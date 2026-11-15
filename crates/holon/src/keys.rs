@@ -112,9 +112,10 @@ const USAGE: &str = "holon key: the keys the server seals its data under (never 
                                     (its code stays); and the root key is rotated where it is
                                     kept, so every backup and copy of the data folder taken before
                                     needs the old root: back up the new one
-  holon key export --to file:PATH [--data DIR] [--root-key SOURCE]
+  holon key export --to file:PATH [--data DIR] [--root-key SOURCE | --server PORT|URL]
                                     a copy of the root key, written owner-only to PATH, which must
                                     hold none: the way to back up a root kept in the OS key store.
+                                    With --server, the root is read where that server reads it.
                                     Keep it apart from the data folder; a forget rotates the root,
                                     so export it again after one
   holon key rotate --root --to <SOURCE> [--forget-old] [--data DIR] [--root-key SOURCE]
@@ -274,7 +275,18 @@ fn export_root(args: &cmdline::Args) -> i32 {
         eprintln!("{WHO}: {} is in the data folder: a copy of the root kept with what it opens protects nothing; put it apart", path.display());
         return 2;
     }
-    let keys = match crate::verify::keys_for(Some(&data.display().to_string()), args.value("--root-key")) {
+    // With --server and no --root-key, the root is read where that server reads it: the server
+    // knows (holon key status), and looking in the default place instead found nothing for a
+    // server started with --root-key file:… (release audit R5). Its keys must be this folder's.
+    let served = match (args.value("--root-key"), args.server()) {
+        (None, Some(_)) => match served_root(args, &data, WHO) {
+            Ok(s) => Some(s),
+            Err(code) => return code,
+        },
+        _ => None,
+    };
+    let root_key = args.value("--root-key").or(served.as_deref());
+    let keys = match crate::verify::keys_for(Some(&data.display().to_string()), root_key) {
         Ok(k) => k,
         Err(e) => {
             eprintln!("{WHO}: {e}");
@@ -290,6 +302,31 @@ fn export_root(args: &cmdline::Args) -> i32 {
     println!("keep it apart from the data folder (another disk, a password manager): the data folder and this key together open everything the server keeps");
     println!("a forget (holon remove --forget, holon key forget) rotates the root: export it again after one");
     0
+}
+
+/// Where the server `--server` names reads its root (`--root-key` as it reads it), when its
+/// keys are `data`'s: `Err` is the exit code, said. A server on another data folder, or one with
+/// its keys in memory, is no answer.
+fn served_root(args: &cmdline::Args, data: &std::path::Path, who: &str) -> Result<String, i32> {
+    let v = cmdline::json(who, args, "GET", "/admin/keys", None)?;
+    let theirs = v["key_id"].as_str().unwrap_or_default();
+    let keys = data.join("keys.json");
+    let ours = std::fs::read(&keys).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).and_then(|f| f["key_id"].as_str().map(str::to_string));
+    match (ours, v["source"].as_str()) {
+        (Some(ours), Some(source)) if ours == theirs => Ok(source.to_string()),
+        (Some(_), Some(_)) => {
+            eprintln!("{who}: that server's keys aren't {}'s: pass --data with the data folder it runs on", keys.display());
+            Err(1)
+        }
+        (None, _) => {
+            eprintln!("{who}: {} isn't there: pass --data with the data folder that server runs on", keys.display());
+            Err(1)
+        }
+        (Some(_), None) => {
+            eprintln!("{who}: that server keeps its keys in memory only: there is no root to export");
+            Err(1)
+        }
+    }
 }
 
 /// `holon key rotate --root --to <SOURCE>`: the data folder's keyring opened with its root, the
@@ -332,6 +369,13 @@ fn rotate_root(args: &cmdline::Args) -> i32 {
         return 2;
     }
     let old = keys.source();
+    // A rotation in place keeps the place as the folder was opened with it: `--to` the key file
+    // in use spelled another way wrote the new key under that spelling (on a disk that ignores
+    // case, the file took its case) and printed it as typed (release audit R5).
+    let new = match &old {
+        Some(o) if o.same_place(&new) => o.clone(),
+        _ => new,
+    };
     // Read before the rotation: after it this folder is under the new root, and the old one's
     // list says only what else it opens.
     let others = match keys.others_on_root() {
@@ -367,6 +411,6 @@ fn rotate_root(args: &cmdline::Args) -> i32 {
         Some(old) => println!("the old root key is still in {old}: it opens copies of the folder taken before (--forget-old removes it)"),
         None => println!("the old root key was replaced where it was kept: a copy of it kept elsewhere still opens copies of the folder taken before"),
     }
-    println!("start the server with --root-key {to}");
+    println!("start the server with --root-key {}", new.arg());
     0
 }

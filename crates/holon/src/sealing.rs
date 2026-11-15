@@ -114,6 +114,16 @@ impl KeySource {
     /// not, `.` and `..`, a link, a drive letter's case), else the same entry or variable. What a
     /// rotation in place and `--forget-old` decide by: told apart by spelling, a rotation `--to`
     /// the file in use, written another way, would forget the new root it just kept there.
+    /// The `--root-key` that names this place, as [`KeySource::parse`] reads it: what `holon key
+    /// status` gives, so `holon key export --server` reads the root where the server does.
+    pub(crate) fn arg(&self) -> String {
+        match self {
+            KeySource::Os { .. } => "os".to_string(),
+            KeySource::Env(var) => format!("env:{var}"),
+            KeySource::File(path) => format!("file:{}", path.display()),
+        }
+    }
+
     pub(crate) fn same_place(&self, other: &KeySource) -> bool {
         match (self, other) {
             (KeySource::File(a), KeySource::File(b)) => a == b || matches!((resolved(a), resolved(b)), (Some(a), Some(b)) if a == b),

@@ -989,7 +989,7 @@ Prints what it swept, what it keeps, and what it spared as new. An in-memory sto
 holon key status [--json] [--server PORT|URL]
 holon key rotate <scope> [--server PORT|URL]
 holon key forget <slug> --yes [--server PORT|URL]
-holon key export --to file:PATH [--data DIR] [--root-key SOURCE]
+holon key export --to file:PATH [--data DIR] [--root-key SOURCE | --server PORT|URL]
 holon key rotate --root --to <SOURCE> [--forget-old] [--data DIR] [--root-key SOURCE]
 ```
 
@@ -1017,13 +1017,15 @@ anything of one.
   read, which must not be there yet and not be in the data folder: how a root kept in the OS key
   store (which shows no one its keys) is backed up. It reads only, so the server may be running.
   Keep the file apart from the data folder; export again after a forget, which rotates the root.
-  `--data` and `--root-key` as for `rotate --root`.
+  `--data` and `--root-key` as for `rotate --root`; with `--server` instead of `--root-key`, the
+  root is read where that server reads it (`status` says), once its keys are the folder's.
 - `rotate --root` runs with the server stopped (it refuses while one runs on the folder): every
   data key is wrapped under a new root key, kept in `--to` (`os`, `file:PATH`, or `env:VAR`
   already holding a new key: `holon serve --new-root-key` prints one). Start the server with
   `--root-key` set to it after. `--to` must hold no key yet (it refuses one that does, so it never
   writes over another folder's root, or any key it didn't make), unless it is where the root is
-  kept now, however its path is spelled: then the root is rotated in place, which it refuses
+  kept now, however its path is spelled: then the root is rotated in place, in the file as it is
+  spelled where it is kept now (and said so), which it refuses
   while another data folder opens under that root (a copy of the folder, or one given the same
   `--root-key`, each listed beside the root when a server opens it): it names the folder, which
   needs a root of its own first, or deleting. The old root stays where it was unless

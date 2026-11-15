@@ -476,7 +476,9 @@ fn offline(home: &Path, args: &[&str]) -> (bool, String) {
 /// Guards, against the real server: a deployment's data key rotated, its chain still checks
 /// across the two versions; its keys forgotten with `holon remove --forget`, its kept records say
 /// so, and the old root (rotated in place) opens nothing of the folder; the root rotated with
-/// the server stopped, and not while it runs; a second server on one folder refuses to start.
+/// the server stopped, and not while it runs, and in place however `--to` spells the file; the
+/// root exported from where the running server reads it; a second server on one folder refuses
+/// to start.
 /// Why: rotation and forgetting are what an operator does when a key may have leaked or a
 /// customer leaves (docs/L4s/at-rest-encryption-L4.md §2.4); each is a few writes to keys.json
 /// and the root's place, which the unit tests check one by one, and this one through the commands
@@ -528,6 +530,12 @@ route.post("/bump", () => {{
     }
     let shown = server.holon(&["key", "status"]);
     assert!(shown.contains("d:shop: version 2") && shown.contains("names: version 1, never rotated") && shown.contains("root.key"), "{shown}");
+    // The root exported from where the running server reads it: --server and no --root-key.
+    // Looking in the default place instead found nothing for a server given --root-key file:…
+    let copy = base.join("root.copy");
+    let said = server.holon(&["key", "export", "--to", &format!("file:{}", copy.display())]);
+    assert!(said.contains("is copied to"), "{said}");
+    assert!(std::fs::read(&copy).unwrap() == std::fs::read(&root_file).unwrap(), "the copy isn't the root the server reads");
     server.holon(&["export", "shop", "--to", &export.display().to_string()]);
     let mut exported = Vec::new();
     files_under(&export, &mut exported);
@@ -586,12 +594,21 @@ route.post("/bump", () => {{
     let shown = again.holon(&["key", "status"]);
     assert!(shown.contains("new.key") && shown.contains("d:shop: forgotten"), "{shown}");
     again.stop();
+
+    // Rotated in place, --to the key file in use spelled another way (and in another case where
+    // the disk ignores it): the new key goes in the file as it is spelled where it is kept, and
+    // that is what the server is told to start with.
+    let other = texts.join("..").join(if cfg!(windows) { "NEW.KEY" } else { "new.key" });
+    let (went, said) = offline(&home, &["key", "rotate", "--root", "--to", &format!("file:{}", other.display()), "--root-key", &new_root]);
+    assert!(went && said.contains(&format!("start the server with --root-key {new_root}\n")), "{said}");
+    let names: Vec<String> = std::fs::read_dir(&base).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert!(names.iter().any(|n| n == "new.key") && !names.iter().any(|n| n == "NEW.KEY"), "{names:?}");
 }
 
 /// The low-level writers (owner-only, atomic, appending) and the standard library's, outside
 /// test code: each file's count of them, and why it may write past at_rest.rs.
 const WRITERS: &[(&str, usize, &str)] = &[
-    ("at_rest.rs", 7, "where sealing is: it writes what it sealed, keys.lock, empty, and keys.json's copy in the backup folder: data keys wrapped under the root"),
+    ("at_rest.rs", 8, "where sealing is: it writes what it sealed, keys.lock, empty, and keys.json's copy in the backup folder, by the archiver and as keys.json is written: data keys wrapped under the root"),
     ("bindings.rs", 1, "access.versions.jsonl: lines sealed with seal_line just before"),
     ("blobs.rs", 2, "the file texts' chunks and chunk lists, sealed with seal just before"),
     ("claims.rs", 1, "the state head: a hash, in clear on purpose (§2.5)"),

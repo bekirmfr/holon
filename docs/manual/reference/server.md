@@ -200,7 +200,8 @@ allow_plain_http = true
     deployment's records go there too once its retention's time is up
     (`<slug>/holon-archive-<slug>-removed-<ms>.json.gz`).
     The folder keeps a copy of `keys.json` too, `<backup>/holon-archive-keys.json` (every key in it
-    wrapped under the root, as in the data folder), written again as it changes, so the backup and
+    wrapped under the root, as in the data folder), written again each time it changes, at once
+    (a forget's copy never opens what it put out of reach), so the backup and
     the root key alone open every archive in it, the data folder lost: `holon verify <archive>
     --root-key …` finds the copy beside it. Keep the root key apart from the backup. Each archive
     holds the units its runs ran and the file texts they read that the server keeps. Every file the server writes there

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The root key and the backup, three rough edges.** `holon key export --server PORT`, with no
+  `--root-key`, reads the root where that server reads it (`holon key status` now names its
+  `--root-key` as `source`), once its keys are the folder's; it looked in the default place and
+  found nothing for a server given `--root-key file:…`. The backup folder's copy of `keys.json` is
+  written again with each write of `keys.json`, at once: for a second or so after a forget, the
+  copy still opened the forgotten deployment's archives with the old root. And a root rotated in
+  place, `--to` the key file in use spelled another way, stays in the file as it was spelled (on a
+  disk that ignores case, the file had taken the new spelling's), and `--root-key` is printed so.
 - **Upgrading from 0.1.0-rc.35 or earlier: this release doesn't read that data folder.** The
   server now seals everything in its data folder (below), and a folder written in clear by an
   older release is refused at start, saying so; nothing in it is changed (only `keys.lock` is

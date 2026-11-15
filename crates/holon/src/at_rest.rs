@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::sealing::{KeySource, new_key};
-use crate::sync::RwLock;
+use crate::sync::{Mutex, RwLock};
 
 /// The keyring's writes (`keys.json`, a root kept) made to fail one at a time, for the tests that
 /// hold a rotation or a forget to leaving an openable folder whichever write fails. Nothing
@@ -247,6 +247,10 @@ pub(crate) struct Keyring {
     read_only: bool,
     /// Made by this open, its root with it: the server says where that root is kept.
     made: bool,
+    /// The backup folder `keys.json` was last copied to ([`Keyring::keep_copy_in`]): each write
+    /// of `keys.json` after is copied there in the same step, so the copy never opens what a
+    /// forget or a root rotation has just put out of reach (release audit R5).
+    backup: Mutex<Option<PathBuf>>,
 }
 
 fn now_ms() -> u64 {
@@ -496,6 +500,7 @@ impl Keyring {
             prints,
             read_only,
             made: false,
+            backup: Mutex::new(None),
         };
         if cut_short && !read_only {
             keyring.persist(&keyring.inner.read().unwrap().file)?;
@@ -556,7 +561,7 @@ impl Keyring {
         }
         let names = derive(NAMES_CONTEXT, derived[NAMES].as_slice());
         let prints = derive(PRINTS_CONTEXT, derived[SECRETS].as_slice());
-        Keyring { path, inner: RwLock::new(Inner { file, open, source, memory_root }), names, prints, read_only: false, made: false }
+        Keyring { path, inner: RwLock::new(Inner { file, open, source, memory_root }), names, prints, read_only: false, made: false, backup: Mutex::new(None) }
     }
 
     /// A new data key for `scope` at `version`, and it wrapped under `root`.
@@ -608,7 +613,14 @@ impl Keyring {
         }
         faults::write("keys.json")?;
         let bytes = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
-        crate::sealing::write_private(path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))
+        crate::sealing::write_private(path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        // The backup's copy follows at once. Left to the archiver's next look, for a second or
+        // so after a forget the copy still opened the forgotten deployment's archives with the
+        // old root. One that can't be written is the archiver's to retry and to say.
+        if let Some(dir) = self.backup.lock().unwrap().as_ref() {
+            let _ = faults::write("the backup's copy of keys.json").and_then(|()| crate::sealing::write_private(&dir.join(BACKUP_KEYS), &bytes).map_err(|e| e.to_string()));
+        }
+        Ok(())
     }
 
     /// The root, read again where it is kept (and checked): to make a scope or a version.
@@ -649,6 +661,7 @@ impl Keyring {
     pub(crate) fn keep_copy_in(&self, dir: &Path) -> Result<bool, String> {
         let Some(path) = &self.path else { return Ok(false) };
         let _held = self.inner.read().unwrap();
+        *self.backup.lock().unwrap() = Some(dir.to_path_buf());
         let bytes = std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
         let to = dir.join(BACKUP_KEYS);
         if std::fs::read(&to).is_ok_and(|kept| kept == bytes) {
@@ -657,6 +670,11 @@ impl Keyring {
         faults::write("the backup's copy of keys.json")?;
         crate::sealing::write_private(&to, &bytes).map_err(|e| format!("could not write {}: {e}", to.display()))?;
         Ok(true)
+    }
+
+    /// No backup folder any more: `keys.json`'s writes are copied nowhere.
+    pub(crate) fn no_backup(&self) {
+        *self.backup.lock().unwrap() = None;
     }
 
     /// A copy of the root, the one this keyring opens under (checked), kept in `to` (`holon key
@@ -887,6 +905,7 @@ impl Keyring {
         serde_json::json!({
             "key_id": inner.file.key_id,
             "root": inner.source.as_ref().map_or_else(|| "kept in memory only".to_string(), |s| s.to_string()),
+            "source": inner.source.as_ref().map(KeySource::arg),
             "scopes": inner.file.scopes.iter().map(|(scope, kept)| serde_json::json!({
                 "scope": scope,
                 "current": kept.current,
@@ -1777,8 +1796,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Guards: a backup folder keeps a copy of keys.json, written again whenever keys.json
-    /// changes (not when it hasn't), and every archive in it opens with that folder and the root
+    /// Guards: a backup folder keeps a copy of keys.json, written again in the same step as each
+    /// write of keys.json (and not when it hasn't changed), and every archive in it opens with that folder and the root
     /// alone once the data folder is gone; a copy that can't be written is said, and the one there
     /// before is left whole.
     /// Why: archives are sealed under per-deployment keys that lived only in the data folder's
@@ -1799,17 +1818,41 @@ mod tests {
         let mut archives = vec![archive("holon-archive-shop-runs-0-9.json.gz", b"runs 0-9")];
         assert!(keys.keep_copy_in(&backup).unwrap());
         assert!(!keys.keep_copy_in(&backup).unwrap(), "the same: not written again");
-        // keys.json changes (a new version of the scope): the copy follows.
+        // Each change to keys.json reaches the copy in the same step, before the archiver looks
+        // again: a new version of a scope, a new scope, a scope forgotten, the root rotated in
+        // place. Left to the archiver, the copy opened a forgotten deployment's archives with the
+        // old root for a second or so after the forget (release audit R5).
+        let copy = || std::fs::read(backup.join(BACKUP_KEYS)).unwrap();
+        let file = || std::fs::read(data.join("keys.json")).unwrap();
         keys.rotate(&deployment("shop")).unwrap();
+        assert_eq!(copy(), file(), "a new version");
         archives.push(archive("holon-archive-shop-runs-10-19.json.gz", b"runs 10-19"));
-        assert!(keys.keep_copy_in(&backup).unwrap());
-        // A copy that can't be written: said, and the one before left whole.
-        let kept = std::fs::read(backup.join(BACKUP_KEYS)).unwrap();
+        keys.seal_line(&deployment("gone"), "log", b"a run").unwrap();
+        assert_eq!(copy(), file(), "a new scope");
+        assert!(keys.forget(&deployment("gone")).unwrap());
+        assert_eq!(copy(), file(), "a scope forgotten");
+        keys.rotate_root(None).unwrap();
+        assert_eq!(copy(), file(), "the root rotated in place");
+        assert!(!keys.keep_copy_in(&backup).unwrap(), "nothing left for the archiver");
+        // A copy that can't be written: keys.json is, the copy before is left whole, and the
+        // archiver's next look writes it, or says why it can't.
+        let kept = copy();
+        faults::fail_at(Some(2));
         keys.rotate(SERVER).unwrap();
+        faults::fail_at(None);
+        assert_eq!(copy(), kept, "left whole");
+        assert_ne!(file(), kept);
         faults::fail_at(Some(1));
         assert!(keys.keep_copy_in(&backup).is_err());
         faults::fail_at(None);
-        assert_eq!(std::fs::read(backup.join(BACKUP_KEYS)).unwrap(), kept);
+        assert_eq!(copy(), kept);
+        assert!(keys.keep_copy_in(&backup).unwrap());
+        assert_eq!(copy(), file());
+        // No backup any more: keys.json's writes are copied nowhere.
+        keys.no_backup();
+        keys.rotate(SERVER).unwrap();
+        assert_ne!(copy(), file());
+        assert!(keys.keep_copy_in(&backup).unwrap());
         assert!(!Keyring::memory().keep_copy_in(&backup).unwrap(), "a keyring in memory has no file to copy");
         // The data folder lost: the backup folder and the root open every archive.
         std::fs::remove_dir_all(&data).unwrap();

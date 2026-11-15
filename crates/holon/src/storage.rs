@@ -1183,6 +1183,7 @@ fn sweep_folders(state: &AppState, now_ms: u64) -> Report {
 /// (`expire_removed`).
 pub(crate) fn archive(state: &AppState, now_ms: u64) {
     let Some(dir) = state.policy().storage.backup.clone() else {
+        crate::at_rest::keys().no_backup();
         let _ = expire_removed(state, None, now_ms);
         return;
     };
