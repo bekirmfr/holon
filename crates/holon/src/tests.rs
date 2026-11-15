@@ -8327,10 +8327,10 @@ fn a_round_past_its_memory_fails_performs_nothing_and_a_flow_may_ask_for_more() 
 #[test]
 fn a_replay_computes_no_more_in_a_round_than_the_deployment_is_granted() {
     let state = test_state();
-    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nmax_steps = 5000\nmax_fuel = 50000000\nmax_memory = 4194304").unwrap());
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nmax_steps = 200000\nmax_fuel = 50000000\nmax_memory = 4194304").unwrap());
     let text = |times: u32, limits: &str| {
         format!(
-            "import {{ flow, js, range, route }} from \"holon\"\n\nflow(\"budget\", {{ port: 8309{limits} }})\n\nconst double = js(function twice(n) {{\n  return n * 2\n}}, {{ fuel: \"20M\" }})\n\nroute.post(\"/loop\", (req) => {{\n  const n = req.json.n * {times}\n  const total = range(n).reduce((acc, i) => acc + range(n).reduce((a, j) => a + i * j, 0), 0)\n  return `total ${{total}}`\n}})\n\nroute.post(\"/twice\", (req) => {{\n  const doubled = range(req.json.n * {times}).map(double)\n  return `total ${{doubled.reduce((acc, x) => acc + x, 0)}}`\n}})\n\nroute.post(\"/copies\", (req) => {{\n  const body = {{ text: req.json.text }}\n  const copies = range(req.json.n * {times}).map((i) => body.text + i)\n  return `count ${{copies.length}}`\n}})\n"
+            "import {{ flow, js, range, route }} from \"holon\"\n\nflow(\"budget\", {{ port: 8309{limits} }})\n\nconst double = js(function twice(n) {{\n  return n * 2\n}}, {{ fuel: \"20M\" }})\n\nroute.post(\"/loop\", (req) => {{\n  const n = req.json.n * {times} * 4\n  const total = range(n).reduce((acc, i) => acc + range(n).reduce((a, j) => a + i * j, 0), 0)\n  return `total ${{total}}`\n}})\n\nroute.post(\"/twice\", (req) => {{\n  const doubled = range(req.json.n * {times}).map(double)\n  return `total ${{doubled.reduce((acc, x) => acc + x, 0)}}`\n}})\n\nroute.post(\"/copies\", (req) => {{\n  const body = {{ text: req.json.text }}\n  const copies = range(req.json.n * {times}).map((i) => body.text + i)\n  return `count ${{copies.length}}`\n}})\n"
         )
     };
     let deploy = |text: &str, acknowledge: &serde_json::Value| {
@@ -8364,10 +8364,11 @@ fn a_replay_computes_no_more_in_a_round_than_the_deployment_is_granted() {
             .collect();
         by_route
     };
-    // Ten times the items: past the steps (100 × 100), the fuel (20 calls) and the memory (a
-    // hundred copies of 64 KiB) the grant gives.
+    // Ten times the items: past the steps (400 × 400), the fuel (20 calls) and the memory (a
+    // hundred copies of 64 KiB) the grant gives. A copy of 64 KiB is steps too (a step for each
+    // 128 bytes read and made), so the grant's steps hold the copies the memory stops.
     let heavier = text(10, "");
-    let rows = [("max_steps", "POST /loop", "5000"), ("max_fuel", "POST /twice", "50000000"), ("max_memory", "POST /copies", "4194304")];
+    let rows = [("max_steps", "POST /loop", "200000"), ("max_fuel", "POST /twice", "50000000"), ("max_memory", "POST /copies", "4194304")];
     let held = replay(&heavier);
     let own = replay(&text(1, ""));
     for (limit, label, granted) in rows {
@@ -8378,9 +8379,9 @@ fn a_replay_computes_no_more_in_a_round_than_the_deployment_is_granted() {
     }
 
     // Granted more by a person, the same version finishes.
-    let more = text(1, ", limits: { max_steps: 100000, max_fuel: 300000000, max_memory: 67108864 }");
+    let more = text(1, ", limits: { max_steps: 2000000, max_fuel: 300000000, max_memory: 67108864 }");
     let mut approved = ack.clone();
-    approved.as_array_mut().unwrap().extend(["Limit(max_fuel=300000000)".into(), "Limit(max_memory=67108864)".into(), "Limit(max_steps=100000)".into()]);
+    approved.as_array_mut().unwrap().extend(["Limit(max_fuel=300000000)".into(), "Limit(max_memory=67108864)".into(), "Limit(max_steps=2000000)".into()]);
     let r = deploy(&more, &approved);
     let code = r.status_code;
     assert_eq!(code, 200, "{}", body_json(r));

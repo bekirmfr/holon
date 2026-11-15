@@ -99,7 +99,7 @@ can change both columns
 | `max_response_bytes` | an outbound response's size | 10485760 (10 MiB) | 104857600 |
 | `max_header_bytes` | an outbound response's headers | 65536 | 262144 |
 | `max_redirects` | redirects followed | 10 | 20 |
-| `max_steps` | steps a run may take between two of its outbound calls (each node it evaluates, each item a function is applied to) | 10000000 | 200000000 |
+| `max_steps` | steps a run may take between two of its outbound calls (each node it evaluates, each item a function is applied to, and a step for each 32 items or 128 bytes a leaf reads or makes, at every level) | 10000000 | 200000000 |
 | `max_fuel` | instructions a run's `js()` functions may run in all between two of its outbound calls (each call runs on its own `module_fuel` or what is left of this, the less) | 4000000000 | 20000000000 |
 | `max_memory` | bytes a run may come to hold between two of its outbound calls: what it made since the last and keeps (a `js()` call's own memory is its `module_memory`, freed as it answers) | 268435456 (256 MiB) | 4294967296 (4 GiB) |
 | `max_await_seconds` | the longest a run may wait at `await` | 2592000 (30 days) | 7776000 (90 days) |
@@ -130,9 +130,14 @@ can change both columns
 A run fails and performs nothing when it takes more than `max_steps` steps between two of its
 outbound calls (or before the first, or after the last), when its `js()` functions want more than
 `max_fuel` instructions in all within one of those stretches, when it comes to hold more than
-`max_memory` bytes within one, or when it is past its time budget at the end of one of those
-stretches: the time is read between them, the steps, instructions and bytes are counted within
-them. The bytes are counted as they are made and looked at every step, and no step joins a text
+`max_memory` bytes within one, or when it is past its time budget (`run_budget_ms`, the whole
+run's): the steps, instructions and bytes are counted within each stretch, and the time is read
+as it steps, so a run that only computes stops at its budget as one that calls out does. A step
+is of the order of a node's work whatever the node does: a leaf that scans, writes or copies a
+list, a record, a text or bytes takes a step for each 32 items or 128 bytes of what it reads and
+makes, at every level (an item, a field or a length is only what it answers; an `append` or a `+`
+onto a value it alone holds, what it adds), so 10 million steps is seconds of computing, not
+minutes. The bytes are counted as they are made and looked at every step, and no step joins a text
 past 16,777,216 UTF-16 units, a list past 1,048,576 items or bytes past 64 MiB (it gives nothing
 instead), so a run goes past its memory by no more than one step makes. A run takes the same steps
 and instructions on any machine, and `holon verify` runs it again with up to the ceilings' steps,

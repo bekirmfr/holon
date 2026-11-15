@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **A step is a unit of work, and a run's time is read as it computes.** A step was a node, or an
+  item a function is applied to, whatever its leaf did, so a leaf that scans what it is handed,
+  called for each item of a list, was the square of its work in a count of steps:
+  `ids.filter(x => ids.indexOf(x) === ids.lastIndexOf(x))` over 100,000 ids held a server's
+  thread for 26 seconds within 10 million steps, and the run's time budget, read only after a
+  round that called out, never stopped it. Now a leaf also takes a step for each 32 items or fields
+  and each 128 bytes of what it reads and makes, at every level of it (a list scanned for a value,
+  each item against the value; `sort` n log n times; a number written as text, a step; a key a
+  signature is checked with, and a compressor's set-up, what they take), so a step is of the order
+  of a node's work whatever the node does: no pure leaf's step takes 20 times what a node of two
+  numbers does, about 2 µs. A leaf that answers an item, a field or a length reads only that, and
+  one that adds to a value it alone holds (`append` or `+` in a `reduce`, `insert` into a record)
+  takes the steps of what it adds. And the time budget (`run_budget_ms`) is read as a round steps,
+  so a run that only computes stops at it too, failing with `the run took longer than …` and
+  performing nothing. A run that builds or scans large values takes more steps than it did, and
+  one that took near its `max_steps` may need more (`limits: { max_steps: n }`). Leaves that copied
+  what they then dropped copy only what they answer (`with_item`, `fill`, `to_spliced`,
+  `with_field`, `insert`, `remove`, `merge`; `flat` and `copy_within` check their params first), and
+  `json_stringify` of control characters, `uri_encode` and `replace` with a long replacement are
+  many times faster.
+
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

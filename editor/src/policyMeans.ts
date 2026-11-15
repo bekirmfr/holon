@@ -19,7 +19,7 @@ export const LIMIT_MEANINGS: Record<string, string> = {
   max_response_bytes: "The largest answer a call out takes in.",
   max_header_bytes: "The largest headers an answer to a call out may have.",
   max_redirects: "The redirects a call out follows.",
-  max_steps: "The steps a run may take between two of its calls out: each node it evaluates, each item a function is applied to.",
+  max_steps: "The steps a run may take between two of its calls out: each node it evaluates, each item a function is applied to, and a step for each 32 items or 128 bytes a node reads or makes, at every level.",
   max_fuel: "What a run's modules may compute in all between two of its calls out.",
   max_memory: "The memory a run may come to hold between two of its calls out, in bytes.",
   max_await_seconds: "How long one waiting point (an approval, an event) may wait.",
