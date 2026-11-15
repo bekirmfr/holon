@@ -80,6 +80,32 @@ pub fn starts_nothing(c: &Lowered, store: &mut MapResolver) -> bool {
     server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.feeds.is_empty() && server.queues.is_empty() && server.websockets.is_empty() && server.actions.is_empty()
 }
 
+/// What the flow does with each secret, node by node, in the words the web console marks its
+/// canvas with ([`crate::flow::secret_lines`]): where one is sent, a write or a call the host
+/// refuses, a route's answer. Each under its handler, with the line of the text the node is on.
+/// `holon check` and an agent's `check` tool print these, so a person at the canvas, a person at
+/// a terminal and an agent read the same of a flow; nothing when it does none of them.
+pub(crate) fn with_its_secrets(c: &Lowered, store: &mut MapResolver) -> Vec<String> {
+    let said = crate::flow::secret_lines(&c.doc.nodes, &c.doc.edges, store, port_of(c), c.doc.unit_settings());
+    if said.is_empty() {
+        return vec![];
+    }
+    let mut out = vec!["with its secrets:".to_string()];
+    for s in said {
+        let at = match (s.handler.is_empty(), c.spans.get(&s.node)) {
+            (false, Some(span)) => format!("{}, line {}: ", s.handler, span.start.line),
+            (false, None) => format!("{}: ", s.handler),
+            (true, Some(span)) => format!("line {}: ", span.start.line),
+            (true, None) => String::new(),
+        };
+        let line = format!("  {at}{}", s.line);
+        if !out.contains(&line) {
+            out.push(line);
+        }
+    }
+    out
+}
+
 /// What `check` says of a flow nothing would start.
 pub const STARTS_NOTHING: &str = "nothing would start a run: add a route, a websocket, a clock, a file, mail, feed or queue handler or an action (an action runs by hand: `export const run = action((input) => { … })`)";
 
@@ -228,6 +254,7 @@ pub fn check(file: &str, source: &str) -> Report {
     let mut unrecorded: Vec<String> = unrecorded.filter(|(_, log)| log.as_str() == "unrecorded").map(|(label, _)| format!("  {}", describe_item(&format!("Unrecorded({label:?})")))).collect();
     unrecorded.sort();
     out.extend(unrecorded);
+    out.extend(with_its_secrets(&c, &mut store));
     out.extend(while_it_runs(&caps));
     // Where a lazy feed handler is moves once its record is on disk: a crash runs again what the
     // last sync didn't cover (host-capabilities L4 §5.9.4).
@@ -425,8 +452,9 @@ mod tests {
         let r = check("leaky.holon.ts", text);
         assert_eq!(r.code, 0, "{r:?}");
         let may = r.out.iter().position(|l| l == "it may:").unwrap_or_else(|| panic!("{:?}", r.out));
+        let listed: Vec<&String> = r.out[may + 1..].iter().take_while(|l| l.starts_with("  ")).collect();
         assert_eq!(
-            r.out[may + 1..],
+            listed,
             ["  receive requests", "  answer its callers with the secret \"token\", or with what is computed from it", "  read the secret \"key\"", "  read the secret \"token\""]
         );
     }
@@ -441,7 +469,7 @@ mod tests {
             let r = check("part.holon.ts", &text);
             assert_eq!(r.code, 0, "{r:?}");
             let at = r.out.iter().position(|l| l == "it may:").unwrap_or_else(|| panic!("{:?}", r.out));
-            r.out[at + 1..].to_vec()
+            r.out[at + 1..].iter().take_while(|l| l.starts_with("  ")).cloned().collect::<Vec<String>>()
         };
         let answers = ["  receive requests", "  answer its callers with the secret \"k\", or with what is computed from it", "  read the secret \"k\""];
         let reads = ["  receive requests", "  read the secret \"k\""];
@@ -452,6 +480,59 @@ mod tests {
         // A key kept as base64 signs as the key: its bytes are the secret whole, spelled another way.
         assert_eq!(may("hmac_sha256, text_to_bytes", "route.get(\"/k\", (req) => hmac_sha256(text_to_bytes(k, { encoding: \"base64\" }), req.query.p))"), reads);
         assert_eq!(may("sha256", "route.get(\"/s\", () => sha256(k))"), reads);
+    }
+
+    /// Guards: what `holon check` prints under "with its secrets:" is what the web console marks
+    /// on the canvas, line for line, for every sample and for a flow that does each kind of thing
+    /// with a secret: sends it to a host, keeps it in its state (refused), hands it to another
+    /// flow (refused), answers its caller with it. Each line says its handler and the line of the
+    /// text its node is on.
+    /// Why: the canvas said "would keep the secret … : the host refuses it" and "would hand the
+    /// secret … to another flow … : the host refuses it" on a node, and `holon check` and an
+    /// agent's `check` tool said neither: an agent writing a flow learned of a refused write or
+    /// call only when the run didn't make it, and a person at a terminal read less than one at
+    /// the canvas.
+    /// If it fails: `check` no longer prints from `flow::secret_lines`, which the canvas's marks
+    /// are made of, or drops or rewords a line: say there what both show.
+    #[test]
+    fn check_says_of_a_flows_secrets_what_the_canvas_marks() {
+        // The lines check prints after "with its secrets:", each without its place.
+        let printed = |file: &str, text: &str| -> Vec<String> {
+            let r = check(file, text);
+            assert_eq!(r.code, 0, "{file}: {r:?}");
+            let Some(at) = r.out.iter().position(|l| l == "with its secrets:") else { return vec![] };
+            r.out[at + 1..].iter().take_while(|l| l.starts_with("  ")).map(|l| l.trim_start().to_string()).collect()
+        };
+        let marked = |file: &str, text: &str| -> Vec<String> {
+            let mut store = MapResolver::new();
+            let c = compile(file, text, &mut store).unwrap_or_else(|r| panic!("{r:?}"));
+            crate::flow::secret_marks(&c.doc.nodes, &c.doc.edges, &mut store, port_of(&c), c.doc.unit_settings()).into_values().flatten().collect()
+        };
+        let same = |file: &str, text: &str| {
+            let (said, marks) = (printed(file, text), marked(file, text));
+            for mark in &marks {
+                assert!(said.iter().any(|l| l.ends_with(mark.as_str())), "{file}: the canvas marks {mark:?}, and check prints {said:?}");
+            }
+            for line in &said {
+                assert!(marks.iter().any(|m| line.ends_with(m.as_str())), "{file}: check prints {line:?}, and the canvas marks {marks:?}");
+            }
+            said
+        };
+        for sample in crate::samples::samples() {
+            same(&format!("{}.holon.ts", sample.name), sample.text);
+        }
+        let text = "import { flow, route } from \"holon\"\nimport state from \"state\"\nimport k from \"secret:k\"\nimport example from \"host:api.example.com\"\nimport { charge } from \"flow:billing\"\n\nflow(\"marks\", { port: 8199 })\n\nroute.get(\"/x\", async () => {\n  const sent = await example.get(\"/v1\", { headers: { authorization: `Bearer ${k}` } })\n  state.kept = k\n  const paid = await charge({ key: k })\n  return { key: k, status: sent.status, paid: paid.error }\n})\n";
+        let said = same("marks.holon.ts", text);
+        for (place, line) in [
+            ("GET /x, line 10: ", "sends the secret \"k\" to https://api.example.com"),
+            ("GET /x, line 11: ", "would keep the secret \"k\" (write its state \"kept\"): the host refuses it"),
+            ("GET /x, line 12: ", "would hand the secret \"k\" to another flow (run the action charge of the flow billing): the host refuses it"),
+            ("GET /x, line ", "answers its caller with the secret \"k\" (approved apart, at deploy)"),
+        ] {
+            assert!(said.iter().any(|l| l.starts_with(place) && l.ends_with(line)), "{place}{line}: {said:?}");
+        }
+        // A flow that reads no secret, or only computes with one, says nothing of them.
+        assert!(printed("hello.holon.ts", HELLO).is_empty());
     }
 
     /// The canvas marks every sink a secret reaches, by node: the request it is sent in, the state
