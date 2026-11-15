@@ -169,7 +169,8 @@ fn run(args: &Args) -> Result<(), Stop> {
         if routes.len() == 1 { "" } else { "s" },
         if connections == 1 { "" } else { "s" }
     );
-    let log_path = format!("/deployments/{}/log?limit=0", seg(slug));
+    // The counts only, from the list of runs: run.view's, not a run's steps (R55).
+    let log_path = format!("/deployments/{}/log/heads?limit=0", seg(slug));
     let width = routes.iter().map(|r| r.named().chars().count()).max().unwrap_or(0);
     let mut results = Vec::new();
     for (i, route) in routes.iter().enumerate() {

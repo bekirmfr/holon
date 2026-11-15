@@ -207,6 +207,8 @@ pub fn run_line(entry: &Value) -> String {
     let s = |k: &str| entry.get(k).and_then(Value::as_str);
     let seq = entry.get("seq").and_then(Value::as_u64).unwrap_or(0);
     let what = match s("kind") {
+        // As the list of runs says it: its route, not its URL, which says the request's values.
+        Some("request") if s("url").is_none() && s("route").is_some() => s("route").unwrap_or_default().to_string(),
         Some("request") => format!("{} {}", s("method").unwrap_or("?"), s("url").unwrap_or("?")),
         Some(kind) => kind.to_string(),
         None => "?".into(),
@@ -234,6 +236,8 @@ pub fn run_line(entry: &Value) -> String {
     }
     if let Some(e) = s("error") {
         line.push_str(&format!(" — failed: {e}"));
+    } else if entry.get("failed").and_then(Value::as_bool) == Some(true) {
+        line.push_str(" — failed");
     }
     line
 }

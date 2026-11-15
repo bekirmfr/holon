@@ -3,7 +3,7 @@
 // this person may decide, with its number in its flow's log (a waiting run is known by its id).
 
 import { useEffect, useMemo, useState } from "react";
-import { getLog, getSummary, type Summary } from "./server";
+import { getLogHeads, getSummary, type Summary } from "./server";
 
 /** How many of the newest runs the palette offers. */
 export const NEWEST = 10;
@@ -24,13 +24,13 @@ export function usePaletteRuns(open: boolean, waiting: { slug: string; runId: st
       (s) => on && setLatest(s.latest.slice(0, NEWEST)),
       () => undefined,
     );
-    // Each waiting run's number: the first line its id is on in its flow's log.
+    // Each waiting run's number: the first line its id is on in its flow's list of runs (run.view's).
     Promise.all(
       slugs
         .split(",")
         .filter(Boolean)
         .map((slug) =>
-          getLog(slug).then(
+          getLogHeads(slug).then(
             ({ entries }) => entries.filter((e) => e.run_id).map((e) => [`${slug}\n${e.run_id}`, e.seq] as const),
             () => [],
           ),

@@ -588,10 +588,11 @@ pub(crate) fn produced_lines(v: &Value) -> Vec<String> {
 
 const RUNS_USAGE: &str = "usage: holon runs <slug> [--last N] [--waiting] [--run N] [--json] [--server PORT|URL]
 
-  A deployment's runs, oldest first: what started each, its answer, how long it took, and why it
-  failed. --waiting lists the runs waiting instead: at an approval (who has approved it so far) or
-  an event, and until when; holon decide decides an approval.
-  --run N shows one run's steps: the flow's text, with each statement's value under it.
+  A deployment's runs, oldest first: what started each (its route), its status, how long it took,
+  who sent it, and whether it failed. --waiting lists the runs waiting instead: at an approval (who
+  has approved it so far) or an event, and until when; holon decide decides an approval.
+  --run N shows one run's steps: the flow's text, with each statement's value under it, and why it
+  failed. A run's steps and values take run.steps on the flow, which the agent role doesn't hold.
 
   --last N                 how many runs, the newest (default 10, at most 200)
   --waiting                the runs waiting for an approval or an event, not the log
@@ -678,7 +679,8 @@ pub(crate) fn runs(args: &[String]) -> i32 {
         }
         return 0;
     }
-    let log = match cmdline::json(WHO, &args, "GET", &format!("{path}/log?limit={last}"), None) {
+    // The list of runs, run.view's: never a run's values (R55).
+    let log = match cmdline::json(WHO, &args, "GET", &format!("{path}/log/heads?limit={last}"), None) {
         Ok(v) => v,
         Err(code) => return code,
     };

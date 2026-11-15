@@ -26,12 +26,14 @@ describe("what the buttons ask", () => {
   });
 
   it("each button asks what its routes ask, or, inside, an action of the catalogue its handler asks", () => {
-    const routes = fixture.routes as Record<string, string>;
+    // A route asking two actions (can.rs's `Rule::Both`) lists them, the first asked first.
+    const routes = fixture.routes as Record<string, string | string[]>;
     for (const [name, b] of Object.entries(BUTTONS) as [Button, (typeof BUTTONS)[Button]][]) {
       for (const route of [b.route].flat()) {
         expect(routes[route], `${name}: ${route} is a route the server answers, asking can`).toBeDefined();
+        const asks = "also" in b ? [b.action, b.also] : [b.action];
         if ("inside" in b) expect(ACTIONS).toContain(b.action);
-        else expect(b.action, `${name}: ${route}`).toBe(routes[route]);
+        else expect(asks, `${name}: ${route}`).toEqual([routes[route]].flat());
       }
     }
   });
@@ -57,7 +59,7 @@ const TABLE: [Button, "host" | "flow", string][] = [
   ["grant", "flow", /*             */ "✓ ✓ · · ·"],
   ["settings", "flow", /*          */ "✓ ✓ · · ·"],
   ["restore", "flow", /*           */ "✓ ✓ · · ·"],
-  ["export", "flow", /*            */ "✓ ✓ ✓ · ✓"],
+  ["export", "flow", /*            */ "✓ ✓ ✓ · ·"],
   ["setSecret", "flow", /*         */ "✓ · · · ·"],
   ["removeSecret", "flow", /*      */ "✓ · · · ·"],
   ["rollBackSecret", "flow", /*    */ "✓ · · · ·"],
@@ -98,7 +100,8 @@ describe("each caller's buttons, as the server answers them", () => {
       if (may) expect(shown, `${who}: ${button}`).toEqual({ disabled: false, title: "what it does" });
       else {
         expect(shown, `${who}: ${button}`).toEqual({ disabled: true, title: answers[BUTTONS[button].action] });
-        expect(can.may(button), `${who}: ${button}`).toMatch(/may not do that: /);
+        // A run's steps are refused in words of their own, saying who gives them (R55).
+        expect(can.may(button), `${who}: ${button}`).toMatch(/may not do that: |may not read .+ run\.steps; a person gives it/);
       }
     }
   });

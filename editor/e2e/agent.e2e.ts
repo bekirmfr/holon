@@ -113,6 +113,21 @@ test("an agent proposes a flow through holon mcp, a person approves it in the ed
     const called = await agent.tool("call", { slug: name, method: "GET", path: "/hi/Ada" });
     expect(called.text).toContain("GET /hi/Ada → 200");
     expect(called.text).toContain("Hey, Ada");
+    // A run's steps aren't the agent's to read until a person gives it run.steps on the flow
+    // (R55): the refusal names what they run, and they bind it viewer there on its page.
+    const who = await mcpAgent(request, adminToken);
+    expect(called.text).toContain("Its steps aren't yours to read");
+    const refused = await agent.tool("explain", { slug: name });
+    expect(refused.failed).toBe(true);
+    expect(refused.text).toContain(`holon bind viewer --to ${who} --flow ${name}`);
+    await page.goto(`/#people.who.${who}`);
+    const bind = page.getByRole("region", { name: `${who}'s page` }).getByRole("form", { name: `bind a role to ${who}` });
+    await bind.getByLabel("bind: role").selectOption("viewer");
+    await bind.getByLabel("bind: where").selectOption("flow");
+    await bind.getByLabel("bind: flow").fill(name);
+    await bind.getByLabel("bind: why").fill("e2e: explains its runs");
+    await bind.getByRole("button", { name: "bind", exact: true }).click();
+    await expect(bind.getByRole("status")).toContainText(`Bound viewer to ${who} on "${name}"`);
     const explained = await agent.tool("explain", { slug: name });
     expect(explained.text).toContain("`Hey, ${req.params.name}`");
     expect(explained.text).toContain('⇒ { body: "Hey, Ada", status: 200 }');

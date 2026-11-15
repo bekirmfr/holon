@@ -227,7 +227,8 @@ This version replayed on "price-rules"'s last 3 runs, offline (nothing sent or w
   run 0  POST /price  differs: its answer
 ```
 
-Nothing is deployed, sent or written; only the version's units are staged on the server. It exits 0
+Nothing is deployed, sent or written; only the version's units are staged on the server. It reads
+the runs' steps, so it takes `run.steps` on the deployment, which the agent role doesn't hold. It exits 0
 when no run differs, 1 when one does or it can't replay, 2 for a wrong argument, so a script can
 hold back a deploy that would answer differently. What "can't tell" means is under
 [Replayed on recent runs](../guides/deploying.md#replayed-on-recent-runs). It reaches the server as
@@ -788,6 +789,7 @@ command that lets them.
 ```sh
 holon bind editor --to bob --flow payout --why "owns the payout flow"
 holon bind editor --to bob --tag payments --why "on the payments team"
+holon bind viewer --to claude --flow payout --why "reads its runs' steps"
 holon bind payout-approver --group payments --approval payout:ok --until 7d
 holon unbind 12 --why "back from leave"
 ```
@@ -888,7 +890,7 @@ holon export <slug> [--server PORT|URL] [--to FOLDER] [--as NAME] [-o PATH]
 ```
 
 Writes a deployment's runs, and every unit they ran on, to `<slug>-runs.json`, for `holon
-verify`. From the server you run on this machine, signed in as you; with several running,
+verify`. It takes `run.export` and `run.steps` (a run's steps and values) on the deployment. From the server you run on this machine, signed in as you; with several running,
 `--server PORT` picks one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), signed in as you with [`holon login`](#holon-login-logout), or as an agent or a service with its token in `HOLON_TOKEN`.
 
 `--max-files-bytes N` (`64K`, `10M`, `2G`) ships at most that much of the file texts the runs

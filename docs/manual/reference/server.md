@@ -225,10 +225,19 @@ can't be guessed.
 
 | Role | May |
 |---|---|
-| viewer | read: flows, deployments, logs |
+| viewer | read: flows, deployments, runs and their steps, logs |
 | editor | everything a viewer may, and save, deploy and approve, run, pause, stop, delete, change grants |
 | admin | everything, and set secrets, bind folders and databases, manage people, agents, services and sign-in |
-| agent | read, check, save flows (never replacing someone else's), deploy what needs no approval, call routes |
+| agent | read, but not a run's steps and values; check, save flows (never replacing someone else's), deploy what needs no approval, call routes |
+
+A run is read at two depths. The list of runs (`GET /deployments/{slug}/log/heads`, `run.view`)
+names each run's route, method, status, how long it took, who sent it, whether it failed and what
+it waits at, and nothing it read or computed. A run's steps and values (`GET
+/deployments/{slug}/log`, its export and replay, a waiting run's shown values) take `run.steps`:
+viewers, editors and admins hold it, the agent role doesn't, and a person gives it to an agent by
+binding it a role that holds it on a flow or a tag (`holon bind viewer --to claude --flow
+payout`). A refusal names that command, and says when the change waits for another person. A
+waiting run's shown values also go to whoever may decide it.
 
 What a role may not do is refused with 403, saying why. A path the control plane has no route for
 is answered 404, once its caller has signed in (401 before).

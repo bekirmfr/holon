@@ -56,7 +56,9 @@ const INSTRUCTIONS: &str = "Holon runs small services (flows) written in its own
 shows what each may do before it runs. Call `reference` first for the language and its leaves, \
 `check` a text before deploying it, then `deploy`, `call` and `explain`; `deployments` and `flows` \
 show what is already there, with its text, and `save` keeps a flow without deploying it; \
-`whoami` says what you may do, and where. Before deploying a new version of a deployed flow, `replay` runs it offline on the flow's recent runs and says which it answers differently: say so in the deploy's why. When a flow begins to answer differently, `history` shows what changed before it, and `restore` what going back would change; a person restores it. Every \
+`whoami` says what you may do, and where. Reading a run's steps and values (`explain`, `replay`) \
+takes run.steps on its flow, which an agent holds only where a person bound it a role that holds \
+it: when one is refused, tell the user what the refusal says a person runs to give it. Before deploying a new version of a deployed flow, `replay` runs it offline on the flow's recent runs and says which it answers differently: say so in the deploy's why. When a flow begins to answer differently, `history` shows what changed before it, and `restore` what going back would change; a person restores it. Every \
 version you deploy waits for a person to approve it in the editor, the first and each after it, \
 whatever it changes (unless a person set that flow to take your versions that ask for nothing \
 more at once): tell the user what it changes and where. A proposal is decided later, and a decline comes with a reason: with a shell, run `holon wait <slug>` in the \
@@ -157,7 +159,7 @@ pub(crate) fn seg(s: &str) -> String {
 // ── the tools ───────────────────────────────────────────────────────────────────────────────
 
 /// The tools, each with what it takes, as the protocol lists them.
-fn tool_list() -> Value {
+pub(crate) fn tool_list() -> Value {
     let text = json!({ "type": "string", "description": "the flow, in the Holon language: a whole file, starting with `flow <name>`" });
     let slug = json!({ "type": "string", "description": "the deployment's name (its slug): the flow's name unless deployed under another" });
     json!([
@@ -488,6 +490,7 @@ fn whoami(api: &dyn Api) -> Result<String, String> {
         None => lines.push("Nothing is bound to you: you may do nothing here until a person binds you a role (holon bind).".into()),
     }
     if kind == "agent" {
+        lines.push("A run's steps and values (`explain`, `replay`) are yours to read only where what you hold allows run.steps: the agent role doesn't, and a person gives it by binding you a role that does, the viewer role on a flow or a tag.".into());
         lines.push("Whatever you hold, a person approves a deploy that needs it, starts, stops, deletes and restores a flow, writes its secrets, decides its approvals, and reads and changes people, roles and resources.".into());
     }
     Ok(lines.join("\n"))
@@ -571,7 +574,7 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>, asked: Asked) -> Result
     if let Some(status) = entry.get("status").and_then(Value::as_str).filter(|s| *s != "running") {
         out.push(format!("It is {status}: a person starts it from the editor's deployed page."));
     }
-    out.push(format!("Call it with `call`, and see what a run did with `explain`.{secrets_note}"));
+    out.push(format!("Call it with `call`, and see what a run did with `explain`, where you may read its runs' steps (run.steps, which a person gives).{secrets_note}"));
     Ok(out.join("\n"))
 }
 
@@ -861,8 +864,9 @@ fn call(api: &dyn Api, args: &Value) -> Result<String, String> {
             v.to_string()
         }
     };
-    let log = format!("/deployments/{}/log", seg(slug));
-    let before = json_of(api, "GET", &format!("{log}?limit=0"), None)?;
+    // The list of runs (run.view's) finds its run: never its values (R55).
+    let heads = format!("/deployments/{}/log/heads", seg(slug));
+    let before = json_of(api, "GET", &format!("{heads}?limit=0"), None)?;
     let next = before.get("next").and_then(Value::as_u64).unwrap_or(0);
     let answer = json_of(api, "POST", &format!("/deployments/{}/request", seg(slug)), Some(Body::Json(json!({ "method": method, "url": path, "headers": headers, "body": body }))))?;
     let status = answer.get("status").and_then(Value::as_u64).unwrap_or(0);
@@ -880,15 +884,18 @@ fn call(api: &dyn Api, args: &Value) -> Result<String, String> {
         out.push(if body.chars().count() > 8000 { format!("{}…", body.chars().take(8000).collect::<String>()) } else { body.to_string() });
     }
     let after = if next == 0 { String::new() } else { format!("after={}&", next - 1) };
-    let page = json_of(api, "GET", &format!("{log}?{after}limit=1000"), None)?;
-    let run = page
-        .get("entries")
-        .and_then(Value::as_array)
-        .and_then(|e| e.iter().find(|e| e.get("method").and_then(Value::as_str) == Some(method.as_str()) && e.get("url").and_then(Value::as_str) == Some(path.as_str())).cloned());
+    let page = json_of(api, "GET", &format!("{heads}?{after}limit=1000"), None)?;
+    // Its run: the first request since, of its method, that it sent.
+    let me = json_of(api, "GET", "/auth/me", None).ok().and_then(|m| m["name"].as_str().map(String::from));
+    let run = page.get("entries").and_then(Value::as_array).and_then(|e| {
+        e.iter()
+            .find(|e| e["kind"] == "request" && e.get("method").and_then(Value::as_str) == Some(method.as_str()) && e.get("by").and_then(Value::as_str) == me.as_deref())
+            .cloned()
+    });
     out.push(String::new());
     match run.as_ref().and_then(|r| r.get("seq")).and_then(Value::as_u64) {
         Some(seq) if run.as_ref().and_then(|r| r.get("run_id")).and_then(Value::as_str).is_some_and(|id| !id.is_empty()) => {
-            out.push(format!("This was run {seq}: `explain` with run {seq} shows what each statement did."));
+            out.push(explains(api, slug, seq));
         }
         Some(_) => out.push("No route matched it, so no run was made.".into()),
         None => out.push(match counted(&before, &page) {
@@ -917,11 +924,22 @@ fn run_action(api: &dyn Api, slug: &str, name: &str, input: Value) -> Result<Str
         return Ok(format!("action {name} is waiting: run {seq}, which `explain` shows; `runs` says what it waits for, an approval or an event."));
     }
     let answer = ran.get("answer").cloned().unwrap_or(Value::Null);
-    Ok(format!("action {name} → {answer}\n\nThis was run {seq}: `explain` with run {seq} shows what each statement did."))
+    Ok(format!("action {name} → {answer}\n\n{}", explains(api, slug, seq)))
+}
+
+/// What a call's or an action's answer says of its run `seq`: that `explain` shows what each
+/// statement did; or, where its steps aren't the caller's to read (run.steps, R55), why not and
+/// who gives them, as the server says it.
+fn explains(api: &dyn Api, slug: &str, seq: u64) -> String {
+    let after = if seq == 0 { String::new() } else { format!("after={}&", seq - 1) };
+    match json_of(api, "GET", &format!("/deployments/{}/log?{after}limit=1", seg(slug)), None) {
+        Ok(_) => format!("This was run {seq}: `explain` with run {seq} shows what each statement did."),
+        Err(refused) => format!("This was run {seq}. Its steps aren't yours to read: {refused}"),
+    }
 }
 
 fn runs(api: &dyn Api, slug: &str, limit: u64) -> Result<String, String> {
-    let log = json_of(api, "GET", &format!("/deployments/{}/log?limit={limit}", seg(slug)), None)?;
+    let log = json_of(api, "GET", &format!("/deployments/{}/log/heads?limit={limit}", seg(slug)), None)?;
     let entries = log.get("entries").and_then(Value::as_array).cloned().unwrap_or_default();
     let waiting = list_of(json_of(api, "GET", &format!("/deployments/{}/runs", seg(slug)), None)?, Some("runs"));
     if entries.is_empty() && waiting.is_empty() {
@@ -1067,7 +1085,7 @@ fn explain(api: &dyn Api, slug: &str, run: Option<u64>) -> Result<String, String
 fn history(api: &dyn Api, slug: &str, last: u64, events_only: bool) -> Result<String, String> {
     let path = format!("/deployments/{}", seg(slug));
     let events = list_of(json_of(api, "GET", &format!("{path}/events"), None)?, Some("events"));
-    let page = if events_only { Value::Null } else { json_of(api, "GET", &format!("{path}/log?limit={last}"), None)? };
+    let page = if events_only { Value::Null } else { json_of(api, "GET", &format!("{path}/log/heads?limit={last}"), None)? };
     let counted = crate::history::unrecorded(&page);
     let runs = if events_only { Vec::new() } else { list_of(page, Some("entries")) };
     let versions = crate::history::Versions::of(&json_of(api, "GET", &format!("{path}/versions"), None)?);
@@ -1651,6 +1669,7 @@ mod tests {
         let said = tool(&state, &p.claude, "whoami", json!({})).unwrap();
         assert!(said.starts_with("You are claude, an agent, owned by ada, on the test server.\nYou hold:\n  - agent on this host: flow.view, "), "{said}");
         assert!(said.ends_with("and reads and changes people, roles and resources."), "{said}");
+        assert!(said.contains("the agent role doesn't, and a person gives it by binding you a role that does"), "{said}");
         // Bound more, through a group, until a time: each its own line.
         let ok = |method: &str, path: &str, body: Value| assert_eq!(route(&state, &req_as(&p.ada, method, path, body.to_string().into_bytes())).status_code, 200, "{path}");
         ok("PUT", "/groups/bots", json!({ "members": ["claude"] }));
@@ -1697,19 +1716,26 @@ mod tests {
         assert!(called.starts_with("POST /slugs → 200"), "{called}");
         assert!(called.contains("hello-world") && called.contains("not signed"), "{called}");
         assert!(called.contains("This was run"), "{called}");
+        // Its steps aren't the agent's to read until a person gives it run.steps on the flow (R55):
+        // the answer says who runs what.
+        assert!(called.contains("Its steps aren't yours to read") && called.contains("holon bind viewer --to claude --flow slugs"), "{called}");
         // One that fails at a missing field, explained: the statement, and where the value went missing.
         let failed = tool(&state, &p.claude, "call", json!({ "slug": "slugs", "method": "POST", "path": "/slugs", "body": { "title": "only a title" } })).unwrap();
         assert!(failed.starts_with("POST /slugs → 400"), "{failed}");
         let listed = tool(&state, &p.claude, "runs", json!({ "slug": "slugs" })).unwrap();
         assert_eq!(listed.lines().count(), 2, "{listed}");
         assert!(listed.lines().nth(1).unwrap().contains("POST /slugs → 400"), "{listed}");
+        let refused = tool(&state, &p.claude, "explain", json!({ "slug": "slugs" })).unwrap_err();
+        assert!(refused.contains("run.steps") && refused.contains("holon bind viewer --to claude --flow slugs"), "{refused}");
+        let bind = json!({ "who": { "principal": "claude" }, "role": "viewer", "scope": { "flows": { "slug": "slugs" } } });
+        assert_eq!(route(&state, &req_as(&p.ada, "POST", "/bindings", bind.to_string().into_bytes())).status_code, 200);
         let why = tool(&state, &p.claude, "explain", json!({ "slug": "slugs" })).unwrap();
         assert!(why.contains("author = slugify(req.json.author)"), "the agent's own names: {why}");
         assert!(why.contains("⇒ nothing: field \"author\" gave nothing"), "{why}");
         assert!(why.contains("⇒ \"only-a-title\""), "{why}");
         assert!(why.contains("⇒ req.json = { title: \"only a title\" }"), "the request, as it arrived: {why}");
         assert!(!why.contains("didn't run"), "the other route is shown without values: {why}");
-        let first_run = called.split("This was run ").nth(1).unwrap().split(':').next().unwrap().parse::<u64>().unwrap();
+        let first_run = called.split("This was run ").nth(1).unwrap().split(|c: char| !c.is_ascii_digit()).next().unwrap().parse::<u64>().unwrap();
         let ok = tool(&state, &p.claude, "explain", json!({ "slug": "slugs", "run": first_run })).unwrap();
         assert!(ok.contains("⇒ \"ada\"") && ok.contains("answered 200"), "{ok}");
         assert!(ok.contains("performed"), "its writes: {ok}");
@@ -1793,7 +1819,9 @@ mod tests {
         let e = tool(&state, &p.claude, "check", json!({ "text": "import { flow, route } from \"holon\"\n\nflow(\"f\", { port: 8200 })\n\nroute.get(\"/a\", () => nope)\n" })).unwrap_err();
         assert!(e.contains("text:5:23: unknown name \"nope\"") && e.contains('^'), "{e}");
         assert!(tool(&state, &p.claude, "deploy", json!({ "text": "import { flow, route } from \"holon\"\n\nflow(\"f\", { port: 8200 })\n\nroute.get(\"/a\", () => nope)\n" })).is_err());
-        assert!(tool(&state, &p.claude, "explain", json!({ "slug": "nobody" })).unwrap_err().contains("404"));
+        assert!(tool(&state, &p.ada, "explain", json!({ "slug": "nobody" })).unwrap_err().contains("404"));
+        let e = tool(&state, &p.claude, "explain", json!({ "slug": "nobody" })).unwrap_err();
+        assert!(e.contains("run.steps") && e.contains("holon bind viewer --to claude --flow nobody"), "{e}");
         assert!(tool(&state, &p.claude, "check", json!({})).unwrap_err().contains("`text` is missing"));
     }
 
@@ -1870,11 +1898,12 @@ mod tests {
         let put = |price: u64| call(&agent, &json!({ "slug": "price-rollback", "method": "PUT", "path": "/prices/tea", "body": { "price": price } })).unwrap();
         let first = put(4);
         put(40);
-        let first = first.split("This was run ").nth(1).unwrap().split(':').next().unwrap().parse::<u64>().unwrap();
+        let first = first.split("This was run ").nth(1).unwrap().split(|c: char| !c.is_ascii_digit()).next().unwrap().parse::<u64>().unwrap();
 
         let history = tool_as(&agent, "history", json!({ "slug": "price-rollback" })).unwrap();
         assert!(history.contains("deployed version 1") && history.contains("deployed version 2"), "{history}");
-        assert!(history.contains(&format!("#{first}")) && history.contains("PUT /prices/tea  200  v2"), "{history}");
+        // A run named by its route, not its path: the item it priced is a value (R55).
+        assert!(history.contains(&format!("#{first}")) && history.contains("PUT /prices/:item  200  v2") && !history.contains("/prices/tea"), "{history}");
         assert!(history.find("deployed version 2").unwrap() < history.find(&format!("#{first}")).unwrap(), "oldest first: {history}");
         let events = tool_as(&agent, "history", json!({ "slug": "price-rollback", "events": true })).unwrap();
         assert!(!events.contains("PUT /prices"), "events only: {events}");
@@ -2078,6 +2107,10 @@ mod tests {
         let (agent, person) = (Signed { state: &state, token: &p.claude }, Signed { state: &state, token: &p.ada });
         let text = "import { flow, route, status } from \"holon\"\n\nflow(\"price\", { port: 18262 })\n\nroute.post(\"/price\", (req) => {\n  const total = req.json.total ?? 0\n  if (!(total > 0)) {\n    return status(422, \"an order has a total\")\n  }\n  return { total, price: (req.json.member ?? false) ? total * 0.9 : total }\n})\n";
         let replay = |text: &str, runs: Option<u64>| tool_as(&agent, "replay", json!({ "text": text, "runs": runs }));
+        let refused = replay(text, None).unwrap_err();
+        assert!(refused.contains("run.steps") && refused.contains("holon bind viewer --to claude --flow price"), "{refused}");
+        let bind = json!({ "who": { "principal": "claude" }, "role": "viewer", "scope": { "flows": { "slug": "price" } } });
+        assert_eq!(person.send("POST", "/bindings", Some(Body::Json(bind))).unwrap().0, 200);
         assert!(replay(text, None).unwrap_err().contains("no deployment \"price\""), "nothing deployed yet");
 
         let plan = agent::plan(text).unwrap();

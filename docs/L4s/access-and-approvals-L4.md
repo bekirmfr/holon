@@ -111,7 +111,7 @@ compose roles from it, never invent actions.
 | Resource | Actions |
 |---|---|
 | `flow` (saved and deployed) | `view`, `edit` (save), `propose`, `deploy`, `approve-deploy` (acknowledge what needs approval), `restore`, `restore-dry-run`, `lifecycle` (run, pause, stop), `delete` |
-| `run` | `view`, `call` (send a request, run an action), `decide` (fill an approval slot), `export` (evidence) |
+| `run` | `view` (the list: when each ran, what started it, its status, how long, who by), `steps` (a run's steps and values: its timeline, request, answer, what it read and sent, a waiting run's input), `call` (send a request, run an action), `decide` (fill an approval slot), `export` (evidence) |
 | `state` | `view`, `write` (by hand, a cell's history) |
 | `secret` | `list` (names, history), `set`, `roll-back` |
 | `resource` (folders, databases, hosts, keys) | `view`, `bind`, `unbind` |
@@ -145,13 +145,26 @@ test holds to this table):
 
 | Role | Permissions | Kinds |
 |---|---|---|
-| `viewer` | `flow.view`, `run.view`, `run.export`, `state.view`, `secret.list`, `policy.view` | any |
+| `viewer` | `flow.view`, `run.view`, `run.steps`, `run.export`, `state.view`, `secret.list`, `policy.view` | any |
 | `editor` | viewer's, and `flow.edit`, `flow.propose`, `flow.deploy`, `flow.approve-deploy`, `flow.restore`, `flow.restore-dry-run`, `flow.lifecycle`, `flow.delete`, `run.call`, `run.decide`, `state.write`, `policy.edit`, `host.check` | person, service |
 | `admin` | everything | person |
-| `agent` | viewer's, and `flow.edit` (its own), `flow.propose`, `flow.restore-dry-run`, `run.call` | agent |
+| `agent` | `flow.view`, `run.view`, `run.export`, `state.view`, `secret.list`, `policy.view` (a viewer's but run.steps), and `flow.edit` (its own), `flow.propose`, `flow.restore-dry-run`, `run.call` | agent |
 
 None but `admin` holds `secret.set`, `secret.roll-back`, `resource.*`, `people.*`, `role.*`,
 `host.view` or `host.operate`: a refusal of one of those says "that needs an admin".
+
+*Done (the audit register's R55):* reading a run's steps and values is `run.steps`, which the
+agent role doesn't hold: an agent reads a flow's runs' steps (`explain`, a run's detail, `export`,
+`replay`, what a waiting run shows) where a person bound it a role that holds them there, the
+viewer role on the flow or a tag. The routes that answer them ask it, and refuse whoever doesn't
+hold it, naming the command that gives it; none answers a thinner run. The list of runs
+(`GET /deployments/<slug>/log/heads`: each run's number, when, what started it, its status, how
+long, who by, where it waits, never its values) stays `run.view`'s. Which kinds a role's
+`run.steps` reaches is one line of `BUILTIN`. What a flow writes with `console.log` keeps its own
+grant, the deploy setting "agents may read its logs": a person gives each, the first by binding a
+role, the second with the flow's version. A run's status, how long it took and whether it waits
+stay in the list, and can tell which way a choice went (the secrets capability's limits). Not
+yet: a proposal's review offering to give the agent that proposed it the flow's runs' steps.
 
 `kinds` is how "an agent never approves a deploy" stays true: `flow.approve-deploy` is in no role
 an agent may hold unless an admin defines one, and §8.4 adds a host setting that forbids it outright.
@@ -440,7 +453,9 @@ payments: payments-team may view and call it, payout-approver decides its approv
 | `GET /access/proposals` | `people.view` | access changes waiting for people (§6) |
 | `POST /access/proposals/<id>/approve` · `…/decline` | `people.assign`, a person holding what it gives | approve, decline (`{reason}`) |
 | `GET /auth/me/can?actions=&flow=` | — | what the caller may do, for the editor |
-| `GET /deployments/<slug>/runs` | `run.view`, or `run.decide` on its approvals | §8.7 |
+| `GET /deployments/<slug>/runs` | `run.view`, or `run.decide` on its approvals; what a point shows, `run.steps` or deciding it | §8.7 |
+| `GET /deployments/<slug>/log` · `…/log/heads` | `run.steps` / `run.view` | a run's steps and values / the list of runs (R55) |
+| `GET /deployments/<slug>/export` · `…/replay` | `run.steps` and `run.export` | evidence, made of a run's steps |
 | `POST /deployments/<slug>/runs/<id>/decide` | `run.decide` | §8.3 |
 
 `/admin/accounts…` and `/admin/tokens…` go (replaced). A change to access that needs approval

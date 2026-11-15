@@ -571,15 +571,16 @@ impl StoredWaiting {
 
     /// As `GET /deployments/<slug>/runs` lists it: `{name, expires_at}`, and for an approval its
     /// steps (`steps`, and `said` in words), each step as it stands (`slots`), and every
-    /// decision taken.
-    fn listed(&self) -> serde_json::Value {
+    /// decision taken; and what it shows of the run (`shows` or `input`) when `shown`: a run's
+    /// values, for whoever reads its steps or decides it (R55, H6).
+    fn listed(&self, shown: bool) -> serde_json::Value {
         let mut v = serde_json::json!({ "name": self.name, "expires_at": self.expires_at });
         if !self.is_event() {
             v["steps"] = self.steps.clone().into();
             v["said"] = Steps::parse(&self.steps).map_or_else(|| self.steps.clone(), |s| s.said()).into();
             v["slots"] = serde_json::to_value(self.slots()).unwrap_or_default();
             v["decisions"] = serde_json::to_value(&self.decisions).unwrap_or_default();
-            match &self.shown {
+            match self.shown.as_ref().filter(|_| shown) {
                 Some(s @ Shown::Shows(_)) => v["shows"] = s.value().clone(),
                 Some(s @ Shown::Input(_)) => v["input"] = s.value().clone(),
                 None => {}
@@ -897,15 +898,16 @@ impl ParkedRun {
         Ok(())
     }
 
-    /// What `GET .../runs` shows: never the tokens.
-    pub(crate) fn summary(&self) -> serde_json::Value {
+    /// What `GET .../runs` shows: never the tokens; of each point it waits at, what it shows of the
+    /// run where `shown` says so.
+    pub(crate) fn summary(&self, shown: impl Fn(&StoredWaiting) -> bool) -> serde_json::Value {
         serde_json::json!({
             "run_id": self.run_id,
             "kind": self.kind,
             "route": self.route,
             "by": self.started_by,
             "parked_at": self.parked_at,
-            "waiting": self.waiting.iter().map(StoredWaiting::listed).collect::<Vec<_>>(),
+            "waiting": self.waiting.iter().map(|w| w.listed(shown(w))).collect::<Vec<_>>(),
             "delivered": self.events.keys().collect::<Vec<_>>(),
         })
     }
@@ -1348,13 +1350,16 @@ pub(crate) fn handle_get_waiting(deployments: &Mutex<BTreeMap<String, Deployment
 /// The waiting runs of `dep` (deployed as `slug`) `caller` lists: each run and every point it
 /// waits at to whoever views its runs; to whoever only decides one of its approvals, the runs
 /// waiting at an approval they may decide, those points alone, and nothing delivered to its
-/// events. Each approval says which of its steps are the caller's to take (`yours`).
+/// events. Each approval says which of its steps are the caller's to take (`yours`). What a point
+/// shows of its run, a run's values, is listed to whoever reads the flow's runs' steps
+/// (run.steps, R55) or decides that point (H6), and to no one else.
 fn waiting_runs(dep: &Deployment, slug: &str, caller: &access::Caller, rules: &Rules) -> Vec<serde_json::Value> {
     use crate::can::{Action, Resource, can};
     let views = can(caller, Action::RunView, &Resource::Flow(slug)).is_ok();
+    let steps = can(caller, Action::RunSteps, &Resource::Flow(slug)).is_ok();
     let decides = |w: &StoredWaiting| !w.is_event() && can(caller, Action::RunDecide, &Resource::Approval { slug, name: Some(&w.name) }).is_ok();
     dep.parked.values().filter_map(|run| {
-        let mut listed = run.summary();
+        let mut listed = run.summary(|w| steps || decides(w));
         let excluded = run.excluded(&dep.versions, rules);
         let points = listed["waiting"].as_array_mut()?;
         let mut kept = Vec::new();

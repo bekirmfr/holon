@@ -23,7 +23,10 @@ Each is a **principal** of one of three kinds, each name unique across them:
 A **viewer** reads; an **editor** also saves, deploys and approves, runs, pauses, stops and
 deletes; an **admin** also sets secrets, binds resources and manages people. An agent's role,
 **agent**, reads, proposes flows and calls them, and never approves, starts, stops or deletes
-([what each may do](../reference/server.md#accounts-and-roles)). That is a role on the whole
+([what each may do](../reference/server.md#accounts-and-roles)). Nor does it read a run's steps
+and values (`run.steps`: a run's timeline, request and answer, what it read and sent), only the
+list of runs: a person gives it that on a flow by binding the agent viewer there
+([Reading a run's steps](agents.md#reading-a-runs-steps)). That is a role on the whole
 host; a role can also hold on one flow only, and an admin can define roles of their own
 ([below](#a-role-on-one-flow-and-roles-of-your-own)).
 

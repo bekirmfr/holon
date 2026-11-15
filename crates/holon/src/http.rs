@@ -339,6 +339,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         {
             return changes::handle_get_changes(state, slug, request);
         }
+        if let Some(slug) = rest.strip_suffix("/log/heads")
+            && method == "GET"
+        {
+            return handle_get_log_heads(&state.deployments, slug, request);
+        }
         if let Some(slug) = rest.strip_suffix("/history") {
             if method == "GET" {
                 return handle_get_history(&state.deployments, slug);

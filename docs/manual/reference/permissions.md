@@ -171,6 +171,13 @@ who may read the deployment reads them, in the console, in `holon editor` and wi
 next deploy. Until then the route and `holon mcp`'s `logs` tool answer that agents may not read them, and revoking it
 (`holon grant <slug> --revoke AgentReadsLogs`, or on the flow's Settings) refuses them again. The flow runs either way.
 
+That is one of an agent's two grants to read. The other is a run's steps and values (`run.steps`),
+which a person gives by binding the agent a role that holds it, on one flow or a tag
+([Reading a run's steps](../guides/agents.md#reading-a-runs-steps)). The log setting is approved
+with the flow, by whoever approves it, and opens what its text chose to print to every agent; a
+binding is given to one agent by a person who may give access there, and opens every value its
+runs read and sent.
+
 ## Who may run an action
 
 An action is never reached from the network: the flow's port answers only its routes. It runs

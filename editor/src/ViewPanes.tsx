@@ -233,7 +233,7 @@ export function BottomPane({
   /** Fit the canvas to a set of nodes (double-click run). */
   onFitToNodes: (ids: string[]) => void;
 }) {
-  const { entries, chain, tallies, error } = useFlowLog(slug);
+  const { entries, steps, chain, tallies, error } = useFlowLog(slug);
   // The pane's height, dragged by its top edge (BottomPane.tsx), the same as in Edit.
   const { pane, onEdge } = useBottomHeight();
   // Live: always show the newest run. A tab coming back with a run selected keeps it (and its
@@ -327,6 +327,11 @@ export function BottomPane({
         )}
       </div>
       {error && <div style={{ color: bad, padding: "4px 8px" }}>{error}</div>}
+      {steps && (
+        <div className="hl-flow__note" role="note" aria-label="steps" style={{ padding: "4px 8px" }}>
+          {steps}
+        </div>
+      )}
       {listenError && (
         <div className="hl-view__not-listening" style={{ color: bad, padding: "4px 8px" }}>
           ✗ not answering: {listenError}. Requests sent to that port reach whatever holds it, not this

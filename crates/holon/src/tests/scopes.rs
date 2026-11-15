@@ -399,6 +399,8 @@ fn the_editor_is_held_to_what_can_answers() {
         .iter()
         .filter_map(|r| match r.rule {
             Rule::Can(action, _) => Some((format!("{} {}", r.method, r.path), json!(action.name()))),
+            // Both actions, the first asked first (a run's evidence is its steps, R55).
+            Rule::Both(first, second, _) => Some((format!("{} {}", r.method, r.path), json!([first.name(), second.name()]))),
             _ => None,
         })
         .collect();

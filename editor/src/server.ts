@@ -1289,6 +1289,35 @@ export async function getLog(slug: string, after?: number): Promise<{ entries: L
   return asJson(res);
 }
 
+/** A run as the list of runs says it (recorder.rs's `RunHead`): when it ran, what started it (its
+ *  route, not its URL), its status, how long, who sent it, whether it failed, where it waits; never
+ *  its values, which are run.steps' (the whole log, `getLog`). */
+export type RunHead = {
+  seq: number;
+  session: number;
+  at_ms: number;
+  duration_ms: number;
+  kind: string;
+  route: string | null;
+  method: string | null;
+  status: number | null;
+  failed: boolean;
+  by: string | null;
+  run_id: string;
+  unit: string;
+  parked: string[];
+  retries: number;
+  lost_since: number | null;
+};
+
+/** `GET /deployments/<slug>/log/heads` — the list of runs past `after`, run.view's: for whoever may
+ *  see a flow's runs and not read their steps (R55). */
+export async function getLogHeads(slug: string, after?: number): Promise<{ entries: RunHead[]; next: number; head: string; breaks: number[]; tallies?: Record<string, Tally> }> {
+  const q = after === undefined ? "" : `?after=${after}`;
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/log/heads${q}`);
+  return asJson(res);
+}
+
 /** A line a flow wrote with `console.log` and the rest, kept beside its runs and not in them (logs.rs):
  *  its time, level (`debug`, `log`, `info`, `warn`, `error`), the version that wrote it, the run, and its
  *  text; `dropped` more than 0: it stands for that many dropped before it. */

@@ -523,7 +523,7 @@ static SAMPLES: &[Sample] = &[
         secrets: &[],
         optional: &[],
         browsers: None,
-        try_it: "curl -X POST -H 'Idempotency-Key: k1' -H 'Content-Type: application/json' -d '{\"amount\":42}' http://127.0.0.1:8121/charges twice: the same id, the second replayed: true; send it with amount 43 for a 409; run two at once with a fresh key and `explain` shows the second claimed charges[k2], waited, and sent nothing",
+        try_it: "curl -X POST -H 'Idempotency-Key: k1' -H 'Content-Type: application/json' -d '{\"amount\":42}' http://127.0.0.1:8121/charges twice: the same id, the second replayed: true; send it with amount 43 for a 409; run two at once with a fresh key and holon runs idempotent --run N (or an agent's `explain`, once a person binds it viewer on the flow) shows the second claimed charges[k2], waited, and sent nothing",
         text: include_str!("../samples/idempotent.holon.ts"),
     },
     Sample {
