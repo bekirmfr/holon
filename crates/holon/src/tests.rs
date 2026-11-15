@@ -4609,9 +4609,6 @@ on.file.created(inbox, (f) => {{
         "firing.rs",
         // An action: over the control plane (`admitted`), or by a flow's call inside a counted run.
         "deploy.rs",
-        // A waiting run going on: at a route (`serve_flow`), a decision (`admitted`) or its
-        // deadline (`scheduler::expire_waiting`).
-        "durable.rs",
     ];
     for entry in std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("src")).unwrap().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -4867,6 +4864,101 @@ fn the_flow_log_records_each_run_well_enough_to_replay_it() {
     assert_eq!(route(&state, &req("POST", "/deploy", again)).status_code, 200);
     assert_eq!(body_json(route(&state, &req("GET", "/deployments/todo/log", vec![])))["next"], 3);
     assert_eq!(route(&state, &req("GET", "/deployments/todo/document", vec![])).status_code, 200, "kept");
+}
+
+/// A paused or stopped deployment takes no run, and a run waiting in it goes on by none of the ways
+/// one does: a decision (refused, nothing kept of it), its deadline, or a request to its resume
+/// route. Each waits on, and once the deployment runs again each goes on as before.
+#[test]
+fn a_paused_or_stopped_deployments_waiting_runs_wait_on() {
+    use serde_json::{json, Value as J};
+    let mut state = test_state();
+    let text = r#"import { action, approval, event, flow, route } from "holon"
+import state from "state"
+
+flow("held", { port: 18314 })
+
+route.post("/hold", () => {
+  const started = hold()
+  return { token: started.waiting.paid }
+})
+
+export const hold = action(async () => {
+  const paid = await event("paid", { expires: "1h" })
+  state.paid = paid.expired ?? false
+})
+
+export const pay = action(async () => {
+  const decision = await approval("payout", { expires: "1h" })
+  state.decided = decision.approved
+})
+
+route.get("/paid/:token", () => "ok", { resumes: "paid" })
+"#;
+    let ack = json!({ "acknowledge": ["NetworkIngress", "Action(\"hold\")", "Action(\"pay\")", "Await(\"paid\")", "Approval(\"payout/person\")", "StateWrite(\"paid\")", "StateWrite(\"decided\")", "RunsAction(\"held/hold\")"] });
+    let r = deploy_json(&state, "held", stage_text(&state, text), ack);
+    let code = r.status_code;
+    assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
+    let waiting = |state: &AppState| state.deployments.lock().unwrap()["held"].parked.keys().cloned().collect::<BTreeSet<String>>();
+    let serve = |state: &AppState, method: &str, url: &str| {
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "held", &fake_data(method, url, vec![]));
+        (r.status, String::from_utf8(r.body).unwrap())
+    };
+    // Started before anyone signs in, so ada didn't start them and may decide: an approval to
+    // decide, an event its route resumes, and one more of each for their deadlines.
+    let started = |state: &AppState, run: &dyn Fn()| {
+        let before = waiting(state);
+        run();
+        waiting(state).difference(&before).next().cloned().unwrap()
+    };
+    let decided = started(&state, &|| assert!(run_action_named(&state, "held", "pay", json!({})).is_success()));
+    let token = std::cell::RefCell::new(String::new());
+    let resumed = started(&state, &|| *token.borrow_mut() = crate::wire::read_json::<J>(serve(&state, "POST", "/hold").1.as_bytes()).unwrap()["token"].as_str().unwrap().to_string());
+    let timed_out = [
+        started(&state, &|| assert!(run_action_named(&state, "held", "pay", json!({})).is_success())),
+        started(&state, &|| assert!(run_action_named(&state, "held", "hold", json!({})).is_success())),
+    ];
+    let all: BTreeSet<String> = [decided.clone(), resumed.clone()].into_iter().chain(timed_out.iter().cloned()).collect();
+    assert_eq!(waiting(&state), all);
+    let People { ada, .. } = with_people(&mut state);
+    let ask = |method: &str, path: &str, body: J| {
+        let r = route(&state, &req_as(&ada, method, path, if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() }));
+        (r.status_code, crate::wire::read_json::<J>(&body_bytes(r)).unwrap_or(J::Null))
+    };
+    let decide = || ask("POST", &format!("/deployments/held/runs/{decided}/decide"), json!({ "name": "payout", "approve": true }));
+    let decisions = || {
+        let runs = ask("GET", "/deployments/held/runs", J::Null).1["runs"].clone();
+        runs.as_array().unwrap().iter().find(|r| r["run_id"] == decided.as_str()).unwrap()["waiting"][0]["decisions"].clone()
+    };
+    let deadline = || {
+        durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+        scheduler::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    };
+    let paid = format!("/paid/{}", token.borrow());
+
+    for (action, status) in [("pause", "paused"), ("stop", "stopped")] {
+        let (code, said) = ask("POST", &format!("/deployments/held/{action}"), J::Null);
+        assert_eq!((code, said["status"].as_str()), (200, Some(status)), "{said}");
+        let (code, said) = decide();
+        let why = format!("\"held\" is {status}: a run waiting in it goes on once it runs again");
+        assert_eq!((code, said["error"].as_str()), (409, Some(why.as_str())), "{status}: a decision is refused");
+        assert!(decisions().as_array().is_none_or(|d| d.is_empty()), "{status}: nothing kept of it: {}", decisions());
+        assert_eq!(serve(&state, "GET", &paid).0, 503, "{status}: its resume route takes no run");
+        deadline();
+        assert_eq!(waiting(&state), all, "{status}: each waits on");
+        let (code, said) = ask("POST", "/deployments/held/run", J::Null);
+        assert_eq!((code, said["status"].as_str()), (200, Some("running")), "{said}");
+    }
+
+    // Running again, each goes on as before.
+    let (code, said) = decide();
+    assert_eq!((code, said["outcome"].as_str()), (200, Some("approved")), "{said}");
+    assert_eq!(serve(&state, "GET", &paid), (200, "ok".to_string()));
+    assert_eq!(waiting(&state), timed_out.iter().cloned().collect(), "decided and resumed, they went on");
+    deadline();
+    assert!(waiting(&state).is_empty(), "past their deadlines, they went on");
+    let kept = |key: &str| state.deployments.lock().unwrap()["held"].state.as_ref().unwrap().state.lock().unwrap().get(key).cloned();
+    assert_eq!((kept("decided"), kept("paid")), (Some(Value::Boolean(false)), Some(Value::Boolean(true))), "the last of each to go on timed out");
 }
 
 /// Run, pause, stop, and the sessions a deployment keeps until it is deleted.

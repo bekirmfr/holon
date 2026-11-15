@@ -1066,10 +1066,15 @@ pub(crate) fn claim_by_token<'a>(deployments: &'a Mutex<BTreeMap<String, Deploym
     Some(Claimed { deployments, slug: slug.to_string(), run_id: run.run_id.clone() })
 }
 
-/// Parked run `run_id`, claimed while it still waits at `name`, unless another resume holds it.
+/// Parked run `run_id`, claimed while it still waits at `name`, unless another resume holds it or
+/// its deployment takes no run now (paused or stopped since it was found due).
 fn claim<'a>(deployments: &'a Mutex<BTreeMap<String, Deployment>>, slug: &str, run_id: &str, name: &str) -> Option<Claimed<'a>> {
     let mut table = deployments.lock().unwrap();
-    let run = table.get_mut(slug)?.parked.get_mut(run_id)?;
+    let dep = table.get_mut(slug)?;
+    if dep.life.status != Status::Running {
+        return None;
+    }
+    let run = dep.parked.get_mut(run_id)?;
     if run.resuming || !run.waiting.iter().any(|w| w.name == name) {
         return None;
     }
@@ -1078,8 +1083,12 @@ fn claim<'a>(deployments: &'a Mutex<BTreeMap<String, Deployment>>, slug: &str, r
 }
 
 /// Deliver `event` to the claimed parked run's waiting point `name`, and run it again from its
-/// record. It finishes (its effects performed now, once), waits again, or fails; the log gets an
-/// entry for this part, under the same run id. The claim is let go when this returns.
+/// record. Whether its deployment takes it was asked as it was claimed, under the lock a pause
+/// takes (`decide`, `claim`, and a resume route before `claim_by_token`): claimed while it ran, it
+/// goes on, as a run started before a pause does, and isn't refused here, where a decision it was
+/// given would be kept with nothing to give it to the run later. It finishes (its effects
+/// performed now, once), waits again, or fails; the log gets an entry for this part, under the
+/// same run id. The claim is let go when this returns.
 pub(crate) fn resume_parked(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
@@ -1172,11 +1181,17 @@ pub(crate) fn resume_parked(
     }
 }
 
+/// Why a run waiting in `slug`, whose status is `status`, doesn't go on now.
+fn not_running(slug: &str, status: Status) -> String {
+    format!("{slug:?} is {}: a run waiting in it goes on once it runs again", crate::deploy::status_word(status))
+}
+
 /// Deliver `{expired: true}` to every waiting point past its deadline: to an approval, with who
-/// approved it before it ran out, `approved` false.
+/// approved it before it ran out, `approved` false. Not in a deployment that takes no run now
+/// (paused or stopped): its runs wait on, and time out once it runs again.
 pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, now: u64) {
     let mut due: Vec<(String, String, String, Value)> = Vec::new();
-    for (slug, dep) in deployments.lock().unwrap().iter() {
+    for (slug, dep) in deployments.lock().unwrap().iter().filter(|(_, dep)| dep.takes_runs(store)) {
         for p in dep.parked.values() {
             for w in p.waiting.iter().filter(|w| w.expires_at <= now) {
                 let event = if w.is_event() { expired_event() } else { w.decision(true) };
@@ -1368,7 +1383,8 @@ impl StoredWaiting {
 /// deployments lock, so two deciding at once decide it once (the design's §8.3), and under this
 /// host's `settings`. Each decision is kept on the waiting point (`StoredWaiting::decide`); when
 /// every step is filled, or one declines (with a `reason`), the run is claimed to be given the
-/// decision. The status and why when it can't be decided.
+/// decision. The status and why when it can't be decided: 409 while the deployment is paused or
+/// stopped, nothing kept of it, as it takes no run then.
 pub(crate) fn decide<'a>(
     deployments: &'a Mutex<BTreeMap<String, Deployment>>,
     slug: &str,
@@ -1380,6 +1396,9 @@ pub(crate) fn decide<'a>(
 ) -> Result<Outcome<'a>, (u16, String)> {
     let mut table = deployments.lock().unwrap();
     let dep = table.get_mut(slug).ok_or((404, format!("no deployment {slug:?}")))?;
+    if dep.life.status != Status::Running {
+        return Err((409, not_running(slug, dep.life.status)));
+    }
     let run = dep.parked.get_mut(run_id).ok_or((404, format!("no run {run_id} of {slug:?} is waiting: it may have been decided, or finished")))?;
     if run.resuming {
         return Err((409, format!("run {run_id} of {slug:?} is going on right now: try again in a moment")));
