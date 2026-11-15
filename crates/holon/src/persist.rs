@@ -189,6 +189,23 @@ pub(crate) fn state_head_for(path: &Place, slug: &str) -> Option<PathBuf> {
     path.beside("state").map(|dir| dir.join(slug).into())
 }
 
+/// The state head at `head` (named for its deployment's slug) written: sealed under the server's
+/// keys, bound to that slug. A plain hash of a state's snapshot let anyone with the folder confirm
+/// a guess of a small state offline (is the counter 41?), as the snapshot's values are hashed
+/// unkeyed; the store's file names are keyed for that same reason (release audit, at rest).
+pub(crate) fn write_state_head(head: &std::path::Path, hex: &str) -> std::io::Result<()> {
+    let slug = head.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    crate::at_rest::write_table(head, &crate::at_rest::role::state_head(&slug), hex.as_bytes())
+}
+
+/// The snapshot hash the state head at `head` names: `Ok(None)` if there is none; an error if it
+/// doesn't open (a plain one, another deployment's, or damaged).
+pub(crate) fn read_state_head(head: &std::path::Path) -> Result<Option<String>, String> {
+    let slug = head.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let opened = crate::at_rest::read_sealed(head, &crate::at_rest::role::state_head(&slug))?;
+    opened.map(|b| String::from_utf8(b.to_vec()).map(|s| s.trim().to_string()).map_err(|_| format!("{} isn't a state head", head.display()))).transpose()
+}
+
 /// Load deployments from `path` at startup — the inverse of `persist_deployments`. Returns an
 /// empty table for one kept nowhere or a missing file (first run). A file that exists
 /// but can't be read or parsed is an `Err`, and the server refuses to start: starting empty
@@ -261,9 +278,13 @@ pub(crate) fn load_deployments(
         // Its state as its head names it (C3 b): no head, none kept yet. No older form is read
         // forward (Holon is in development: a data folder from before heads loads empty).
         let head = state_head_for(path, slug);
-        let state = match head.as_deref().and_then(|h| std::fs::read_to_string(h).ok()) {
+        let named = match head.as_deref() {
+            Some(h) => read_state_head(h).map_err(|e| format!("deployment {slug:?} in {file:?}: its state head: {e}"))?,
+            None => None,
+        };
+        let state = match named {
             Some(hex) => {
-                let refs = crate::restore::snapshot_refs(hex.trim(), store)
+                let refs = crate::restore::snapshot_refs(&hex, store)
                     .map_err(|e| format!("deployment {slug:?} in {file:?}: its state head names no snapshot the store has: {e}"))?;
                 let state = State::load(&refs, store)
                     .map_err(|e| format!("deployment {slug:?} in {file:?}: its state can't be loaded from the store: {e:?}"))?;
@@ -394,8 +415,7 @@ pub(crate) fn load_deployments(
 /// already (a second crash before a run).
 pub(crate) fn note_cut_off_runs(path: &Place, deployments: &mut BTreeMap<String, Deployment>) {
     for (slug, dep) in deployments.iter_mut() {
-        let Some(loaded) = state_head_for(path, slug).and_then(|head| std::fs::read_to_string(head).ok()) else { continue };
-        let loaded = loaded.trim().to_string();
+        let Some(loaded) = state_head_for(path, slug).and_then(|head| read_state_head(&head).ok().flatten()) else { continue };
         // The run verify takes a run after it to have begun from: the last that ran and didn't fail.
         let last = dep.log.with(|log| log.newest().find(|e| !e.run_id.is_empty() && e.error.is_none()).map(|e| (e.seq, e.state_after.clone())));
         let Some((seq, Some(left))) = last else { continue };

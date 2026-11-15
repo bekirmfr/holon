@@ -3609,7 +3609,7 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
     // file holding no state at all; and a restart gets the same root back.
     let file: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS)).unwrap();
     assert!(file[0].get("state").is_none() && file[0].get("state_refs").is_none(), "no state in the deployments file: {}", file[0]);
-    let head = std::fs::read_to_string(state_head_for(&Place::parse(&path), "writer").unwrap()).unwrap();
+    let head = persist::read_state_head(&state_head_for(&Place::parse(&path), "writer").unwrap()).unwrap().unwrap();
     let hash = hash_value(&Value::Text("kept".into())).unwrap();
     assert_eq!(crate::restore::snapshot_refs(head.trim(), &state.store).unwrap()["k"], hash);
     let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
@@ -8368,7 +8368,7 @@ fn a_run_a_crash_cut_off_before_its_line_is_said_and_a_state_changed_while_stopp
         }
         // The server starts again from what is on disk; after a crash, crashes again before any
         // run, which says nothing more.
-        let loaded = std::fs::read_to_string(persist::state_head_for(&at, &slug).unwrap()).unwrap();
+        let loaded = persist::read_state_head(&persist::state_head_for(&at, &slug).unwrap()).unwrap().unwrap();
         let mut reloaded = BTreeMap::new();
         for _ in 0..if crashed { 2 } else { 1 } {
             reloaded = load_deployments(&at, &state.store, &state.policy()).unwrap();
@@ -14070,7 +14070,7 @@ fn a_run_writes_only_its_state_head_and_only_when_it_changed_the_state() {
         assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &fake_data(method, url, vec![])).status, 200, "{method} {url}");
     };
     let file = || std::fs::read(state.deployments_path.at().unwrap()).unwrap();
-    let head = |slug: &str| std::fs::read_to_string(state_head_for(&state.deployments_path, slug).unwrap()).ok();
+    let head = |slug: &str| persist::read_state_head(&state_head_for(&state.deployments_path, slug).unwrap()).ok().flatten();
     let counted = |slug: &str| -> (u64, u64) {
         let on_disk: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(state.deployments_path.at().unwrap(), crate::at_rest::role::DEPLOYMENTS)).unwrap();
         let kept = on_disk.as_array().unwrap().iter().find(|r| r["slug"] == slug).unwrap()["trigger_count"].as_u64().unwrap();
@@ -14133,7 +14133,7 @@ fn a_state_is_kept_by_its_head_across_restarts_concurrent_writes_and_a_delete() 
         }
     });
     let live = Arc::clone(state.deployments.lock().unwrap()[&counter].state.as_ref().unwrap());
-    let head = std::fs::read_to_string(state_head_for(&state.deployments_path, &counter).unwrap()).unwrap();
+    let head = persist::read_state_head(&state_head_for(&state.deployments_path, &counter).unwrap()).unwrap().unwrap();
     assert_eq!(head.trim(), crate::restore::snapshot_hash(&live.state.lock().unwrap()).unwrap(), "the head names the live state");
     assert_eq!(hits(&reload()), Some(Value::Number(80.0)), "every write, back after a restart");
     assert_eq!(call("GET", "/last"), call("GET", "/last"));

@@ -25,7 +25,7 @@ In the data folder (`--data`, `HOLON_DATA`):
 | `store/` | every unit, and under it the values (`values/`, the long-lived ones packed in `values/packs/`) and the texts of files runs read (`blobs/`): each sealed, and named by a keyed hash of its hash, not the hash itself | `--store` |
 | `deployments.json` | the deployments, their grants, sessions and parked runs | `--deployments` |
 | `deployments.logs/` | each deployment's run log: its newest 128 runs a line each, `<slug>.jsonl`, and the older ones it keeps gzipped in `<slug>.sealed/`; its events, `<slug>.events.jsonl`; its console lines in `<slug>.console.jsonl`, rolled to `<slug>.console.1.jsonl` and on. All sealed (see [The root key](#the-root-key)): `holon export` gives a run log readable | |
-| `deployments.state/` | each stateful deployment's state, `<slug>`: the hash of its current snapshot, whose values are in `store/`, written as each change lands | |
+| `deployments.state/` | each stateful deployment's state, `<slug>`: the hash of its current snapshot, whose values are in `store/`, written as each change lands, sealed | |
 | `flows.json` | saved flows | `--flows` |
 | `accounts.json` | people, agents and services, sessions, invites and tokens (as hashes) | `--accounts` |
 | `access.json` | the roles bound to each of them; `access.versions.jsonl` beside it, every version, with who changed what and when | beside `--accounts` |
@@ -522,9 +522,13 @@ them; none of it ever shows a key.
 
 Sealing hides what flows were given and kept, not that they ran. Someone with the data folder and
 without the root learns: which deployments exist (file names are slugs), how many runs each kept
-and when (file sizes and times, a segment's sequence range in its name), how large what they keep
-is, and the state heads (hashes, as an export carries them). `holon.toml`, the witness's queue and
-receipts, and the clean-stop mark are kept as they are: none holds run data.
+and when (file sizes and times, a segment's sequence range in its name), and how large what they
+keep is. Each run-log line keeps in clear its number and the hash of the line before it (the chain
+`holon verify` checks, as an export carries it): a guess of a whole line could be checked against
+it, but every line holds its run's id, which holds a random nonce of the host's. A state head is
+sealed: a hash of a small state (a counter, a flag) in clear would let a guess of it be checked.
+`holon.toml`, the witness's queue and receipts, and the clean-stop mark are kept as they are:
+none holds run data.
 
 ### Secrets from elsewhere
 

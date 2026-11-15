@@ -796,6 +796,19 @@ pub(crate) struct Redactor {
     pairs: Vec<(String, String)>,
 }
 
+/// Each run makes one, a copy of every secret's value: wiped when it goes, as the vault's are
+/// (`Zeroizing`), rather than left in freed memory run after run (release audit B10).
+impl Drop for Redactor {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        for (value, _) in &mut self.pairs {
+            value.zeroize();
+        }
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for Redactor {}
+
 impl Redactor {
     pub(crate) fn of(vault: &Vault) -> Redactor {
         let vault = vault.lock().unwrap();
@@ -865,8 +878,8 @@ impl Redactor {
 
     /// This and `other` together: an entry is redacted once, so a mark one of them writes is
     /// never read by the other as a run's own text.
-    pub(crate) fn and(mut self, other: Redactor) -> Redactor {
-        self.pairs.extend(other.pairs);
+    pub(crate) fn and(mut self, mut other: Redactor) -> Redactor {
+        self.pairs.extend(std::mem::take(&mut other.pairs));
         self.pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
         self
     }

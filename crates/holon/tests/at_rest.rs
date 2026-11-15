@@ -129,7 +129,8 @@ fn found_in(bytes: &[u8], forms: &[Vec<u8>]) -> Option<String> {
 }
 
 /// A mail server that greets, takes a binding's check, and puts off every mail (451): what is
-/// mailed stays in the spool, tried again later. Its port.
+/// mailed stays in the spool, tried again later; but one to a recipient whose name starts with
+/// `given-up-` is refused for good (550), and given up. Its port.
 fn putting_off_smtp() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -145,7 +146,8 @@ fn putting_off_smtp() -> u16 {
                     let answer: &[u8] = match verb.as_str() {
                         "EHLO" => b"250-stand-in\r\n250 AUTH PLAIN LOGIN\r\n",
                         "AUTH" => b"235 ok\r\n",
-                        "MAIL" => b"451 4.3.0 not now\r\n",
+                        "RCPT" if line.contains("given-up-") => b"550 5.1.1 no such user\r\n",
+                        "RCPT" => b"451 4.3.0 not now\r\n",
                         "QUIT" => b"221 bye\r\n",
                         _ => b"250 ok\r\n",
                     };
@@ -285,11 +287,14 @@ fn no_file_the_server_writes_holds_run_data_in_clear() {
         .env("HOLON_SECRET_OUT_URL", format!("http://k:s@127.0.0.1:{sqs}/000000000000/out?region=stand-in"))
         .env_remove("HOLON_DATA")
         .env_remove("HOLON_RUN_DIR")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        // What it says on its console too, which a collector (journald, docker logs) keeps in
+        // clear: nothing a run was given belongs there.
+        .stdout(std::fs::File::create(base.join("console.out")).unwrap())
+        .stderr(std::fs::File::create(base.join("console.err")).unwrap())
         .spawn()
         .expect("holon serve starts");
     let mut server = Server { child, dirs: vec![base.clone()], port, home: home.clone() };
+    let console = || ["console.out", "console.err"].map(|f| std::fs::read(base.join(f)).unwrap_or_default()).concat();
     until("holon serve answers", 60, || TcpStream::connect(("127.0.0.1", port)).is_ok());
 
     server.holon(&["policy", "--backup", &backup.display().to_string(), "--sweep-every", "1m"]);
@@ -329,6 +334,8 @@ route.post("/read", () => box["read.txt"])
 
 route.post("/send", (req) => {{
   ops.send({{ to: "someone@acme.com", subject: req.json.text, text: req.json.text }})
+  ops.send({{ to: `given-up-${{req.json.text}}@acme.com`, subject: req.json.text, text: req.json.text }})
+  ops.send({{ to: `${{req.json.text}}@elsewhere.example`, subject: req.json.text, text: req.json.text }})
   out.send({{ data: {{ text: req.json.text }} }})
   return "sent"
 }})
@@ -392,6 +399,10 @@ route.post("/keep", (req) => {{
     let read = post(kept_port, "/read", &body);
     assert!(status(&read) == 200 && read.contains(&canary), "the file read: {read}");
     assert_eq!(status(&post(kept_port, "/send", &body)), 200);
+    // One mail refused for good by the mail server, one to a recipient the binding doesn't allow:
+    // each given up, and said on the console.
+    let given_up = || String::from_utf8_lossy(&console()).matches("gave up a mail").count();
+    until("two mails given up, said", 60, || given_up() == 2);
     for _ in 0..300 {
         assert_eq!(status(&post(kept_port, "/bump", &body)), 200);
     }
@@ -452,6 +463,32 @@ route.post("/keep", (req) => {{
     }
     let clear: Vec<String> = files.iter().filter_map(|f| found_in(&std::fs::read(f).unwrap(), &forms).map(|how| format!("{}: {how}", f.display()))).collect();
     assert!(clear.is_empty(), "the canary {canary} in clear, of {} files: {clear:#?}", files.len());
+    let said = console();
+    assert!(found_in(&said, &forms).is_none(), "the canary {canary} on the server's console: {}", String::from_utf8_lossy(&said));
+    // Nor a hash of a state the runs left, which the export carries (`state_after`, in each run's
+    // line): the state is small (a counter, the canary), and a plain hash of it lets a guess of it
+    // be checked offline.
+    let mut hashes = Vec::new();
+    for f in exported.iter().filter(|f| f.extension().is_some_and(|e| e == "json")) {
+        let text = std::fs::read_to_string(f).unwrap();
+        for (at, _) in text.match_indices("state_after") {
+            let after = &text[at + "state_after".len()..];
+            let from = after.find(|c: char| c.is_ascii_hexdigit()).filter(|n| *n < 8);
+            if let Some(hex) = from.map(|n| &after[n..]).and_then(|h| h.get(..64)).filter(|h| h.chars().all(|c| c.is_ascii_hexdigit())) {
+                hashes.push(hex.to_ascii_lowercase());
+            }
+        }
+    }
+    let hashes: std::collections::HashSet<String> = hashes.into_iter().collect();
+    assert!(hashes.len() > 100, "the export's state hashes: {}", hashes.len());
+    // Each run of hex digits in a file, each 64 of them in it looked up.
+    let hex_hash_in = |bytes: &[u8]| -> Option<String> {
+        bytes.split(|b| !b.is_ascii_hexdigit()).filter(|run| run.len() >= 64).find_map(|run| {
+            run.windows(64).map(|w| String::from_utf8_lossy(w).to_ascii_lowercase()).find(|w| hashes.contains(w))
+        })
+    };
+    let hashed: Vec<String> = files.iter().filter_map(|f| hex_hash_in(&std::fs::read(f).unwrap()).map(|h| format!("{}: {h}", f.display()))).collect();
+    assert!(hashed.is_empty(), "a state's hash in clear: {hashed:#?}");
 }
 
 /// `holon serve` on `home`, its root where `root` says (`file:…`), at `port`.
@@ -593,6 +630,21 @@ route.post("/bump", () => {{
     until("holon serve answers under the new root", 60, || TcpStream::connect(("127.0.0.1", port)).is_ok());
     let shown = again.holon(&["key", "status"]);
     assert!(shown.contains("new.key") && shown.contains("d:shop: forgotten"), "{shown}");
+    // A root that can't be read any more (a key file on a mount gone): a new deployment is
+    // refused at its deploy, saying so, rather than deployed with every run's line lost; and once
+    // the root is back, it deploys.
+    let new_file = base.join("new.key");
+    let away = base.join("new.key.away");
+    std::fs::rename(&new_file, &away).unwrap();
+    let late = texts.join("late.holon.ts");
+    std::fs::write(&late, format!("import {{ flow, route }} from \"holon\"\n\nflow(\"late\", {{ port: {} }})\n\nroute.get(\"/\", () => \"late\")\n", free_port())).unwrap();
+    let at = port.to_string();
+    let deploy_late = || offline(&home, &["deploy", &late.display().to_string(), "--approve", "--server", &at]);
+    let (went, said) = deploy_late();
+    assert!(!went && said.contains("keys couldn't be made"), "{said}");
+    std::fs::rename(&away, &new_file).unwrap();
+    let (went, said) = deploy_late();
+    assert!(went, "{said}");
     again.stop();
 
     // Rotated in place, --to the key file in use spelled another way (and in another case where
@@ -611,7 +663,6 @@ const WRITERS: &[(&str, usize, &str)] = &[
     ("at_rest.rs", 8, "where sealing is: it writes what it sealed, keys.lock, empty, and keys.json's copy in the backup folder, by the archiver and as keys.json is written: data keys wrapped under the root"),
     ("bindings.rs", 1, "access.versions.jsonl: lines sealed with seal_line just before"),
     ("blobs.rs", 2, "the file texts' chunks and chunk lists, sealed with seal just before"),
-    ("claims.rs", 1, "the state head: a hash, in clear on purpose (§2.5)"),
     ("events.rs", 1, "the events file opened to append lines sealed by its LineSeal"),
     ("flowcmd.rs", 1, "the command line writing a flow's text where a person asked"),
     ("flowscmd.rs", 1, "the command line writing a saved flow's text where a person asked"),

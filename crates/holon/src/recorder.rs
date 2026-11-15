@@ -691,6 +691,12 @@ pub struct Log {
     /// Cut-backs begun holding the lock (`cut_back`), counted for a test.
     #[cfg(test)]
     cuts_holding_lock: usize,
+    /// A test's: the next cut-back made holding the lock fails to write its file.
+    #[cfg(test)]
+    fail_cut_write: bool,
+    /// The trims the witness was told of (`seq`), for a test.
+    #[cfg(test)]
+    trims: Vec<u64>,
     /// Entries let go of from memory, to be freed once the log's lock is released
     /// (`LogCell::with`): freeing one, its timeline and all, took a quarter of the time a run held
     /// the lock.
@@ -1641,6 +1647,10 @@ impl Log {
             fail_syncs: false,
             #[cfg(test)]
             cuts_holding_lock: 0,
+            #[cfg(test)]
+            fail_cut_write: false,
+            #[cfg(test)]
+            trims: Vec::new(),
             gone: Vec::new(),
             defer_cuts: false,
             cut_wanted: false,
@@ -2195,7 +2205,7 @@ impl Log {
                 // What it let go of was written to the backup (`CutPlan::make`): it can be again.
                 self.cut_done();
                 if let Some((seq, prev)) = &made.trimmed {
-                    self.export("trim", *seq, prev, now_ms());
+                    self.trimmed(*seq, prev);
                 }
             }
             other => {
@@ -2327,15 +2337,15 @@ impl Log {
             all.extend_from_slice(b);
             all.push(b'\n');
         }
-        // The witness hears that the runs before the oldest kept are gone by the host's choice.
         let (trimmed, oldest_ms) = oldest_kept(&self.sealed, &split, seal.as_ref().map(|s| &s.2), &kept, !split.gone.is_empty() || !split.drop.is_empty());
-        if let Some((seq, prev)) = trimmed {
-            self.export("trim", seq, &prev, now_ms());
-        }
-        self.file_oldest_ms = oldest_ms;
         // Written whole and synced (write_private), the newest line with it. If it can't be, the
         // segment sealed goes again: its runs are in the file still.
-        if let Err(e) = crate::sealing::write_private(&path, &all) {
+        #[cfg(test)]
+        let fault = std::mem::take(&mut self.fail_cut_write);
+        #[cfg(not(test))]
+        let fault = false;
+        let written = if fault { Err(std::io::Error::other("a write made to fail")) } else { crate::sealing::write_private(&path, &all) };
+        if let Err(e) = written {
             if let Some((final_path, _, _)) = &seal
                 && !self.sealed.iter().any(|s| s.path == *final_path)
             {
@@ -2344,10 +2354,18 @@ impl Log {
             return Err(e);
         }
         sync_dir_of(&path);
+        // Only now, the cut on disk, does the witness hear that the runs before the oldest kept
+        // are gone by the host's choice, as the cut made outside the lock tells it after its swap.
+        // Told before, a write that failed left the witness told of a trim the log never made, and
+        // the runs it named still there (release audit C11).
         self.generation += 1;
         self.written = kept.len();
         self.file_len = all.len() as u64;
         self.lines = index;
+        if let Some((seq, prev)) = trimmed {
+            self.trimmed(seq, &prev);
+        }
+        self.file_oldest_ms = oldest_ms;
         self.cut = false;
         self.dirty = false;
         if let Some((_, _, sealed)) = seal {
@@ -2380,6 +2398,14 @@ impl Log {
     }
 
     /// Queue a head for the witness (heads.rs), when this is a deployment's log.
+    /// The witness told that the runs before `seq` (whose `prev` is `prev`) are gone by the
+    /// host's choice: only once the cut that let them go is on disk.
+    fn trimmed(&mut self, seq: u64, prev: &str) {
+        #[cfg(test)]
+        self.trims.push(seq);
+        self.export("trim", seq, prev, now_ms());
+    }
+
     fn export(&self, kind: &str, seq: u64, head: &str, at_ms: u64) {
         if let Some(slug) = &self.slug {
             crate::heads::note(crate::heads::Head { deployment: slug.clone(), kind: kind.into(), seq, head: head.into(), at_ms });
@@ -3080,6 +3106,52 @@ mod tests {
         assert_eq!(cell.with(|l| l.backup_error().map(str::to_string)), None, "written to again");
         assert_eq!(cell.with(|l| l.holds().3), 3, "cut back");
         assert!(std::fs::read_dir(backup.join("slug")).unwrap().count() > 0, "what it let go of is there");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Guards:** the witness is told of a trim only by a cut that is on disk, whichever way it
+    /// is made: holding the lock or outside it, a cut whose write or swap fails tells it nothing,
+    /// and the cut made after tells it once (release audit C11).
+    ///
+    /// **Why:** the cut made holding the lock told the witness before writing its file: a write
+    /// that failed left the witness told the runs before a seq were gone, with every one of them
+    /// still in the log.
+    ///
+    /// **If it fails:** a witness's record says runs were let go of that a copy of the log still
+    /// holds, and an operator comparing the two is told the log is not what the witness heard.
+    #[test]
+    fn the_witness_hears_of_a_trim_only_once_the_cut_is_on_disk() {
+        let dir = temp_dir("trim-order");
+        let path = dir.join("slug.jsonl");
+        let mut log = Log::open_keeping(Some(path.clone()), 3);
+        log.defer_cuts = true;
+        let push = |log: &mut Log, n: usize| {
+            for _ in 0..n {
+                log.push(entry());
+            }
+        };
+        let on_disk = || Log::open_keeping(Some(path.clone()), 1000).after(None, 1000).len();
+        push(&mut log, 8);
+        // Holding the lock, its write failing: nothing told, every run on disk still.
+        log.fail_cut_write = true;
+        log.cut_here();
+        assert!(log.trims.is_empty(), "told of a trim never made: {:?}", log.trims);
+        assert_eq!(on_disk(), 8);
+        // Made again (the pause past): written, then told, once.
+        log.cut_paused_until = 0;
+        log.cut_here();
+        assert_eq!((log.trims.len(), on_disk()), (1, 3));
+        // Outside the lock, its swap failing: the cut made instead holding the lock tells once.
+        push(&mut log, 4);
+        let made = log.plan_cut().expect("a cut wanted").make().unwrap().expect("something to cut");
+        std::fs::remove_file(&made.tmp).unwrap();
+        log.finish_cut(Ok(Some(made)));
+        assert_eq!((log.trims.len(), on_disk()), (2, 3));
+        // Outside the lock, swapped: told once.
+        push(&mut log, 4);
+        let made = log.plan_cut().expect("a cut wanted").make().unwrap().expect("something to cut");
+        log.finish_cut(Ok(Some(made)));
+        assert_eq!((log.trims.len(), on_disk()), (3, 3));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

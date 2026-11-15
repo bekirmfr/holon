@@ -1002,7 +1002,10 @@ anything of one.
   `d:<slug>`: what each deployment wrote), and the deployments whose keys were forgotten. Admins.
 - `rotate <scope>` makes a new version of a scope's data key: what is written from then on is
   sealed under it, and what was sealed under the versions before still opens. `names` is never
-  rotated: the store's files are named by it. Needs `host.operate`.
+  rotated: the store's files are named by it. It protects what is written after it, not before:
+  nothing is sealed again, and every version is kept, so a version that leaked still opens what
+  it sealed, wherever a copy of that is (forgetting a removed deployment's keys is what puts what
+  it wrote out of reach). Needs `host.operate`.
 - `forget <slug> --yes`, for a removed deployment (as `holon remove --forget`; it can't be undone,
   so it asks for `--yes`): its keys are dropped from
   `keys.json`, so its kept log, events, records and backups open nowhere again, and say they

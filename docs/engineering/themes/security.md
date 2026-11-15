@@ -345,7 +345,8 @@ effect, and an answer with no JSON form fails the call (`a_flow_call_sends_and_h
 `write_private` writes a file aside created with mode `0o600` (a protected owner-and-SYSTEM DACL on
 Windows, `restrict_to_owner`), syncs it and renames it over. It keeps the accounts, the deployments
 file, the secrets file and key file, the host key, the folders' and databases' bindings, the run
-files and `~/.holon/tokens.json`, each state head, and each log as a cut-back rewrites it.
+files and `~/.holon/tokens.json`, each state head (sealed, bound to its slug: a plain hash of a
+small state let a guess of it be checked offline), and each log as a cut-back rewrites it.
 Logs, events and the secrets audit are opened `0o600` when created; sealed log segments go through
 `write_aside`. holon-host's `write_atomically` creates its file `0o600` too, so the content store
 (units and every state and value), the packs, the kept file texts, the flows file, the policy as

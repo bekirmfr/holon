@@ -1809,7 +1809,7 @@ mod commit_checks {
             let said = run.error.clone().unwrap_or_default();
             assert_eq!(said.starts_with(folders::WRITE_FAILED) && said.contains("the state it left"), fails, "{head:?}, changed: {}: {said:?}", !std::ptr::eq(live, &start));
             if !fails && std::ptr::eq(live, &changed) {
-                assert_eq!(std::fs::read_to_string(head).ok(), run.state_after, "its head names the snapshot it left");
+                assert_eq!(crate::persist::read_state_head(head).ok().flatten(), run.state_after, "its head names the snapshot it left");
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -1865,7 +1865,7 @@ mod commit_checks {
                 run.start_state = Some(start);
                 keep_state(&cell, &mut run, &live, &store);
                 full.store(false, std::sync::atomic::Ordering::SeqCst);
-                let Ok(hex) = std::fs::read_to_string(&head) else { continue };
+                let Ok(Some(hex)) = crate::persist::read_state_head(&head) else { continue };
                 let loaded = crate::restore::load_snapshot(&hex, &store).unwrap_or_else(|e| panic!("failing {failing:05b}, after step {i}: the head doesn't load: {e}"));
                 if run.error.is_none() {
                     assert_eq!(crate::restore::snapshot_hash(&loaded), crate::restore::snapshot_hash(&live), "failing {failing:05b}, step {i}: the head names the state it left");

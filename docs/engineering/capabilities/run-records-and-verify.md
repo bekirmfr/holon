@@ -112,7 +112,8 @@ lock, which every run takes under its log's (release audit R45). Until a 2xx, th
 `<deployments>.heads/pending.jsonl`, written and synced with the logs every second (`heads::sync`,
 under the file's own lock: appended, or written afresh after a batch is taken or the queue cut);
 the witness's answer is kept as a line of
-`receipts.jsonl`, synced; a failing witness is tried again after a growing pause, up to
+`receipts.jsonl`, synced, rolled to `receipts.1.jsonl` past `RECEIPTS_ROLL_BYTES` (16 MiB) so the
+newest are kept in at most twice that (the witness keeps every one it gave); a failing witness is tried again after a growing pause, up to
 `MAX_BACKOFF` (five minutes). Past `MAX_PENDING` (10,000) heads waiting, each deployment's newest
 of each kind stands for the ones before it (`Exporter::compact`): a head pins every line before it
 in its chain, so the witness loses steps, not runs. The batch being sent is left as it is, as it

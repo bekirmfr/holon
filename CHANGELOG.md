@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Smaller at-rest and record fixes.** A deployment's state head (the hash of its state's
+  snapshot) is sealed: in clear, a small state (a counter, a flag) could be confirmed offline by
+  guessing it. The server's console no longer says a given-up mail's subject or recipients, or a
+  refused recipient's address: the deployment's events, which are sealed, say them. A log cut back
+  holding its lock tells the witness of the trim only once its file is written. `receipts.jsonl`
+  rolls past 16 MiB, keeping the newest. A run's copy of the secrets' values, made to redact its
+  record, is wiped when it goes. The manual says what a data key's rotation doesn't do (nothing is
+  sealed again), and that each run-log line keeps the hash of the line before it in clear.
 - **The root key and the backup, three rough edges.** `holon key export --server PORT`, with no
   `--root-key`, reads the root where that server reads it (`holon key status` now names its
   `--root-key` as `source`), once its keys are the folder's; it looked in the default place and

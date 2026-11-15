@@ -820,7 +820,11 @@ impl Mails {
                 return Some(item);
             }
             Err(f) => {
-                eprintln!("holon: {}: gave up mailing {what}: {}", s.slug, f.why());
+                // The console says which deployment, run and binding; its subject, its recipients
+                // and the server's answer (which names a recipient it refused) are run data, kept
+                // in the deployment's events, which are sealed, not in what the console's
+                // collector (journald, docker logs) keeps in clear (release audit, at rest).
+                eprintln!("holon: {}: gave up a mail of run {} through {}: the deployment's events say why", s.slug, s.run, s.mail);
                 self.note(&s.slug, &s.mail, format!("gave up mailing {what}: {}", f.why()));
             }
         }
@@ -854,7 +858,8 @@ pub(crate) fn ungranted(mail: &str, message: &Value, granted: &BTreeSet<String>)
     for r in recipients {
         let Value::Text(r) = r else { return Some("a recipient isn't an address".into()) };
         if !granted.iter().any(|g| g.split_once('/').is_some_and(|(m, a)| m == mail && a.eq_ignore_ascii_case(&r))) {
-            return Some(format!("{r} isn't a recipient it was granted"));
+            // Not named: a recipient is run data, and this is said on the console, in clear.
+            return Some("a recipient isn't one it was granted".into());
         }
     }
     None
@@ -1255,7 +1260,8 @@ mod tests {
     fn a_grant_covers_the_recipients_it_names_or_any_for_a_star() {
         let granted: BTreeSet<String> = ["ops/approvals@acme.com".to_string()].into();
         assert_eq!(ungranted("ops", &message(&["Approvals@acme.com"], "s"), &granted), None);
-        assert!(ungranted("ops", &message(&["approvals@acme.com", "x@acme.com"], "s"), &granted).unwrap().contains("x@acme.com"));
+        let refused = ungranted("ops", &message(&["approvals@acme.com", "x@acme.com"], "s"), &granted).unwrap();
+        assert!(refused.contains("isn't one it was granted") && !refused.contains("x@acme.com"), "{refused}");
         assert!(ungranted("alerts", &message(&["approvals@acme.com"], "s"), &granted).is_some());
         assert_eq!(ungranted("ops", &message(&["anyone@acme.com"], "s"), &["ops/*".to_string()].into()), None);
         let many: Vec<(Capability, Value)> = (0..101).map(|_| (Capability::MailSend("ops".into()), Value::Boolean(true))).collect();

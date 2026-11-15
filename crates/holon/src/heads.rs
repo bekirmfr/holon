@@ -66,6 +66,12 @@ pub const MAX_PENDING: usize = 10_000;
 /// The longest pause before trying a failing witness again.
 const MAX_BACKOFF: Duration = Duration::from_secs(300);
 
+/// Past this, `receipts.jsonl` is rolled to `receipts.1.jsonl`, the one before let go of: the
+/// newest receipts are kept, up to twice this, and the file no longer grows for good (release
+/// audit C12). A receipt answers for a batch of heads, each standing for every run before it in
+/// its chain; the witness keeps every one it gave.
+const RECEIPTS_ROLL_BYTES: u64 = 16 << 20;
+
 pub struct Exporter {
     url: String,
     token: Option<String>,
@@ -386,12 +392,21 @@ impl Exporter {
 
     /// After a batch was taken: its receipt kept, synced.
     fn keep(&self, batch: &str, receipt: &str) -> std::io::Result<()> {
+        self.keep_within(batch, receipt, RECEIPTS_ROLL_BYTES)
+    }
+
+    /// [`Exporter::keep`], `receipts.jsonl` rolled first if the receipt would take it past `roll`.
+    fn keep_within(&self, batch: &str, receipt: &str, roll: u64) -> std::io::Result<()> {
         let Some(dir) = &self.dir else { return Ok(()) };
         // A receipt that isn't JSON is kept as text, under the batch it answered.
         let receipt: serde_json::Value = serde_json::from_str(receipt).unwrap_or_else(|_| serde_json::Value::String(receipt.to_string()));
         let line = serde_json::json!({ "batch": batch, "receipt": receipt }).to_string() + "\n";
         use std::io::Write;
-        let mut receipts = crate::sealing::append_private(&dir.join("receipts.jsonl"))?;
+        let path = dir.join("receipts.jsonl");
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() + line.len() as u64 > roll) {
+            std::fs::rename(&path, dir.join("receipts.1.jsonl"))?;
+        }
+        let mut receipts = crate::sealing::append_private(&path)?;
         receipts.write_all(line.as_bytes())?;
         // An append-only handle; the sync opens the file to write, as Windows asks.
         crate::recorder::sync_file(&dir.join("receipts.jsonl"))
@@ -490,6 +505,31 @@ mod tests {
         let receipt: serde_json::Value = serde_json::from_str(receipts.lines().next().unwrap()).unwrap();
         assert_eq!(receipt["batch"], id);
         assert_eq!(receipt["receipt"]["took"], id, "the witness's answer, as it gave it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guards: the receipts kept are the newest, rolled to one file before them past
+    /// [`RECEIPTS_ROLL_BYTES`], so they take at most twice that however long the server runs.
+    /// Why: `receipts.jsonl` was appended to for good: a busy witnessed server filled its disk
+    /// with them (release audit C12).
+    #[test]
+    fn the_receipts_kept_are_the_newest_and_take_a_bounded_room() {
+        let dir = std::env::temp_dir().join(format!("holon-receipts-{}-{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exporter = Exporter::new("http://127.0.0.1:9", None, Some(dir.clone())).unwrap();
+        let roll = 2_000;
+        for n in 0..500 {
+            exporter.keep_within(&format!("batch-{n:04}"), "{\"ok\":true}", roll).unwrap();
+        }
+        let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+        let (now, before) = (read("receipts.jsonl"), read("receipts.1.jsonl"));
+        assert!(now.len() as u64 <= roll && before.len() as u64 <= roll, "{} and {} bytes", now.len(), before.len());
+        assert!(now.lines().last().unwrap().contains("batch-0499"), "the newest kept");
+        let first_now: serde_json::Value = serde_json::from_str(now.lines().next().unwrap()).unwrap();
+        let last_before: serde_json::Value = serde_json::from_str(before.lines().last().unwrap()).unwrap();
+        let n = |v: &serde_json::Value| v["batch"].as_str().unwrap()[6..].parse::<u32>().unwrap();
+        assert_eq!(n(&last_before) + 1, n(&first_now), "none lost between the two");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

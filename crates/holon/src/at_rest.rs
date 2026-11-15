@@ -1250,6 +1250,11 @@ pub(crate) mod role {
     pub(crate) const SPOOL_MAIL: &str = "spool: mail";
     pub(crate) const SPOOL_QUEUE: &str = "spool: queue";
 
+    /// A deployment's state head: the hash of its snapshot, bound to its slug.
+    pub(crate) fn state_head(slug: &str) -> String {
+        format!("state head: {slug}")
+    }
+
     /// A run log's sealed segment: its older runs, gzipped then sealed whole.
     pub(crate) fn segment(slug: &str) -> String {
         format!("segment: {slug}")
