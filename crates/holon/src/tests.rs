@@ -20,6 +20,8 @@ mod frames;
 mod run_steps;
 /// An expired waiting run slow to go on holds no other deadline (R34).
 mod expiring;
+/// A deploy puts its version in only while the deployment is what it was worked out from (R25).
+mod meanwhile;
 mod scopes;
 mod tags;
 /// What a handler's text does, against what the same text does as JavaScript.

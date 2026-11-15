@@ -52,10 +52,16 @@ pub(crate) fn is_valid_slug(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// What the slug's deployment holds now, if it is deployed.
+/// What the slug's deployment holds now, if it is deployed: what a deploy is worked out against,
+/// read before the lock that puts the version in, and asked again under it ([`Previous::still`]).
 #[derive(Default)]
 struct Previous {
     grant: Option<Grant>,
+    /// How many versions it has: a deploy or a restore adds one.
+    versions: usize,
+    /// Whether a person let an agent's versions deploy without them, and turned proposing off.
+    agents_deploy_at_once: bool,
+    agents_propose_off: bool,
     unit: Option<Hash>,
     browsers: Vec<String>,
     /// The keys its server taints.
@@ -72,6 +78,9 @@ fn previous_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) ->
     match deployments.lock().unwrap().get(slug) {
         Some(d) => Previous {
             grant: Some(d.grant.clone()),
+            versions: d.versions.len(),
+            agents_deploy_at_once: d.agents_deploy_at_once,
+            agents_propose_off: d.agents_propose_off,
             unit: Some(d.unit),
             browsers: d.browsers.clone(),
             taint: d.server.as_ref().map(|s| s.taint.clone()).unwrap_or_default(),
@@ -82,6 +91,33 @@ fn previous_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) ->
         None => Previous::default(),
     }
 }
+
+impl Previous {
+    /// Whether `now`, the slug's deployment under the lock that puts a version in, is still the one
+    /// this was read from: its grant (a revoke, a limit lowered), its versions and its settings as
+    /// they were. A deploy worked out from a copy a person changed meanwhile would undo the change
+    /// with the grant it builds (R25): it is worked out again instead.
+    fn still(&self, now: Option<&Deployment>) -> bool {
+        match now {
+            None => self.unit.is_none(),
+            Some(d) => {
+                self.unit == Some(d.unit)
+                    && self.versions == d.versions.len()
+                    && self.grant.as_ref() == Some(&d.grant)
+                    && (self.agents_deploy_at_once, self.agents_propose_off) == (d.agents_deploy_at_once, d.agents_propose_off)
+            }
+        }
+    }
+}
+
+/// A held deploy's two ends: it says it is there, then waits to be let go.
+#[cfg(test)]
+pub(crate) type Hold = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+
+/// A test's hold on a deploy of a slug, between working out what it needs and putting it in
+/// (tests/meanwhile.rs).
+#[cfg(test)]
+pub(crate) static HELD: std::sync::LazyLock<Mutex<BTreeMap<String, Hold>>> = std::sync::LazyLock::new(Default::default);
 
 /// The origins `browsers` answers pages from that the slug's deployment doesn't yet, as items a
 /// person approves for an agent (`Browser("https://app.example")`): a page from there, in its
@@ -397,7 +433,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     // settings, where the host lets them): then only what asks for more waits. A person who
     // doesn't approve its deploys wrote what they deploy: what asks for more waits for someone
     // who does, the rest deploys.
-    let proposed = !approves && (!missing.is_empty() || waits_for_a_person(who, policy, deployments, &body.slug));
+    let proposed = !approves && (!missing.is_empty() || waits_for_a_person(who, policy, &previous));
     // What a person reviews is the document: a proposal's must be what it deploys, and so must a
     // program's, which the next review is read against.
     if (proposed || matches!(who.kind, Some(crate::accounts::Kind::Agent | crate::accounts::Kind::Service)))
@@ -464,8 +500,25 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     let note = body.note.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(String::from);
     let version;
 
+    #[cfg(test)]
+    {
+        let held = HELD.lock().unwrap().remove(&body.slug);
+        if let Some((there, go)) = held {
+            let _ = there.send(());
+            let _ = go.recv_timeout(std::time::Duration::from_secs(10));
+        }
+    }
     {
         let mut deployments = deployments.lock().unwrap();
+        // What it needs, and whether it waits for a person, were worked out from the deployment
+        // as read before this lock: changed meanwhile (a revoke, a limit lowered, a setting turned,
+        // another version), the grant built from that copy would undo the change. Asked again.
+        if !previous.still(deployments.get(&body.slug)) {
+            return err(
+                409,
+                format!("{:?} changed while this deploy was worked out (its grant, its settings or another version): deploy again, and what it needs is asked anew", body.slug),
+            );
+        }
         if let Some((other, _)) = deployments
             .iter()
             .find(|(other, d)| **other != body.slug && server.port.is_some() && d.server.as_ref().is_some_and(|o| o.port == server.port))
@@ -713,8 +766,8 @@ fn code_rows(previous: &Previous, server: Option<&Server>) -> Vec<serde_json::Va
 /// person even when it asks for nothing more: it does when a program (an agent, a service) deploys
 /// it, unless a person who may approve its deploys let the flow take theirs at once (its settings,
 /// proposals.rs) and the host lets them (`[agents] deploy_at_once`); never for a flow not deployed.
-fn waits_for_a_person(who: &Caller, policy: &Policy, deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> bool {
-    let at_once = policy.agents_deploy_at_once && deployments.lock().unwrap().get(slug).is_some_and(|d| d.agents_deploy_at_once);
+fn waits_for_a_person(who: &Caller, policy: &Policy, previous: &Previous) -> bool {
+    let at_once = policy.agents_deploy_at_once && previous.agents_deploy_at_once;
     who.kind != Some(crate::accounts::Kind::Person) && !at_once
 }
 
@@ -897,7 +950,7 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
         "approves": !proposes,
         // Whether, deployed by `who`, it waits for a person as a proposal: an agent's version
         // does, what it asks for or not, unless a person let the flow's take it at once (deploy).
-        "proposed": proposes && (!needs.is_empty() || waits_for_a_person(who, policy, deployments, &body.slug)),
+        "proposed": proposes && (!needs.is_empty() || waits_for_a_person(who, policy, &previous)),
         "already_granted": granted,
         // Where each secret it reads is sent (secret → hosts): said beside the secret's item.
         "sent": &sent,

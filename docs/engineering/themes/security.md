@@ -211,6 +211,12 @@ exceptions are ever granted. At deploy (deploy.rs):
    flow of their own.
 3. The `Grant` is kept with the deployment; the **`Permit`** applies it to the policy in force
    (a ceiling lowered since wins; an exception holds only while the policy still allows it).
+   What a deploy needs, and whether it waits for a person, is worked out from the deployment as
+   read before the lock that puts the version in (`deploy::Previous`); under that lock it must
+   still be the same (`Previous::still`: its grant, its versions, its agents' settings), or the
+   deploy answers 409 and is sent again. Before, a grant built from that copy undid a revoke, a
+   lowered limit or "deploy at once" turned off made meanwhile, so an agent redeploying in a loop
+   took back what a person had just taken away (R25).
 
 At perform time the permit is the rule, whatever the graph says: `run_attempt` drops every
 effect `Permit::allows` doesn't cover ("refused … not granted to this deployment"), and an answer
