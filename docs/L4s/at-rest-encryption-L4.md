@@ -1,5 +1,10 @@
 # Encryption at rest: every byte a flow leaves on disk, sealed under keys the server never stores beside it (L4)
 
+> **Dev-phase document: not for the launch repository.** It describes open limits of the design
+> and work in progress. It is kept here while Holon is being built, and is left out when the
+> public platform repository is made, which starts from a fresh history (owner, 2026-11-15).
+<!-- holon:dev-phase-only -->
+
 **Status:** built (2026-11-14 and 15), in the steps of §9; §10 stays open. The design below was
 written on 2026-11-14, grounded at `origin/main` `7077129a` (branch `launch-fixes-4`, one commit
 ahead, which touches none of the files below): every claim about the code names its file and line
