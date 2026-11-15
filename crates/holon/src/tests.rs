@@ -8419,14 +8419,13 @@ export const pay = action(async (order) => {
     }
 
     // A field verify doesn't hold by running the run again (`verify::NOT_HELD`, a `*` for any
-    // index), and the steps of R26 still to come.
+    // index).
     let not_held = |at: &str| {
-        verify::NOT_HELD.iter().any(|f| {
+        verify::NOT_HELD.iter().any(|(f, _)| {
             let (at, f): (Vec<&str>, Vec<&str>) = (at.split('/').collect(), f.split('/').collect());
             f.len() <= at.len() && f.iter().zip(&at).all(|(f, a)| f == a || *f == "*")
         })
     };
-    let open = |at: &str| OPEN.iter().any(|f| at == *f || at.starts_with(&format!("{f}/")));
     // What a report says of each run: whether it checked it, and how far.
     let account = |r: &verify::Report| format!("{:?} {:?} {:?} {:?} {}", r.reruns, r.states, r.given, r.ids_given, r.complete());
     let (mut tried, mut passed, mut leaks, mut said_less, mut witnessed) = (0, 0, Vec::new(), Vec::new(), Vec::new());
@@ -8468,7 +8467,7 @@ export const pay = action(async (order) => {
                 }
                 passed += 1;
                 *by_field.entry(at.split('/').next().unwrap_or_default().to_string()).or_insert(0) += 1;
-                if not_held(&at) || open(&at) {
+                if not_held(&at) {
                     continue;
                 }
                 match account(&report) == account(&honest) {
@@ -8539,10 +8538,6 @@ fn rewritten(v: &serde_json::Value, from: &serde_json::Value, to: &serde_json::V
         _ => v.clone(),
     }
 }
-
-/// What [`no_line_changed_and_chained_again_passes_as_checked`] doesn't hold verify to yet: the
-/// fields R26's later steps hold (audit R26).
-const OPEN: &[&str] = &["commit", "session", "retries", "by", "grant"];
 
 /// **Guards:** what `holon verify` makes of each kind of run an entry can say it was, and the exit
 /// that follows. A run that failed is run again: what it computed is checked, and what its writes

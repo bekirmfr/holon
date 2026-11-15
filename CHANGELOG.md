@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **`holon verify` holds each run's line to the run, and says what only the chain holds.** A line
+  changed and the lines after it chained again (by someone holding the server's data, with no
+  witness) passed wherever verify read the line rather than making it again: an error and a
+  status put in, a step's outputs or rounds, what a run answered, the points it waits at, the
+  state it left, what a resumed run was delivered. Now every line must be one the server writes
+  (`run 7 ISN'T A LINE THE SERVER WRITES: …`, exit 1), and verify makes each of those again
+  from the run: its steps round by round, its answer as the line keeps it, where it waits, the
+  state it left (a resumed part's and a run's beside others' too: the state the commit before
+  its own left, its writes applied), and an approval's decisions, replayed by the server's own
+  rules against the steps the run asked for and whoever started it. What no run again can make
+  (when it ran and for how long, its session, its commit's cell and number, its tries, who
+  called it, its grant) is the server's account, held by the chain alone: without `--head`, the
+  report says so, and the guide lists each. A run whose snapshot the store couldn't take names
+  the state it left by its hash all the same. ([Checking runs](docs/manual/guides/checking-runs.md#what-only-the-chain-holds))
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

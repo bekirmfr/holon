@@ -51,12 +51,30 @@ pub(crate) const FORMAT: &str = "holon-runs/1";
 /// none of that (`firing::without_secret_derived`), and only the secret's value could make it again.
 pub(crate) const WITHHELD_NODE: &str = "it computed a value from a secret, which the log never keeps: only the secret could compute it again";
 
-/// What of a run's line `holon verify` doesn't hold it to, by field (a field's path, as
-/// `tests::changes_of` names it, `*` any index): when it ran and for how long, and when each of
-/// its steps did, which no run again can say. Anything else changed in a line, and the lines
-/// chained again, is found (that test).
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const NOT_HELD: &[&str] = &["at_ms", "duration_ms", "timeline/*/start_us", "timeline/*/end_us"];
+/// What of a run's line `holon verify` doesn't hold it to by running the run again, by field (a
+/// field's path, as `tests::changes_of` names it, `*` any index), and what it is as `describe`
+/// says it: the server's account of when, where and for whom it ran, which no run again can make.
+/// Each is held by the chain alone, and so by a witness's head (`--head`): changed and the lines
+/// chained again, it passes without one, and fails with one. Anything else changed in a line is
+/// found (`tests::no_line_changed_and_chained_again_passes_as_checked`, audit R26).
+///
+/// A commit's number and cell say which run's state it began after and whether others landed
+/// beside it: changed, verify may check less of its state, and says which runs it didn't. `by`
+/// is the server's account of its caller, no more; an approval's decisions are held to it
+/// (whoever started the run decides only a step that takes them, `decided_as`). `grant` names the
+/// grant it ran under by its hash: the export holds the units the runs ran, not the grants.
+pub(crate) const NOT_HELD: &[(&str, &str)] = &[
+    ("at_ms", "when it began"),
+    ("duration_ms", "how long it took"),
+    ("timeline/*/start_us", "when each step began"),
+    ("timeline/*/end_us", "when each step ended"),
+    ("session", "its run session"),
+    ("commit/cell", "which load of the state it committed to"),
+    ("commit/n", "its commit's number"),
+    ("retries", "how many times it ran again before its commit landed (its tries)"),
+    ("by", "who called it (the server's account of its caller)"),
+    ("grant", "the grant it ran under (by its hash)"),
+];
 
 /// What a mark stands for, as a reason for a run not run again ends: said once, here.
 pub(crate) const MARK_STANDS_FOR: &str = "only a text of 6 characters or more is carried through a replay";
@@ -2692,6 +2710,11 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
             )
         }
         _ => {}
+    }
+    // What no run again can make, which only the chain holds: a witnessed head holds it too.
+    if head.is_none() && r.runs > 0 {
+        let said: Vec<&str> = NOT_HELD.iter().map(|(_, said)| *said).collect();
+        out += &format!("  held by the chain alone, not by running each run again (a witnessed head holds it too): {}\n", said.join(", "));
     }
     if !r.bad_units.is_empty() {
         out += &format!("  units: {} DON'T MATCH their hash\n", r.bad_units.iter().map(|u| short(u)).collect::<Vec<_>>().join(", "));
