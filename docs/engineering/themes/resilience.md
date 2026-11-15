@@ -375,6 +375,11 @@ agent's proposal 3,000 deep could trap a reviewer's tab, whose wasm has a 1 MiB 
   a `}`, an `of` or a `>` that may close a type's arguments, on what the parser made of what came
   before; read the wrong way, each skips what the other counts. The count refuses that `/`,
   saying to put one side in parentheses (`Refused::TwoWays`).
+- **Read to its end.** `#` begins a word, as a private name's does (`#x`), and the word has it,
+  so every step of the count reads something: at a `#` in code it read an empty word and the same
+  place again, forever, and `a #b` hung `holon check`, the language server as `#` was typed and
+  the editor's tab (`the_count_reads_every_text_to_its_end`, each ASCII character and a few past
+  it in each place a token stands).
 - **Limits.** An `else if` chain counts three levels a link (its condition, its statement or
   block, its `else`): 41 links fit in a route's handler, where the parser's tree is one a link.
   `graph::graph` lowers on the deep stack, as `lang::compile` does.

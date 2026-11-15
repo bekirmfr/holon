@@ -361,7 +361,9 @@ impl<'s> Count<'s> {
 
     /// The word here: to its first byte that is no word's, or a space oxc takes as one.
     fn word_here(&self) -> &'s str {
-        let mut end = self.i;
+        // A private name's `#` (`#x`) begins a word it is no part of, and alone (`a # b`) is a word
+        // the parser refuses: the word has it either way, so the count goes past every word it reads.
+        let mut end = self.i + usize::from(self.b[self.i] == b'#');
         while end < self.b.len() && is_word_part(self.b[end]) && space_at(self.b, end).is_none() {
             end += 1;
         }
@@ -908,6 +910,38 @@ mod tests {
             most = most.max((nests, s.name));
         }
         println!("the samples' most, as fmt's layout counts: {} ({})", most.0, most.1);
+    }
+
+    /// Guards: the count reads every text to its end, whatever it holds: each ASCII character and
+    /// a few past it, at a text's start, between words, after a value, after `(`, `,` and `=`, at
+    /// a line's start, in a template's `${`, a string and a private name, each read in time.
+    /// Why: `#` begins a word in the count (a private name's, `#x`) but was no part of one, so at a
+    /// `#` in code the word it read was empty and it read the same place again, forever: `holon
+    /// check`, the language server as `#` was typed, an agent's check and the editor's tab hung on
+    /// `a #b`, before anything said a word.
+    /// If it fails: the count reads nothing of the character named where it stands: make it a
+    /// token of some kind, as the parser does.
+    #[test]
+    fn the_count_reads_every_text_to_its_end() {
+        use std::sync::mpsc::RecvTimeoutError;
+        let chars = (1u8..0x80).map(char::from).chain(['\u{a0}', '\u{2028}', '\u{feff}', '\u{3000}', '\u{e9}', '\u{211d}', '\u{1f600}']);
+        let forms = ["{c}", "a {c} b", "a{c}", "({c}", "f(x, {c}", "a = {c}", "x\n{c}", "`${{c}", "\"{c}", "#{c}"];
+        let texts: Vec<String> = chars.flat_map(|c| forms.map(|form| form.replace("{c}", &c.to_string()))).collect();
+        let (read, reading) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            for text in texts {
+                let _ = read.send(text.clone());
+                let _ = deepest(&text, MAX_NESTING);
+            }
+        });
+        let mut last = String::new();
+        loop {
+            match reading.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(text) => last = text,
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => panic!("the count reads {last:?} on and on"),
+            }
+        }
     }
 
     #[test]

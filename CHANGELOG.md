@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A `#` in a flow's code no longer hangs what reads it.** The count that bounds how deep a
+  text nests read nothing at a `#` outside a string or a comment (`a #b`, a private name) and
+  read the same place again, forever: `holon check`, the language server as `#` was typed, an
+  agent's `check` and the editor's tab hung. It reads a `#` as the word it begins.
 - **A text nested past the bound is refused however it is written.** The count that refuses a
   text nested past 128 levels read some texts otherwise than the parser: `x as⏎any as⏎any…`, an
   `else if` chain whose statements end with `;`, a `//` comment ended by a lone `\r`, U+2028 or
