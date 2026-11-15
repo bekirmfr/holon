@@ -669,6 +669,12 @@ pub(crate) struct ParkedRun {
     /// it arrive together. Never persisted: a restart frees it.
     #[serde(skip)]
     pub(crate) resuming: bool,
+    /// The waiting point it was given its event at, while the part that follows runs: saved
+    /// before any of it runs, with the decision it was given (`resume_parked`), and cleared when
+    /// it has. Found set as the server starts, a crash cut that part off, and what it does may
+    /// have been done: it is ended, not run again (`end_cut_off_parts`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) going_on: Option<String>,
 }
 
 /// What of a parked run is sealed on disk.
@@ -776,6 +782,7 @@ impl ParkedRun {
             started_by: waits.started_by.clone(),
             sealed: None,
             resuming: false,
+            going_on: None,
         })
     }
 
@@ -1119,6 +1126,20 @@ pub(crate) fn resume_parked(
     let root = resolver.resolve(&unit).ok_or("the run's unit no longer resolves")?;
     let started = started_now();
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
+    // Saved as going on, with the decision it was given, before any of the part runs: a crash
+    // while it runs leaves it so on disk, and the server, starting again, ends it rather than
+    // give it its event again and make its effects twice (`end_cut_off_parts`). Not saved, it
+    // doesn't go on: it waits, and its event (a decision, which stands) can be given again.
+    let going_on = |at: Option<&str>| {
+        if let Some(run) = deployments.lock().unwrap().get_mut(slug).and_then(|d| d.parked.get_mut(run_id)) {
+            run.going_on = at.map(String::from);
+        }
+    };
+    going_on(Some(name));
+    if let Err(e) = persist_deployments(deployments_path, deployments) {
+        going_on(None);
+        return Err(format!("it wasn't saved as going on, so it waits on: {e}"));
+    }
     let run = fire_with_state(root, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &secrets, &mut waits, Some(resumed));
 
     let mut entry = run_entry("resume", started, &sourced, &run);
@@ -1149,6 +1170,9 @@ pub(crate) fn resume_parked(
             // One turned away by a run lock (firing.rs) didn't run: it waits on, for its event
             // to be delivered again.
             let turned_away = run.error.as_deref().is_some_and(|e| e.starts_with("busy:"));
+            if let Some(kept) = dep.parked.get_mut(run_id) {
+                kept.going_on = None;
+            }
             if turned_away {
                 eprintln!("holon: run {run_id} in {slug:?} waits on: its event can be delivered again");
             } else if run.waiting.is_empty() || run.error.is_some() {
@@ -1174,11 +1198,32 @@ pub(crate) fn resume_parked(
             }
         }
     }
-    persist_deployments(deployments_path, deployments);
-    match run.error {
-        Some(e) => Err(e),
-        None => Ok(()),
+    let saved = persist_deployments(deployments_path, deployments);
+    match (run.error, saved) {
+        (Some(e), _) => Err(e),
+        (None, Err(e)) => Err(format!("it went on, but {e}")),
+        (None, Ok(())) => Ok(()),
     }
+}
+
+/// As the server starts: each waiting run saved as going on (`ParkedRun::going_on`) had a part
+/// cut off by a crash or a power loss, and what that part does may have been done (a payment
+/// sent, a row written). It is ended, not run again, as a request a crash cut off isn't: given its
+/// event again, its effects would be made twice. Its deployment's timeline says so, and its log
+/// how far it got. Whether any was ended, so the deployments file is saved without it.
+pub(crate) fn end_cut_off_parts(deployments: &mut BTreeMap<String, Deployment>) -> bool {
+    let mut ended = false;
+    for (slug, dep) in deployments.iter_mut() {
+        let cut: Vec<(String, String)> = dep.parked.values().filter_map(|p| Some((p.run_id.clone(), p.going_on.clone()?))).collect();
+        for (run_id, at) in cut {
+            dep.parked.remove(&run_id);
+            eprintln!("holon: run {run_id} of {slug:?} was going on from {at:?} when the server stopped: it is ended, not run again");
+            let what = format!("ended run {run_id}, cut off going on from {at:?} when the server stopped: what it does may have been done, so it isn't run again (its log says how far it got)");
+            dep.note("lifecycle", what, None, Default::default());
+            ended = true;
+        }
+    }
+    ended
 }
 
 /// Why a run waiting in `slug`, whose status is `status`, doesn't go on now.
@@ -1498,7 +1543,9 @@ pub(crate) fn handle_post_decide(state: &AppState, slug: &str, run_id: &str, cal
         Err((code, why)) => err(code, why),
         Ok(Outcome::Waits { slot, slots }) => {
             recorded(state, slot);
-            persist_deployments(path, deployments);
+            if let Err(e) = persist_deployments(path, deployments) {
+                return err(500, format!("your decision is taken, but {e}: after a restart it isn't"));
+            }
             Response::json(&reply(slot, &slots, "waiting"))
         }
         Ok(Outcome::Decides { claimed, slot, slots, approved, event }) => {

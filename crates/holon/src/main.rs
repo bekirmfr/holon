@@ -1117,6 +1117,8 @@ fn serve(args: Vec<String>) {
     if !stopped_cleanly {
         persist::note_cut_off_runs(&deployments_at, &mut initial_deployments);
     }
+    // A waiting run a crash cut off as it went on is ended, not run again (durable.rs).
+    let ended_cut_off = durable::end_cut_off_parts(&mut initial_deployments);
     for (slug, dep) in initial_deployments.iter_mut() {
         dep.secrets = secrets.vault(slug);
         // Its waiting runs' sealed parts open under its keys.
@@ -1136,6 +1138,9 @@ fn serve(args: Vec<String>) {
     let flows = Mutex::new(load_flows(&flows_at).unwrap_or_else(|e| refuse_to_start(e)));
     let proposals = proposals::Proposals::beside(&flows_at).unwrap_or_else(|e| refuse_to_start(e));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
+    if ended_cut_off {
+        let _ = persist_deployments(&deployments_at, &deployments);
+    }
     folders.mails.serve(Arc::clone(&deployments));
     folders.queues.serve(Arc::clone(&deployments));
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_at.clone());
@@ -1260,10 +1265,8 @@ fn sync_to_disk(deployments: &Mutex<BTreeMap<String, Deployment>>, kept_at: &Pla
     for d in deployments.lock().unwrap().values_mut() {
         counted |= std::mem::take(&mut d.tallies_changed);
     }
-    if counted {
-        persist_deployments(kept_at, deployments);
-    }
-    recorder::sync_logs(deployments).and_then(|()| heads::sync())
+    let saved = if counted { persist_deployments(kept_at, deployments) } else { Ok(()) };
+    recorder::sync_logs(deployments).and_then(|()| heads::sync()).and(saved)
 }
 
 /// Why the data folder `dir` is a warning, if it is: other users of this machine may read it

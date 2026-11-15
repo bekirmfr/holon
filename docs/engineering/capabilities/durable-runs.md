@@ -79,7 +79,9 @@ deployments lock (`resuming`), so a second request carrying it at once finds not
 is a 404 ("no run is waiting here for that token"). The route's own handler then runs and is
 logged; then `resume_parked` delivers the request record as the event: it opens the record, makes
 a `Resumption` (the same unit, inputs, sourced values, nonce and starting state, its earlier
-requests answered from the record), and fires it with `fire_with_state`. The part is logged as a
+requests answered from the record), saves it as going on (`ParkedRun::going_on`, with the
+decision it was given; not saved, it doesn't go on and waits), and fires it with
+`fire_with_state`. The part is logged as a
 `resume` entry under the same run id, on the version it started on. It finishes (its effects
 performed now, once; it leaves `parked`), fails (it leaves too), waits again (its rounds and events
 kept, a point it already waited at keeping its deadline), or is turned away by a run lock (`busy:`)
@@ -149,6 +151,10 @@ as it stands, `approved` false, with `expired: true` and who had approved.
 - **Tokens**, because the host key is a file: losing or replacing it invalidates every outstanding
   token.
 - **Not the claim**: `resuming` is never persisted; a restart frees it.
+- **Not a part a crash cut off.** A run saved as going on when the server starts again had a part
+  running when it stopped, and what that part does may have been done: `end_cut_off_parts` ends it
+  rather than give it its event again, and its deployment's timeline says so. At most once: a part
+  cut off before it did anything isn't done either.
 - **Sessions**: a deployment is running, paused (answers 503, skips ticks, keeps its session) or
   stopped (the session ends, its state kept as the session's snapshot by reference); running again
   starts a session from the latest state, from nothing, or from an earlier session's snapshot
@@ -194,13 +200,14 @@ the nav the approvals with a step still theirs.
 - **Defaults and ceilings** (`DurableLimits`): `max_await_seconds` 30 days by default, at most 90
   (`MAX_AWAIT_SECONDS`); `max_waiting_runs` 10,000 by default, at most 100,000. A deploy whose
   `await` waits longer than granted is refused, naming the limit to ask for.
-- **A crash between a resumed part's commit and the deployments file's write runs it again.** The
-  run is still parked after the restart; the same event resumes it again. Its database write
-  applies once (the commit is marked done), but its outbound requests go out again: its record of
-  the first resume was lost with the stop (`a_resumed_run_resumed_again_after_its_commit_applies_once`
-  asserts two hits).
-- **Each park and each resume writes the whole deployments file**, every deployment in it, not a
-  record of its own; not measured.
+- **A crash while a resumed part runs ends the run.** It was saved as going on before the part
+  ran, so the server, starting again, ends it (`end_cut_off_parts`) and its outbound requests don't
+  go out twice; a part the crash cut off before it did anything is ended too, and a person starts
+  it again (`a_waiting_run_a_crash_cuts_off_as_it_goes_on_is_ended_not_run_again`). Its database
+  write would apply once anyway (the commit is marked done:
+  `a_resumed_run_resumed_again_after_its_commit_applies_once`).
+- **Each park writes the whole deployments file, and each resume twice** (before its part runs, and
+  after), every deployment in it, not a record of its own; not measured.
 - **Expiry is a second's sweep of every waiting point**, under the deployments lock to list them,
   on the clock scheduler's thread, after its ticks: a slow tick delays expiry. `expire_waiting`
   doesn't look at a deployment's status, so a paused deployment's runs expire on time, while

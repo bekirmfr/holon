@@ -413,7 +413,8 @@ fn fire_one_arrival(
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.
     if parked_any {
-        persist_deployments(deployments_path, deployments);
+        // Nobody waits on an answer: the server's output says so when it isn't saved.
+        let _ = persist_deployments(deployments_path, deployments);
     }
 }
 

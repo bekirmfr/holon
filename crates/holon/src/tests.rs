@@ -4961,6 +4961,224 @@ route.get("/paid/:token", () => "ok", { resumes: "paid" })
     assert_eq!((kept("decided"), kept("paid")), (Some(Value::Boolean(false)), Some(Value::Boolean(true))), "the last of each to go on timed out");
 }
 
+/// A crash while a waiting run's part goes on doesn't make its effects twice, whichever way it
+/// went on (a decision, its resume route, its deadline): it was saved as going on, with what it
+/// was given, before any of the part ran, and the server, starting again, ends it rather than run
+/// it again. Once the part is over, nothing is ended.
+///
+/// **Why:** the deciding approval was saved only after the part's effects (a payout sent), so a
+/// crash in between left the run waiting without its decision: approved again, it paid again.
+#[test]
+fn a_waiting_run_a_crash_cuts_off_as_it_goes_on_is_ended_not_run_again() {
+    use serde_json::{json, Value as J};
+    let (host, hits, gate) = gated_counting_server();
+    gate.shut();
+    let dir = std::env::temp_dir().join(format!("holon-cut-off-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("deployments.json");
+    let mut state = test_state_at(Place::parse(&path.display().to_string()));
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n").unwrap());
+    let text = format!(
+        r#"import {{ action, approval, event, flow, route }} from "holon"
+import api from "host:{host}"
+
+flow("payouts", {{ port: {} }})
+
+route.post("/hold", () => {{
+  const started = hold()
+  return {{ token: started.waiting.paid }}
+}})
+
+export const hold = action(async () => {{
+  const paid = await event("paid", {{ expires: "1h" }})
+  const sent = await api.get("/slow", {{ headers: {{ "x-paid": JSON.stringify(paid.expired ?? false) }} }})
+  return sent.body
+}})
+
+export const pay = action(async () => {{
+  const decision = await approval("payout", {{ expires: "1h", people: 2 }})
+  const sent = await api.get("/slow", {{ headers: {{ "x-approved": JSON.stringify(decision.approved) }} }})
+  return sent.body
+}})
+
+route.get("/paid/:token", () => "ok", {{ resumes: "paid" }})
+"#,
+        free_port()
+    );
+    assert_eq!(deploy_text(&state, &text, &host), "payouts");
+    let People { ada, .. } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let invited = |name: &str| accounts.accept(&accounts.invite(name, "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let (bob, cy) = (invited("bob"), invited("cy"));
+    let state = &state;
+    let waiting = || state.deployments.lock().unwrap()["payouts"].parked.keys().cloned().collect::<BTreeSet<String>>();
+    let serve = |method: &str, url: &str| {
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "payouts", &fake_data(method, url, vec![]));
+        (r.status, String::from_utf8(r.body).unwrap())
+    };
+    let ask = |token: &str, method: &str, path: &str, body: J| {
+        let r = route(state, &req_as(token, method, path, if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() }));
+        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    let started = |start: &dyn Fn()| {
+        let before = waiting();
+        start();
+        waiting().difference(&before).next().cloned().unwrap()
+    };
+    let held = || started(&|| assert_eq!(serve("POST", "/hold").0, 200));
+    let token_of = |run: &str| durable::token_for(run, "paid");
+    // As the server would find it starting again after a crash now: what it loads, once each run
+    // cut off going on is ended, and whether any was.
+    let restarted = || {
+        let mut loaded = load_deployments(&state.deployments_path, &state.store, &state.policy()).unwrap();
+        let ended = durable::end_cut_off_parts(&mut loaded);
+        (loaded, ended)
+    };
+
+    // Each way a waiting run goes on, and the run it is given: its part waits at the gate.
+    let decided = started(&|| assert_eq!(ask(&bob, "POST", "/trigger/payouts/pay", json!({})).0, 202));
+    let (code, said) = ask(&ada, "POST", &format!("/deployments/payouts/runs/{decided}/decide"), json!({ "name": "payout", "approve": true }));
+    assert_eq!(code, 200, "{said}");
+    let decide = || assert_eq!(ask(&cy, "POST", &format!("/deployments/payouts/runs/{decided}/decide"), json!({ "name": "payout", "approve": true })).0, 200);
+    let resumed = held();
+    let resume = || assert_eq!(serve("GET", &format!("/paid/{}", token_of(&resumed))).0, 200);
+    // A way: its name, the point it delivers to, the run it is given, and how it goes on.
+    type Way<'a> = (&'a str, &'a str, &'a dyn Fn() -> String, &'a (dyn Fn() + Sync));
+    let ways: [Way; 3] = [
+        ("a decision", "payout", &|| decided.clone(), &decide),
+        ("its resume route", "paid", &|| resumed.clone(), &resume),
+        ("its deadline", "paid", &held, &|| durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000)),
+    ];
+    for (n, (way, at, run, go_on)) in ways.into_iter().enumerate() {
+        let run = run();
+        std::thread::scope(|s| {
+            let going = s.spawn(go_on);
+            assert!(gate.out_at_once(1), "{way}: its part calls out");
+            let loaded = load_deployments(&state.deployments_path, &state.store, &state.policy()).unwrap();
+            let kept = &loaded["payouts"].parked[&run];
+            assert_eq!(kept.going_on.as_deref(), Some(at), "{way}: saved as going on before its part ran");
+            if way == "a decision" {
+                assert_eq!(kept.waiting[0].decisions.len(), 2, "{way}: with the decision it was given");
+            }
+            let (loaded, ended) = restarted();
+            assert!(ended && !loaded["payouts"].parked.contains_key(&run), "{way}: a crash now, and it is ended, not run again");
+            let noted = loaded["payouts"].events.entries().iter().any(|e| e.kind == "lifecycle" && e.what.contains(&format!("ended run {run}")));
+            assert!(noted, "{way}: its deployment's timeline says so");
+            gate.open();
+            going.join().unwrap();
+            gate.shut();
+        });
+        assert_eq!(hits_of(&hits, "/slow"), n + 1, "{way}: its part called out once");
+        let (loaded, ended) = restarted();
+        assert!(!ended && !loaded["payouts"].parked.contains_key(&run), "{way}: its part over, it is gone, and nothing is ended");
+    }
+    assert!(waiting().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What answers that something was kept doesn't, while the deployments file can't be saved: a
+/// run waiting (its token, from a route or an action), a decision taken, a state put back, a
+/// deploy, a delete, a pause, a stop, a run again, a grant and settings changed. Each says what
+/// was done, and that a restart won't keep it. Saved again, each answers as before.
+#[test]
+fn what_isnt_saved_isnt_answered_as_kept() {
+    use serde_json::{json, Value as J};
+    let dir = std::env::temp_dir().join(format!("holon-unsaved-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("deployments.json");
+    let mut state = test_state_at(Place::parse(&path.display().to_string()));
+    let text = format!(
+        r#"import {{ action, approval, event, flow, route }} from "holon"
+import state from "state"
+
+flow("payouts", {{ port: {} }})
+
+route.post("/hold", () => hold())
+
+export const hold = action(async () => {{
+  const paid = await event("paid", {{ expires: "1h" }})
+  state.paid = paid.expired ?? false
+}})
+
+export const pay = action(async () => {{
+  const decision = await approval("payout", {{ expires: "1h", people: 2 }})
+  state.paid = decision.approved
+}})
+
+export const bump = action(() => {{
+  state.n = (state.n ?? 0) + 1
+}})
+
+route.get("/paid/:token", () => "ok", {{ resumes: "paid" }})
+"#,
+        free_port()
+    );
+    let plan = holon_author::agent::plan(&text).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let counter = to_hex(&stage_text(&state, COUNTER));
+    let People { ada, .. } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let ask = |token: &str, method: &str, path: &str, body: J| {
+        let r = route(&state, &req_as(token, method, path, if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() }));
+        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    let preview = |slug: &str, unit: &str| crate::wire::read_json::<J>(ask(&ada, "POST", "/deploy/preview", json!({ "slug": slug, "unit": unit })).1.as_bytes()).unwrap()["needs_approval"].clone();
+    let deploy = |slug: &str, unit: &str| ask(&ada, "POST", "/deploy", json!({ "slug": slug, "unit": unit, "acknowledge": preview(slug, unit) }));
+    let (code, said) = deploy("payouts", &plan.unit);
+    assert_eq!(code, 200, "{said}");
+    let serve = || {
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "payouts", &fake_data("POST", "/hold", vec![]));
+        (r.status, String::from_utf8(r.body).unwrap())
+    };
+    // Before the file can't be saved: a run waiting for a decision bob started, and a run whose
+    // state is put back.
+    assert_eq!(ask(&bob, "POST", "/trigger/payouts/pay", json!({})).0, 202);
+    let runs = crate::wire::read_json::<J>(ask(&ada, "GET", "/deployments/payouts/runs", J::Null).1.as_bytes()).unwrap();
+    let waiting_run = runs["runs"][0]["run_id"].as_str().unwrap().to_string();
+    let (code, said) = ask(&ada, "POST", "/trigger/payouts/bump", json!({}));
+    assert_eq!(code, 200, "{said}");
+    let bumped = crate::wire::read_json::<J>(said.as_bytes()).unwrap()["seq"].as_u64().unwrap();
+
+    // A folder where the file goes: it can't be written.
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let decide = || ask(&ada, "POST", &format!("/deployments/payouts/runs/{waiting_run}/decide"), json!({ "name": "payout", "approve": true }));
+    // Each with the status it is answered with: a route's start of a run that waits answers the
+    // route's run (which says it to its caller here) with `{error, message}`, as a start that
+    // didn't run.
+    type Answer<'a> = &'a dyn Fn() -> (u16, String);
+    let rows: [(&str, Answer, u16, &str); 11] = [
+        ("a route starts a run that waits", &serve, 200, "the action's run waits, but"),
+        ("an action's run waits", &|| ask(&ada, "POST", "/trigger/payouts/pay", json!({})), 500, "the action's run waits, but"),
+        ("a decision is taken", &decide, 500, "your decision is taken, but"),
+        ("a state is put back", &|| ask(&ada, "POST", "/deployments/payouts/restore", json!({ "run": bumped, "state": true })), 500, "is put back, in session"),
+        ("settings change", &|| ask(&ada, "POST", "/deployments/payouts/settings", json!({ "agents_propose": false })), 500, "settings are changed, but"),
+        ("a deploy", &|| deploy("counter", &counter), 500, "\"counter\" is deployed, but"),
+        ("a grant changes", &|| ask(&ada, "POST", "/deployments/counter/grant", json!({ "lower": { "keep_runs": 3 } })), 500, "grant is changed, but"),
+        ("a pause", &|| ask(&ada, "POST", "/deployments/counter/pause", J::Null), 500, "\"counter\" is paused, but"),
+        ("a run again", &|| ask(&ada, "POST", "/deployments/counter/run", J::Null), 500, "\"counter\" is running, but"),
+        ("a stop", &|| ask(&ada, "POST", "/deployments/counter/stop", J::Null), 500, "\"counter\" is stopped, but"),
+        ("a delete", &|| ask(&ada, "DELETE", "/deployments/counter", J::Null), 500, "\"counter\" is deleted, but"),
+    ];
+    for (what, answer, status, said) in rows {
+        let (code, text) = answer();
+        assert_eq!(code, status, "{what}: {text}");
+        let text = text.replace("\\\"", "\"");
+        assert!(text.contains(said) && text.contains("deployments file couldn't be written"), "{what}: {text}");
+    }
+    // Saved again, each answers as before.
+    std::fs::remove_dir(&path).unwrap();
+    let (code, text) = serve();
+    assert!(code == 200 && text.contains("\"waiting\""), "{text}");
+    assert_eq!(ask(&ada, "POST", "/trigger/payouts/pay", json!({})).0, 202);
+    assert_eq!(deploy("counter", &counter).0, 200);
+    assert_eq!(ask(&ada, "POST", "/deployments/counter/pause", J::Null).0, 200);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Run, pause, stop, and the sessions a deployment keeps until it is deleted.
 #[test]
 fn a_deployment_runs_pauses_stops_and_keeps_every_session() {
@@ -10741,9 +10959,11 @@ fn a_resumed_run_whose_file_changed_runs_again_from_its_last_wait() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A resumed run whose commit landed, the server stopping before it could forget the run, is
-/// resumed again by the same event: it reads the row its own commit wrote, so its check finds
-/// nothing changed, and its database has it marked done, so its commit applies nothing again.
+/// A resumed run whose commit landed, given the same event again from the record it had before:
+/// it reads the row its own commit wrote, so its check finds nothing changed, and its database has
+/// it marked done, so its commit applies nothing again. The database's own guard: a server that
+/// stopped there doesn't give it the event again, as it was saved going on and is ended as the
+/// server starts (`a_waiting_run_a_crash_cuts_off_as_it_goes_on_is_ended_not_run_again`).
 #[test]
 fn a_resumed_run_resumed_again_after_its_commit_applies_once() {
     let (host, hits) = counting_server();
@@ -10759,7 +10979,7 @@ fn a_resumed_run_resumed_again_after_its_commit_applies_once() {
     let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
     let record = state.deployments.lock().unwrap()[&slug].parked.values().next().cloned().unwrap();
     assert_eq!(data_call(&state, &slug, "GET", &format!("/paid/{token}"), "").0, 200);
-    // As if the server stopped once it had committed: the run is still parked.
+    // Its record as it was before it went on, put back: the run is parked again.
     state.deployments.lock().unwrap().get_mut(&slug).unwrap().parked.insert(record.run_id.clone(), record);
     assert_eq!(data_call(&state, &slug, "GET", &format!("/paid/{token}"), "").0, 200);
     let n: i64 = rusqlite::Connection::open(&file).unwrap().query_row("select n from counts where id = 1", [], |r| r.get(0)).unwrap();
@@ -10767,7 +10987,7 @@ fn a_resumed_run_resumed_again_after_its_commit_applies_once() {
     let entries = log_entries(&state, &slug);
     let again = entries.iter().filter(|e| e["kind"] == "resume").nth(1).unwrap_or_else(|| panic!("{entries:#?}"));
     assert!(again["error"].is_null() && again["retries"].is_null(), "committed at once, nothing written again: {again}");
-    assert_eq!(hits_of(&hits, "/slow"), 2, "its record of the first resume was lost with the stop");
+    assert_eq!(hits_of(&hits, "/slow"), 2, "the record it ran from again doesn't hold the first resume's request");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -13048,7 +13268,7 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
         levels
     };
     assert_eq!(levels(&state), ["GET /broken unrecorded", "GET /health unrecorded", "POST /notes strict"]);
-    persist_deployments(&state.deployments_path, &state.deployments);
+    persist_deployments(&state.deployments_path, &state.deployments).unwrap();
     let kept: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(state.deployments_path.at().unwrap(), crate::at_rest::role::DEPLOYMENTS)).unwrap();
     let record = kept.as_array().unwrap().iter().find(|r| r["slug"] == slug.as_str()).unwrap();
     assert_eq!(record["tallies"]["GET /health"]["runs"], 3, "{record}");
@@ -13474,7 +13694,7 @@ fn a_run_writes_only_its_state_head_and_only_when_it_changed_the_state() {
     assert_ne!(head(&counter).as_deref(), Some(first.as_str()), "a write keeps its new head");
     assert_eq!(file(), deployed, "and no run rewrote the deployments file");
     assert_eq!(counted(&counter), (5, 0), "the runs are counted in memory");
-    persist_deployments(&state.deployments_path, &state.deployments);
+    persist_deployments(&state.deployments_path, &state.deployments).unwrap();
     assert_eq!(counted(&counter), (5, 5), "and kept with the next change to the definition");
 
     call(&same, "POST", "/k");

@@ -324,8 +324,9 @@ fn serve_flow(
     }
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.
-    if parked_any {
-        persist_deployments(deployments_path, deployments);
+    // One that waits, not saved, isn't answered with its token: after a restart it isn't waiting.
+    if parked_any && let Err(e) = persist_deployments(deployments_path, deployments) {
+        answer = data::DataResponse::json_error(500, &format!("the request ran, and its run waits, but {e}: after a restart it isn't waiting"));
     }
     // The route's own handler has answered; now the waiting run continues.
     if let Some((claimed, name, event, _)) = resume {

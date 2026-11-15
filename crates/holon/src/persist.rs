@@ -8,10 +8,11 @@ use crate::*;
 /// separator) and avoids any path-traversal-shaped weirdness reaching `strip_prefix`.
 /// Write the whole current deployments table to `path` as a JSON array of `DeploymentRecord`
 /// (write-through — called after every successful deploy/delete, not batched or scheduled).
-/// A no-op for a table kept nowhere. Failures are logged, not fatal — a person's server
-/// keeps working even if the disk write failed; they just won't survive a restart until it
-/// succeeds again, which is the honest degradation for something that was opt-in persistence
-/// to begin with.
+/// A no-op for a table kept nowhere. A failure is said in the server's output and returned, not
+/// fatal: the server keeps working, and what wasn't saved won't survive a restart until a save
+/// succeeds again. What answers someone tells them so (a waiting run's token, a decision, a
+/// restore, a deploy), and a waiting run isn't given its event unless it was saved as going on
+/// (`durable::resume_parked`).
 ///
 /// Takes the table's mutex rather than a locked table: the table lock is held only long enough
 /// to copy each deployment's fields and clone its state `Arc`. Each state map is then locked on
@@ -19,9 +20,9 @@ use crate::*;
 /// was held throughout, so one deployment mid-fire (holding its state lock) or one slow disk
 /// write stalled every endpoint and the clock scheduler. `PERSIST` serializes whole
 /// snapshot-and-write passes, so an older snapshot can never land on disk after a newer one.
-pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<String, Deployment>>) {
+pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<(), String> {
     static PERSIST: Mutex<()> = Mutex::new(());
-    let Some(path) = path.at() else { return };
+    let Some(path) = path.at() else { return Ok(()) };
     let _persist = PERSIST.lock().unwrap();
     let records: Vec<DeploymentRecord> = deployments
         .lock()
@@ -75,16 +76,16 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
             }
         })
         .collect();
-    match serde_json::to_vec_pretty(&records) {
-        Ok(bytes) => {
-            // Sealed under the server's keys, owner-only: it holds the flows' documents, grants
-            // and what their waiting runs need.
-            if let Err(e) = crate::at_rest::write_table(path, crate::at_rest::role::DEPLOYMENTS, &bytes) {
-                eprintln!("warning: failed to persist deployments to {path:?}: {e}");
-            }
-        }
-        Err(e) => eprintln!("warning: failed to serialize deployments: {e}"),
+    let saved = match serde_json::to_vec_pretty(&records) {
+        // Sealed under the server's keys, owner-only: it holds the flows' documents, grants and
+        // what their waiting runs need.
+        Ok(bytes) => crate::at_rest::write_table(path, crate::at_rest::role::DEPLOYMENTS, &bytes).map_err(|e| format!("the deployments file couldn't be written to {path:?}: {e}")),
+        Err(e) => Err(format!("the deployments couldn't be serialized: {e}")),
+    };
+    if let Err(e) = &saved {
+        eprintln!("warning: {e}");
     }
+    saved
 }
 
 /// Where deployment `slug`'s state is kept for the deployments file at `path`: a file beside its

@@ -1019,6 +1019,11 @@ misled, the compiler refuses instead.
   nor a request to its resume route. It waits on, and once the deployment runs again it is
   decided, times out or is resumed as before; a run that went on before the pause goes on to
   its end.
+- **A crash doesn't run a part twice.** A waiting run is saved as going on, with the decision or
+  event it was given, before the part that follows runs. If the server stops without finishing
+  (a crash, a power loss) while it runs, what it does may have been done, so the server, starting
+  again, ends the run rather than run the part again, and the deployment's timeline says so: a
+  payout isn't sent twice. Its log says how far it got; someone starts it again if it didn't.
 - **Sharing is explicit.** A binding is one value used many times. The same expression written
   twice is computed twice.
 - **Every run ends.** There are no loops and no recursion: `map`, `reduce` and a list's other
