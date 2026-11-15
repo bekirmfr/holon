@@ -112,7 +112,8 @@ test("an admin defines a role and binds through the forms; a person's page says 
   const bound = bobs.getByRole("table", { name: `what is bound to ${bob}` });
   await expect(bound.getByRole("row").filter({ hasText: `on "${slug}"` })).toContainText("viewer");
   const mayDo = bobs.locator('dl[aria-label="what it may do"] > div').filter({ hasText: `on ${slug}` });
-  await expect(mayDo).toContainText("flow view · run view, export · state view · secret list");
+  // A viewer reads a run's steps too (run.steps, R55).
+  await expect(mayDo).toContainText("flow view · run view, steps, export · state view · secret list");
 
   // bob now sees the flow.
   const asBob = await editorAs(browser, bobToken, bob);
