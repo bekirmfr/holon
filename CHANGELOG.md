@@ -4,7 +4,8 @@
 
 - **Postgres requires TLS to another machine.** A connection that named no `sslmode` took
   libpq's `prefer`, so anyone on the path could answer "no TLS" and read it, a cleartext password
-  too. It is now required unless the database is on the same machine or the URL says otherwise.
+  too. It is now required unless the database is on the same machine or the URL says otherwise;
+  a server without TLS is refused saying so, and that `?sslmode=disable` is the owner's to write.
 - **A value inside a MongoDB `$expr` is data.** A text starting with `$` there names a field:
   `{ $expr: { $eq: ["$owner", who] } }` with `who` = `"$owner"` matched every document. Each value
   computed into an expression goes in as `$literal`.

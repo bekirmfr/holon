@@ -47,7 +47,7 @@ pub(crate) struct Connection {
 pub(crate) fn open(url: &str, channel: &str, idle: Duration) -> Result<Connection, String> {
     let mut config = crate::engines::pg_config(url)?;
     config.connect_timeout(Duration::from_secs(5)).application_name("holon (listen)");
-    let mut client = config.connect(crate::engines::pg_tls()).map_err(|e| format!("the database can't be reached: {}", pg_said(&e)))?;
+    let mut client = config.connect(crate::engines::pg_tls()).map_err(|e| format!("the database can't be reached: {}", crate::engines::pg_connect_said(url, &e)))?;
     client.batch_execute(&format!("LISTEN \"{channel}\"")).map_err(|e| format!("the database didn't listen on {channel}: {}", pg_said(&e)))?;
     Ok(Connection { client, closed: Arc::new(AtomicBool::new(false)), idle, heard: Instant::now() })
 }
