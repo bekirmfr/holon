@@ -888,6 +888,10 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
         "manifest": to_hex(&manifest.hash()),
         "items": items,
         "needs_approval": needs,
+        // Whether `who` approves what it asks for, deploying it: if not (an agent, or one who may
+        // propose but not approve), their deploy sends no `acknowledge`, and is kept as a proposal
+        // where it waits for a person (`proposed`).
+        "approves": !proposes,
         // Whether, deployed by `who`, it waits for a person as a proposal: an agent's version
         // does, what it asks for or not, unless a person let the flow's take it at once (deploy).
         "proposed": proposes && (!needs.is_empty() || waits_for_a_person(who, policy, deployments, &body.slug)),

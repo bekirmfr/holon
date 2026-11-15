@@ -202,8 +202,13 @@ reached over https, and `http://` to another machine is refused while there is o
 A first deploy, and a version that asks for something its grant doesn't cover, needs a person's
 approval. Without `--approve`, deploy prints what it asks for and exits 1, deploying nothing:
 approve it in the editor, by deploying it from there. `--approve` approves it here, as you, and
-prints what it approved, in the deployment's timeline as yours. Agents' tools
-([`holon mcp`](#holon-mcp)) never approve: the server refuses an agent's deploy that would.
+prints what it approved, in the deployment's timeline as yours. Agents never approve: signed in
+with an agent's token, as through [`holon mcp`](#holon-mcp), each version is proposed for a person,
+whatever it asks for, unless a person let the flow take its agents' versions that ask for nothing
+more at once. It prints the proposal, what it asks for, and that a person approves it in the
+editor's Approvals; [`holon wait`](#holon-wait) ends when they decide. Signed in as someone who
+may propose versions but not approve them, a version that asks for something new is proposed the
+same way, and `--approve` gives nothing.
 
 ## `holon replay`
 

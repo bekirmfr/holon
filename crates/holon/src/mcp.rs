@@ -1591,6 +1591,57 @@ mod tests {
         json_of(person, "POST", &format!("/deployments/{slug}/settings"), Some(Body::Json(json!({ "agents_deploy_at_once": true })))).unwrap();
     }
 
+    /// **Guards:** `holon deploy`'s two requests (deploycmd.rs `stage` and `commit`), as whoever
+    /// signs in: one who approves what a version asks for deploys it, acknowledging it; an agent
+    /// acknowledges nothing and proposes it, a first version or a later one, asking for something
+    /// new or not, and so does a person who may propose but not approve, a version that asks for
+    /// something new (one that asks for nothing new deploys: a person's version waits only for
+    /// what it asks); an agent's version a person let the flow take at once deploys.
+    /// **Why:** the command acknowledged what a version asks for whoever signed in, and the server
+    /// refuses an acknowledgement from one who doesn't approve: an agent's token was answered 403
+    /// where `holon mcp` proposes (the audit's R25).
+    #[test]
+    fn holon_deploy_proposes_for_whoever_doesnt_approve_and_deploys_for_whoever_does() {
+        let mut state = test_state();
+        let p = with_people(&mut state);
+        let accounts = state.access.accounts().unwrap();
+        let pat = accounts.accept(&accounts.invite("pat", "viewer", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+        let ok = |method: &str, path: &str, body: Value| assert_eq!(route(&state, &req_as(&p.ada, method, path, body.to_string().into_bytes())).status_code, 200, "{path}");
+        ok("PUT", "/roles/proposer", json!({ "allows": ["flow.view", "flow.edit", "flow.propose"], "kinds": ["person"] }));
+        ok("POST", "/bindings", json!({ "who": { "principal": "pat" }, "role": "proposer", "scope": { "flows": { "slug": "slugs" } } }));
+        let (ada, claude, pat) = (Signed { state: &state, token: &p.ada }, Signed { state: &state, token: &p.claude }, Signed { state: &state, token: &pat });
+        // Whether the preview said they approve it, and the proposal it was kept as, if it was:
+        // waiting or not, and whether it asks for something new.
+        let deploy = |api: &dyn Api, text: &str| {
+            let plan = agent::plan(text).unwrap();
+            let staged = crate::deploycmd::stage(api, &plan, "slugs").unwrap();
+            let approves = staged.approves;
+            let kept = crate::deploycmd::commit(api, &plan, staged, plan.document.clone()).unwrap_or_else(|e| panic!("{e}"));
+            (approves, kept.map(|p| (p["state"].as_str().unwrap_or_default().to_string(), p["needs"].as_array().is_some_and(|n| !n.is_empty()))))
+        };
+        let deployed = || json_of(&ada, "GET", "/deployments", None).unwrap()["deployments"].as_array().unwrap().iter().find(|d| d["slug"] == "slugs").map(|d| d["unit"].clone());
+        let waiting = |asks_new: bool| Some(("waiting".to_string(), asks_new));
+        let [v2, v3] = ["\"not signed\"", "\"by pat\""].map(|s| SLUGS_TEXT.replace("\"unsigned\"", s));
+        // A version that asks for something new: a clock.
+        let ticks = format!("{SLUGS_TEXT}\nevery(\"1h\", () => {{\n  state.ticked = now\n}})\n").replace("import { flow,", "import { every, flow,");
+        let unit = |text: &str| json!(agent::plan(text).unwrap().unit);
+
+        assert_eq!(deploy(&claude, SLUGS_TEXT), (false, waiting(true)), "an agent's first version");
+        assert_eq!(deployed(), None);
+        assert_eq!(deploy(&ada, SLUGS_TEXT), (true, None), "a person who approves it");
+        assert_eq!(deployed(), Some(unit(SLUGS_TEXT)));
+        assert_eq!(deploy(&claude, &v2), (false, waiting(false)), "an agent's later version, asking for nothing new");
+        assert_eq!(deploy(&pat, &ticks), (false, waiting(true)), "a person who may propose but not approve, a version asking for more");
+        assert_eq!(deployed(), Some(unit(SLUGS_TEXT)), "proposed, not deployed");
+        assert_eq!(deploy(&pat, &v3), (false, None), "theirs asking for nothing new");
+        assert_eq!(deployed(), Some(unit(&v3)));
+        let_at_once(&ada, "slugs");
+        assert_eq!(deploy(&claude, &v2), (false, None), "let at once");
+        assert_eq!(deployed(), Some(unit(&v2)));
+        assert_eq!(deploy(&ada, &ticks), (true, None));
+        assert_eq!(deployed(), Some(unit(&ticks)));
+    }
+
     #[test]
     fn whoami_says_what_each_binding_allows_and_where() {
         let mut state = test_state();

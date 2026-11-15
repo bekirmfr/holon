@@ -16,7 +16,10 @@ const USAGE: &str = "usage: holon deploy <file> [options]
 
   Compiles a flow and deploys it to a running server, as the editor's Deploy does. When the flow
   needs what it isn't granted yet, deploy prints what that is and exits 1: approve it in the
-  editor by deploying from there, or here with --approve.
+  editor by deploying from there, or here with --approve. Signed in as an agent (its token in
+  HOLON_TOKEN), it approves nothing: each version is proposed for a person, who approves it in
+  the editor's Approvals (holon wait <slug> ends when they decide). So is one that needs what
+  isn't granted, signed in as someone who may propose versions but not approve them.
 
   --manifest               what it touches and may do, as a deploy would show it; nothing is deployed
   --json                   with --manifest: as JSON, with the text it would deploy and the text
@@ -164,7 +167,14 @@ pub(crate) fn run(args: &[String]) -> i32 {
         return 0;
     }
 
-    if !needs.is_empty() && !approve {
+    // Whoever doesn't approve what it asks for (an agent, or one who may propose but not
+    // approve) sends it as it is: the server keeps it as a proposal for a person, and --approve
+    // isn't theirs to give.
+    let approves = staged.approves;
+    if approve && !approves {
+        eprintln!("holon deploy: you don't approve what \"{slug}\" asks for here, so --approve gives nothing: it is proposed for a person who does");
+    }
+    if !needs.is_empty() && !approve && approves {
         eprintln!("holon deploy: \"{slug}\" needs approval before it can deploy.");
         eprintln!("What it touches (+ new, - no longer, ~ changed, ! not ready on this server):");
         for line in crate::touches::text(&crate::touches::lines(&staged.touches, &staged.settings)) {
@@ -186,18 +196,19 @@ pub(crate) fn run(args: &[String]) -> i32 {
             eprintln!("holon deploy: {e}");
             return 1;
         }
-        // Kept for someone else to deploy: what it needs is beyond whoever signed in.
+        // Kept for a person to deploy: whoever signed in doesn't approve it, or what it needs is
+        // beyond them.
         Ok(Some(proposal)) => {
-            let waits: Vec<&str> = proposal["needs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-            println!("proposed {slug:?} ({}) on {server}: it waits for someone who may approve {}", &plan.unit[..12], waits.join(", "));
-            println!("  they deploy it from the editor's flows page, or decline it with a reason");
+            for line in proposed_lines(&slug, &server, &plan, &proposal) {
+                println!("{line}");
+            }
             return 0;
         }
         Ok(None) => {}
     }
 
     println!("deployed {slug:?} ({}) on {server}", &plan.unit[..12]);
-    if !needs.is_empty() {
+    if approves && !needs.is_empty() {
         println!("  approved, as you:");
         for cap in &needs {
             println!("    - {}", agent::describe_sending(cap, &plan.sent));
@@ -215,6 +226,23 @@ pub(crate) fn run(args: &[String]) -> i32 {
     0
 }
 
+/// What `holon deploy` says of a version kept as `proposal` (proposals.rs): which version and
+/// proposal, what it asks for, where a person decides it, and how to hear what they decide.
+fn proposed_lines(slug: &str, server: &str, plan: &agent::Plan, proposal: &Value) -> Vec<String> {
+    let number = |k: &str| proposal.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let mut out = vec![format!("proposed {slug:?} ({}) on {server}, as version {} (proposal {}): it waits for a person to approve it", &plan.unit[..12], number("version"), number("id"))];
+    let needs: Vec<&str> = proposal["needs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if needs.is_empty() {
+        out.push("  it asks for nothing new".into());
+    } else {
+        out.push("  it asks to:".into());
+        out.extend(needs.iter().map(|cap| format!("    - {}", agent::describe_sending(cap, &plan.sent))));
+    }
+    out.push("  they approve it in the editor's Approvals, which deploys it, or decline it with a reason".into());
+    out.push(format!("  holon wait {slug} --server {server} ends when they decide (exit 0 approved, 1 declined, with the reason)"));
+    out
+}
+
 /// A deploy staged on a server: its units sent, and what the server says deploying it needs.
 pub(crate) struct Staged {
     /// The deploy request, without its acknowledgements and document yet.
@@ -230,6 +258,9 @@ pub(crate) struct Staged {
     pub(crate) granted_now: Option<Vec<String>>,
     pub(crate) items: Vec<String>,
     pub(crate) withheld: Vec<String>,
+    /// Whether whoever signed in approves what it asks for: not an agent, nor one who may propose
+    /// but not approve, whose deploy acknowledges nothing (proposals.rs).
+    pub(crate) approves: bool,
 }
 
 /// Send `plan`'s units to `server`, and ask what deploying it as `slug` needs a person to approve;
@@ -262,16 +293,23 @@ pub(crate) fn stage(api: &dyn Api, plan: &agent::Plan, slug: &str) -> Result<Sta
         granted_now: preview.get("granted_now").and_then(Value::as_array).map(|_| list("granted_now")),
         items: list("items"),
         withheld: list("withheld"),
+        approves: preview.get("approves").and_then(Value::as_bool).unwrap_or(true),
     })
 }
 
 /// Deploy what [`stage`] staged, with `document` (the plan's, with its text kept or not):
-/// approving what it needs, as whoever `token` signs in as. The proposal it was kept as instead,
-/// when what it needs is beyond them (proposals.rs).
+/// approving what it needs, as whoever `token` signs in as, if they approve it. The proposal it
+/// was kept as instead, when they don't (an agent's version, or one who may propose but not
+/// approve), or
+/// what it needs is beyond them (proposals.rs): their deploy acknowledges nothing, which the
+/// server would refuse.
 pub(crate) fn commit(api: &dyn Api, plan: &agent::Plan, staged: Staged, document: Value) -> Result<Option<Value>, String> {
-    let Staged { mut body, needs, .. } = staged;
-    let mut acknowledge = plan.may.clone();
-    acknowledge.extend(needs.iter().filter(|n| !plan.may.contains(n)).cloned());
+    let Staged { mut body, needs, approves, .. } = staged;
+    let mut acknowledge = Vec::new();
+    if approves {
+        acknowledge = plan.may.clone();
+        acknowledge.extend(needs.iter().filter(|n| !plan.may.contains(n)).cloned());
+    }
     body["acknowledge"] = json!(acknowledge);
     body["document"] = document;
     post_json(api, "/deploy", &body).map(|answer| answer.get("proposal").cloned())
