@@ -476,12 +476,21 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
             Some(old) => (Arc::clone(&old.log), old.document.take(), std::mem::take(&mut old.versions), std::mem::take(&mut old.events)),
             None => {
                 let mut log = Log::for_deployment(deployments_path, &body.slug);
+                let events = crate::events::Events::for_deployment(deployments_path, &body.slug);
+                // A log or events left there that it can't read (a key missing) isn't started
+                // over: numbered again from 0, what they hold would be cut (recorder.rs).
+                if let Some(why) = log.refused() {
+                    return err(409, format!("{:?}'s run log is there and can't be opened: {why}", body.slug));
+                }
+                if let Some(why) = events.refused() {
+                    return err(409, format!("{:?}'s events are there and can't be opened: {why}", body.slug));
+                }
                 // Writing what it lets go of to the backup from its first run, not only from the
                 // housekeeping's next look (storage.rs `act`, which also says whether a full disk
                 // may let them go without): or a flow running past its `keep` in its first seconds
                 // lets its oldest go unbacked.
                 log.set_backup(policy.storage.backup.clone().map(|dir| (dir.into(), false)));
-                (Arc::new(LogCell::new(log)), None, Vec::new(), crate::events::Events::for_deployment(deployments_path, &body.slug))
+                (Arc::new(LogCell::new(log)), None, Vec::new(), events)
             }
         };
         log.with(|log| log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms()));

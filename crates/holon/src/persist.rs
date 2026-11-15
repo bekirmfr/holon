@@ -203,6 +203,11 @@ pub(crate) fn load_deployments(
 
         println!("loaded deployment {:?} from {file:?} (triggers: {triggers:?})", record.slug);
         let mut log = Log::for_deployment(path, &record.slug);
+        // Not started on a log or events it can't read: it would number its runs again from 0,
+        // and cut what it holds (recorder.rs, `Log::refused`).
+        if let Some(why) = log.refused() {
+            return Err(format!("deployment {slug:?}'s run log can't be opened: {why}"));
+        }
         log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms());
         // Writing what it lets go of to the backup from its first run, as a new deployment's does
         // (deploy.rs), not only from the housekeeping's first look.
@@ -220,6 +225,9 @@ pub(crate) fn load_deployments(
             channels.keep_waiting_sent(&p.run_id, p.sent.clone());
         }
         let events = crate::events::Events::for_deployment(path, &record.slug);
+        if let Some(why) = events.refused() {
+            return Err(format!("deployment {slug:?}'s events can't be opened: {why}"));
+        }
         if !events.breaks().is_empty() {
             eprintln!("holon: {:?}'s events were changed outside holon: event {:?} doesn't follow the one before it", record.slug, events.breaks());
         }

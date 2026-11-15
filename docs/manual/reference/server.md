@@ -465,8 +465,13 @@ as they are sealed: an export (`holon export`) is plain, and `holon verify` chec
 
 `<id>` is the one `keys.json` records. The first start makes the root and says where it is kept.
 Without the right root the server doesn't start; nor does it when `keys.json` is missing beside
-data it sealed. A root key file in the data folder is refused: a copy of the folder would open
-itself.
+data it sealed, or is older than that data (a copy taken before a deployment was made or a key
+rotated): a deployment's run log or events holding a line whose key `keys.json` doesn't have
+stop the start, naming the deployment and the line, and a deploy onto them is refused. Nothing
+of such a log is read past, numbered over or cut; restore the `keys.json` that goes with the
+folder (a backup folder keeps a copy). A mailbox, queue, feed or folder watch whose record of what
+it has seen doesn't open holds the same way: it runs nothing and marks nothing seen, and says so.
+A root key file in the data folder is refused: a copy of the folder would open itself.
 
 Back the root up apart from the data: one without the other opens nothing. `holon key export --to
 file:PATH` copies it, from wherever it is kept, to a file only you can read (the OS key store shows

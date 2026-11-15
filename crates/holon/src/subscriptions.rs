@@ -200,12 +200,13 @@ struct Kept {
 }
 
 impl Kept {
-    fn read(&self) -> Seen {
-        let bytes = match &self.file {
-            Some(f) => crate::at_rest::read_sealed(f, crate::at_rest::role::FEED_SEEN).ok().flatten().map(|b| b.to_vec()),
-            None => self.memory.lock().unwrap().get(&self.key).cloned(),
-        };
-        bytes.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    /// Where it is: none yet if nothing is kept. One kept that doesn't open is an error (at_rest.rs,
+    /// `read_seen`): the feed isn't read, rather than run again from the start.
+    fn read(&self) -> Result<Seen, String> {
+        match &self.file {
+            Some(f) => Ok(crate::at_rest::read_seen(f, crate::at_rest::role::FEED_SEEN)?.unwrap_or_default()),
+            None => Ok(self.memory.lock().unwrap().get(&self.key).and_then(|b| serde_json::from_slice(b).ok()).unwrap_or_default()),
+        }
     }
 
     fn keep(&self, seen: &Seen) {
@@ -231,18 +232,30 @@ struct Made {
     /// none newer was.
     moves: u64,
     kept: Arc<Mutex<u64>>,
+    /// What is kept didn't open when it was read: no move is kept over it.
+    held: bool,
 }
 
 impl Made {
-    /// Where the deployment is, as moved or else as kept.
+    /// Where the deployment is, as moved or else as kept. The reading thread doesn't start on a
+    /// place that doesn't open (`read`); one that stops opening after is held: read as none, never
+    /// written over.
     fn seen(&mut self, kept: &Kept) -> &mut Seen {
-        self.seen.get_or_insert_with(|| kept.read())
+        if self.seen.is_none() {
+            let read = kept.read();
+            self.held |= read.is_err();
+            self.seen = Some(read.unwrap_or_default());
+        }
+        self.seen.as_mut().expect("read above")
     }
 
     /// A move to where it is now: what keeps it, unless a newer move was kept first.
     fn moved(&mut self, kept: &Kept) -> Box<dyn FnOnce() + Send> {
         self.moves += 1;
         let (at, newest, kept, seen) = (self.moves, Arc::clone(&self.kept), kept.clone(), self.seen(kept).clone());
+        if self.held {
+            return Box::new(|| {});
+        }
         Box::new(move || {
             let mut newest = newest.lock().unwrap();
             if at > *newest {
@@ -486,6 +499,17 @@ fn position(shared: &Shared, binding: &Binding, kept: &Kept) -> (Option<String>,
 /// lost, until it is closed.
 fn read(shared: &Shared, deployments: &Mutex<BTreeMap<String, Deployment>>, binding: &Binding, kept: &Kept) {
     let feed = &shared.feed;
+    // Held on a place kept that doesn't open: it reads nothing, rather than from the start
+    // (at_rest.rs, `read_seen`).
+    if let Err(e) = kept.read() {
+        let why = crate::at_rest::seen_held(&format!("the feed {feed}"), &e);
+        shared.note(deployments, why.clone());
+        shared.feeds.set_live(&shared.slug, feed, |l| {
+            (l.status, l.since) = ("unreadable", feeds::now_ms());
+            l.error = Some(why);
+        });
+        return;
+    }
     let (mut last_read, numbers) = position(shared, binding, kept);
     let mut counting = Counting { last: numbers, ..Counting::default() };
     shared.feeds.set_live(&shared.slug, feed, |l| l.position = last_read.clone());
@@ -788,11 +812,11 @@ mod tests {
         *made.seen(&kept) = at("1", 101);
         feeds.hold("app", 7, made.moved(&kept));
         assert!(made.holding());
-        assert_eq!(kept.read(), Seen::default(), "not kept before its sync");
+        assert_eq!(kept.read().unwrap(), Seen::default(), "not kept before its sync");
         feeds.release("app", 7);
-        assert_eq!(kept.read(), Seen::default(), "a sync through 6 doesn't cover 7");
+        assert_eq!(kept.read().unwrap(), Seen::default(), "a sync through 6 doesn't cover 7");
         feeds.release("app", 8);
-        assert_eq!(kept.read(), at("1", 101));
+        assert_eq!(kept.read().unwrap(), at("1", 101));
         assert!(!made.holding());
         // A lazy move, then a strict one kept at once: the lazy one, released after, is older.
         made.seen(&kept).position = Some("2".into());
@@ -802,16 +826,16 @@ mod tests {
         made.seen(&kept).numbers.set("BTC-USD", 103);
         made.moved(&kept)();
         feeds.release("app", 10);
-        assert_eq!(kept.read(), at("3", 103));
+        assert_eq!(kept.read().unwrap(), at("3", 103));
     }
 
     #[test]
     fn where_a_deployment_is_is_kept_in_memory_without_a_file() {
         let kept = Kept { file: None, key: Path::new("app").join("prices.json"), memory: Arc::default() };
-        assert_eq!(kept.read(), Seen::default());
+        assert_eq!(kept.read().unwrap(), Seen::default());
         let seen = Seen { at: "http://127.0.0.1:1/events".into(), position: Some("41".into()), recent: VecDeque::from(["41".to_string()]), numbers: Numbers::from(vec![("BTC-USD".to_string(), 41)]) };
         kept.keep(&seen);
-        assert_eq!(kept.read(), seen);
+        assert_eq!(kept.read().unwrap(), seen);
     }
 
     #[test]

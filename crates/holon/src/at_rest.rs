@@ -122,6 +122,46 @@ impl std::fmt::Display for Unreadable {
     }
 }
 
+impl std::error::Error for Unreadable {}
+
+impl Unreadable {
+    /// Whether it is whole but its key isn't in `keys.json`: never a line cut short as it was
+    /// written (that one fails to parse or to open, [`Unreadable::Damaged`]), but a `keys.json`
+    /// older than the data, or not the one that goes with it. What was sealed is there still, so
+    /// nothing may take it as gone: skipped, numbered again over, or cut.
+    pub(crate) fn key_missing(&self) -> bool {
+        matches!(self, Unreadable::NoVersion { .. })
+    }
+}
+
+/// Whether `e` (a [`LineSeal::open_file`]'s) is [`Unreadable::key_missing`].
+pub(crate) fn key_missing_in(e: &std::io::Error) -> bool {
+    e.get_ref().and_then(|i| i.downcast_ref::<Unreadable>()).is_some_and(Unreadable::key_missing)
+}
+
+/// What to do about a record whose key is missing, said once wherever one is found.
+pub(crate) const RESTORE_KEYS: &str = "keys.json is older than the data, or isn't the one that goes with this data folder: \
+     restore the one that does (a backup folder keeps a copy, holon-archive-keys.json); nothing of it is read or written until then";
+
+/// A listener's sealed record of what it has seen (a mailbox's, a queue's, a feed's, a folder
+/// watch's), read: none if there is no file yet. One that is there but doesn't open (a key
+/// missing, damage) or doesn't parse is an error, never none: taken as none, the listener would
+/// run again on what it ran, or mark as seen what waits unrun, then write over the file.
+pub(crate) fn read_seen<T: serde::de::DeserializeOwned>(path: &Path, role: &str) -> Result<Option<T>, String> {
+    match read_sealed(path, role)? {
+        Some(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("{}: {e}", path.display())),
+        None => Ok(None),
+    }
+}
+
+/// What a listener says when what it has seen doesn't open ([`read_seen`]): it is held.
+pub(crate) fn seen_held(what: &str, why: &str) -> String {
+    format!(
+        "what it has seen of {what} can't be read ({why}): it runs nothing and marks nothing seen until it can. \
+         A key missing means {RESTORE_KEYS}. Otherwise remove that file to start over, which takes what is there now as seen"
+    )
+}
+
 /// `keys.json`: the data keys, wrapped by the root, and nothing that opens them without it.
 #[derive(Serialize, Deserialize, Clone, Default)]
 struct KeysFile {
@@ -1211,18 +1251,25 @@ impl LineSeal {
     /// or plain where a sealed one belongs). A run log's line sealed apart from its seq and prev
     /// is opened to the whole line, as it was made.
     pub(crate) fn open(&self, line: &str) -> Option<String> {
+        self.read(line).ok()
+    }
+
+    /// [`LineSeal::open`], saying why a line doesn't open: a key missing
+    /// ([`Unreadable::key_missing`]) is told apart from a line cut short or changed.
+    pub(crate) fn read(&self, line: &str) -> Result<String, Unreadable> {
+        let damaged = |why: &str| Unreadable::Damaged(why.into());
+        let text = |bytes: &[u8]| std::str::from_utf8(bytes).map(str::to_string).map_err(|_| damaged("it isn't text"));
         if let Some(numbered) = line.strip_prefix(NUMBERED) {
-            let (seq, rest) = numbered.split_once('.')?;
-            let (prev, sealed) = rest.split_once('.')?;
-            let seq: u64 = seq.parse().ok()?;
+            let (seq, rest) = numbered.split_once('.').ok_or_else(|| damaged("no seq"))?;
+            let (prev, sealed) = rest.split_once('.').ok_or_else(|| damaged("no prev"))?;
+            let seq: u64 = seq.parse().map_err(|_| damaged("its seq isn't a number"))?;
             if !prev.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return None;
+                return Err(damaged("its prev isn't hex"));
             }
-            let body = self.keys.open_body(&self.scope, &self.role, sealed).ok()?;
-            return Some(rejoin(seq, prev, std::str::from_utf8(&body).ok()?));
+            let body = self.keys.open_body(&self.scope, &self.role, sealed)?;
+            return Ok(rejoin(seq, prev, &text(&body)?));
         }
-        let plain = self.keys.open_line(&self.scope, &self.role, line).ok()?;
-        String::from_utf8(plain.to_vec()).ok()
+        text(&self.keys.open_line(&self.scope, &self.role, line)?)
     }
 
     /// Each line of `text` (lines ending in `\n`) sealed, `\n` after each.
@@ -1260,7 +1307,8 @@ impl LineSeal {
 
     /// A whole file sealed for `role`, opened.
     pub(crate) fn open_file(&self, role: &str, bytes: &[u8]) -> std::io::Result<Zeroizing<Vec<u8>>> {
-        self.keys.open_file(role, bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+        // The reason kept inside, for [`key_missing_in`].
+        self.keys.open_file(role, bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 }
 
@@ -1331,6 +1379,26 @@ pub(crate) mod testing {
     /// `line` as the line log at `path` holds it, sealed (no newline).
     pub(crate) fn sealed(path: &Path, line: &str) -> String {
         seal_of(path).seal(line).unwrap()
+    }
+
+    /// A version of a scope no keyring here has: what a `keys.json` older than the data lacks.
+    const MISSING: u32 = 999;
+
+    /// A line whole on disk but sealed under a version of its scope the keys don't have: a run
+    /// log's (numbered, seq `seq` after `prev`), or any other line log's.
+    pub(crate) fn line_of_missing_key(numbered: Option<(u64, &str)>) -> String {
+        let body = b64(&[7u8; 48]);
+        match numbered {
+            Some((seq, prev)) => format!("{NUMBERED}{seq}.{prev}.{MISSING}.{body}"),
+            None => format!("{LINE}{MISSING}.{body}"),
+        }
+    }
+
+    /// A whole file sealed under `scope` at a version the keys don't have.
+    pub(crate) fn file_of_missing_key(scope: &str) -> Vec<u8> {
+        let mut file = file_header(scope, MISSING);
+        file.extend_from_slice(&[7u8; 48]);
+        file
     }
 }
 

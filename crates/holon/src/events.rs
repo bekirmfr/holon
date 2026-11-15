@@ -96,6 +96,8 @@ pub(crate) struct Events {
     /// Whether events were written since the file was last synced to disk (recorder.rs's
     /// `sync_logs`).
     dirty: bool,
+    /// Why its file isn't read or written ([`Events::refused`]).
+    refused: Option<String>,
 }
 
 /// Where `slug`'s events are kept for the deployments file at `deployments_path`, if anywhere:
@@ -119,11 +121,30 @@ impl Events {
         let line_seal = file.as_deref().map(|f| crate::at_rest::LineSeal::of(&slug(f), crate::at_rest::role::EVENTS));
         let mut events = Events { file, line_seal, ..Events::default() };
         let (Some(path), Some(seal)) = (&events.file, &events.line_seal) else { return events };
-        let Ok(text) = std::fs::read_to_string(path) else { return events };
+        // Refused, as a run log is (recorder.rs, `Log::refused`): in memory only, so nothing of
+        // its file is numbered over or written, and who opens it doesn't run the deployment.
+        let refuse = |why: String| Events { refused: Some(why), ..Events::default() };
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return events,
+            Err(e) => return refuse(format!("its file {} can't be read: {e}", path.display())),
+        };
+        let text = String::from_utf8_lossy(&bytes);
         events.cut = !text.is_empty() && !text.ends_with('\n');
         // A line a crash cut short (or changed outside holon) doesn't open, and is skipped; the
-        // chain goes on from the line before it, and says so at the next.
-        for line in seal.open_lines(&text).collect::<Vec<_>>() {
+        // chain goes on from the line before it, and says so at the next. One whose key is
+        // missing is whole: never skipped.
+        let mut lines = Vec::new();
+        for (n, line) in text.lines().enumerate() {
+            match seal.read(line) {
+                Ok(plain) => lines.push(plain),
+                Err(e) if e.key_missing() => {
+                    return refuse(format!("line {} of {} is {e}: {}", n + 1, path.display(), crate::at_rest::RESTORE_KEYS));
+                }
+                Err(_) => {}
+            }
+        }
+        for line in lines {
             if let Ok(event) = serde_json::from_str::<Event>(&line) {
                 if event.prev != events.head {
                     events.breaks.push(event.seq);
@@ -133,6 +154,12 @@ impl Events {
             }
         }
         events
+    }
+
+    /// Why its file isn't read or written, if it isn't: a line whose key `keys.json` doesn't have,
+    /// or a file that couldn't be read.
+    pub(crate) fn refused(&self) -> Option<&str> {
+        self.refused.as_deref()
     }
 
     /// Append an event, numbered and chained to the one before; keep it in the file.

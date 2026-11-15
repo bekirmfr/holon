@@ -575,10 +575,14 @@ fn read_history(at: &Path) -> Result<String, String> {
 }
 
 /// A line of the history, opened and read: none if it doesn't open (cut short as it was written,
-/// or not sealed) or doesn't parse.
-fn open_version<T: for<'de> Deserialize<'de>>(line: &str) -> Option<T> {
-    let plain = crate::at_rest::keys().open_line(crate::at_rest::SERVER, crate::at_rest::role::ACCESS_HISTORY, line).ok()?;
-    serde_json::from_slice(&plain).ok()
+/// or not sealed) or doesn't parse. One whose key is missing is whole: an error, never none, so
+/// no version is lost from the history or read past.
+fn open_version<T: for<'de> Deserialize<'de>>(line: &str) -> Result<Option<T>, String> {
+    match crate::at_rest::keys().open_line(crate::at_rest::SERVER, crate::at_rest::role::ACCESS_HISTORY, line) {
+        Ok(plain) => Ok(serde_json::from_slice(&plain).ok()),
+        Err(e) if e.key_missing() => Err(format!("a version in the access history is {e}: {}", crate::at_rest::RESTORE_KEYS)),
+        Err(_) => Ok(None),
+    }
 }
 
 impl Bindings {
@@ -595,7 +599,13 @@ impl Bindings {
         // The last whole line: one cut short was being written when the server stopped, and was
         // never in force. One that doesn't open (cut short, or not sealed) is none.
         let text = read_history(&history(&path))?;
-        let last = text.lines().rev().find_map(open_version::<Document>);
+        let mut last = None;
+        for line in text.lines().rev() {
+            if let Some(version) = open_version::<Document>(line)? {
+                last = Some(version);
+                break;
+            }
+        }
         if let Some(last) = last.filter(|l| l.version > document.version) {
             document = last;
         }
@@ -689,7 +699,7 @@ impl Bindings {
             let kept = self.kept.lock().unwrap();
             return kept.iter().map(|d| serde_json::to_value(d).and_then(serde_json::from_value).map_err(|e| e.to_string())).collect();
         };
-        Ok(read_history(&history(path))?.lines().filter_map(open_version).collect())
+        read_history(&history(path))?.lines().map(open_version).filter_map(Result::transpose).collect()
     }
 
     /// Each version's number, when, by whom, what and why, newest first.

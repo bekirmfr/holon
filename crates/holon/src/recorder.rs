@@ -638,6 +638,9 @@ pub struct Log {
     sealed: Vec<Sealed>,
     /// How many of its newest runs it keeps in its file as written (`HOT`).
     hot: usize,
+    /// Why its file isn't read or written: a line or segment whose key `keys.json` doesn't have,
+    /// or a file that couldn't be read ([`Log::refused`]).
+    refused: Option<String>,
 }
 
 /// A cut-back to be made with the log's lock released: the file as it was when it was planned
@@ -960,22 +963,32 @@ pub fn ran_failed(entry: &LogEntry) -> bool {
     entry.error.is_some() || entry.status.is_some_and(|s| s >= 500)
 }
 
+/// A line of a log file as [`lines_of`] reads it: its length, it opened with its entry, where it
+/// is, and why it doesn't open when its key is missing.
+type LineOf<'a> = (usize, Option<(Cow<'a, str>, LogEntry)>, u64, Option<String>);
+
 /// The lines of a log file's `text`, as `open_retaining` reads them: each line's length on disk
 /// (as `str::lines` splits them), the line opened with its entry when it opens and parses, and
-/// where it is. Opened under `seal`, or taken as it is for none (a segment's, opened whole).
-fn lines_of<'a>(text: &'a str, seal: Option<&'a LineSeal>) -> impl Iterator<Item = (usize, Option<(Cow<'a, str>, LogEntry)>, u64)> + 'a {
+/// where it is, and why it doesn't open when its key is missing ([`Unreadable::key_missing`]): a
+/// line whole on disk that nothing may skip, number over or cut. Opened under `seal`, or taken as
+/// it is for none (a segment's, opened whole).
+///
+/// [`Unreadable::key_missing`]: crate::at_rest::Unreadable::key_missing
+fn lines_of<'a>(text: &'a str, seal: Option<&'a LineSeal>) -> impl Iterator<Item = LineOf<'a>> + 'a {
     let mut offset = 0u64;
     // One line parsed at a time: a log opened holds one entry more than it keeps, not its file's.
     text.split_inclusive('\n').map(move |raw| {
         let at = offset;
         offset += raw.len() as u64;
         let line = raw.strip_suffix('\n').map_or(raw, |l| l.strip_suffix('\r').unwrap_or(l));
-        let plain = match seal {
-            Some(seal) => seal.open(line).map(Cow::Owned),
-            None => Some(Cow::Borrowed(line)),
+        let (plain, missing) = match seal.map(|s| s.read(line)) {
+            Some(Ok(p)) => (Some(Cow::Owned(p)), None),
+            Some(Err(e)) if e.key_missing() => (None, Some(e.to_string())),
+            Some(Err(_)) => (None, None),
+            None => (Some(Cow::Borrowed(line)), None),
         };
         let read = plain.and_then(|p| crate::wire::read_json::<LogEntry>(p.as_bytes()).ok().map(|e| (p, e)));
-        (line.len(), read, at)
+        (line.len(), read, at, missing)
     })
 }
 
@@ -1446,6 +1459,7 @@ impl Log {
             backup_error: None,
             sealed: Vec::new(),
             hot: HOT,
+            refused: None,
         };
         let Some(path) = log.file.clone() else { return log };
         let mut chained = false;
@@ -1466,6 +1480,9 @@ impl Log {
         for p in segments {
             let text = match read_segment(&p) {
                 Ok(t) => t,
+                Err(e) if crate::at_rest::key_missing_in(&e) => {
+                    return log.refuse(format!("its sealed segment {} is {e}: {}", p.display(), crate::at_rest::RESTORE_KEYS));
+                }
                 Err(e) => {
                     eprintln!("holon: the sealed segment {} can't be read, its runs are missing from the log: {e}", p.display());
                     continue;
@@ -1474,7 +1491,7 @@ impl Log {
             let size = std::fs::metadata(&p).map_or(0, |m| m.len());
             let mut runs = Vec::new();
             let mut first_prev = None;
-            for (_, read, _) in lines_of(&text, None) {
+            for (_, read, _, _) in lines_of(&text, None) {
                 if let Some((line, entry)) = read {
                     if entry.seq < log.next_seq {
                         continue;
@@ -1488,14 +1505,27 @@ impl Log {
                 log.sealed.push(Sealed { path: p, runs, first_prev: first_prev.unwrap_or_default(), size });
             }
         }
-        let Ok(text) = std::fs::read_to_string(&path) else { return log.opened() };
+        // None yet: a new log. One that is there but can't be read is refused, not taken as
+        // empty: its runs would be numbered again from 0, over the ones it holds.
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return log.opened(),
+            Err(e) => return log.refuse(format!("its file {} can't be read: {e}", path.display())),
+        };
+        // Bytes that aren't text (damage) are read as the lines around them: such a line doesn't
+        // open, as a changed one doesn't.
+        let text = String::from_utf8_lossy(&bytes);
         log.cut = !text.is_empty() && !text.ends_with('\n');
-        log.file_len = text.len() as u64;
+        log.file_len = bytes.len() as u64;
         let sealed_up_to = log.next_seq;
         let mut twice = false;
         let seal = log.line_seal.clone();
-        for (len, read, offset) in lines_of(&text, seal.as_ref()) {
+        for (len, read, offset, missing) in lines_of(&text, seal.as_ref()) {
             log.written += 1;
+            if let Some(why) = missing {
+                let why = format!("line {} of {} is {why}: {}", log.written, path.display(), crate::at_rest::RESTORE_KEYS);
+                return log.refuse(why);
+            }
             // A line a crash cut short is skipped, not fatal: the others still replay, and the
             // chain goes on from the line before it. So is one that doesn't open (changed
             // outside holon), and the chain says so at the next.
@@ -1535,6 +1565,23 @@ impl Log {
             }
         }
         log.opened()
+    }
+
+    /// Refused, for `why`: a log in memory only, so nothing of its file is read, numbered over,
+    /// cut or written, and [`Log::refused`] says why. Who opens a deployment's log asks that
+    /// first, and doesn't run it (persist.rs, deploy.rs).
+    fn refuse(self, why: String) -> Log {
+        let mut log = Log::open_retaining(None, self.keep, self.max_age_ms);
+        log.refused = Some(why);
+        log
+    }
+
+    /// Why its file isn't read or written, if it isn't: a line or segment whose key `keys.json`
+    /// doesn't have (`keys.json` older than the log, or not the one that goes with the folder),
+    /// or a file that couldn't be read. Taken as empty, it would be numbered again from 0, with a
+    /// new key minted at a version already used, and the next cut-back would drop what it holds.
+    pub fn refused(&self) -> Option<&str> {
+        self.refused.as_deref()
     }
 
     /// The last of opening it: what it keeps pruned, the file cut back when it is past its age; and
@@ -1981,9 +2028,17 @@ impl Log {
         if bytes.len() as u64 != self.file_len {
             let text = String::from_utf8_lossy(&bytes);
             let seal = self.line_seal.clone();
-            self.lines = lines_of(&text, seal.as_ref())
-                .filter_map(|(len, read, offset)| read.map(|(_, e)| LineAt { offset, len, at_ms: e.at_ms, seq: e.seq, prev: e.prev }))
-                .collect();
+            let mut lines = VecDeque::new();
+            for (len, read, offset, missing) in lines_of(&text, seal.as_ref()) {
+                // A line whose key is missing is whole, and only the file holds it: never cut.
+                if let Some(why) = missing {
+                    return Err(std::io::Error::other(format!("{} holds a line {why}: not cut back. {}", path.display(), crate::at_rest::RESTORE_KEYS)));
+                }
+                if let Some((_, e)) = read {
+                    lines.push_back(LineAt { offset, len, at_ms: e.at_ms, seq: e.seq, prev: e.prev });
+                }
+            }
+            self.lines = lines;
         }
         // Each line it could keep, oldest first: the file's that parsed, then the newest entry's.
         let in_file = |at: &LineAt| bytes.get(at.offset as usize..at.offset as usize + at.len);
@@ -2347,6 +2402,83 @@ mod tests {
         let newer = log.after(Some((keep + 2) as u64), 10);
         assert_eq!(newer.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![(keep + 3) as u64, (keep + 4) as u64]);
         assert_eq!(log.after(None, 3).iter().map(|e| e.seq).collect::<Vec<_>>(), vec![22, 23, 24], "the newest 3");
+    }
+
+    /// Guards: a record whose key `keys.json` doesn't have (one older than the data, or another
+    /// folder's) is never taken as gone. A run log or events holding a line under it refuse to
+    /// open, say why, and leave their file byte for byte; a cut-back of a file that gained one
+    /// cuts nothing; a log file that is there but can't be read refuses too, rather than open
+    /// empty (D14); a listener's record of what it has seen is an error, never none; the access
+    /// history refuses. A line cut short as it was written is still skipped.
+    /// Why: taken as torn or empty, the runs were numbered again from 0 under a key minted again
+    /// at a version already used, the next cut-back dropped the old lines unbacked, and a
+    /// mailbox, queue, feed or folder ran again what it ran, or marked seen what waited (R6).
+    #[test]
+    fn a_record_whose_key_is_missing_is_never_taken_as_gone() {
+        use crate::at_rest::testing::{file_of_missing_key, line_of_missing_key};
+        use std::io::Write;
+        let dir = temp_dir("key-missing");
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        let place = Place::from(dir.join("deployments.json").to_string_lossy().into_owned());
+        let append = |path: &Path, text: &str| std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap().write_all(text.as_bytes()).unwrap();
+
+        // A run log of three runs, then a line under a version the keys lack (as a key rotated
+        // after this keys.json was copied would seal), then the log as it was cuts back.
+        let path = file_for(&place, "keyless").unwrap();
+        let mut log = Log::open_keeping(Some(path.clone()), 3);
+        for _ in 0..3 {
+            log.push(entry());
+        }
+        assert_eq!(Log::open_keeping(Some(path.clone()), 3).next_seq(), 3, "it opens while its keys are there");
+        append(&path, &(line_of_missing_key(Some((3, log.head()))) + "\n"));
+        let before = std::fs::read(&path).unwrap();
+        let cut = log.cut_back(None).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(cut.contains("not cut back"), "{cut}");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "nothing cut");
+        drop(log);
+        let opened = Log::open_keeping(Some(path.clone()), 3);
+        let why = opened.refused().unwrap_or_else(|| panic!("opened with next seq {}", opened.next_seq()));
+        assert!(why.contains("version 999") && why.contains("keys.json") && why.contains("line 4"), "{why}");
+        drop(opened);
+        assert_eq!(std::fs::read(&path).unwrap(), before, "nothing of it written");
+
+        // A line cut short as it was written is still skipped: that log opens.
+        let torn = file_for(&place, "torn").unwrap();
+        let mut log = Log::open_keeping(Some(torn.clone()), 3);
+        log.push(entry());
+        log.push(entry());
+        drop(log);
+        let whole = crate::at_rest::testing::sealed(&torn, &serde_json::to_string(&entry()).unwrap());
+        append(&torn, &whole[..whole.len() / 2]);
+        let opened = Log::open_keeping(Some(torn), 3);
+        assert!(opened.refused().is_none() && opened.next_seq() == 2, "a torn line: {:?}", opened.refused());
+
+        // A file there that can't be read (here a folder) refuses, rather than open empty (D14).
+        let unreadable = file_for(&place, "unreadable").unwrap();
+        std::fs::create_dir_all(&unreadable).unwrap();
+        assert!(Log::open_keeping(Some(unreadable), 3).refused().is_some_and(|w| w.contains("can't be read")));
+
+        // Events: the same.
+        let events = path.with_extension("events.jsonl");
+        append(&events, &(line_of_missing_key(None) + "\n"));
+        let opened = crate::events::Events::for_deployment(&place, "keyless");
+        assert!(opened.refused().is_some_and(|w| w.contains("version 999")), "{:?}", opened.refused());
+
+        // What a mailbox, queue, feed or folder watch has seen: an error, never none.
+        let seen = dir.join("seen.json");
+        assert!(crate::at_rest::read_seen::<serde_json::Value>(&seen, crate::at_rest::role::MAIL_SEEN).unwrap().is_none(), "none yet");
+        std::fs::write(&seen, file_of_missing_key(&crate::at_rest::deployment("keyless"))).unwrap();
+        let read = crate::at_rest::read_seen::<serde_json::Value>(&seen, crate::at_rest::role::MAIL_SEEN);
+        assert!(read.as_ref().is_err_and(|e| e.contains("version 999")), "{read:?}");
+        std::fs::write(&seen, b"{}").unwrap();
+        assert!(crate::at_rest::read_seen::<serde_json::Value>(&seen, crate::at_rest::role::MAIL_SEEN).is_err(), "plain where sealed belongs: not none");
+
+        // The access history: a version under a missing key is an error, never passed over.
+        let access = dir.join("access.json");
+        append(&crate::bindings::history(&access), &(line_of_missing_key(None) + "\n"));
+        let said = crate::bindings::Bindings::open(access).err().unwrap_or_default();
+        assert!(said.contains("version 999"), "{said}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A fresh directory for one test's log files.
