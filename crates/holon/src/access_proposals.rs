@@ -504,7 +504,7 @@ fn read_again(accounts: &Accounts, p: &Proposal, now: u64) -> Result<Read, Strin
         return Err(format!("its author, {}, no longer holds {} {}", p.author, g.action.name(), g.scope.said()));
     }
     let retie = retie(&before, &after);
-    if let Some((b, a)) = retie.as_ref().and_then(|(to, _)| bindings::beyond(&as_author, &after, Kind::Person, after.reaching(to).map(|(b, _)| b), now)) {
+    if let Some((b, a)) = retie.as_ref().and_then(|(to, _)| bindings::beyond(&as_author, &after, Kind::Person, after.reaching(to).map(|(b, _)| b), now, false)) {
         return Err(format!("its author, {}, no longer holds {} {}, which holds {} there", p.author, b.role, b.scope.said(), a.name()));
     }
     let acting = who_could_act(accounts, &to);
@@ -537,7 +537,7 @@ fn may_not_approve(caller: &Caller, name: &str, id: u64, read: &Read) -> Option<
     if tied.as_deref() == Some(name) {
         return Some(format!("access change {id} ties this machine's run file, which signs in as you now, to {to}: it is approved by someone it doesn't sign in as"));
     }
-    let (b, a) = bindings::beyond(caller, &read.after, Kind::Person, read.after.reaching(to).map(|(b, _)| b), epoch_now())?;
+    let (b, a) = bindings::beyond(caller, &read.after, Kind::Person, read.after.reaching(to).map(|(b, _)| b), epoch_now(), false)?;
     Some(format!("access change {id} ties this machine's run file to {to}, who holds {} {}, which holds {} there, which you don't: it is approved only by someone who holds what it gives", b.role, b.scope.said(), a.name()))
 }
 
@@ -609,7 +609,9 @@ pub(crate) fn approve(accounts: &Accounts, caller: &Caller, id: u64) -> Result<P
 }
 
 /// `caller` declines the proposal `id`, saying why: it. Its author may withdraw it so; anyone
-/// else who may approve it may decline it.
+/// else declines only what they may approve (`may_not_approve`, read as it is now), so a role that
+/// assigns people doesn't turn down whatever gives more than it holds. One that no longer applies
+/// is declined by anyone who decides proposals.
 pub(crate) fn decline(accounts: &Accounts, caller: &Caller, id: u64, reason: &str) -> Result<Proposal, Refused> {
     let proposals = accounts.proposals();
     let mut list = proposals.list.lock().unwrap();
@@ -618,6 +620,14 @@ pub(crate) fn decline(accounts: &Accounts, caller: &Caller, id: u64, reason: &st
     let reason = reason.trim();
     if reason.is_empty() {
         return Err((400, "say why it is declined: {\"reason\": \"…\"}".into()));
+    }
+    // Anyone else declines only what they may approve (D6, D13), read as it is now: one that no
+    // longer applies is declined by anyone who may decide it.
+    if p.author != name
+        && let Ok(read) = read_again(accounts, p, epoch_now())
+        && let Some(refused) = may_not_approve(caller, &name, id, &read)
+    {
+        return Err((403, format!("{refused}; it is declined only by its author or someone who may approve it")));
     }
     p.state = State::Declined { declined_by: name, reason: reason.into() };
     p.ended_at = Some(epoch_now());
@@ -963,7 +973,7 @@ mod tests {
                 assert!(!p.to.iter().any(|w| a.acting_as(w).iter().any(|(by, _)| *by == ap.who)), "{case}: {} could act as whom it gives more", ap.who);
                 if let Some((to, tied)) = retie(doc, &after) {
                     assert_ne!(tied.as_deref(), Some(ap.who.as_str()), "{case}: the run file signs in as {}", ap.who);
-                    assert!(bindings::beyond(&then, doc, Kind::Person, doc.reaching(&to).map(|(b, _)| b), now).is_none(), "{case}: {} holds no less than {to}", ap.who);
+                    assert!(bindings::beyond(&then, doc, Kind::Person, doc.reaching(&to).map(|(b, _)| b), now, false).is_none(), "{case}: {} holds no less than {to}", ap.who);
                 }
             }
         }

@@ -472,6 +472,86 @@ fn no_one_gives_or_changes_more_than_they_hold() {
     assert_eq!(cy("PATCH", "/people/cy", json!({ "display": "Cy" })).0, 200, "themself");
 }
 
+/// Giving is binding, whichever route gives: a role given with a principal, or set on one, takes
+/// people.assign on the host as a binding does, beside what it gives (D19). And what is given lasts
+/// no longer than its giver holds it: dee, admin until next week, binds no one past then, gives no
+/// role with a principal (that is for good), adds no one to a group bound for good, and makes no
+/// way in to someone holding more for good, so as to act as them; within her week, she binds.
+#[test]
+fn giving_takes_people_assign_and_lasts_no_longer_than_its_giver_holds_it() {
+    let (state, t, _, _) = server();
+    let ada = |method: &str, path: &str, body: Value| send(&state, &t.ada, method, path, body);
+    let cy = |method: &str, path: &str, body: Value| send(&state, &t.cy, method, path, body);
+    let dee = |method: &str, path: &str, body: Value| send(&state, &t.dee, method, path, body);
+
+    // cy manages people and assigns no one: makes and changes principals, gives no role.
+    assert_eq!(ada("PUT", "/roles/onboarding", json!({ "allows": ["people.view", "people.manage"], "kinds": ["person"] })).0, 200);
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "principal": "cy" }, "role": "onboarding", "scope": "host" })).0, 200);
+    let assigns = |role: &str| (403, format!("giving {role} binds it on the host, which takes people.assign there, which you don't hold"));
+    assert_eq!(refusal(cy("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "viewer" }))), assigns("viewer"));
+    assert_eq!(refusal(cy("POST", "/people", json!({ "name": "bot", "kind": "agent", "role": "agent" }))), assigns("agent"));
+    assert_eq!(ada("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "viewer" })).0, 200);
+    assert_eq!(refusal(cy("PATCH", "/people/eve", json!({ "role": "viewer" }))), assigns("viewer"));
+    assert_eq!(cy("POST", "/bindings", json!({ "who": { "principal": "eve" }, "role": "viewer", "scope": "host" })).0, 403);
+    assert_eq!(cy("PATCH", "/people/eve", json!({ "display": "Eve" })).0, 200, "what people.manage changes");
+
+    // dee is admin until next week, and a viewer for good.
+    let week = crate::deploy::epoch_now() + 7 * 86_400;
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "principal": "dee" }, "role": "admin", "scope": "host", "expires_at": week })).0, 200);
+    let outlasts = |role: &str, lasts: &str| (403, format!("what {role} gives on this host you hold only until a binding of yours expires, and this one would last {lasts}: a binding lasts no longer than what lets its author make it"));
+    assert_eq!(refusal(dee("POST", "/bindings", json!({ "who": { "principal": "dee" }, "role": "admin", "scope": "host" }))), outlasts("admin", "for good"));
+    let later = week + 86_400;
+    let until_later = format!("until {}", crate::cmdline::when(Some(later)));
+    assert_eq!(refusal(dee("POST", "/bindings", json!({ "who": { "principal": "eve" }, "role": "editor", "scope": "host", "expires_at": later }))), outlasts("editor", &until_later));
+    assert_eq!(refusal(dee("POST", "/people", json!({ "name": "fay", "kind": "person", "role": "editor" }))), outlasts("editor", "for good"));
+    assert_eq!(refusal(dee("PATCH", "/people/eve", json!({ "role": "editor" }))), outlasts("editor", "for good"));
+    assert_eq!(ada("PUT", "/groups/admins", json!({ "members": ["ada"] })).0, 200);
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "group": "admins" }, "role": "admin", "scope": "host" })).0, 200);
+    let (code, said) = dee("PUT", "/groups/admins", json!({ "members": ["ada", "eve"] }));
+    assert_eq!(code, 403, "adding eve to a group bound admin for good: {said}");
+    assert_eq!(ada("PATCH", "/people/bob", json!({ "role": "editor" })).0, 200);
+    let (code, said) = dee("POST", "/people/bob/reset", Value::Null);
+    assert_eq!(code, 403, "a way in to bob, editor for good: {said}");
+    // Within her week, and what she holds for good, she gives.
+    assert_eq!(dee("POST", "/bindings", json!({ "who": { "principal": "eve" }, "role": "editor", "scope": "host", "expires_at": week })).0, 200, "until her own binding ends");
+    assert_eq!(dee("POST", "/people", json!({ "name": "fay", "kind": "person", "role": "viewer" })).0, 200, "a viewer, as she is for good");
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "principal": "dee" }, "role": "admin", "scope": "host" })).0, 200);
+    assert_eq!(dee("POST", "/bindings", json!({ "who": { "principal": "eve" }, "role": "admin", "scope": "host" })).0, 200, "admin for good now");
+}
+
+/// Deciding an access change is one thing whichever way it goes: someone other than its author
+/// declines it only if they may approve it (D6, D13); its author withdraws it. And no one tightens
+/// the settings past what can be decided: an access change waiting for more people than hold
+/// people.assign here besides whoever sets it would wait for good, loosening the settings again
+/// among them, but through this machine's run file.
+#[test]
+fn whoever_declines_an_access_change_may_approve_it_and_no_one_sets_approvals_none_can_give() {
+    let w = world();
+    let (state, t) = (&w.state, &w.t);
+    let ada = |method: &str, path: &str, body: Value| send(state, &t.ada, method, path, body);
+    let cy = |method: &str, path: &str, body: Value| send(state, &t.cy, method, path, body);
+    let id = |name: &str| w.ids.iter().find(|(n, _)| *n == name).unwrap().1.clone();
+    let decline = |id: String| format!("/access/proposals/{id}/decline");
+    // cy holds people.assign, and not what admin gives: approves dee made admin no more than
+    // declines it; dee given people-admin, which cy holds, cy declines.
+    let (code, said) = cy("POST", &decline(id("admin-change")), json!({ "reason": "no" }));
+    assert_eq!(code, 403, "{said}");
+    assert!(error_of(&said).ends_with("; it is declined only by its author or someone who may approve it"), "{said}");
+    assert_eq!(cy("POST", &decline(id("assign-change")), json!({ "reason": "not yet" })).0, 200);
+    assert_eq!(ada("POST", &decline(id("admin-change")), json!({ "reason": "withdrawn" })).0, 200, "its author");
+
+    // ada and cy hold people.assign: a change by either waits for 1 other at most.
+    let wait = |n: u8, hold: &str| (409, format!("an access change would wait for {} other than its author, and {hold} people.assign on this host besides you: one could wait for good, these settings too, and only this machine's run file would loosen them. Give people.assign to more people first", if n == 1 { "1 person".to_string() } else { format!("{n} people") }));
+    assert_eq!(refusal(cy("PUT", "/access/approvals", json!({ "changes": 2 }))), wait(2, "1 person holds"));
+    assert_eq!(refusal(ada("PUT", "/access/approvals", json!({ "changes": 3 }))), wait(3, "1 person holds"));
+    assert_eq!(cy("PUT", "/access/approvals", json!({ "changes": 1, "starter": false })).0, 200, "as many as it was, and not looser");
+    let (state, t, _, _) = server();
+    let ada = |method: &str, path: &str, body: Value| send(&state, &t.ada, method, path, body);
+    assert_eq!(refusal(ada("PUT", "/access/approvals", json!({ "changes": 1 }))), wait(1, "no one holds"), "ada alone holds it");
+    assert_eq!(ada("PATCH", "/people/bob", json!({ "role": "admin" })).0, 200);
+    assert_eq!(ada("PUT", "/access/approvals", json!({ "changes": 1 })).0, 200);
+}
+
 /// Everyone `world` makes, and what it made, by name: bindings and tokens by id.
 struct World {
     state: AppState,

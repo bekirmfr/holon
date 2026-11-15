@@ -305,6 +305,9 @@ pub(crate) struct Held {
     /// The binding it is, and the document's version it was read in: what a decision keeps as
     /// what let it (the plan's D43). None for what no document holds (the OS user's admin).
     pub(crate) from: Option<Bound>,
+    /// When its binding expires (seconds), if it does: what its holder makes lasts no longer
+    /// (`Caller::lasting`).
+    pub(crate) until: Option<u64>,
 }
 
 /// A binding by its id, in the access document's version `access`.
@@ -316,7 +319,7 @@ pub(crate) struct Bound {
 
 impl Held {
     pub(crate) fn new(role: Arc<RoleDef>, scope: Scope) -> Held {
-        Held { role, scope, tagged: Arc::default(), from: None }
+        Held { role, scope, tagged: Arc::default(), from: None, until: None }
     }
 
     /// What the OS user's run file holds (local.rs): admin, on the host, while the server runs.
@@ -499,7 +502,7 @@ impl Document {
             };
             for name in names {
                 let from = Some(Bound { binding: b.id, access: self.version });
-                held.entry(name.clone()).or_default().push((Held { from, ..Held::new(Arc::clone(role), b.scope.clone()) }, b.expires_at));
+                held.entry(name.clone()).or_default().push((Held { from, until: b.expires_at, ..Held::new(Arc::clone(role), b.scope.clone()) }, b.expires_at));
             }
         }
         held
@@ -805,13 +808,31 @@ pub(crate) fn may_bind(who: &Caller, role: &Arc<RoleDef>, scope: &Scope) -> Resu
     }
 }
 
+/// `may_bind`, for a binding lasting `until` (none: for good): its author also holds what it gives
+/// there for as long (`Caller::lasting`), so an admin until Friday binds no one past Friday.
+pub(crate) fn may_bind_until(who: &Caller, role: &Arc<RoleDef>, scope: &Scope, until: Option<u64>) -> Result<(), Response> {
+    may_bind(who, role, scope)?;
+    may_bind(&who.lasting(until), role, scope).map_err(|_| {
+        let lasts = until.map_or("for good".to_string(), |at| format!("until {}", crate::cmdline::when(Some(at))));
+        err(403, format!("what {} gives {} you hold only until a binding of yours expires, and this one would last {lasts}: a binding lasts no longer than what lets its author make it", role.name, scope.said()))
+    })
+}
+
 /// The first of `bindings` that gives a principal of `kind` something `who` doesn't hold where it
 /// is made, and what (D19): what `who` may not give them, by adding them to a group, or let
 /// themselves have, by making their sign-in or tokens. One that has expired, or of a role `kind`
-/// may not hold, gives nothing.
-pub(crate) fn beyond<'a>(who: &Caller, document: &Document, kind: Kind, bindings: impl IntoIterator<Item = &'a Binding>, now: u64) -> Option<(&'a Binding, Action)> {
+/// may not hold, gives nothing. Giving (`for_as_long`), `who` holds it for as long as the binding
+/// lasts (`Caller::lasting`): an admin until Friday gives no one admin for good.
+pub(crate) fn beyond<'a>(who: &Caller, document: &Document, kind: Kind, bindings: impl IntoIterator<Item = &'a Binding>, now: u64, for_as_long: bool) -> Option<(&'a Binding, Action)> {
     bindings.into_iter().filter(|b| b.live(now)).find_map(|b| {
         let role = document.role(&b.role).filter(|r| r.kinds.contains(&kind))?;
+        let lasting;
+        let who = if for_as_long {
+            lasting = who.lasting(b.expires_at);
+            &lasting
+        } else {
+            who
+        };
         gives(&role, &b.scope).into_iter().find(|(a, on)| can(who, *a, on).is_err()).map(|(a, _)| (b, a))
     })
 }
@@ -939,11 +960,12 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
                 Err(r) => return Some(r),
             };
             let Some(role) = document.role(&new.role) else { return Some(err(400, format!("no role {:?}: GET /roles lists them", new.role))) };
-            if let Err(r) = new.scope.check().map_err(|e| err(400, e)).and_then(|_| may_bind(caller, &role, &new.scope)) {
-                return Some(r);
-            }
             if new.expires_at.is_some_and(|at| at <= now) {
                 return Some(err(400, "expires_at has passed: a binding expires later than now"));
+            }
+            // What it gives, its author holds for as long as it lasts.
+            if let Err(r) = new.scope.check().map_err(|e| err(400, e)).and_then(|_| may_bind_until(caller, &role, &new.scope, new.expires_at)) {
+                return Some(r);
             }
             let change = Change::Bind { who: new.who.clone(), role: new.role.clone(), scope: new.scope.clone(), expires_at: new.expires_at };
             match govern(accounts, caller, change, new.why.as_deref(), || accounts.bind(new.who, &new.role, new.scope, new.expires_at, by, new.why.as_deref())) {
@@ -992,6 +1014,31 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
             settings.agents = change.agents.unwrap_or(settings.agents);
             settings.starter = change.starter.unwrap_or(settings.starter);
             settings.changes = change.changes.unwrap_or(settings.changes);
+            // Tightened, an access change can still be approved, these settings among them: as
+            // many people as one waits for, other than whoever sets it, may decide it (persons
+            // holding people.assign on the host). Past that, only this machine's run file could
+            // loosen them again.
+            // (A count out of 1 to 5 is refused as such, by `set_approvals`.)
+            if let Some(n) = settings.changes.filter(|n| (1..=5).contains(n) && *n > document.approvals.changes.unwrap_or(0)) {
+                let decides = |p: &&crate::accounts::Principal| {
+                    let them = Caller { name: Some(p.name.clone()), kind: Some(p.kind), holds: Some(accounts.holding(&p.name)), local: None };
+                    can(&them, Action::PeopleAssign, &Resource::Host).is_ok()
+                };
+                let principals = accounts.principals();
+                let others = principals.iter().filter(|p| p.kind == Kind::Person && !p.disabled && Some(p.name.as_str()) != caller.name.as_deref()).filter(decides).count();
+                if others < usize::from(n) {
+                    let wait = if n == 1 { "1 person".to_string() } else { format!("{n} people") };
+                    let hold = match others {
+                        0 => "no one holds".to_string(),
+                        1 => "1 person holds".to_string(),
+                        k => format!("{k} people hold"),
+                    };
+                    return Some(err(
+                        409,
+                        format!("an access change would wait for {wait} other than its author, and {hold} people.assign on this host besides you: one could wait for good, these settings too, and only this machine's run file would loosen them. Give people.assign to more people first"),
+                    ));
+                }
+            }
             let said = settings.said();
             let proposed = crate::access_proposals::Change::Approvals { settings: settings.clone() };
             match govern(accounts, caller, proposed, change.why.as_deref(), || accounts.set_approvals(settings, by, change.why.as_deref())) {
@@ -1168,7 +1215,7 @@ fn make_group(state: &crate::AppState, request: &Request, caller: &Caller, accou
     let taken = before.iter().filter(|m| !group.members.contains(m)).map(|m| (m, false));
     for (m, joins) in added.chain(taken) {
         let Some(kind) = accounts.principal(m).map(|p| p.kind) else { continue };
-        if let Some((b, a)) = beyond(caller, &document, kind, bound.iter().copied(), crate::deploy::epoch_now()) {
+        if let Some((b, a)) = beyond(caller, &document, kind, bound.iter().copied(), crate::deploy::epoch_now(), joins) {
             let held = format!("{} {}, which holds {} there", b.role, b.scope.said(), a.name());
             return err(
                 403,
@@ -1291,7 +1338,7 @@ mod tests {
         d.bind(Subject::Principal("bob".into()), "editor", flow.clone(), Some(100), "ada", 1);
         d.bind(Subject::Principal("bob".into()), "viewer", Scope::Host, None, "ada", 1);
         access.keep(d.after(&Document::default(), "ada", "bound", None, 1)).unwrap();
-        assert_eq!(&*access.held("bob", 99), [via(at(Role::Editor, flow), 0, 1), via(at_host(Role::Viewer), 1, 1)]);
+        assert_eq!(&*access.held("bob", 99), [Held { until: Some(100), ..via(at(Role::Editor, flow), 0, 1) }, via(at_host(Role::Viewer), 1, 1)], "each saying when it ends");
         assert_eq!(&*access.held("bob", 100), [via(at_host(Role::Viewer), 1, 1)], "expired at 100");
         assert_eq!(access.document().bindings.len(), 2, "kept until unbound");
     }

@@ -181,3 +181,52 @@ fn the_preview_says_who_a_tag_lets_in() {
     let (_, lines) = review(&untagged);
     assert!(lines.contains(&"  - leaves payments: bob as editor, the group ops as viewer — no longer".to_string()), "{lines:?}");
 }
+
+/// While this host has people approve what gives more (`approvals.changes`), a version that joins
+/// a tag giving someone what that waits for on the flow (`run.decide`, or an admin's) and they
+/// don't hold on it now isn't deployed, whoever approves the deploy: that giving is the access
+/// settings' people's, not one deploy approver's. Given to them on the flow first, as an access
+/// change approved, the tag gives them nothing new and the version deploys; a tag whose bindings
+/// give nothing that waits (bob, viewer on it) is joined as before.
+#[test]
+fn a_tag_gives_no_one_through_a_deploy_what_waits_for_people() {
+    let (state, ada, _, untagged, tagged) = server();
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    accounts.accept(&accounts.invite("cy", "viewer", None, "ada").unwrap(), PW).unwrap();
+    let dee = accounts.accept(&accounts.invite("dee", "admin", None, "ada").unwrap(), PW).unwrap().0;
+    let as_ada = |method: &str, path: &str, body: Value| send(&state, &ada, method, path, body);
+    // bob views the flows on payments: nothing of that waits for people.
+    let bobs = accounts.bindings_of("bob").into_iter().find(|b| b.role == "editor").unwrap();
+    assert_eq!(as_ada("DELETE", &format!("/bindings/{}", bobs.id), Value::Null).0, 204);
+    assert_eq!(as_ada("POST", "/bindings", json!({ "who": { "principal": "bob" }, "role": "viewer", "scope": { "flows": { "tag": "payments" } } })).0, 200);
+    assert_eq!(as_ada("PUT", "/roles/approver", json!({ "allows": ["run.decide", "run.view"], "kinds": ["person"] })).0, 200);
+    assert_eq!(deploy(&state, Some(&ada), "e", &untagged, json!({})).0, 200);
+    assert_eq!(as_ada("POST", "/bindings", json!({ "who": { "principal": "cy" }, "role": "approver", "scope": { "flows": { "tag": "payments" } } })).0, 200);
+    assert_eq!(as_ada("PUT", "/access/approvals", json!({ "changes": 1 })).0, 200);
+    let deploying = |slug: &str, unit: &str| deploy(&state, Some(&ada), slug, unit, json!({}));
+
+    let gives = |slug: &str| (409, format!("this version gives cy run.decide (by payments) on \"{slug}\", through the tags it adds, which they don't hold on it now; giving that waits here for 1 person as an access change, not a deploy's approval: give it to them on \"{slug}\" first, which waits for them, or deploy it without the tag"));
+    assert_eq!(refusal(deploying("e", &tagged)), gives("e"));
+    assert_eq!(refusal(deploying("n", &tagged)), gives("n"), "a new flow too");
+    assert!(!accounts.tagged("payments").contains("e"));
+    // With cy's binding gone, bob's gives nothing that waits: it deploys.
+    let cys = accounts.bindings_of("cy").into_iter().find(|b| b.role == "approver").unwrap();
+    assert_eq!(as_ada("DELETE", &format!("/bindings/{}", cys.id), Value::Null).0, 204);
+    let (code, said) = deploying("b", &tagged);
+    assert_eq!(code, 200, "{said}");
+    let (code, said) = as_ada("POST", "/bindings", json!({ "who": { "principal": "cy" }, "role": "approver", "scope": { "flows": { "tag": "payments" } } }));
+    assert_eq!(code, 202, "giving waits now: {said}");
+    let id = serde_json::from_str::<Value>(&said).unwrap()["proposal"]["id"].clone();
+    assert_eq!(send(&state, &dee, "POST", &format!("/access/proposals/{id}/approve"), Value::Null).0, 200);
+    let (code, said) = deploying("b", &tagged);
+    assert_eq!(code, 200, "on the tag already, it adds none: {said}");
+
+    // Given on e as an access change, which waits for dee and is made when she approves it.
+    let (code, said) = as_ada("POST", "/bindings", json!({ "who": { "principal": "cy" }, "role": "approver", "scope": { "flows": { "slug": "e" } } }));
+    assert_eq!(code, 202, "{said}");
+    let id = serde_json::from_str::<Value>(&said).unwrap()["proposal"]["id"].clone();
+    assert_eq!(send(&state, &dee, "POST", &format!("/access/proposals/{id}/approve"), Value::Null).0, 200);
+    let (code, said) = deploying("e", &tagged);
+    assert_eq!(code, 200, "cy decides e's approvals already: {said}");
+    assert!(accounts.tagged("payments").contains("e"));
+}

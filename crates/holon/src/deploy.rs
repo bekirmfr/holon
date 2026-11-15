@@ -296,6 +296,9 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     if let Err(refusal) = as_it_would_be(who, asks, &body.slug, tagged_now.as_deref(), &server.tags) {
         return refusal.response();
     }
+    if let Some(gives) = state.access.accounts().and_then(|a| tag_gives(a, &body.slug, tagged_now.as_deref(), &server.tags)) {
+        return err(409, gives);
+    }
     let approves = may_approve(who, &body.slug, tagged_now.is_some(), &server.tags);
     if !approves && !body.acknowledge.is_empty() {
         let name = who.name.as_deref().unwrap_or_default();
@@ -1114,6 +1117,49 @@ fn as_tagged(held: &crate::bindings::Held, slug: &str, tags: &[String]) -> crate
         }
         _ => held.clone(),
     }
+}
+
+/// Why a version of `slug` tagged `then` (`now` deployed, if it is) isn't deployed, if it isn't:
+/// while this host has people approve what gives more (access_proposals.rs, `approvals.changes`),
+/// a tag it adds gives someone, through a binding on the tag, what that waits for on the flow
+/// (`run.decide`, or an admin's) and they don't hold on it now. A deploy's approval is one person's
+/// and an access change's is the settings' (D6, D13), so whom the tag gives is given it on the flow
+/// first, as an access change, which waits for them (the tag then gives them nothing new), or the
+/// version goes without the tag.
+fn tag_gives(accounts: &crate::accounts::Accounts, slug: &str, now: Option<&[String]>, then: &[String]) -> Option<String> {
+    let n = accounts.access_document().approvals.changes?;
+    let added: Vec<&String> = then.iter().filter(|t| !now.unwrap_or_default().contains(t)).collect();
+    if added.is_empty() {
+        return None;
+    }
+    let on = Resource::Flow(slug);
+    let mut gains: Vec<String> = Vec::new();
+    for p in accounts.principals() {
+        let holds = accounts.holding(&p.name);
+        let before = Caller { name: Some(p.name.clone()), kind: Some(p.kind), holds: Some(Arc::clone(&holds)), local: None };
+        let after = Caller { holds: Some(holds.iter().map(|h| as_tagged(h, slug, then)).collect()), ..before.clone() };
+        for h in holds.iter().filter(|h| h.role.kinds.contains(&p.kind)) {
+            let crate::bindings::Scope::Flows(crate::bindings::Selector::Tag(tag)) = &h.scope else { continue };
+            if !added.contains(&tag) {
+                continue;
+            }
+            for action in h.role.allows() {
+                let new = crate::access_proposals::governed(action) && on.takes(action) && can(&after, action, &on).is_ok() && can(&before, action, &on).is_err();
+                let said = format!("{} {} (by {tag})", p.name, action.name());
+                if new && !gains.contains(&said) {
+                    gains.push(said);
+                }
+            }
+        }
+    }
+    if gains.is_empty() {
+        return None;
+    }
+    let people = if n == 1 { "1 person".to_string() } else { format!("{n} people") };
+    Some(format!(
+        "this version gives {} on {slug:?}, through the tags it adds, which they don't hold on it now; giving that waits here for {people} as an access change, not a deploy's approval: give it to them on {slug:?} first, which waits for them, or deploy it without the tag",
+        gains.join(", ")
+    ))
 }
 
 /// For each of `tags`, who a binding on it lets act on a flow deployed with it now (D24).

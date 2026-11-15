@@ -160,7 +160,11 @@ Who may act on a flow is part of what its deploy approves: a version that adds a
 the host's policy never grants one by itself. Bob deploys a new flow tagged `payments`, and a new
 version of one, but neither tags a flow he holds nothing on (taking it over) nor takes the tag
 off one (taking it out of his own reach, and his team's): a host admin does those. An agent's
-version that adds a tag waits as a proposal, as any change it can't approve does.
+version that adds a tag waits as a proposal, as any change it can't approve does. While access
+changes wait for people (`--changes`, [below](#access-changes-that-wait-for-people)), a version
+whose new tag would let someone decide the flow's runs, or do an admin's part on it, that they
+can't now isn't deployed: the server names them, and they are given it on the flow first, which
+waits for those people, not for whoever approves the deploy.
 
 A role bound to a **group** holds for each member whose kind it allows. **People and access**
 offers roles of your own where it offers a role, and lists beside each principal what else holds
@@ -217,7 +221,9 @@ holon access approvals --changes 2 --why "two more sign off whoever is given mor
   step that says so.
 - `--changes N`: an access change that gives someone more waits until N people other than its
   author approve it, 1 to 5 ([below](#access-changes-that-wait-for-people)). Off by default: a
-  change applies at once.
+  change applies at once. It is raised only while N people besides you hold `people.assign` on the
+  host: give it to them first, or no change could be approved, loosening it again among them, but
+  through this machine's run file.
 
 Each change is a version, with who made it and why; `holon access approvals` alone shows them.
 
@@ -229,7 +235,9 @@ more when it lets someone do what they couldn't, of `run.decide` or of what is a
 adding someone to a group bound to one, changing a role so that it holds it, setting someone's
 role on the host to one; and when it loosens these settings (`--exclude-deployer off`,
 `--agents on`, `--starter on`, `--changes` lower or off). A binding that lasts longer than the
-one it outlives gives more too.
+one it outlives gives more too. Whatever waits or not, no one gives what they hold for less long:
+an admin `--until 7d` binds no one, gives no role and adds no one to a group past those seven
+days.
 
 The server answers such a change 202 with the proposal: what its version will say, what it gives
 and to whom, and how many must approve it. N people other than its author approve it, each a
@@ -237,7 +245,8 @@ person holding `people.assign` on the host and what the change gives, where it g
 hold less don't give more together. The last approval makes it, as its author asked it, by them,
 its why saying who approved it; it is read again first, and one that no longer applies (its role
 removed since, the last admin) is stale, saying why, and its author proposes it again. Anyone who
-may approve it declines it with a reason, and its author withdraws it so. Proposals are kept
+may approve it declines it with a reason (someone who may not approve it may not decline it
+either), and its author withdraws it so. Proposals are kept
 beside the access document (`access.proposals.json`), never as versions of it: a proposal changes
 no one's access. The routes are the server's ([The server](../reference/server.md#accounts-and-roles)).
 

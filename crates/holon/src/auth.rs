@@ -81,10 +81,15 @@ fn shown(p: &Principal, accounts: &Accounts) -> serde_json::Value {
 }
 
 /// Why `caller` may not give the role named `role` on the host, as inviting, adding or setting
-/// someone with it binds it there (D19), if they may not: 400 for no such role.
+/// someone with it binds it there, if they may not: 400 for no such role. A binding, so as
+/// `POST /bindings` asks: people.assign on the host (people.manage, which lets them this far,
+/// makes and changes principals, not what they hold), and what it gives, for good (D19).
 fn may_give(caller: &Caller, accounts: &Accounts, role: &str) -> Result<(), Response> {
     let Some(def) = accounts.access_document().role(role) else { return Err(err(400, format!("no role {role:?}: GET /roles lists them"))) };
-    crate::bindings::may_bind(caller, &def, &crate::bindings::Scope::Host)
+    if crate::can::can(caller, crate::can::Action::PeopleAssign, &crate::can::Resource::Host).is_err() {
+        return Err(err(403, format!("giving {role} binds it on the host, which takes people.assign there, which you don't hold")));
+    }
+    crate::bindings::may_bind_until(caller, &def, &crate::bindings::Scope::Host, None)
 }
 
 /// What `name` holds that `caller` doesn't, in words, if anything (D19): or what an agent or a
@@ -93,7 +98,7 @@ fn holds_more(caller: &Caller, accounts: &Accounts, name: &str) -> Option<String
     let document = accounts.access_document();
     let more = |who: &str| -> Option<String> {
         let p = accounts.principal(who)?;
-        let (b, a) = crate::bindings::beyond(caller, &document, p.kind, document.reaching(who).map(|(b, _)| b), crate::deploy::epoch_now())?;
+        let (b, a) = crate::bindings::beyond(caller, &document, p.kind, document.reaching(who).map(|(b, _)| b), crate::deploy::epoch_now(), true)?;
         Some(format!("{} {}, which holds {} there, which you don't", b.role, b.scope.said(), a.name()))
     };
     match more(name) {

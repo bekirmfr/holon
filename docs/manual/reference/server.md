@@ -263,9 +263,12 @@ admin binds it (`POST /bindings`):
   it for that.
 - **A binding that has expired** holds nothing. It stays listed, `expired: true`, until it is
   unbound.
-- A binding gives only what its author holds where it is made, and is refused where its role holds
-  nothing (a viewer at an approval point). It is taken away only by someone who holds what it
-  gives there (403 saying what): a role that assigns people doesn't unbind an admin.
+- A binding gives only what its author holds where it is made, and for as long: one lasting past
+  a binding of its author's that lets them give it is refused (403), so an admin until Friday binds
+  no one, gives no role and adds no one to a group past Friday, nor resets someone who holds more
+  for good. It is refused where its role holds nothing (a viewer at an approval point). It is
+  taken away only by someone who holds what it gives there (403 saying what): a role that assigns
+  people doesn't unbind an admin.
 
 `GET /bindings` (`?who=&role=&flow=`) lists what is bound, and `DELETE /bindings/<id>` (`?why=`)
 unbinds one. `GET /access/versions` lists every version, newest first, and `GET /access?version=N`
@@ -280,6 +283,9 @@ no step takes whoever started the run nor their party, and a deploy whose approv
 would is refused; with
 `changes` N (1 to 5; `null` turns it off), an access change that gives more waits for N people.
 They are `false`, `true`, `true` and `null` by default, and `GET /access` has them, `approvals`.
+`changes` is raised only while at least N people besides whoever raises it hold `people.assign` on
+the host (409 if not): past that, no access change could be approved, loosening these settings
+among them, but through this machine's run file.
 
 While `changes` is N, a change that gives someone more (`POST /bindings`, `PUT /roles/<name>`,
 `PUT /groups/<name>`, `PATCH /people/<name>` with a role, `PUT /access/approvals` loosening them)
@@ -290,7 +296,11 @@ it), `what` (what its version will say), `gives` (in words), `to` (whom it gives
 was proposed on), `needs`, `approvals` and `state` (`waiting`; `applied` with its `version`;
 `declined` with `declined_by` and `reason`; `stale` with why). `POST /people` with a role that would wait is
 refused, 409: invite or add them with one that gives less, then give it. A change through this
-machine's run file to `/access/approvals` is made at once.
+machine's run file to `/access/approvals` is made at once. A version that joins a tag giving
+someone, through a binding on the tag, `run.decide` or an admin's action on the flow that they
+don't hold there now is refused (409, saying whom and what): that giving waits for the N people,
+not a deploy's approver. Give it to them on the flow first (which waits), or deploy without the
+tag.
 
 - `GET /access/proposals` (`people.view`) lists every proposal, newest first.
 - `POST /access/proposals/<id>/approve` (`people.assign`): a person other than its author, holding
@@ -299,7 +309,8 @@ machine's run file to `/access/approvals` is made at once.
   that no longer applies, or to one of whose `to` a way in was made since, is `stale`: 409, saying
   why.
 - `POST /access/proposals/<id>/decline` (`{"reason": "…"}`, `people.assign`): declines it; its
-  author withdraws it so. One that no longer waits is 409.
+  author withdraws it so. Anyone else declines only what they may approve (403 if not, saying
+  why). One that no longer waits is 409.
 
 An admin also defines roles of their own, and groups:
 
@@ -352,7 +363,8 @@ access document's version, which moves with every change to who may do what: wha
 changes only with it (or with a flow's tags, on deploying). `/auth/me` and `GET /people` answer what holds for a principal, each binding
 with what its role allows (an agent may not read `/roles`), and one to one of its groups with the
 group's name. `POST` and `PATCH /people` take any role the principal's kind may hold, an admin's
-own included. From the command line: `holon roles`, `groups`, `bind`, `unbind` and `access`
+own included; giving one binds it, so it takes `people.assign` on the host, as `POST /bindings`
+does (`people.manage` alone makes and changes principals, not what they hold). From the command line: `holon roles`, `groups`, `bind`, `unbind` and `access`
 ([the command line](cli.md#roles-and-bindings)).
 
 A run waiting at an approval is listed to whoever views the flow's runs or decides one of its

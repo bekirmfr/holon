@@ -63,7 +63,7 @@ impl Role {
 /// the OS user's `local:<user>` while it is tied to none), its kind and what it holds
 /// (bindings.rs); no one for what is open (signing in, the health check), and on a server without
 /// accounts (the tests), who holds nothing at all and is let do everything (`holds` none).
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Caller {
     pub(crate) name: Option<String>,
     pub(crate) kind: Option<Kind>,
@@ -74,6 +74,16 @@ pub(crate) struct Caller {
 }
 
 impl Caller {
+    /// It, holding only what it holds for as long as `until` (none: for good): the bindings that
+    /// last that long, and what no document holds (the run file's admin). What it makes lasts no
+    /// longer than what lets it make it: an admin until Friday binds no one, gives no role and
+    /// makes no way in to anyone past Friday (bindings.rs `may_bind`, `beyond`).
+    pub(crate) fn lasting(&self, until: Option<u64>) -> Caller {
+        let lasts = |end: Option<u64>| end.is_none_or(|end| until.is_some_and(|until| until <= end));
+        let holds = self.holds.as_ref().map(|held| held.iter().filter(|h| lasts(h.until)).cloned().collect());
+        Caller { name: self.name.clone(), kind: self.kind, holds, local: self.local.clone() }
+    }
+
     /// Whether it is the run file tied to no account (before setup, or the account disabled): admin
     /// on the host, by the OS user's name, bound nowhere, so it decides no approval (D45).
     pub(crate) fn untied(&self) -> bool {

@@ -2832,9 +2832,13 @@ export const pay = action(async (order) => {
     assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["approvals"], json!({ "exclude_deployer": false, "agents": true, "starter": true, "changes": null }));
 
     // How many people approve an access change that gives more: one to five, said in the
-    // version; null, none. Raising it is made at once; lowering it, or turning it off, gives more,
-    // and waits for that many people (access_proposals.rs). Each row: what is sent, and what is
-    // kept, or that it waits, or why it is refused.
+    // version; null, none. Raising it is made at once (while that many besides whoever raises it
+    // may decide one: five more admins here); lowering it, or turning it off, gives more, and
+    // waits for that many people (access_proposals.rs). Each row: what is sent, and what is kept,
+    // or that it waits, or why it is refused.
+    for name in ["gil", "hal", "ivy", "jo", "kim"] {
+        invited(name, "admin");
+    }
     enum Then {
         Kept(Value),
         Waits,
