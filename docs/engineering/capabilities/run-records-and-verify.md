@@ -181,12 +181,23 @@ fed a placeholder is computed twice, with two placeholders (`Fed`): if what it g
 which, it computed with the secret's value, and the run is `cant_tell`; if not, it passed it along
 or picked past it, and stands. What `Fed` computes stands in for the node, so the round's budget
 never counts it: it computes on a budget of its own, made afresh each round, of twice the round's
-steps, fuel and memory, and a version that wants more is `cant_tell` too. Each round is held to
-`rerun_limits()` (no clock or count of requests, as in `rerun`) but `within` the steps, fuel and
-memory the deployment's permit grants: a replay needs no approval, and runs a version anyone who may
-read the deployment stages on up to 200 runs, so it computes no more than a person approved for the
-deployment's own runs. A version asking for more has it once deployed; replayed, a run that needs it
-differs ("it doesn't finish within what the deployment is granted"). The run id isn't compared:
+steps, fuel and memory, and a version that wants more is `cant_tell` too. Each run is held to
+`rerun_limits()` but `within` what the deployment's permit grants a run of its kind (`Granted::of`:
+a request's limits, or a clock's for a tick, file, mail, feed or queue run): each round's steps,
+fuel and memory, the run's `run_budget`, and its `max_requests` times its parts (a later part sends
+its earlier parts' requests again). A replay needs no approval, and runs a version anyone who may
+read the deployment stages (an agent, with its `replay` tool) on up to 200 runs, so it computes no
+more than a person approved for the deployment's own runs. A version asking for more has it once
+deployed; replayed, a run that needs it differs ("it doesn't finish within what the deployment is
+granted"). A run that has missed a request or a read is `cant_tell` whatever it does next, so it
+goes no further: `ByRead::claim`, which the host asks before each round it sends, ends it as an
+overtaken run ends. And the replay as a whole is held (`Replays`, on `AppState`): it runs for
+`DEADLINE` (30 s) at most, a run's budget cut to what is left, the runs not reached by then counted
+(`not_reached`, the oldest; one its time ran out in is `cant_tell`), and the server runs `AT_ONCE`
+(two) at a time, the next answered 503 with `Retry-After`: a replay holds a thread of the control
+plane while it runs. Before (the release audit's H10, the register's R27), a replayed run had an
+hour and any number of requests, a missed one was answered offline and the run went on, and nothing
+held a whole replay or how many ran. The run id isn't compared:
 another version's differs by design. The file texts come from the export machinery (`export_of`), so
 a file holding a secret isn't read back, as in an export. The editor shows it on a version's review
 and in the deploy dialog (`ReplayRuns.tsx`); the sample `price-rules` is the flow to try it on.
@@ -276,7 +287,9 @@ every sample that needs nothing outside the server.
 
 A replay: `a_version_replays_on_its_deployments_recent_runs` (same, differs, can't tell, no
 such action, nothing changed), `a_replay_answers_a_request_the_run_sent_and_cant_tell_one_it_didnt`,
-`a_replay_cant_tell_a_run_that_computes_with_a_secret` (and is told one that passes it along).
+`a_replay_cant_tell_a_run_that_computes_with_a_secret` (and is told one that passes it along);
+`a_replay_is_bounded_whatever_the_version_does` (the grant's requests, the deadline and what it
+didn't reach, two at once) and `a_replayed_run_goes_no_further_than_what_it_missed`.
 
 End to end: `a deployment's runs export from view mode and from holon export, and holon verify
 runs each again`, and the `inbox-report`, `log-archive`, `journal`, `drop-box` and `file-audit`

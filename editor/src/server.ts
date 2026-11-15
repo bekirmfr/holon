@@ -1298,7 +1298,7 @@ export type RunReplayed = {
 };
 
 /** `GET /deployments/<slug>/replay`: a version replayed offline on the deployment's recent runs. */
-export type Replayed = { unit: string; replayed: number; same: number; differ: number; cant_tell: number; runs: RunReplayed[] };
+export type Replayed = { unit: string; replayed: number; same: number; differ: number; cant_tell: number; not_reached: number; runs: RunReplayed[] };
 
 /** `GET /deployments/<slug>/replay?unit=<hash>` — the version `unit` (staged, or a proposal's)
  *  replayed on the deployment's last `runs` runs, offline: nothing is sent or changed. */

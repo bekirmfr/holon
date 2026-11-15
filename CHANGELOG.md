@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A replay is held to what the deployment's runs are granted, and as a whole.** Each replayed
+  run gets the run time and the count of requests a run of its kind is granted, where it had an
+  hour and any number; a run that sends or reads what its run didn't stops there; a replay runs for
+  30 seconds at most, counting the runs it didn't reach (`not_reached`: "12 not reached in time" in
+  `holon replay`, the agent's tool and the editor); and the server runs two at a time, a third
+  answered 503. A replay needs no approval and anyone who may read a deployment starts one, an
+  agent too: one could hold a thread of the control plane for hours.
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

@@ -18,12 +18,20 @@
 //! each round twice the round's steps and fuel (it computes a node twice), and a version that
 //! wants more can't be told either.
 //!
-//! Each round is held to the steps and fuel the deployment is granted (`within`): a replay needs
-//! no approval, so it computes no more than a person approved for the deployment's own runs. A
-//! version that asks for more has it once deployed; replayed, a run that needs it doesn't finish,
-//! and says so.
+//! Each run is held to what the deployment is granted a run of its kind (`within`): each round to
+//! its steps, fuel and memory, the run to its time and its count of requests. A replay needs no
+//! approval, and anyone who may read the deployment starts one (an agent too), so it computes no
+//! more than a person approved for the deployment's own runs. A version that asks for more has it
+//! once deployed; replayed, a run that needs it doesn't finish, and says so. A run that asks what
+//! its run didn't (a request, a read) can't be told, so it goes no further (`ByRead::claim`).
+//!
+//! And a replay as a whole is held (`Replays`): it runs for `DEADLINE` at most, the runs it hasn't
+//! reached by then counted, not run (`not_reached`), and the server runs `AT_ONCE` at a time, the
+//! next answered 503: a replay holds one of the control plane's threads while it runs.
 
 use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 /// What `GET /deployments/<slug>/replay` answers.
 #[derive(Serialize, Debug)]
@@ -34,6 +42,8 @@ pub(crate) struct Replayed {
     pub(crate) same: usize,
     pub(crate) differ: usize,
     pub(crate) cant_tell: usize,
+    /// The runs asked for that it didn't reach before its deadline (`Replays`): the oldest.
+    pub(crate) not_reached: usize,
     /// Newest first.
     pub(crate) runs: Vec<RunReplayed>,
 }
@@ -61,9 +71,79 @@ pub(crate) struct RunReplayed {
 const RUNS: usize = 20;
 const MOST_RUNS: usize = 200;
 
+/// How many replays the server runs at once ([`Replays`]).
+const AT_ONCE: usize = 2;
+/// How long a replay runs, at most ([`Replays`]).
+const DEADLINE: Duration = Duration::from_secs(30);
+
+/// The replays a server is running, and how many it runs at once and for how long: a replay runs
+/// on a thread of the control plane, as long as its runs compute, so many at once, or one long
+/// one, would leave none to answer anyone else. Each runs until its deadline, then counts the runs
+/// it didn't reach (`not_reached`); one more than `at_once` is answered 503.
+pub(crate) struct Replays {
+    going: AtomicUsize,
+    at_once: usize,
+    deadline: Duration,
+}
+
+impl Default for Replays {
+    fn default() -> Replays {
+        Replays { going: AtomicUsize::new(0), at_once: AT_ONCE, deadline: DEADLINE }
+    }
+}
+
+impl Replays {
+    /// Replays `at_once` at a time, each for `deadline` at most.
+    #[cfg(test)]
+    pub(crate) fn new(at_once: usize, deadline: Duration) -> Replays {
+        Replays { going: AtomicUsize::new(0), at_once, deadline }
+    }
+
+    /// A place among those running, while it is held; none when every one is taken.
+    pub(crate) fn enter(&self) -> Option<Going<'_>> {
+        let at_once = self.at_once;
+        self.going.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < at_once).then_some(n + 1)).ok().map(|_| Going(&self.going))
+    }
+}
+
+/// A replay running ([`Replays::enter`]): its place is given back when it is dropped.
+pub(crate) struct Going<'a>(&'a AtomicUsize);
+
+impl Drop for Going<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// The limits a deployment grants its runs (its permit's): a request's (a route's, a WebSocket
+/// block's, an action's, a waiting run's later part), and a clock's (a tick's, a file's, a mail's,
+/// a feed's or a queue's handler).
+pub(crate) struct Granted<'a> {
+    pub(crate) request: &'a Limits,
+    pub(crate) clock: &'a Limits,
+}
+
+impl Granted<'_> {
+    /// What a run of `kind` (its entry's) is granted, as the server ran it (`fire_with_state`'s
+    /// `clock`).
+    fn of(&self, kind: &str) -> &Limits {
+        match kind {
+            "tick" | "file" | "mail" | "feed" | "queue" => self.clock,
+            _ => self.request,
+        }
+    }
+}
+
 /// `GET /deployments/<slug>/replay?unit=<hex>[&runs=N]`: the version `unit` (staged, `POST
 /// /unit`, or a proposal's) replayed on the deployment's last `N` runs. Changes nothing.
-pub(crate) fn handle_get_replay(store: &SharedStore, folders: &folders::Folders, deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
+pub(crate) fn handle_get_replay(
+    store: &SharedStore,
+    folders: &folders::Folders,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    replays: &Replays,
+    slug: &str,
+    request: &Request,
+) -> Response {
     let Some(unit) = request.get_param("unit").as_deref().and_then(parse_hash) else {
         return err(400, "unit: the version to replay, as its hash (hex), staged with POST /unit");
     };
@@ -72,10 +152,14 @@ pub(crate) fn handle_get_replay(store: &SharedStore, folders: &folders::Folders,
         Some(Ok(n)) if (1..=MOST_RUNS).contains(&n) => n,
         Some(_) => return err(400, format!("runs: how many recent runs, 1 to {MOST_RUNS}")),
     };
-    let (log, redactor, granted) = match deployments.lock().unwrap().get(slug) {
-        Some(dep) => (std::sync::Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets), dep.permit.request_limits.clone()),
+    let (log, redactor, request_limits, clock_limits) = match deployments.lock().unwrap().get(slug) {
+        Some(dep) => (std::sync::Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets), dep.permit.request_limits.clone(), dep.permit.clock_limits.clone()),
         None => return err(404, format!("no deployment {slug:?}")),
     };
+    let Some(_going) = replays.enter() else {
+        return err(503, format!("the server is running {} replays already: try again in a moment", replays.at_once)).with_additional_header("Retry-After", "5");
+    };
+    let deadline = Instant::now() + replays.deadline;
     let loaded = match units::closure(store, unit) {
         Ok(loaded) => loaded,
         Err(e) => return e.response(),
@@ -93,29 +177,48 @@ pub(crate) fn handle_get_replay(store: &SharedStore, folders: &folders::Folders,
         Ok(export) => export,
         Err(e) => return err(500, e),
     };
-    Response::json(&replay(&export, unit, &resolver, runs, &within(&granted)))
+    Response::json(&replay(&export, unit, &resolver, runs, &Granted { request: &request_limits, clock: &clock_limits }, deadline))
 }
 
-/// The limits a replay holds each round to: `holon verify`'s (`rerun_limits`: no clock or count
-/// of requests to stop it, so what a run comes to doesn't hang on the machine), but the steps,
-/// fuel and memory the deployment is `granted`, never more: a replay needs no approval.
-fn within(granted: &Limits) -> Limits {
-    Limits { max_steps: granted.max_steps, max_fuel: granted.max_fuel, max_memory: granted.max_memory, ..super::rerun_limits() }
+/// The limits a replay holds a run of `parts` (its entry and the earlier parts of the same run) to:
+/// `holon verify`'s (`rerun_limits`), but what the deployment is `granted` a run of its kind, never
+/// more, as a replay needs no approval: each round's steps, fuel and memory, the run's time, and its
+/// requests, as many as its parts were each granted (a later part sends its earlier parts' again).
+/// And no time past the replay's deadline: `left` of it.
+fn within(granted: &Limits, parts: usize, left: Duration) -> Limits {
+    Limits {
+        max_steps: granted.max_steps,
+        max_fuel: granted.max_fuel,
+        max_memory: granted.max_memory,
+        run_budget: granted.run_budget.min(left),
+        max_requests: granted.max_requests.saturating_mul(parts),
+        ..super::rerun_limits()
+    }
 }
 
-/// `unit` replayed on the last `runs` runs among `export`'s lines that ran, each round held to
-/// `limits` (`within` the deployment's grant).
-pub(crate) fn replay(export: &Export, unit: Hash, resolver: &impl holon_core::Resolver, runs: usize, limits: &Limits) -> Replayed {
+/// `unit` replayed on the last `runs` runs among `export`'s lines that ran, newest first, each held
+/// `within` what the deployment is `granted` a run of its kind, until `deadline`: the runs left by
+/// then are counted as not reached.
+pub(crate) fn replay(export: &Export, unit: Hash, resolver: &impl holon_core::Resolver, runs: usize, granted: &Granted, deadline: Instant) -> Replayed {
     let entries: Vec<LogEntry> = export.lines.iter().filter_map(|l| crate::wire::read_json::<LogEntry>(l.as_bytes()).ok()).collect();
     let files = BTreeMap::new();
     let texts = Texts { blobs: &export.blobs, blob_bytes: &export.blob_bytes, files: &files };
     let marks = Marks::new();
-    let mut out = Replayed { unit: to_hex(&unit), replayed: 0, same: 0, differ: 0, cant_tell: 0, runs: Vec::new() };
+    let mut out = Replayed { unit: to_hex(&unit), replayed: 0, same: 0, differ: 0, cant_tell: 0, not_reached: 0, runs: Vec::new() };
     let ran: Vec<usize> = (0..entries.len()).filter(|&i| !entries[i].run_id.is_empty()).collect();
-    for &i in ran.iter().rev().take(runs) {
+    let asked: Vec<usize> = ran.iter().rev().take(runs).copied().collect();
+    for (n, &i) in asked.iter().enumerate() {
+        let Some(left) = deadline.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) else {
+            out.not_reached = asked.len() - n;
+            break;
+        };
         let entry = &entries[i];
         let earlier: Vec<&LogEntry> = entries[..i].iter().filter(|e| e.run_id == entry.run_id).collect();
-        let (outcome, why, now_status) = match replay_one(entry, &earlier, &texts, unit, resolver, &marks, limits) {
+        let granted = granted.of(&entry.kind);
+        let limits = within(granted, earlier.len() + 1, left);
+        // Its time cut short by the replay's deadline: a run stopped by that isn't one that differs.
+        let cut_short = limits.run_budget < granted.run_budget;
+        let (outcome, why, now_status) = match replay_one(entry, &earlier, &texts, unit, resolver, &marks, &limits, cut_short) {
             Replay::Same(now) => ("same", Vec::new(), now),
             Replay::Differs(why, now) => ("differs", why, now),
             Replay::CantTell(why) => ("cant_tell", vec![why], None),
@@ -139,7 +242,8 @@ enum Replay {
     CantTell(String),
 }
 
-fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash, resolver: &impl holon_core::Resolver, marks: &Marks, limits: &Limits) -> Replay {
+#[allow(clippy::too_many_arguments)]
+fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash, resolver: &impl holon_core::Resolver, marks: &Marks, limits: &Limits, cut_short: bool) -> Replay {
     if let Some(e) = &entry.error {
         return Replay::CantTell(format!("it failed then: {e}"));
     }
@@ -229,12 +333,13 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
         events: entry.events.iter().map(|(k, v)| (k.clone(), marks.read(v, entry.escaped))).collect(),
         marks: marks.clone(),
         missed: Vec::new(),
+        sent: &performer,
     };
     let mut host = RecordingHost::new();
     let mut observer = Fed::new(marks, resolver, limits);
     let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &performer, limits, &mut observer, &mut waits, &[]);
 
-    if let Some(missed) = performer.missed.into_inner().unwrap().into_iter().next() {
+    if let Some(missed) = performer.missed.lock().unwrap().first().cloned() {
         return Replay::CantTell(format!("it sends {missed}, which the run didn't: what it would be answered can't be told offline"));
     }
     if let Some(missed) = waits.missed.into_iter().next() {
@@ -256,8 +361,15 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
     }
     let status = (entry.kind == "request").then(|| data::respond(outcome.outputs.first().and_then(Option::as_ref)).status);
     if let Some(e) = &outcome.error {
+        if cut_short && matches!(e, holon_host::RunError::TimeBudget { .. }) {
+            return Replay::CantTell("the replay's time ran out before it finished".into());
+        }
         let why = match e {
-            holon_host::RunError::StepBudget { .. } | holon_host::RunError::FuelBudget { .. } | holon_host::RunError::MemoryBudget { .. } => {
+            holon_host::RunError::StepBudget { .. }
+            | holon_host::RunError::FuelBudget { .. }
+            | holon_host::RunError::MemoryBudget { .. }
+            | holon_host::RunError::RequestBudget { .. }
+            | holon_host::RunError::TimeBudget { .. } => {
                 format!("it doesn't finish within what the deployment is granted: {}", e.message())
             }
             _ => format!("it doesn't finish: {}", e.message()),
@@ -386,14 +498,25 @@ fn asked(request: &Value) -> String {
 
 /// A replay's reads, events and tokens: a read answered by the run's read of the same request,
 /// wherever it is asked from; one the run never made, or whose answer isn't here, is missed.
-struct ByRead {
+struct ByRead<'a> {
     reads: Vec<(Value, Result<Option<Value>, String>)>,
     events: BTreeMap<String, Value>,
     marks: Marks,
     missed: Vec<String>,
+    /// The replay's network: a request it missed ends the run too.
+    sent: &'a ByRequest,
 }
 
-impl Waits for ByRead {
+impl Waits for ByRead<'_> {
+    /// Before a round sends anything: a run that has asked what its run didn't (a request, a
+    /// read) can't be told whatever it does next, so it goes no further. It ends as a run
+    /// overtaken does, sending nothing more; `replay_one` reads what it missed first.
+    fn claim(&mut self) -> holon_host::Claim {
+        match self.missed.is_empty() && self.sent.missed.lock().unwrap().is_empty() {
+            true => holon_host::Claim::Held,
+            false => holon_host::Claim::Overtaken,
+        }
+    }
     fn read(&mut self, _path: &[u32], request: &Value) -> Option<Value> {
         match self.reads.iter().find(|(r, _)| r == request) {
             Some((_, Ok(answer))) => answer.clone(),
@@ -499,5 +622,34 @@ fn swap(v: &Value, from: &str, to: &str) -> Value {
             Value::Bytes(out)
         }
         Value::Number(_) | Value::Boolean(_) => v.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guards: a replayed run that asks what its run didn't, a request or a read, goes no further:
+    /// `ByRead::claim`, which the host asks before each round it sends, ends it as an overtaken
+    /// run ends, sending nothing more. Until then, it is held.
+    /// Why: a missed request was answered offline and the run went on, round after round, each
+    /// computing as much as the grant allows, for a run already known to be "can't tell".
+    /// If it fails: `ByRead::claim` holds a run that missed a request (the row "request") or a
+    /// read ("read"), or ends one that missed nothing ("answered").
+    #[test]
+    fn a_replayed_run_goes_no_further_than_what_it_missed() {
+        let get = |url: &str| Value::Record([("method".to_string(), Value::Text("GET".into())), ("url".to_string(), Value::Text(url.into()))].into());
+        let limits = super::super::rerun_limits();
+        for (row, asks, reads) in [("answered", "https://api.example.com/a", false), ("request", "https://api.example.com/b", false), ("read", "https://api.example.com/a", true)] {
+            let sent = ByRequest { answers: vec![(get("https://api.example.com/a"), Value::Number(200.0))], used: Mutex::new(vec![false]), missed: Mutex::new(Vec::new()) };
+            let mut waits = ByRead { reads: Vec::new(), events: BTreeMap::new(), marks: Marks::new(), missed: Vec::new(), sent: &sent };
+            assert!(matches!(waits.claim(), holon_host::Claim::Held), "{row}: before it asks");
+            sent.perform(&get(asks), &limits);
+            if reads {
+                assert_eq!(waits.read(&[0], &get("a read the run didn't make")), None, "{row}");
+            }
+            let missed = row != "answered";
+            assert_eq!(matches!(waits.claim(), holon_host::Claim::Overtaken), missed, "{row}");
+        }
     }
 }
