@@ -116,7 +116,14 @@ it may:
 
 A websocket is listed under its server with the blocks it has, `WebSocket /room/:name: open,
 message, close`. A flow that touches nothing outside says `it only computes: it reads and changes
-nothing outside`. Each mistake goes to stderr as `file:line:col: message`, with the line and a caret
+nothing outside`. A flow that does something with a secret says what, under `with its secrets:`,
+each line with its handler and the line of the text: where the secret is sent (`POST /stripe, line
+11: sends the secret "slack_webhook_path" to https://hooks.slack.com`), a route that answers its
+caller with it, and a write or a call the host will refuse when the run tries it (`would keep the
+secret "k" (write its state "kept"): the host refuses it`, `would hand the secret "k" to another
+flow (…): the host refuses it`). These are the lines the editor marks the canvas's nodes with, and
+an agent's `check` tool prints them too, so a refused write is known before the flow runs. They
+are cautious: a value that may hold the secret is marked, so the exit code stays 0. Each mistake goes to stderr as `file:line:col: message`, with the line and a caret
 under the place, and the exit code is 1.
 
 ### `holon show`
