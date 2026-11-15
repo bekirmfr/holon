@@ -157,10 +157,14 @@ allow_plain_http = true
   - `allow_unrecorded`: whether a handler's runs may ever be kept out of its log, each approved as
     `Unrecorded("GET /health")` (default `true`: a person approves each).
 - **`[agents]`**:
-  - `propose`: whether an agent's version that needs a person's approval waits for one, as a
-    proposal in **Approvals** (default `true`). `false`: it is refused, and nothing is proposed
-    or saved; a version that asks for nothing new still deploys from the agent, and a person
-    deploys the rest. A flow's own **agents may propose versions** setting can only refuse more.
+  - `propose`: whether an agent's version waits for a person, as a proposal in **Approvals**
+    (default `true`). `false`: it is refused, and nothing is proposed or saved; a person deploys
+    each version. A flow's own **agents may propose versions** setting can only refuse more.
+  - `deploy_at_once`: whether a person may let a flow take its agent versions that ask for
+    nothing more without them, in the flow's **agents' versions deploy at once** setting (default
+    `true`: each flow's setting decides, and it is off until someone who may approve the flow's
+    deploys turns it on). `false`: every agent version waits for a person, whatever a flow's
+    setting says.
     See [Agents](../guides/agents.md#approving-what-an-agent-proposes).
 
 - **`[storage]`**: how the server keeps what it stores.

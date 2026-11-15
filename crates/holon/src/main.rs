@@ -443,6 +443,10 @@ struct Deployment {
     document: Option<serde_json::Value>,
     /// A person turned off agents proposing its versions (proposals.rs). Persisted.
     agents_propose_off: bool,
+    /// A person who may approve its deploys let an agent's versions of it deploy without them,
+    /// as long as they ask for nothing more (deploy.rs; off unless one turns it on, and only where
+    /// the host lets them, `[agents] deploy_at_once`). Persisted.
+    agents_deploy_at_once: bool,
     /// Every version deployed, oldest first, the current one last (`wire::Version`): a run
     /// logged on an earlier version is shown on its own canvas, and any version with its request
     /// kept can be deployed again (`holon restore`). Kept for good. Persisted.

@@ -413,7 +413,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             }
         } else if let Some(slug) = rest.strip_suffix("/settings") {
             if method == "POST" {
-                return crate::proposals::handle_post_settings(state, slug, request, by);
+                return crate::proposals::handle_post_settings(state, slug, request, &caller);
             }
         } else if let Some(slug) = rest.strip_suffix("/tick") {
             if method == "POST" {

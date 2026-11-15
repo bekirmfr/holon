@@ -402,6 +402,9 @@ fn an_agent_is_held_to_its_own_flows_and_to_what_each_flow_lets_agents() {
     assert_eq!(send(&ada, "POST", "/deployments/e/settings", json!({ "agents_propose": false })).0, 200);
     assert!(refused(deploy_as(&claude, json!({ "slug": "e", "unit": unit })), "a person turned off agents proposing versions of \"e\""));
     assert_eq!(send(&ada, "POST", "/deployments/e/settings", json!({ "agents_propose": true })).0, 200);
+    // Its agent versions that ask for nothing more let deploy at once: still not over a stopped one.
+    assert_eq!(send(&claude, "POST", "/deployments/e/settings", json!({ "agents_deploy_at_once": true })).0, 403);
+    assert_eq!(send(&ada, "POST", "/deployments/e/settings", json!({ "agents_deploy_at_once": true })).0, 200);
     assert_eq!(send(&ada, "POST", "/deployments/e/stop", Value::Null).0, 200);
     assert!(refused(deploy_as(&claude, json!({ "slug": "e", "unit": unit })), "deployment \"e\" is stopped, and an agent doesn't start one"));
     assert_eq!(deploy_as(&bob, json!({ "slug": "e", "unit": unit })).0, 200, "a person starts it");

@@ -27,6 +27,7 @@ import {
   listSecrets,
   listWaitingRuns,
   setAgentsPropose,
+  setAgentsDeployAtOnce,
   type DeploymentEntry,
   type GrantView,
   type HostPolicy,
@@ -98,7 +99,7 @@ export function SettingsTab({
       <Limits slug={slug} title="Limits" group="limits" rows={rows} known={policy !== null} may={can.may("settings")} onChanged={reread} onEdit={onEdit} />
       <Limits slug={slug} title="Runs kept" group="runs kept" rows={rows} known={policy !== null} may={can.may("settings")} onChanged={reread} onEdit={onEdit} />
       <Network view={view} policy={policy} may={can.may("grant")} onChange={(item) => changeGrant(slug, { revoke: [item] }).then((v) => (setView(v), onChanged()))} onEdit={onEdit} />
-      <Agents slug={slug} entry={entry} agents={manifest?.requirements?.agents ?? []} may={can.may("settings")} onChanged={onChanged} />
+      <Agents slug={slug} entry={entry} agents={manifest?.requirements?.agents ?? []} may={can.may("settings")} mayLet={can.may("grant")} onChanged={onChanged} />
       {(entry.waiting ?? 0) > 0 && <Waiting slug={slug} count={entry.waiting ?? 0} />}
       <Sessions entry={entry} onRunFrom={(n) => onAction("run", n)} may={can.may("run")} />
       <Lifecycle entry={entry} onAction={onAction} can={can} />
@@ -108,17 +109,27 @@ export function SettingsTab({
 }
 
 /** Whether agents may propose its versions (proposals.rs): off, an agent's deploy of it is
- *  refused, neither proposed nor saved. Changing it is a deployer's (`flow.deploy`). Which of its
- *  actions agents may run is part of a version, approved with it. */
-function Agents({ slug, entry, agents, may, onChanged }: { slug: string; entry: DeploymentEntry; agents: string[]; may: Answer; onChanged: () => void }) {
+ *  refused, neither proposed nor saved. Changing it is a deployer's (`flow.deploy`). And whether an
+ *  agent's version that asks for nothing more deploys without a person (deploy.rs): off unless
+ *  someone who may approve its deploys (`flow.approve-deploy`) turns it on, where the host lets
+ *  them; a deployer turns it off. Which of its actions agents may run is part of a version,
+ *  approved with it. */
+function Agents({ slug, entry, agents, may, mayLet, onChanged }: { slug: string; entry: DeploymentEntry; agents: string[]; may: Answer; mayLet: Answer; onChanged: () => void }) {
   const [on, setOn] = useState(entry.agents_propose !== false);
+  const [atOnce, setAtOnce] = useState(entry.agents_deploy_at_once === true);
   const [msg, setMsg] = useState("");
-  // Whether the host takes agents' proposals at all (its policy's `[agents] propose`).
+  // Whether the host takes agents' proposals at all (its policy's `[agents] propose`), and lets a
+  // flow take their versions at once (`[agents] deploy_at_once`).
   const [hostTakes, setHostTakes] = useState(true);
+  const [hostLets, setHostLets] = useState(true);
   useEffect(() => {
     let live = true;
     getPermissions().then(
-      (p) => live && setHostTakes(p.agents_propose !== false),
+      (p) => {
+        if (!live) return;
+        setHostTakes(p.agents_propose !== false);
+        setHostLets(p.agents_deploy_at_once !== false);
+      },
       () => undefined,
     );
     return () => {
@@ -126,6 +137,7 @@ function Agents({ slug, entry, agents, may, onChanged }: { slug: string; entry: 
     };
   }, []);
   useEffect(() => setOn(entry.agents_propose !== false), [entry.agents_propose]);
+  useEffect(() => setAtOnce(entry.agents_deploy_at_once === true), [entry.agents_deploy_at_once]);
   const change = (next: boolean) => {
     // Shown at once; back as it was if the server refuses.
     setMsg("");
@@ -135,6 +147,17 @@ function Agents({ slug, entry, agents, may, onChanged }: { slug: string; entry: 
       setMsg(say(e));
     });
   };
+  const changeAtOnce = (next: boolean) => {
+    setMsg("");
+    setAtOnce(next);
+    setAgentsDeployAtOnce(slug, next).then(onChanged, (e: unknown) => {
+      setAtOnce(!next);
+      setMsg(say(e));
+    });
+  };
+  // Turning it on lets agents change what runs without a person: someone who may approve its
+  // deploys, where the host lets them. Turning it off, a deployer.
+  const mayAtOnce: Answer = atOnce ? may : !hostLets ? "this host lets no flow take agents' versions at once (agents.deploy_at_once = false)" : mayLet;
   return (
     <section className="hl-flow__section" aria-label="agents">
       <h2>Agents</h2>
@@ -143,7 +166,25 @@ function Agents({ slug, entry, agents, may, onChanged }: { slug: string; entry: 
         <input type="checkbox" checked={on} {...gateOf(may)} onChange={(e) => change(e.target.checked)} />
         agents may propose versions
       </label>
-      <p className="hl-flow__note">{on ? "An agent's version that asks for nothing new deploys at once; one that does waits in Approvals, for a person." : "An agent's deploy of it is refused."}</p>
+      <p className="hl-flow__note">{on ? "Each version an agent deploys waits in Approvals, for a person." : "An agent's deploy of it is refused."}</p>
+      {on && (
+        <>
+          <label className="hl-flow__check" title={mayAtOnce === true ? undefined : mayAtOnce}>
+            <input type="checkbox" checked={atOnce} {...gateOf(mayAtOnce)} onChange={(e) => changeAtOnce(e.target.checked)} />
+            agents' versions deploy at once
+          </label>
+          <p className="hl-flow__note">
+            {atOnce && hostLets
+              ? "An agent's version that asks for nothing more deploys without a person; one that asks for more, or sends something out through code it changed, still waits for one."
+              : "Off: nothing an agent writes runs before a person has read it."}
+          </p>
+          {atOnce && !hostLets && (
+            <p className="hl-flow__note" role="note">
+              This host lets no flow take agents' versions at once (its policy's agents.deploy_at_once = false): each still waits for a person, whatever this says.
+            </p>
+          )}
+        </>
+      )}
       <dl className="hl-flow__facts">
         <div>
           <dt>agents may run</dt>
@@ -152,7 +193,7 @@ function Agents({ slug, entry, agents, may, onChanged }: { slug: string; entry: 
       </dl>
       {on && !hostTakes && (
         <p className="hl-flow__note" role="note">
-          This host takes no proposals from agents (its policy's agents.propose = false): an agent's version that asks for something new is refused, whatever this says.
+          This host takes no proposals from agents (its policy's agents.propose = false): an agent's version is refused, whatever this says.
         </p>
       )}
     </section>

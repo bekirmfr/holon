@@ -377,16 +377,20 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
         needed.extend(borrowed.into_iter().map(|(item, _)| item));
     }
     let missing: Vec<String> = needed.into_iter().filter(|item| !body.acknowledge.contains(item)).collect();
-    // An agent approves nothing: what needs a person waits for one, as a proposal, unless the
-    // host takes none.
-    if !approves && !missing.is_empty() {
+    // An agent approves nothing: each version it deploys waits for a person, as a proposal, what
+    // it asks for or not, unless the host takes none; so does a service's that doesn't approve.
+    // A person who may approve its deploys may let a deployed flow's take theirs at once (its
+    // settings, where the host lets them): then only what asks for more waits. A person who
+    // doesn't approve its deploys wrote what they deploy: what asks for more waits for someone
+    // who does, the rest deploys.
+    if !approves && (!missing.is_empty() || waits_for_a_person(who, policy, deployments, &body.slug)) {
         if !policy.agents_propose {
+            let needs = if missing.is_empty() { String::new() } else { format!(", and this one needs {}", missing.join(", ")) };
             return err(
                 403,
                 format!(
-                    "this host takes no proposals from agents (holon.toml: agents.propose = false), and this version of {:?} needs a person to approve: {}. A person deploys it",
-                    body.slug,
-                    missing.join(", ")
+                    "this host takes no proposals from agents (holon.toml: agents.propose = false): each version of {:?} an agent deploys waits for a person{needs}. A person deploys it",
+                    body.slug
                 ),
             );
         }
@@ -527,6 +531,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
         let parked = deployments.get(&body.slug).map(|old| old.parked.clone()).unwrap_or_default();
         // And whether agents may propose its versions is as a person left it.
         let agents_propose_off = deployments.get(&body.slug).is_some_and(|old| old.agents_propose_off);
+        let agents_deploy_at_once = deployments.get(&body.slug).is_some_and(|old| old.agents_deploy_at_once);
         let state = match carried {
             Some(arc) => Some(arc),
             None if is_state => Some(Arc::new(claims::StateCell::kept_at(State::new(), state_head_for(deployments_path, &body.slug)))),
@@ -566,6 +571,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
                 versions,
                 events,
                 agents_propose_off,
+                agents_deploy_at_once,
             },
         );
     }
@@ -638,6 +644,15 @@ fn borrowed(deployments: &Mutex<BTreeMap<String, Deployment>>, items: &BTreeSet<
         .collect()
 }
 
+/// Whether a version of `slug` that `who`, who doesn't approve its deploys, deploys waits for a
+/// person even when it asks for nothing more: it does when a program (an agent, a service) deploys
+/// it, unless a person who may approve its deploys let the flow take theirs at once (its settings,
+/// proposals.rs) and the host lets them (`[agents] deploy_at_once`); never for a flow not deployed.
+fn waits_for_a_person(who: &Caller, policy: &Policy, deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> bool {
+    let at_once = policy.agents_deploy_at_once && deployments.lock().unwrap().get(slug).is_some_and(|d| d.agents_deploy_at_once);
+    who.kind != Some(crate::accounts::Kind::Person) && !at_once
+}
+
 /// Whether `who` approves what deploying a version of `slug` tagged `then` needs: on the flow as
 /// it is deployed now, if it is, and as the version would make it (D22).
 fn may_approve(who: &Caller, slug: &str, deployed: bool, then: &[String]) -> bool {
@@ -678,6 +693,7 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         listen_error: dep.listen_error.clone(),
         waiting: dep.parked.len(),
         agents_propose: !dep.agents_propose_off,
+        agents_deploy_at_once: dep.agents_deploy_at_once,
         version: dep.versions.last().map(|v| v.number),
         tags: dep.server.as_ref().map(|s| s.tags.clone()).unwrap_or_default(),
     }
@@ -801,6 +817,9 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
         "manifest": to_hex(&manifest.hash()),
         "items": items,
         "needs_approval": needs,
+        // Whether, deployed by `who`, it waits for a person as a proposal: an agent's version
+        // does, what it asks for or not, unless a person let the flow's take it at once (deploy).
+        "proposed": proposes && (!needs.is_empty() || waits_for_a_person(who, policy, deployments, &body.slug)),
         "already_granted": granted,
         // Where each secret it reads is sent (secret → hosts): said beside the secret's item.
         "sent": &sent,
@@ -1129,25 +1148,27 @@ pub(crate) fn permissions_view(policy: &Policy) -> serde_json::Value {
         "allow_private_addresses": policy.allow_private_addresses,
         "allow_unrecorded": policy.allow_unrecorded,
         "agents_propose": policy.agents_propose,
+        "agents_deploy_at_once": policy.agents_deploy_at_once,
         "storage": { "sweep_every": crate::permissions::every_text(policy.storage.sweep_every), "warn_at": crate::permissions::threshold_text(policy.storage.warn_at), "full_at": crate::permissions::threshold_text(policy.storage.full_at), "when_full": policy.storage.when_full.text(), "backup": policy.storage.backup.as_ref().map(|b| b.display().to_string()) },
         "text": policy.text,
     })
 }
 
 /// `GET /deployments/<slug>/manifest` — what it needs, re-derived from its unit; and
-/// `GET /deployments/<slug>/grant` — what the host granted it, with the grant's hash.
+/// `GET /deployments/<slug>/grant` — what the host granted it, with the grant's hash, as a change
+/// to it answers (grants.rs).
 pub(crate) fn handle_get_permission_view(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     slug: &str,
     which: &str,
 ) -> Response {
-    let (unit, grant, attention) = match deployments.lock().unwrap().get(slug) {
-        Some(d) => (d.unit, d.grant.clone(), d.attention.clone()),
+    let (unit, grant, view) = match deployments.lock().unwrap().get(slug) {
+        Some(d) => (d.unit, d.grant.clone(), crate::grants::grant_view(d)),
         None => return err(404, format!("no deployment {slug:?}")),
     };
     if which == "grant" {
-        return Response::json(&serde_json::json!({ "grant": grant, "hash": to_hex(&grant.hash()), "attention": attention }));
+        return Response::json(&view);
     }
     let resolver = match closure(store, unit) {
         Ok(r) => r,

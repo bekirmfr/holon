@@ -186,8 +186,10 @@ fn on_timeline(state: &AppState, slug: &str, what: String, by: Option<&str>) {
     }
 }
 
-/// An agent's deploy of `body` that needs a person to approve `needs`: the flow saved under the
-/// agent's name (never over someone else's), and kept as a proposal. 202, with the proposal.
+/// A deploy of `body` that waits for a person who approves it (deploy.rs): an agent's or a
+/// service's, whatever it asks for (`needs`, maybe nothing), or one by a person who doesn't
+/// approve its deploys that asks for more. The flow saved under its author's name (never over
+/// someone else's), and kept as a proposal. 202, with the proposal.
 pub(crate) fn propose(state: &AppState, body: &DeployRequestBody, needs: Vec<String>, who: &crate::access::Caller) -> Response {
     let by = who.name.as_deref();
     let Some(document) = body.document.clone() else {
@@ -293,6 +295,9 @@ struct SettingsBody {
     /// Whether agents may propose its versions.
     #[serde(default)]
     agents_propose: Option<bool>,
+    /// Whether an agent's version that asks for nothing more deploys without a person.
+    #[serde(default)]
+    agents_deploy_at_once: Option<bool>,
     /// Limits to lower in place, by name (`keep_runs` and `keep_run_days` among them): each to at
     /// most what it is now. Raising one widens what it may do, so it is a new version, which a
     /// person approves (docs/L4s/web-console-L4.md §8.4).
@@ -300,22 +305,35 @@ struct SettingsBody {
     lower: BTreeMap<String, u64>,
 }
 
-/// `POST /deployments/<slug>/settings`, `{ "agents_propose", "lower" }`, each optional: the
-/// settings a deployer changes in place, none of which widens what it may do. Whether agents may
-/// propose its versions (off, an agent's deploy of it is refused, deploy.rs), kept as an event;
-/// and limits lowered, as its grant's (grants.rs), which a deploy that asks for them could have
-/// set without anyone's approval. The limits first: one that would be raised changes nothing.
-pub(crate) fn handle_post_settings(state: &AppState, slug: &str, request: &Request, by: Option<&str>) -> Response {
+/// `POST /deployments/<slug>/settings`, `{ "agents_propose", "agents_deploy_at_once", "lower" }`,
+/// each optional: the settings a deployer changes in place. Whether agents may propose its
+/// versions (off, an agent's deploy of it is refused, deploy.rs), and whether an agent's version
+/// that asks for nothing more deploys without a person, each kept as an event; and limits
+/// lowered, as its grant's (grants.rs), which a deploy that asks for them could have set without
+/// anyone's approval. Letting agents' versions deploy at once widens who changes what it runs: a
+/// person who may approve its deploys turns it on, where the host lets them (`[agents]
+/// deploy_at_once`); turning it off, anyone who changes its settings. What is refused changes
+/// nothing; then the limits, one that would be raised changing nothing.
+pub(crate) fn handle_post_settings(state: &AppState, slug: &str, request: &Request, who: &Caller) -> Response {
+    let by = who.name.as_deref();
     let body: SettingsBody = match read_body(request).map(|b| serde_json::from_slice(&b)) {
         Ok(Ok(b)) => b,
         Ok(Err(e)) => return err(400, format!("not a valid settings JSON: {e}")),
         Err(r) => return r,
     };
-    if body.agents_propose.is_none() && body.lower.is_empty() {
-        return err(400, "nothing to change: send agents_propose, or limits to lower");
+    if body.agents_propose.is_none() && body.agents_deploy_at_once.is_none() && body.lower.is_empty() {
+        return err(400, "nothing to change: send agents_propose, agents_deploy_at_once, or limits to lower");
     }
     if !state.deployments.lock().unwrap().contains_key(slug) {
         return err(404, format!("no deployment {slug:?}"));
+    }
+    if body.agents_deploy_at_once == Some(true) {
+        if let Err(refusal) = can(who, Action::FlowApproveDeploy, &Resource::Flow(slug)) {
+            return err(403, format!("{}: letting an agent's versions of {slug:?} deploy without a person is for someone who may approve its deploys", refusal.0));
+        }
+        if !state.policy().agents_deploy_at_once {
+            return err(403, format!("this host lets no flow's agent versions deploy without a person (holon.toml: agents.deploy_at_once = false): each version of {slug:?} an agent deploys waits for one"));
+        }
     }
     if !body.lower.is_empty() {
         let change = crate::permissions::ChangeRequest { lower: body.lower, ..Default::default() };
@@ -331,6 +349,18 @@ pub(crate) fn handle_post_settings(state: &AppState, slug: &str, request: &Reque
         {
             dep.agents_propose_off = !on;
             let what = if on { "agents may propose versions" } else { "agents may no longer propose versions" };
+            let seq = dep.log.next_seq();
+            dep.events.push("settings", what.into(), by, seq, crate::events::Detail::default());
+        }
+        if let Some(on) = body.agents_deploy_at_once
+            && dep.agents_deploy_at_once != on
+        {
+            dep.agents_deploy_at_once = on;
+            let what = if on {
+                "an agent's version that asks for nothing more now deploys without a person: what asks for more still waits for one"
+            } else {
+                "each agent's version waits for a person again"
+            };
             let seq = dep.log.next_seq();
             dep.events.push("settings", what.into(), by, seq, crate::events::Detail::default());
         }

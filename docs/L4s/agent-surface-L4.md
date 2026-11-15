@@ -47,8 +47,10 @@ not JSON to be parsed: the same sentences `holon check` and the editor use.
    granted by the host's policy (`[grants] auto`) or by the slug's previous grant. Otherwise it
    saves the flow (`POST /flows`, under the slug) and answers what a person must approve and
    where: the editor's flows page, which deploys it with the approval dialog it already has.
-   After that, a new version that needs nothing more deploys from the agent at once, and one that
-   needs more goes back to the person. A version whose code changed and that reads a secret
+   After that, each new version goes back to the person too, as a proposal with all it changes
+   (since 2026-11-15; a version that needs nothing more deploys from the agent at once only on a
+   flow whose settings a person who may approve its deploys set so), and so does one that needs
+   more, with or without that setting. A version whose code changed and that reads a secret
    needs more too: the previous grant approved what the old code did with it. A required secret
    sends it back to the person; an optional one deploys withheld (`revoked`, its reads refused)
    until a person grants it back. So does an unrecorded handler whose code it changed: its

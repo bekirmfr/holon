@@ -41,6 +41,7 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
                 uses: dep.uses.clone(),
                 browsers: dep.browsers.clone(),
                 agents_propose_off: dep.agents_propose_off,
+                agents_deploy_at_once: dep.agents_deploy_at_once,
                 trigger_count: dep.trigger_count,
                 error_count: dep.error_count,
                 tallies: dep.tallies.clone(),
@@ -273,6 +274,7 @@ pub(crate) fn load_deployments(
                 tallies_changed: false,
                 deployed_at,
                 agents_propose_off: record.agents_propose_off,
+                agents_deploy_at_once: record.agents_deploy_at_once,
             },
         );
     }

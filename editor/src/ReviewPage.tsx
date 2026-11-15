@@ -183,7 +183,7 @@ export function ReviewPage({
   const dialog = useDialog();
   const approve = async () => {
     if (!data) return;
-    const action = asked > 0 ? "Approve and deploy" : entry ? "Update" : "Deploy";
+    const action = asked > 0 || data.proposal ? "Approve and deploy" : entry ? "Update" : "Deploy";
     const again = askAgain(slug, data.preview.touches, action);
     if (again && !(await dialog.confirm(again, `${action} anyway`))) return;
     setBusy(true);
@@ -392,8 +392,9 @@ export function ReviewPage({
                   <input type="checkbox" checked={read} onChange={(e) => setRead(e.target.checked)} />
                   {asked > 0 ? `I read the ${asked} new permission${asked === 1 ? "" : "s"} and the change.` : "I read the change."}
                 </label>
-                <button className="hl-flow__button hl-flow__button--go" {...can.gate(asked > 0 ? "approve" : "deployNow", { disabled: !read || busy })} onClick={() => void approve()}>
-                  {busy ? "Deploying…" : asked > 0 ? "Approve and deploy" : entry ? "Update" : "Deploy"}
+                {/* An agent's version is approved, whatever it asks for: by someone who may approve its deploys. */}
+                <button className="hl-flow__button hl-flow__button--go" {...can.gate(asked > 0 || data.proposal ? "approve" : "deployNow", { disabled: !read || busy })} onClick={() => void approve()}>
+                  {busy ? "Deploying…" : asked > 0 || data.proposal ? "Approve and deploy" : entry ? "Update" : "Deploy"}
                 </button>
               </>
             )}

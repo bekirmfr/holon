@@ -56,10 +56,10 @@ const INSTRUCTIONS: &str = "Holon runs small services (flows) written in its own
 shows what each may do before it runs. Call `reference` first for the language and its leaves, \
 `check` a text before deploying it, then `deploy`, `call` and `explain`; `deployments` and `flows` \
 show what is already there, with its text, and `save` keeps a flow without deploying it; \
-`whoami` says what you may do, and where. Before deploying a new version of a deployed flow, `replay` runs it offline on the flow's recent runs and says which it answers differently: say so in the deploy's why. When a flow begins to answer differently, `history` shows what changed before it, and `restore` what going back would change; a person restores it. A first \
-deploy, and any version that needs a new permission, waits for a person to approve it in the \
-editor: tell the user what it asks for and where, and deploy again once they have. A proposal \
-is decided later, and a decline comes with a reason: with a shell, run `holon wait <slug>` in the \
+`whoami` says what you may do, and where. Before deploying a new version of a deployed flow, `replay` runs it offline on the flow's recent runs and says which it answers differently: say so in the deploy's why. When a flow begins to answer differently, `history` shows what changed before it, and `restore` what going back would change; a person restores it. Every \
+version you deploy waits for a person to approve it in the editor, the first and each after it, \
+whatever it changes (unless a person set that flow to take your versions that ask for nothing \
+more at once): tell the user what it changes and where. A proposal is decided later, and a decline comes with a reason: with a shell, run `holon wait <slug>` in the \
 background (it ends when a person decides, exit 0 approved, 1 declined with the reason); without \
 one, `deployments` with the slug and `wait` holds until they do. Read the outcome before you \
 deploy again. A run that \
@@ -185,7 +185,7 @@ fn tool_list() -> Value {
         {
             "name": "deploy",
             "title": "Deploy a flow",
-            "description": "Deploy a flow to the Holon server. It never approves anything: when the flow may do something not yet approved (a first deploy always is), it is proposed for a person, with your why and note, and the answer says what they must approve and where. They approve it or decline it with a reason, which `deployments` with its slug says. Once a version is deployed, a new one that needs nothing more deploys from here at once.",
+            "description": "Deploy a flow to the Holon server. It never approves anything: each version is proposed for a person, with your why and note, whatever it changes, and the answer says what it asks for and where they review it. They approve it, which deploys it, or decline it with a reason, which `deployments` with its slug says. Only on a flow whose settings a person set to take agents' versions at once does a version that asks for nothing more deploy from here at once.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -542,10 +542,10 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>, asked: Asked) -> Result
         let touches = crate::touches::text(&crate::touches::lines(&preview["touches"], &preview["settings"]));
         let version = p.get("version").and_then(Value::as_u64).unwrap_or(1);
         let why = if asked.why.is_some() { "with your why" } else { "with no why: say what it changes and why, with `why`, next time" };
+        let asks = if needs.is_empty() { "It asks for nothing new.".to_string() } else { format!("It asks to:\n{}", described(&needs)) };
         return Ok(format!(
-            "Not deployed yet: proposed as version {version} of \"{slug}\" (proposal {}), {why}. A person has to approve what it may do. It asks to:\n{}\n\nWhat it touches (+ new, - no longer, ~ changed, ! not ready on {}):\n{}\n\nIt waits in the editor's Approvals on {} (#approvals.{slug}.v{version}), where they approve it, which deploys it, or decline it with a reason. Tell them, and hear what they decide without polling: run `holon wait {slug} --server {}` in the background (it ends when they decide, exit 0 if approved, 1 if declined, with the reason), or `deployments` with \"{slug}\" and `wait` where your host has no shell. Once it is deployed, a version that needs nothing more deploys from here at once.{secrets_note}",
+            "Not deployed yet: proposed as version {version} of \"{slug}\" (proposal {}), {why}. A person approves each version an agent deploys, reading all it changes. {asks}\n\nWhat it touches (+ new, - no longer, ~ changed, ! not ready on {}):\n{}\n\nIt waits in the editor's Approvals on {} (#approvals.{slug}.v{version}), where they approve it, which deploys it, or decline it with a reason. Tell them, and hear what they decide without polling: run `holon wait {slug} --server {}` in the background (it ends when they decide, exit 0 if approved, 1 if declined, with the reason), or `deployments` with \"{slug}\" and `wait` where your host has no shell.{secrets_note}",
             p.get("id").and_then(Value::as_u64).unwrap_or(0),
-            described(&needs),
             api.server(),
             touches.join("\n"),
             api.server(),
@@ -1586,6 +1586,11 @@ mod tests {
 
     const SLUGS_TEXT: &str = include_str!("../../holon-author/samples/slugs.holon.ts");
 
+    /// `slug`'s agent versions that ask for nothing more let deploy at once, by `person`.
+    fn let_at_once(person: &dyn Api, slug: &str) {
+        json_of(person, "POST", &format!("/deployments/{slug}/settings"), Some(Body::Json(json!({ "agents_deploy_at_once": true })))).unwrap();
+    }
+
     #[test]
     fn whoami_says_what_each_binding_allows_and_where() {
         let mut state = test_state();
@@ -1621,8 +1626,16 @@ mod tests {
         let preview: Value = serde_json::from_slice(&body_bytes(route(&state, &req_as(&p.ada, "POST", "/deploy/preview", serde_json::to_vec(&json!({ "slug": "slugs", "unit": plan.unit })).unwrap())))).unwrap();
         let approve = json!({ "slug": "slugs", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document });
         assert_eq!(route(&state, &req_as(&p.ada, "POST", "/deploy", serde_json::to_vec(&approve).unwrap())).status_code, 200);
-        // A new version that needs nothing more deploys from the agent at once.
+        // A new version waits for a person too, whatever it changes; this one asks for nothing new.
         let v2 = text.replace("\"unsigned\"", "\"not signed\"");
+        let second = tool(&state, &p.claude, "deploy", json!({ "text": v2 })).unwrap();
+        assert!(second.starts_with("Not deployed yet") && second.contains("It asks for nothing new."), "{second}");
+        // The person approves it, and lets the flow take the agent's versions that ask for nothing
+        // more at once: then one deploys from the agent.
+        let plan = agent::plan(&v2).unwrap();
+        let approve = json!({ "slug": "slugs", "unit": plan.unit, "acknowledge": [], "document": plan.document });
+        assert_eq!(route(&state, &req_as(&p.ada, "POST", "/deploy", serde_json::to_vec(&approve).unwrap())).status_code, 200);
+        let_at_once(&Signed { state: &state, token: &p.ada }, "slugs");
         let second = tool(&state, &p.claude, "deploy", json!({ "text": v2 })).unwrap();
         assert!(second.starts_with("Deployed \"slugs\""), "{second}");
         assert!(second.contains("POST /slugs"), "{second}");
@@ -1709,7 +1722,9 @@ mod tests {
         let preview: Value = serde_json::from_slice(&body_bytes(route(&state, &req_as(&p.ada, "POST", "/deploy/preview", serde_json::to_vec(&json!({ "slug": "page-api", "unit": plan.unit })).unwrap())))).unwrap();
         let approve = json!({ "slug": "page-api", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document, "browsers": ["https://app.example", "*"] });
         assert_eq!(route(&state, &req_as(&p.ada, "POST", "/deploy", serde_json::to_vec(&approve).unwrap())).status_code, 200);
-        // The next version deploys from the agent, with the origins one by one.
+        let_at_once(&Signed { state: &state, token: &p.ada }, "page-api");
+        // The next version deploys from the agent, where the person let it, with the origins one by
+        // one.
         let v2 = text.replace("\"hi {name}\"", "\"hello {name}\"");
         let second = tool(&state, &p.claude, "deploy", json!({ "text": v2 })).unwrap();
         assert!(second.starts_with("Deployed \"page-api\""), "{second}");
@@ -1746,9 +1761,11 @@ mod tests {
         assert!(approved.contains("refused") && approved.contains("an agent doesn't approve"), "{approved}");
         let unasked = json_of(&agent, "POST", "/deploy", ask(json!([]))).unwrap();
         assert_eq!(unasked["proposal"]["state"], "waiting", "{unasked}");
-        // The person approves; then the agent's next version deploys, and it calls it.
+        // The person approves, and lets its agent versions that ask for nothing more deploy at
+        // once; then the agent's next version deploys, and it calls it.
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "agent-slugs", "unit": plan.unit })))).unwrap();
         json_of(&person, "POST", "/deploy", ask(preview["needs_approval"].clone())).unwrap();
+        let_at_once(&person, "agent-slugs");
         let v2 = SLUGS_TEXT.replace("\"unsigned\"", "\"not signed\"");
         assert!(deploy(&agent, &v2, slug).unwrap().starts_with("Deployed \"agent-slugs\""));
         // Its code changed, so the secret it can run without is withheld until a person grants it back.
@@ -1794,7 +1811,8 @@ mod tests {
         let plan = agent::plan(&text).unwrap();
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "price-rollback", "unit": plan.unit })))).unwrap();
         json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "price-rollback", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document })))).unwrap();
-        // Version 2, with another fee, from the agent: it needs nothing more.
+        let_at_once(&person, "price-rollback");
+        // Version 2, with another fee, from the agent: it needs nothing more, and the person let it.
         assert!(deploy(&agent, &text.replace("fee = 0.5", "fee = 5"), None).unwrap().starts_with("Deployed \"price-rollback\""));
         let put = |price: u64| call(&agent, &json!({ "slug": "price-rollback", "method": "PUT", "path": "/prices/tea", "body": { "price": price } })).unwrap();
         let first = put(4);
@@ -1970,6 +1988,7 @@ mod tests {
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "quiet-api", "unit": plan.unit })))).unwrap();
         let approve = json!({ "slug": "quiet-api", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document });
         json_of(&person, "POST", "/deploy", Some(Body::Json(approve))).unwrap();
+        let_at_once(&person, "quiet-api");
         let item = json!("Unrecorded(\"GET /health\")");
         let grant = || json_of(&person, "GET", "/deployments/quiet-api/grant", None).unwrap()["grant"].clone();
         let deployed = |text: &str| {
@@ -2221,6 +2240,7 @@ mod tests {
         for Row { slug, base, wider, narrower, words, review: (setting, now, then), held } in rows {
             let held = |state: &AppState| state.deployments.lock().unwrap().get(slug).map(held).unwrap();
             deployed_by_person(&text(slug, base, "hi"), slug);
+            let_at_once(&person, slug);
             let as_left = held(&state);
             assert!(deploy(&agent, &text(slug, base, "hello"), Some(slug)).unwrap().starts_with(&format!("Deployed \"{slug}\"")), "{slug}: kept as it is");
             let proposed = deploy(&agent, &text(slug, wider, "hello"), Some(slug)).unwrap();
@@ -2254,6 +2274,8 @@ mod tests {
         let ask = |unit: &str, acknowledge: Value| Some(Body::Json(json!({ "slug": "peek", "unit": unit, "acknowledge": acknowledge, "document": plan.document })));
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "peek", "unit": plan.unit })))).unwrap();
         json_of(&person, "POST", "/deploy", ask(&plan.unit, preview["needs_approval"].clone())).unwrap();
+        // Its agent versions that ask for nothing more let deploy at once: these still wait.
+        let_at_once(&person, "peek");
         json_of(&person, "POST", "/deployments/peek/secrets/api_key", Some(Body::Json(json!({ "value": "sk_live_not_for_agents" })))).unwrap();
         // The agent's version that would read it out encoded waits for a person.
         assert!(deploy(&agent, &v2, Some("peek")).unwrap().starts_with("Not deployed yet"));

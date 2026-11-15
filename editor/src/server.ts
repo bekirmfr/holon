@@ -893,10 +893,14 @@ export const getProposal = async (id: number) => asJson<Proposal>(await api(`${B
 export const declineProposal = async (id: number, reason: string) => asJson<Proposal>(await post(`${BASE}/proposals/${id}/decline`, { reason }));
 /** Whether agents may propose a deployment's versions. */
 export const setAgentsPropose = async (slug: string, on: boolean) => changeSettings(slug, { agents_propose: on });
-/** `POST /deployments/<slug>/settings`: what a deployer changes in place, none of it widening what
- *  it may do: whether agents may propose its versions, and limits lowered (fewer runs kept among
- *  them). A limit raised is refused: that is a new version, which a person approves. */
-export const changeSettings = async (slug: string, change: { agents_propose?: boolean; lower?: Record<string, number> }) =>
+/** Whether an agent's version of a deployment that asks for nothing more deploys without a person
+ *  (on: someone who may approve its deploys, where the host lets them). */
+export const setAgentsDeployAtOnce = async (slug: string, on: boolean) => changeSettings(slug, { agents_deploy_at_once: on });
+/** `POST /deployments/<slug>/settings`: what a deployer changes in place: whether agents may
+ *  propose its versions, whether an agent's version that asks for nothing more deploys at once
+ *  (turned on only by someone who may approve its deploys), and limits lowered (fewer runs kept
+ *  among them). A limit raised is refused: that is a new version, which a person approves. */
+export const changeSettings = async (slug: string, change: { agents_propose?: boolean; agents_deploy_at_once?: boolean; lower?: Record<string, number> }) =>
   asJson<DeploymentEntry>(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/settings`, change));
 
 /** A secret's history: a deployment's, or (`slug` null) the server's own. */
@@ -960,9 +964,12 @@ export type HostPolicy = {
   allow_private_addresses: boolean;
   /** Whether a handler's runs may ever be kept out of its log (`Unrecorded(…)`). */
   allow_unrecorded?: boolean;
-  /** `[agents] propose`: whether an agent's version that needs a person waits for one as a
-   *  proposal (off: it is refused, and nothing is saved). */
+  /** `[agents] propose`: whether an agent's version waits for a person as a proposal (off: it is
+   *  refused, and nothing is saved). */
   agents_propose?: boolean;
+  /** `[agents] deploy_at_once`: whether a flow's settings may let its agent versions that ask for
+   *  nothing more deploy without a person (off: each waits for one, whatever a flow says). */
+  agents_deploy_at_once?: boolean;
   /** `[storage]`: how often the server sweeps (`"10m"`, `"off"`). */
   storage?: { sweep_every: string; warn_at?: string };
   /** The policy file's text as it was read (null: there is none, and the defaults hold). */
@@ -1011,6 +1018,9 @@ export type DeploymentEntry = {
   waiting?: number;
   /** Whether agents may propose its versions (off: an agent's deploy of it is refused). */
   agents_propose?: boolean;
+  /** Whether a person let an agent's version of it that asks for nothing more deploy without them
+   *  (off: each waits for a person). */
+  agents_deploy_at_once?: boolean;
   /** The tags its version is deployed with (`flow("payout", { tags: ["payments"] })`): a binding
    *  on one of them holds on it. */
   tags?: string[];

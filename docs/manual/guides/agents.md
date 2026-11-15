@@ -163,11 +163,19 @@ Opening the flow from the **flows** page and deploying it there approves the pro
 
 A flow's settings have **agents may propose versions**. Turned off, an agent's deploy of it is
 refused, neither proposed nor saved. The **Proposal** sample is a flow to try this with. For the
-whole host, the policy's `[agents] propose = false` refuses every agent version that needs a
-person, on every flow ([The policy](../reference/server.md#the-policy)); the **Policy** page and
-`holon policy` say which it is.
+whole host, the policy's `[agents] propose = false` refuses every agent version, on every flow
+([The policy](../reference/server.md#the-policy)); the **Policy** page and `holon policy` say
+which it is.
 
-From then on, a new version that asks for nothing more deploys from the agent at once. A version
+Every version an agent deploys waits for you like this, the first and each after it, whatever it
+changes: its review shows all of it, the code beside what runs now, what it may do (new, gone, or
+*asked again*) and its settings. Nothing an agent writes runs before a person has read it.
+
+You can let one flow take an agent's versions without you: its settings have **agents' versions
+deploy at once**, off until someone who may approve its deploys turns it on, and its timeline says
+who did. Turned on, a version that asks for nothing more deploys from the agent at once; turn it
+off again from the same place. The policy's `[agents] deploy_at_once = false` keeps it off on
+every flow. Even with it on, some versions still wait for you. A version
 that asks for something new (another host, another secret, a site in its `browsers` line whose
 pages it doesn't answer yet) is proposed to you again. So is a
 version whose code changed and that reads a secret: what a secret is used for is the code, so a

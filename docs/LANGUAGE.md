@@ -3163,8 +3163,9 @@ the syntax to TypeScript's, keeping the lowering.
    language, with the agent's own binding names, and under each statement of the run's route the
    value it had, or the node a missing value first went missing at (`field "author" gave
    nothing`), read from the run's recorded timeline through the document's `trace`. The tools
-   never approve: a deploy that needs approval is saved as a flow for a person to deploy from the
-   editor, and once they have, a version that needs nothing more deploys from the agent at once.
+   never approve: each version an agent deploys is kept as a proposal for a person to approve
+   from the editor, with all it changes (a version that needs nothing more deploys from the agent
+   at once only on a flow whose settings a person set so, where the host lets them).
    The server holds it to that too: `holon mcp` signs in as an agent, a principal of its own
    whose `agent` role proposes and calls and never approves, grants, starts, stops or deletes,
    shown by its own name (`bma-agent`, made for the OS user on a server they run); its own token

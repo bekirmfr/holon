@@ -355,6 +355,9 @@ pub(crate) struct DeploymentRecord {
     /// A person turned off agents proposing its versions (proposals.rs).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) agents_propose_off: bool,
+    /// A person let an agent's versions of it deploy without them (deploy.rs).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) agents_deploy_at_once: bool,
 }
 
 #[derive(Serialize)]
@@ -425,6 +428,10 @@ pub(crate) struct DeploymentEntry {
     pub(crate) waiting: usize,
     /// Whether agents may propose its versions (proposals.rs).
     pub(crate) agents_propose: bool,
+    /// Whether a person let an agent's versions of it deploy without them, as long as they ask for
+    /// nothing more (deploy.rs). The host may not let it (`[agents] deploy_at_once = false`,
+    /// `GET /permissions`): then each still waits.
+    pub(crate) agents_deploy_at_once: bool,
     /// The number of the version deployed now (`v3`), as `/versions` counts them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) version: Option<u32>,

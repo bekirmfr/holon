@@ -313,8 +313,8 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "proposal",
         title: "Proposal (an agent asks, a person approves)",
-        description: "A flow that calls httpbin.org for an id: a host to reach, which a person approves. An agent that deploys it through holon mcp proposes it instead: the server keeps the version as a proposal (GET /proposals), with the agent's why and note and what it asks for, and it waits in the editor's Approvals. A person reviews it there and approves it, which deploys it, or declines it with a reason (POST /proposals/<id>/decline), which the agent reads back through holon mcp's deployments. A deployed flow's settings can turn agents' proposals off.",
-        shows: &["proposals", "agents propose", "holon mcp", "Approvals", "decline with a reason", "network egress"],
+        description: "A flow that calls httpbin.org for an id: a host to reach, which a person approves. An agent that deploys it through holon mcp proposes it instead: the server keeps the version as a proposal (GET /proposals), with the agent's why and note and what it asks for, and it waits in the editor's Approvals. A person reviews it there and approves it, which deploys it, or declines it with a reason (POST /proposals/<id>/decline), which the agent reads back through holon mcp's deployments. Each later version the agent deploys waits the same way, whatever it changes. A deployed flow's settings can turn agents' proposals off, or let its agent versions that ask for nothing more deploy at once, which someone who may approve its deploys turns on.",
+        shows: &["proposals", "agents propose", "agents' versions deploy at once", "holon mcp", "Approvals", "decline with a reason", "network egress"],
         port: Some("8184"),
         secrets: &[],
         optional: &[],
