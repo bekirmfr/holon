@@ -7683,6 +7683,14 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         ("read", "const prior = seen[k.slice(0, 3)] ?? \"none\"\n  return { prior }", nothing, false),
         ("claim", "const prior = seen[k.slice(0, 3)] ?? \"none\"\n  const got = await host.get(\"/a\")\n  return { status: got.status, prior }", nothing, false),
         ("failure", "const text = notes[k.slice(0, 3)]\n  return { text }", nothing, false),
+        // The secret whole, recoded first (a recoding leaf gives it as it is, in other letters),
+        // then a read's key, claimed before a call, and a header's name: each says the secret.
+        (
+            "recoded",
+            "const e = encodeURIComponent(k)\n  const prior = seen[e] ?? \"none\"\n  const got = await host.get(\"/a\", { headers: { [e]: \"1\" } })\n  return { status: got.status, prior }",
+            nothing,
+            false,
+        ),
     ];
     // And a route that writes the collection the rows read, never called: the deployment may write
     // it, so a run that reads it claims what it read before it calls out.
