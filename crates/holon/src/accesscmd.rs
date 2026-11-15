@@ -286,7 +286,9 @@ pub(crate) fn groups(args: &[String]) -> i32 {
                 members.retain(|m| !names.contains(m));
             }
             let about = args.value("--about").map(String::from).or_else(|| now.and_then(|g| g["about"].as_str().map(String::from)));
-            let body = json!({ "members": members, "about": about, "why": args.value("--why") });
+            // Made from the group as read here (`base`): a change made to it since is refused, not
+            // undone.
+            let body = json!({ "members": members, "about": about, "why": args.value("--why"), "base": all["version"] });
             match cmdline::json(WHO, &args, "PUT", &format!("/groups/{}", seg(group)), Some(&body)) {
                 Ok(v) => {
                     if let Some(line) = waiting(&v).filter(|_| !args.flag("--json")) {

@@ -311,18 +311,17 @@ pub(crate) fn note_cut_off_runs(path: &Place, deployments: &mut BTreeMap<String,
 
 /// Persist the flows table — same write-through discipline and opt-out (kept nowhere) as
 /// `persist_deployments`, but simpler: a `FlowRecord` is already its own on-disk shape (no
-/// store cross-references, no re-derivation needed on the way back in).
-pub(crate) fn persist_flows(path: &Place, flows: &BTreeMap<String, FlowRecord>) {
-    let Some(path) = path.at() else { return };
+/// store cross-references, no re-derivation needed on the way back in). Why it isn't written, if
+/// it isn't: the save that changed it is then put back and refused (flows.rs), never answered as
+/// kept.
+pub(crate) fn persist_flows(path: &Place, flows: &BTreeMap<String, FlowRecord>) -> Result<(), String> {
+    let Some(path) = path.at() else { return Ok(()) };
     let records: Vec<&FlowRecord> = flows.values().collect();
-    match serde_json::to_vec_pretty(&records) {
-        Ok(bytes) => {
-            if let Err(e) = crate::at_rest::write_table(path, crate::at_rest::role::FLOWS, &bytes) {
-                eprintln!("warning: failed to persist flows to {path:?}: {e}");
-            }
-        }
-        Err(e) => eprintln!("warning: failed to serialize flows: {e}"),
-    }
+    let bytes = serde_json::to_vec_pretty(&records).map_err(|e| format!("the flows don't serialize: {e}"))?;
+    crate::at_rest::write_table(path, crate::at_rest::role::FLOWS, &bytes).map_err(|e| {
+        eprintln!("warning: failed to persist flows to {path:?}: {e}");
+        format!("the flows file isn't written: {e}")
+    })
 }
 
 /// Load flows at startup — the inverse of `persist_flows`. A missing file (first run) or

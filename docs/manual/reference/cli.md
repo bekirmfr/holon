@@ -266,7 +266,8 @@ shows its code, its code with the graph beside it (following the cursor), or the
 In the editor, keys type; `esc` leaves the text for the page keys and `i` comes back. `ctrl+t`
 (or `ctrl+n`, or the tab bar's `+`) opens a draft in a new tab from anywhere (`n` on the
 editor's page keys): its first save asks for a file. `ctrl+s` saves (to its file, else on the
-server, not deployed), `ctrl+d` deploys, showing what it may do and what you approve by
+server, not deployed, over the save it opened: one made since, in the editor or by an agent, is
+refused and kept), `ctrl+d` deploys, showing what it may do and what you approve by
 deploying it (`s` there saves it on the server instead, for whoever may approve it), `ctrl+r` shows a run over its text (what it played lit, the rest dimmed, each
 statement's value under it; `=` or the tab bar's Values hides the values for the code alone,
 and shows them again). Under it, as in the web editor, a panel: the runs on its left
@@ -624,7 +625,9 @@ holon flows remove <name>
 The flows saved on the server, as the editor's flows page lists them: who saved each, when, and
 whether it is deployed (and whether what is deployed is its latest). `show` prints one's text.
 `save` compiles a file and saves it, not deployed, with its text as written, for someone to open
-in the editor; a flow someone else saved under that name is kept, unless `--replace`. `remove`
+in the editor; a flow someone else saved under that name is kept, unless `--replace`. It
+replaces the save it read, so one made in between, in the editor or by an agent, is kept and the
+save refused. `remove`
 deletes a saved flow; a deployment of it stays.
 
 ### `holon activity`

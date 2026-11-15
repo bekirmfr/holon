@@ -176,7 +176,8 @@ export type Scope = "host" | { flows: { slug: string } | { tag: string } } | { a
 export type HeldBinding = { id: number; role: string; allows: string[]; scope: Scope; group: string | null; by: string; at: number; expires_at: number | null; expired: boolean };
 /** A role (`GET /roles`): built in, or defined by an admin; who may hold it, how many bindings do. */
 export type RoleEntry = { name: string; about: string | null; allows: string[]; kinds: Kind[]; builtin: boolean; bound: number };
-export const listRoles = async () => (await asJson<{ roles: RoleEntry[] }>(await api(`${BASE}/roles`))).roles;
+/** Every role, and the access version they were read at: what a change to one is made from. */
+export const listRoles = async () => asJson<{ roles: RoleEntry[]; version: number }>(await api(`${BASE}/roles`));
 /** An agent's or a service's token: what it is for, never its value. */
 /** An agent's or a service's token, never its value: `last_used` (epoch seconds), absent until a request came with it. */
 export type TokenEntry = { id: string; principal: string; label: string; created_at: number; created_by: string; last_used?: number };
@@ -227,16 +228,19 @@ export async function unbind(id: number, why: string): Promise<void> {
 }
 /** A group (`GET /groups`): its members, and how many bindings are to it. */
 export type GroupEntry = { name: string; about: string | null; members: string[]; bound: number };
-export const listGroups = async () => (await asJson<{ groups: GroupEntry[] }>(await api(`${BASE}/groups`))).groups;
+/** Every group, and the access version they were read at: what a change to one is made from. */
+export const listGroups = async () => asJson<{ groups: GroupEntry[]; version: number }>(await api(`${BASE}/groups`));
 /** `PUT /groups/<name>`, with all its members: 403 for a member added or taken out who'd gain or
- *  lose what its author doesn't hold. */
-export const putGroup = async (name: string, g: { about?: string | null; members: string[]; why?: string }) =>
+ *  lose what its author doesn't hold; 409 when it changed since `base`, the access version it was
+ *  read at (`GET /groups`' `version`). */
+export const putGroup = async (name: string, g: { about?: string | null; members: string[]; why?: string; base?: number }) =>
   asJson<{ group: GroupEntry; version: number } | AccessProposalAnswer>(await put(`${BASE}/groups/${encodeURIComponent(name)}`, g));
 export async function removeGroup(name: string, why: string): Promise<void> {
   await asJson<void>(await api(`${BASE}/groups/${encodeURIComponent(name)}${because(why)}`, { method: "DELETE" }));
 }
-/** `PUT /roles/<name>`: an admin's role, defined or changed, allowing only what its author holds. */
-export const defineRole = async (name: string, r: { about?: string | null; allows: string[]; kinds: Kind[]; why?: string }) =>
+/** `PUT /roles/<name>`: an admin's role, defined or changed, allowing only what its author holds;
+ *  409 when it changed since `base`, the access version it was read at (`GET /roles`' `version`). */
+export const defineRole = async (name: string, r: { about?: string | null; allows: string[]; kinds: Kind[]; why?: string; base?: number }) =>
   asJson<{ role: RoleEntry; version: number } | AccessProposalAnswer>(await put(`${BASE}/roles/${encodeURIComponent(name)}`, r));
 /** `DELETE /roles/<name>`: 409 while it is bound. */
 export async function removeRole(name: string, why: string): Promise<void> {
@@ -667,7 +671,7 @@ export type DeployResult = {
   triggers: string[];
   /** Answered 202 instead: whoever deployed it may not approve what it asks, so it waits as this
    *  proposal (proposals.rs). */
-  proposal?: { id: number; version?: number };
+  proposal?: { id: number; version?: number; saved_at?: number };
 };
 
 /** `POST /deploy` — register `slug -> unit`. `acknowledge` must name every capability the
@@ -1660,16 +1664,34 @@ export type FlowListEntry = { name: string; saved_at_epoch_seconds: number; save
 /** A full saved flow as `GET /flows/<name>` returns it. */
 export type FlowRecord = FlowListEntry & { document: FlowDocument };
 
-/** `POST /flows` — save (upsert) the current canvas under `name`. The same name saves over
- *  the previous version: a flow is a mutable workspace file, and "save" means exactly what it
- *  means in any editor. Throws {@link ServerError} (400) for an invalid name. */
-export async function saveFlow(name: string, document: FlowDocument): Promise<FlowListEntry> {
+/** A save refused because the flow was saved again, or removed, since the save it was made from:
+ *  the save there now (`savedAt`, null when none is), to replace it from if its author says so. */
+export class StaleSave extends ServerError {
+  savedAt: number | null;
+  savedBy: string | null;
+  constructor(message: string, savedAt: number | null, savedBy: string | null) {
+    super(409, message);
+    this.name = "StaleSave";
+    this.savedAt = savedAt;
+    this.savedBy = savedBy;
+  }
+}
+
+/** `POST /flows` — save the current canvas under `name`, over `base`: the save it was made from
+ *  (its stamp; null for a new flow, none saved under the name). One saved since, or removed, is
+ *  left as it is and throws {@link StaleSave}; {@link ServerError} (400) for an invalid name. */
+export async function saveFlow(name: string, document: FlowDocument, base: number | null): Promise<FlowListEntry> {
   const res = await api(`${BASE}/flows`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     // What it places, beside the document (holonUsage.ts): who uses a holon, from listings.
-    body: JSON.stringify({ name, document, uses: usesIn(document) }),
+    body: JSON.stringify({ name, document, uses: usesIn(document), base }),
   });
+  if (res.status === 409) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string; saved_at_epoch_seconds?: number | null; saved_by?: string | null };
+    if ("saved_at_epoch_seconds" in body) throw new StaleSave(body.error ?? res.statusText, body.saved_at_epoch_seconds ?? null, body.saved_by ?? null);
+    throw new ServerError(409, body.error ?? res.statusText);
+  }
   return asJson<FlowListEntry>(res);
 }
 

@@ -149,8 +149,43 @@ impl ApprovalSettings {
 
 /// A field a request may set to null, told apart from one it leaves out: `Some(None)` when it is
 /// null, `None` (`#[serde(default)]`) when it isn't there.
-fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+pub(crate) fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
     Option::<T>::deserialize(d).map(Some)
+}
+
+/// What a whole record made from a stale copy is refused with (409): the record changed since its
+/// author read it, and their copy would put back what was changed (a member taken out, an action
+/// a role no longer allows).
+pub(crate) const CHANGED_SINCE: &str = "since you read it";
+
+/// Whether `now`, the record `what` names as it is, is still as its author read it (`read`: as
+/// they read it, none when there was none; None when they didn't say), or why not.
+pub(crate) fn as_read<T: PartialEq>(what: &str, now: Option<&T>, read: Option<&Option<T>>) -> Result<(), String> {
+    let Some(read) = read else { return Ok(()) };
+    let how = match (read.as_ref(), now) {
+        (Some(read), Some(now)) if read == now => return Ok(()),
+        (None, None) => return Ok(()),
+        (Some(_), Some(_)) => "was changed",
+        (Some(_), None) => "was removed",
+        (None, Some(_)) => "was made",
+    };
+    Err(format!("{what} {how} {CHANGED_SINCE}: read it again, and make your change to it as it is now"))
+}
+
+/// The record `of` finds in the access document as version `base` left it (none: there was none):
+/// what a change made from that version replaces. The document now's when it is that version, the
+/// history's when it isn't; 409 when that version isn't one kept here.
+fn read_at<T>(accounts: &crate::accounts::Accounts, base: u64, of: impl Fn(&Document) -> Option<T>) -> Result<Option<T>, Response> {
+    let now = accounts.access_document();
+    if base == now.version {
+        return Ok(of(&now));
+    }
+    match accounts.access_version(base) {
+        Ok(Some(then)) if base < now.version => Ok(of(&then)),
+        Ok(None) if base == 0 => Ok(of(&Document::default())),
+        Ok(_) => Err(err(409, format!("access version {base} isn't one kept here (it is at version {}): read it again", now.version))),
+        Err(e) => Err(err(500, e)),
+    }
 }
 
 /// This host's approval settings: the access document's, the defaults on a server without
@@ -1154,9 +1189,16 @@ fn define(state: &crate::AppState, request: &Request, caller: &Caller, accounts:
         kinds: Vec<Kind>,
         #[serde(default)]
         why: Option<String>,
+        /// The access version its author read the role at (`GET /roles`' `version`).
+        #[serde(default)]
+        base: Option<u64>,
     }
     let def: Def = match body(request, "a role is {\"allows\": [\"run.decide\", \"run.view\"], \"kinds\": [\"person\"]}") {
         Ok(def) => def,
+        Err(r) => return r,
+    };
+    let read = match def.base.map(|base| read_at(accounts, base, |d| d.roles.iter().find(|r| r.name == name).cloned())).transpose() {
+        Ok(read) => read,
         Err(r) => return r,
     };
     let about = def.about.map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
@@ -1174,7 +1216,8 @@ fn define(state: &crate::AppState, request: &Request, caller: &Caller, accounts:
         return err(403, format!("{name} allows {}, which you don't hold on this host: a role is changed only by someone who holds what it allows", a.name()));
     }
     let by = caller.name.as_deref().unwrap_or("");
-    match govern(accounts, caller, Change::Role { role: text.clone() }, def.why.as_deref(), || accounts.define_role(text, by, def.why.as_deref())) {
+    let change = Change::Role { role: text.clone(), read: read.clone() };
+    match govern(accounts, caller, change, def.why.as_deref(), || accounts.define_role_as_read(text, read, by, def.why.as_deref())) {
         Ok(Governed::Waits(p)) => crate::access_proposals::waits(state, accounts, &p),
         Ok(Governed::Made(changed)) => {
             state.activity.record(if changed { "changed the role" } else { "defined the role" }, name, Some(by));
@@ -1182,7 +1225,7 @@ fn define(state: &crate::AppState, request: &Request, caller: &Caller, accounts:
             let about = document.roles.iter().find(|r| r.name == name).and_then(|r| r.about.clone());
             Response::json(&serde_json::json!({ "role": role_listed(&role, about.as_deref(), document.bound(Some(name), None)), "version": document.version }))
         }
-        Err(e) => err(400, e),
+        Err(e) => err(if e.contains(CHANGED_SINCE) { 409 } else { 400 }, e),
     }
 }
 
@@ -1196,9 +1239,16 @@ fn make_group(state: &crate::AppState, request: &Request, caller: &Caller, accou
         members: Vec<String>,
         #[serde(default)]
         why: Option<String>,
+        /// The access version its author read the group at (`GET /groups`' `version`).
+        #[serde(default)]
+        base: Option<u64>,
     }
     let def: Def = match body(request, "a group is {\"members\": [\"bob\", \"cy\"]}") {
         Ok(def) => def,
+        Err(r) => return r,
+    };
+    let read = match def.base.map(|base| read_at(accounts, base, |d| d.group(name).cloned())).transpose() {
+        Ok(read) => read,
         Err(r) => return r,
     };
     let mut members = def.members;
@@ -1227,14 +1277,15 @@ fn make_group(state: &crate::AppState, request: &Request, caller: &Caller, accou
         }
     }
     let by = caller.name.as_deref().unwrap_or("");
-    match govern(accounts, caller, Change::Group { group: group.clone() }, def.why.as_deref(), || accounts.set_group(group.clone(), by, def.why.as_deref())) {
+    let change = Change::Group { group: group.clone(), read: read.clone() };
+    match govern(accounts, caller, change, def.why.as_deref(), || accounts.set_group_as_read(group.clone(), read, by, def.why.as_deref())) {
         Ok(Governed::Waits(p)) => crate::access_proposals::waits(state, accounts, &p),
         Ok(Governed::Made(changed)) => {
             state.activity.record(if changed { "changed the group" } else { "made the group" }, name, Some(by));
             let document = accounts.access_document();
             Response::json(&serde_json::json!({ "group": group, "bound": document.bound(None, Some(name)), "version": document.version }))
         }
-        Err(e) => err(400, e),
+        Err(e) => err(if e.contains(CHANGED_SINCE) { 409 } else { 400 }, e),
     }
 }
 

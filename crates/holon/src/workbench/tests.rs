@@ -173,7 +173,7 @@ fn typing_edits_the_text_and_it_is_checked_once_typing_settles() {
 fn a_saved_flow_waits_for_a_person_who_approves_it_from_the_approvals_page() {
     let (mut app, _) = app();
     let plan = holon_author::agent::plan(BEATS).unwrap();
-    app.client.as_ref().unwrap().save("beats", &plan, BEATS).unwrap();
+    app.client.as_ref().unwrap().save("beats", &plan, BEATS, None).unwrap();
     app.refresh();
     let waiting = app.waiting();
     assert_eq!(waiting.len(), 1);
@@ -1339,7 +1339,7 @@ fn the_lists_say_more_in_a_row() {
     let (mut app, _) = bumped(2);
     let plan = holon_author::agent::plan(&BUMP.replace("+ 1", "+ 2")).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(1100));
-    app.client.as_ref().unwrap().save("bump", &plan, &BUMP.replace("+ 1", "+ 2")).unwrap();
+    app.client.as_ref().unwrap().save("bump", &plan, &BUMP.replace("+ 1", "+ 2"), None).unwrap();
     app.refresh();
     app.go(Page::Overview);
     let shown = screen(&mut app, 150, 36);
@@ -1354,13 +1354,51 @@ fn the_lists_say_more_in_a_row() {
     assert!(shown.contains("holon new hello-api.holon.ts --sample hello-api"), "{shown}");
 }
 
+/// A tab opened from the server saves over the save it was opened from, and over its own saves
+/// since, but not over one made since by someone else (R32): theirs is refused, not lost, and
+/// stands.
+#[test]
+fn a_tab_saves_over_the_save_it_opened_and_not_over_a_save_made_since() {
+    let (mut app, _) = app();
+    let plan = holon_author::agent::plan(BEATS).unwrap();
+    app.client.as_ref().unwrap().save("beats", &plan, BEATS, None).unwrap();
+    app.refresh();
+    app.edit("beats");
+    let i = app.tab;
+    assert_eq!(app.tabs[i].slug.as_deref(), Some("beats"));
+    for n in 1..=2 {
+        app.save(i, None);
+        let note = app.note.as_ref().unwrap();
+        assert!(!note.error, "save {n}: {}", note.text);
+    }
+    let theirs = format!("// theirs\n{BEATS}");
+    app.client.as_ref().unwrap().save("beats", &plan, &theirs, None).unwrap();
+    app.save(i, None);
+    let note = app.note.as_ref().unwrap();
+    assert!(note.error && note.text.contains("was saved again"), "{}", note.text);
+    assert_eq!(app.client.as_ref().unwrap().saved_text("beats").unwrap().0, theirs, "theirs stands");
+
+    // Saved by someone else after it was opened and before it is first saved here: refused too.
+    let bump = holon_author::agent::plan(BUMP).unwrap();
+    app.client.as_ref().unwrap().save("bump", &bump, BUMP, None).unwrap();
+    app.refresh();
+    app.edit("bump");
+    let j = app.tab;
+    let theirs = format!("// theirs\n{BUMP}");
+    app.client.as_ref().unwrap().save("bump", &bump, &theirs, None).unwrap();
+    app.save(j, None);
+    let note = app.note.as_ref().unwrap();
+    assert!(note.error && note.text.contains("was saved again"), "{}", note.text);
+    assert_eq!(app.client.as_ref().unwrap().saved_text("bump").unwrap().0, theirs, "theirs stands");
+}
+
 /// `/` narrows the flows and the library in place, `f` goes round the flows' chips, and esc
 /// clears the filter.
 #[test]
 fn slash_filters_a_list_in_place() {
     let (mut app, _) = bumped(0);
     let plan = holon_author::agent::plan(BEATS).unwrap();
-    app.client.as_ref().unwrap().save("beats", &plan, BEATS).unwrap();
+    app.client.as_ref().unwrap().save("beats", &plan, BEATS, None).unwrap();
     app.refresh();
     app.go(Page::Flows);
     assert_eq!(app.flow_names(), ["beats", "bump"]);
@@ -1410,7 +1448,7 @@ fn approvals_review_beside_the_list() {
     let (mut app, _) = app();
     for text in [BEATS, BUMP] {
         let plan = holon_author::agent::plan(text).unwrap();
-        app.client.as_ref().unwrap().save(&plan.name, &plan, text).unwrap();
+        app.client.as_ref().unwrap().save(&plan.name, &plan, text, None).unwrap();
     }
     app.refresh();
     app.go(Page::Approvals);

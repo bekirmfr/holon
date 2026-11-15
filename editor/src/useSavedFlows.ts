@@ -10,7 +10,7 @@ import { flowAsNode } from "./canvasOps";
 import { replaceComposite } from "./composites";
 import { documentUnits } from "./docUnits";
 import { holonIndex, interfaceLoss } from "./holonUsage";
-import { getFlow, listDeployments, listFlows, saveFlow, type FlowDocument } from "./server";
+import { getFlow, listDeployments, listFlows, saveFlow, StaleSave, type FlowDocument } from "./server";
 import { savedKeyOf } from "./tabs";
 import type { Evaluator } from "./holon";
 import type { FlowSettings } from "./DeploySettings";
@@ -35,6 +35,8 @@ export function useSavedFlows({
   setEdges,
   setSavedKey,
   setSavedOnServer,
+  savedAt,
+  setSavedAt,
   notify,
   setError,
 }: {
@@ -55,6 +57,9 @@ export function useSavedFlows({
   setEdges: (es: Edge[]) => void;
   setSavedKey: (key: string) => void;
   setSavedOnServer: (saved: boolean) => void;
+  /** The save the flow was opened from or last saved as (tabs.ts `FlowMeta.savedAt`). */
+  savedAt: number | null;
+  setSavedAt: (at: number | null) => void;
   /** Says what a save or an update did, once (ui/Toast.tsx). */
   notify: Notify;
   setError: (msg: string) => void;
@@ -99,11 +104,15 @@ export function useSavedFlows({
   // Saving answers its name and what it was saved as (tabs.ts's savedKey), or null when it wasn't.
   const onSave = useCallback(async (): Promise<{ name: string; key: string } | null> => {
     let name = flowName;
+    // The save this replaces: the one it was opened from or last saved as, and none since (the
+    // server refuses one made from another, so a colleague's or an agent's save isn't lost).
+    let base = savedAt;
     if (!name) {
       name = await dialog.prompt("Flow name (letters, digits, - and _ only):");
       if (!name) return null;
       // A draft named now (New opens untitled) mustn't quietly replace a flow saved under that name.
       if (savedFlowTimes.has(name) && !(await dialog.confirm(`A flow named "${name}" is saved already. Replace it with this one?`, "Replace"))) return null;
+      base = savedFlowTimes.get(name) ?? null;
       setFlowName(name);
     }
     let carried: ReturnType<typeof documentUnits>;
@@ -124,19 +133,31 @@ export function useSavedFlows({
     if (!(await placedElsewhereOk(name, doc))) return null;
     const saved = name;
     const key = savedKeyOf(nodes, edges, settings, source);
-    return saveFlow(name, doc).then(
-      (entry) => {
-        setSavedKey(key);
-        setSavedOnServer(true);
-        notify(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`);
-        return { name: saved, key };
-      },
-      (e: unknown) => {
-        notify(`not saved: ${e instanceof Error ? e.message : String(e)}`, "bad");
-        return null;
-      },
-    );
-  }, [flowName, nodes, edges, getViewport, ev, settings, source, dialog, savedFlowTimes, placedElsewhereOk, setFlowName, notify, setSavedKey, setSavedOnServer]);
+    const kept = (entry: { saved_at_epoch_seconds: number }) => {
+      setSavedKey(key);
+      setSavedOnServer(true);
+      setSavedAt(entry.saved_at_epoch_seconds);
+      notify(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`);
+      return { name: saved, key };
+    };
+    const notKept = (e: unknown) => {
+      notify(`not saved: ${e instanceof Error ? e.message : String(e)}`, "bad");
+      return null;
+    };
+    try {
+      return kept(await saveFlow(name, doc, base));
+    } catch (e) {
+      if (!(e instanceof StaleSave)) return notKept(e);
+      // Saved since it was opened (or before, under a name given now), or removed: replaced only
+      // when its author says so.
+      const by = `${e.savedBy ? ` by ${e.savedBy}` : ""}, ${e.savedAt === null ? "" : new Date(e.savedAt * 1000).toLocaleString()}`;
+      const what =
+        e.savedAt === null ? `"${name}" was removed since you opened it.` : base === null ? `A flow named "${name}" is saved already${by}.` : `"${name}" was saved again${by}, since you opened it.`;
+      const ask = e.savedAt === null ? "Save yours as it again?" : "Replace that save with yours? It is lost if you do.";
+      if (!(await dialog.confirm(`${what} ${ask}`, e.savedAt === null ? "Save" : "Replace"))) return notKept(new Error(what));
+      return saveFlow(name, doc, e.savedAt).then(kept, notKept);
+    }
+  }, [flowName, nodes, edges, getViewport, ev, settings, source, dialog, savedFlowTimes, savedAt, placedElsewhereOk, setFlowName, notify, setSavedKey, setSavedOnServer, setSavedAt]);
 
   // Place the newest saved version of a holon over the one placed from an older save: same place,
   // and its wires kept to the ports the new version still has.

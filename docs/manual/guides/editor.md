@@ -39,7 +39,10 @@ each request.
 
 **new flow** opens an untitled canvas in the editor at once; the flow is named when you first save
 or deploy it. A name another saved flow or a deployment already has asks before that one is
-replaced. The editor keeps each flow open in a tab of its own, after its **Home** tab; every tab
+replaced. A save replaces the save the flow was opened from: when someone saved it since (a
+colleague, or an agent through `holon mcp`), or removed it, saving asks before theirs is replaced,
+and says whose it is and when. The same goes for a group or a role on the People pages: one
+changed since the page read it is refused, and the page reads it again. The editor keeps each flow open in a tab of its own, after its **Home** tab; every tab
 closes with its ×.
 
 - **Overview** is where the console opens: what needs a person, four tiles (runs in the last 24

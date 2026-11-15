@@ -205,6 +205,10 @@ pub(crate) struct SaveFlowBody {
     pub(crate) document: serde_json::Value,
     #[serde(default)]
     pub(crate) uses: Option<Vec<HolonUse>>,
+    /// The save it was made from, by its `saved_at_epoch_seconds`; null for a new flow, none saved
+    /// under the name. Left out, it replaces whatever is saved there (flows.rs `save`).
+    #[serde(default, deserialize_with = "crate::bindings::present")]
+    pub(crate) base: Option<Option<u64>>,
 }
 
 /// `GET /flows`' per-entry listing shape — name and freshness only, never the (possibly

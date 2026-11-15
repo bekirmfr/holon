@@ -26,7 +26,7 @@ In the data folder (`--data`, `HOLON_DATA`):
 | `deployments.json` | the deployments, their grants, sessions and parked runs | `--deployments` |
 | `deployments.logs/` | each deployment's run log: its newest 128 runs a line each, `<slug>.jsonl`, and the older ones it keeps gzipped in `<slug>.sealed/`; its events, `<slug>.events.jsonl`; its console lines in `<slug>.console.jsonl`, rolled to `<slug>.console.1.jsonl` and on. All sealed (see [The root key](#the-root-key)): `holon export` gives a run log readable | |
 | `deployments.state/` | each stateful deployment's state, `<slug>`: the hash of its current snapshot, whose values are in `store/`, written as each change lands | |
-| `flows.json` | saved flows | `--flows` |
+| `flows.json` | saved flows: at most 1,000, with documents of 4 MiB each and 64 MiB in all; a save past them is refused (413 for the document, 409 for the rest), and one this file doesn't take answers 500 and changes nothing | `--flows` |
 | `accounts.json` | people, agents and services, sessions, invites and tokens (as hashes) | `--accounts` |
 | `access.json` | the roles bound to each of them; `access.versions.jsonl` beside it, every version, with who changed what and when | beside `--accounts` |
 | `secrets.json` | sealed secrets; `secrets.audit.jsonl` beside it, who changed what (never values) | `--secrets` |
@@ -326,6 +326,13 @@ An admin also defines roles of their own, and groups:
   it out of its groups.
 - A role or a group still bound isn't removed (409, saying how many bindings hold it): unbind
   them first.
+- **A change is made from what its author read**: `"base"`, the `version` `GET /roles` or
+  `GET /groups` answered. One changed since then (or made, or removed) is refused (409, saying
+  so), since the copy they read would put back what a colleague changed, a member taken out or an
+  action a role no longer allows: read it again and change it as it is. The console and
+  `holon groups add|drop` send it; a change that doesn't say is made over whatever is there. An
+  access change waiting for people goes stale the same way, when what it changes is changed
+  before it is approved.
 - **No one gives or takes more than they hold**, whichever way: binding or unbinding a role,
   inviting, adding or setting someone with one, adding a member to a group that is bound or
   taking one out, or changing a role that is defined (holding what it allows before and after).

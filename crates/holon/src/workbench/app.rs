@@ -213,6 +213,11 @@ pub(crate) struct Tab {
     pub(crate) graph: Option<super::graph::TabGraph>,
     /// What the inspector shows: the name last at the cursor, or just before it as it is typed.
     pub(crate) inspected: Option<Inspected>,
+    /// The save on the server that saving it replaces (flows.rs `save`): for one opened from the
+    /// server, the save there when it was opened (none: there was none) or last saved here, so one
+    /// made since, in the editor or by an agent, is refused rather than lost. None for one opened
+    /// otherwise (a file, a draft, a sample), which replaces whatever is saved under its name.
+    pub(crate) base: Option<Option<u64>>,
 }
 
 /// A name the inspector shows: what it is, the grammar it is written by, a sample's lines.
@@ -227,7 +232,7 @@ impl Tab {
     pub(crate) fn new(name: &str, text: &str, path: Option<PathBuf>, slug: Option<String>) -> Tab {
         let buf = Buffer::new(text);
         let kept = buf.text();
-        Tab { name: name.to_string(), path, slug, check: Check::of(&kept), kept, buf, edited: None, deployed: None, runs: None, graph: None, draft: false, inspected: None }
+        Tab { name: name.to_string(), path, slug, check: Check::of(&kept), kept, buf, edited: None, deployed: None, runs: None, graph: None, draft: false, inspected: None, base: None }
     }
 
     pub(crate) fn dirty(&self) -> bool {
@@ -809,8 +814,9 @@ impl App {
             return self.fail("no server to open it from");
         };
         match latest_text(c, name) {
-            Ok(t) => {
-                let tab = Tab::new(name, &t, None, Some(name.to_string()));
+            Ok((t, saved)) => {
+                let mut tab = Tab::new(name, &t, None, Some(name.to_string()));
+                tab.base = Some(saved);
                 self.add_tab(tab);
             }
             Err(e) => self.fail(e),
@@ -930,7 +936,7 @@ impl App {
             return asks.clone();
         }
         let now: Vec<String> = deployed_at.and_then(|_| c.get(&format!("/deployments/{}/manifest", crate::mcp::seg(slug))).ok()).map(|m| client::strings(&m, "items")).unwrap_or_default();
-        let asks: Vec<String> = c.saved_text(slug).ok().and_then(|t| agent::plan(&t).ok()).map(|p| p.may.iter().filter(|m| !now.contains(m)).map(|m| agent::describe(m)).collect()).unwrap_or_default();
+        let asks: Vec<String> = c.saved_text(slug).ok().and_then(|(t, _)| agent::plan(&t).ok()).map(|p| p.may.iter().filter(|m| !now.contains(m)).map(|m| agent::describe(m)).collect()).unwrap_or_default();
         self.asks.borrow_mut().insert(slug.to_string(), (saved_at, asks.clone()));
         asks
     }
@@ -1034,9 +1040,12 @@ impl App {
         let Some(c) = self.client.as_ref() else {
             return self.fail("no server to save it on: :w <file> writes it to a file");
         };
-        match c.save(&name, &plan, &text) {
-            Ok(()) => {
+        // What it replaces: the save it was opened from, under the name it was opened as.
+        let base = tab.base.filter(|_| tab.slug.as_deref() == Some(name.as_str()));
+        match c.save(&name, &plan, &text, base) {
+            Ok(at) => {
                 let tab = &mut self.tabs[i];
+                tab.base = Some(Some(at));
                 tab.kept = text;
                 tab.slug = Some(name.clone());
                 tab.name = name.clone();
@@ -1071,9 +1080,11 @@ impl App {
     fn propose(&mut self) {
         let Some(Modal::Approve { slug, plan, text, tab, .. }) = self.modal.take() else { return };
         let Some(c) = self.client.as_ref() else { return };
-        match c.save(&slug, &plan, &text) {
-            Ok(()) => {
+        let base = self.tabs.get(tab).and_then(|t| t.base.filter(|_| t.slug.as_deref() == Some(slug.as_str())));
+        match c.save(&slug, &plan, &text, base) {
+            Ok(at) => {
                 if let Some(t) = self.tabs.get_mut(tab).filter(|t| t.path.is_none()) {
+                    t.base = Some(Some(at));
                     t.kept = text;
                     t.slug = Some(slug.clone());
                     t.name = slug.clone();
@@ -1841,7 +1852,7 @@ impl App {
         } else if wait.starts_with("to free its port") {
             Pending::Said(format!("Its port is taken: {wait}. Stop what holds it, then deploy it again."))
         } else {
-            let staged = latest_text(c, slug).and_then(|text| {
+            let staged = latest_text(c, slug).and_then(|(text, _)| {
                 let plan = agent::plan(&text)?;
                 staging(c, slug.clone(), plan, text, None)
             });
@@ -2368,13 +2379,13 @@ fn deploy_review(slug: &str, plan: &agent::Plan, staged: &Staged, now: Option<&s
 }
 
 /// A flow's latest text: a version saved since it was deployed, else the one deployed, else the
-/// one saved.
-fn latest_text(c: &Client, name: &str) -> Result<String, String> {
+/// one saved; and the save there as it was read (none: there is none), which saving it replaces.
+fn latest_text(c: &Client, name: &str) -> Result<(String, Option<u64>), String> {
     let deployed_at = c.deployment(name).and_then(|d| d["deployed_at_epoch_seconds"].as_u64());
     let saved_at = c.saved(name).and_then(|f| f["saved_at_epoch_seconds"].as_u64());
     match (deployed_at, saved_at) {
         (Some(d), Some(s)) if s > d => c.saved_text(name),
-        (Some(_), _) => c.text(name, None),
+        (Some(_), _) => c.text(name, None).map(|text| (text, saved_at)),
         (None, Some(_)) => c.saved_text(name),
         (None, None) => Err(format!("nothing named \"{name}\" is deployed or saved")),
     }

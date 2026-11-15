@@ -201,11 +201,13 @@ impl Client {
     }
 
     /// The text of a saved flow: as written when that is its canvas's code, else its canvas
-    /// printed (`agent::text_of`, as every reading of a document's text is).
-    pub(crate) fn saved_text(&self, name: &str) -> Result<String, String> {
+    /// printed (`agent::text_of`, as every reading of a document's text is); and the stamp of the
+    /// save it is.
+    pub(crate) fn saved_text(&self, name: &str) -> Result<(String, Option<u64>), String> {
         let saved = self.get(&format!("/flows/{}", seg(name)))?;
+        let at = saved["saved_at_epoch_seconds"].as_u64();
         let document = saved.get("document").cloned().unwrap_or(saved);
-        agent::text_of(name, &document)
+        agent::text_of(name, &document).map(|text| (text, at))
     }
 
     /// What a run did, laid over the text of the version it ran on.
@@ -237,9 +239,15 @@ impl Client {
         deploycmd::commit(self.api.as_ref(), plan, staged, crate::mcp::saved_document(plan, text))
     }
 
-    /// Save a flow without deploying it, as the flows page lists it.
-    pub(crate) fn save(&self, name: &str, plan: &agent::Plan, text: &str) -> Result<(), String> {
-        self.post("/flows", json!({ "name": name, "document": crate::mcp::saved_document(plan, text) })).map(|_| ())
+    /// Save a flow without deploying it, as the flows page lists it, over `base` when said (the save
+    /// it replaces, flows.rs `save`): the save's stamp.
+    pub(crate) fn save(&self, name: &str, plan: &agent::Plan, text: &str, base: Option<Option<u64>>) -> Result<u64, String> {
+        let mut body = json!({ "name": name, "document": crate::mcp::saved_document(plan, text) });
+        if let Some(base) = base {
+            body["base"] = json!(base);
+        }
+        let saved = self.post("/flows", body)?;
+        saved["saved_at_epoch_seconds"].as_u64().ok_or_else(|| "the server didn't say when it saved it".to_string())
     }
 
     /// A restore: a dry run first, then (`acknowledge` set) the real one.

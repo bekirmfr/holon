@@ -94,7 +94,16 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   // canvas is a sliver and its toolbar runs under the text pane: its buttons are pressed as such,
   // not at a point another element covers (a click there once waited out the test).
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).dispatchEvent("click");
-  await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
+  // The sample opened as a copy, a new flow: where another test has saved a hello-api on this
+  // server already, the save asks before it replaces that one.
+  const kept = page.getByRole("region", { name: "notices" }).getByText(/^saved \d/);
+  const ask = page.getByRole("dialog");
+  await expect(kept.or(ask).first()).toBeVisible();
+  if (await ask.isVisible()) {
+    await expect(ask).toContainText('A flow named "hello-api" is saved already');
+    await ask.getByRole("button", { name: "Replace" }).click();
+  }
+  await expect(kept).toBeVisible();
   const saved = await request.get(`${SERVER}/flows/hello-api`, { headers: { Authorization: `Bearer ${adminToken}` } });
   const doc = ((await saved.json()) as { document: { source?: string } }).document;
   expect(doc.source).toContain("// says hello, loudly");

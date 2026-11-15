@@ -195,7 +195,7 @@ pub(crate) fn propose(state: &AppState, body: &DeployRequestBody, needs: Vec<Str
     let Some(document) = body.document.clone() else {
         return err(400, "a proposal keeps its canvas for the person who reviews it: send \"document\"");
     };
-    let saved_at = match crate::flows::save(state, &body.slug, document.clone(), body.uses.clone(), who) {
+    let saved_at = match crate::flows::save(state, &body.slug, document.clone(), body.uses.clone(), who, None) {
         Ok(at) => at,
         Err(refused) => return refused,
     };

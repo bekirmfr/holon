@@ -1281,10 +1281,19 @@ impl Accounts {
     /// Define the role `role.name`, or change it, by `by`, saying why: whether it was there
     /// before. A role still bound changes for every binding of it; refused when one is to a
     /// principal whose kind it no longer allows.
+    #[cfg(test)]
     pub(crate) fn define_role(&self, role: bindings::RoleText, by: &str, why: Option<&str>) -> Result<bool, String> {
+        self.define_role_as_read(role, None, by, why)
+    }
+
+    /// `define_role`, made only while the role is as its author read it (`read`: as they read it,
+    /// none when there was none; None: they didn't say). One changed since is refused
+    /// (`bindings::CHANGED_SINCE`): made from their copy, it would put back what was changed.
+    pub(crate) fn define_role_as_read(&self, role: bindings::RoleText, read: Option<Option<bindings::RoleText>>, by: &str, why: Option<&str>) -> Result<bool, String> {
         let there = self.access.document().roles.iter().any(|r| r.name == role.name);
         let what = format!("{} the role {}: {}, held by {}", if there { "changed" } else { "defined" }, role.name, role.allows.join(", "), role.kinds.iter().map(|k| k.said()).collect::<Vec<_>>().join(" or "));
         self.change_access(by, &what, why, |_, access| {
+            bindings::as_read(&format!("the role {}", role.name), access.roles.iter().find(|r| r.name == role.name), read.as_ref())?;
             match access.roles.iter_mut().find(|r| r.name == role.name) {
                 Some(r) => *r = role,
                 None => access.roles.push(role),
@@ -1309,11 +1318,18 @@ impl Accounts {
 
     /// Make the group `group.name` with its members, or change it, by `by`, saying why: whether
     /// it was there before.
+    #[cfg(test)]
     pub(crate) fn set_group(&self, group: bindings::Group, by: &str, why: Option<&str>) -> Result<bool, String> {
+        self.set_group_as_read(group, None, by, why)
+    }
+
+    /// `set_group`, made only while the group is as its author read it (`define_role_as_read`).
+    pub(crate) fn set_group_as_read(&self, group: bindings::Group, read: Option<Option<bindings::Group>>, by: &str, why: Option<&str>) -> Result<bool, String> {
         let there = self.access.document().group(&group.name).is_some();
         let members = if group.members.is_empty() { "no one".to_string() } else { group.members.join(", ") };
         let what = format!("{} the group {}: {members}", if there { "changed" } else { "made" }, group.name);
         self.change_access(by, &what, why, |_, access| {
+            bindings::as_read(&format!("the group {}", group.name), access.group(&group.name), read.as_ref())?;
             match access.groups.iter_mut().find(|g| g.name == group.name) {
                 Some(g) => *g = group,
                 None => access.groups.push(group),

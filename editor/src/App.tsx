@@ -255,6 +255,7 @@ function Canvas({
   const { name: flowName, settings, savedKey, notice, viewing } = flow;
   const setFlowName = useMemo(() => metaSetter(setFlow, "name"), []);
   const setSavedOnServer = useMemo(() => metaSetter(setFlow, "saved"), []);
+  const setSavedAt = useMemo(() => metaSetter(setFlow, "savedAt"), []);
   const setSettings = useMemo(() => metaSetter(setFlow, "settings"), []);
   const setSavedKey = useMemo(() => metaSetter(setFlow, "savedKey"), []);
   const setNotice = useMemo(() => metaSetter(setFlow, "notice"), []);
@@ -348,7 +349,7 @@ function Canvas({
     choose: dialog.choose,
     save: () => saveNow.current(),
   });
-  const tabFromDocument = useCallback((name: string | null, doc: FlowDocument, saved: boolean) => tabFromDoc(name, doc, saved, ev), [ev]);
+  const tabFromDocument = useCallback((name: string | null, doc: FlowDocument, saved: boolean, savedAt: number | null = null) => tabFromDoc(name, doc, saved, ev, savedAt), [ev]);
   // What the work area shows: the page asked for; in the editor, its Home tab when asked for or
   // with no flow open.
   const shown: AppPage = page === "canvas" && (route.kind === "editor-home" || tabIds.length === 0) ? "editor-home" : page;
@@ -375,7 +376,7 @@ function Canvas({
       if (current?.dirty && !(await dialog.confirm(`Discard your unsaved changes to "${rec.name}" and reload the saved copy?`, "Reload saved"))) {
         return false;
       }
-      showTab(open, tabFromDocument(rec.name, rec.document, true));
+      showTab(open, tabFromDocument(rec.name, rec.document, true, rec.saved_at_epoch_seconds));
       return true;
     },
     [tabOf, switchTab, activeId, captureTab, dialog, showTab, tabFromDocument],
@@ -422,6 +423,8 @@ function Canvas({
     setEdges,
     setSavedKey,
     setSavedOnServer,
+    savedAt: flow.savedAt,
+    setSavedAt,
     notify: toast,
     setError: setDeployError,
   });
@@ -679,6 +682,10 @@ function Canvas({
       // Deployed, it is tried next.
       bottom.open("try");
       toast(`Deployed ${name}.`, "ok", { label: "Open the flow", to: { kind: "flow", slug: name, tab: "status" } });
+    },
+    onProposedSave: (at) => {
+      setSavedOnServer(true);
+      setSavedAt(at);
     },
   });
   // What the editor's buttons need (can.tsx): saving and deploying, of any flow as their routes

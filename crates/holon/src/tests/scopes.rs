@@ -900,3 +900,139 @@ fn where_a_resource_is_shows_only_to_whoever_may_bind_one() {
     assert_eq!(refusal(send(&state, &t.cy, "POST", "/admin/folders", json!({ "name": "x", "path": folder }))).0, 403, "cy only views");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A record a page writes whole, from the copy it read: one kind of each (R32).
+struct Whole {
+    what: &'static str,
+    /// Where it is written: a method and a path.
+    write: (&'static str, &'static str),
+    /// Its body, holding `content`, made from `base` (left out when it is None).
+    body: fn(&str, Option<Value>) -> Value,
+    /// What its author sends as `base`, from what they read.
+    base: fn(&AppState, &str) -> Value,
+    /// What it holds now, as its content says it; none when it isn't there.
+    now: fn(&AppState, &str) -> Option<String>,
+    /// Where it is removed.
+    remove: &'static str,
+    /// What it holds, in turn: made first, ada's, bob's, and later.
+    says: [&'static str; 4],
+}
+
+fn with_base(mut body: Value, base: Option<Value>) -> Value {
+    if let Some(base) = base {
+        body["base"] = base;
+    }
+    body
+}
+
+fn read_json(state: &AppState, token: &str, path: &str) -> Value {
+    let (code, said) = send(state, token, "GET", path, Value::Null);
+    if code == 404 {
+        return Value::Null;
+    }
+    assert_eq!(code, 200, "{path}: {said}");
+    serde_json::from_str(&said).unwrap()
+}
+
+const WHOLES: [Whole; 3] = [
+    Whole {
+        what: "a saved flow",
+        write: ("POST", "/flows"),
+        body: |content, base| with_base(json!({ "name": "draft", "document": { "says": content } }), base),
+        base: |state, token| read_json(state, token, "/flows/draft").get("saved_at_epoch_seconds").cloned().unwrap_or(Value::Null),
+        now: |state, token| read_json(state, token, "/flows/draft").pointer("/document/says").and_then(Value::as_str).map(String::from),
+        remove: "/flows/draft",
+        says: ["first", "ada's", "bob's", "later"],
+    },
+    Whole {
+        what: "a group's members",
+        write: ("PUT", "/groups/crew"),
+        body: |content, base| with_base(json!({ "members": content.split(',').collect::<Vec<_>>() }), base),
+        base: |state, token| read_json(state, token, "/groups")["version"].clone(),
+        now: |state, token| {
+            let groups = read_json(state, token, "/groups");
+            groups["groups"].as_array().unwrap().iter().find(|g| g["name"] == "crew").map(|g| g["members"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect::<Vec<_>>().join(","))
+        },
+        remove: "/groups/crew",
+        says: ["cy", "cy,dee", "dee", "bob"],
+    },
+    Whole {
+        what: "a role's actions",
+        write: ("PUT", "/roles/watcher"),
+        body: |content, base| with_base(json!({ "allows": content.split(',').collect::<Vec<_>>(), "kinds": ["person"] }), base),
+        base: |state, token| read_json(state, token, "/roles")["version"].clone(),
+        now: |state, token| {
+            let roles = read_json(state, token, "/roles");
+            roles["roles"].as_array().unwrap().iter().find(|r| r["name"] == "watcher").map(|r| r["allows"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect::<Vec<_>>().join(","))
+        },
+        remove: "/roles/watcher",
+        says: ["run.view", "flow.view,run.view", "flow.view", "people.view"],
+    },
+];
+
+/// Each record a page writes whole, from the copy it read (a saved flow, a group's members, a
+/// role's actions), as two people read it at once and write theirs in turn (R32): the first is
+/// kept; the second, made from the copy they read, is refused (409), says what was done since, and
+/// leaves the first's; made again from the record as it is now, it is kept. One made as new (read
+/// before there was one) where there is one, or from one removed since, is refused too, and one that doesn't say what it
+/// was read as replaces whatever is there. An access change waiting for people, made from a copy
+/// changed before it is approved, goes stale, and what was changed since stands.
+#[test]
+fn a_whole_record_written_from_a_stale_copy_is_refused_and_changes_nothing() {
+    let (state, t, _, _) = server();
+    assert_eq!(send(&state, &t.ada, "PATCH", "/people/bob", json!({ "role": "admin" })).0, 200);
+    for w in &WHOLES {
+        let (method, path) = w.write;
+        let write = |token: &str, content: &str, base: Option<Value>| send(&state, token, method, path, (w.body)(content, base));
+        let now = || (w.now)(&state, &t.ada);
+        let [first, ada_s, bob_s, later] = w.says;
+
+        // Read before there is one: none (a flow's null), or the access version without it.
+        let none = (w.base)(&state, &t.ada);
+        assert_eq!(write(&t.ada, first, Some(none.clone())).0, 200, "{}: made as new", w.what);
+        let (code, said) = refusal(write(&t.bob, first, Some(none)));
+        assert_eq!(code, 409, "{}: made as new where there is one: {said}", w.what);
+        assert!(said.contains("was made since you") || said.contains("is saved already"), "{}: {said}", w.what);
+        let (ada_read, bob_read) = ((w.base)(&state, &t.ada), (w.base)(&state, &t.bob));
+        assert_eq!(write(&t.ada, ada_s, Some(ada_read)).0, 200, "{}: ada's, from what she read", w.what);
+        let (code, said) = refusal(write(&t.bob, bob_s, Some(bob_read)));
+        assert_eq!(code, 409, "{}: bob's, from the copy he read: {said}", w.what);
+        assert!(said.contains("since you"), "{}: {said}", w.what);
+        assert_eq!(now().as_deref(), Some(ada_s), "{}: ada's stands", w.what);
+        assert_eq!(write(&t.bob, bob_s, Some((w.base)(&state, &t.bob))).0, 200, "{}: bob's, from it as it is now", w.what);
+        assert_eq!(now().as_deref(), Some(bob_s), "{}", w.what);
+        assert_eq!(write(&t.ada, later, None).0, 200, "{}: not saying what it was read as replaces it", w.what);
+        assert_eq!(now().as_deref(), Some(later), "{}", w.what);
+
+        let read = (w.base)(&state, &t.ada);
+        let (code, said) = send(&state, &t.bob, "DELETE", w.remove, Value::Null);
+        assert!(code == 200 || code == 204, "{}: {said}", w.what);
+        let (code, said) = refusal(write(&t.ada, ada_s, Some(read)));
+        assert_eq!(code, 409, "{}: from one removed since: {said}", w.what);
+        assert!(said.contains("removed since you"), "{}: {said}", w.what);
+        assert_eq!(now(), None, "{}: it stays removed", w.what);
+    }
+    let (code, said) = refusal(send(&state, &t.ada, "PUT", "/groups/crew", json!({ "members": ["cy"], "base": 999 })));
+    assert_eq!((code, said.contains("isn't one kept here")), (409, true), "{said}");
+
+    // Waiting for people: ada's change to the team, from the team as she read it; bob takes cy out
+    // of it before it is approved, and approving ada's would put cy back.
+    let ada = |method: &str, path: &str, body: Value| send(&state, &t.ada, method, path, body);
+    assert_eq!(ada("PUT", "/roles/approver", json!({ "allows": ["run.decide", "run.view"], "kinds": ["person"] })).0, 200);
+    assert_eq!(ada("PUT", "/groups/team", json!({ "members": ["cy", "dee"] })).0, 200);
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "group": "team" }, "role": "approver", "scope": { "flows": { "slug": "d" } } })).0, 200);
+    assert_eq!(ada("POST", "/people", json!({ "name": "gil", "kind": "person", "role": "viewer" })).0, 200);
+    assert_eq!(ada("PUT", "/access/approvals", json!({ "changes": 1 })).0, 200);
+    let read = read_json(&state, &t.ada, "/groups")["version"].clone();
+    let (code, said) = ada("PUT", "/groups/team", json!({ "members": ["cy", "dee", "gil"], "base": read }));
+    assert_eq!(code, 202, "giving gil run.decide on d waits: {said}");
+    let id = serde_json::from_str::<Value>(&said).unwrap()["proposal"]["id"].as_u64().unwrap();
+    assert_eq!(send(&state, &t.bob, "PUT", "/groups/team", json!({ "members": ["dee"], "base": read })).0, 200, "taking cy out is made at once");
+    let (code, said) = refusal(send(&state, &t.bob, "POST", &format!("/access/proposals/{id}/approve"), json!({})));
+    assert_eq!(code, 409, "{said}");
+    assert!(said.contains("so it is stale: the group team was changed since"), "{said}");
+    let proposals = read_json(&state, &t.ada, "/access/proposals");
+    assert_eq!(proposals["proposals"][0]["state"], "stale", "{proposals}");
+    let team = read_json(&state, &t.ada, "/groups")["groups"].as_array().unwrap().iter().find(|g| g["name"] == "team").unwrap()["members"].clone();
+    assert_eq!(team, json!(["dee"]), "what bob did stands");
+}

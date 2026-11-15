@@ -109,6 +109,9 @@ function useAccess() {
   // A change kept as an access change that waits for people, in words.
   const [note, setNote] = useState("");
   const [version, setVersion] = useState(0);
+  // The access version the roles and the groups were read at: a change to one is made from it, and
+  // refused (409) when it changed since, so a page read before a colleague's change doesn't undo it.
+  const [read, setRead] = useState({ roles: 0, groups: 0 });
 
   const refresh = useCallback(() => {
     const failed = (e: unknown) => {
@@ -117,8 +120,14 @@ function useAccess() {
     listPrincipals()
       .then(setPrincipals, failed)
       .finally(() => setLoaded(true));
-    listRoles().then(setRoles, failed);
-    listGroups().then(setGroups, failed);
+    listRoles().then((r) => {
+      setRoles(r.roles);
+      setRead((at) => ({ ...at, roles: r.version }));
+    }, failed);
+    listGroups().then((g) => {
+      setGroups(g.groups);
+      setRead((at) => ({ ...at, groups: g.version }));
+    }, failed);
     listBindings().then(setBindings, failed);
     listDeployments().then((ds) => setFlows(ds.map((d) => ({ slug: d.slug, tags: d.tags ?? [] }))), failed);
     listAccessVersions().then(setVersions, failed);
@@ -143,7 +152,7 @@ function useAccess() {
       refresh();
     }
   };
-  return { dialog, principals, loaded, roles, groups, bindings, flows, versions, changes, oidc, msg, note, say: setNote, version, refresh, act };
+  return { dialog, principals, loaded, roles, groups, read, bindings, flows, versions, changes, oidc, msg, note, say: setNote, version, refresh, act };
 }
 type Access = ReturnType<typeof useAccess>;
 type Act = (f: () => Promise<unknown>) => Promise<unknown>;
@@ -1070,7 +1079,7 @@ function GroupsList({ a }: { a: Access }) {
         onSubmit={(e) => {
           e.preventDefault();
           const name = draft.name.trim();
-          void a.act(() => putGroup(name, { about: draft.about.trim() || null, members: [] })).then((made) => {
+          void a.act(() => putGroup(name, { about: draft.about.trim() || null, members: [], base: a.read.groups })).then((made) => {
             if (made) location.hash = format({ kind: "group", name });
           });
         }}
@@ -1091,7 +1100,7 @@ function GroupView({ name, a }: { name: string; a: Access }) {
   const [adding, setAdding] = useState("");
   const g = a.groups.find((x) => x.name === name);
   if (!g) return <div style={quiet}>{a.loaded ? `No group here is named ${name}.` : "reading…"}</div>;
-  const set = (members: string[]) => a.act(() => putGroup(name, { about: g.about, members }));
+  const set = (members: string[]) => a.act(() => putGroup(name, { about: g.about, members, base: a.read.groups }));
   const kindOf = (m: string) => a.principals.find((p) => p.name === m)?.kind ?? "";
   return (
     <section aria-label={`the group ${name}`}>
@@ -1215,7 +1224,7 @@ function RoleForm({ a, role, onDone }: { a: Access; role: RoleEntry | null; onDo
   const submit = async () => {
     setError("");
     try {
-      a.say(waitingOf(await defineRole(name.trim(), { about: what.trim() || null, allows, kinds, ...(why.trim() ? { why: why.trim() } : {}) })) ?? "");
+      a.say(waitingOf(await defineRole(name.trim(), { about: what.trim() || null, allows, kinds, base: a.read.roles, ...(why.trim() ? { why: why.trim() } : {}) })) ?? "");
       setWhy("");
       if (role) onDone();
       else {

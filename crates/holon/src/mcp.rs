@@ -576,18 +576,20 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>, asked: Asked) -> Result
 }
 
 /// Save `document` as the flow `name`; or, when a flow by that name is someone else's, leave it
-/// and answer whose it is.
+/// and answer whose it is. It replaces the save read here (`base`), and no save made since.
 fn save_flow(api: &dyn Api, name: &str, document: &Value) -> Result<Option<String>, String> {
     let me = json_of(api, "GET", "/auth/me", None).ok().and_then(|m| m.get("name").and_then(Value::as_str).map(str::to_string));
     let (status, bytes) = api.send("GET", &format!("/flows/{}", seg(name)), None)?;
+    let mut base = Value::Null;
     if status == 200 {
         let saved: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         let by = saved.get("saved_by").and_then(Value::as_str);
         if by.is_some() && by != me.as_deref() {
             return Ok(Some(by.unwrap_or("someone").to_string()));
         }
+        base = saved["saved_at_epoch_seconds"].clone();
     }
-    json_of(api, "POST", "/flows", Some(Body::Json(json!({ "name": name, "document": document }))))?;
+    json_of(api, "POST", "/flows", Some(Body::Json(json!({ "name": name, "document": document, "base": base }))))?;
     Ok(None)
 }
 

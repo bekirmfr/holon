@@ -62,10 +62,21 @@ pub(crate) enum Change {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_at: Option<u64>,
     },
-    /// `PUT /roles/<name>`: the role whole, as it would be.
-    Role { role: RoleText },
-    /// `PUT /groups/<name>`: the group whole, its members all of them.
-    Group { group: Group },
+    /// `PUT /roles/<name>`: the role whole, as it would be; and, when its author said which version
+    /// they read it at (`base`), the role as they read it (null: there was none). Made only while
+    /// it is still so (accounts.rs `define_role_as_read`), when it is approved too.
+    Role {
+        role: RoleText,
+        #[serde(default, deserialize_with = "bindings::present", skip_serializing_if = "Option::is_none")]
+        read: Option<Option<RoleText>>,
+    },
+    /// `PUT /groups/<name>`: the group whole, its members all of them; and the group as its author
+    /// read it, as for a role.
+    Group {
+        group: Group,
+        #[serde(default, deserialize_with = "bindings::present", skip_serializing_if = "Option::is_none")]
+        read: Option<Option<Group>>,
+    },
     /// `PATCH /people/<name>` with a role: bound on the host in place of what is bound there.
     HostRole { name: String, role: String },
     /// `PUT /access/approvals`: the settings whole, as they would be.
@@ -79,8 +90,8 @@ impl Change {
     pub(crate) fn make(&self, accounts: &Accounts, by: &str, why: Option<&str>) -> Result<(), String> {
         match self.clone() {
             Change::Bind { who, role, scope, expires_at } => accounts.bind(who, &role, scope, expires_at, by, why).map(drop),
-            Change::Role { role } => accounts.define_role(role, by, why).map(drop),
-            Change::Group { group } => accounts.set_group(group, by, why).map(drop),
+            Change::Role { role, read } => accounts.define_role_as_read(role, read, by, why).map(drop),
+            Change::Group { group, read } => accounts.set_group_as_read(group, read, by, why).map(drop),
             Change::HostRole { name, role } => accounts.set_role(&name, &role, by, why),
             Change::Approvals { settings } => accounts.set_approvals(settings, by, why).map(drop),
             Change::Local { account } => accounts.set_local(&account, by, why).map(drop),
@@ -757,7 +768,7 @@ mod tests {
     fn changes(base: &ApprovalSettings) -> Vec<(&'static str, Change, bool, &'static [&'static str])> {
         let bind = |role: &str, scope: Scope| Change::Bind { who: Subject::Principal("eve".into()), role: role.into(), scope, expires_at: None };
         let to_fay = |role: &str| Change::Bind { who: Subject::Principal("fay".into()), role: role.into(), scope: Scope::Host, expires_at: None };
-        let team = |members: &[&str]| Change::Group { group: Group { name: "team".into(), about: None, members: members.iter().map(|m| m.to_string()).collect() } };
+        let team = |members: &[&str]| Change::Group { group: Group { name: "team".into(), about: None, members: members.iter().map(|m| m.to_string()).collect() }, read: None };
         let settings = |f: fn(&mut ApprovalSettings)| {
             let mut s = base.clone();
             f(&mut s);
@@ -769,7 +780,7 @@ mod tests {
             ("approver bound to fay, whose reset link bob made", to_fay("approver"), true, &[]),
             ("assigner bound to eve on the host", bind("assigner", Scope::Host), true, &["bob", "cy"]),
             ("approver bound to eve until later", Change::Bind { who: Subject::Principal("dee".into()), role: "approver".into(), scope: pay(), expires_at: Some(epoch_now() + 3600) }, false, &[]),
-            ("watch, which eve holds on pay, made to decide", Change::Role { role: role("watch", &["run.view", "run.decide"]) }, true, &["bob"]),
+            ("watch, which eve holds on pay, made to decide", Change::Role { role: role("watch", &["run.view", "run.decide"]), read: None }, true, &["bob"]),
             ("eve into team, bound approver on pay", team(&["dee", "eve"]), true, &["bob"]),
             ("eve made an editor", Change::HostRole { name: "eve".into(), role: "editor".into() }, true, &["bob"]),
             ("whoever deployed a version let decide it", settings(|s| s.exclude_deployer = false), true, &["bob", "cy"]),
@@ -779,7 +790,7 @@ mod tests {
             ("agents kept from their steps", settings(|s| s.agents = false), false, &[]),
             ("watch bound to eve on the host", bind("watch", Scope::Host), false, &[]),
             ("dee out of team", team(&[]), false, &[]),
-            ("approver narrowed to run.view", Change::Role { role: role("approver", &["run.view"]) }, false, &[]),
+            ("approver narrowed to run.view", Change::Role { role: role("approver", &["run.view"]), read: None }, false, &[]),
         ]
     }
 

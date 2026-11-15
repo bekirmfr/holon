@@ -3447,6 +3447,55 @@ fn deleting_an_unknown_flow_is_404() {
     assert_eq!(route(&state, &req("DELETE", "/flows/nope", vec![])).status_code, 404);
 }
 
+/// Saved flows are bounded, and kept or not as one with their file (R32): a document past
+/// `MAX_DOCUMENT_BYTES` is refused (413), and a new flow past `MAX_SAVED` or documents past
+/// `MAX_SAVED_BYTES` (409), while a flow there is still saved over within them; a save or a removal
+/// its file doesn't take (its place is a folder here) answers 500 and leaves the flows as they were.
+#[test]
+fn saved_flows_are_bounded_and_one_not_written_is_not_kept() {
+    use crate::flows::{MAX_DOCUMENT_BYTES, MAX_SAVED, MAX_SAVED_BYTES};
+    let state = test_state();
+    let save = |state: &AppState, name: &str, document: serde_json::Value| {
+        route(state, &req("POST", "/flows", serde_json::to_vec(&serde_json::json!({ "name": name, "document": document })).unwrap())).status_code
+    };
+    // A document of `n` bytes, as the server counts them.
+    let sized = |n: usize| serde_json::json!({ "pad": "x".repeat(n - r#"{"pad":""}"#.len()) });
+    let names = |state: &AppState| body_json(route(state, &req("GET", "/flows", vec![]))).as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+
+    assert_eq!(save(&state, "big", sized(MAX_DOCUMENT_BYTES + 1)), 413);
+    assert_eq!(save(&state, "big", sized(MAX_DOCUMENT_BYTES)), 200);
+    let fill = MAX_SAVED_BYTES / MAX_DOCUMENT_BYTES;
+    for n in 1..fill {
+        assert_eq!(save(&state, &format!("big{n}"), sized(MAX_DOCUMENT_BYTES)), 200, "{n}");
+    }
+    assert_eq!(save(&state, "over", sized(16)), 409, "{MAX_SAVED_BYTES} bytes of documents are saved");
+    assert_eq!(save(&state, "big", sized(MAX_DOCUMENT_BYTES)), 200, "one there is saved over");
+    assert_eq!(names(&state).len(), fill);
+    for name in names(&state) {
+        assert_eq!(route(&state, &req("DELETE", &format!("/flows/{name}"), vec![])).status_code, 200);
+    }
+    for n in 0..MAX_SAVED {
+        assert_eq!(save(&state, &format!("f{n}"), serde_json::json!({})), 200, "{n}");
+    }
+    assert_eq!(save(&state, "one-more", serde_json::json!({})), 409, "{MAX_SAVED} flows are saved");
+    assert_eq!(save(&state, "f0", serde_json::json!({ "v": 1 })), 200, "one there is saved over");
+
+    // Its file's place is a folder: nothing is written there, and nothing changes.
+    let mut state = test_state();
+    assert_eq!(save(&state, "kept", serde_json::json!({ "v": 1 })), 200);
+    let folder = unique_temp_path("flows-folder");
+    std::fs::create_dir_all(&folder).unwrap();
+    state.flows_path = folder.clone().into();
+    let kept = body_json(route(&state, &req("GET", "/flows/kept", vec![])));
+    assert_eq!(save(&state, "kept", serde_json::json!({ "v": 2 })), 500);
+    assert_eq!(body_json(route(&state, &req("GET", "/flows/kept", vec![]))), kept, "as it was");
+    assert_eq!(route(&state, &req("DELETE", "/flows/kept", vec![])).status_code, 500);
+    assert_eq!(route(&state, &req("GET", "/flows/kept", vec![])).status_code, 200, "still there");
+    assert_eq!(save(&state, "new", serde_json::json!({})), 500);
+    assert_eq!(names(&state), ["kept"], "nor is a new one there");
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
 #[test]
 fn flows_persist_across_a_simulated_restart() {
     let flows_path = unique_temp_path("flows");
@@ -3659,10 +3708,10 @@ fn persist_writes_whole_files_and_leaves_no_temp_files() {
             name.to_string(),
             FlowRecord { name: name.to_string(), saved_at_epoch_seconds: 0, document: serde_json::json!({}), saved_by: None, uses: None },
         );
-        persist_flows(&Place::parse(&path), &flows);
+        persist_flows(&Place::parse(&path), &flows).unwrap();
     }
     flows.remove("a");
-    persist_flows(&Place::parse(&path), &flows); // shrinking: no stale tail from the longer write
+    persist_flows(&Place::parse(&path), &flows).unwrap(); // shrinking: no stale tail from the longer write
     assert_eq!(load_flows(&Place::parse(&path)).unwrap().keys().collect::<Vec<_>>(), vec!["b"]);
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
