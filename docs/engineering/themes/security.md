@@ -444,6 +444,15 @@ What is not defended, or only partly:
   writing in the folder can swap a link between the check and the open (on Linux, without
   `/proc`, too). On Linux no link in a folder is followed, even one to inside it.
 - **Secrets in memory are in the clear** (`Resolved`, wiped when dropped), as is any process's.
+- **A sealed file rolled back**: a seal binds a file to its scope, key version and role
+  (at_rest.rs), not to its age, so an older sealed copy of a table (`deployments.json`,
+  `accounts.json`, `access.json`) put back in its place opens and is read. Only a log's chain,
+  against a witness's later head, shows one going back. An older `keys.json` opens only under
+  the root that wrapped it, which a forget rotates where it can (server.md).
+- **Forgetting doesn't reach the content store**: a deployment's state values there are sealed
+  under the server's keys, which a forget doesn't change. The sweep removes those nothing names
+  any more, but a copy of the store taken before the forget still opens beside the folder's
+  `keys.json`.
 - **Plain HTTP** to the server and data plane unless an ingress ends TLS in front.
 
 ## 5. What the tests hold

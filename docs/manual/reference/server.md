@@ -460,6 +460,10 @@ keyed hash of its content hash, so a name says nothing of what it holds; and wha
 sent (`mail-spool/`, `queue-spool/`), a removed deployment's records (`removed/`), and what a
 backup holds. Each is sealed for what it is, so
 one is never read as another, and a plain file where a sealed one belongs is refused, not read.
+An older sealed copy of a file put back in its place is not refused: a seal says what the file
+is and where it belongs, not when it was written, so whoever can write the folder can put back
+yesterday's deployments, accounts or access. Only a run log shows it, to a witness that holds a
+later head.
 `keys.json` is the one kept as it is. A run log's chain is over its lines as they were made, not
 as they are sealed: an export (`holon export`) is plain, and `holon verify` checks it with no key.
 `--root-key` says where the root is:
@@ -510,7 +514,9 @@ them; none of it ever shows a key.
   section): its keys leave `keys.json`, so its kept log, events, records and backups open
   nowhere again, and say they were forgotten rather than damaged. The content store, which every deployment shares and the server's keys seal, isn't forgotten:
   the values nothing else names are swept from it at once (those written in the last hour by
-  the next sweep), and the flow's code stays in it. Then the root is rotated
+  the next sweep), and the flow's code stays in it. A copy of the content store taken before the
+forget still opens, with its state values, beside the folder's `keys.json`: the server's keys
+seal it, and a forget doesn't change them. Then the root is rotated
   where it is kept, so a copy of the whole folder taken before (which holds the old `keys.json`)
   needs the old root. A copy of that root kept elsewhere, as a backup should be, still opens such
   a copy; forgetting doesn't reach it. Back the new root up then (`holon key export`). A root in an
