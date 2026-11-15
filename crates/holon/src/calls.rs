@@ -75,6 +75,10 @@ pub(crate) struct Caller<'a> {
     /// Whether the run won't be logged (its handler is unrecorded, and granted so): the other
     /// flow's log says so, its run there pointing to none here.
     pub(crate) unrecorded: bool,
+    /// Who started the run making the calls, signed in (`RunWaits::started_by`), carried to each
+    /// run it starts: they decide none of that run's approvals either, as if they had started it
+    /// themselves. The flow and run that called are its log's `by`.
+    pub(crate) started_by: Option<&'a str>,
     /// In a test, the run's fixed sources (firing::fixed): a call runs on a thread of its own,
     /// whose run takes them from a range of its own, by the call's place.
     #[cfg(test)]
@@ -116,7 +120,7 @@ impl Caller<'_> {
         let chain: Vec<String> = self.chain.iter().cloned().chain(std::iter::once(self.slug.to_string())).collect();
         #[cfg(test)]
         crate::firing::fixed::from(self.fixed.map(|n| ((n + 1) << 20) + ((path.iter().fold(0u64, |a, &p| a * 31 + p as u64) % 1024) << 10)));
-        let ran = deploy::run_action(self.store, &host.deployments, &host.deployments_path, flow, action, Ok(input.clone()), Some(&by), None, &chain);
+        let ran = deploy::run_action(self.store, &host.deployments, &host.deployments_path, flow, action, Ok(input.clone()), Some(&by), self.started_by, None, &chain);
         let run = ran.seq.map(|s| Value::Number(s as f64));
         if ran.waiting && start {
             // Started, and waiting: each point it waits at, with its token.

@@ -1368,7 +1368,7 @@ pub(crate) fn handle_post_action(
             holon_core::parse_json(&text).ok_or_else(|| "what is sent to an action is JSON, and this isn't".to_string())
         }
     });
-    let ran = run_action(store, deployments, deployments_path, slug, name, input, by, Some(who), &[]);
+    let ran = run_action(store, deployments, deployments_path, slug, name, input, by, by, Some(who), &[]);
     if ran.status == 404 && ran.reply.is_null() {
         return Response::empty_404();
     }
@@ -1420,6 +1420,7 @@ pub(crate) fn run_action(
     name: &str,
     input: Result<Value, String>,
     by: Option<&str>,
+    started_by: Option<&str>,
     who: Option<&Caller>,
     chain: &[String],
 ) -> ActionRan {
@@ -1461,7 +1462,7 @@ pub(crate) fn run_action(
     let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64)), (Capability::Random, random_bytes())];
     let started = started_now();
     let inputs = [Some(input.clone())];
-    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), started_by: by.map(String::from), ..Default::default() };
+    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), started_by: started_by.map(String::from), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     // As a route's (listeners.rs): an unrecorded run keeps no timeline, and is never logged, failed
     // or not (resilience-audit-L4.md, §2.8).

@@ -2470,6 +2470,103 @@ export const pay = action(async (order) => {
     assert_eq!(lines.iter().filter(|l| l.contains("(action pay, started by bob, since ")).count(), 1, "{lines:?}");
 }
 
+/// Whoever started a run started each run it leads to: a run another flow's call starts, from an
+/// action they ran, a request they sent over the control plane, a later part of their run, or a
+/// run their run started. Its approval's listing names them, and they decide none of it, as if
+/// they had started it themselves; someone else does.
+///
+/// **Why:** a run a flow's call started was started by "flow relay, run N", which is no one's
+/// name, so whoever started the run that called decided it (the separation of duties lost).
+#[test]
+fn whoever_started_a_run_started_each_run_it_leads_to() {
+    use serde_json::{json, Value as J};
+    let mut state = test_state();
+    let People { ada, .. } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let ask = |token: &str, method: &str, path: &str, body: J| {
+        let (code, said) = access_table::ask(&state, Some(token), method, path, if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() });
+        (code, serde_json::from_str::<J>(&said).unwrap_or(J::Null))
+    };
+    let deploy = |text: &str| {
+        let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(&state, &req_as(&ada, "POST", "/unit", u.clone())).status_code, 200);
+        }
+        let asked = ask(&ada, "POST", "/deploy/preview", json!({ "slug": plan.name, "unit": plan.unit })).1["needs_approval"].clone();
+        let (code, said) = ask(&ada, "POST", "/deploy", json!({ "slug": plan.name, "unit": plan.unit, "document": {}, "acknowledge": asked }));
+        assert_eq!(code, 200, "{said}");
+    };
+    deploy(
+        r#"import { action, approval, flow } from "holon"
+
+flow("payouts")
+
+export const pay = action(async (order) => {
+  const decision = await approval("payout", { expires: "1h" })
+  return decision.approved
+})
+"#,
+    );
+    deploy(
+        r#"import { action, flow } from "holon"
+import { pay } from "flow:payouts"
+
+flow("middle")
+
+export const pass = action((order) => pay(order))
+"#,
+    );
+    deploy(&format!(
+        r#"import {{ action, event, flow, route }} from "holon"
+import {{ pay }} from "flow:payouts"
+import {{ pass }} from "flow:middle"
+
+flow("relay", {{ port: {} }})
+
+route.post("/pay", (req) => pay({{ path: req.path }}))
+
+export const go = action((order) => pay(order))
+
+export const later = action(async (order) => {{
+  const went = await event("went", {{ expires: "1h" }})
+  return pay({{ via: went.method }})
+}})
+
+export const twice = action((order) => pass(order))
+
+route.get("/went/:token", () => "ok", {{ resumes: "went" }})
+"#,
+        free_port()
+    ));
+    let parked = |slug: &str| state.deployments.lock().unwrap()[slug].parked.keys().cloned().collect::<BTreeSet<String>>();
+    let resume_later = || {
+        let before = parked("relay");
+        assert_eq!(ask(&bob, "POST", "/trigger/relay/later", json!({})).0, 202);
+        let run = parked("relay").difference(&before).next().cloned().unwrap();
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "relay", &fake_data("GET", &format!("/went/{}", durable::token_for(&run, "went")), vec![]));
+        assert_eq!(r.status, 200);
+    };
+    let ways: [(&str, &dyn Fn()); 4] = [
+        ("an action bob ran", &|| assert!(ask(&bob, "POST", "/trigger/relay/go", json!({ "amount": 1 })).0 < 300)),
+        ("a request bob sent over the control plane", &|| assert_eq!(ask(&bob, "POST", "/deployments/relay/request", json!({ "method": "POST", "url": "/pay", "body": "{}" })).1["status"], 200)),
+        ("a later part of bob's run", &resume_later),
+        ("a run bob's run started", &|| assert!(ask(&bob, "POST", "/trigger/relay/twice", json!({})).0 < 300)),
+    ];
+    for (way, start) in ways {
+        let before = parked("payouts");
+        start();
+        let run = parked("payouts").difference(&before).next().cloned().unwrap_or_else(|| panic!("{way}: a run waits at payouts"));
+        let listed = ask(&ada, "GET", "/deployments/payouts/runs", J::Null).1["runs"].as_array().unwrap().iter().find(|r| r["run_id"] == run.as_str()).cloned().unwrap();
+        assert_eq!(listed["by"], "bob", "{way}: its listing names who started it: {listed}");
+        let decide = |token: &str| ask(token, "POST", &format!("/deployments/payouts/runs/{run}/decide"), json!({ "name": "payout", "approve": true }));
+        let (code, said) = decide(&bob);
+        assert_eq!((code, said["error"].as_str()), (403, Some("bob started this run: someone else decides its approval \"payout\"")), "{way}: {said}");
+        let (code, said) = decide(&ada);
+        assert_eq!((code, said["outcome"].as_str()), (200, Some("approved")), "{way}: {said}");
+    }
+}
+
 /// **Guards:** an approval's steps are what its deploy asks for. A version that changes them asks
 /// for the new item as any new permission does, and an agent's such version waits for a person
 /// as a proposal (docs/L4s/approval-steps-plan.md D29).
@@ -13162,7 +13259,7 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
         let events = &mut table.get_mut(&slug).unwrap().events;
         events.take_dirty().inspect(|_| events.still_dirty()).is_none()
     };
-    let action = |name: &str| run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(Value::Record(BTreeMap::new())), None, None, &[]).status;
+    let action = |name: &str| run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(Value::Record(BTreeMap::new())), None, None, None, &[]).status;
 
     // Strict: a read, and a write.
     assert_eq!(call("GET", "/health", ""), 200);
@@ -13236,7 +13333,7 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     assert_eq!((tally("GET /health").runs, tally("GET /health").failed), (3, 0));
     assert!(state.deployments.lock().unwrap()[&slug].tallies_changed, "for the periodic sync to write");
     assert!(tally("GET /health").last_at_ms > 0);
-    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "report", Ok(Value::Record(BTreeMap::new())), None, None, &[]);
+    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "report", Ok(Value::Record(BTreeMap::new())), None, None, None, &[]);
     assert_eq!((ran.status, ran.seq), (200, None), "an unrecorded action answers, with no entry");
     assert_eq!(tally("action report").runs, 1);
 
@@ -13318,7 +13415,7 @@ fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
     // (missing), which isn't a failure.
     let failing = deploy_plain_text(&state, "import { action, flow } from \"holon\"\n\nflow(\"failing\", { port: 8173 })\n\nexport const check = action((input) => input.nowhere, { log: \"unrecorded\" })\n");
     let log = Arc::clone(&state.deployments.lock().unwrap()[&failing].log);
-    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &failing, "check", Ok(Value::Record(BTreeMap::new())), None, None, &[]);
+    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &failing, "check", Ok(Value::Record(BTreeMap::new())), None, None, None, &[]);
     assert_eq!((ran.status, ran.seq), (404, None), "no answer: missing, with no entry: {:?}", ran.error);
     assert_eq!(log.next_seq(), 0, "nothing logged");
     let tally = state.deployments.lock().unwrap()[&failing].tallies["action check"].clone();
@@ -13411,7 +13508,7 @@ route.get("/paid/:token", () => "thanks", {{ resumes: "paid" }})
     };
     for (level, port) in [("strict", 18206), ("lazy", 18207), ("unrecorded", 18208)] {
         let slug = deploy_plain_text(&state, &text(level, port));
-        let hold = || run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "hold", Ok(Value::Record(BTreeMap::new())), None, None, &[]);
+        let hold = || run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "hold", Ok(Value::Record(BTreeMap::new())), None, None, None, &[]);
         let held = hold();
         assert_eq!((held.status, held.waiting, held.error.as_deref()), (202, true, None), "{level}: {}", held.reply);
         let refused = hold();
@@ -14747,7 +14844,7 @@ fn the_server_records_what_its_golden_record_holds() {
             for name in &actions {
                 for body in &bodies {
                     let input = holon_core::parse_json(if body.is_empty() { "{}" } else { body }).unwrap_or(Value::Record(BTreeMap::new()));
-                    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(input), None, None, &[]);
+                    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(input), None, None, None, &[]);
                     wrote(&mut out, format!("== {slug} · action {name} · body {} → {} {}", body.len(), ran.status, ran.reply));
                 }
             }

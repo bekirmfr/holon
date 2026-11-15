@@ -732,7 +732,20 @@ fn run_attempt(
     // A file as a request's body is sent from a folder the deployment reads.
     let forward = waits.forward.clone();
     let (slug, run, chain) = (waits.slug.clone().unwrap_or_default(), waits.run_id.clone().unwrap_or_default(), waits.chain.clone());
-    let caller = calls::Caller { store, fed: &secret_fed, permit, vault: secrets, slug: &slug, run: &run, chain: &chain, unrecorded: waits.unrecorded, #[cfg(test)] fixed: fixed::peek() };
+    let started_by = waits.started_by.clone();
+    let caller = calls::Caller {
+        store,
+        fed: &secret_fed,
+        permit,
+        vault: secrets,
+        slug: &slug,
+        run: &run,
+        chain: &chain,
+        unrecorded: waits.unrecorded,
+        started_by: started_by.as_deref(),
+        #[cfg(test)]
+        fixed: fixed::peek(),
+    };
     let sender = folders::Sender {
         outbound: &permit.outbound,
         folders: waits.folders.clone(),

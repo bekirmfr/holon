@@ -172,8 +172,9 @@ pub(crate) struct RunWaits {
     /// Its run won't be logged (an unrecorded handler's, unless it fails): no timeline is kept
     /// (docs/L4s/request-path-L4.md §4.5 a).
     pub(crate) unrecorded: bool,
-    /// Who started the run, signed in: a control-plane call's caller, or an action's. None for a
-    /// request on the flow's own port, where nobody signs in, and for every other trigger.
+    /// Who started the run, signed in: a control-plane call's caller, or an action's; for a run a
+    /// flow's call started, whoever started the run that called (calls.rs). None for a request on
+    /// the flow's own port, where nobody signs in, and for every other trigger.
     pub(crate) started_by: Option<String>,
 }
 
@@ -814,7 +815,8 @@ impl ParkedRun {
             .collect();
         let mut events: BTreeMap<String, Value> = self.events.iter().map(|(k, v)| (k.clone(), v.clone().into_core())).collect();
         events.insert(name.to_string(), event);
-        let waits = RunWaits { run_id: Some(self.run_id.clone()), tokens: self.tokens.clone(), events, ..Default::default() };
+        // Who started it is who started each later part: a run a part starts (calls.rs) is theirs.
+        let waits = RunWaits { run_id: Some(self.run_id.clone()), tokens: self.tokens.clone(), events, started_by: self.started_by.clone(), ..Default::default() };
         let refs = self
             .state_refs
             .clone()
