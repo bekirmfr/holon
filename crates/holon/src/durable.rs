@@ -1202,10 +1202,37 @@ pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<S
         let Some(claimed) = claim(deployments, &slug, &run_id, &name) else {
             continue;
         };
-        if let Err(e) = resume_parked(store, deployments, deployments_path, &slug, claimed, &name, event) {
-            eprintln!("holon: expiring {name:?} of run {run_id} in {slug:?}: {e}");
+        match resume_parked(store, deployments, deployments_path, &slug, claimed, &name, event) {
+            Ok(()) => {}
+            // Turned away by a run lock: it didn't run, and its deadline's event goes again.
+            Err(e) if e.starts_with("busy:") => eprintln!("holon: expiring {name:?} of run {run_id} in {slug:?}: {e}"),
+            Err(e) => end_unresumable(deployments, deployments_path, &slug, &run_id, &name, &e),
         }
     }
+}
+
+/// End waiting run `run_id` of `slug`, past its deadline at `name`, whose resume failed for a
+/// reason a pass a second later finds again (`why`: its record won't open, its unit isn't in the
+/// store, what it learned can't be kept): no longer waiting, its log saying why, and said once.
+/// Left waiting, it was resumed again every second, for good, and said each time (release audit
+/// R46, D12). Its first part's entry in the log keeps what it was started with.
+fn end_unresumable(deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, slug: &str, run_id: &str, name: &str, why: &str) {
+    let ended = {
+        let mut table = deployments.lock().unwrap();
+        // One a request claimed meanwhile is its to resume.
+        table.get_mut(slug).filter(|d| d.parked.get(run_id).is_some_and(|p| !p.resuming)).and_then(|d| d.parked.remove(run_id))
+    };
+    let Some(run) = ended else { return };
+    let error = format!("its deadline at {name:?} passed and it can't be resumed, so it ends: {why}");
+    eprintln!("holon: run {run_id} in {slug:?}: {error}");
+    let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let unit = if run.version.is_empty() { run.unit.clone() } else { run.version.clone() };
+    let entry = crate::recorder::LogEntry { kind: "resume".into(), at_ms, run_id: run_id.to_string(), unit, route: run.route.clone(), error: Some(error), ..Default::default() };
+    let declared = holon_core::LogLevel::parse(&run.log).unwrap_or_default();
+    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&run.tokens), declared) {
+        l.said(slug);
+    }
+    persist_deployments(deployments_path, deployments);
 }
 
 /// `GET /deployments/<slug>/runs` — the runs waiting in it, without their tokens; each approval

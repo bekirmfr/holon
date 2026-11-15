@@ -688,6 +688,9 @@ pub struct Log {
     /// A test's: the next syncs of its file fail, as a disk that can't flush fails them.
     #[cfg(test)]
     fail_syncs: bool,
+    /// Cut-backs begun holding the lock (`cut_back`), counted for a test.
+    #[cfg(test)]
+    cuts_holding_lock: usize,
     /// Entries let go of from memory, to be freed once the log's lock is released
     /// (`LogCell::with`): freeing one, its timeline and all, took a quarter of the time a run held
     /// the lock.
@@ -709,6 +712,11 @@ pub struct Log {
     backup: Option<(PathBuf, bool)>,
     /// Why the last cut-back couldn't write them there (and so didn't cut), if it couldn't.
     backup_error: Option<String>,
+    /// Cut-backs made with the lock released that failed in a row (the backup unwritable, the
+    /// disk full): the next waits twice as long as the last, up to [`CUT_PAUSE_MAX_MS`].
+    cut_failures: u32,
+    /// No cut-back is begun before this (ms since the epoch): the pause after one failed.
+    cut_paused_until: u64,
     /// Its sealed segments, oldest first: the runs it keeps older than the newest `hot`.
     sealed: Vec<Sealed>,
     /// How many of its newest runs it keeps in its file as written (`HOT`).
@@ -789,7 +797,7 @@ impl CutPlan {
         let mut bytes = Vec::with_capacity(self.file_len as usize);
         std::fs::File::open(&self.path)?.take(self.file_len).read_to_end(&mut bytes)?;
         if bytes.len() as u64 != self.file_len {
-            return Err(std::io::Error::other("the file is shorter than when its cut was planned"));
+            return Err(std::io::Error::other(FileMoved));
         }
         let in_file = |at: &LineAt| bytes.get(at.offset as usize..at.offset as usize + at.len);
         let lines: Vec<(&[u8], &LineAt)> = self.lines.iter().filter_map(|at| in_file(at).map(|b| (b, at))).collect();
@@ -847,10 +855,46 @@ fn keep_aside(backup: Option<&(PathBuf, bool)>, path: &Path, gone: &[(Vec<u8>, &
         crate::at_rest::write_sealed(&dir.join(crate::storage::batch_name(first.seq, last.seq, &head)), &crate::at_rest::deployment(slug), &crate::at_rest::role::batch(slug), &bytes)
     })();
     match written {
-        Err(e) if !*may_drop => Err(std::io::Error::other(format!("the runs it lets go of couldn't be written to the backup {}: {e}", dir.display()))),
+        Err(e) if !*may_drop => Err(std::io::Error::other(BackupUnwritten(format!("the runs it lets go of couldn't be written to the backup {}: {e}", dir.display())))),
         _ => Ok(()),
     }
 }
+
+/// A cut-back made with the lock released found the file shorter than when it was planned
+/// (changed outside holon): it is made holding the lock instead, from the file read afresh.
+#[derive(Debug)]
+struct FileMoved;
+
+impl std::fmt::Display for FileMoved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the file is shorter than when its cut was planned")
+    }
+}
+
+impl std::error::Error for FileMoved {}
+
+/// A cut-back's error that is the backup's: what it lets go of couldn't be written there. The log
+/// keeps it as its `backup_error`, which the host warns of (storage.rs).
+#[derive(Debug)]
+struct BackupUnwritten(String);
+
+impl std::fmt::Display for BackupUnwritten {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for BackupUnwritten {}
+
+/// The pause after a cut-back made with the lock released fails, doubled with each failure in a
+/// row, up to [`CUT_PAUSE_MAX_MS`] (release audit R46): with the backup unwritable or the disk
+/// full, a cut tried each second read the whole file each second, holding the log's lock, and
+/// said so each second.
+pub const CUT_PAUSE_MS: u64 = 1_000;
+
+/// The longest pause between cut-backs that fail: how long the file may go on growing past what
+/// it keeps once what failed is put right (a backup set again starts afresh, `set_backup`).
+pub const CUT_PAUSE_MAX_MS: u64 = 5 * 60 * 1_000;
 
 /// After a cut that `split` made (of `sealed` then the file's lines, `seal` the segment it seals,
 /// `stay` the lines left in the file): the oldest run it keeps, when runs before it went (`went`)
@@ -1595,10 +1639,14 @@ impl Log {
             fail_partway: false,
             #[cfg(test)]
             fail_syncs: false,
+            #[cfg(test)]
+            cuts_holding_lock: 0,
             gone: Vec::new(),
             defer_cuts: false,
             cut_wanted: false,
             cutting: false,
+            cut_failures: 0,
+            cut_paused_until: 0,
             generation: 0,
             backup: None,
             backup_error: None,
@@ -1801,6 +1849,12 @@ impl Log {
     /// Where the runs it lets go of are written first, and whether a cut may go on without
     /// (storage.rs keeps it as `[storage] backup` says).
     pub fn set_backup(&mut self, backup: Option<(PathBuf, bool)>) {
+        // Another backup, or one a cut may now go on without: a cut that failed for the last is
+        // tried again at once, not after its pause. The host sets it on each look, the same.
+        if backup != self.backup {
+            self.cut_failures = 0;
+            self.cut_paused_until = 0;
+        }
         self.backup = backup;
     }
 
@@ -2063,7 +2117,7 @@ impl Log {
     /// The cut-back wanted, as the file is now, to be made with the lock released: none if none is
     /// wanted, one is being made, or the log keeps no file.
     fn plan_cut(&mut self) -> Option<CutPlan> {
-        if !self.cut_wanted || self.cutting {
+        if !self.cut_wanted || self.cutting || now_ms() < self.cut_paused_until {
             return None;
         }
         let path = self.file.clone()?;
@@ -2081,20 +2135,17 @@ impl Log {
 
     /// Swap in a cut-back made with the lock released (`CutPlan::make`): the lines written since
     /// it was planned copied after the kept ones and synced, then the file replaced. One the file
-    /// moved under (changed outside holon), or one that failed, is made here instead, as it always
-    /// was.
+    /// moved under (changed outside holon), or whose swap failed, is made here instead, from the
+    /// file read afresh. One that failed as it was made (the backup unwritable, the disk full) is
+    /// tried again after a pause (`cut_failed`), not here: made holding the lock it failed the same
+    /// way, each second, reading the whole file as the runs waited (release audit R46).
     fn finish_cut(&mut self, made: std::io::Result<Option<CutMade>>) {
         self.cutting = false;
         let mut made = match made {
             Ok(Some(made)) => made,
-            Ok(None) => return,
-            Err(e) => {
-                eprintln!("holon: the flow log {:?} is cut back holding its lock: {e}", self.file);
-                if let Err(e) = self.cut_back(None) {
-                    eprintln!("holon: could not cut back the flow log in {:?}: {e}", self.file);
-                }
-                return;
-            }
+            Ok(None) => return self.cut_done(),
+            Err(e) if e.get_ref().is_some_and(|r| r.is::<FileMoved>()) => return self.cut_here(),
+            Err(e) => return self.cut_failed(&e),
         };
         // A log no longer kept in that file (deleted, or moved) has nothing to cut.
         if self.file.as_deref() != Some(made.path.as_path()) || !made.path.exists() {
@@ -2142,7 +2193,7 @@ impl Log {
         match swapped {
             Ok(true) => {
                 // What it let go of was written to the backup (`CutPlan::make`): it can be again.
-                self.backup_error = None;
+                self.cut_done();
                 if let Some((seq, prev)) = &made.trimmed {
                     self.export("trim", *seq, prev, now_ms());
                 }
@@ -2157,14 +2208,51 @@ impl Log {
                         let _ = std::fs::remove_file(path);
                     }
                 }
+                // The swap failed, or the file moved under the cut: made here, from the file read
+                // afresh; paused, as any, if that fails too.
                 if let Err(e) = other {
                     eprintln!("holon: the flow log {:?} is cut back holding its lock: {e}", self.file);
                 }
-                if let Err(e) = self.cut_back(None) {
-                    eprintln!("holon: could not cut back the flow log in {:?}: {e}", self.file);
-                }
+                self.cut_here();
             }
         }
+    }
+
+    /// A cut made with the lock released whose swap failed, or that the file moved under (changed
+    /// outside holon): made here, from the file read afresh, as it always was; a pause after it,
+    /// if it fails too (`cut_failed`).
+    fn cut_here(&mut self) {
+        match self.cut_back(None) {
+            Ok(true) => self.cut_done(),
+            Ok(false) => {
+                let why = self.backup_error.clone().unwrap_or_default();
+                self.cut_failed(&std::io::Error::other(BackupUnwritten(why)));
+            }
+            Err(e) => self.cut_failed(&e),
+        }
+    }
+
+    /// A cut-back was made, or found nothing to cut: the next is begun when a run wants one.
+    fn cut_done(&mut self) {
+        self.backup_error = None;
+        self.cut_failures = 0;
+        self.cut_paused_until = 0;
+    }
+
+    /// A cut-back failed: still wanted, and begun again after a pause, twice the last one's while
+    /// it fails, up to [`CUT_PAUSE_MAX_MS`]; said once, as it starts failing. A backup that
+    /// couldn't be written is the log's `backup_error`, which the host warns of while it lasts.
+    fn cut_failed(&mut self, e: &std::io::Error) {
+        if e.get_ref().is_some_and(|r| r.is::<BackupUnwritten>()) {
+            self.backup_error = Some(e.to_string());
+        }
+        if self.cut_failures == 0 {
+            eprintln!("holon: could not cut back the flow log in {:?}, tried again after a pause, longer while it fails: {e}", self.file);
+        }
+        let pause = CUT_PAUSE_MS.saturating_mul(1 << self.cut_failures.min(16)).min(CUT_PAUSE_MAX_MS);
+        self.cut_failures = self.cut_failures.saturating_add(1);
+        self.cut_paused_until = now_ms().saturating_add(pause);
+        self.cut_wanted = true;
     }
 
     /// Rewrite the file as the lines it keeps, byte for byte, then `line` (the newest entry's,
@@ -2172,6 +2260,10 @@ impl Log {
     /// line, which carries the numbering and the chain on.
     fn cut_back(&mut self, line: Option<(&str, LineAt)>) -> std::io::Result<bool> {
         let Some(path) = self.file.clone() else { return Ok(true) };
+        #[cfg(test)]
+        {
+            self.cuts_holding_lock += 1;
+        }
         // Closed before the file is replaced: a handle would go on writing to the old one (and
         // Windows won't replace an open file). The next line opens the new one.
         self.handle = None;
@@ -2507,7 +2599,7 @@ fn shows_in(wanted: Wanted, key: &str, text: &str) -> bool {
 }
 
 /// Now, in milliseconds since the epoch.
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
@@ -2987,6 +3079,54 @@ mod tests {
         push(1);
         assert_eq!(cell.with(|l| l.backup_error().map(str::to_string)), None, "written to again");
         assert_eq!(cell.with(|l| l.holds().3), 3, "cut back");
+        assert!(std::fs::read_dir(backup.join("slug")).unwrap().count() > 0, "what it let go of is there");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Guards:** a cut-back that fails (the backup unwritable, the disk full) is not made again
+    /// holding the log's lock: it is still wanted, and tried again after a pause that doubles
+    /// while it fails, up to [`CUT_PAUSE_MAX_MS`]; a backup set again cuts at once (release audit
+    /// R46, D7).
+    ///
+    /// **Why:** a cut made with the lock released that failed was made again under the lock, and
+    /// failed the same way: each second, the whole file read with every run waiting, and said.
+    ///
+    /// **If it fails:** with the backup unwritable, a busy flow's runs wait each second on a read
+    /// of its whole log, and the console fills with the same line.
+    #[test]
+    fn a_cut_back_that_fails_waits_longer_each_time_and_is_never_made_holding_the_lock() {
+        let dir = temp_dir("cut-pause");
+        let path = dir.join("slug.jsonl");
+        let blocked = dir.join("blocked");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&blocked, "a file where the folder would be").unwrap();
+        let cell = LogCell::new(Log::open_keeping(Some(path.clone()), 3));
+        cell.with(|l| l.set_backup(Some((blocked.clone(), false))));
+        for _ in 0..8 {
+            cell.with(|l| l.push(entry()));
+        }
+        for failed in 0..12u32 {
+            let before = now_ms();
+            cell.cut_if_planned();
+            // Asked again at once, as the next second's sync does: paused, nothing begun.
+            cell.cut_if_planned();
+            let (until, failures, wanted, error, held) = cell.with(|l| (l.cut_paused_until, l.cut_failures, l.cut_wanted, l.backup_error.clone(), l.cuts_holding_lock));
+            assert_eq!((failures, held), (failed + 1, 0), "tried once, never holding the lock");
+            assert!(wanted, "still wanted");
+            assert!(error.is_some_and(|e| e.contains("backup")), "the backup's error, for the host to warn of");
+            let pause = until.saturating_sub(before);
+            let expected = (CUT_PAUSE_MS << failed).min(CUT_PAUSE_MAX_MS);
+            assert!(pause >= expected.saturating_sub(5) && pause <= expected + 1_000, "failure {}: paused {pause} ms, not {expected}", failed + 1);
+            // As if the pause had run out.
+            cell.with(|l| l.cut_paused_until = 0);
+        }
+        assert!(cell.with(|l| l.holds().3) > 6, "nothing let go of unbacked");
+        // Put right: a backup that can be written to cuts at the next sync, the pause let go.
+        cell.with(|l| l.cut_paused_until = u64::MAX);
+        let backup = dir.join("backup");
+        cell.with(|l| l.set_backup(Some((backup.clone(), false))));
+        cell.cut_if_planned();
+        assert_eq!(cell.with(|l| (l.holds().3, l.cut_failures, l.backup_error.clone(), l.cuts_holding_lock)), (3, 0, None, 0), "cut back, with the lock released");
         assert!(std::fs::read_dir(backup.join("slug")).unwrap().count() > 0, "what it let go of is there");
         let _ = std::fs::remove_dir_all(&dir);
     }

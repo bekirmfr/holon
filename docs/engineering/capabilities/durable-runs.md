@@ -139,6 +139,12 @@ deadline is claimed (one being resumed is left alone) and given `{expired: true}
 (`expired_event`), so the flow decides what timing out means. An approval is given its decision
 as it stands, `approved` false, with `expired: true` and who had approved.
 
+A run past its deadline that can't be resumed (its record won't open, its unit isn't in the store,
+what it learned can't be kept) ends there (`end_unresumable`): no longer waiting, its log given a
+`resume` entry whose error says why, and said once. Left waiting, it was tried again every second,
+for good, and said each time (release audit R46). One turned away by a run lock didn't run, and
+is tried again by the next pass.
+
 ### What survives a restart
 
 - **Waiting runs**, in the deployments file. Their inputs, sourced values, requests, events and any

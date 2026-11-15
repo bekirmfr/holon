@@ -12,6 +12,12 @@
   them wrote them in clear): it names them and refuses; it still moves old key files.
   `holon uninstall --purge` removes the key such a release kept its secrets under (the OS key
   store's `holon / secrets-key-<id>`) with the folder.
+- **A failure is no longer retried every second for good.** With the backup unwritable or the
+  disk full, a log's cut-back is tried again after a pause that doubles up to five minutes, said
+  once, and no longer made again holding the log's lock, which read the whole file each second as
+  its runs waited. A waiting run past its deadline that can't be resumed ends, its log saying why,
+  instead of being tried each second. A server starting gives each log its backup before cutting
+  back the runs past their age, which went unbacked.
 - **A slow lock holder no longer stalls the server.** A data-plane worker no longer takes the
   deployments table's lock: what a request needs of it is read with its run, on the blocking pool,
   so a holder writing or sealing can't leave every port deaf. An export, a replay and a removed

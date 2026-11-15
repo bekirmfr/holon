@@ -199,7 +199,12 @@ person resumes while the disk is full is paused again at the next look.
   seconds of starting, lazy and strict `hello` and the `notes` listing no slower (SL4 step 9). The
   newest 128 stay as written so a run's append and sync are unchanged.
 - **A backup that can't be written keeps the runs**: retention was asked to move them, not lose
-  them (SL4 §4). Gzipped exports, because an export proves itself offline: `hello-api`'s 10,669
+  them (SL4 §4). The cut-back that couldn't write them is tried again after a pause, doubled while
+  it fails up to five minutes (`CUT_PAUSE_MS`, `CUT_PAUSE_MAX_MS`), and not made again holding the
+  log's lock: that failed the same way, each second, reading the whole file as the runs waited
+  (release audit R46). A backup set again is tried at once. A server starting gives each log its
+  backup before its retention, which cuts a file past its age at once: given after, the aged
+  runs a restart found went unbacked. Gzipped exports, because an export proves itself offline: `hello-api`'s 10,669
   runs went from 51 MB to 3.9 MB, `notes-api`'s 10,049 from 618 MB to 20 MB (steps 6, 8).
 - **Only its own files**: a file of the admin's own on the backup drive was once "exported" empty
   and deleted (`7c0b545`); the prefix and the exact shape make every file the server touches its

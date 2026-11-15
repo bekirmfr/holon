@@ -4223,6 +4223,96 @@ fn no_data_plane_worker_waits_on_the_deployments_table() {
     assert_eq!(route(&state, &req("POST", "/deployments/held/stop", vec![])).status_code, 200);
 }
 
+/// **Guards:** a restart writes the runs it finds past their age to `[storage] backup` before
+/// it lets them go (release audit R46): a loaded log has its backup before its retention.
+///
+/// **Why:** the backup was given to a loaded log after its retention, which cuts a file past its
+/// age back at once: the aged runs a restart found were let go of with nothing written, a backup
+/// set or not.
+///
+/// **If it fails:** a server down a few days and started again drops its oldest runs unbacked.
+#[test]
+fn a_restart_backs_up_the_runs_it_finds_past_their_age_before_it_lets_them_go() {
+    let mut state = test_state();
+    let path = unique_temp_path("aged");
+    state.deployments_path = path.clone().into();
+    // Runs kept a day, by the host's default.
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nkeep_run_days = 1\n").unwrap());
+    let port = free_port();
+    deploy_plain_text(&state, &format!("import {{ flow, route }} from \"holon\"\n\nflow(\"aged\", {{ port: {port} }})\n\nroute.get(\"/x\", () => \"x\")\n"));
+    // Its runs, three of them days past what it keeps, written as it ran them, before a restart.
+    state.deployments.lock().unwrap().clear();
+    let day = 24 * 3600 * 1000;
+    let now = crate::recorder::now_ms();
+    let mut log = crate::recorder::Log::for_deployment(&state.deployments_path, "aged");
+    for days_ago in [5, 4, 3, 0] {
+        log.push(crate::recorder::LogEntry { kind: "tick".into(), session: 1, at_ms: now - days_ago * day, ..Default::default() });
+    }
+    drop(log);
+    let backup = std::path::PathBuf::from(unique_temp_path("aged-backup"));
+    let mut policy = (*state.policy()).clone();
+    policy.storage.backup = Some(crate::paths::HostPath::new(&backup));
+    let reloaded = load_deployments(&Place::parse(&path), &state.store, &policy).unwrap();
+    assert_eq!(reloaded["aged"].log.with(|l| l.holds().3), 1, "the aged runs let go of at load");
+    let batches: Vec<String> = std::fs::read_dir(backup.join("aged")).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+    assert!(batches.iter().any(|b| b.starts_with(&format!("holon-archive-{:020}-{:020}-", 0, 2))), "written to the backup first: {batches:?}");
+    drop(reloaded);
+    let _ = std::fs::remove_dir_all(&backup);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// **Guards:** a waiting run past its deadline that can't be resumed ends, whatever keeps it from
+/// resuming: no longer waiting, its log saying why, and tried no more (release audit R46, D12).
+///
+/// **Why:** one that couldn't (its record unreadable, its unit gone from the store) was left
+/// waiting past its deadline, and every pass, each second, tried it again and said so, for good.
+///
+/// **If it fails:** a run that can never go on is listed as waiting and tried each second, the
+/// console filling with the same line.
+#[test]
+fn a_waiting_run_past_its_deadline_that_cant_resume_ends_and_is_tried_no_more() {
+    let mut state = test_state();
+    let path = unique_temp_path("stuck");
+    state.deployments_path = path.clone().into();
+    let text = r#"import { action, event, flow } from "holon"
+import state from "state"
+
+flow("stuck")
+
+export const later = action(async () => {
+  const go = await event("go", { expires: "1h" })
+  state.later = go.expired ? 1 : 2
+})
+"#;
+    assert_eq!(deploy_plain_text(&state, text), "stuck");
+    let deadline = || durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    let entries = || body_json(route(&state, &req("GET", "/deployments/stuck/log", vec![])))["entries"].as_array().unwrap().clone();
+    let waiting = || state.deployments.lock().unwrap()["stuck"].parked.len();
+    // Each way a resume fails for good, done to a run waiting: what its log then says.
+    type Breaks<'a> = &'a dyn Fn(&mut durable::ParkedRun);
+    let ways: [(&str, Breaks); 3] = [
+        ("doesn't read", &|r| r.sealed = Some("not a sealed line".into())),
+        ("isn't a hash", &|r| r.unit = "not a hash".into()),
+        ("no longer resolves", &|r| r.unit = "ab".repeat(32)),
+    ];
+    for (says, break_it) in ways {
+        assert_eq!(run_action_named(&state, "stuck", "later", serde_json::json!({})).status_code, 202, "it waits");
+        break_it(state.deployments.lock().unwrap().get_mut("stuck").unwrap().parked.values_mut().next().unwrap());
+        let before = entries().len();
+        deadline();
+        assert_eq!(waiting(), 0, "{says}: no longer waiting");
+        let logged = entries();
+        assert_eq!(logged.len(), before + 1, "{says}: one entry");
+        let last = logged.last().unwrap();
+        let error = last["error"].as_str().unwrap_or_default();
+        assert_eq!(last["kind"], "resume", "{says}");
+        assert!(error.contains("can't be resumed") && error.contains("\"go\""), "{says}: {error}");
+        deadline();
+        assert_eq!(entries().len(), before + 1, "{says}: tried no more");
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
 /// One raw HTTP/1.1 exchange on `port`: everything the server sends back until it closes.
 fn raw_http(port: u16, request: &[u8]) -> String {
     use std::io::Write;

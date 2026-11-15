@@ -303,10 +303,12 @@ pub(crate) fn load_deployments(
         if let Some(why) = log.refused() {
             return Err(format!("deployment {slug:?}'s run log can't be opened: {why}"));
         }
-        log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms());
         // Writing what it lets go of to the backup from its first run, as a new deployment's does
-        // (deploy.rs), not only from the housekeeping's first look.
+        // (deploy.rs), not only from the housekeeping's first look; and before its retention,
+        // which cuts back a file past its age at once: set after, the aged runs a restart found
+        // were let go of with no backup written (release audit R46).
         log.set_backup(policy.storage.backup.clone().map(|dir| (dir.into(), false)));
+        log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms());
         if !log.breaks().is_empty() {
             let runs: Vec<String> = log.breaks().iter().map(u64::to_string).collect();
             eprintln!(

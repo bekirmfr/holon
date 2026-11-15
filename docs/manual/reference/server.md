@@ -116,7 +116,9 @@ The server looks at what it holds every ten seconds, and warns of:
 - **a cache at its size** most of the last hour: it let go of flows (or values) to make room at
   most looks, so runs load them from disk again;
 - **sweeping off** while the store takes more than a tenth of its disk;
-- **a backup that can't be written to**: a log keeps the runs it would let go of until it can;
+- **a backup that can't be written to**: a log keeps the runs it would let go of until it can,
+  trying again after a pause that grows while it fails, up to five minutes, and at once when the
+  backup is set again;
 - **a batch of runs in the backup that can't be made an export**: its runs stay in it as the log
   wrote them, it is tried again at each look, and the other batches are made exports meanwhile;
 - **a pack of the store's values that can't be read** (cut short, or changed on disk): it is left
