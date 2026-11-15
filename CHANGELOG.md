@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A cloud's metadata service is never reached.** With private addresses granted, a flow could
+  call 169.254.169.254, where a cloud hands out the machine's credentials. It, the rest of
+  169.254.0.0/16, `100.100.100.200` and `fd00:ec2::254` are refused however written (mapped,
+  6to4, NAT64, and the forms that hide an IPv4 address).
 - **A redirect to another host carries none of the flow's headers.** It carried `content-type`,
   `accept`, `accept-language` and `user-agent`, and a secret a flow put in one of them went to a
   host its approval doesn't name. No body goes there either, so none says what one is.

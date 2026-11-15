@@ -8,6 +8,7 @@
 //!   308 of a request that has one), which may hold a secret too;
 //! - no private, loopback, link-local or metadata addresses, checked on the addresses DNS
 //!   actually returned and the connection actually uses (so DNS rebinding can't get around it);
+//!   a cloud's metadata service never, private addresses granted or not ([`is_metadata`]);
 //! - HTTPS only, with certificate checks;
 //! - the request's limits: timeouts, request, response and header sizes, redirects.
 //!
@@ -219,9 +220,11 @@ impl Outbound {
             .redirects(0) // followed below, each one checked
             .resolver(move |netloc: &str| -> std::io::Result<Vec<SocketAddr>> {
                 let addrs: Vec<SocketAddr> = netloc.to_socket_addrs()?.collect();
-                let public: Vec<SocketAddr> = addrs.iter().copied().filter(|a| allow_private || !is_private(a.ip())).collect();
+                // A cloud's metadata service is never reached, private addresses granted or not.
+                let public: Vec<SocketAddr> = addrs.iter().copied().filter(|a| !is_metadata(a.ip()) && (allow_private || !is_private(a.ip()))).collect();
                 if public.is_empty() && !addrs.is_empty() {
-                    return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "a private address"));
+                    let what = if addrs.iter().any(|a| is_metadata(a.ip())) { "a private address: a cloud's metadata service, never reached" } else { "a private address" };
+                    return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, what));
                 }
                 Ok(public)
             })
@@ -429,6 +432,30 @@ pub(crate) fn said(e: &ureq::Error) -> String {
     match e {
         ureq::Error::Status(code, _) => format!("it answered {code}"),
         ureq::Error::Transport(t) => transport_said(t),
+    }
+}
+
+/// Whether `ip` is a cloud's metadata service, which hands whoever asks the machine's
+/// credentials: never reached by a flow, even one granted private addresses. 169.254.0.0/16
+/// (AWS, GCP and Azure answer at 169.254.169.254, ECS at 169.254.170.2), Alibaba's
+/// 100.100.100.200 and AWS's IPv6 `fd00:ec2::254`, however the address is spelled: inside an IPv6
+/// one (mapped, IPv4-compatible, 6to4, NAT64), and behind the forms that hide an IPv4 address
+/// this host can't tell (NAT64 for local use, Teredo), which are refused whole.
+pub(crate) fn is_metadata(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_link_local() || v4.octets() == [100, 100, 100, 200],
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_metadata(IpAddr::V4(v4));
+            }
+            let seg = v6.segments();
+            let v4_at = |hi: u16, lo: u16| IpAddr::V4(std::net::Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8));
+            let carried = (seg[..6] == [0, 0, 0, 0, 0, 0] && !v6.is_loopback() && !v6.is_unspecified() && is_metadata(v4_at(seg[6], seg[7])))
+                || (seg[0] == 0x2002 && is_metadata(v4_at(seg[1], seg[2])))
+                || (seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] && is_metadata(v4_at(seg[6], seg[7])));
+            let hidden = seg[..3] == [0x64, 0xff9b, 1] || seg[..2] == [0x2001, 0];
+            carried || hidden || seg == [0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254]
+        }
     }
 }
 
@@ -748,6 +775,36 @@ mod tests {
         let small = Limits { max_request_bytes: 3, ..Limits::request_run() };
         let out = o.send("PUT", &format!("https://{addr}/up"), &BTreeMap::new(), Body::File(&file), &small, None);
         assert_eq!(field(&out, "error"), &Value::Text("too_large".into()), "a file counts as a body");
+    }
+
+    /// **Guards:** a cloud's metadata service is never reached by a flow, whatever it was granted:
+    /// each way its addresses can be spelled is one, those that aren't stay reachable with private
+    /// addresses granted, and a request to one is refused before anything is sent.
+    /// **Why:** private addresses granted (a deployment that calls a service on its network) let
+    /// through 169.254.169.254 too, where a cloud hands out the machine's credentials.
+    /// **If it fails:** a spelling of a metadata address isn't recognised, or the resolver lets one
+    /// through when private addresses are granted.
+    #[test]
+    fn metadata_addresses_are_never_reached_however_spelled() {
+        for ip in [
+            "169.254.169.254", "169.254.170.2", "169.254.0.1", "100.100.100.200", "fd00:ec2::254",
+            // Inside an IPv6 address: mapped, IPv4-compatible, 6to4, NAT64.
+            "::ffff:169.254.169.254", "::ffff:100.100.100.200", "::a9fe:a9fe", "2002:a9fe:a9fe::1", "64:ff9b::a9fe:a9fe", "64:ff9b::6464:64c8",
+            // Where an IPv4 address hides that can't be told: NAT64 for local use, Teredo.
+            "64:ff9b:1::a9fe:a9fe", "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+        ] {
+            assert!(is_metadata(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["127.0.0.1", "10.0.0.1", "192.168.1.1", "100.100.100.201", "8.8.8.8", "::1", "fd00:ec2::253", "fc00::1", "::ffff:10.0.0.1", "2002:0a00:0001::"] {
+            assert!(!is_metadata(ip.parse().unwrap()), "{ip}");
+        }
+        // Granted the host, plain HTTP and private addresses: still refused, nothing sent.
+        let metadata: BTreeSet<String> = ["169.254.169.254".to_string(), "[::ffff:a9fe:a9fe]".to_string()].into();
+        let o = Outbound { allowed: metadata.clone(), revoked: BTreeSet::new(), plain_http: metadata.clone(), allow_private: true };
+        for host in &metadata {
+            let out = o.perform(&request("GET", &format!("http://{host}/latest/meta-data/"), ""), &Limits::request_run());
+            assert_eq!(field(&out, "error"), &Value::Text("blocked_address".into()), "{host}: {out:?}");
+        }
     }
 
     #[test]
