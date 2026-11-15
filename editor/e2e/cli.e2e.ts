@@ -85,7 +85,8 @@ test("a clock flow is run by hand, its grant and secrets changed, and it is remo
   expect(ok(adminToken, ["grant", slug, "--grant", 'StateWrite("beats")'])).toContain(`${slug} (running)`);
   const policy = ok(adminToken, ["policy"]);
   expect(policy).toMatch(/^keep_runs\s+\d+\s+\d+$/m);
-  expect(policy).toMatch(/^agents propose\s+allowed: what needs a person waits for one$/m);
+  expect(policy).toMatch(/^agents propose\s+allowed: each agent's version waits for a person$/m);
+  expect(policy).toMatch(/^agents at once\s+a flow's settings: /m);
 
   // A secret, piped in and never shown; rolled back after a dry run that names values by fingerprint.
   const value = `e2e-secret-${Date.now()}`;
