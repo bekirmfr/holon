@@ -360,6 +360,11 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     // without asking, and everything else must be acknowledged. A redeploy asks only for what
     // the previous grant didn't already cover.
     let manifest = Manifest::new(caps.iter(), body.requirements.clone().of_unit(root_unit, &resolver));
+    // Two waits named alike (a canvas can build them; the language refuses them): the second
+    // would take the first's decision, never asking what a review shows it asks.
+    if let Some(why) = holon_core::approval::named_apart(manifest.items().iter().map(String::as_str)) {
+        return err(400, why);
+    }
     let seen = Arc::new(folders::Scoped::new(Arc::clone(folders), &body.slug));
     if let Some(why) = policy
         .refuses(&manifest)
@@ -893,7 +898,7 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
         "granted_now": previous.grant.as_ref().map(|g| &g.items),
         // Secrets it can run without that an agent's deploy leaves out, for a person to grant back.
         "withheld": withheld,
-        "refused": policy.refuses(&manifest).or_else(|| {
+        "refused": holon_core::approval::named_apart(manifest.items().iter().map(String::as_str)).or_else(|| policy.refuses(&manifest)).or_else(|| {
             let permit = Permit::new(unit_hash, &Grant::for_manifest(&manifest, 0, "preview"), policy);
             durable::refuses_waits(root_unit, &resolver, &permit)
         }).or_else(|| folders::Scoped::new(Arc::clone(folders), &body.slug).refuses(&manifest))

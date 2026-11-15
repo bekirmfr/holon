@@ -243,6 +243,44 @@ pub fn universe() -> Vec<Steps> {
     all
 }
 
+/// Why a flow's waits can't each be asked, if one can't: two named alike, two approvals asking
+/// for other steps, or an approval and an event (`consent`, its permissions:
+/// `Approval("payout/person")`, `Await("went")`). A run keeps one decision or delivery a name, so
+/// the second would be answered with the first's, and what it asks for, which a review shows,
+/// never asked. The language refuses the second where it is written; a server, a unit built
+/// otherwise (a canvas).
+pub fn named_apart<'a>(consent: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let mut seen: std::collections::BTreeMap<&str, Option<&str>> = std::collections::BTreeMap::new();
+    for item in consent {
+        let (name, steps) = if let Some(rest) = item.strip_prefix("Approval(\"").and_then(|r| r.strip_suffix("\")")) {
+            let Some((name, steps)) = rest.split_once('/') else { continue };
+            (name, Some(steps))
+        } else if let Some(name) = item.strip_prefix("Await(\"").and_then(|r| r.strip_suffix("\")")) {
+            (name, None)
+        } else {
+            continue;
+        };
+        match seen.get(name) {
+            Some(was) if *was != steps => return Some(apart(name, *was, steps)),
+            Some(_) => {}
+            None => {
+                seen.insert(name, steps);
+            }
+        }
+    }
+    None
+}
+
+/// What a flow is told of two waits named `name` alike, one waiting for `a` and the other for `b`:
+/// an approval's steps (its canonical text), or none, an event.
+pub fn apart(name: &str, a: Option<&str>, b: Option<&str>) -> String {
+    let what = |s: Option<&str>| match s {
+        Some(s) => format!("an approval asking for {}", Steps::parse(s).map_or_else(|| s.to_string(), |s| s.said())),
+        None => "an event".to_string(),
+    };
+    format!("{} and {} are both named {name:?}: a run keeps one decision a name, so the second would be answered with the first's, and what it asks for never asked. Name them apart", what(a), what(b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

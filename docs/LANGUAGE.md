@@ -471,7 +471,10 @@ taken, a decline included, as `{slot, who, kind, role, at, approved, reason, not
 access}` (`slot` 0 and no `role` for `people`; `note` any JSON the decider sent with it; `binding`
 and `access` what let them, below), with `declined_by` and
 `reason` when declined, or `expired: true` when nobody decided in time. Its permission, `Approval("payout/person*2")`, names who decides it: its steps,
-one step of two people.
+one step of two people. A name is one wait across the flow: a run keeps one decision a name, so
+a second `approval` named alike asking for other steps, or an `event` named as an approval, is
+refused where it is written (the second would be answered with the first's decision, and what it
+asks for never asked); the same approval in two handlers is one.
 
 An approval in steps names who takes each step, by the role they hold where the approval is (the
 target design, [`docs/L4s/access-and-approvals-L4.md`](L4s/access-and-approvals-L4.md) §8):

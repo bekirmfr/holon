@@ -351,6 +351,9 @@ struct Lowerer<'a> {
     ticks: Vec<Block>,
     /// Whether the block being lowered is a websocket's: it runs and is done, so it doesn't wait.
     socket: bool,
+    /// The flow's waits by name: an approval's steps, or none for an event. A run keeps one
+    /// decision a name, so a name is one wait across the flow (`approval::named_apart`).
+    waits: BTreeMap<String, Option<String>>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -414,6 +417,7 @@ impl<'a> Lowerer<'a> {
             routes: vec![],
             ticks: vec![],
             socket: false,
+            waits: BTreeMap::new(),
         }
     }
 
@@ -2088,6 +2092,14 @@ impl<'a> Lowerer<'a> {
                 }
                 if matches!(self.cur().kind, FrameKind::Route { .. }) {
                     return err(e.span, ROUTE_WAITS);
+                }
+                let asks = approval.as_ref().map(|s| s.text());
+                match self.waits.get(&name.text) {
+                    Some(was) if *was != asks => return err(e.span, holon_core::approval::apart(&name.text, was.as_deref(), asks.as_deref())),
+                    Some(_) => {}
+                    None => {
+                        self.waits.insert(name.text.clone(), asks);
+                    }
                 }
                 let mut params = vec![("name".to_string(), name.text.clone())];
                 if let Some(x) = expires {
@@ -4659,6 +4671,55 @@ route.post("/hook", async (req) => {
         let d = compiled(&token).doc;
         let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut MapResolver::new(), "8080", d.unit_settings());
         assert!(server.errors.iter().any(|e| e.contains("is an approval, which people decide in Holon: it has no token")), "{:?}", server.errors);
+    }
+
+    /// **Guards:** a name is one wait across a flow: a second `approval` named alike asking for
+    /// other steps, in the same handler or another, or an `approval` and an `event` named alike,
+    /// is refused where it is written, in one sentence naming both; the same approval twice (a
+    /// helper two handlers call), or two names, compiles.
+    /// **Why:** a run keeps one decision a name, so the second point was answered with the first's
+    /// decision: a review showed a CFO step the run never asked (R22).
+    #[test]
+    fn a_wait_s_name_is_one_wait_across_the_flow() {
+        let src = |pay: &str, refund: &str| {
+            format!("import {{ action, approval, event, flow }} from \"holon\"\n\nflow(\"f\")\n\nexport const pay = action(async (order) => {{\n{pay}\n  return true\n}})\n\nexport const refund = action(async (order) => {{\n{refund}\n  return true\n}})\n")
+        };
+        let (one, cfo, paid, other) = (
+            "  const a = await approval(\"payout\")",
+            "  const b = await approval(\"payout\", { steps: [{ role: \"cfo\" }] })",
+            "  const c = await event(\"payout\")",
+            "  const d = await approval(\"refund\", { steps: [{ role: \"cfo\" }] })",
+        );
+        let both = "an approval asking for a person and an approval asking for a person holding cfo are both named \"payout\": a run keeps one decision a name, so the second would be answered with the first's, and what it asks for never asked. Name them apart";
+        let event = "an approval asking for a person and an event are both named \"payout\": a run keeps one decision a name, so the second would be answered with the first's, and what it asks for never asked. Name them apart";
+        // Its decision used, as a handler that compiles uses it.
+        let used = |wait: &str, v: &str| format!("{wait}\n  if (!{v}.approved) {{\n    return false\n  }}");
+        let (a, d) = (used(one, "a"), used(other, "d"));
+        // (what, pay's body, refund's body, the refusal and the line it is on, or none).
+        type Row<'a> = (&'a str, String, &'a str, Option<(&'a str, u32)>);
+        let rows: [Row; 6] = [
+            ("two approvals named alike in one handler", format!("{one}\n{cfo}"), "", Some((both, 7))),
+            ("in two handlers", one.to_string(), cfo, Some((both, 11))),
+            ("an approval and an event", one.to_string(), paid, Some((event, 11))),
+            ("the same approval in two handlers", a.clone(), &a, None),
+            ("two names", a.clone(), &d, None),
+            ("one approval", a.clone(), "", None),
+        ];
+        for (what, pay, refund, refused) in rows {
+            let got = ts::compile(&src(&pay, refund));
+            match refused {
+                Some((said, line)) => {
+                    let e = got.err().unwrap_or_else(|| panic!("{what}: compiles"));
+                    assert_eq!((e.message.as_str(), e.span.start.line), (said, line), "{what}");
+                }
+                None => assert!(got.is_ok(), "{what}: {:?}", got.err().map(|e| e.message)),
+            }
+        }
+        // A unit built otherwise (a canvas) is refused by what it asks for, as a server reads it.
+        let asks = |items: &[&str]| holon_core::approval::named_apart(items.iter().copied());
+        assert_eq!(asks(&["Approval(\"payout/person\")", "Approval(\"payout/person:cfo\")"]).as_deref(), Some(both));
+        assert_eq!(asks(&["Approval(\"payout/person\")", "Await(\"payout\")"]).as_deref(), Some(event));
+        assert_eq!(asks(&["Approval(\"payout/person\")", "Approval(\"refund/person:cfo\")", "Await(\"went\")", "NetworkIngress"]), None);
     }
 
     /// **Guards:** an approval's options make the steps the canonical text says, each way of

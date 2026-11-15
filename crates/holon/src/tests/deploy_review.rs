@@ -358,6 +358,45 @@ fn a_review_shows_all_a_version_changes_and_what_it_shows_deploys() {
     assert_eq!(again(document_of(&base)).0, 200);
 }
 
+/// R22: a flow whose canvas has two approvals named alike, asking for other steps (the language
+/// refuses them where they are written; a canvas can build them), is refused: its preview says why,
+/// and its deploy is 400, saying the same. Named apart, it deploys.
+///
+/// **Why:** a run keeps one decision a name, so the second was answered with the first's: a review
+/// showed a CFO step, and one approval by someone without the role completed the run.
+#[test]
+fn a_canvas_with_two_approvals_named_alike_is_refused() {
+    let (state, _book, ada) = server();
+    let text = r#"import { action, approval, flow } from "holon"
+
+flow("twice")
+
+export const pay = action(async (order) => {
+  const a = await approval("payout")
+  const b = await approval("cfo_check", { steps: [{ role: "cfo" }] })
+  return a.approved && b.approved
+})
+"#;
+    let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+    let alike: Value = serde_json::from_str(&plan.document.to_string().replace("\"cfo_check\"", "\"payout\"")).unwrap();
+    for (what, document, refused) in [
+        ("two approvals named alike", alike, Some("an approval asking for a person and an approval asking for a person holding cfo are both named \"payout\": a run keeps one decision a name, so the second would be answered with the first's, and what it asks for never asked. Name them apart")),
+        ("named apart", plan.document.clone(), None),
+    ] {
+        let (unit, units) = holon_author::agent::canvas_units(&document).unwrap();
+        for u in units {
+            assert_eq!(ask(&state, Some(&ada), "POST", "/unit", u).0, 200, "{what}");
+        }
+        let (code, preview) = send(&state, &ada, "POST", "/deploy/preview", json!({ "slug": "twice", "unit": unit }));
+        assert_eq!((code, preview["refused"].as_str()), (200, refused), "{what}: {preview}");
+        let (code, said) = send(&state, &ada, "POST", "/deploy", json!({ "slug": "twice", "unit": unit, "document": document, "acknowledge": preview["needs_approval"] }));
+        match refused {
+            Some(why) => assert_eq!((code, said["error"].as_str()), (400, Some(why)), "{what}"),
+            None => assert_eq!(code, 200, "{what}: {said}"),
+        }
+    }
+}
+
 const SYNC: &str = r#"import { action, every, flow, route } from "holon"
 import state from "state"
 import crm from "host:crm.example.com"

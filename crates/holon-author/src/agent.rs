@@ -122,6 +122,18 @@ fn canvas_unit(doc: &FlowDocument) -> Result<String, String> {
     flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings()).map(|canvas| to_hex(&canvas))
 }
 
+/// The units `document`'s canvas deploys as: the flow's, in hex, and each unit it is made of,
+/// encoded, as a client stages them (`POST /unit`) before deploying it.
+pub fn canvas_units(document: &Value) -> Result<(String, Vec<Vec<u8>>), String> {
+    let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
+    let mut store = MapResolver::new();
+    crate::text::restore(&doc, &mut store, &Names::new());
+    let port = doc.server.clone().unwrap_or_default().port;
+    let hash = flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings())?;
+    let units = closure_of(&[hash], &store).iter().filter_map(|h| store.resolve(h).and_then(|u| encode_preimage(u).ok())).collect();
+    Ok((to_hex(&hash), units))
+}
+
 /// What a flow's document deploys as: the unit its canvas builds, in hex, and the sites whose
 /// pages it answers (its `browsers` line, one by one). A server checks a document it is sent
 /// against the unit deployed with it: a person reviews the document (its text is printed from it,
