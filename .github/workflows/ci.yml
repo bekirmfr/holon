@@ -144,3 +144,23 @@ jobs:
         working-directory: editors/vscode
       - run: xvfb-run -a npm run test:vscode
         working-directory: editors/vscode
+
+  # 5. No dependency with a known advisory: the crates Cargo.lock names (`cargo audit`, against
+  #    the RustSec database as it is that day) and the packages the editor and the extension ship
+  #    (`npm audit --omit=dev`). What cargo audit is told not to fail on is in .cargo/audit.toml,
+  #    each with why. A new advisory fails this job on whatever pull request runs next, whoever's
+  #    it is: update the crate, or list it there with its reason. The tools a build or a test
+  #    runs (vite, vitest, playwright) are not audited here.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo install cargo-audit --locked --version 0.23.0
+      - run: cargo audit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm audit --omit=dev
+        working-directory: editor
+      - run: npm audit --omit=dev
+        working-directory: editors/vscode
