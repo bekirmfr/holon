@@ -248,8 +248,10 @@ line never written, and a second of `lazy` lines unsynced.
   ctrl+c exits at once, as a power loss. A message a socket sends while it stops isn't run; a
   waiting run's deadline that passes while it stops is delivered once it is back.
 - **Tests.** `a_server_told_to_stop_starts_no_run_and_finishes_the_one_going_on` (every way a run
-  starts that a test drives without a far side, before and after the stop, and a run with its
-  call out as it is told; and a sweep holding every file that starts runs to asking),
+  starts that a test drives without a far side, before and after the stop, and runs with their
+  calls out as it is told, an action's and a clock's tick on its own thread, which no pass of
+  the clock waits for: each goes on to its line, counted at the door; and a sweep holding every
+  file that starts runs to asking),
   `the_door_closes_only_on_no_runs_and_a_run_is_counted_or_turned_away` (runs racing the drain),
   `the_drain_waits_for_the_last_run_saying_how_many_are_left`.
 

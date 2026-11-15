@@ -4517,15 +4517,18 @@ on.file.created(inbox, (f) => {{
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **Guards:** a server told to stop starts no run, whichever way a run starts, and the run going
-/// on when it was told goes on to its end and its log line (stopping.rs).
+/// **Guards:** a server told to stop starts no run, whichever way a run starts, and the runs going
+/// on when it was told go on to their end and their log line, holding the door the stop waits on
+/// (stopping.rs): an action's, and a clock's tick on its thread of its own (R34).
 ///
 /// **Why:** the server exits once no run goes on. A run a trigger started after it was told would
 /// keep the stop waiting, or be cut off at the exit half done: its calls made, its line never
 /// written.
 ///
 /// **If it fails:** a stop that never ends while a clock keeps starting runs, or a run cut off at
-/// the exit with what it did on no record; or the run going on refused its own end.
+/// the exit with what it did on no record; or the run going on refused its own end; or a tick,
+/// which no pass of the clock waits for, isn't counted at the door, and the server leaves before
+/// its line.
 ///
 /// Each way a run starts that a test drives without a far side is a row: a request to an
 /// unrecorded route and one to a recorded route, a WebSocket opened, an action over the control
@@ -4574,6 +4577,11 @@ export const slow = action(async () => {{
 
 every("1s", () => {{
   ++state.ticks
+}})
+
+every("1h", async () => {{
+  const r = await api.get("/slow")
+  state.slowTicks = (state.slowTicks ?? 0) + (r.body == "slow" ? 1 : 1)
 }})
 
 on.file.created(inbox, (f) => {{
@@ -4650,11 +4658,21 @@ on.file.created(inbox, (f) => {{
     }
     assert_eq!(run_action_named(&state, "stopping", "later", serde_json::json!({})).status_code, 202, "another waits");
 
-    // A run going on, its call out, as the server is told to stop.
+    // Runs going on, their calls out, as the server is told to stop: an action's, and the hour's
+    // clock's tick, on its own thread, which nothing of the clock waits for (an hour on, every
+    // clock is due: the second's tick ends at once).
+    let slow_ticks = shown("slowTicks").as_f64().unwrap_or(0.0);
     gate.shut();
     std::thread::scope(|s| {
         let going_on = s.spawn(|| run_action_named(&state, "stopping", "slow", serde_json::json!({})));
-        let out = gate.out_at_once(1);
+        let ticking = scheduler::start_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, SystemTime::now() + Duration::from_secs(3 * 3600), &scheduler::Ticking::default());
+        let out = gate.out_at_once(2);
+        let since = std::time::Instant::now();
+        while ticking.iter().filter(|t| !t.is_finished()).count() > 1 && since.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // What the stopping server waits on (stopping::drain); other tests' runs may hold it too.
+        let held = stopping::DOOR.runs();
         let logged = log_entries(&state, "stopping").len();
         state.store.1.stop();
         let refused: Vec<(&str, bool, Option<u16>)> = rows
@@ -4668,7 +4686,11 @@ on.file.created(inbox, (f) => {{
         let (left_waiting, logged_after) = (waiting(), log_entries(&state, "stopping").len());
         gate.open();
         let answered = going_on.join().unwrap().status_code;
-        assert!(out, "its call went out");
+        for tick in ticking {
+            tick.join().unwrap();
+        }
+        assert!(out, "their calls went out");
+        assert!(held >= 2, "the action's run and the tick hold the door the stop waits on: {held}");
         for (what, ran, told) in refused {
             assert!(!ran, "{what}: told to stop, it doesn't run");
             assert!(told.is_none_or(|s| s == 503), "{what}: its caller is told to try again: {told:?}");
@@ -4678,9 +4700,12 @@ on.file.created(inbox, (f) => {{
         assert_eq!(answered, 200, "the run going on goes on to its end");
     });
     assert_eq!(shown("slow"), "slow");
-    assert_eq!(hits_of(&hits, "/slow"), 1);
+    assert_eq!(shown("slowTicks").as_f64(), Some(slow_ticks + 1.0), "the tick going on goes on to its end");
     let entries = log_entries(&state, "stopping");
     assert!(entries.iter().any(|e| e["kind"] == "trigger" && e["error"].is_null() && e.to_string().contains("/slow")), "its line is written");
+    let tick_lines = entries.iter().filter(|e| e["kind"] == "tick" && e["error"].is_null() && e.to_string().contains("/slow")).count();
+    assert_eq!(tick_lines as f64, slow_ticks + 1.0, "the tick's line is written, as each before it");
+    assert_eq!(hits_of(&hits, "/slow") as f64, 1.0 + slow_ticks + 1.0);
 
     // Every file that starts runs asks first, but those whose runs start only where another asked.
     let asked_elsewhere = [
