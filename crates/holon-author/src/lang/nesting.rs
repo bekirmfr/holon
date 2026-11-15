@@ -74,12 +74,15 @@ pub(crate) enum Refused {
     /// A `/` here reads as a division or a regular expression as the parser takes what came
     /// before it (the module's doc).
     TwoWays(usize),
+    /// The count read nothing here, and would read the same place again forever: a fault of
+    /// the count's, refused at the byte rather than spinning (audit R58).
+    Stuck(usize),
 }
 
 impl Refused {
     fn at(self) -> usize {
         match self {
-            Refused::Deep(at) | Refused::TwoWays(at) => at,
+            Refused::Deep(at) | Refused::TwoWays(at) | Refused::Stuck(at) => at,
         }
     }
 }
@@ -94,6 +97,7 @@ pub fn check(src: &str) -> Result<(), LowerError> {
             let message = match refused {
                 Refused::Deep(_) => format!("this nests more than {MAX_NESTING} levels deep: name a part of it, with a const or a function"),
                 Refused::TwoWays(_) => "this `/` reads two ways in TypeScript, after a `}`, an `of` or a `>` that may close a type's arguments: a division, or a regular expression's start; put the value it divides, or the regular expression, in parentheses".to_string(),
+                Refused::Stuck(_) => "Holon can't read this text past here, a fault of Holon's and not the flow's: please report it, with the text".to_string(),
             };
             Err(LowerError { span: Span { start: at, end: at }, message })
         }
@@ -219,10 +223,17 @@ pub(crate) fn deepest(src: &str, limit: usize) -> Result<usize, Refused> {
         c.skip_to_line_end();
     }
     while c.i < c.b.len() {
+        let at = c.i;
         if c.top().open == b'`' {
             c.template_text()?;
         } else {
             c.code()?;
+        }
+        // Each turn reads something. One that left the place as it was would read it again,
+        // forever, with nothing said (`#` did, R58): refused there, whatever kind of token
+        // comes to forget to move.
+        if c.i == at {
+            return Err(Refused::Stuck(at));
         }
     }
     Ok(c.deepest)
@@ -919,6 +930,8 @@ mod tests {
     /// `#` in code the word it read was empty and it read the same place again, forever: `holon
     /// check`, the language server as `#` was typed, an agent's check and the editor's tab hung on
     /// `a #b`, before anything said a word.
+    /// The count's loop refuses a turn that reads nothing (`Refused::Stuck`), so a branch that
+    /// forgets to move fails here at once, naming the byte; without that floor, by the deadline.
     /// If it fails: the count reads nothing of the character named where it stands: make it a
     /// token of some kind, as the parser does.
     #[test]
@@ -927,17 +940,21 @@ mod tests {
         let chars = (1u8..0x80).map(char::from).chain(['\u{a0}', '\u{2028}', '\u{feff}', '\u{3000}', '\u{e9}', '\u{211d}', '\u{1f600}']);
         let forms = ["{c}", "a {c} b", "a{c}", "({c}", "f(x, {c}", "a = {c}", "x\n{c}", "`${{c}", "\"{c}", "#{c}"];
         let texts: Vec<String> = chars.flat_map(|c| forms.map(|form| form.replace("{c}", &c.to_string()))).collect();
-        let (read, reading) = std::sync::mpsc::channel::<String>();
+        // Each text as it is begun, and again with the byte it went no further at, if it didn't.
+        let (read, reading) = std::sync::mpsc::channel::<(String, Option<usize>)>();
         std::thread::spawn(move || {
             for text in texts {
-                let _ = read.send(text.clone());
-                let _ = deepest(&text, MAX_NESTING);
+                let _ = read.send((text.clone(), None));
+                if let Err(Refused::Stuck(at)) = deepest(&text, MAX_NESTING) {
+                    let _ = read.send((text, Some(at)));
+                }
             }
         });
         let mut last = String::new();
         loop {
             match reading.recv_timeout(std::time::Duration::from_secs(5)) {
-                Ok(text) => last = text,
+                Ok((text, None)) => last = text,
+                Ok((text, Some(at))) => panic!("the count went no further than byte {at} of {text:?}"),
                 Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) => panic!("the count reads {last:?} on and on"),
             }

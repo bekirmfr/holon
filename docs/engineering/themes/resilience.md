@@ -379,7 +379,9 @@ agent's proposal 3,000 deep could trap a reviewer's tab, whose wasm has a 1 MiB 
   so every step of the count reads something: at a `#` in code it read an empty word and the same
   place again, forever, and `a #b` hung `holon check`, the language server as `#` was typed and
   the editor's tab (`the_count_reads_every_text_to_its_end`, each ASCII character and a few past
-  it in each place a token stands).
+  it in each place a token stands). The count's loop has a floor too: a turn that leaves the
+  place as it was is refused there (`Refused::Stuck`, a fault of Holon's to report), so no kind
+  of token can bring the hang back (audit R58).
 - **Limits.** An `else if` chain counts three levels a link (its condition, its statement or
   block, its `else`): 41 links fit in a route's handler, where the parser's tree is one a link.
   `graph::graph` lowers on the deep stack, as `lang::compile` does.
