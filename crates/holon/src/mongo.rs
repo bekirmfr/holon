@@ -792,7 +792,7 @@ mod tests {
         let sneaky = Value::Text("$owner".into());
         let literal = |v: Bson| Bson::Document(doc! { "$literal": v });
         let t = check(Part::Filter, r#"{"$expr":{"$eq":["$owner",$1]}}"#).unwrap().0;
-        assert_eq!(document(&t, &[sneaky.clone()]).unwrap(), doc! { "$expr": { "$eq": ["$owner", literal(Bson::String("$owner".into()))] } });
+        assert_eq!(document(&t, std::slice::from_ref(&sneaky)).unwrap(), doc! { "$expr": { "$eq": ["$owner", literal(Bson::String("$owner".into()))] } });
         let t = check(Part::Filter, r#"{"$and":[{"$expr":{"$gt":[{"$size":"$tags"},$1]}},{"owner":$2}]}"#).unwrap().0;
         let d = document(&t, &[n(2.0), sneaky.clone()]).unwrap();
         assert_eq!(d, doc! { "$and": [{ "$expr": { "$gt": [{ "$size": "$tags" }, literal(Bson::Int32(2))] } }, { "owner": "$owner" }] }, "deep inside one; outside, a query's value");
