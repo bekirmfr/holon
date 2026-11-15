@@ -16,9 +16,14 @@
 //!   scope or version fails to open; a line's doesn't name its place in a log, so a cut-back
 //!   copies sealed lines byte for byte (§4). A run log's line is sealed apart from its `seq` and
 //!   `prev`, before the log's lock is taken, and they are kept in clear before it
-//!   (`r1.<seq>.<prev>.<v>.<body>`): sealing a whole line under the lock cost lazy runs a third of
-//!   their throughput (§7's fallback, measured in docs/engineering/performance.md). The chain
-//!   still hashes the whole line as made, so a seq or prev changed on disk breaks it.
+//!   (`r2.<seq>.<prev>.<place>.<v>.<body>`): sealing a whole line under the lock cost lazy runs a
+//!   third of their throughput (§7's fallback, measured in docs/engineering/performance.md). The
+//!   chain still hashes the whole line as made, so a seq or prev changed on disk breaks it; and
+//!   `<place>`, a keyed hash of the seq, the prev and the body's nonce and tag, binds the three
+//!   together, so a body moved to another line (the last line's, which no line after it names,
+//!   swapped for an earlier one's) doesn't open there (release audit R37).
+//! - **A whole file of one deployment's opens only where that deployment's belongs**: its reader
+//!   names the scope it expects ([`Keyring::open_file_in`]), not the header alone (K8).
 //! - **Nothing plain is read where a sealed record belongs**: [`Unreadable::NotSealed`].
 //!
 //! The root key is read when the keyring opens and when a scope is made, and not kept: what the
@@ -79,8 +84,11 @@ pub(crate) type Key = Zeroizing<[u8; 32]>;
 const MAGIC: &[u8; 4] = b"HLA1";
 /// What a sealed line starts with.
 const LINE: &str = "a1.";
-/// What a run log's line sealed apart from its seq and prev starts with.
-const NUMBERED: &str = "r1.";
+/// What a run log's line sealed apart from its seq and prev starts with: `r2.<seq>.<prev>.<place>.`
+/// before its sealed body, `<place>` binding the two to that body (release audit R37).
+const NUMBERED: &str = "r2.";
+/// How long a numbered line's place is: 16 bytes of a keyed hash, in base64url.
+const PLACE: usize = 22;
 const NONCE: usize = 24;
 const KEYS_FORMAT: u32 = 1;
 const AEAD: &str = "xchacha20poly1305";
@@ -147,8 +155,8 @@ pub(crate) const RESTORE_KEYS: &str = "keys.json is older than the data, or isn'
 /// watch's), read: none if there is no file yet. One that is there but doesn't open (a key
 /// missing, damage) or doesn't parse is an error, never none: taken as none, the listener would
 /// run again on what it ran, or mark as seen what waits unrun, then write over the file.
-pub(crate) fn read_seen<T: serde::de::DeserializeOwned>(path: &Path, role: &str) -> Result<Option<T>, String> {
-    match read_sealed(path, role)? {
+pub(crate) fn read_seen<T: serde::de::DeserializeOwned>(path: &Path, scope: &str, role: &str) -> Result<Option<T>, String> {
+    match read_sealed_in(path, scope, role)? {
         Some(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("{}: {e}", path.display())),
         None => Ok(None),
     }
@@ -362,6 +370,40 @@ fn derive(context: &str, data_key: &[u8]) -> Key {
 }
 
 const SEAL_CONTEXT: &str = "holon at-rest v1 seal";
+/// What a numbered line's place is keyed by, derived from the key its body is sealed with.
+const PLACE_CONTEXT: &str = "holon at-rest v1 a run log line's place";
+
+/// Where a run log's line is (its seq and the hash of the line before), bound to the body sealed
+/// apart from them, as the hash `place` begins: by the body's nonce and tag, which no other
+/// sealing has, under a key derived from its own. Its body moved to another line (the last line's
+/// body swapped for an earlier one's, which the chain alone wouldn't show, no line naming the
+/// last) no longer opens there (release audit R37). Made before the log's lock is taken, so under
+/// it only the seq and prev are hashed in, a few dozen bytes whatever the line's length.
+fn place_of(key: &Key, sealed: &[u8]) -> blake3::Hasher {
+    let mut place = blake3::Hasher::new_keyed(&derive(PLACE_CONTEXT, key.as_slice()));
+    place.update(&sealed[..NONCE]);
+    place.update(&sealed[sealed.len() - 16..]);
+    place
+}
+
+/// `bytes` (a place) in base64url into `out`, made nowhere else: under a log's lock.
+fn b64_to(bytes: &[u8; 16], out: &mut [u8; PLACE]) {
+    let mut at = 0;
+    for c in bytes.chunks(3) {
+        let n = u32::from(c[0]) << 16 | u32::from(*c.get(1).unwrap_or(&0)) << 8 | u32::from(*c.get(2).unwrap_or(&0));
+        for i in 0..=c.len() {
+            out[at] = B64[(n >> (18 - 6 * i)) as usize & 63];
+            at += 1;
+        }
+    }
+}
+
+/// The place of a line at `seq` after `prev`, from what [`place_of`] began.
+fn place_at(mut place: blake3::Hasher, seq: u64, prev: &str) -> [u8; 16] {
+    place.update(&seq.to_le_bytes());
+    place.update(prev.as_bytes());
+    place.finalize().as_bytes()[..16].try_into().expect("16 bytes")
+}
 const NAMES_CONTEXT: &str = "holon at-rest v1 names";
 const PRINTS_CONTEXT: &str = "holon secrets fingerprints";
 
@@ -867,6 +909,13 @@ impl Keyring {
 
     /// A whole file sealed for `role`, opened.
     pub(crate) fn open_file(&self, role: &str, bytes: &[u8]) -> Result<Zeroizing<Vec<u8>>, Unreadable> {
+        self.open_file_in(None, role, bytes)
+    }
+
+    /// [`Keyring::open_file`], refused unless it was sealed under `scope` when one is named: a
+    /// file one deployment wrote, copied where another's belongs, opens for neither there, as its
+    /// header alone would let it (release audit K8).
+    pub(crate) fn open_file_in(&self, expected: Option<&str>, role: &str, bytes: &[u8]) -> Result<Zeroizing<Vec<u8>>, Unreadable> {
         let rest = bytes.strip_prefix(MAGIC.as_slice()).ok_or(Unreadable::NotSealed)?;
         let damaged = || Unreadable::Damaged("its header is cut short".into());
         let (&len, rest) = rest.split_first().ok_or_else(damaged)?;
@@ -875,6 +924,9 @@ impl Keyring {
             return Err(damaged());
         }
         let scope = std::str::from_utf8(&rest[..len]).map_err(|_| Unreadable::Damaged("its scope isn't text".into()))?;
+        if let Some(expected) = expected.filter(|e| *e != scope) {
+            return Err(Unreadable::Damaged(format!("it is sealed under {scope:?}, where one of {expected:?} belongs (moved from another deployment's place)")));
+        }
         let version = u32::from_le_bytes(rest[len..len + 4].try_into().expect("four bytes"));
         let key = self.version(scope, version)?;
         let header = &bytes[..MAGIC.len() + 1 + len + 4];
@@ -900,15 +952,22 @@ impl Keyring {
         buf.push(b'.');
         b64_into(&sealed, &mut buf);
         buf.push(b'\n');
-        Ok(Framed { buf, start: ROOM })
+        Ok(Framed { buf, start: ROOM, place: Some(place_of(&key, &sealed)) })
     }
 
-    /// A body sealed by [`Keyring::seal_body`] (`<version>.<base64url>`), opened.
-    fn open_body(&self, scope: &str, role: &str, sealed: &str) -> Result<Zeroizing<Vec<u8>>, Unreadable> {
+    /// A body sealed by [`Keyring::seal_body`] (`<version>.<base64url>`), opened, if `place` is
+    /// where it was numbered: at `seq` after `prev` ([`place_of`]).
+    fn open_body(&self, scope: &str, role: &str, (seq, prev, place): (u64, &str, &str), sealed: &str) -> Result<Zeroizing<Vec<u8>>, Unreadable> {
         let (version, body) = sealed.split_once('.').ok_or_else(|| Unreadable::Damaged("no version".into()))?;
         let version: u32 = version.parse().map_err(|_| Unreadable::Damaged("its version isn't a number".into()))?;
         let key = self.version(scope, version)?;
-        let sealed = unb64(body.trim_end()).ok_or_else(|| Unreadable::Damaged("not base64url".into()))?;
+        let sealed = unb64(body.trim_end()).filter(|s| s.len() >= NONCE + 16).ok_or_else(|| Unreadable::Damaged("not base64url".into()))?;
+        let want = place_at(place_of(&key, &sealed), seq, prev);
+        let said = unb64(place).unwrap_or_default();
+        // Compared in constant time: how much of a place matches says nothing.
+        if said.len() != want.len() || said.iter().zip(want).fold(0, |d, (a, b)| d | (a ^ b)) != 0 {
+            return Err(Unreadable::Damaged(format!("it isn't the line sealed at {seq} after the line before it (its body moved from another line)")));
+        }
         open_with(&key, body_aad(scope, version, role).as_bytes(), &sealed)
             .ok_or_else(|| Unreadable::Damaged(format!("it doesn't open as {role:?} under {scope:?} version {version} (changed, or sealed by another folder's keys)")))
     }
@@ -963,9 +1022,10 @@ fn body_aad(scope: &str, version: u32, role: &str) -> String {
     format!("r1\0{scope}\0{version}\0{role}")
 }
 
-/// The most a numbered line's front takes: the newline a line after a cut-back starts with, `r1.`,
-/// a seq (at most 20 digits), `.`, the hash of the line before (64 hex digits) and `.`.
-const ROOM: usize = 1 + NUMBERED.len() + 20 + 1 + 64 + 1;
+/// The most a numbered line's front takes: the newline a line after a cut-back starts with, `r2.`,
+/// a seq (at most 20 digits), `.`, the hash of the line before (64 hex digits), `.`, its place
+/// and `.`.
+const ROOM: usize = 1 + NUMBERED.len() + 20 + 1 + 64 + 1 + PLACE + 1;
 
 /// A line for a log's file, framed to be written as it is: `buf[start..]` is the line and its
 /// newline, with room before it for what goes in front under the log's lock (a body sealed ahead's
@@ -973,6 +1033,9 @@ const ROOM: usize = 1 + NUMBERED.len() + 20 + 1 + 64 + 1;
 pub(crate) struct Framed {
     buf: Vec<u8>,
     start: usize,
+    /// For a body sealed ahead, its place begun ([`place_of`]): its seq and prev go in under the
+    /// log's lock.
+    place: Option<blake3::Hasher>,
 }
 
 impl Framed {
@@ -982,7 +1045,7 @@ impl Framed {
         buf.push(b'\n');
         buf.extend_from_slice(line.as_bytes());
         buf.push(b'\n');
-        Framed { buf, start: 1 }
+        Framed { buf, start: 1, place: None }
     }
 
     /// The line, without its newline.
@@ -1254,12 +1317,16 @@ impl LineSeal {
         self.keys.seal_body(&self.scope, &self.role, body.as_bytes()).map_err(std::io::Error::other)
     }
 
-    /// A body sealed ahead made the line on disk: its seq and prev in clear before it
-    /// (`r1.<seq>.<prev>.`), written into the room left in front of it, so under the log's lock
-    /// nothing is made or copied but those (docs/engineering/themes/performance.md).
+    /// A body sealed ahead made the line on disk: its seq, prev and place in clear before it
+    /// (`r2.<seq>.<prev>.<place>.`), written into the room left in front of it, so under the log's
+    /// lock nothing is made or copied but those, and the place's hash is of a few dozen bytes
+    /// (docs/engineering/themes/performance.md).
     pub(crate) fn number(framed: &mut Framed, seq: u64, prev: &str) {
         let mut digits = [0u8; 20];
-        let parts = [NUMBERED.as_bytes(), decimal(seq, &mut digits), b".", prev.as_bytes(), b"."];
+        let mut place = [0u8; PLACE];
+        let at = place_at(framed.place.take().expect("a body sealed ahead"), seq, prev);
+        b64_to(&at, &mut place);
+        let parts = [NUMBERED.as_bytes(), decimal(seq, &mut digits), b".", prev.as_bytes(), b".", &place, b"."];
         let len: usize = parts.iter().map(|p| p.len()).sum();
         if len >= framed.start {
             // A prev longer than a hash (none is): made again, with room.
@@ -1290,12 +1357,13 @@ impl LineSeal {
         let text = |bytes: &[u8]| std::str::from_utf8(bytes).map(str::to_string).map_err(|_| damaged("it isn't text"));
         if let Some(numbered) = line.strip_prefix(NUMBERED) {
             let (seq, rest) = numbered.split_once('.').ok_or_else(|| damaged("no seq"))?;
-            let (prev, sealed) = rest.split_once('.').ok_or_else(|| damaged("no prev"))?;
+            let (prev, rest) = rest.split_once('.').ok_or_else(|| damaged("no prev"))?;
+            let (place, sealed) = rest.split_once('.').ok_or_else(|| damaged("no place"))?;
             let seq: u64 = seq.parse().map_err(|_| damaged("its seq isn't a number"))?;
             if !prev.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err(damaged("its prev isn't hex"));
             }
-            let body = self.keys.open_body(&self.scope, &self.role, sealed)?;
+            let body = self.keys.open_body(&self.scope, &self.role, (seq, prev, place), sealed)?;
             return Ok(rejoin(seq, prev, &text(&body)?));
         }
         text(&self.keys.open_line(&self.scope, &self.role, line)?)
@@ -1359,6 +1427,16 @@ pub(crate) fn read_sealed(path: &Path, role: &str) -> Result<Option<Zeroizing<Ve
     read(keys(), path, role)
 }
 
+/// [`read_sealed`], refused unless it was sealed under `scope` ([`Keyring::open_file_in`]): for a
+/// file of one deployment's, in a folder that holds every deployment's.
+pub(crate) fn read_sealed_in(path: &Path, scope: &str, role: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => keys().open_file_in(Some(scope), role, &bytes).map(Some).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("could not read {}: {e}", path.display())),
+    }
+}
+
 /// For tests: a server table's text as it was sealed (`role` one of [`role`]), opened under the
 /// process's keys; panics where there is none or it doesn't open.
 #[cfg(test)]
@@ -1418,7 +1496,7 @@ pub(crate) mod testing {
     pub(crate) fn line_of_missing_key(numbered: Option<(u64, &str)>) -> String {
         let body = b64(&[7u8; 48]);
         match numbered {
-            Some((seq, prev)) => format!("{NUMBERED}{seq}.{prev}.{MISSING}.{body}"),
+            Some((seq, prev)) => format!("{NUMBERED}{seq}.{prev}.{}.{MISSING}.{body}", "A".repeat(PLACE)),
             None => format!("{LINE}{MISSING}.{body}"),
         }
     }
@@ -1922,38 +2000,62 @@ mod tests {
         }
     }
 
-    /// Guards: a run log line sealed apart from its seq and prev (before the log's lock) opens to
-    /// the very line that was made and hashed; its seq or prev changed on disk opens to another
-    /// line (whose hash the next line's prev no longer names); its body moved to another
-    /// deployment's log, or another role, doesn't open.
-    /// Why: sealing outside the lock keeps seq and prev in clear; the chain, not the AEAD, is what
-    /// holds them (docs/L4s/at-rest-encryption-L4.md §7).
+    /// Guards: what is sealed opens only where it was sealed (release audit R37). A run log line
+    /// sealed apart from its seq and prev (before the log's lock) opens to the very line that was
+    /// made and hashed, and nowhere else: of two lines, any mix of one's seq, prev, place and body
+    /// with the other's doesn't open (the last line's body swapped for an earlier one's among
+    /// them, which the chain alone wouldn't show); nor does it under another deployment's log or
+    /// another role. A whole file of one deployment's opens where that deployment's belongs, not
+    /// where another's does, whatever its header says (K8).
+    /// Why: sealing outside the lock keeps seq and prev in clear; their place, keyed and bound to
+    /// the body's nonce and tag, is what holds them to it (docs/L4s/at-rest-encryption-L4.md §7).
     #[test]
-    fn a_line_sealed_ahead_opens_to_the_line_that_was_made() {
+    fn what_is_sealed_opens_only_where_it_was_sealed() {
         let keys = std::sync::Arc::new(Keyring::memory());
         let seal = LineSeal::with(std::sync::Arc::clone(&keys), &deployment("shop"), role::LOG);
-        let body = r#","at_ms":1,"answer":"a secret answer"}"#;
-        let numbered = |seq: u64, prev: &str| {
+        let numbered = |seq: u64, prev: &str, body: &str| {
             let mut framed = seal.seal_body(body).unwrap();
             LineSeal::number(&mut framed, seq, prev);
             assert_eq!(framed.text(false).last(), Some(&b'\n'));
             assert_eq!(framed.text(true)[0], b'\n', "room for the newline after a cut-back");
             String::from_utf8(framed.line().to_vec()).unwrap()
         };
+        let body = r#","at_ms":1,"answer":"a secret answer"}"#;
         let prev = "ab".repeat(32);
-        let line = numbered(7, &prev);
-        assert!(line.starts_with(&format!("r1.7.{prev}.1.")) && !line.contains("secret"), "{line}");
+        let line = numbered(7, &prev, body);
+        assert!(line.starts_with(&format!("r2.7.{prev}.")) && !line.contains("secret"), "{line}");
         assert_eq!(seal.open(&line).unwrap(), rejoin(7, &prev, body));
         assert_eq!(rejoin(7, &prev, body), format!(r#"{{"seq":7,"prev":"{prev}","at_ms":1,"answer":"a secret answer"}}"#));
-        assert_eq!(seal.open(&numbered(0, "")).unwrap(), format!(r#"{{"seq":0{body}"#), "the first line has no prev");
-        assert_eq!(seal.open(&numbered(u64::MAX, &prev)).unwrap(), rejoin(u64::MAX, &prev, body), "the longest seq fits the room");
-        // Changed in clear: another line, so another hash.
-        let moved = seal.open(&line.replacen("r1.7.", "r1.8.", 1)).unwrap();
-        assert_ne!(moved, rejoin(7, &prev, body));
-        assert_eq!(seal.open(&line.replacen(&prev, &"cd".repeat(32), 1)).unwrap(), rejoin(7, &"cd".repeat(32), body));
+        assert_eq!(seal.open(&numbered(0, "", body)).unwrap(), format!(r#"{{"seq":0{body}"#), "the first line has no prev");
+        assert_eq!(seal.open(&numbered(u64::MAX, &prev, body)).unwrap(), rejoin(u64::MAX, &prev, body), "the longest seq fits the room");
+
+        // Two lines, the second after the first; each of its four parts from one or the other.
+        let parts = |line: &str| -> [String; 4] {
+            let rest = line.strip_prefix(NUMBERED).unwrap();
+            let mut it = rest.splitn(4, '.');
+            [(); 4].map(|_| it.next().unwrap().to_string())
+        };
+        let later = numbered(8, &crate::recorder::line_hash(&rejoin(7, &prev, body)), r#","at_ms":2,"answer":"a refusal"}"#);
+        let (a, b) = (parts(&line), parts(&later));
+        for mix in 0..16u8 {
+            let pick = |i: usize| if mix & (1 << i) == 0 { &a[i] } else { &b[i] };
+            let made = format!("{NUMBERED}{}.{}.{}.{}", pick(0), pick(1), pick(2), pick(3));
+            let opens = seal.open(&made).is_some();
+            assert_eq!(opens, mix == 0 || mix == 15, "seq, prev, place, body from {mix:04b} (1: the later line's) opened: {opens}");
+        }
         assert!(seal.open(&line.replacen(&prev, "not-hex", 1)).is_none(), "a prev that isn't a hash");
+        let said = seal.read(&format!("{NUMBERED}{}.{}.{}.{}", b[0], b[1], b[2], a[3])).err().unwrap();
+        assert!(said.to_string().contains("moved from another line"), "{said}");
         // Another log, another role.
         assert!(LineSeal::with(std::sync::Arc::clone(&keys), &deployment("other"), role::LOG).open(&line).is_none());
         assert!(LineSeal::with(std::sync::Arc::clone(&keys), &deployment("shop"), role::EVENTS).open(&line).is_none());
+
+        // A whole file of one deployment's, where it belongs and where another's does.
+        for role in [role::QUEUE_SEEN, role::MAIL_SEEN, role::FEED_SEEN, role::ARRIVALS, role::SPOOL_MAIL, role::SPOOL_QUEUE] {
+            let file = keys.seal_file(&deployment("shop"), role, b"what shop has seen").unwrap();
+            assert_eq!(keys.open_file_in(Some(&deployment("shop")), role, &file).unwrap().as_slice(), b"what shop has seen", "{role}");
+            let moved = keys.open_file_in(Some(&deployment("other")), role, &file).err().unwrap();
+            assert!(matches!(moved, Unreadable::Damaged(_)) && moved.to_string().contains("moved from another deployment"), "{role}: {moved}");
+        }
     }
 }

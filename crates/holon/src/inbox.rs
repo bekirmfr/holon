@@ -60,7 +60,7 @@ fn seen_dir(deployments_path: &Place, slug: &str) -> Option<PathBuf> {
 /// error (at_rest.rs, `read_seen`): the look stops there, and nothing is run or marked seen.
 fn read_seen(file: Option<&PathBuf>, memory: &Mutex<BTreeMap<PathBuf, Vec<u8>>>, key: &Path) -> Result<Seen, String> {
     match file {
-        Some(f) => Ok(crate::at_rest::read_seen(f, crate::at_rest::role::MAIL_SEEN)?.unwrap_or_default()),
+        Some(f) => Ok(crate::at_rest::read_seen(f, &crate::at_rest::deployment_of(key), crate::at_rest::role::MAIL_SEEN)?.unwrap_or_default()),
         None => Ok(memory.lock().unwrap().get(key).and_then(|b| serde_json::from_slice(b).ok()).unwrap_or_default()),
     }
 }

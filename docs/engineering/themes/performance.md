@@ -518,9 +518,12 @@ measured against a control build that writes the log in clear (lazy 24,878–25,
   deployment, and the seal held it. So a line's body (everything after its `seq` and `prev`) is
   sealed before the lock is taken, beside where the line is made (`Made::sealed`, firing.rs), and
   under it only `r1.<seq>.<prev>.` goes in front (`LineSeal::number`). Seq and prev are in clear
-  on disk; the chain hashes the line as made, so one changed breaks it at the next line
-  (`a_line_sealed_ahead_opens_to_the_line_that_was_made`). This is §7's fallback, and it took lazy
-  back to 21,618–22,440.
+  on disk; the chain hashes the line as made, so one changed breaks it at the next line. This is
+  §7's fallback, and it took lazy back to 21,618–22,440. Since release audit R37 the front is
+  `r2.<seq>.<prev>.<place>.`: the place, a keyed BLAKE3 of the seq, the prev and the body's nonce
+  and tag (begun ahead, so under the lock it hashes at most 84 bytes), binds the body to its line,
+  which the chain alone left open for the last line (`what_is_sealed_opens_only_where_it_was_sealed`).
+  Not measured on its own: a hash of that size is well under the 6 µs the lock's hold moved by.
 - **A line leaving the log opened for nothing:** a cut-back opened each line it let go of to keep
   aside for the backup, with no backup set too: one decrypt a run. Now only with a backup.
 - **The core's base64 decoder** looks each character up in its alphabet: 1.75 µs to write 1.5 KB,
@@ -537,7 +540,8 @@ again with its newline to be written), 1.3 the write a third longer (base64).
 
 - **Nothing made or copied under the lock but the prefix:** a body sealed ahead is framed
   (`at_rest::Framed`): its sealed text and newline after room for what goes in front of it, the
-  newline after a cut-back too, so under the lock `r1.<seq>.<prev>.` (at most 89 bytes) is written
+  newline after a cut-back too, so under the lock `r1.<seq>.<prev>.` (at most 89 bytes; with its
+  place since R37, `r2.<seq>.<prev>.<place>.`, 112) is written
   into that room and the buffer written as it is. And the line as made, which the chain hashes, is
   no longer made again under the lock to be hashed: `chain_hash` hashes its seq and prev, then its
   body, held to `line_hash` of the line made whole by

@@ -2613,12 +2613,12 @@ mod tests {
 
         // What a mailbox, queue, feed or folder watch has seen: an error, never none.
         let seen = dir.join("seen.json");
-        assert!(crate::at_rest::read_seen::<serde_json::Value>(&seen, crate::at_rest::role::MAIL_SEEN).unwrap().is_none(), "none yet");
+        assert!(crate::at_rest::read_seen::<serde_json::Value>(&seen, &crate::at_rest::deployment("keyless"), crate::at_rest::role::MAIL_SEEN).unwrap().is_none(), "none yet");
         std::fs::write(&seen, file_of_missing_key(&crate::at_rest::deployment("keyless"))).unwrap();
-        let read = crate::at_rest::read_seen::<serde_json::Value>(&seen, crate::at_rest::role::MAIL_SEEN);
+        let read = crate::at_rest::read_seen::<serde_json::Value>(&seen, &crate::at_rest::deployment("keyless"), crate::at_rest::role::MAIL_SEEN);
         assert!(read.as_ref().is_err_and(|e| e.contains("version 999")), "{read:?}");
         std::fs::write(&seen, b"{}").unwrap();
-        assert!(crate::at_rest::read_seen::<serde_json::Value>(&seen, crate::at_rest::role::MAIL_SEEN).is_err(), "plain where sealed belongs: not none");
+        assert!(crate::at_rest::read_seen::<serde_json::Value>(&seen, &crate::at_rest::deployment("keyless"), crate::at_rest::role::MAIL_SEEN).is_err(), "plain where sealed belongs: not none");
 
         // The access history: a version under a missing key is an error, never passed over.
         let access = dir.join("access.json");
@@ -2644,7 +2644,7 @@ mod tests {
             log.push(entry());
         }
         // Each line sealed on disk (at_rest.rs); the chain is over the lines as made.
-        assert!(std::fs::read_to_string(&path).unwrap().lines().all(|l| l.starts_with("a1.") || l.starts_with("r1.")), "sealed");
+        assert!(std::fs::read_to_string(&path).unwrap().lines().all(|l| l.starts_with("a1.") || l.starts_with("r2.")), "sealed");
         let lines = open_lines(&path);
         let first: LogEntry = serde_json::from_str(&lines[0]).unwrap();
         assert_eq!(first.prev, "", "the first entry has nothing before it");

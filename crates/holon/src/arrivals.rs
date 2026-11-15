@@ -102,7 +102,7 @@ impl Watch {
             }
         }
         let file: Option<PathBuf> = deployments_path.beside("arrivals").map(|dir| dir.join(format!("{slug}.json")).into());
-        let read = file.as_ref().map_or(Ok(None), |f| crate::at_rest::read_seen::<BTreeMap<String, Seen>>(f, crate::at_rest::role::ARRIVALS));
+        let read = file.as_ref().map_or(Ok(None), |f| crate::at_rest::read_seen::<BTreeMap<String, Seen>>(f, &crate::at_rest::deployment(slug), crate::at_rest::role::ARRIVALS));
         let held = read.as_ref().err().filter(|_| !folders.is_empty()).map(|e| crate::at_rest::seen_held("its folders", e));
         if let Some(why) = &held {
             eprintln!("holon: {slug:?} watches no folder: {why}");

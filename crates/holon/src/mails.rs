@@ -705,7 +705,8 @@ impl Mails {
         let Ok(files) = std::fs::read_dir(dir) else { return };
         let mut logged: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for file in files.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e == "mail")) {
-            let bytes = match crate::at_rest::read_sealed(&file, crate::at_rest::role::SPOOL_MAIL) {
+            let named = crate::at_rest::deployment(file.file_name().and_then(|n| n.to_str()).and_then(|n| n.split('.').next()).unwrap_or_default());
+            let bytes = match crate::at_rest::read_sealed_in(&file, &named, crate::at_rest::role::SPOOL_MAIL) {
                 Ok(Some(bytes)) => bytes,
                 Ok(None) => continue,
                 // One that doesn't open (changed, plain, or sealed by another folder's keys): left

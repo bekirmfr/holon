@@ -532,7 +532,8 @@ impl Queues {
         let mut logged: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut found: Vec<(Spooled, String, PathBuf)> = Vec::new();
         for file in files.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e == "msg")) {
-            let bytes = match crate::at_rest::read_sealed(&file, crate::at_rest::role::SPOOL_QUEUE) {
+            let named = crate::at_rest::deployment(file.file_name().and_then(|n| n.to_str()).and_then(|n| n.split('.').next()).unwrap_or_default());
+            let bytes = match crate::at_rest::read_sealed_in(&file, &named, crate::at_rest::role::SPOOL_QUEUE) {
                 Ok(Some(bytes)) => bytes,
                 Ok(None) => continue,
                 // One that doesn't open (changed, plain, or sealed by another folder's keys): left

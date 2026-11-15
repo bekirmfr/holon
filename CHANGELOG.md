@@ -12,6 +12,11 @@
   them wrote them in clear): it names them and refuses; it still moves old key files.
   `holon uninstall --purge` removes the key such a release kept its secrets under (the OS key
   store's `holon / secrets-key-<id>`) with the folder.
+- **What is sealed opens only where it was sealed.** A run log's line, sealed apart from its seq and
+  the hash before it so the log's lock isn't held while it is sealed, now carries a keyed hash
+  binding the two to its body (`r2.` lines): before, the last line's body could be swapped for an
+  earlier one's and still open, the chain not showing it. And a deployment's listener records and
+  spool files open only where that deployment's belong, not wherever their own header says.
 - **A forget says what it reaches, and sweeps the content store.** Forgetting a removed
   deployment's keys makes its log, events, records and backups open nowhere again; the content
   store, which every deployment shares and the server's keys seal, isn't forgotten. The forget now

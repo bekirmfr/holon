@@ -82,7 +82,7 @@ impl Kept {
     /// `read_seen`): the listener doesn't start, rather than run again what it ran.
     fn read(&self) -> Result<Seen, String> {
         match &self.file {
-            Some(f) => Ok(crate::at_rest::read_seen(f, crate::at_rest::role::QUEUE_SEEN)?.unwrap_or_default()),
+            Some(f) => Ok(crate::at_rest::read_seen(f, &crate::at_rest::deployment_of(&self.key), crate::at_rest::role::QUEUE_SEEN)?.unwrap_or_default()),
             None => Ok(self.memory.lock().unwrap().get(&self.key).and_then(|b| serde_json::from_slice(b).ok()).unwrap_or_default()),
         }
     }

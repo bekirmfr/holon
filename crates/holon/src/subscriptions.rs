@@ -204,7 +204,7 @@ impl Kept {
     /// `read_seen`): the feed isn't read, rather than run again from the start.
     fn read(&self) -> Result<Seen, String> {
         match &self.file {
-            Some(f) => Ok(crate::at_rest::read_seen(f, crate::at_rest::role::FEED_SEEN)?.unwrap_or_default()),
+            Some(f) => Ok(crate::at_rest::read_seen(f, &crate::at_rest::deployment_of(&self.key), crate::at_rest::role::FEED_SEEN)?.unwrap_or_default()),
             None => Ok(self.memory.lock().unwrap().get(&self.key).and_then(|b| serde_json::from_slice(b).ok()).unwrap_or_default()),
         }
     }
