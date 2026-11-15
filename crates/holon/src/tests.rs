@@ -6386,14 +6386,34 @@ fn verify_checks_that_each_runs_state_follows_from_the_one_before() {
     let s = report.states.as_ref().unwrap();
     assert_eq!((&s.began, &s.breaks), (&vec![1, 2], &vec![]));
 
-    // A second apart, each is checked whole: the first has no run before it here.
+    // A second apart, each is checked whole: the first began from nothing, as a log's first does.
     let apart = rechained(&|_, _| {});
     let report = verify::check(&apart, None, &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert_eq!(states(&apart), (vec![1, 2], vec![], vec![0, 1, 2], vec![]));
     let text = verify::describe(&report, None);
-    assert!(text.contains("state: 2 runs began from the state the run before them left, 3 left what their writes make of the one they began with"), "{text}");
-    assert!(text.contains("state not checked (1 run: 0), where it began: no run before it here"), "{text}");
+    assert!(
+        text.contains("state: run 0 began from nothing, as a log's first does; 2 runs began from the state the run before them left, 3 left what their writes make of the one they began with"),
+        "{text}"
+    );
+    assert!(report.complete() && !text.contains("state not checked") && text.ends_with("ok\n"), "{text}");
+    // From its second run on, an export begins after the log's first: what the first left, which
+    // the second began from, isn't in it. Nothing fails, and not everything was checked: exit 3.
+    let later = verify::Export { lines: apart.lines[1..].to_vec(), ..serde_json::from_value(serde_json::to_value(&apart).unwrap()).unwrap() };
+    let report = verify::check(&later, None, &BTreeMap::new());
+    let text = verify::describe(&report, None);
+    assert!(report.ok() && !report.complete(), "{text}");
+    assert_eq!(report.states.as_ref().unwrap().unchecked[verify::NONE_BEFORE], vec![1], "{text}");
+    assert!(text.ends_with("INCOMPLETE: nothing here fails, but not every run's state was checked (said above)\n"), "{text}");
+    // The log's first line, saying it began from a state: not from nothing, so not checked.
+    let said_more = rechained(&|i, v| {
+        if i == 0 {
+            v["state_before"] = serde_json::json!({ "k": { "type": "Text", "value": "planted" } });
+        }
+    });
+    let report = verify::check(&said_more, None, &BTreeMap::new());
+    assert_eq!(report.states.as_ref().unwrap().unchecked.get(verify::NOT_FROM_NOTHING), Some(&vec![0]), "{}", verify::describe(&report, None));
+    assert!(!report.complete(), "{}", verify::describe(&report, None));
 
     // Run 1 says it left another state: it re-runs as before, but its state doesn't follow, nor
     // does run 2's.
@@ -8034,7 +8054,7 @@ fn a_run_after_a_commit_the_trimmed_log_lost_has_no_run_before_it() {
     let text = verify::describe(&report, None);
     assert!(report.ok(), "{text}");
     let s = report.states.unwrap();
-    assert_eq!((s.breaks, &s.unchecked["where it began: no run before it here"]), (vec![], &vec![2, 3]), "{text}");
+    assert_eq!((s.breaks, &s.unchecked[verify::NONE_BEFORE]), (vec![], &vec![2, 3]), "{text}");
 
     // The same two without their numbers, as a log written before them, chained again: Y broke.
     let mut x = lines[2].clone();
@@ -8359,7 +8379,9 @@ fn changes_of(line: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
 /// and the lines are chained again (each way `changes_of` knows: a leaf, an item, a field out, a
 /// field the server writes only sometimes put in), but in a field verify says it doesn't hold
 /// ([`verify::NOT_HELD`], said in checking-runs.md): verify ends FAILED. Nor does it pass saying
-/// it checked less of a run than it does of the honest line. With the head a witness holds,
+/// it checked less of a run than it does of the honest line; and a change that makes it check
+/// less of a state (a commit's cell or number, which are `NOT_HELD`) ends 3, never 0, as the
+/// honest export, checking every state, ends 0. With the head a witness holds,
 /// every change fails, those fields included: the chain holds each line whole. The exports are
 /// of the kinds of runs there are: an action's that writes the state, a request's that reads its
 /// query and answers, and an approval's two parts, the second resumed by two people's decisions.
@@ -8429,6 +8451,7 @@ export const pay = action(async (order) => {
     // What a report says of each run: whether it checked it, and how far.
     let account = |r: &verify::Report| format!("{:?} {:?} {:?} {:?} {}", r.reruns, r.states, r.given, r.ids_given, r.complete());
     let (mut tried, mut passed, mut leaks, mut said_less, mut witnessed) = (0, 0, Vec::new(), Vec::new(), Vec::new());
+    let (mut less_state, mut ends_0) = (Vec::new(), Vec::new());
     let mut by_field: BTreeMap<String, usize> = BTreeMap::new();
     for slug in ["c", "seen", "payouts"] {
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req_as(&ada, "GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
@@ -8467,6 +8490,15 @@ export const pay = action(async (order) => {
                 }
                 passed += 1;
                 *by_field.entry(at.split('/').next().unwrap_or_default().to_string()).or_insert(0) += 1;
+                // A change that makes it check less of a state (the honest export checks every
+                // one) ends 3, not 0, whatever field it is in: what it didn't check is said, and
+                // a script reading the exit code doesn't take it as checked.
+                if report.states.as_ref().is_some_and(|s| !s.unchecked.is_empty()) {
+                    less_state.push(format!("{slug} run {seq}: {at}"));
+                    if report.complete() {
+                        ends_0.push(format!("{slug} run {seq}: {at}"));
+                    }
+                }
                 if not_held(&at) {
                     continue;
                 }
@@ -8519,10 +8551,18 @@ export const pay = action(async (order) => {
             }
         }
     }
-    eprintln!("{tried} changes tried, {passed} pass verify without the head ({by_field:?}); {} as checked, {} saying less", leaks.len(), said_less.len());
+    eprintln!(
+        "{tried} changes tried, {passed} pass verify without the head ({by_field:?}); {} as checked, {} saying less, {} checking less of a state ({} ending 0)",
+        leaks.len(),
+        said_less.len(),
+        less_state.len(),
+        ends_0.len()
+    );
     assert!(witnessed.is_empty(), "{} of {tried} changes pass with the witnessed head:\n{}", witnessed.len(), witnessed.join("\n"));
     assert!(leaks.is_empty(), "{} of {tried} changes pass as checked:\n{}", leaks.len(), leaks.join("\n"));
     assert!(said_less.is_empty(), "{} of {tried} changes pass, saying less was checked:\n{}", said_less.len(), said_less.join("\n"));
+    assert!(ends_0.is_empty(), "{} of {tried} changes check less of a state and end 0:\n{}", ends_0.len(), ends_0.join("\n"));
+    assert!(less_state.iter().any(|at| at.contains(": commit/")), "a commit's cell or number changed checks less of a state: {less_state:?}");
 }
 
 /// `v` with every value in it that is `from` (a whole JSON value: a string, a record's field as

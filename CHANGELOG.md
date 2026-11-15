@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`holon verify` exits 3 when a run's state couldn't be checked.** A state not checked (a
+  resumed part with nothing to hold it to, a commit whose numbering can't be followed, a run with
+  no run before it in an export that begins mid-log) ended `ok`, exit 0, as if checked; a commit's
+  cell or number changed, with no witness, could make verify check less and still end 0. Now it
+  ends `INCOMPLETE` and exits 3, as an export with a run not run again does. The log's first run,
+  which began from nothing, is checked in an export from the first line, so a whole log can still
+  end 0. ([Checking runs](docs/manual/guides/checking-runs.md#the-state-run-to-run))
 - **`holon verify` holds each run's line to the run, and says what only the chain holds.** A line
   changed and the lines after it chained again (by someone holding the server's data, with no
   witness) passed wherever verify read the line rather than making it again: an error and a

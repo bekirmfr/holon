@@ -81,8 +81,7 @@ notes-api: 42 runs, runs 1 to 42
   2 runs: 9, 31 checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)
   secrets: 38 outbound requests carried one, each to a host its approval shows it going to
   tokens: 12 outbound requests carried what a call answered to a secret, each to a host its approval shows that going to
-  state: 41 runs began from the state the run before them left, 42 left what their writes make of the one they began with
-  state not checked (1 run: 1), where it began: no run before it here
+  state: run 1 began from nothing, as a log's first does; 41 runs began from the state the run before them left, 42 left what their writes make of the one they began with
 ok
 ```
 
@@ -118,7 +117,8 @@ ok
    what is answered to that secret going to ("…; what is answered to it goes to
    https://api.example.com").
 
-It exits 0 when everything checks and every run was run again, and 1 when anything doesn't
+It exits 0 when everything checks, every run was run again and every run's state checked, and 1
+when anything doesn't
 check, with what failed:
 
 ```
@@ -130,8 +130,10 @@ check, with what failed:
 FAILED
 ```
 
-When nothing fails but some runs couldn't be run again (see below), it exits 3: nothing in the
-export was found changed, and not all of it was checked. The report says which runs, and why:
+When nothing fails but some runs couldn't be run again (see below), or a run's state couldn't be
+checked ([The state, run to run](#the-state-run-to-run)), it exits 3: nothing in the export was
+found changed, and not all of it was checked, so a script reading the exit code doesn't take it
+as checked. The report says which runs, and why:
 
 ```
   not re-run (1 run: 12): it read inbox/sales.csv, whose text the export doesn't hold (its folder keeps hashes, the server no longer keeps it, or the export left it out): give it with --files
@@ -173,11 +175,18 @@ that what its writes make of the state it began with is the state it left. So a 
 changed between runs, or a run's writes dropped, without the report saying where, even in a log
 chained again after the change.
 
-What it doesn't check, it says, by why:
+The log's first run began from nothing: an empty state, after no commit. In an export from the
+log's first line, that is checked: it says `run 1 began from nothing, as a log's first does`.
 
-- the first run here, which began from a state no run here left; in a log trimmed to its newest
-  runs, so are those that ran beside it and began after a commit older than every one here,
-  whose run's line is gone;
+What it doesn't check, it says, by why, and the export is then INCOMPLETE (exit 3), as one with a
+run not run again is:
+
+- a run with no run before it here, in an export that begins after the log's first run (a log
+  trimmed to its newest runs, one run's export): what it began from, the runs before it would
+  check. In a trimmed log, so are those that ran beside it and began after a commit older than
+  every one here, whose run's line is gone. Export from the first run to have it checked;
+- in an export from the log's first line, a run with no run before it whose line says it began
+  from a state, or after a commit, as no log's first run does;
 - a run after a deploy, a stop, or a restore of a version's state, which put a state in place
   (the events say which). After a restore of a run's state, the next run is checked: it began
   from the state that run left;

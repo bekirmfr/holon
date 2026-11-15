@@ -176,9 +176,13 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
 5. **Where the secrets went** (`check_sends`): each request carrying a secret's mark went to a host
    its unit sends that secret to; **the events** (`check_events`), their chain and head.
 
-It exits 0 when it all checks (`Report::ok`) and every run was run again (`Report::complete`), 1
-when it doesn't check, 3 when it checks but some runs weren't run again, 2 when it can't read the
-export.
+It exits 0 when it all checks (`Report::ok`) and everything was checked (`Report::complete`: every
+run run again, every run's state checked), 1 when it doesn't check, 3 when it checks but some runs
+weren't run again or some states weren't checked (`States::unchecked`), 2 when it can't read the
+export. A run with no run before it here is checked where it began only in an export from the
+log's first line, and only if its line says it began from nothing (`began_from_nothing`: an
+empty state, after no commit); else it is `NONE_BEFORE` (the export begins later) or
+`NOT_FROM_NOTHING`.
 
 ### A replay of another version
 

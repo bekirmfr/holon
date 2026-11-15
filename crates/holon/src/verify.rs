@@ -26,7 +26,8 @@
 //! keeps; too large; or too deep), one that failed, and run again gets further (a limit of the server's stopped it, or dropped what it did), one
 //! that read a file whose text neither the export nor `--files` holds (its folder keeps only
 //! hashes). They are counted, not failed, and an export with any checks only so far: `holon
-//! verify` exits 3, not 0. One that failed may say less than it does run again, never other: the
+//! verify` exits 3, not 0. So does one with a run whose state isn't checked (`States::unchecked`):
+//! nothing in it fails, and not everything in it was checked. One that failed may say less than it does run again, never other: the
 //! same run id, the outputs it keeps as computed, what it did and sent the start of what it does,
 //! and its status that or a failure's; one that says other differs. A request no route took, and a
 //! run turned away before it began, ran nothing: there is nothing to run again, and their entries
@@ -448,6 +449,9 @@ pub(crate) struct States {
     pub(crate) began: Vec<u64>,
     pub(crate) beside: Vec<u64>,
     pub(crate) restored: Vec<u64>,
+    /// The runs that began from nothing, as a log's first does: an empty state, after no commit,
+    /// in an export from the log's first line ([`began_from_nothing`]).
+    pub(crate) fresh: Vec<u64>,
     /// The runs that left what their writes make of the state they began with.
     pub(crate) left: Vec<u64>,
     /// What wasn't checked, by why.
@@ -644,9 +648,16 @@ impl Report {
             && self.tokens_outside.is_empty()
     }
 
-    /// Whether every run was run again: none [`Rerun::Skipped`]. An export that checks but isn't
-    /// complete has nothing found wrong in it, and not everything in it checked.
+    /// Whether everything in it was checked: every run run again (none [`Rerun::Skipped`]), and
+    /// every run's state (none [`States::unchecked`]). An export that checks but isn't complete
+    /// has nothing found wrong in it, and not everything in it checked: `holon verify` exits 3,
+    /// so a script reading its exit code doesn't take it as checked.
     pub(crate) fn complete(&self) -> bool {
+        self.all_run_again() && self.states.as_ref().is_none_or(|s| s.unchecked.is_empty())
+    }
+
+    /// Whether every run was run again: none [`Rerun::Skipped`].
+    fn all_run_again(&self) -> bool {
         !self.reruns.iter().any(|(_, r)| matches!(r, Rerun::Skipped(_)))
     }
 }
@@ -794,7 +805,7 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
         report.reruns.push((entry.seq, came_to));
     }
     let events: Vec<crate::events::Event> = export.events.iter().filter_map(|l| serde_json::from_str(l).ok()).collect();
-    report.states = check_states(&entries, &lefts, &events, &marks, &resolver);
+    report.states = check_states(&entries, &lefts, &events, &marks, &resolver, !report.trimmed);
     check_sends(&entries, &resolver, &marks, &mut report);
     report
 }
@@ -927,6 +938,20 @@ fn beside(a: &LogEntry, b: &LogEntry) -> bool {
     a0 <= b1 + 1 && b0 <= a1 + 1
 }
 
+/// Why a run with no run before it here isn't checked where it began, in an export that begins
+/// after the log's first line: the runs before it would check it.
+pub(crate) const NONE_BEFORE: &str = "where it began: no run before it here, as the export begins after the log's first run (the runs before it would check it)";
+
+/// Why a run with no run before it here, in an export from the log's first line, isn't checked
+/// where it began: its line says it began from a state, or after a commit, as no log's first run does.
+pub(crate) const NOT_FROM_NOTHING: &str = "where it began: no run before it here, and not from nothing (an empty state, after no commit), as a log's first run begins";
+
+/// Whether `b`'s line says it began from nothing, as a log's first run does: an empty state, after
+/// no commit (`after` 0, or none in a line written before commits were numbered).
+fn began_from_nothing(b: &LogEntry) -> bool {
+    b.state_before.is_empty() && b.commit.as_ref().and_then(|c| c.after).unwrap_or(0) == 0
+}
+
 /// Why a run that began from the state the server loaded after a crash isn't checked where it began.
 pub(crate) const CUT_OFF: &str =
     "where it began: from the state the server loaded after a crash, which a run the crash cut off between its commit and its line may have left (its events say so)";
@@ -947,6 +972,11 @@ pub(crate) const CUT_OFF: &str =
 /// has no run before it here, as the first hasn't. A line without them is taken by its place and
 /// its times.
 ///
+/// A run with no run before it here began, in an export from the log's first line
+/// (`from_the_first`), from nothing: an empty state, after no commit ([`began_from_nothing`]); one
+/// whose line says otherwise, or in an export that begins later (a trimmed log, one run's), isn't
+/// checked where it began ([`NOT_FROM_NOTHING`], [`NONE_BEFORE`]).
+///
 /// A run the server cut off between its commit and its line, crashing, isn't in the log either:
 /// the server, started again from the state it left, says so as an event naming that state
 /// (`Event::loaded`, persist.rs), and the run after it here, if it began from that very state, is
@@ -959,7 +989,14 @@ pub(crate) const CUT_OFF: &str =
 /// here, or a run before it that couldn't be run again leaves it a break. Nor is a run whose line
 /// the server couldn't write, which the line after it says: a run after the one before it here,
 /// and after it, may have begun from what it left, and is said unchecked.
-fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[crate::events::Event], marks: &Marks, resolver: &impl holon_core::Resolver) -> Option<States> {
+fn check_states(
+    entries: &[(LogEntry, &str)],
+    lefts: &[Option<Left>],
+    events: &[crate::events::Event],
+    marks: &Marks,
+    resolver: &impl holon_core::Resolver,
+    from_the_first: bool,
+) -> Option<States> {
     if !entries.iter().any(|(e, _)| e.state_after.is_some()) {
         return None;
     }
@@ -1007,7 +1044,8 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
             Some(h) => {
                 // The run before it that committed: one that failed did only if it left a state.
                 match entries[..i].iter().rposition(|(e, _)| ran(e) && (e.error.is_none() || e.state_after.is_some())) {
-                    None => states.unchecked("where it began: no run before it here", b.seq),
+                    None if from_the_first && began_from_nothing(b) => states.fresh.push(b.seq),
+                    None => states.unchecked(if from_the_first { NOT_FROM_NOTHING } else { NONE_BEFORE }, b.seq),
                     Some(pi) => match &entries[pi].0.state_after {
                         None => states.unchecked(
                             "where it began: the run before it kept no state it left (its version held none, or the state, unchanged, couldn't be kept)",
@@ -1042,7 +1080,7 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
                                 states.began.push(b.seq);
                                 states.beside.push(b.seq);
                             } else if before_the_first(entries, b) {
-                                states.unchecked("where it began: no run before it here", b.seq);
+                                states.unchecked(if from_the_first { NOT_FROM_NOTHING } else { NONE_BEFORE }, b.seq);
                             } else if let Some(why) = began[i]
                                 .as_ref()
                                 .and_then(|(_, now)| moved(p, lefts[pi].as_ref(), now))
@@ -2534,8 +2572,9 @@ pub(crate) fn keys_for(data: Option<&str>, root_key: Option<&str>) -> Result<std
 }
 
 /// `holon verify <export.json> [--head <hex>] [--files DIR] [--data DIR] [--root-key SOURCE]`:
-/// check an export, say what was found, and exit 0 only if it checks, every run in it run again;
-/// 3 if nothing in it fails, but some runs couldn't be run again; 1 if anything doesn't check.
+/// check an export, say what was found, and exit 0 only if it checks, every run in it run again
+/// and every run's state checked; 3 if nothing in it fails, but some runs couldn't be run again or
+/// some states checked; 1 if anything doesn't check.
 pub(crate) fn run(args: &[String]) -> i32 {
     let mut file = None;
     let mut head = None;
@@ -2597,8 +2636,8 @@ const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR
   Checks a deployment's exported runs (holon export), offline: that its run log's hash chain is
   unbroken, that every unit is what its hash says, and that every run, run again from its log
   entry, produces what the log says it did. Exits 0 when it all checks, 1 when anything doesn't,
-  3 when nothing fails but some runs couldn't be run again (it says which, and why), 2 when it
-  can't read the export.
+  3 when nothing fails but not everything was checked: some runs couldn't be run again, or some
+  runs' states checked (it says which, and why), 2 when it can't read the export.
 
   --head HEX               a head a witness holds: check it is in the export, so no run up to
                            it was changed or removed
@@ -2807,8 +2846,13 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
             how.push(format!("{} of them after a restore, from the state it put back", s.restored.len()));
         }
         let beside = if how.is_empty() { String::new() } else { format!(" ({})", how.join("; ")) };
+        let fresh = match s.fresh.len() {
+            0 => String::new(),
+            1 => format!("run {} began from nothing, as a log's first does; ", s.fresh[0]),
+            _ => format!("{} began from nothing, as a log's first does; ", count_of(&s.fresh)),
+        };
         out += &format!(
-            "  state: {} runs began from the state the run before them left{beside}, {} left what their writes make of the one they began with\n",
+            "  state: {fresh}{} runs began from the state the run before them left{beside}, {} left what their writes make of the one they began with\n",
             s.began.len(),
             s.left.len()
         );
@@ -2819,10 +2863,14 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
             out += &format!("  run {seq}'s state DOESN'T FOLLOW: {how}\n");
         }
     }
-    out += match (r.ok(), r.complete()) {
-        (false, _) => "FAILED\n",
-        (true, false) => "INCOMPLETE: nothing here fails, but not every run was run again (said above)\n",
-        (true, true) => "ok\n",
+    out += match (r.ok(), r.all_run_again(), r.complete()) {
+        (false, _, _) => "FAILED\n",
+        (true, false, false) if r.states.as_ref().is_some_and(|s| !s.unchecked.is_empty()) => {
+            "INCOMPLETE: nothing here fails, but not every run was run again, nor every run's state checked (said above)\n"
+        }
+        (true, false, _) => "INCOMPLETE: nothing here fails, but not every run was run again (said above)\n",
+        (true, true, false) => "INCOMPLETE: nothing here fails, but not every run's state was checked (said above)\n",
+        (true, true, true) => "ok\n",
     };
     out
 }
