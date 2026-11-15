@@ -18,6 +18,7 @@ import { reviewQueue, routeOf, said, versionsSaid, type Approval, type Reviewabl
 import type { Me } from "./AuthGate";
 import { canOn, useCan } from "./can";
 import { approvalSaid, chainOf, chainSaid, decidedLine, decidedSaid, inSteps, isApproval, shownSaid, stepName, waitsAfter, yourDecision, yourSteps, type ChainStep, type WaitingPoint, type WaitingStep } from "./decisions";
+import { browsersOf } from "./DeploySettings";
 import { useDialog } from "./Dialog";
 import { cardRows, mayGroups, textLines, type CardRows } from "./reviewMay";
 import { follow, format, type ApprovalsTab, type Route } from "./routes";
@@ -153,7 +154,7 @@ const proposed = (a: Approval): a is Reviewable & { proposal: Proposal } => (a.k
  *  against the grant now, each row pointing at its line. */
 export async function readCard(p: Proposal, textOf: (slug: string, doc: FlowDocument) => string): Promise<CardRows> {
   const { document } = await getProposal(p.id);
-  const preview = await previewDeploy(p.slug, p.unit, document?.server?.requirements);
+  const preview = await previewDeploy(p.slug, p.unit, document?.server?.requirements, document?.server ? browsersOf(document.server) : undefined);
   let text = document?.source ?? "";
   try {
     if (document) text = textOf(p.slug, document);

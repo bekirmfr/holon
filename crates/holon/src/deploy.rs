@@ -62,6 +62,10 @@ struct Previous {
     taint: Vec<String>,
     /// Its server's handlers, by label: each one's unit.
     handlers: BTreeMap<String, Hash>,
+    /// And each one's log level, as its code says it.
+    logs: BTreeMap<String, holon_core::LogLevel>,
+    /// The port its routes answer on.
+    port: Option<u16>,
 }
 
 fn previous_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Previous {
@@ -72,6 +76,8 @@ fn previous_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) ->
             browsers: d.browsers.clone(),
             taint: d.server.as_ref().map(|s| s.taint.clone()).unwrap_or_default(),
             handlers: d.server.iter().flat_map(|s| s.handlers()).map(|(label, _, h)| (label, h)).collect(),
+            logs: d.server.iter().flat_map(|s| s.handlers()).map(|(label, log, _)| (label, log)).collect(),
+            port: d.server.as_ref().and_then(|s| s.port),
         },
         None => Previous::default(),
     }
@@ -383,7 +389,15 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     // settings, where the host lets them): then only what asks for more waits. A person who
     // doesn't approve its deploys wrote what they deploy: what asks for more waits for someone
     // who does, the rest deploys.
-    if !approves && (!missing.is_empty() || waits_for_a_person(who, policy, deployments, &body.slug)) {
+    let proposed = !approves && (!missing.is_empty() || waits_for_a_person(who, policy, deployments, &body.slug));
+    // What a person reviews is the document: a proposal's must be what it deploys, and so must a
+    // program's, which the next review is read against.
+    if (proposed || matches!(who.kind, Some(crate::accounts::Kind::Agent | crate::accounts::Kind::Service)))
+        && let Err(refused) = document_is_the_unit(&body, unit_hash)
+    {
+        return refused;
+    }
+    if proposed {
         if !policy.agents_propose {
             let needs = if missing.is_empty() { String::new() } else { format!(", and this one needs {}", missing.join(", ")) };
             return err(
@@ -644,6 +658,49 @@ fn borrowed(deployments: &Mutex<BTreeMap<String, Deployment>>, items: &BTreeSet<
         .collect()
 }
 
+/// Whether `body`'s document, if it sends one, is what it deploys: its canvas builds the unit sent,
+/// and its `browsers` line is the sites sent. A person reviews a proposal's document (the text
+/// printed from it, its canvas), and the deployed one is what the next review is read against, so
+/// one that said something else than the unit would have them approve code they never read.
+fn document_is_the_unit(body: &DeployRequestBody, unit: Hash) -> Result<(), Response> {
+    let Some(document) = &body.document else { return Ok(()) };
+    let (built, browsers) = holon_author::agent::deploys_as(document).map_err(|e| err(400, format!("{e}: a person reads the document sent, so it must be the flow deployed")))?;
+    let sent = to_hex(&unit);
+    if built != sent {
+        return Err(err(
+            400,
+            format!("the document sent deploys as {}, not as the unit sent ({}): a person reads the document, so send the one the unit was built from", &built[..12], &sent[..12]),
+        ));
+    }
+    let (said, asked): (BTreeSet<&String>, BTreeSet<&String>) = (browsers.iter().collect(), body.browsers.iter().collect());
+    if said != asked {
+        let line = |set: &BTreeSet<&String>| if set.is_empty() { "none".to_string() } else { set.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ") };
+        return Err(err(400, format!("the document's browsers line ({}) isn't the browsers sent ({}): a person reads the document", line(&said), line(&asked))));
+    }
+    Ok(())
+}
+
+/// Its code beside the version deployed now, handler by handler, as dry-run rows in the group
+/// `code` (touches.rs): one added (`new`), one changed (its unit is another) and one removed
+/// (`gone`). None for a first deploy, all of whose code is new, nor for a handler as it is.
+fn code_rows(previous: &Previous, server: Option<&Server>) -> Vec<serde_json::Value> {
+    if previous.unit.is_none() {
+        return vec![];
+    }
+    let then: BTreeMap<String, Hash> = server.iter().flat_map(|s| s.handlers()).map(|(label, _, h)| (label, h)).collect();
+    let row = |name: &str, change: &str| serde_json::json!({ "group": "code", "kind": "handler", "name": name, "change": change, "uses": [], "ready": null, "has": null });
+    let mut rows = vec![];
+    for (label, h) in &then {
+        match previous.handlers.get(label) {
+            None => rows.push(row(label, "new")),
+            Some(was) if was != h => rows.push(row(label, "changed")),
+            Some(_) => {}
+        }
+    }
+    rows.extend(previous.handlers.keys().filter(|label| !then.contains_key(*label)).map(|label| row(label, "gone")));
+    rows
+}
+
 /// Whether a version of `slug` that `who`, who doesn't approve its deploys, deploys waits for a
 /// person even when it asks for nothing more: it does when a program (an agent, a service) deploys
 /// it, unless a person who may approve its deploys let the flow take theirs at once (its settings,
@@ -762,6 +819,8 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
     let server = read_server(root_unit, &resolver).ok();
     let (mut needs, withheld) = approval_needed(policy, &manifest, &previous, server.as_ref(), &body.slug, unit_hash, &resolver, proposes);
     let taint: Vec<String> = server.as_ref().map(|s| s.taint.clone()).unwrap_or_default();
+    let (port, logs): (Option<u16>, BTreeMap<String, holon_core::LogLevel>) = (server.as_ref().and_then(|s| s.port), server.iter().flat_map(|s| s.handlers()).map(|(label, log, _)| (label, log)).collect());
+    let code = code_rows(&previous, server.as_ref());
     // What it runs of other flows that `who` may not run: refused to a person who approves,
     // waiting for someone who may when proposed.
     let borrowed = borrowed(deployments, &manifest.items(), &body.slug, who);
@@ -791,10 +850,7 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
     }
     let granted: Vec<&String> = items.iter().filter(|i| !needs.contains(*i) && !withheld.contains(*i)).collect();
     // What it touches, beside what it touches now, and the settings that change.
-    let (deployed, asked_now) = {
-        let table = deployments.lock().unwrap();
-        (table.keys().cloned().collect(), table.get(&body.slug).and_then(|d| d.versions.last()).and_then(|v| v.request.clone()))
-    };
+    let deployed = deployments.lock().unwrap().keys().cloned().collect();
     let now: Option<Vec<String>> = previous.grant.as_ref().map(|g| g.items.iter().cloned().collect());
     let optional: Vec<String> = manifest.requirements.optional.iter().cloned().collect();
     // Who each tag it joins or leaves lets act on it (D24).
@@ -804,9 +860,19 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
     let (then, needing, withholding) = (list(&items), list(&needs), list(&withheld));
     // Where each secret it reads is sent (secret → destinations).
     let sent = holon_core::sent_secrets(root_unit, &resolver);
-    let touches = touches::touches(&server, &touches::Ask { now: now.as_deref(), then: &then, needs: &needing, withheld: &withholding, optional: &optional, sent: &sent, unready: &unready, waits: &waits });
-    let settings = match &asked_now {
-        Some(a) => touches::settings([&a.browsers, &body.browsers], [&previous.taint, &taint]),
+    let mut touches = touches::touches(&server, &touches::Ask { now: now.as_deref(), then: &then, needs: &needing, withheld: &withholding, optional: &optional, sent: &sent, unready: &unready, waits: &waits });
+    // Its code, handler by handler, first.
+    if let Some(rows) = touches.as_array_mut() {
+        rows.splice(0..0, code);
+    }
+    // Beside the version deployed now: none for a first deploy, all of which is new.
+    let settings = match previous.unit {
+        Some(_) => touches::settings(touches::Settings {
+            browsers: [&previous.browsers, &body.browsers],
+            taint: [&previous.taint, &taint],
+            port: [previous.port, port],
+            logs: [&previous.logs, &logs],
+        }),
         None => serde_json::json!([]),
     };
     Ok(serde_json::json!({

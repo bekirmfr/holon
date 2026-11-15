@@ -95,6 +95,8 @@ test("an agent proposes a flow through holon mcp, a person approves it in the ed
     const decision = page.getByRole("complementary", { name: "decision" });
     await expect(decision.getByRole("group", { name: "if approved" })).toContainText("v2 goes live");
     await expect(decision.getByRole("group", { name: "if approved" })).toContainText("It asks for nothing new");
+    // Its changes say which handler's code it changes, beside its text.
+    await expect(page.getByRole("group", { name: "changes" }).getByRole("region", { name: "Its handlers" })).toContainText("handler GET /hi/:name");
     await decision.getByRole("checkbox").check();
     await decision.getByRole("button", { name: "Approve and deploy" }).click();
     await expect(page.getByText(`Deployed ${name} v2.`)).toBeVisible();

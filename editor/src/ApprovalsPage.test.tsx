@@ -61,7 +61,7 @@ describe("ProposalCard", () => {
   beforeEach(() => {
     setSession(null);
     vi.mocked(mayI).mockResolvedValue({ "flow.approve-deploy": true });
-    vi.mocked(getProposal).mockResolvedValue({ ...proposal, document: { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, source: TEXT } as FlowDocument });
+    vi.mocked(getProposal).mockResolvedValue({ ...proposal, document: { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, source: TEXT, server: { port: "", browsers: "https://shop.example *" } } as FlowDocument });
     vi.mocked(previewDeploy).mockResolvedValue({ touches: TOUCHES, settings: [] } as unknown as DeployPreview);
     vi.stubGlobal(
       "IntersectionObserver",
@@ -101,7 +101,8 @@ describe("ProposalCard", () => {
 
     await act(async () => shown!([{ isIntersecting: true }]));
     expect(getProposal).toHaveBeenCalledWith(7);
-    expect(previewDeploy).toHaveBeenCalledWith("refunds", proposal.unit, undefined);
+    // With the sites whose pages it answers, as its deploy sends them: a new one is approved here.
+    expect(previewDeploy).toHaveBeenCalledWith("refunds", proposal.unit, undefined, ["https://shop.example", "*"]);
     const rows = [...card.querySelectorAll("li")].map((li) => li.textContent);
     // Its text as typed, when the document can't be printed here.
     expect(rows).toEqual(["+host api.stripe.com: callline 2", "−host api.old.com: call"]);

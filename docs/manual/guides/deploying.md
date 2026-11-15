@@ -50,7 +50,9 @@ it)** can be left out (see [Optional permissions](#optional-permissions)). **App
 grants the list; **Cancel** changes nothing.
 
 **What it touches** is the same list by thing rather than by permission, beside what the
-deployment touches now: what starts it (requests, actions, waits), the folders, databases and
+deployment touches now. A new version of a deployed flow begins with **Its handlers**: each
+handler whose code it changes (**~**), adds (**+**) or removes (**-**), by its label (`GET /a`, `every 1m`). Then
+what starts it (requests, actions, waits), the folders, databases and
 secrets it is given, what it reaches outside (each host it calls, the flows whose actions it runs,
 its channels, processes, the sites whose pages it answers), what it keeps (each state key and
 collection), and its limits. Each thing is one row, marked **+** new, **-** no longer (the new
@@ -71,12 +73,15 @@ schedule or a file starts has no starter, and can be decided. A row marked **+**
 *asked again* is granted now, and asked of a person again: an agent changed the code that uses
 it. A row that is ready says what the server has for it: a secret's version and where it comes from (`set, v3
 (env:HOLON_SECRET_SIGNING_KEY)`), a folder or a database bound. Below the rows, **Its settings**
-lists the deploy settings that change: how often it runs, the sites whose pages it answers.
+lists the deploy settings that change: how often it runs, the sites whose pages it answers, the
+keys it keeps out of its records (`taint`), its port, each handler's log level.
 `holon editor`, `holon deploy` (when it needs approval), `holon restore --dry-run` and the agent
 tools show the same rows, worked out by the server.
 
-Only a person can approve. An agent's deploy that needs approval is saved instead, for you to
-open and deploy ([Working with agents](agents.md)).
+Only a person can approve. Each version an agent deploys is saved instead, for you to read and
+deploy ([Working with agents](agents.md)), and what you read is what deploys: the server refuses
+a proposal whose text builds another version than the one proposed, or whose `browsers` line
+isn't the sites it sends.
 
 ## Deploy settings
 

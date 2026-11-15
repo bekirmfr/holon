@@ -198,7 +198,22 @@ fn stage_text(state: &AppState, text: &str) -> Hash {
     for u in &plan.units {
         assert_eq!(route(state, &req("POST", "/unit", u.clone())).status_code, 200);
     }
+    keep_document(&plan.unit, &plan.document);
     parse_hash(&plan.unit).unwrap()
+}
+
+/// The documents of the flows the tests staged, by unit.
+static DOCUMENTS: crate::sync::Mutex<BTreeMap<String, serde_json::Value>> = crate::sync::Mutex::new(BTreeMap::new());
+
+/// `document` kept as the document of `unit`, staged.
+pub(crate) fn keep_document(unit: &str, document: &serde_json::Value) {
+    DOCUMENTS.lock().unwrap().insert(unit.to_string(), document.clone());
+}
+
+/// The document of `unit`, staged: what a proposal of it sends (deploy.rs checks that a
+/// proposal's document builds its unit). An empty one for a unit no test staged.
+pub(crate) fn document_of(unit: &str) -> serde_json::Value {
+    DOCUMENTS.lock().unwrap().get(unit).cloned().unwrap_or_else(|| serde_json::json!({}))
 }
 
 /// [`writer_text`] staged: its unit.
@@ -2595,7 +2610,7 @@ fn an_approval_s_steps_are_what_its_deploy_asks_for() {
     assert_eq!(code, 200, "{said}");
     // One person in place of two is a new item: an agent's version is a proposal needing it, and
     // a person's deploys once it is acknowledged.
-    let (code, said) = send(&scout, "/deploy", json!({ "slug": "payouts", "unit": one, "document": {}, "why": "one is enough" }));
+    let (code, said) = send(&scout, "/deploy", json!({ "slug": "payouts", "unit": one, "document": document_of(&one), "why": "one is enough" }));
     assert_eq!((code, &said["proposal"]["needs"]), (202, &json!(["Approval(\"payout/person\")"])), "{said}");
     let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": one, "document": {} }));
     assert!(code == 400 && said["error"].as_str().unwrap().contains("Approval(\"payout/person\")"), "{said}");

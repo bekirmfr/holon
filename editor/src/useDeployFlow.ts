@@ -147,7 +147,7 @@ export function useDeployFlow({
     let proposes = false;
     try {
       await stageClosure(ev, hash, new Set());
-      const preview = await previewDeploy(name, hash, requirements);
+      const preview = await previewDeploy(name, hash, requirements, browsersOf(settings));
       if (preview.refused) {
         setError(`this host can't grant that: ${preview.refused}`);
         return;

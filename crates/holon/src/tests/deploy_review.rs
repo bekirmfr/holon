@@ -49,6 +49,7 @@ fn stage(state: &AppState, ada: &str, text: &str) -> String {
     for unit in &plan.units {
         assert_eq!(ask(state, Some(ada), "POST", "/unit", unit.clone()).0, 200);
     }
+    keep_document(&plan.unit, &plan.document);
     plan.unit
 }
 
@@ -71,7 +72,7 @@ fn at_once(state: &AppState, token: &str, slug: &str) {
 /// needs, an agent approving nothing.
 fn deploy_as(state: &AppState, token: &str, slug: &str, unit: &str, by_agent: bool) -> (u16, Value) {
     let needs = if by_agent { json!([]) } else { review(state, token, slug, unit).0 };
-    send(state, token, "POST", "/deploy", json!({ "slug": slug, "unit": unit, "document": {}, "acknowledge": needs }))
+    send(state, token, "POST", "/deploy", json!({ "slug": slug, "unit": unit, "document": document_of(unit), "acknowledge": needs }))
 }
 
 const PAYMENTS: &str = r#"import { action, flow } from "holon"
@@ -256,6 +257,105 @@ fn every_agent_version_waits_for_a_person_unless_one_lets_the_flow_take_it() {
     let (code, said) = deploy_as(&state, &cy, "tally", &more, true);
     assert_eq!((code, said["proposal"]["agent"].as_bool()), (202, Some(false)), "{said}");
     let _ = std::fs::remove_file(&path);
+}
+
+const SHOWN: &str = r#"import { flow, route } from "holon"
+
+flow("shown", { port: 18447, browsers: ["https://a.example"], taint: ["card"], tags: ["t1"] })
+
+route.get("/a", () => "a")
+
+route.get("/b", () => "b")
+
+route.get("/hi", () => "hi")
+"#;
+
+/// R25, R24: a version's review shows all it changes beside the version deployed now, to whoever
+/// reads it (a person who approves it, the agent that proposes it): its code, handler by handler
+/// (one changed, one added, one removed), and its settings (the sites whose pages it answers, the
+/// keys it keeps out of its records, its port, a handler's log level), its tags among what it
+/// touches. A first deploy has nothing to set beside, and the same version again changes none of
+/// it. And what a person reads is what deploys: a proposal whose document builds another unit,
+/// whose browsers line isn't the browsers sent, or that doesn't read, is refused and nothing
+/// proposed; so is an agent's version deployed at once with one, which the next review reads.
+///
+/// **Why:** the review said nothing of a version's port or log levels, nor per handler, a person
+/// reviewing in the editor never saw the sites it answers (its preview sent none, R24), and the
+/// document shown was never checked against the unit approved (R25).
+#[test]
+fn a_review_shows_all_a_version_changes_and_what_it_shows_deploys() {
+    let (state, book, ada) = server();
+    let scout = agent(&book, "scout");
+    // A person who may deploy it, not approve its deploys: what asks for more, they propose.
+    let cy = person(&book, "cy");
+    let deployer = ["flow.view", "flow.edit", "flow.propose", "flow.deploy"].map(String::from).to_vec();
+    book.define_role(crate::bindings::RoleText { name: "deployer".into(), about: None, allows: deployer, kinds: vec![Kind::Person] }, "ada", None).unwrap();
+    bind(&book, "cy", "deployer", Selector::Slug("shown".into()));
+    let base = stage(&state, &ada, SHOWN);
+    let next = stage(
+        &state,
+        &ada,
+        &SHOWN
+            .replace(r#"port: 18447, browsers: ["https://a.example"], taint: ["card"], tags: ["t1"]"#, r#"port: 18448, browsers: ["https://a.example", "https://b.example"], tags: ["t2"]"#)
+            .replace(r#"() => "a")"#, r#"() => "A")"#)
+            .replace(r#"route.get("/b", () => "b")"#, r#"route.get("/c", () => "c")"#)
+            .replace(r#"route.get("/hi", () => "hi")"#, r#"route.get("/hi", () => "hi", { log: "lazy" })"#),
+    );
+    let (one, both) = (json!(["https://a.example"]), json!(["https://a.example", "https://b.example"]));
+    let preview = |token: &str, unit: &str, browsers: &Value| {
+        let (code, preview) = send(&state, token, "POST", "/deploy/preview", json!({ "slug": "shown", "unit": unit, "browsers": browsers }));
+        assert_eq!(code, 200, "{preview}");
+        preview
+    };
+    let lines = |preview: &Value| crate::touches::text(&crate::touches::lines(&preview["touches"], &preview["settings"]));
+    let beside = |lines: &[String]| lines.iter().any(|l| l == "Its handlers" || l == "Its settings");
+    let first = preview(&ada, &base, &one);
+    assert!(!beside(&lines(&first)), "a first deploy: {:#?}", lines(&first));
+    let deployed = json!({ "slug": "shown", "unit": base, "document": document_of(&base), "browsers": one, "acknowledge": first["needs_approval"] });
+    assert_eq!(send(&state, &ada, "POST", "/deploy", deployed).0, 200);
+
+    for (who, token) in [("ada", &ada), ("scout", &scout)] {
+        let lines = lines(&preview(token, &next, &both));
+        for want in [
+            "Its handlers",
+            "  ~ handler GET /a",
+            "  + handler GET /c — new",
+            "  - handler GET /b — no longer",
+            "Its settings",
+            "  ~ answers pages from: https://a.example → https://a.example https://b.example",
+            "  ~ keeps out of its records: card → none of its own",
+            "  ~ port: 18447 → 18448",
+            "  ~ GET /hi logs its runs: strict → lazy",
+        ] {
+            assert!(lines.iter().any(|l| l == want), "{who}: {want:?} in {lines:#?}");
+        }
+        assert!(lines.iter().any(|l| l.contains("joins t2")) && lines.iter().any(|l| l.contains("leaves t1")), "{who}: {lines:#?}");
+    }
+    let same = lines(&preview(&ada, &base, &one));
+    assert!(!beside(&same), "the same version: {same:#?}");
+
+    // What a person reads is what deploys: an agent's proposal, and a person's.
+    let propose = |token: &str, document: Value, browsers: &Value| send(&state, token, "POST", "/deploy", json!({ "slug": "shown", "unit": next, "document": document, "browsers": browsers, "why": "two sites" }));
+    let rows: [(&str, &str, Value, &Value, &str); 4] = [
+        ("another version's document", &scout, document_of(&base), &both, "the document sent deploys as "),
+        ("a browsers line that isn't the browsers sent", &scout, document_of(&next), &one, "the document's browsers line (https://a.example https://b.example) isn't the browsers sent (https://a.example)"),
+        ("a document that doesn't read", &scout, json!({ "nodes": 3 }), &both, "the flow's document doesn't read"),
+        ("a person's proposal with another version's document", &cy, document_of(&base), &both, "the document sent deploys as "),
+    ];
+    for (what, token, document, browsers, said) in rows {
+        let (code, answer) = propose(token, document, browsers);
+        assert_eq!(code, 400, "{what}: {answer}");
+        assert!(answer["error"].as_str().unwrap().starts_with(said), "{what}: {answer}");
+    }
+    assert!(state.proposals.all().iter().all(|p| p.slug != "shown"), "nothing proposed");
+    let (code, answer) = propose(&scout, document_of(&next), &both);
+    assert_eq!(code, 202, "with its own document: {answer}");
+    // Deployed at once, the agent's version is held to it too.
+    at_once(&state, &ada, "shown");
+    let again = |document: Value| send(&state, &scout, "POST", "/deploy", json!({ "slug": "shown", "unit": base, "document": document, "browsers": one }));
+    let (code, answer) = again(document_of(&next));
+    assert_eq!(code, 400, "{answer}");
+    assert_eq!(again(document_of(&base)).0, 200);
 }
 
 const SYNC: &str = r#"import { action, every, flow, route } from "holon"

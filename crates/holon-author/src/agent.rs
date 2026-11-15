@@ -111,10 +111,26 @@ pub fn text_of(name: &str, document: &Value) -> Result<String, String> {
 /// Whether `source` compiles to the unit `doc`'s canvas deploys as.
 fn says_its_canvas(source: &str, doc: &FlowDocument) -> bool {
     let Ok(said) = plan(source) else { return false };
+    canvas_unit(doc).is_ok_and(|canvas| canvas == said.unit)
+}
+
+/// The unit `doc`'s canvas deploys as, in hex.
+fn canvas_unit(doc: &FlowDocument) -> Result<String, String> {
     let mut store = MapResolver::new();
     crate::text::restore(doc, &mut store, &Names::new());
     let port = doc.server.clone().unwrap_or_default().port;
-    flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings()).is_ok_and(|canvas| to_hex(&canvas) == said.unit)
+    flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings()).map(|canvas| to_hex(&canvas))
+}
+
+/// What a flow's document deploys as: the unit its canvas builds, in hex, and the sites whose
+/// pages it answers (its `browsers` line, one by one). A server checks a document it is sent
+/// against the unit deployed with it: a person reviews the document (its text is printed from it,
+/// [`text_of`]), so one that said something else would have them approve what they never read.
+pub fn deploys_as(document: &Value) -> Result<(String, Vec<String>), String> {
+    let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
+    let unit = canvas_unit(&doc).map_err(|e| format!("the flow's document doesn't build: {e}"))?;
+    let browsers = doc.server.and_then(|s| s.browsers).unwrap_or_default().split(|c: char| c.is_whitespace() || c == ',').filter(|o| !o.is_empty()).map(String::from).collect();
+    Ok((unit, browsers))
 }
 
 /// A consent name as a person reads it (`StateWrite("beats")` → write its state "beats").

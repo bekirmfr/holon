@@ -2271,9 +2271,9 @@ mod tests {
         for unit in &plan.units {
             agent.send("POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
         }
-        let ask = |unit: &str, acknowledge: Value| Some(Body::Json(json!({ "slug": "peek", "unit": unit, "acknowledge": acknowledge, "document": plan.document })));
+        let ask = |plan: &agent::Plan, acknowledge: Value| Some(Body::Json(json!({ "slug": "peek", "unit": plan.unit, "acknowledge": acknowledge, "document": plan.document })));
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "peek", "unit": plan.unit })))).unwrap();
-        json_of(&person, "POST", "/deploy", ask(&plan.unit, preview["needs_approval"].clone())).unwrap();
+        json_of(&person, "POST", "/deploy", ask(&plan, preview["needs_approval"].clone())).unwrap();
         // Its agent versions that ask for nothing more let deploy at once: these still wait.
         let_at_once(&person, "peek");
         json_of(&person, "POST", "/deployments/peek/secrets/api_key", Some(Body::Json(json!({ "value": "sk_live_not_for_agents" })))).unwrap();
@@ -2283,14 +2283,14 @@ mod tests {
         let preview = json_of(&agent, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "peek", "unit": leaky.unit })))).unwrap();
         // Answering with what is computed from the key is a permission of its own.
         assert_eq!(preview["needs_approval"], json!(["SecretAnswer(\"api_key\")", "SecretRead(\"api_key\")"]), "{preview}");
-        let proposed = json_of(&agent, "POST", "/deploy", ask(&leaky.unit, json!([]))).unwrap();
+        let proposed = json_of(&agent, "POST", "/deploy", ask(&leaky, json!([]))).unwrap();
         assert!(proposed["proposal"]["needs"].as_array().unwrap().contains(&json!("SecretAnswer(\"api_key\")")), "proposed, not deployed: {proposed}");
         let answered = json_of(&agent, "POST", "/deployments/peek/request", Some(Body::Json(json!({ "method": "GET", "url": "/k" })))).unwrap();
         assert!(!answered.to_string().contains("c2tfbGl2ZV"), "the key isn't read out as base64: {answered}");
         // The same code it may deploy again while it runs; once a person stops it, it stays stopped.
-        json_of(&agent, "POST", "/deploy", ask(&plan.unit, json!([]))).unwrap();
+        json_of(&agent, "POST", "/deploy", ask(&plan, json!([]))).unwrap();
         assert_eq!(person.send("POST", "/deployments/peek/stop", None).unwrap().0, 200);
-        let restarted = json_of(&agent, "POST", "/deploy", ask(&plan.unit, json!([]))).unwrap_err();
+        let restarted = json_of(&agent, "POST", "/deploy", ask(&plan, json!([]))).unwrap_err();
         assert!(restarted.contains("is stopped") && restarted.contains("doesn't start"), "{restarted}");
         assert_eq!(json_of(&person, "GET", "/deployments", None).unwrap()["deployments"][0]["status"], "stopped");
     }

@@ -493,15 +493,17 @@ fn going_back_offers_what_can_be_put_back_then_a_dry_run_then_restores() {
     press(&mut app, KeyCode::Char('n'));
     let Some(Modal::DryRun { review, .. }) = &app.modal else { panic!() };
     let rows = review.rows();
-    assert_eq!(rows[review.cursor(&rows)], super::review::Row::Head(1), "the next hunk");
-    // ↓ a row at a time: past the blank one, to the next hunk (what starts it, closed: nothing
-    // in it changes); ↑ back.
+    assert_eq!(rows[review.cursor(&rows)], super::review::Row::Head(1), "the next hunk: its handlers");
+    assert!(lines.iter().any(|(t, l)| *t == Tone::Warn && l == "~ handler action bump"), "the handler whose code changes: {lines:#?}");
+    // ↓ a row at a time from the next (what starts it, closed: nothing in it changes): past the
+    // blank one, to the hunk after it; ↑ back.
+    press(&mut app, KeyCode::Char('n'));
     press(&mut app, KeyCode::Down);
     let Some(Modal::DryRun { review, .. }) = &app.modal else { panic!() };
-    assert_eq!(rows[review.cursor(&rows)], super::review::Row::Head(2));
+    assert_eq!(rows[review.cursor(&rows)], super::review::Row::Head(3));
     press(&mut app, KeyCode::Up);
     let Some(Modal::DryRun { review, .. }) = &app.modal else { panic!() };
-    assert_eq!(rows[review.cursor(&rows)], super::review::Row::Head(1));
+    assert_eq!(rows[review.cursor(&rows)], super::review::Row::Head(2));
     // A click on a head opens it again, or closes it.
     let head = rows.iter().position(|r| *r == super::review::Row::Head(0)).unwrap();
     click(&mut app, Click::Row(List::Review, head));

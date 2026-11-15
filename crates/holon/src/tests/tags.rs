@@ -145,7 +145,7 @@ fn an_agents_new_tag_is_a_proposal() {
     let accounts = Arc::clone(state.access.accounts().unwrap());
     accounts.add("scout", Kind::Agent, "agent", "ada", "ada").unwrap();
     let (scout, _) = accounts.create_token("scout", "Scout", "ada").unwrap();
-    let (code, said) = send(&state, &scout, "POST", "/deploy", json!({ "slug": "e", "unit": tagged, "document": {}, "why": "on the payments team's flows" }));
+    let (code, said) = send(&state, &scout, "POST", "/deploy", json!({ "slug": "e", "unit": tagged, "document": document_of(&tagged), "why": "on the payments team's flows" }));
     assert_eq!(code, 202, "{said}");
     let proposal: Value = serde_json::from_str(&said).unwrap();
     assert_eq!(proposal["proposal"]["needs"], json!(["Tag(\"payments\")"]));

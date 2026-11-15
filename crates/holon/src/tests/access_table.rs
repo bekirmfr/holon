@@ -394,7 +394,7 @@ fn an_agent_is_held_to_its_own_flows_and_to_what_each_flow_lets_agents() {
     let deploy_as = |t: &str, body: Value| send(t, "POST", "/deploy", body);
     let approves = "an agent doesn't approve what a flow may do";
     assert!(refused(deploy_as(&claude, json!({ "slug": "d", "unit": unit, "acknowledge": ["Action(\"echo\")"] })), approves));
-    let (code, said) = deploy_as(&claude, json!({ "slug": "e", "unit": unit, "why": "an echo", "document": {} }));
+    let (code, said) = deploy_as(&claude, json!({ "slug": "e", "unit": unit, "why": "an echo", "document": document_of(&unit) }));
     assert_eq!(code, 202, "a proposal: {said}");
     assert_eq!(deploy(&state, Some(&ada), "e", &unit, json!({})).0, 200);
     let proposed = state.proposals.all().into_iter().find(|p| p.slug == "e").unwrap();

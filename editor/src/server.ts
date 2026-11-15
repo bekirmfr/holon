@@ -744,6 +744,8 @@ export type DeployPreview = {
   touches?: Touch[];
   /** The deploy settings that change. */
   settings?: SettingChange[];
+  /** Whether, deployed by whoever asked, it waits for a person as a proposal. */
+  proposed?: boolean;
 };
 
 /** A secret as the server lists it: never its value. `source`: `local` (sealed by the server),
@@ -946,11 +948,14 @@ export async function deleteSecret(slug: string, name: string): Promise<void> {
   if (!res.ok) await asJson(res);
 }
 
-export async function previewDeploy(slug: string, unitHash: string, requirements?: Requirements): Promise<DeployPreview> {
+/** What deploying `unitHash` as `slug` would do. `browsers`: the sites whose pages it answers, as
+ *  the deploy sends them (its document's line): a new one is a change a person reads, and approves
+ *  for an agent. */
+export async function previewDeploy(slug: string, unitHash: string, requirements?: Requirements, browsers?: string[]): Promise<DeployPreview> {
   const res = await api(`${BASE}/deploy/preview`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ slug, unit: unitHash, ...(requirements !== undefined ? { requirements } : {}) }),
+    body: JSON.stringify({ slug, unit: unitHash, ...(requirements !== undefined ? { requirements } : {}), ...(browsers !== undefined ? { browsers } : {}) }),
   });
   return asJson<DeployPreview>(res);
 }

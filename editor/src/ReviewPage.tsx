@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Reviewable } from "./approvals";
 import { useDecline } from "./ApprovalsPage";
+import { browsersOf } from "./DeploySettings";
 import { useDialog } from "./Dialog";
 import { codeHunk, touchHunks } from "./hunks";
 import { holonGraph, type FlowGraph } from "./holonText";
@@ -127,7 +128,13 @@ export function ReviewPage({
       const deployedDoc = entry ? await getDeployedDocument(slug) : null;
       const versions = entry ? await getVersions(slug) : [];
       const { hash, document } = await prepare(slug, saved.document);
-      const preview = await previewDeploy(slug, hash, saved.document.server?.requirements);
+      // What it shows is its document; what approving deploys is the unit that builds. The server
+      // refuses a proposal whose document builds another unit than the one proposed: should one
+      // still differ, it isn't approved here.
+      if (proposal && hash !== proposal.unit) {
+        throw new Error(`this proposal's document builds another version (${hash.slice(0, 12)}) than the one proposed (${proposal.unit.slice(0, 12)}): what it shows isn't what was proposed, so it isn't approved here. Decline it from Approvals.`);
+      }
+      const preview = await previewDeploy(slug, hash, saved.document.server?.requirements, saved.document.server ? browsersOf(saved.document.server) : undefined);
       const written = (doc: FlowDocument) => {
         try {
           return textOf(slug, doc);
