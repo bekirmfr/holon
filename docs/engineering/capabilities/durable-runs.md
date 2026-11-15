@@ -138,7 +138,9 @@ the route.
 
 The clock scheduler's thread, every second, calls `expire_waiting`: each waiting point past its
 deadline is claimed (one being resumed is left alone) and given `{expired: true}`
-(`expired_event`), so the flow decides what timing out means. An approval is given its decision
+(`expired_event`), so the flow decides what timing out means. Each goes on in a thread of its
+own, claimed there, at most `EXPIRING_AT_ONCE` (16) at once, the rest due at the next pass: a
+run slow to go on (a request its part sends) holds no other deadline, nor the next pass (R34). An approval is given its decision
 as it stands, `approved` false, with `expired: true` and who had approved.
 
 ### What survives a restart

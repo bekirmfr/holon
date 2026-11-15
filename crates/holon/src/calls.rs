@@ -36,6 +36,9 @@ use crate::*;
 pub(crate) struct Hub {
     host: std::sync::OnceLock<Host>,
     stopping: std::sync::atomic::AtomicBool,
+    /// The expired waiting runs going on now, each in a thread of its own (`durable::expire_waiting`),
+    /// at most `durable::EXPIRING_AT_ONCE`.
+    pub(crate) expiring: std::sync::atomic::AtomicUsize,
 }
 
 struct Host {

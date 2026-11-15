@@ -1294,28 +1294,85 @@ fn not_running(slug: &str, status: Status) -> String {
     format!("{slug:?} is {}: a run waiting in it goes on once it runs again", crate::deploy::status_word(status))
 }
 
+/// How many expired waiting runs go on at once (R34). Each goes on in a thread of its own, so one
+/// slow to finish (a request its part sends, a lock it waits for) holds no other deadline; past
+/// this many, the rest stay due, and go on at the next pass, a second later.
+pub(crate) const EXPIRING_AT_ONCE: usize = 16;
+
+/// The expired runs a pass of [`expire_waiting`] set going, each in its thread. Dropped, they go
+/// on alone, as the clock scheduler leaves them; [`Expiring::wait`] sees them through.
+#[must_use = "dropped, the expired runs go on alone: wait() sees them through"]
+// The server drops them (a stop waits for their runs at its door, stopping.rs); the tests wait.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct Expiring(Vec<std::thread::JoinHandle<()>>);
+
+impl Expiring {
+    /// None set going: the server is stopping.
+    pub(crate) fn none() -> Expiring {
+        Expiring(Vec::new())
+    }
+
+    /// Until each has gone on (finished, waited again or failed).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn wait(self) {
+        for going in self.0 {
+            let _ = going.join();
+        }
+    }
+}
+
+/// One of the [`EXPIRING_AT_ONCE`] taken, given back as its run's part is over (or panicked).
+struct Going(Arc<calls::Hub>);
+
+impl Going {
+    fn take(hub: &Arc<calls::Hub>) -> Option<Going> {
+        use std::sync::atomic::Ordering::SeqCst;
+        hub.expiring.fetch_update(SeqCst, SeqCst, |n| (n < EXPIRING_AT_ONCE).then_some(n + 1)).ok().map(|_| Going(Arc::clone(hub)))
+    }
+}
+
+impl Drop for Going {
+    fn drop(&mut self) {
+        self.0.expiring.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// Deliver `{expired: true}` to every waiting point past its deadline: to an approval, with who
 /// approved it before it ran out, `approved` false. Not in a deployment that takes no run now
-/// (paused or stopped): its runs wait on, and time out once it runs again.
-pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, now: u64) {
+/// (paused or stopped): its runs wait on, and time out once it runs again. Each run goes on in a
+/// thread of its own, claimed there, so this pass, and the next, wait for none of them (R34).
+pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: &Place, now: u64) -> Expiring {
     let mut due: Vec<(String, String, String, Value)> = Vec::new();
     for (slug, dep) in deployments.lock().unwrap().iter().filter(|(_, dep)| dep.takes_runs(store)) {
-        for p in dep.parked.values() {
+        // One going on now (resumed by a request, or by a pass before this one) is left to it.
+        for p in dep.parked.values().filter(|p| !p.resuming) {
             for w in p.waiting.iter().filter(|w| w.expires_at <= now) {
                 let event = if w.is_event() { expired_event() } else { w.decision(true) };
                 due.push((slug.clone(), p.run_id.clone(), w.name.clone(), event));
             }
         }
     }
+    let mut going = Vec::new();
     for (slug, run_id, name, event) in due {
-        // A run a request is resuming right now isn't expired under it.
-        let Some(claimed) = claim(deployments, &slug, &run_id, &name) else {
-            continue;
-        };
-        if let Err(e) = resume_parked(store, deployments, deployments_path, &slug, claimed, &name, event) {
-            eprintln!("holon: expiring {name:?} of run {run_id} in {slug:?}: {e}");
+        // As many at once as may be: the rest are due at the next pass.
+        let Some(taken) = Going::take(&store.1) else { break };
+        let (store, deployments, deployments_path) = (store.clone(), Arc::clone(deployments), deployments_path.clone());
+        let spawned = std::thread::Builder::new().name(format!("holon-expire-{slug}")).spawn(move || {
+            let _taken = taken;
+            // A run a request (or another pass) is resuming right now isn't expired under it.
+            let Some(claimed) = claim(&deployments, &slug, &run_id, &name) else {
+                return;
+            };
+            if let Err(e) = resume_parked(&store, &deployments, &deployments_path, &slug, claimed, &name, event) {
+                eprintln!("holon: expiring {name:?} of run {run_id} in {slug:?}: {e}");
+            }
+        });
+        match spawned {
+            Ok(thread) => going.push(thread),
+            Err(e) => eprintln!("holon: expiring a waiting run: no thread for it ({e}); it is due again at the next pass"),
         }
     }
+    Expiring(going)
 }
 
 /// `GET /deployments/<slug>/runs` — the runs waiting in it, without their tokens; each approval

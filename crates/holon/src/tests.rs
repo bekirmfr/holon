@@ -18,6 +18,8 @@ mod deploy_review;
 mod frames;
 /// Reading a run's steps and values takes run.steps (R55).
 mod run_steps;
+/// An expired waiting run slow to go on holds no other deadline (R34).
+mod expiring;
 mod scopes;
 mod tags;
 /// What a handler's text does, against what the same text does as JavaScript.
@@ -2304,7 +2306,7 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     *state.deployments.lock().unwrap().get_mut("shop").unwrap().state.as_ref().unwrap().state.lock().unwrap() = State::new();
     call("POST", "/orders");
     assert_eq!(runs().len(), 1);
-    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
     assert!(runs().is_empty(), "expired and finished");
     assert_eq!(written(), None);
     let entries = body_json(route(&state, &req("GET", "/deployments/shop/log", vec![])))["entries"].as_array().unwrap().clone();
@@ -2435,7 +2437,7 @@ export const pay = action(async (order) => {
 
     // Nobody else decides in time: it goes on as expired, with who approved.
     assert_eq!(decide(&ada, &ids[2], approve.clone()).0, 200);
-    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
     let d = decided();
     assert_eq!((&d["approved"], &d["expired"], &d["by"]), (&serde_json::json!(false), &serde_json::json!(true), &serde_json::json!(["ada"])), "{d}");
     assert_eq!(decisions(&d), [took("ada", true, None)], "{d}");
@@ -3194,7 +3196,7 @@ fn a_token_resumes_its_run_once_however_many_requests_carry_it() {
     // While a resume holds the run, its token finds nothing, and its deadline doesn't expire it.
     let held = durable::claim_by_token(&state.deployments, "once", "paid", &token).expect("the run waits for its token");
     assert_eq!(call("GET", &format!("/paid/{token}")), 404, "a second resume while the first runs");
-    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
     assert_eq!(resumes(), 0, "not expired under the resume");
     // Let go with the run still waiting (a resume that failed before it ran): the token works again.
     drop(held);
@@ -4505,7 +4507,7 @@ on.file.created(inbox, (f) => {{
             arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
         }
     };
-    let deadline = || durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    let deadline = || durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
 
     // A way a run starts: what it counts in `seen` (a light request counts nothing: its answer
     // says it ran), what its log entry is called, what to do calm beforehand, and how it starts,
@@ -4716,7 +4718,7 @@ on.file.created(inbox, (f) => {{
         None
     };
     let deadline = || {
-        scheduler::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+        scheduler::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
         None
     };
     let rows = [
@@ -5102,8 +5104,8 @@ route.get("/paid/:token", () => "ok", { resumes: "paid" })
         runs.as_array().unwrap().iter().find(|r| r["run_id"] == decided.as_str()).unwrap()["waiting"][0]["decisions"].clone()
     };
     let deadline = || {
-        durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
-        scheduler::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+        durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
+        scheduler::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
     };
     let paid = format!("/paid/{}", token.borrow());
 
@@ -5218,7 +5220,7 @@ route.get("/paid/:token", () => "ok", {{ resumes: "paid" }})
     let ways: [Way; 3] = [
         ("a decision", "payout", &|| decided.clone(), &decide),
         ("its resume route", "paid", &|| resumed.clone(), &resume),
-        ("its deadline", "paid", &held, &|| durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000)),
+        ("its deadline", "paid", &held, &|| durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait()),
     ];
     for (n, (way, at, run, go_on)) in ways.into_iter().enumerate() {
         let run = run();
@@ -11880,7 +11882,7 @@ fn trading_bot_keeps_the_newest_price_and_places_each_order_once() {
     price("SOL-USD", "2999", 1);
     eventually("the second large order waits", || call("GET", "/orders", "")["waiting"][unasked["id"].as_str().unwrap()]["approve"].is_string());
     let asked_before = exchange.asked.lock().unwrap().len();
-    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
     let orders = call("GET", "/orders", "");
     assert_eq!(orders["waiting"], serde_json::json!({}), "it no longer waits: {orders}");
     assert!(orders["placed"][unasked["id"].as_str().unwrap()].is_null(), "nobody placed it: {orders}");

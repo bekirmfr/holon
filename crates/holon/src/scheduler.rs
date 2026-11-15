@@ -213,14 +213,16 @@ pub(crate) fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<B
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(1));
         run_due_clock_ticks(&store, &deployments, &deployments_path, SystemTime::now());
-        expire_waiting(&store, &deployments, &deployments_path, epoch_now());
+        // Each expired run goes on in its own thread, waited for by no pass (R34).
+        drop(expire_waiting(&store, &deployments, &deployments_path, epoch_now()));
     });
 }
 
 /// The waiting runs past their deadlines go on, timed out (`durable::expire_waiting`), unless the
 /// server is stopping (stopping.rs): then they wait on, and time out once it is back.
-pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, now: u64) {
-    if !store.1.stopping() {
-        durable::expire_waiting(store, deployments, deployments_path, now);
+pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: &Place, now: u64) -> durable::Expiring {
+    if store.1.stopping() {
+        return durable::Expiring::none();
     }
+    durable::expire_waiting(store, deployments, deployments_path, now)
 }
