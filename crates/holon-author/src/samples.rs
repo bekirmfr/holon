@@ -419,6 +419,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/shared-key.holon.ts"),
     },
     Sample {
+        name: "basic-auth",
+        title: "A Basic header built from a secret, checked again",
+        description: "Call an API (httpbin.dev stands in) with a Basic authorization header, base64 of a user and the secret: computed from the secret, so the log writes a mark in its place wherever the run had it, lists its keyed hash, and holon verify runs the run again with that one step taken as recorded. A second route computes a true or false from the secret, which no mark stands for: its run is withheld and verify says why.",
+        shows: &["secrets", "values computed from a secret", "marks", "verify", "http_request"],
+        port: Some("8201"),
+        secrets: &[SampleSecret { name: "api_password", what: "secret, any made-up value (6 characters or more); it is sent to httpbin.dev", from: None }],
+        optional: &[],
+        browsers: None,
+        try_it: "deploy it, set the secret in the flow's Settings, then curl http://127.0.0.1:8201/call and curl http://127.0.0.1:8201/kind each answer {\"status\":200}; holon export basic-auth, then holon verify on it runs /call again with one step taken as recorded, and says why /kind wasn't",
+        text: include_str!("../samples/basic-auth.holon.ts"),
+    },
+    Sample {
         name: "license-check",
         title: "A key in a query goes to the database",
         description: "Ask a database which plan a licence key unlocks, the key passed as the query's $1: the approval says the key is sent to the database \"vendor\", and the canvas marks the read. The row it answers is what the database said, not the key.",

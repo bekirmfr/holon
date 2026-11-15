@@ -317,7 +317,8 @@ fn clock_ticks_fire_when_due_and_not_before() {
 
 /// A clock run's history is redacted as its log entry is: whoever may read the deployment reads
 /// it. Here the write of a secret into state is refused, but the run's outputs still hold it; and a
-/// write of something computed from it is refused too, its output withheld.
+/// write of something computed from it is refused too, its output shown with the computed value
+/// as its mark.
 #[test]
 fn a_clock_runs_history_never_shows_a_secret() {
     let state = test_state();
@@ -339,7 +340,7 @@ fn a_clock_runs_history_never_shows_a_secret() {
     assert!(history.contains("\"ticks\":[{"), "it ticked: {history}");
     assert!(!history.contains(value), "the history leaks it: {history}");
     assert!(history.contains("‹secret:api_key v1 #"), "{history}");
-    assert!(!history.contains("c2tfbGl2ZV9rZXB0") && history.contains("‹withheld: computed from a secret›"), "{history}");
+    assert!(!history.contains("c2tfbGl2ZV9rZXB0") && history.contains(secrets::DERIVED_MARK) && !history.contains("‹withheld"), "{history}");
     let current = body_json(route(&state, &req("GET", "/deployments/leak/state", vec![])));
     assert!(current["state"].get("encoded").is_none(), "the derived write was refused: {current}");
     assert!(state.deployments.lock().unwrap()["leak"].history[0].outputs.iter().flatten().all(|o| !format!("{o:?}").contains(value)), "not kept either");
@@ -7110,9 +7111,14 @@ route.get("/basic", (req) => {
     assert_eq!(named, stood, "{text}");
     assert!(!text.contains("fed a placeholder"), "each says what it was fed: {text}");
     assert!(!text.contains("a-dummy-token-for-tests"), "nothing of the value: {text}");
+    // The Basic header alone a mark would stand for; whether the token is long is a true or
+    // false, which none does: the reason names a leaf, the secret and why.
     match &report.reruns[1].1 {
-        verify::Rerun::Skipped(why) => assert_eq!(why, verify::WITHHELD_NODE, "{text}"),
-        other => panic!("a run computed from the secret is not run again: {other:?}\n{text}"),
+        verify::Rerun::Skipped(why) => {
+            assert!(why.starts_with('`') && (why.contains("computed a number from the secret api_token: ") || why.contains("computed a true or false from the secret api_token: ")), "{why}");
+            assert!(why.ends_with(verify::MARK_STANDS_FOR), "{why}");
+        }
+        other => panic!("a run that computed a true or false from the secret is not run again: {other:?}\n{text}"),
     }
     assert!(!text.contains("too large"), "{text}");
     assert!(text.lines().last().is_some_and(|l| l.starts_with("INCOMPLETE")), "{text}");
@@ -7561,8 +7567,9 @@ fn the_preview_says_where_each_secret_is_sent() {
 /// What is computed from a secret isn't kept: a state, collection or channel write of it is
 /// refused, as a write of its value is (it would sit on disk, in every later snapshot, and in the
 /// channel's packs), while the run's other writes go through; and the run's answer, though the
-/// caller gets it (the deploy approved `SecretAnswer`), is withheld from the log, its output and
-/// its response body alike. Verify skips such a run rather than calling it changed.
+/// caller gets it (the deploy approved `SecretAnswer`), is in the log with the computed value as
+/// its mark, its output and its response body alike. Verify skips such a run rather than calling
+/// it changed: run again, it would make the writes the server refused.
 #[test]
 fn what_is_computed_from_a_secret_is_neither_kept_nor_logged() {
     let state = claims_state("");
@@ -7601,14 +7608,143 @@ route.post("/go", (req) => {
     let entry = entries.last().unwrap();
     let performed: Vec<&str> = entry["performed"].as_array().unwrap().iter().map(|p| p["capability"].as_str().unwrap()).collect();
     assert_eq!(performed, [r#"StateWrite("plain")"#], "no channel send to rebuild packs from: {entry}");
-    assert_eq!(entry["response_body"], "‹withheld: computed from a secret›", "{entry}");
+    let hash = entry["derived"][0].as_str().unwrap_or_else(|| panic!("its entry lists what it computed: {entry}"));
+    assert_eq!((entry["derived"].as_array().unwrap().len(), hash.len()), (1, 64), "{entry}");
+    assert_eq!(entry["response_body"], format!(r#"{{"echoed":"hello:‹derived #{}›"}}"#, &hash[..8]), "{entry}");
     let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
     assert!(!log.contains("c2tfbGl2ZV9kZXJp"), "base64 of the key: {log}");
+    assert!(!log.contains("‹withheld"), "every value it computed has a mark: {log}");
 
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
     let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
-    assert!(matches!(report.reruns[..], [(0, verify::Rerun::Skipped(_))]), "{}", verify::describe(&report, None));
+    match &report.reruns[..] {
+        [(0, verify::Rerun::Skipped(why))] => assert!(why.contains("which the server refuses"), "{why}"),
+        other => panic!("{other:?}\n{}", verify::describe(&report, None)),
+    }
     assert!(report.ok(), "{}", verify::describe(&report, None));
+}
+
+/// **Guards:** a run's record says nothing of what the run computed from a secret. A flow that
+/// computes from its secret in each way a flow does (encoded into a header, beside headers that
+/// are nobody's secret, into a JSON body, answered to the caller, encoded twice and joined,
+/// compared with what the caller sent; and a number, a true or false, a short text, and inside
+/// a function applied to each item) is run with one secret, then with another. (Each row
+/// computes a value; none chooses its steps by one: which steps a run took isn't held here.) Its two records
+/// read the same, but for the marks' prints and the hashes and commitments its entry lists:
+/// which of two secrets a run had can't be told from anything else in it. Where every computed
+/// value is a text of six characters or more, the record shows a mark for each and `holon
+/// verify` runs the run again; where one isn't, it withholds what follows and says why.
+///
+/// **Why:** before a computed value had a mark, everything computed from a secret was left out
+/// whole, by the graph alone. Marking is by value: a value the record didn't know was computed
+/// (one a step gave that wasn't kept, one no mark stands for) would be written as it is. This
+/// holds the two together: any difference between the two records is a leak, whatever made it.
+///
+/// **If it fails:** the row and the place named differ between two runs that differ only in
+/// their secret: that place holds something computed from it, in the clear. Or a run that could
+/// be run again no longer is, or one that can't be is said to differ.
+#[test]
+fn a_runs_record_reads_the_same_whatever_its_secret() {
+    let (host, _) = counting_server();
+    let state = claims_state("");
+    // (the route, what it does with the secret `k`, what a caller sends given the secret,
+    // whether its record marks every value it computed)
+    type Sent = fn(&str) -> String;
+    let nothing: Sent = |_| String::new();
+    let rows: Vec<(&str, &str, Sent, bool)> = vec![
+        ("basic", "const got = await host.get(\"/a\", { headers: { authorization: `Basic ${btoa(`user:${k}`)}` } })\n  return { status: got.status }", nothing, true),
+        (
+            "mixed",
+            "const got = await host.get(\"/a\", {\n    headers: { accept: \"application/json\", authorization: `Basic ${btoa(`user:${k}`)}`, \"x-n\": \"1\" },\n  })\n  return { status: got.status }",
+            nothing,
+            true,
+        ),
+        ("body", "const got = await host.post(\"/a\", { body: JSON.stringify({ auth: btoa(k), n: 1 }) })\n  return { status: got.status }", nothing, true),
+        ("answer", "return { header: `Basic ${btoa(k)}` }", nothing, true),
+        ("twice", "const got = await host.post(\"/a\", { body: `${btoa(k)}.${btoa(btoa(k))}` })\n  return { status: got.status }", nothing, true),
+        ("check", "const ok = secure_equals(req.body, btoa(k))\n  return (ok ? { ok } : undefined) ?? status(401)", |k| holon_core::bytes_text(k.as_bytes(), "base64").unwrap(), true),
+        ("number", "const got = await host.get(\"/a\", { headers: { \"x-n\": String(k.length) } })\n  return { status: got.status }", nothing, false),
+        ("bool", "const got = await host.get(\"/a\", { headers: { \"x-live\": String(k.startsWith(\"live_\")) } })\n  return { status: got.status }", nothing, false),
+        ("short", "const got = await host.get(\"/a\", { headers: { \"x-start\": k.slice(0, 3) } })\n  return { status: got.status }", nothing, false),
+        ("each", "const got = await host.post(\"/a\", { body: [\"a\", \"b\"].map((p) => btoa(p + k)).join(\",\") })\n  return { status: got.status }", nothing, false),
+    ];
+    let routes: String = rows.iter().map(|(path, body, _, _)| format!("route.post(\"/{path}\", async (req) => {{\n  {body}\n}})\n\n")).collect();
+    let text = format!(
+        "import {{ flow, route, secure_equals, status }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\n\nflow(\"whatever\", {{ port: 18301 }})\n\n{routes}"
+    );
+    let slug = deploy_text(&state, &text, &host);
+    // Two secrets that differ in every way a row looks at: how long, how they begin.
+    let secrets = ["live_alpha-secret-value-1", "test_bravo-another-secret-value-22"];
+    for secret in secrets {
+        let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+        for (path, _, sent, _) in &rows {
+            let (status, body, _) = data_call(&state, &slug, "POST", &format!("/{path}"), &sent(secret));
+            assert_eq!(status, 200, "{path}: {body}");
+        }
+    }
+
+    // A record as it reads but for what is the secret's own by design: a mark's version and
+    // print, the hashes and commitments its entry lists; and what any two runs differ in (when,
+    // how long, which run, the bytes each drew).
+    const OWN: [&str; 13] = ["seq", "prev", "at_ms", "duration_ms", "start_us", "end_us", "run_id", "nonce", "sourced", "session", "secrets", "committed", "derived"];
+    fn but_marks(v: &serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::String(s) => secrets::read_marked(s, true)
+                .into_iter()
+                .map(|(piece, mark)| match mark {
+                    true if piece.starts_with(secrets::DERIVED_MARK) => "‹derived›".to_string(),
+                    true if piece.starts_with("‹secret:") => format!("{}›", piece.split(' ').next().unwrap()),
+                    _ => piece,
+                })
+                .collect::<String>()
+                .into(),
+            serde_json::Value::Array(items) => items.iter().map(but_marks).collect::<Vec<_>>().into(),
+            serde_json::Value::Object(fields) => fields.iter().filter(|(k, _)| !OWN.contains(&k.as_str())).map(|(k, v)| (k.clone(), but_marks(v))).collect::<serde_json::Map<_, _>>().into(),
+            other => other.clone(),
+        }
+    }
+    // Where two records differ, by path: the first place.
+    fn differs(a: &serde_json::Value, b: &serde_json::Value, at: String) -> Option<String> {
+        match (a, b) {
+            (serde_json::Value::Object(x), serde_json::Value::Object(y)) => {
+                let keys: BTreeSet<&String> = x.keys().chain(y.keys()).collect();
+                keys.into_iter().find_map(|k| differs(x.get(k).unwrap_or(&serde_json::Value::Null), y.get(k).unwrap_or(&serde_json::Value::Null), format!("{at}.{k}")))
+            }
+            (serde_json::Value::Array(x), serde_json::Value::Array(y)) if x.len() == y.len() => x.iter().zip(y).enumerate().find_map(|(i, (x, y))| differs(x, y, format!("{at}[{i}]"))),
+            _ => (a != b).then_some(at),
+        }
+    }
+    let entries = log_entries(&state, &slug);
+    assert_eq!(entries.len(), 2 * rows.len());
+    let export_text = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let export: verify::Export = serde_json::from_str(&export_text).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let said = verify::describe(&report, None);
+    for (i, (path, _, _, marked)) in rows.iter().enumerate() {
+        let (one, other) = (&entries[i], &entries[rows.len() + i]);
+        assert_eq!(one["url"], format!("/{path}"), "{one}");
+        assert_eq!(differs(&but_marks(one), &but_marks(other), String::new()), None, "{path}: two secrets, two records\n{one}\n{other}");
+        for (entry, rerun) in [(one, &report.reruns[i].1), (other, &report.reruns[rows.len() + i].1)] {
+            let line = entry.to_string();
+            assert_eq!(line.contains(secrets::DERIVED_MARK) && !line.contains("‹withheld"), *marked, "{path}: {line}");
+            match (marked, rerun) {
+                (true, verify::Rerun::Matched) => {}
+                (false, verify::Rerun::Skipped(why)) => assert!(why.ends_with(verify::MARK_STANDS_FOR) || why.contains("inside a function applied to each item"), "{path}: {why}"),
+                other => panic!("{path}: {other:?}\n{said}"),
+            }
+        }
+    }
+    // And nothing of either secret, or of what the rows encode of it, anywhere in the log or
+    // an export of it.
+    let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
+    for secret in secrets {
+        let b64 = |s: &str| holon_core::bytes_text(s.as_bytes(), "base64").unwrap();
+        for (what, value) in [("the secret", secret.to_string()), ("it encoded", b64(secret)), ("it encoded with a user", b64(&format!("user:{secret}"))), ("it encoded twice", b64(&b64(secret)))] {
+            assert!(!log.contains(&value) && !export_text.contains(&value), "{what} is in the record");
+        }
+    }
+    assert!(report.ok(), "{said}");
 }
 
 /// The read-call-write flows the claim tests run, calling `host` over plain HTTP: the call is

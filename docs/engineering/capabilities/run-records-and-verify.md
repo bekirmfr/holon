@@ -231,8 +231,12 @@ and in the deploy dialog (`ReplayRuns.tsx`); the sample `price-rules` is the flo
   written took 492–931 ms before sealing and 528–792 ms after, on the soaks' `notes-api` (storage
   L4 step 9). A log in memory only (`--deployments :memory:`) keeps every run.
 - **Some runs can't be re-run**: those computed from a secret are checked only around the node
-  the log stands in for; budget failures and file reads without their text are counted, not
-  checked.
+  the log stands in for; one that computed from a secret something no mark stands for (a true or
+  false, a number, a short text; or inside a function applied to each item) isn't run again, and
+  its reason names the leaf and the secret (`withheld_why`); budget failures and file reads
+  without their text are counted, not checked. A run that comes out other than its entry is
+  skipped, not said to differ, whenever its timeline has a node that may compute from a secret
+  with no outputs kept (`left_out`).
 - **An unrecorded run leaves no entry** ([G8](../themes/resilience.md#g8-an-unrecorded-run-leaves-no-entry-failed-or-not-and-is-counted)),
   so verify can say nothing of it; a run that panics leaves none either (G3).
 - **Exports are whole**: one JSON value made in memory; nothing streams or exports incrementally.

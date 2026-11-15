@@ -148,21 +148,106 @@ fn context(slug: &str, name: &str, version: u32) -> String {
 /// one. Whoever holds the value and the salt computes it again and knows the value is the one a
 /// run recorded; without the salt (32 random bytes) it says nothing of the value, however weak.
 pub(crate) fn commitment(owner: &str, name: &str, version: u32, salt: &[u8; 32], value: &str) -> String {
-    let mut of = Zeroizing::new(Vec::new());
-    for field in [b"holon-secret-commitment/v1".as_slice(), owner.as_bytes(), name.as_bytes(), &version.to_le_bytes(), salt.as_slice(), value.as_bytes()] {
-        of.extend_from_slice(&(field.len() as u64).to_le_bytes());
-        of.extend_from_slice(field);
+    hashed("sha256", vec![fields(&[b"holon-secret-commitment/v1", owner.as_bytes(), name.as_bytes(), &version.to_le_bytes(), salt.as_slice(), value.as_bytes()])])
+}
+
+/// `of`, each field with its length before it, so no two fields read as one.
+fn fields(of: &[&[u8]]) -> Zeroizing<Vec<u8>> {
+    let mut out = Zeroizing::new(Vec::new());
+    for field in of {
+        out.extend_from_slice(&(field.len() as u64).to_le_bytes());
+        out.extend_from_slice(field);
     }
-    // Core's SHA-256 takes a value: the bytes are moved into one, and wiped once hashed.
-    let mut given = holon_core::Value::Bytes(std::mem::take(&mut *of));
-    let hashed = holon_core::primitives::compute("sha256", &[&given], &[holon_core::Param::frozen("encoding", "hex")]);
-    if let holon_core::Value::Bytes(bytes) = &mut given {
-        zeroize::Zeroize::zeroize(bytes);
+    out
+}
+
+/// Core's `leaf` (`sha256` of one input, `hmac_sha256` of a key and a message), in hex. Core's
+/// leaves take values: the bytes are moved into them, and wiped once hashed.
+fn hashed(leaf: &str, inputs: Vec<Zeroizing<Vec<u8>>>) -> String {
+    let mut given: Vec<holon_core::Value> = inputs.into_iter().map(|mut bytes| holon_core::Value::Bytes(std::mem::take(&mut *bytes))).collect();
+    let hashed = holon_core::primitives::compute(leaf, &given.iter().collect::<Vec<_>>(), &[holon_core::Param::frozen("encoding", "hex")]);
+    for value in &mut given {
+        if let holon_core::Value::Bytes(bytes) = value {
+            zeroize::Zeroize::zeroize(bytes);
+        }
     }
     match hashed {
         Some(holon_core::Value::Text(hex)) => hex,
-        _ => unreachable!("sha256 of bytes, in hex, is a text"),
+        _ => unreachable!("a hash of bytes, in hex, is a text"),
     }
+}
+
+/// How the mark of a value a run computed from a secret begins: `‹derived #7c1e9a02›`.
+pub(crate) const DERIVED_MARK: &str = "‹derived #";
+
+/// The key a run's marks for what it computed from its secrets are made under
+/// ([`derived_hash`]): SHA-256 of a domain and, in name order, the name and the salt of each
+/// secret it was given. None for a run given none with a salt: it marks nothing.
+pub(crate) fn derived_key<'a>(salts: impl IntoIterator<Item = (&'a str, &'a [u8; 32])>) -> Option<Zeroizing<Vec<u8>>> {
+    let mut of: Vec<&[u8]> = vec![b"holon-derived-key/v1"];
+    for (name, salt) in salts {
+        of.push(name.as_bytes());
+        of.push(salt.as_slice());
+    }
+    if of.len() == 1 {
+        return None;
+    }
+    let hex = Zeroizing::new(hashed("sha256", vec![fields(&of)]));
+    holon_core::text_bytes(&hex, "hex").map(Zeroizing::new)
+}
+
+/// The hash of `value`, a text the run `run` (its id) computed from a secret: HMAC-SHA-256, in
+/// hex, under the run's key ([`derived_key`]), of a domain, the run's id, the value's kind and
+/// the value, each with its length before it. Its first eight digits are the value's mark. Keyed,
+/// so a weak value can't be guessed from it; bound to the run, so one value has one mark through
+/// a run and another in the next.
+pub(crate) fn derived_hash(key: &[u8], run: &str, value: &str) -> String {
+    hashed("hmac_sha256", vec![Zeroizing::new(key.to_vec()), fields(&[b"holon-derived/v1", run.as_bytes(), b"text", value.as_bytes()])])
+}
+
+/// What the run `run` computed from its secrets, as its record marks it: each text of
+/// [`MIN_SECRET_LEN`] characters or more that a leaf making something of a secret gave
+/// (`SecretFed::makes`, read off `timeline`), with its hash under `key`.
+///
+/// And whether that is all of it (`whole`): every node that may compute from a secret was
+/// followed and observed (`kept`: the run kept a timeline; none deeper than it records, none
+/// inside a function or a module), and each such leaf gave a text a mark can stand for. One
+/// that gave a true or false, a number, bytes, a list, a short text or nothing leaves the run
+/// not whole: no mark stands for those, and what is computed from a secret is then withheld
+/// whole, as it is for a run with no key.
+pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint::SecretFed, key: Option<&[u8]>, run: &str, kept: bool) -> crate::recorder::Born {
+    let Some(key) = key.filter(|_| !fed.is_empty()) else { return Default::default() };
+    let mut whole = kept && fed.followed_to(crate::recorder::Timer::DEPTH);
+    let mut made: BTreeSet<&str> = BTreeSet::new();
+    for node in timeline.iter().filter(|n| fed.makes(&n.path)) {
+        let Some(outputs) = &node.outputs else {
+            whole = false;
+            continue;
+        };
+        for (port, output) in outputs.iter().enumerate() {
+            if fed.output(&node.path, port) != crate::taint::Taint::Derived {
+                continue;
+            }
+            let Some(SValue::Text(text)) = output else {
+                whole = false;
+                continue;
+            };
+            if text.chars().count() >= MIN_SECRET_LEN {
+                made.insert(text);
+                // Found by its value, and as JSON text writes it once: one that JSON escapes (a
+                // quote, a backslash, a control character) reads another way again written out
+                // twice, where nothing would find it.
+                whole &= serde_json::to_string(text.as_str()).is_ok_and(|quoted| quoted.len() == text.len() + 2);
+            } else {
+                whole = false;
+            }
+        }
+    }
+    let mut values: Vec<(String, String)> = made.into_iter().map(|value| (derived_hash(key, run, value), value.to_string())).collect();
+    values.sort();
+    // Two values under one mark would read as one.
+    whole &= values.windows(2).all(|pair| pair[0].0[..8] != pair[1].0[..8]);
+    crate::recorder::Born { values, whole }
 }
 
 /// What a run given `value`, the version `v` of `owner`'s secret `name`, records of it.
@@ -984,6 +1069,20 @@ impl Redactor {
         Redactor { pairs }
     }
 
+    /// What a run computed from its secrets ([`born`]), each as `‹derived #7c1e9a02›`, the start
+    /// of its hash: found by its value wherever the run's record holds it, as a secret is, and
+    /// as it reads inside JSON text.
+    pub(crate) fn born(born: &crate::recorder::Born) -> Redactor {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for (hash, value) in &born.values {
+            let mark = format!("{DERIVED_MARK}{}›", &hash[..8]);
+            let escaped = serde_json::to_string(value.as_str()).ok().map(|q| q[1..q.len() - 1].to_string()).filter(|e| e != value);
+            pairs.extend(std::iter::once((value.clone(), mark.clone())).chain(escaped.map(|e| (e, mark))));
+        }
+        pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+        Redactor { pairs }
+    }
+
     /// A run's tokens, as `‹token:name›`: a token is a bearer credential for its waiting point.
     pub(crate) fn tokens(tokens: &BTreeMap<String, String>) -> Redactor {
         let mut pairs: Vec<(String, String)> =
@@ -1235,13 +1334,13 @@ pub(crate) fn texts_mut(v: &mut SValue, f: &mut impl FnMut(&mut String)) {
 }
 
 /// What follows a mark's `‹`: the kinds of value the log writes a mark in place of.
-const MARKED: [&str; 3] = ["secret:", "token:", "taint:"];
+const MARKED: [&str; 4] = ["secret:", "token:", "taint:", "derived #"];
 
 /// How a tainted value's mark begins: `‹taint:number›`.
 const TAINT_MARK: &str = "‹taint:";
 
 /// Whether `s` starts with what reads as a mark the log writes: a run of `‹` before `secret:`,
-/// `token:` or `taint:`.
+/// `token:`, `taint:` or `derived #`.
 fn reads_as_mark(s: &str) -> bool {
     let rest = s.trim_start_matches('‹');
     rest.len() < s.len() && MARKED.iter().any(|kind| rest.starts_with(kind))
@@ -1847,6 +1946,54 @@ mod tests {
         assert!(!e.escaped, "nothing to escape: the line is as it was");
     }
 
+    /// Guards: the hash a run's record keeps of a value it computed from a secret
+    /// ([`derived_hash`]) is one value's in one run under one set of salts, and nobody else's;
+    /// and the redactor made of such values ([`Redactor::born`]) writes each as the start of its
+    /// hash wherever it is, a secret's own mark first where a value is both.
+    /// Why: `holon verify` follows a value through a run by its mark, and reads two marks as two
+    /// values; and a hash that didn't take the salts, or the run, could be guessed from, or
+    /// matched across runs.
+    /// If it fails: the row named says which: a mark that moves between runs of one value in
+    /// one run, a key made of no salt, or a derived value that hides a secret's mark.
+    #[test]
+    fn a_value_computed_from_a_secret_has_one_mark_in_a_run_keyed_by_the_runs_salts() {
+        let (a, b) = ([7u8; 32], [9u8; 32]);
+        let key = |salts: &[(&str, &[u8; 32])]| derived_key(salts.iter().copied());
+        assert!(key(&[]).is_none(), "no salt, no key: nothing is marked");
+        let one = key(&[("k", &a)]).unwrap();
+        assert_eq!(one.len(), 32);
+        assert_eq!(*one, *key(&[("k", &a)]).unwrap(), "the same salts, the same key");
+        for (what, other) in [("another salt", key(&[("k", &b)])), ("another name", key(&[("j", &a)])), ("one more secret", key(&[("k", &a), ("m", &b)]))] {
+            assert_ne!(*one, *other.unwrap(), "{what}");
+        }
+        // A name and a salt don't read as another name and salt: each has its length before it.
+        assert_ne!(*key(&[("ab", &a)]).unwrap(), *key(&[("a", &a)]).unwrap());
+
+        let hash = derived_hash(&one, "run-1", "QmFzaWMgdmFsdWU=");
+        assert!(hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()), "{hash}");
+        assert_eq!(hash, derived_hash(&one, "run-1", "QmFzaWMgdmFsdWU="), "one value, one run: one hash");
+        assert_ne!(hash, derived_hash(&one, "run-2", "QmFzaWMgdmFsdWU="), "another run");
+        assert_ne!(hash, derived_hash(&one, "run-1", "QmFzaWMgdmFsdWU"), "another value");
+        assert_ne!(hash, derived_hash(&key(&[("k", &b)]).unwrap(), "run-1", "QmFzaWMgdmFsdWU="), "another key");
+
+        // Marked by its value, wherever it is; and where it is a secret's own value, as the secret.
+        let secret = "sk_live_both_ways";
+        let vault: Vault = Arc::new(Mutex::new(Resolved { current: BTreeMap::from([("k".to_string(), Zeroizing::new(secret.to_string()))]), ..Resolved::default() }));
+        let born = crate::recorder::Born {
+            values: vec![(hash.clone(), "QmFzaWMgdmFsdWU=".to_string()), (derived_hash(&one, "run-1", secret), secret.to_string())],
+            whole: true,
+        };
+        let redactor = Redactor::of(&vault).and(Redactor::born(&born));
+        let mark = format!("{DERIVED_MARK}{}›", &hash[..8]);
+        assert_eq!(redactor.text("Basic QmFzaWMgdmFsdWU= and QmFzaWMgdmFsdWU="), format!("Basic {mark} and {mark}"));
+        assert_eq!(redactor.text(secret), "‹secret:k›", "a secret's value reads as the secret, though a step gave it too");
+        let mut e = LogEntry { request: Some(SValue::Text(format!("{mark} QmFzaWMgdmFsdWU="))), ..LogEntry::default() };
+        redactor.entry(&mut e);
+        assert_eq!(e.request, Some(SValue::Text(format!("‹{mark} {mark}"))), "a look-alike the run wrote itself is escaped, as a secret's is");
+        assert!(e.escaped);
+        assert_eq!(read_marked(&format!("‹{mark} {mark}"), true), vec![(format!("{mark} "), false), (mark.clone(), true), (String::new(), false)]);
+    }
+
     /// Guards: every text a log entry holds goes through the redactor ([`Redactor::entry`]), or is
     /// named below as one that holds no run data: an id or a hash the host makes, a word it
     /// writes, a name the flow's text gives.
@@ -1942,6 +2089,8 @@ mod tests {
             // Never written with the line: each goes its own way, redacted there (firing.rs's
             // `push_run`, mails.rs, queues.rs).
             answered: AnswerTokens(vec![(t(), t())]),
+            born: crate::recorder::Born { values: vec![(t(), t())], whole: true },
+            derived: vec![t()],
             mails: vec![(t(), holon_core::Value::Text(t()))],
             queued: vec![(t(), holon_core::Value::Text(t()))],
             lines: vec![(t(), holon_core::Value::Text(t()))],
@@ -1990,6 +2139,8 @@ mod tests {
             // fingerprint; and what each is held to, a word for where it is kept and a hash the
             // host makes of it under a salt.
             ".by", ".secrets.{}", ".committed.{}", ".committed.{}.kind", ".committed.{}.commitment",
+            // What it computed from a secret, each by a keyed hash the host makes of it.
+            ".derived[]",
             // A file read's hashes: the file's, its text's in the blob store, the proof's.
             ".reads[].file.hash", ".reads[].file.blob", ".reads[].file.range.proof[]",
         ]

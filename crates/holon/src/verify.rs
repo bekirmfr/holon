@@ -51,6 +51,66 @@ pub(crate) const FORMAT: &str = "holon-runs/1";
 /// none of that (`firing::without_secret_derived`), and only the secret's value could make it again.
 pub(crate) const WITHHELD_NODE: &str = "it computed a value from a secret, which the log never keeps: only the secret could compute it again";
 
+/// What a mark stands for, as a reason for a run not run again ends: said once, here.
+pub(crate) const MARK_STANDS_FOR: &str = "only a text of 6 characters or more is carried through a replay";
+
+/// Why a run that came out other than its entry says isn't said to differ, if the log left out
+/// what it would take to run it again: the outputs of a node that may compute from a secret,
+/// which the run ran ([`withheld_why`]), or of a node this check asked for (`unrecorded`) that
+/// was too large or too deep to keep. None: the log kept all it keeps, and the run differs.
+fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry, unrecorded: &BTreeSet<Vec<u32>>) -> Option<String> {
+    let fed = taint::SecretFed::of(root, resolver);
+    if entry.timeline.iter().any(|t| t.outputs.is_none() && fed.derives(&t.path)) || unrecorded.iter().any(|p| fed.derives(p)) {
+        return Some(withheld_why(root, resolver, &fed, entry));
+    }
+    (!unrecorded.is_empty()).then(|| "it computed with a secret or a resume token at a node the log keeps no outputs for (too large, or too deep)".into())
+}
+
+/// Why the log withheld what `entry`'s run computed from a secret, so that it isn't run again:
+/// which leaf, from which secret, and why no mark stands for what it gave. The leaf is one that
+/// makes something of a secret (`SecretFed::makes`) and ran; one whose output is declared as
+/// something a mark can't be (a number, a true or false, a list) is named before one that gives
+/// a text. A run that computed where the log follows no steps says that.
+fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::SecretFed, entry: &LogEntry) -> String {
+    if !fed.followed_to(recorder::Timer::DEPTH) {
+        return "it computed with a secret inside a function applied to each item, inside a module, or deeper than the log records a run's steps: the values made there can't each be marked, so the log withholds them, and only the secret could compute them again".into();
+    }
+    let unit_at = |path: &[u32]| {
+        path.iter().try_fold(root, |unit, &child| match &unit.body {
+            holon_core::UnitBody::Composite { children, .. } => resolver.resolve(children.get(child as usize)?),
+            _ => None,
+        })
+    };
+    // What a leaf's declared output says it gives, where that is no text.
+    let gives = |unit: &holon_core::Unit, path: &[u32]| {
+        unit.outputs.iter().enumerate().filter(|(port, _)| fed.output(path, *port) == taint::Taint::Derived).find_map(|(_, port)| match &port.ty {
+            holon_core::Type::Number => Some("a number"),
+            holon_core::Type::Boolean => Some("a true or false"),
+            holon_core::Type::List(_) | holon_core::Type::Product(_) => Some("a list"),
+            holon_core::Type::Record => Some("a record"),
+            _ => None,
+        })
+    };
+    let ran: Vec<(&[u32], &holon_core::Unit)> = fed.makers().filter(|path| entry.timeline.iter().any(|t| t.path == *path)).filter_map(|path| Some((path, unit_at(path)?))).collect();
+    let Some((path, unit, what)) = ran.iter().find_map(|(path, unit)| Some((*path, *unit, Some(gives(unit, path)?)))).or(ran.first().map(|(path, unit)| (*path, *unit, None))) else {
+        return WITHHELD_NODE.into();
+    };
+    let leaf = match &unit.body {
+        holon_core::UnitBody::Primitive { name } => format!("`{name}`"),
+        _ => "a step".into(),
+    };
+    let from: Vec<&str> = entry.secrets.keys().filter(|name| taint::SecretFed::of_secret(root, resolver, name).derives(path)).map(String::as_str).collect();
+    let from = match from.as_slice() {
+        [] => "a secret".to_string(),
+        [name] => format!("the secret {name}"),
+        names => format!("the secrets {}", names.join(", ")),
+    };
+    match what {
+        Some(what) => format!("{leaf} computed {what} from {from}: {MARK_STANDS_FOR}"),
+        None => format!("{leaf} computed from {from} a value no mark stands for (too short, or not a text): {MARK_STANDS_FOR}"),
+    }
+}
+
 /// A deployment's runs, as `GET /deployments/<slug>/export` writes them.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Export {
@@ -402,6 +462,10 @@ fn shown_parts(shown: &str) -> Option<(u32, &str)> {
 /// - One value has one commitment: the same owner, name, version and fingerprint, in any run of
 ///   the export, is the same commitment (`committed`: the first seen of each).
 ///
+/// - What it lists as computed from a secret is hashes: each 64 hex digits, in order, none twice;
+///   and a mark of such a value anywhere in its line (`‹derived #7c1e9a02›`) is the start of one
+///   of them, so each mark is held to a whole hash the chain keeps.
+///
 /// It doesn't say the commitment is the value's: that takes the value and its salt.
 fn listed_secrets(entry: &LogEntry, line: &str, committed: &mut BTreeMap<(bool, String, u32, String), (u64, String)>) -> Option<String> {
     for (name, c) in &entry.committed {
@@ -421,7 +485,11 @@ fn listed_secrets(entry: &LogEntry, line: &str, committed: &mut BTreeMap<(bool, 
             }
         }
     }
-    if !line.contains("‹secret:") {
+    let hash = |h: &String| h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    if !entry.derived.iter().all(hash) || !entry.derived.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Some("what its entry lists as computed from a secret isn't hashes, each once and in order".into());
+    }
+    if !line.contains("‹secret:") && !line.contains(secrets::DERIVED_MARK) {
         return None;
     }
     // Every mark in the line as the log wrote it: its request, its outputs, its nodes' records.
@@ -439,6 +507,12 @@ fn listed_secrets(entry: &LogEntry, line: &str, committed: &mut BTreeMap<(bool, 
         match v {
             serde_json::Value::String(s) => {
                 for (piece, mark) in secrets::read_marked(&s, entry.escaped) {
+                    if mark && let Some(print) = piece.strip_prefix(secrets::DERIVED_MARK).and_then(|rest| rest.strip_suffix('›')) {
+                        if print.len() != 8 || !entry.derived.iter().any(|h| h.starts_with(print)) {
+                            odd = odd.or(Some(format!("a mark of a value computed from a secret reads #{print}, and its entry lists no hash that begins so")));
+                        }
+                        continue;
+                    }
                     let Some((name, version, print)) = mark.then(|| secret_mark(&piece)).flatten() else { continue };
                     let kept = prints.entry((name.to_string(), version)).or_insert_with(|| print.to_string());
                     if kept != print {
@@ -490,6 +564,9 @@ pub(crate) struct Stood {
     /// The tainted keys in its inputs (`authorization`): values of the request's the host never
     /// keeps.
     pub(crate) tainted: Vec<String>,
+    /// Whether its inputs held a value the run computed from a secret (`‹derived #7c1e9a02›`).
+    /// Not which: such a mark is a run's own, and the same step in two runs reads as one here.
+    pub(crate) derived: bool,
 }
 
 impl Stood {
@@ -504,6 +581,7 @@ impl Stood {
             some("the secret", "the secrets", &self.secrets),
             some("the token", "the tokens", &self.tokens),
             some("the request's", "the request's", &self.tainted).map(|t| t + ", which the log never keeps"),
+            self.derived.then(|| "a value computed from a secret".to_string()),
         ]
         .into_iter()
         .flatten()
@@ -1395,7 +1473,7 @@ fn rerun(
         matches!(c, StateWrite(_) | CollectionWrite(_) | DbWrite(_) | ChannelSend(_) | MailSend(_) | QueueSend(_) | FileWrite(_))
     };
     if host.performed.iter().any(|(c, p)| keeps(c) && marks.carries_secret(p)) {
-        return Rerun::Skipped("it wrote a secret's value, which the server refuses: not run again".into());
+        return Rerun::Skipped("it wrote a secret's value, or one computed from it, which the server refuses: not run again".into());
     }
 
     // What it produced, as the log would write it, to compare with what the log wrote.
@@ -1479,16 +1557,13 @@ fn rerun(
 
     match differs.is_empty() {
         true => Rerun::Matched,
-        // The log keeps no outputs for a node that may compute with a secret, by the rule the
-        // server withholds them by (`firing::without_secret_derived`); for others, they were too
-        // large or too deep to keep. Each is a different thing to be told.
-        false if !observer.unrecorded.is_empty() => {
-            let fed = taint::SecretFed::of(root, resolver);
-            Rerun::Skipped(match observer.unrecorded.iter().any(|p| fed.derives(p)) {
-                true => WITHHELD_NODE.into(),
-                false => "it computed with a secret or a resume token at a node the log keeps no outputs for (too large, or too deep)".into(),
-            })
-        }
+        // The log keeps no outputs for a node that may compute with a secret unless it has a mark
+        // for every value the run computed from one, by the rule the server withholds them by
+        // (`firing::without_secret_derived`): run again without them, such a run isn't the run
+        // it was, whether or not a node here asked for what the log left out (one that reads a
+        // secret inside a function applied to each item is asked for nothing). For other nodes,
+        // the outputs were too large or too deep to keep. Each is a different thing to be told.
+        false if let Some(why) = left_out(root, resolver, entry, &observer.unrecorded) => Rerun::Skipped(why),
         // Stopped by a limit verify isn't held to (its budget, the clock), or one past which the
         // server dropped what it did (a file's, a queue's size): run again, it goes further. So
         // its entry may say less than the run again does, never other: the same run, each output
@@ -1745,10 +1820,12 @@ impl Observer for Asserting {
                     _ => "a module".into(),
                 };
                 let mut fed = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+                let mut derived = false;
                 for v in inputs.iter().flatten() {
                     fed.0.extend(self.marks.secrets_in(v));
                     fed.1.extend(self.marks.tokens_in(v));
                     fed.2.extend(self.marks.tainted_in(v));
+                    derived |= !self.marks.rest_of(Marks::DERIVED, v).is_empty();
                 }
                 let list = |set: BTreeSet<String>| set.into_iter().collect();
                 // A pure leaf's record can be held to its shape, and, where its inputs tell
@@ -1762,10 +1839,12 @@ impl Observer for Asserting {
                     // one record to another by.
                     if self.unrecorded.is_empty() && inputs.iter().flatten().all(|v| self.marks.all_told_apart(v)) {
                         let of = *blake3::hash(format!("{name}\0{:?}\0{inputs:?}", unit.params).as_bytes()).as_bytes();
-                        self.taken.insert(path.to_vec(), Taken { of, leaf: leaf.clone(), outputs: outputs.clone() });
+                        // Less the print of a value the run computed: that is the run's own.
+                        let outputs = outputs.iter().map(|o| o.as_ref().map(|v| self.marks.across_runs(v))).collect();
+                        self.taken.insert(path.to_vec(), Taken { of, leaf: leaf.clone(), outputs });
                     }
                 }
-                self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2) });
+                self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2), derived });
                 Some(outputs.clone())
             }
             None => {
@@ -1789,6 +1868,10 @@ struct Marks {
 }
 
 impl Marks {
+    /// What follows a placeholder's start for a value a run computed from a secret, up to its
+    /// print (`secrets::DERIVED_MARK`, less the `‹`).
+    const DERIVED: &'static str = "derived #";
+
     fn new() -> Marks {
         let mut tag = [0u8; 16];
         getrandom::fill(&mut tag).expect("the OS random source");
@@ -1880,7 +1963,8 @@ impl Marks {
     fn carries_secret(&self, v: &Value) -> bool {
         // A credential a call answered to a request that held a secret (`secrets::answered_tokens`)
         // is refused a write as the secret is.
-        let secret = |t: &str| t.contains(&format!("{}secret:", self.start)) || t.contains(&format!("{}token:answer ", self.start));
+        // So is what the run computed from a secret.
+        let secret = |t: &str| t.contains(&format!("{}secret:", self.start)) || t.contains(&format!("{}token:answer ", self.start)) || t.contains(&format!("{}{}", self.start, Marks::DERIVED));
         match v {
             Value::Text(t) => secret(t),
             Value::List(items) => items.iter().any(|v| self.carries_secret(v)),
@@ -1943,6 +2027,9 @@ impl Marks {
             }
             out.push_str(&t[from..at]);
             match Marks::print_of(body) {
+                // A print of a value a run computed is of another kind than a secret's or a
+                // token's (another key): the two never read as one value.
+                Some(print) if body.starts_with(Marks::DERIVED) => out.push_str(&format!("{}{}{print}›", self.start, Marks::DERIVED)),
                 Some(print) => out.push_str(&format!("{}#{print}›", self.start)),
                 None => out.push_str(&t[at..end]),
             }
@@ -1950,6 +2037,32 @@ impl Marks {
         }
         out.push_str(&t[from..]);
         Value::Text(out)
+    }
+
+    /// `v` with each placeholder of a value a run computed from a secret written without its
+    /// print: such a mark is keyed by its run, so one value reads otherwise in the next run. For
+    /// holding one run's record of a leaf to another's (`Taken`), never for what is kept.
+    fn across_runs(&self, v: &Value) -> Value {
+        let derived = format!("{}{}", self.start, Marks::DERIVED);
+        let mut v = SValue::from_core(v);
+        secrets::texts_mut(&mut v, &mut |t| {
+            if !t.contains(&derived) {
+                return;
+            }
+            let (mut out, mut from) = (String::with_capacity(t.len()), 0);
+            for (at, end, body) in self.each_in(t) {
+                if at < from || !body.starts_with(Marks::DERIVED) {
+                    continue;
+                }
+                out.push_str(&t[from..at]);
+                out.push_str(&derived);
+                out.push('›');
+                from = end;
+            }
+            out.push_str(&t[from..]);
+            *t = out;
+        });
+        v.into_core()
     }
 
     /// Whether a record's key anywhere in `v` carries a placeholder.
@@ -2525,6 +2638,7 @@ mod tests {
             ..LogEntry::default()
         };
         let line = |texts: &[&str]| serde_json::json!({ "request": { "headers": texts, "nested": [{ "deep": texts }] } }).to_string();
+        let computed = |hashes: &[&str]| LogEntry { derived: hashes.iter().map(|h| h.to_string()).collect(), ..entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))) };
         let same = "‹secret:k v2 #aaaaaaaa›";
         // (what the entry says, the texts its line holds, why it doesn't hold together)
         let rows: Vec<(&str, LogEntry, Vec<&str>, Option<&str>)> = vec![
@@ -2542,6 +2656,15 @@ mod tests {
             ("a commitment cut short", entry(1, "v2 #aaaaaaaa", kept("local", "abcd")), vec![same], Some("isn't a kind and a commitment")),
             ("a commitment that isn't hex", entry(1, "v2 #aaaaaaaa", kept("local", &hex('z'))), vec![same], Some("isn't a kind and a commitment")),
             ("a commitment to a version it doesn't list", entry(1, "the second", kept("local", &hex('1'))), vec![], Some("doesn't list which version")),
+            // What it computed from a secret: each mark the start of a hash its entry lists.
+            ("a computed value's mark, its hash listed", computed(&[&hex('3'), &hex('7')]), vec!["Basic ‹derived #77777777›", "‹derived #33333333›"], None),
+            ("a computed value's mark with no hash listed", computed(&[&hex('3')]), vec!["‹derived #77777777›"], Some("lists no hash that begins so")),
+            ("a computed value's mark, nothing listed", computed(&[]), vec!["‹derived #77777777›"], Some("lists no hash that begins so")),
+            ("a computed value's mark cut short", computed(&[&hex('3')]), vec!["‹derived #3333›"], Some("lists no hash that begins so")),
+            ("a look-alike of one the run wrote itself, escaped", computed(&[]), vec!["‹‹derived #77777777›"], None),
+            ("hashes listed out of order", computed(&[&hex('7'), &hex('3')]), vec![], Some("isn't hashes, each once and in order")),
+            ("a hash listed twice", computed(&[&hex('3'), &hex('3')]), vec![], Some("isn't hashes, each once and in order")),
+            ("a listed hash that isn't one", computed(&["abcd"]), vec![], Some("isn't hashes, each once and in order")),
         ];
         for (what, entry, texts, why) in rows {
             let said = listed_secrets(&entry, &line(&texts), &mut BTreeMap::new());
@@ -2598,7 +2721,7 @@ mod tests {
             let t = |i: usize| texts[(pick + i) % texts.len()].clone();
             match ty {
                 Number => Value::Number((pick % 3) as f64),
-                Boolean => Value::Boolean(pick % 2 == 0),
+                Boolean => Value::Boolean(pick.is_multiple_of(2)),
                 Text => t(0),
                 List(_) => Value::List(vec![t(0), t(1), text("b"), t(2), t(0)]),
                 Record => Value::Record(BTreeMap::from([("id".to_string(), t(0)), ("z".to_string(), t(1)), ("a".to_string(), Value::List(vec![t(2)]))])),

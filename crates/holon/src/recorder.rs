@@ -195,9 +195,20 @@ pub struct LogEntry {
     /// Absent when nothing was, and in entries logged before look-alikes were escaped.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub escaped: bool,
+    /// Each value the run computed from a secret that its marks stand for (`‹derived #7c1e9a02›`),
+    /// by its whole hash, in hex, in order: `secrets::derived_hash` of the value, keyed by the
+    /// salts of the secrets the run was given and bound to the run's id. A mark is the first
+    /// eight digits of one of these. Whoever later holds the secrets and their salts computes
+    /// the value again and compares; without them it says nothing of the value. Absent when the
+    /// run computed none, and in entries logged before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derived: Vec<String>,
     /// The credentials its calls answered, until the entry is logged (`log_run`): not part of it.
     #[serde(skip)]
     pub answered: AnswerTokens,
+    /// The values it computed from a secret, until the entry is logged: not part of it.
+    #[serde(skip)]
+    pub born: Born,
     /// The mails it sent, through which and each message whole, until the entry is logged and
     /// they are spooled (mails.rs): the log keeps them in `performed`, their attachments by hash.
     #[serde(skip)]
@@ -283,6 +294,25 @@ pub struct AnswerTokens(pub Vec<(String, String)>);
 impl std::fmt::Debug for AnswerTokens {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "AnswerTokens({} kept out of sight)", self.0.len())
+    }
+}
+
+/// The values a run computed from its secrets (`secrets::born`), each with its hash, on their way
+/// to the redactor that writes a mark for each wherever the run's record holds it: never
+/// serialized, never printed.
+#[derive(Clone, Default)]
+pub struct Born {
+    /// (the value's hash in hex, the value), in the hashes' order.
+    pub values: Vec<(String, String)>,
+    /// Whether these are every value the run computed from a secret: then its record shows what
+    /// is computed from one with each such value as its mark. Otherwise it withholds whole what
+    /// may be computed from one, as a mark can't stand for all of it.
+    pub whole: bool,
+}
+
+impl std::fmt::Debug for Born {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Born({} kept out of sight, whole: {})", self.values.len(), self.whole)
     }
 }
 
@@ -422,7 +452,7 @@ pub struct NodeTiming {
     /// Why a module at this node gave nothing (the engine's words: out of fuel, a trap, a js
     /// body's exception), or what a `throw` here said, when it did: what `explain` says beside the
     /// statement. Redacted like the rest of the entry, and withheld at a node that may compute
-    /// with a secret, as its outputs are (`firing::without_secret_derived`).
+    /// with a secret (`firing::without_secret_derived`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -2352,6 +2382,8 @@ mod tests {
             committed: BTreeMap::new(),
             escaped: false,
             answered: AnswerTokens::default(),
+            derived: Vec::new(),
+            born: Born::default(),
             mails: Vec::new(),
             queued: Vec::new(),
         }

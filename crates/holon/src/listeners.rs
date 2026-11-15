@@ -190,7 +190,7 @@ fn serve_flow(
             let inputs = [Some(req)];
             let mut run = fire_with_state(endpoint, &inputs, &resolver, store, state.as_ref(), sourced, &permit, false, &secrets, &mut waits, None);
             parked = durable::park_if_waiting(deployments, store, slug, &matched.endpoint, "request", Some(route.to_string()), level, &inputs, sourced, &run, &waits);
-            answer_derived = run.secret_fed.derives_output(0);
+            answer_derived = run.withholds_output(0);
             // An answer carrying a secret goes to the caller only where a person approved it
             // (`SecretAnswer("name")`): one the graph says may carry it, or one that holds its
             // value as it is (a far side echoing a header back, which the graph can't see), in a

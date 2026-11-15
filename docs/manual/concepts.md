@@ -160,8 +160,11 @@ oldest it still has. See [Checking runs](guides/checking-runs.md).
 Secrets never enter the log: their values are redacted from everything it holds. So a step that
 computed with a secret can't be run again offline. `holon verify` takes what the log says that
 step gave (a token check passed, a receipt signed with the key) and checks the rest of the run
-against it. A run that computed a value from a secret, which the log never keeps (a Basic header
-built from it, a true or false about it), isn't run again at all, and verify says so. See
+against it. A value a run computed from a secret (a Basic header built from it) isn't in the log
+either: the log writes a mark for it wherever the run had it (`‹derived #7c1e9a02›`) and keeps a
+keyed hash of it, and verify runs the run again with the step that made it taken as recorded. A
+mark stands for a text of 6 characters or more: a run that computed a true or false, a number or
+a short text from a secret isn't run again at all, and verify says which step and why. See
 [Verifying](guides/checking-runs.md#verifying).
 
 ## People, roles and agents

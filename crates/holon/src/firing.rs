@@ -116,6 +116,9 @@ pub(crate) struct FiredRun {
     pub(crate) committed: BTreeMap<String, recorder::Committed>,
     /// The credentials its calls answered to requests that held a secret (`secrets::answered_tokens`).
     pub(crate) answered: recorder::AnswerTokens,
+    /// What it computed from its secrets, as its record marks it (`secrets::born`), and whether
+    /// that is all of it.
+    pub(crate) born: recorder::Born,
     /// The state it left, once committed: a snapshot's hash (`restore::save_snapshot`).
     pub(crate) state_after: Option<String>,
     /// The commit to its state it began after, and its own once it lands (`recorder::Commit`).
@@ -688,6 +691,8 @@ fn run_attempt(
             committed.extend(vault.committed.get(name).map(|c| (name.clone(), c.clone())));
         }
     }
+    // What its marks for the values it computes from them are made under: their salts.
+    let born_key = secrets::derived_key(vault.salts.iter().filter(|(name, _)| committed.contains_key(*name)).map(|(name, salt)| (name.as_str(), &**salt)));
     drop(vault);
     // Only the state keys the deployment was granted are read, each lent as the state holds it.
     let sourced: Vec<(Capability, &Value)> = start
@@ -759,6 +764,8 @@ fn run_attempt(
     // The credentials the calls that sent a secret were answered with: kept out of the log by
     // their value, and out of what is written, as the secret is.
     let answered = secrets::answered_tokens(&outcome.rounds, secrets, &secret_fed);
+    // What it computed from its secrets, for its record to mark each by its value.
+    let born = secrets::born(&timer.timeline, &secret_fed, born_key.as_ref().map(|k| k.as_slice()), &run_hex, !waits.unrecorded);
     let holds_answered = |payload: &Value| answered.iter().find(|(_, v)| secrets::value_holds(payload, &|s: &str| s.contains(v.as_str()))).map(|(name, _)| name.clone());
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
     // carrying a secret's value, or something computed from one (taint.rs), which would put it on
@@ -857,6 +864,7 @@ fn run_attempt(
         secrets: given,
         committed,
         answered: recorder::AnswerTokens(answered),
+        born,
         state_after: None,
         commit: None,
         running: None,
@@ -1071,11 +1079,12 @@ pub(crate) fn redaction_of(deployments: &Mutex<BTreeMap<String, Deployment>>, sl
 }
 
 /// What `entry` is logged redacted of: the run's own values (`tokens`), the deployment's secrets,
-/// the credentials its calls answered, and the values of the keys its flow taints (`taint`, and
-/// those every run does) wherever it or its `lines` hold them (`data::tainted`), each as its
-/// mark. One taken for a secret or a token stays marked as that.
+/// the credentials its calls answered, what it computed from its secrets, and the values of the
+/// keys its flow taints (`taint`, and those every run does) wherever it or its `lines` hold them
+/// (`data::tainted`), each as its mark. One taken for a secret or a token stays marked as that:
+/// of two marks for one value, the one named first here is written.
 pub(crate) fn redactor_of(entry: &mut LogEntry, lines: &[(String, Value)], tokens: Redactor, secrets: &Arc<Mutex<secrets::Resolved>>, taint: &[String]) -> Redactor {
-    let marked = tokens.and(Redactor::of(secrets)).and(Redactor::answers(&entry.answered.0, secrets));
+    let marked = tokens.and(Redactor::of(secrets)).and(Redactor::answers(&entry.answered.0, secrets)).and(Redactor::born(&entry.born));
     let found = data::tainted(taint, entry, lines, &marked);
     marked.and(Redactor::tainted(&found))
 }
@@ -1197,6 +1206,7 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
     let queued = std::mem::take(&mut entry.queued);
     let queued = folders.all.queues.spool_logged(slug, &entry, queued);
     entry.answered = Default::default();
+    entry.born = Default::default();
     entry.session = session;
     // Its line made before the lock is taken, so runs of one deployment don't wait while another
     // run's is: under the lock only its seq and the line before's hash go in.
@@ -1285,14 +1295,17 @@ fn without_kept_files(mut timeline: Vec<recorder::NodeTiming>, reads: &[collecti
     timeline
 }
 
-/// The timeline, with the outputs of each node that may produce something computed from a secret
-/// left out, and why it gave nothing (a thrown message, a module's error: as much the node's as
-/// its outputs) withheld: redaction finds a secret's value, not what is computed from it
-/// (taint.rs).
-fn without_secret_derived(mut timeline: Vec<recorder::NodeTiming>, fed: &taint::SecretFed) -> Vec<recorder::NodeTiming> {
+/// The timeline, with why each node that may produce something computed from a secret gave
+/// nothing (a thrown message, a module's error) withheld; and, unless the run's record marks
+/// every value it computed from one (`marked`, `recorder::Born::whole`), with those nodes'
+/// outputs left out: redaction finds a secret's value, and what is computed from it only where
+/// the run kept each such value (taint.rs, `secrets::born`).
+fn without_secret_derived(mut timeline: Vec<recorder::NodeTiming>, fed: &taint::SecretFed, marked: bool) -> Vec<recorder::NodeTiming> {
     if !fed.is_empty() {
         for node in timeline.iter_mut().filter(|n| fed.derives(&n.path)) {
-            node.outputs = None;
+            if !marked {
+                node.outputs = None;
+            }
             if node.reason.is_some() {
                 node.reason = Some(taint::WITHHELD.into());
             }
@@ -1312,23 +1325,25 @@ fn withheld_or_shown(derived: bool, shown: impl FnOnce() -> Value) -> SValue {
 }
 
 /// A run's outputs as its log entry and history keep them (`shown`: how each looks there), each
-/// that may be computed from a secret withheld.
+/// that may be computed from a secret withheld (`FiredRun::withholds_output`). Whoever shows
+/// them redacts them of what the run computed from its secrets too (`Redactor::born`).
 pub(crate) fn logged_outputs(run: &FiredRun, shown: impl Fn(&Value) -> Value) -> Vec<Option<SValue>> {
-    run.outputs.iter().enumerate().map(|(port, o)| o.as_ref().map(|v| withheld_or_shown(run.secret_fed.derives_output(port), || shown(v)))).collect()
+    run.outputs.iter().enumerate().map(|(port, o)| o.as_ref().map(|v| withheld_or_shown(run.withholds_output(port), || shown(v)))).collect()
 }
 
 /// What a run performed as its log entry and history keep it (`shown`: how each payload looks
-/// there), each payload that may be computed from a secret withheld.
+/// there), each payload that may be computed from a secret withheld, as its outputs are.
 pub(crate) fn logged_performed(run: &FiredRun, shown: impl Fn(&Capability, &Value) -> Value) -> Vec<PerformedEntry> {
     run.performed
         .iter()
-        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or_shown(run.secret_fed.derives_effect(c), || shown(c, p)) })
+        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or_shown(run.withholds_effect(c), || shown(c, p)) })
         .collect()
 }
 
-/// A round as the log keeps it: each request's parts computed from a secret withheld.
-fn logged_round(round: &Round, fed: &taint::SecretFed) -> recorder::LoggedRound {
-    if fed.is_empty() {
+/// A round as the log keeps it: each request's parts computed from a secret withheld, unless
+/// the run's record marks every value it computed from one (`marked`).
+fn logged_round(round: &Round, fed: &taint::SecretFed, marked: bool) -> recorder::LoggedRound {
+    if fed.is_empty() || marked {
         return recorder::LoggedRound::from_host(round);
     }
     let mut round = round.clone();
@@ -1389,8 +1404,8 @@ fn entry_with(
         performed: logged_performed(run, folders::loggable),
         response_body: None,
         error: run.error.clone(),
-        timeline: without_secret_derived(without_kept_files(timeline, &run.reads, &run.performed), &run.secret_fed),
-        rounds: run.rounds.iter().map(|r| logged_round(r, &run.secret_fed)).collect(),
+        timeline: without_secret_derived(without_kept_files(timeline, &run.reads, &run.performed), &run.secret_fed, run.born.whole),
+        rounds: run.rounds.iter().map(|r| logged_round(r, &run.secret_fed, run.born.whole)).collect(),
         run_id: run.run_id.clone(),
         unit: run.unit.clone(),
         nonce: run.nonce.clone(),
@@ -1399,7 +1414,7 @@ fn entry_with(
         progress: run
             .progress
             .iter()
-            .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or(run.secret_fed.derives_effect(c), p) })
+            .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or(run.withholds_effect(c), p) })
             .collect(),
         events: BTreeMap::new(),
         retries: run.retries,
@@ -1416,13 +1431,15 @@ fn entry_with(
         by: None,
         secrets: run.secrets.clone(),
         committed: run.committed.clone(),
+        derived: run.born.values.iter().map(|(hash, _)| hash.clone()).collect(),
         answered: run.answered.clone(),
+        born: run.born.clone(),
         mails: mails::of(&run.performed),
         // A line computed from a secret is withheld, as an effect's payload is in `performed`.
         lines: run
             .lines
             .iter()
-            .map(|(level, v)| (level.clone(), if run.secret_fed.derives_effect(&Capability::Log(level.clone())) { Value::Text(taint::WITHHELD.into()) } else { v.clone() }))
+            .map(|(level, v)| (level.clone(), if run.withholds_effect(&Capability::Log(level.clone())) { Value::Text(taint::WITHHELD.into()) } else { v.clone() }))
             .collect(),
         queued: queues::of(&run.performed),
         escaped: false,
@@ -1454,6 +1471,24 @@ fn entry_with(
 }
 
 impl FiredRun {
+    /// Whether its record withholds its output `port` whole: it may be computed from a secret,
+    /// and the record doesn't mark every value the run computed from one (`recorder::Born`).
+    /// Where it does, the output is kept, and redacted of those values as of a secret's
+    /// (`Redactor::born`).
+    pub(crate) fn withholds_output(&self, port: usize) -> bool {
+        !self.born.whole && self.secret_fed.derives_output(port)
+    }
+
+    /// [`FiredRun::withholds_output`], for what an effect with `capability` carries.
+    pub(crate) fn withholds_effect(&self, capability: &Capability) -> bool {
+        !self.born.whole && self.secret_fed.derives_effect(capability)
+    }
+
+    /// [`FiredRun::withholds_output`], for what input `port` of the node at `path` was handed.
+    pub(crate) fn withholds_input(&self, path: &[u32], port: usize) -> bool {
+        !self.born.whole && self.secret_fed.input(path, port) == taint::Taint::Derived
+    }
+
     /// No run at all: an unrouted request.
     pub(crate) fn nothing() -> FiredRun {
         FiredRun {
@@ -1477,6 +1512,7 @@ impl FiredRun {
             secrets: BTreeMap::new(),
             committed: BTreeMap::new(),
             answered: recorder::AnswerTokens::default(),
+            born: recorder::Born::default(),
             state_after: None,
             commit: None,
             running: None,
