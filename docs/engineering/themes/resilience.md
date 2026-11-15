@@ -95,8 +95,9 @@ after 5 ms, doubling to 1 s, and said once a run of failures (audit R16).
 - **Why.** 448 runs at once might each hold 256 MiB, and a parse made 80 times its text in one
   step before a check; a WebSocket held no connection place, so a server's open sockets ran past
   its open-file limit, where every accept failed and its loop spun on a core printing each time.
-- **Cost.** One more thread-local read an allocation (the thread's ending arranged), one atomic
-  add a 64 KiB moved; a round's clock reading also reads the count.
+- **Cost.** An add, a compare and a store more an allocation, in the thread-local the count was
+  already in, and one atomic add a 64 KiB moved; a round's clock reading also reads the count.
+  `crunch` ×1.012 and `hello` ×1.049 in instructions ([performance](performance.md#the-processs-memory-count-2026-11-15)).
 - **Limits.** The count is the allocator's: what a module's engine maps for itself, the threads'
   stacks and the allocator's own overhead are outside it, which is why the default leaves half the
   machine. A run going on as the server passes its cap fails, whether or not it grew most. A
@@ -320,6 +321,40 @@ changed outside holon.
 - **Tests.** `a_run_a_crash_cut_off_before_its_line_is_said_and_a_state_changed_while_stopped_breaks`
   (a crash with and without a run cut off, a clean stop with one, a state changed once loaded, a
   second crash before any run), `a_clean_stops_mark_is_taken_by_the_next_start_alone`.
+
+### G12. Reading a text doesn't double with how deep it nests
+
+What reads a flow (`holon check`, `POST /deploy` and the preview, each run that reads a secret,
+fmt, the editor and the language server) does work in proportion to the text, however its parts
+are reused or nested (audit R17):
+
+- **Where a secret goes** (`holon_core::taint`). The walk follows every path, since the host asks
+  of a node by its path, so a function using one that uses one… twice each was 2^k paths: 18
+  levels took 2.8 s to check, and each two more four times as long. The walks one question about a flow takes (each secret's,
+  and what is answered to it) visit at most `MAX_VISITS`, 65,536 nodes, between them (`Visits`);
+  past it a function not yet followed is taken as not followed, as a `map`'s function is: what it
+  makes derived, every effect it could make carrying the secret, every host it could call sent it.
+  That says more than the flow does, never less: the approval asks for more, and the log withholds
+  more. The samples' most is 2,065 a question.
+- **A sum known to be a number** (`numeric`, a collection's key): asked each sum once, without
+  recursing; `a1 = a0 + a0`, `a2 = a1 + a1`… was asked again at each use.
+- **fmt's layout** (Oxfmt's) lays a call's arguments out again for each way it tries to break
+  them: `f(f(…))` 22 deep took a second, `xs.map((x) => String(…))` six deep 2.5 s and seven past
+  half a minute. fmt refuses a text whose calls, templates and functions written in place nest
+  more than 20 in each other (a function twice; a function's block starts again), saying where
+  to name a part (`format::MAX_LAYOUT_NESTING`); at the bound the slowest form takes a few
+  tenths of a second. The samples' most is 7. The editor's Format, the language server's and a
+  canvas printed as text each ask fmt.
+
+- **Limits.** A flow past the walks' budget is asked for more than it does (every secret it reads
+  may answer its callers, here); a run of it walks about 0.1 s more before it starts, two
+  questions' worth. A canvas whose nodes print as calls nested past fmt's bound can't be shown as
+  text until a part is named. Looking a node up while lowering a text (`builder::data`, `source`)
+  is a scan of the nodes and wires so far: quadratic in a very long handler, not doubling.
+- **Tests.** `no_entry_doubles_its_work_with_each_level_a_text_nests` (every entry that reads a
+  text, over each form that doubled, 20 to 60 levels deep, one with 100 secrets, in 20 s together;
+  each fix taken out fails it), `the_samples_walk_far_below_what_a_question_may_visit`,
+  `the_samples_lay_out_far_below_fmts_bound`.
 
 ## 3. Policy, not accident
 

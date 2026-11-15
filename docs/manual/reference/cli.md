@@ -142,7 +142,9 @@ holon fmt <file>
 
 Lays the file out in the canonical form, as Prettier does, at 100 columns and without
 semicolons, keeping its comments and blank lines. It writes only a text that compiles to the same
-flow.
+flow, and one whose calls, templates and functions written in place nest 20 deep at most, a
+function counting twice ([the reference](../language/reference.md#files) says why): past it, it
+says where to name a part.
 
 ### `holon types`
 

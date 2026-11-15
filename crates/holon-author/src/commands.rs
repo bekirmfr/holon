@@ -574,6 +574,34 @@ mod tests {
 
     /// Beside each secret, where the flow sends it: stripe-to-slack posts its Slack path to Slack,
     /// and only verifies a signature with the Stripe secret, which sends it nowhere.
+    /// Guards: the walks a question about a sample takes (each run's `SecretFed::of`, the deploy's
+    /// and check's `sent_secrets`) visit a tenth of what core lets one question visit
+    /// (`taint::MAX_VISITS`) at most.
+    /// Why: past the budget a function not yet followed is taken as computing with the secret,
+    /// sending it everywhere it could: a flow written to be read must never come near it.
+    /// If it fails: a sample walks more paths than flows are expected to (name the reused part
+    /// once), or the budget is too low for flows people write, and raising it keeps a question's
+    /// walks to tens of milliseconds (`no_entry_doubles_its_work_with_each_level_a_text_nests`).
+    #[test]
+    fn the_samples_walk_far_below_what_a_question_may_visit() {
+        use holon_core::taint::{SecretFed, Visits, MAX_VISITS};
+        let mut most = (0, "");
+        for s in crate::samples::samples() {
+            let mut store = MapResolver::new();
+            let c = compile("sample", s.text, &mut store).unwrap_or_else(|e| panic!("{}: {e:?}", s.name));
+            let (_, unit) = derive(&c, &mut store);
+            let Some(root) = unit.ok().and_then(|(hash, _)| holon_core::parse_hash(&hash)).and_then(|h| store.resolve(&h)) else { continue };
+            let (run, sent) = (Visits::default(), Visits::default());
+            SecretFed::of_within(root, &store, &run);
+            holon_core::taint::sent_secrets_within(root, &store, &sent);
+            for (question, visits) in [("a run's", run.taken()), ("sent_secrets", sent.taken())] {
+                assert!(visits <= MAX_VISITS / 10, "{}: {question} walks visit {visits}", s.name);
+                most = most.max((visits, s.name));
+            }
+        }
+        println!("the samples' most visits a question: {} ({})", most.0, most.1);
+    }
+
     #[test]
     fn check_says_where_each_secret_is_sent() {
         let r = check("stripe-to-slack.holon.ts", include_str!("../samples/stripe-to-slack.holon.ts"));

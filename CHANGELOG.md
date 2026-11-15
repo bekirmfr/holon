@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Checking, deploying and formatting a flow take time in proportion to it.** A function using
+  one that uses one, twice each, with a secret through them, made `holon check`, a deploy and each
+  run walk every path: twenty-four such levels took minutes, and anyone who may propose a deploy could
+  hold the server's CPU with one. Now the walks that find where a secret goes stop after 65,536
+  nodes for one question, and what they haven't followed is taken as computing with the secret
+  (the approval asks for more, never less). Sums of sums as a collection's key no longer double
+  the compile at each line. And `holon fmt` refuses a text whose calls, templates and functions
+  written in place nest more than 20 in each other, a function counting twice (seven
+  `xs.map((x) => String(…))` inside each other took half a minute to lay out): name a part with a
+  `const`, as fmt says where.
 - **The server keeps to its memory and its open files.** A run was held to its own `max_memory`,
   and nothing held the runs together: many at once, or a few parsing a megabyte or two of JSON
   each (a parse makes about 80 times its text, all in one step), took the server's memory until

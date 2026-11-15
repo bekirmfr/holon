@@ -75,7 +75,7 @@ pub(crate) fn deepest_at(src: &str) -> Pos {
 }
 
 /// The line and column (in characters) of byte `at`.
-fn pos(b: &[u8], at: usize) -> Pos {
+pub(crate) fn pos(b: &[u8], at: usize) -> Pos {
     let before = &b[..at.min(b.len())];
     let start = before.iter().rposition(|&c| c == b'\n').map_or(0, |i| i + 1);
     let line = before.iter().filter(|&&c| c == b'\n').count();
@@ -471,10 +471,46 @@ mod tests {
         }),
     ];
 
-    /// The forms fmt's layout (Oxfmt's) takes too long to lay out as deep as the bound, so fmt is
-    /// left out for them there: it lays a text out again for each call or template the text is
-    /// in, twice the time a level, and these nest a call or a template at every level.
-    const SLOW_TO_LAY_OUT: &[&str] = &["calls", "templates"];
+    /// A flow reading the secret `k`, sending `value`, made of it, to a host, with `a`.
+    fn sending(defs: &str, value: &str) -> String {
+        format!("import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport api from \"host:api.example.com\"\n\nflow(\"deep\", {{ port: 8999 }})\n\n{defs}\nroute.get(\"/\", async (req) => {{\n  const a = req.query.a\n  const r = await api.get(\"/a\", {{ headers: {{ a, k: {value} }} }})\n  return r.status\n}})\n")
+    }
+
+    /// Each way a text made the work of an entry that reads it double with each level it nests
+    /// (audit R17), `n` levels deep: a function using the one before twice, with a secret through
+    /// them (the walks that follow a secret, at check, deploy and each run, followed each use);
+    /// a sum of the sum before, as a collection's key (`numeric`, asking again at each use); and
+    /// for fmt's layout (Oxfmt's, laying a call's arguments out again for each way it tries), calls
+    /// in calls, templates of calls, and a list method's function calling the next.
+    const DOUBLING: &[(&str, Form)] = &[
+        ("functions used twice", |n| {
+            let defs = lines(n, |k| format!("function f{k}(x: string): string {{\n  return f{}(x) + f{}(x)\n}}\n\n", k - 1, k - 1));
+            sending(&format!("function f0(x: string): string {{\n  return x.trim()\n}}\n\n{defs}"), &format!("f{n}(k)"))
+        }),
+        // And two hundred secrets through them, each followed by a walk of its own, which share
+        // what one question may visit.
+        ("many secrets through functions used twice", |n| {
+            let defs = lines(n, |k| format!("function f{k}(x: string): string {{\n  return f{}(x) + f{}(x)\n}}\n\n", k - 1, k - 1));
+            let secrets = lines(SECRETS, |i| format!("import k{i} from \"secret:k{i}\"\n"));
+            let all = (1..=SECRETS).map(|i| format!("k{i}")).collect::<Vec<_>>().join(", ");
+            let text = sending(&format!("function f0(x: string): string {{\n  return x.trim()\n}}\n\n{defs}"), &format!("f{n}([k, {all}].join(\"\"))"));
+            text.replacen("import api", &format!("{secrets}import api"), 1)
+        }),
+        ("sums of sums", |n| {
+            let sums = lines(n, |k| format!("  const a{k} = a{} + a{}\n", k - 1, k - 1));
+            handler(&format!("  const a0 = 1\n{sums}  return notes[a{n}]\n")).replacen("\n\nflow(", "\nimport notes from \"collection:notes\"\n\nflow(", 1)
+        }),
+        ("calls", |n| answering(&format!("{}a{}", "f(".repeat(n), ")".repeat(n)))),
+        ("templates of calls", |n| answering(&format!("{}a{}", "`${f(".repeat(n), ")}`".repeat(n)))),
+        ("functions written in place", |n| answering(&format!("{}a{}", "[a].map((x) => String(".repeat(n), "))".repeat(n)))),
+    ];
+
+    /// How many secrets the form with many reads, each followed by a walk of its own.
+    const SECRETS: usize = 100;
+
+    /// How long every entry together may take over one text of [`DOUBLING`], in a debug build:
+    /// what was doubling took past it twenty levels in.
+    const IN_TIME: std::time::Duration = std::time::Duration::from_secs(20);
 
     /// Whether `message` is the bound's: the count's, or the reader's for what follows one another.
     fn the_bound(message: &str) -> bool {
@@ -528,7 +564,7 @@ mod tests {
         // the place the text nests deepest.
         let deepest = deepest_at(&text);
         let laid_out = format!("{}:{}: laid out as fmt writes it", deepest.line, deepest.col);
-        for (entry, said) in compiled(&text, !SLOW_TO_LAY_OUT.contains(&name)) {
+        for (entry, said) in compiled(&text, true) {
             let refuses = said.iter().any(|m| the_bound(m) && !m.starts_with(&laid_out));
             assert!(!refuses, "{name}, {taken} deep: {entry} refuses it: {said:?}");
         }
@@ -554,7 +590,8 @@ mod tests {
     /// (count it in `deepest`) or the reader (bound what it gathers, as `hold` does), or the bound
     /// no longer fits an entry's stack; an overflow ends this test's process without a word.
     /// (`else if` chains are left out: they count, but read slowly long before the bound; and fmt
-    /// for the forms in [`SLOW_TO_LAY_OUT`] at the bound.)
+    /// fmt lays out the forms that nest calls or templates far past its own bound
+    /// ([`format::MAX_LAYOUT_NESTING`]) no further: it says so, an ordinary mistake.)
     #[test]
     fn no_text_nested_past_the_bound_crashes_any_compile_entry() {
         std::thread::scope(|s| {
@@ -575,6 +612,78 @@ mod tests {
     /// any flow written to be read. If it fails, a sample nests deeper than it needs (name a part
     /// of it), or flows need a higher bound, which every entry's stack must still fit (the test
     /// above).
+    /// Guards: no entry that reads a flow's text (the command line's check and fmt, the language
+    /// server's mistakes, hover and completion, an agent's check, the editor's wasm) does work
+    /// that doubles with each level the text nests: each form that did, as deep as the reader
+    /// takes it up to 60 levels, is read by every entry in [`IN_TIME`] together, and none says the
+    /// nesting bound. fmt lays the layout's forms out or says it can't in time.
+    /// Why: a function using one that uses one… twice each was followed at every path, so the
+    /// walk that finds where a secret goes, at `POST /deploy`, the preview, `holon check` and each
+    /// run, was 2^k: eighteen levels took 2.8 s, twenty-four minutes; `a1 = a0 + a0`, `a2 = a1 +
+    /// a1`… as a collection's key asked each sum again at each use; and Oxfmt's layout took 2.5 s
+    /// for `xs.map((x) => String(…))` six deep and past half a minute at seven (audit R17).
+    /// If it fails: an entry walks a text again for each way it reaches a part of it (ask each
+    /// part once, or bound the walk, as `taint::MAX_VISITS` does, saying no less than the flow
+    /// does), or fmt's layout takes a form past its bound in time (count it in
+    /// `format::layout_nesting`).
+    #[test]
+    fn no_entry_doubles_its_work_with_each_level_a_text_nests() {
+        for &(name, form) in DOUBLING {
+            let past_the_bound = |n: usize| ts::parse(&form(n)).err().is_some_and(|e| the_bound(&e.message));
+            let n = (1..=60).rev().find(|&n| !past_the_bound(n)).expect("taken one level deep");
+            assert!(n >= 20, "{name}: refused {} deep", n + 1);
+            let text = form(n);
+            let started = std::time::Instant::now();
+            let (said, read) = std::sync::mpsc::channel();
+            let reading = text.clone();
+            std::thread::Builder::new()
+                .name(format!("{name}, {n} deep"))
+                .stack_size(4 << 20)
+                .spawn(move || {
+                    let entries = compiled(&reading, true);
+                    read_in_the_editor(&reading);
+                    let _ = said.send(entries);
+                })
+                .unwrap();
+            let entries = match read.recv_timeout(IN_TIME) {
+                Ok(entries) => entries,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!("{name}, {n} deep: the entries took more than {IN_TIME:?}"),
+                Err(e) => panic!("{name}, {n} deep: an entry failed ({e})"),
+            };
+            println!("{name}, {n} deep: {:?}", started.elapsed());
+            for (entry, said) in &entries {
+                assert!(!said.iter().any(|m| the_bound(m)), "{name}, {n} deep: {entry} says the nesting bound: {said:?}");
+                if *entry == "format" {
+                    assert!(said.iter().all(|m| m.contains("fmt can't lay this out in time")), "{name}, {n} deep: fmt says {said:?}");
+                }
+            }
+            if name.ends_with("functions used twice") {
+                // Past what the walks may visit, the secret is taken as going wherever the flow
+                // could send it: the one host it calls, which it does send it to.
+                let check = entries.iter().find(|(e, _)| *e == "check").map(|(_, s)| s.clone());
+                assert_eq!(check, Some(vec![]), "{name}: check refuses it");
+                let sent = crate::commands::sent_of(&text);
+                assert!(sent.get("k").is_some_and(|to| to.contains("api.example.com")), "{name}: sent {sent:?}");
+            }
+        }
+    }
+
+    /// Guards: the samples lay out at half fmt's bound at most ([`format::MAX_LAYOUT_NESTING`]).
+    /// Why: past it fmt refuses a text, so it must sit far above any flow written to be read.
+    /// If it fails: a sample nests its calls, templates and functions written in place deeper
+    /// than it needs (name a part of it), or the bound is too low for flows people write, and
+    /// raising it must keep `no_entry_doubles_its_work_with_each_level_a_text_nests` in time.
+    #[test]
+    fn the_samples_lay_out_far_below_fmts_bound() {
+        let mut most = (0, "");
+        for s in crate::samples::samples() {
+            let (nests, past) = format::layout_nesting(s.text);
+            assert!(past.is_none() && nests <= format::MAX_LAYOUT_NESTING / 2, "{} nests {nests} as fmt's layout counts it", s.name);
+            most = most.max((nests, s.name));
+        }
+        println!("the samples' most, as fmt's layout counts: {} ({})", most.0, most.1);
+    }
+
     #[test]
     fn the_samples_nest_far_below_the_bound() {
         for s in crate::samples::samples() {
