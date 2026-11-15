@@ -286,9 +286,17 @@ impl Conn {
         let tokens = || Redactor::tokens(&waits.tokens).and(Redactor::handed(&handed));
         // A strict run's answer goes out once its record is on disk; one whose record may not be
         // isn't answered as done (C2 e).
-        if let Some(Logged { kept: Err(e), .. }) = log_or_count(deployments, slug, counted, entry, tokens, block.log, sends) {
-            eprintln!("holon: {slug:?} {}: the run's record may not be on disk: {e}", block.label);
-            return Some(DataResponse::json_error(500, &format!("the block ran, but {e}")));
+        match log_or_count(deployments, slug, counted, entry, tokens, block.log, sends) {
+            Some(Logged { kept: Err(e), .. }) => {
+                eprintln!("holon: {slug:?} {}: the run's record may not be on disk: {e}", block.label);
+                return Some(DataResponse::json_error(500, &format!("the block ran, but {e}")));
+            }
+            // What it sends couldn't be spooled: none of it is sent, and its record says it failed.
+            Some(Logged { unsent: Some(e), .. }) => {
+                eprintln!("holon: {slug:?} {}: the run failed, as what it sends couldn't be spooled: {e}", block.label);
+                return Some(DataResponse::json_error(500, "the block ran, but what it sends couldn't be kept to send, so none of it is sent: its run log says why"));
+            }
+            _ => {}
         }
         Some(answer)
     }

@@ -656,9 +656,19 @@ impl Keyring {
         Ok((version, key))
     }
 
+    /// `scope`'s keys made now if it has none (`keys.json` written): a deployment's, before it goes
+    /// live, so that nothing it runs is the first to need the root, and none fails to be sealed
+    /// for a root that can't be read then (release audit F17).
+    pub(crate) fn make_scope(&self, scope: &str) -> Result<(), String> {
+        self.current(scope).map(|_| ())
+    }
+
     /// A new data key for `scope` at `version`, made its current: written to `keys.json` before it
     /// is used, so nothing is sealed under a key keys.json doesn't keep.
     fn add_version(&self, inner: &mut Inner, scope: &str, version: u32) -> Result<Key, String> {
+        if crate::faults::failing("a scope's key").is_some() {
+            return Err(crate::faults::error("a scope's key").to_string());
+        }
         let root = self.root(inner)?;
         let (wrapped, data) = Keyring::new_version(&root, &inner.file.key_id, scope, version);
         let mut file = inner.file.clone();

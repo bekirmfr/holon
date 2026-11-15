@@ -326,8 +326,13 @@ fn serve_flow(
     // A strict run answers once its record is on disk; one whose record may not be isn't
     // answered as done (C2 e).
     let counted = Counted { route: route.as_deref(), at_ms: started.0, duration_ms: started.1.elapsed().as_secs_f64() * 1000.0, status: answer.status, error: error.as_deref() };
-    if let Some(Logged { kept: Err(e), .. }) = log_or_count(deployments, slug, counted, entry, tokens, level, sends) {
-        answer = data::DataResponse::json_error(500, &format!("the request ran, but {e}"));
+    match log_or_count(deployments, slug, counted, entry, tokens, level, sends) {
+        Some(Logged { kept: Err(e), .. }) => answer = data::DataResponse::json_error(500, &format!("the request ran, but {e}")),
+        // What it sends couldn't be spooled: none of it is sent, and its record says it failed.
+        Some(Logged { unsent: Some(_), .. }) => {
+            answer = data::DataResponse::json_error(500, "the request ran, but what it sends couldn't be kept to send, so none of it is sent: its run log says why")
+        }
+        _ => {}
     }
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.

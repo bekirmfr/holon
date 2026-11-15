@@ -12,6 +12,16 @@
   them wrote them in clear): it names them and refuses; it still moves old key files.
   `holon uninstall --purge` removes the key such a release kept its secrets under (the OS key
   store's `holon / secrets-key-<id>`) with the folder.
+- **A write that fails is never taken as done.** An event the server couldn't write (a full disk)
+  no longer breaks the events' chain for good: the chain goes on from the last line written, the
+  next event says which were lost, and `holon verify` lists them (and calls events missing that
+  none says were lost removed). A run whose line couldn't be written sends nothing: its packs,
+  queue messages and mail are dropped, as a crash would have, instead of going out with no line
+  of it in the log. A queue message or mail that can't be spooled fails its run: its record says
+  so, its caller gets 500 and nothing else it sends goes out, where before the message was
+  dropped and the record said it was sent. A deployment's keys are made as it is first deployed,
+  and a deploy whose keys can't be made is refused, instead of going live with nothing it runs
+  sealable.
 - **Waiting runs are sealed once, and capped by bytes.** A run waiting at `await` is sealed as it
   parks or parks again, and every save of the deployments file writes that sealed form, instead
   of sealing every waiting run of every deployment again under the table's lock. A new limit,

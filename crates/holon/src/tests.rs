@@ -7761,6 +7761,167 @@ fn a_run_after_a_commit_the_trimmed_log_lost_has_no_run_before_it() {
     assert_eq!(report.states.unwrap().breaks, vec![(3, "it began from a state the run before it (run 2) didn't leave, nor a run beside it".to_string())]);
 }
 
+/// **Guards:** a write that fails is never taken as done (release audit R28). For each write a
+/// run or a change depends on, made to fail: a run's line (a full disk), a queue message's or a
+/// mail's spool file, an event's line (whole, or cut short), a deployment's keys as it is first
+/// deployed. A run whose line isn't written sends nothing (no pack, message or mail); one whose
+/// message or mail can't be spooled fails, says so in its record, answers 500 and sends nothing;
+/// an event lost is said lost by the next, the chain whole, the export verifying, the file
+/// opening again unbroken; a deployment whose keys can't be made isn't deployed.
+///
+/// **Why:** each of these was taken as done: the events' head moved before the line was kept, so
+/// one failed write read as the events changed outside holon for good (F17, D8); a run's packs and
+/// mail went out with no line of it in the log (D9); a spool that failed dropped the message while
+/// the record said it was sent (O3); a deployment went live with nothing it ran sealable (F17).
+///
+/// **If it fails:** a full disk reads as tampering; or a subscriber, a queue or an inbox gets what
+/// the log never held; or a payout's record says a message went that never will.
+#[test]
+fn a_write_that_fails_is_never_taken_as_done() {
+    let sink = smtp::sink::start("PLAIN LOGIN");
+    let sqs = sqs::stand_in::StandIn::start();
+    sqs.make("outbox");
+    let dir = std::env::temp_dir().join(format!("holon-failed-writes-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_OPS_SMTP=smtp://ops:s3cret@127.0.0.1:{}\nHOLON_SECRET_OUT_URL={}\n", sink.port, sqs.url("outbox"))).unwrap();
+    let sources = || secret_sources::Sources::new(Some(env.clone())).unwrap();
+    let mut state = test_state_at(unique_temp_path("failed-writes").into());
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n").unwrap());
+    let mails = mails::Mails::memory().with_sources(sources()).with_retry([Duration::from_millis(50); 4], Duration::from_secs(60));
+    let queues = queues::Queues::memory().with_sources(sources()).with_retry([Duration::from_millis(50); 4], Duration::from_secs(60));
+    state.folders = Arc::new(folders::Folders::memory().with_mails(mails).with_queues(queues));
+    state.folders.mails.serve(Arc::clone(&state.deployments));
+    state.folders.queues.serve(Arc::clone(&state.deployments));
+    let bind = |path: &str, body: serde_json::Value| assert_eq!(route(&state, &req("POST", path, serde_json::to_vec(&body).unwrap())).status_code, 200, "{path}");
+    bind("/admin/mails", serde_json::json!({ "name": "ops", "smtp": "env:HOLON_SECRET_OPS_SMTP", "from": "Ops <ops@acme.com>", "to": "*@acme.com" }));
+    bind("/admin/queues", serde_json::json!({ "name": "out", "url": "env:HOLON_SECRET_OUT_URL" }));
+    let text = r#"import { flow, route } from "holon"
+import news from "channel:news"
+import ops from "mail:ops"
+import out from "queue:out"
+
+flow("writes", { port: 18244 })
+
+route.post("/send/:n", (req) => {
+  news.send({ n: req.params.n })
+  out.send({ data: { n: req.params.n } })
+  ops.send({ to: "a@acme.com", subject: `n ${req.params.n}`, text: "hi" })
+  return "sent"
+})
+
+route.post(
+  "/lazy/:n",
+  (req) => {
+    news.send({ n: req.params.n })
+    out.send({ data: { n: req.params.n } })
+    ops.send({ to: "a@acme.com", subject: `n ${req.params.n}`, text: "hi" })
+    return "sent"
+  },
+  { log: "lazy" },
+)
+"#;
+    // A deployment whose keys can't be made isn't deployed: nothing it ran could be kept.
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    crate::faults::fail("a scope's key", false);
+    let refused = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] }));
+    crate::faults::heal();
+    let (status, said) = (refused.status_code, String::from_utf8_lossy(&body_bytes(refused)).into_owned());
+    assert!(status == 503 && said.contains("keys couldn't be made"), "{status} {said}");
+    assert!(state.deployments.lock().unwrap().is_empty());
+    let slug = deploy_text(&state, text, "127.0.0.1");
+
+    // What went out: the packs on its channel, the messages on its queue, the mails sent; each
+    // as the `n` it was sent for.
+    let packs = || state.deployments.lock().unwrap()[&slug].channels.kept("news", true).iter().map(|p| p.json.clone()).collect::<Vec<_>>();
+    let messages = || sqs.messages("outbox").len();
+    let mailed = || sink.got.lock().unwrap().len();
+    let last_entry = || log_entries(&state, &slug).into_iter().last().unwrap();
+    // Each row: the route (strict, or lazy, whose caller is answered before its line is synced),
+    // the write that fails (none, the run's line, or a spool file, by name), the status, whether
+    // its record is in the log and its error starts with which, and whether what it sends goes
+    // out.
+    type Row = (&'static str, Option<&'static str>, u16, Option<Option<&'static str>>, bool);
+    let rows: Vec<Row> = vec![
+        ("send", None, 200, Some(None), true),
+        ("send", Some("its line"), 500, None, false),
+        ("lazy", Some("its line"), 200, None, false),
+        ("send", Some("a spooled message"), 500, Some(Some(queues::SEND_FAILED)), false),
+        ("lazy", Some("a spooled mail"), 500, Some(Some(mails::SEND_FAILED)), false),
+        ("lazy", None, 200, Some(None), true),
+    ];
+    let mut sent = 0;
+    for (n, (path, fails, want_status, recorded, goes_out)) in rows.into_iter().enumerate() {
+        let row = format!("row {n}, /{path}, {fails:?} failing");
+        let runs_before = log_entries(&state, &slug).len();
+        let fail_line = |on: bool| state.deployments.lock().unwrap()[&slug].log.with(|l| l.fail_writes = on);
+        match fails {
+            Some("its line") => fail_line(true),
+            Some(write) => crate::faults::fail(write, false),
+            None => {}
+        }
+        let (status, answer, _) = data_call(&state, &slug, "POST", &format!("/{path}/{n}"), "");
+        fail_line(false);
+        crate::faults::heal();
+        assert_eq!(status, want_status, "{row}: {answer}");
+        crate::recorder::sync_logs(&state.deployments).unwrap();
+        match recorded {
+            // Not in the file: the export below says it lost.
+            None => assert_eq!(log_entries(&state, &slug).len(), runs_before + 1, "{row}"),
+            Some(error) => {
+                let entry = last_entry();
+                let said = entry["error"].as_str();
+                assert!(error.map_or(said.is_none(), |e| said.is_some_and(|s| s.starts_with(e))), "{row}: {entry}");
+            }
+        }
+        if goes_out {
+            sent += 1;
+            eventually(&format!("{row}: its message and its mail"), || messages() == sent && mailed() == sent);
+        }
+        // What a row that sends nothing would have sent comes before the next one's: had it gone
+        // out, the counts would be past what was sent.
+        assert_eq!(packs().len(), sent, "{row}: {:?}", packs());
+    }
+    assert_eq!(packs().iter().map(|p| p.to_string()).collect::<Vec<_>>(), [r#"{"n":"0"}"#, r#"{"n":"5"}"#].map(String::from));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!((messages(), mailed()), (2, 2), "nothing of a run that failed to be kept or to spool went out");
+    let subjects: Vec<String> = sink.got.lock().unwrap().iter().filter_map(|g| g.data.lines().find(|l| l.starts_with("Subject: ")).map(String::from)).collect();
+    assert_eq!(subjects, ["Subject: n 0", "Subject: n 5"]);
+
+    // An event whose line can't be written, whole or cut short: the next says it lost, the chain
+    // goes on whole from the last line written.
+    let lifecycle = |action: &str| {
+        let body = if action == "run" { br#"{"from":"latest"}"#.to_vec() } else { vec![] };
+        assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/{action}"), body)).status_code, 200, "{action}");
+    };
+    let events_before = state.deployments.lock().unwrap()[&slug].events.lines().len();
+    crate::faults::fail("an event", false);
+    lifecycle("pause");
+    crate::faults::heal();
+    lifecycle("run");
+    crate::faults::fail("an event", true);
+    lifecycle("pause");
+    crate::faults::heal();
+    lifecycle("run");
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let said = verify::describe(&report, None);
+    assert!(report.ok(), "{said}");
+    assert_eq!(report.lost, vec![(1, 2)], "the runs whose lines failed: {said}");
+    let (first, second) = (events_before as u64, events_before as u64 + 2);
+    assert_eq!((&report.event_breaks, &report.event_gaps, &report.events_lost), (&vec![], &vec![], &vec![(first, first), (second, second)]), "{said}");
+    assert!(said.contains(&format!("event {first} isn't in the file: the server couldn't write it, and the event after says so")), "{said}");
+    // Opened again as a server starting opens it: unbroken.
+    let reopened = crate::events::Events::for_deployment(&state.deployments_path, &slug);
+    assert!(reopened.breaks().is_empty() && reopened.refused().is_none(), "{:?}", reopened.breaks());
+    assert_eq!(reopened.lines().len(), events_before + 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// **Guards:** `holon verify` tells a run the server couldn't write (a full disk) from one
 /// removed: the lost one reads as a run not in the file, which the line after it says, the chain
 /// unbroken, the export passing, and the run after it unchecked where it began (it may have begun

@@ -9,6 +9,10 @@
 //! checked when it is opened), and kept for good: events are few, runs many. Each names the run
 //! log's next seq when it happened (`run_seq`), so the two merge into one order. Each head goes to
 //! the witness, if one is set (heads.rs, kind `"event"`).
+//!
+//! An event whose line couldn't be written (a full disk) leaves the chain where it was, as a run
+//! log's does: the next line written follows the last one that was and says from which event on
+//! the lines before it were lost (`lost_since`), and the witness is sent no head that no line has.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -26,6 +30,12 @@ pub(crate) struct Event {
     pub(crate) seq: u64,
     /// The hash of the line before it (empty for the first).
     pub(crate) prev: String,
+    /// When the lines of the events before it couldn't be written (a full disk, say): the seq of
+    /// the first of them, each up to it lost. Its `prev` is the line before them, the last one
+    /// written, so the chain goes on whole and an event lost reads as lost, not removed, as a run
+    /// log's line does (`LogEntry::lost_since`). Absent when none was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) lost_since: Option<u64>,
     pub(crate) at_ms: u64,
     /// The run log's next seq when it happened: it came after the runs before that one.
     pub(crate) run_seq: u64,
@@ -98,6 +108,9 @@ pub(crate) struct Events {
     dirty: bool,
     /// Why its file isn't read or written ([`Events::refused`]).
     refused: Option<String>,
+    /// The first event whose line couldn't be written since the last that was: the next line
+    /// written says so (`Event::lost_since`).
+    lost_since: Option<u64>,
 }
 
 /// Where `slug`'s events are kept for the deployments file at `deployments_path`, if anywhere:
@@ -168,6 +181,7 @@ impl Events {
         let event = Event {
             seq: self.entries.last().map_or(0, |e| e.seq + 1),
             prev: self.head.clone(),
+            lost_since: self.lost_since,
             at_ms,
             run_seq,
             kind: kind.into(),
@@ -188,18 +202,27 @@ impl Events {
                 return;
             }
         };
-        self.head = line_hash(&line);
-        if let Some(slug) = &self.slug {
-            crate::heads::note(crate::heads::Head { deployment: slug.clone(), kind: "event".into(), seq: event.seq, head: self.head.clone(), at_ms });
-        }
+        let seq = event.seq;
         self.entries.push(event);
-        if let Err(e) = self.keep_line(&line) {
-            eprintln!("holon: could not keep an event in {:?}: {e}", self.file);
+        // The chain goes on from lines in the file, and the witness is sent only their heads: a
+        // line that couldn't be written is said lost by the next that is (release audit D8), never
+        // named as the `prev` of one that would read as the chain broken.
+        match self.keep_line(&line) {
+            Ok(()) => {
+                self.head = line_hash(&line);
+                self.lost_since = None;
+                if let Some(slug) = &self.slug {
+                    crate::heads::note(crate::heads::Head { deployment: slug.clone(), kind: "event".into(), seq, head: self.head.clone(), at_ms });
+                }
+            }
+            Err(e) => {
+                eprintln!("holon: could not keep an event in {:?}: {e}", self.file);
+                self.lost_since.get_or_insert(seq);
+            }
         }
     }
 
     fn keep_line(&mut self, line: &str) -> std::io::Result<()> {
-        use std::io::Write;
         let Some(path) = self.file.clone() else { return Ok(()) };
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -208,7 +231,8 @@ impl Events {
             Some(seal) => seal.seal(line)?,
             None => line.to_string(),
         };
-        let text = if std::mem::take(&mut self.cut) { format!("\n{line}\n") } else { format!("{line}\n") };
+        let after_cut = std::mem::take(&mut self.cut);
+        let text = if after_cut { format!("\n{line}\n") } else { format!("{line}\n") };
         let new = !path.exists();
         let mut options = std::fs::OpenOptions::new();
         options.append(true).create(true);
@@ -221,8 +245,21 @@ impl Events {
         if new {
             crate::sealing::restrict_to_owner(&path)?;
         }
-        file.write_all(text.as_bytes())?;
-        self.dirty = true;
+        let bytes = text.as_bytes();
+        let failing = crate::faults::failing("an event");
+        let bytes = if failing == Some(true) { &bytes[..bytes.len() / 2] } else { bytes };
+        let (put, wrote) = match failing {
+            Some(false) => (0, Err(crate::faults::error("an event"))),
+            Some(true) => (crate::recorder::write_counted(&mut file, bytes).0, Err(crate::faults::error("an event"))),
+            None => crate::recorder::write_counted(&mut file, bytes),
+        };
+        // Part of the line may be in the file: the next starts on a line of its own, as after a
+        // crash, so it isn't lost joined to the part.
+        self.dirty |= put > 0;
+        if let Err(e) = wrote {
+            self.cut = after_cut || put > 0;
+            return Err(e);
+        }
         Ok(())
     }
 

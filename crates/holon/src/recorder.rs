@@ -892,7 +892,7 @@ fn sync_dir_of(path: &Path) {
 }
 
 /// Write `bytes` to `file` as `write_all` does, and how many went in, a failed write's too.
-fn write_counted(file: &mut std::fs::File, bytes: &[u8]) -> (usize, std::io::Result<()>) {
+pub(crate) fn write_counted(file: &mut std::fs::File, bytes: &[u8]) -> (usize, std::io::Result<()>) {
     use std::io::Write;
     let mut put = 0;
     while put < bytes.len() {
@@ -1945,6 +1945,12 @@ impl Log {
         seq
     }
 
+    /// Whether entry `seq`, the newest pushed, has its line written: not when its write failed
+    /// (`unkept`), whatever its level. What it sends goes out only if it has.
+    pub fn wrote(&self, seq: u64) -> bool {
+        self.unkept.back() != Some(&seq)
+    }
+
     /// Entry `seq`'s line isn't in the file: a strict run is told so, and the next line written
     /// says so.
     fn unkept(&mut self, seq: u64) {
@@ -2313,6 +2319,7 @@ impl Log {
     /// (the newest `limit`, when there are more): those in memory, and the older ones read from
     /// its file. Read here, with whatever lock it is under held; a `LogCell`'s `after` reads them
     /// with its lock released.
+    #[cfg(test)]
     pub fn after(&self, after: Option<u64>, limit: usize) -> Vec<LogEntry> {
         self.plan(after, limit).read()
     }

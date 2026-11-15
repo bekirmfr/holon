@@ -326,6 +326,11 @@ pub(crate) struct Report {
     pub(crate) events: usize,
     pub(crate) bad_event_lines: Vec<usize>,
     pub(crate) event_breaks: Vec<u64>,
+    /// Events whose lines the server couldn't write, as the event after them says, and events
+    /// missing that no event says were lost: the first and the last of each run of them, as for
+    /// runs (`lost`, `gaps`).
+    pub(crate) events_lost: Vec<(u64, u64)>,
+    pub(crate) event_gaps: Vec<(u64, u64)>,
     pub(crate) events_head_matches: bool,
     /// For a head given to check against: the event it is the hash of, if it is one.
     pub(crate) witnessed_event: Option<u64>,
@@ -393,6 +398,7 @@ impl Report {
             && self.gaps.is_empty()
             && self.head_matches
             && self.event_breaks.is_empty()
+            && self.event_gaps.is_empty()
             && self.bad_event_lines.is_empty()
             && self.events_head_matches
             && (self.witnessed != Some(None) || self.witnessed_event.is_some())
@@ -917,6 +923,8 @@ fn whole(unit: &holon_core::Unit, resolver: &impl holon_core::Resolver) -> bool 
 /// the head the export names.
 fn check_events(export: &Export, witnessed: Option<&str>, report: &mut Report) {
     let mut head = String::new();
+    // The seq the next event has, unless the server says it lost those before it.
+    let mut next = 0;
     for (i, line) in export.events.iter().enumerate() {
         let Ok(event) = serde_json::from_str::<crate::events::Event>(line) else {
             report.bad_event_lines.push(i + 1);
@@ -925,6 +933,17 @@ fn check_events(export: &Export, witnessed: Option<&str>, report: &mut Report) {
         if event.prev != head {
             report.event_breaks.push(event.seq);
         }
+        // Events the server couldn't write, which the next it wrote says (`Event::lost_since`):
+        // not a break. Events missing that no line says were lost were removed, the lines after
+        // them chained again.
+        let said = event.lost_since.filter(|from| *from < event.seq);
+        if let Some(from) = said {
+            report.events_lost.push((from, event.seq - 1));
+        }
+        if event.seq > next && said.is_none_or(|from| from > next) {
+            report.event_gaps.push((next, event.seq - 1));
+        }
+        next = event.seq + 1;
         head = line_hash(line);
         if witnessed == Some(head.as_str()) {
             report.witnessed_event = Some(event.seq);
@@ -1812,6 +1831,14 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
         };
         if !r.bad_event_lines.is_empty() {
             out += &format!("  event lines {} aren't events (cut short by a crash, or changed)\n", list(&r.bad_event_lines));
+        }
+        for (from, to) in &r.events_lost {
+            let which = if from == to { format!("event {from} isn't") } else { format!("events {from} to {to} aren't") };
+            out += &format!("  {which} in the file: the server couldn't write it, and the event after says so\n");
+        }
+        for (from, to) in &r.event_gaps {
+            let which = if from == to { format!("event {from} is") } else { format!("events {from} to {to} are") };
+            out += &format!("  {which} MISSING, and no event says the server lost it: removed outside holon\n");
         }
     }
     if !r.events_head_matches {

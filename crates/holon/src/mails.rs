@@ -584,9 +584,11 @@ impl Mails {
     /// The mails a logged run sent (`mails`: through which, and the message, as it performed
     /// them), spooled before its record is written: its place in the run, the time it began
     /// (`at_ms`, its `Date`) and its id give each its `Message-ID`. One whose mail isn't bound now
-    /// is noted and dropped.
-    fn spool(&self, slug: &str, run: &str, at_ms: u64, mails: Vec<(String, Value)>, unlogged: bool) -> Vec<Queued> {
+    /// is noted and dropped. With them, why one couldn't be spooled, if one couldn't: it is noted
+    /// and dropped too.
+    fn spool(&self, slug: &str, run: &str, at_ms: u64, mails: Vec<(String, Value)>, unlogged: bool) -> (Vec<Queued>, Option<String>) {
         let mut out = Vec::new();
+        let mut unspooled = None;
         for (n, (mail, message)) in mails.into_iter().enumerate() {
             let Some((key, binding)) = self.resolve_keyed(slug, &mail).filter(|(_, b)| !b.smtp.is_empty()) else {
                 self.note(slug, &mail, format!("didn't mail through {mail}: it isn't bound to send now"));
@@ -608,29 +610,55 @@ impl Mails {
             let subject = field("subject").pop().unwrap_or_default();
             let spooled = Spooled { slug: slug.to_string(), mail, run: run.to_string(), n, at_ms, to, subject, unlogged };
             let file = self.0.spool.as_ref().map(|dir| dir.join(format!("{slug}.{run}.{n}.mail")));
-            if let (Some(dir), Some(file)) = (&self.0.spool, &file) {
-                let mut kept = serde_json::to_vec(&spooled).unwrap_or_default();
-                kept.push(b'\n');
-                kept.extend_from_slice(&bytes);
-                // Sealed under the deployment's keys (at_rest.rs, §5.5): what it mails, to whom.
-                let scope = crate::at_rest::deployment(slug);
-                if let Err(e) = holon_host::create_private_dir(dir).and_then(|_| crate::at_rest::write_sealed(file, &scope, crate::at_rest::role::SPOOL_MAIL, &kept)) {
-                    self.note(slug, &spooled.mail, format!("didn't mail {:?} through {}: it couldn't be spooled ({e})", spooled.subject, spooled.mail));
-                    continue;
+            // Sealed under the deployment's keys (at_rest.rs, §5.5): what it mails, to whom.
+            let written = match (&self.0.spool, &file) {
+                _ if crate::faults::failing("a spooled mail").is_some() => Err(crate::faults::error("a spooled mail")),
+                (Some(dir), Some(file)) => {
+                    let mut kept = serde_json::to_vec(&spooled).unwrap_or_default();
+                    kept.push(b'\n');
+                    kept.extend_from_slice(&bytes);
+                    let scope = crate::at_rest::deployment(slug);
+                    holon_host::create_private_dir(dir).and_then(|_| crate::at_rest::write_sealed(file, &scope, crate::at_rest::role::SPOOL_MAIL, &kept))
                 }
+                _ => Ok(()),
+            };
+            if let Err(e) = written {
+                self.note(slug, &spooled.mail, format!("didn't mail {:?} through {}: it couldn't be spooled ({e})", spooled.subject, spooled.mail));
+                unspooled.get_or_insert(format!("a mail through {} couldn't be spooled: {e}", spooled.mail));
+                continue;
             }
             out.push(Queued { key, spooled, message: bytes, file, tries: 0, not_before: Instant::now() });
         }
-        out
+        (out, unspooled)
     }
 
     /// Spool a logged run's mails (`entry` is its record, about to be written), before its record
-    /// is: what [`hold`](Self::hold) holds. A run that failed or parked sent none.
-    pub(crate) fn spool_logged(&self, slug: &str, entry: &LogEntry, mails: Vec<(String, Value)>) -> Vec<Queued> {
+    /// is: what [`hold`](Self::hold) holds. A run that failed or parked sent none. `Err`: one
+    /// couldn't be spooled, so none is sent (those spooled are dropped), and why: the run's record
+    /// says it, never that it sent what it never will (release audit O3).
+    pub(crate) fn spool_logged(&self, slug: &str, entry: &LogEntry, mails: Vec<(String, Value)>) -> Result<Vec<Queued>, String> {
         if mails.is_empty() || entry.error.is_some() || !entry.parked.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        self.spool(slug, &entry.run_id, entry.at_ms, mails, false)
+        match self.spool(slug, &entry.run_id, entry.at_ms, mails, false) {
+            (spooled, None) => Ok(spooled),
+            (spooled, Some(why)) => {
+                self.drop_spooled(slug, spooled, "another of its run's mails couldn't be spooled");
+                Err(why)
+            }
+        }
+    }
+
+    /// Mails spooled for a run and never to be sent (`why` not), their files removed and each
+    /// noted: one of the run's couldn't be spooled, or its record couldn't be written. What a
+    /// mail's recipient gets is what the log holds (release audit D9).
+    pub(crate) fn drop_spooled(&self, slug: &str, spooled: Vec<Queued>, why: &str) {
+        for q in spooled {
+            if let Some(file) = &q.file {
+                let _ = std::fs::remove_file(file);
+            }
+            self.note(slug, &q.spooled.mail, format!("didn't mail {:?} through {}: {why}", q.spooled.subject, q.spooled.mail));
+        }
     }
 
     /// Hold the mails spooled for entry `seq`, just written, until it is on disk
@@ -663,7 +691,7 @@ impl Mails {
         if mails.is_empty() || entry.error.is_some() || !entry.parked.is_empty() {
             return;
         }
-        for q in self.spool(slug, &entry.run_id, entry.at_ms, mails, true) {
+        for q in self.spool(slug, &entry.run_id, entry.at_ms, mails, true).0 {
             self.queue(q);
         }
     }
@@ -1266,7 +1294,7 @@ mod tests {
             .with_retry([Duration::from_millis(50); 4], Duration::from_secs(5));
         mails.bind("ops", &send("env:HOLON_SECRET_OPS_SMTP", "Treasury <treasury@acme.com>", "*@acme.com"), None).unwrap();
         mails.serve(Arc::new(Mutex::new(BTreeMap::new())));
-        mails.hold("app", 7, mails.spool_logged("app", &entry("r1"), vec![("ops".into(), message(&["a@acme.com"], "first")), ("ops".into(), message(&["b@acme.com"], "second"))]));
+        mails.hold("app", 7, mails.spool_logged("app", &entry("r1"), vec![("ops".into(), message(&["a@acme.com"], "first")), ("ops".into(), message(&["b@acme.com"], "second"))]).unwrap());
         // Spooled, not sent: its record isn't on disk.
         assert_eq!(std::fs::read_dir(dir.join("mail-spool")).unwrap().count(), 2);
         std::thread::sleep(Duration::from_millis(100));
@@ -1282,7 +1310,7 @@ mod tests {
         assert_eq!(got[0].from, "treasury@acme.com");
         wait_for("spool emptied", || std::fs::read_dir(dir.join("mail-spool")).unwrap().count() == 0);
         // A failed run's, or a parked one's: nothing.
-        mails.hold("app", 9, mails.spool_logged("app", &LogEntry { error: Some("x".into()), ..entry("r2") }, vec![("ops".into(), message(&["a@acme.com"], "failed"))]));
+        mails.hold("app", 9, mails.spool_logged("app", &LogEntry { error: Some("x".into()), ..entry("r2") }, vec![("ops".into(), message(&["a@acme.com"], "failed"))]).unwrap());
         assert_eq!(std::fs::read_dir(dir.join("mail-spool")).unwrap().count(), 0);
         // A recipient put off is tried again; one refused is given up, the rest still going.
         mails.send_unlogged("app", &entry("r3"), vec![("ops".into(), message(&["later@acme.com"], "deferred")), ("ops".into(), message(&["reject@acme.com"], "refused")), ("ops".into(), message(&["c@acme.com"], "third"))]);
@@ -1297,8 +1325,8 @@ mod tests {
         let mails = Mails::open(dir.join("mails.json").to_str().unwrap()).unwrap().with_sources(sources("smtp://127.0.0.1:1"));
         // Bound to a server that isn't there: spooled, and kept.
         mails.0.bound.write().unwrap().server.insert("ops".into(), Binding { smtp: "env:HOLON_SECRET_OPS_SMTP".into(), from: "t@acme.com".into(), to: vec!["*".into()], ..Default::default() });
-        mails.hold("app", 1, mails.spool_logged("app", &entry("landed"), vec![("ops".into(), message(&["a@acme.com"], "landed"))]));
-        mails.hold("app", 2, mails.spool_logged("app", &entry("lost"), vec![("ops".into(), message(&["a@acme.com"], "lost"))]));
+        mails.hold("app", 1, mails.spool_logged("app", &entry("landed"), vec![("ops".into(), message(&["a@acme.com"], "landed"))]).unwrap());
+        mails.hold("app", 2, mails.spool_logged("app", &entry("lost"), vec![("ops".into(), message(&["a@acme.com"], "lost"))]).unwrap());
         mails.send_unlogged("app", &entry("unlogged"), vec![("ops".into(), message(&["a@acme.com"], "unlogged"))]);
         assert_eq!(std::fs::read_dir(&spool).unwrap().count(), 3);
         // Each sealed under the deployment's keys (at_rest.rs §5.5): no recipient, no subject in

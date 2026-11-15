@@ -90,7 +90,11 @@ ok
    the server couldn't write (a full disk) isn't a break: the line after it says so, and the
    report lists it, `run 17 isn't in the file: the server couldn't write its line, and the line
    after says so`. The server numbers runs one after another, so runs missing that no line says
-   were lost were removed, and the lines after them chained again: `runs 5 to 7 MISSING`;
+   were lost were removed, and the lines after them chained again: `runs 5 to 7 MISSING`. The
+   deployment's events are checked the same way: an event the server couldn't write is said
+   lost by the next (`event 3 isn't in the file`), and one missing that none says was lost was
+   removed. A run whose line couldn't be written sends nothing: no pack, queue message or mail
+   of it goes out, so what its subscribers and queues got is what the log holds;
 2. every unit in the export is what its hash says;
 3. every run, run again from its log entry through the same core, produced what the log says:
    the same outputs, the same effects, the same status. Outbound calls are answered from the log,

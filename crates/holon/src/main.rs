@@ -75,6 +75,7 @@ mod editor;
 mod durable;
 mod engines;
 mod events;
+mod faults;
 mod mongo;
 mod firing;
 mod fixtures;

@@ -475,6 +475,12 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
             // The log goes on across versions: a run of the old version still in flight logs to it.
             Some(old) => (Arc::clone(&old.log), old.document.take(), std::mem::take(&mut old.versions), std::mem::take(&mut old.events)),
             None => {
+                // Its keys made before it goes live: left to its first seal, a root that couldn't be
+                // read then left it live with nothing it ran sealable, lazy runs answering 200 with
+                // no record (release audit F17).
+                if let Err(why) = crate::at_rest::keys().make_scope(&crate::at_rest::deployment(&body.slug)) {
+                    return err(503, format!("{:?}'s keys couldn't be made, so nothing it runs could be kept: {why}", body.slug));
+                }
                 let mut log = Log::for_deployment(deployments_path, &body.slug);
                 let events = crate::events::Events::for_deployment(deployments_path, &body.slug);
                 // A log or events left there that it can't read (a key missing) isn't started
