@@ -72,8 +72,8 @@ pub(crate) fn handle_get_replay(store: &SharedStore, folders: &folders::Folders,
         Some(Ok(n)) if (1..=MOST_RUNS).contains(&n) => n,
         Some(_) => return err(400, format!("runs: how many recent runs, 1 to {MOST_RUNS}")),
     };
-    let (log, redactor, granted) = match deployments.lock().unwrap().get(slug) {
-        Some(dep) => (std::sync::Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets), dep.permit.request_limits.clone()),
+    let (log, redactor, granted, plain_http) = match deployments.lock().unwrap().get(slug) {
+        Some(dep) => (std::sync::Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets), dep.permit.request_limits.clone(), dep.permit.outbound.plain_http.clone()),
         None => return err(404, format!("no deployment {slug:?}")),
     };
     let loaded = match units::closure(store, unit) {
@@ -93,7 +93,7 @@ pub(crate) fn handle_get_replay(store: &SharedStore, folders: &folders::Folders,
         Ok(export) => export,
         Err(e) => return err(500, e),
     };
-    Response::json(&replay(&export, unit, &resolver, runs, &within(&granted)))
+    Response::json(&replay(&export, unit, &resolver, runs, &within(&granted), &plain_http))
 }
 
 /// The limits a replay holds each round to: `holon verify`'s (`rerun_limits`: no clock or count
@@ -104,8 +104,9 @@ fn within(granted: &Limits) -> Limits {
 }
 
 /// `unit` replayed on the last `runs` runs among `export`'s lines that ran, each round held to
-/// `limits` (`within` the deployment's grant).
-pub(crate) fn replay(export: &Export, unit: Hash, resolver: &impl holon_core::Resolver, runs: usize, limits: &Limits) -> Replayed {
+/// `limits` (`within` the deployment's grant), a request named as it would go on the wire to
+/// the hosts granted plain HTTP (`plain_http`).
+pub(crate) fn replay(export: &Export, unit: Hash, resolver: &impl holon_core::Resolver, runs: usize, limits: &Limits, plain_http: &BTreeSet<String>) -> Replayed {
     let entries: Vec<LogEntry> = export.lines.iter().filter_map(|l| crate::wire::read_json::<LogEntry>(l.as_bytes()).ok()).collect();
     let files = BTreeMap::new();
     let texts = Texts { blobs: &export.blobs, blob_bytes: &export.blob_bytes, files: &files };
@@ -115,7 +116,7 @@ pub(crate) fn replay(export: &Export, unit: Hash, resolver: &impl holon_core::Re
     for &i in ran.iter().rev().take(runs) {
         let entry = &entries[i];
         let earlier: Vec<&LogEntry> = entries[..i].iter().filter(|e| e.run_id == entry.run_id).collect();
-        let (outcome, why, now_status) = match replay_one(entry, &earlier, &texts, unit, resolver, &marks, limits) {
+        let (outcome, why, now_status) = match replay_one(entry, &earlier, &texts, unit, resolver, &marks, limits, plain_http) {
             Replay::Same(now) => ("same", Vec::new(), now),
             Replay::Differs(why, now) => ("differs", why, now),
             Replay::CantTell(why) => ("cant_tell", vec![why], None),
@@ -139,7 +140,8 @@ enum Replay {
     CantTell(String),
 }
 
-fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash, resolver: &impl holon_core::Resolver, marks: &Marks, limits: &Limits) -> Replay {
+#[allow(clippy::too_many_arguments)]
+fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash, resolver: &impl holon_core::Resolver, marks: &Marks, limits: &Limits, plain_http: &BTreeSet<String>) -> Replay {
     if let Some(e) = &entry.error {
         return Replay::CantTell(format!("it failed then: {e}"));
     }
@@ -212,7 +214,7 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
         .flat_map(|r| r.exchanges)
         .map(|x| (x.request, x.response))
         .collect();
-    let performer = ByRequest { used: Mutex::new(vec![false; answers.len()]), answers, missed: Mutex::new(Vec::new()) };
+    let performer = ByRequest { used: Mutex::new(vec![false; answers.len()]), answers, missed: Mutex::new(Vec::new()), plain_http };
     let own = entry.reads.iter().map(|r| (r, entry.escaped));
     let reads = own
         .chain(earlier.iter().rev().flat_map(|e| e.reads.iter().map(|r| (r, e.escaped))))
@@ -347,13 +349,15 @@ fn effects(then: &[PerformedEntry], now: &[PerformedEntry]) -> String {
 
 /// The network, for a replay: what the run was answered to the very same request, each answer
 /// once while another for the same request is left; a request it never made is missed.
-struct ByRequest {
+struct ByRequest<'a> {
     answers: Vec<(Value, Value)>,
     used: Mutex<Vec<bool>>,
     missed: Mutex<Vec<String>>,
+    /// The hosts granted plain HTTP, where a missed request would go as `http://`.
+    plain_http: &'a BTreeSet<String>,
 }
 
-impl Performer for ByRequest {
+impl Performer for ByRequest<'_> {
     fn perform(&self, request: &Value, limits: &Limits) -> Value {
         let mut used = self.used.lock().unwrap();
         let same: Vec<usize> = (0..self.answers.len()).filter(|&i| self.answers[i].0 == *request).collect();
@@ -363,17 +367,19 @@ impl Performer for ByRequest {
                 self.answers[i].1.clone()
             }
             None => {
-                self.missed.lock().unwrap().push(asked(request));
+                self.missed.lock().unwrap().push(asked(request, self.plain_http));
                 Offline.perform(request, limits)
             }
         }
     }
 }
 
-/// A request as a replay names it: its method and its address, not its headers or body.
-fn asked(request: &Value) -> String {
+/// A request as a replay names it: its method and its address as it would go on the wire (plain
+/// HTTP to a host granted it, where the request says `https://`), not its headers or body.
+fn asked(request: &Value, plain_http: &BTreeSet<String>) -> String {
     let Value::Record(r) = request else { return "a request".into() };
     let text = |k: &str| match r.get(k) {
+        Some(Value::Text(t)) if k == "url" => Some(crate::outbound::on_the_wire(t, plain_http)),
         Some(Value::Text(t)) => Some(t.clone()),
         _ => None,
     };

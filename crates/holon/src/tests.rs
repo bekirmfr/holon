@@ -1736,7 +1736,8 @@ fn a_run_of_every_kind_finds_the_handler_it_ran_by_its_kind_and_label() {
 }
 
 /// A replayed version's outbound requests are answered by what the run was answered to the same
-/// request, wherever the version asks it from; one the run never sent can't be told.
+/// request, wherever the version asks it from; one the run never sent can't be told, and is named
+/// as it would go on the wire: plain HTTP to a host granted it, where the request says `https://`.
 #[test]
 fn a_replay_answers_a_request_the_run_sent_and_cant_tell_one_it_didnt() {
     use std::io::Write;
@@ -1788,7 +1789,8 @@ export const call = action(async (path) => {{
   const s = await api.get(\"/more\")
   return [r, s]");
     assert_eq!(r["cant_tell"], 1, "{r}");
-    assert!(r["runs"][0]["why"][0].as_str().unwrap().starts_with(&format!("it sends GET https://{host}/more")), "{r}");
+    // Named as it would go on the wire: plain HTTP, as the grant has it, where the request says https.
+    assert!(r["runs"][0]["why"][0].as_str().unwrap().starts_with(&format!("it sends GET http://{host}/more")), "{r}");
 }
 
 /// The grant is the boundary at run time: an effect it doesn't cover isn't performed, whatever
@@ -6659,7 +6661,7 @@ fn a_replay_computes_with_a_secret_on_a_budget_of_its_own() {
         let unit = stage_text(&state, &signer(n));
         let loaded = units::closure(&state.store, unit).unwrap_or_else(|_| panic!("the version's units"));
         let resolver = holon_module::WithEngine::new(&loaded, holon_module::shared());
-        let r = verify::replay(&export, unit, &resolver, 1, limits);
+        let r = verify::replay(&export, unit, &resolver, 1, limits, &BTreeSet::new());
         (r.differ, r.cant_tell, r.runs[0].why.join("; "))
     };
     let computed = |r: (usize, usize, String)| r.0 == 1 && r.2 == "its answer";

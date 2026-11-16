@@ -175,9 +175,21 @@ impl Outbound {
     }
 
     fn url(&self, target: &Target) -> String {
-        let scheme = if self.plain_http.contains(&target.authority) { "http" } else { "https" };
-        format!("{scheme}://{}{}", target.authority, target.rest)
+        wire_url(target, &self.plain_http)
     }
+}
+
+/// `target`'s address as it goes on the wire: plain HTTP to a host granted it (`PlainHttp`),
+/// HTTPS to any other, whatever scheme the request names (core writes `https://`).
+fn wire_url(target: &Target, plain_http: &BTreeSet<String>) -> String {
+    let scheme = if plain_http.contains(&target.authority) { "http" } else { "https" };
+    format!("{scheme}://{}{}", target.authority, target.rest)
+}
+
+/// `url` as a deployment granted plain HTTP to `plain_http` sends it: what is said of a request
+/// says what went, or would go, on the wire. One the host wouldn't call stays as it is.
+pub(crate) fn on_the_wire(url: &str, plain_http: &BTreeSet<String>) -> String {
+    parse_url(url).map_or_else(|| url.to_string(), |target| wire_url(&target, plain_http))
 }
 
 impl Performer for Outbound {
