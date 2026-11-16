@@ -1651,6 +1651,10 @@ fn rerun(
             ..stood.clone()
         })
         .collect();
+    // What holds a value its flow never keeps, under its key, is refused where it runs
+    // (never_keep.rs), and so here: its mark stands where the value stood.
+    let never_keep = read_server(deployed, resolver).map(|s| s.never_keep).unwrap_or_default();
+    host.performed.retain(|(c, p)| crate::never_keep::refused(c, p, &never_keep).is_none());
     // A write of a secret's value is refused where it runs (firing.rs), and run again here with
     // its placeholder it can't be told from one that was performed (a file's text, logged by
     // hash, differs too): the run isn't checked.

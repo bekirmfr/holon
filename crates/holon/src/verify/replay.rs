@@ -361,6 +361,9 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
             "it computes with a secret, a token or a tainted value more than a replay does in a round ({steps} steps, {fuel} instructions of js and module code, {memory} bytes of memory)"
         ));
     }
+    // As the server has it: what holds a value the version never keeps, under its key, is refused
+    // (never_keep.rs).
+    host.performed.retain(|(c, p)| crate::never_keep::refused(c, p, &server.never_keep).is_none());
     // As `rerun` has it: the server refuses a write of a secret's value.
     let keeps = |c: &Capability| matches!(c, Capability::StateWrite(_) | Capability::CollectionWrite(_) | Capability::DbWrite(_) | Capability::ChannelSend(_) | Capability::FileWrite(_));
     if host.performed.iter().any(|(c, p)| keeps(c) && marks.carries_secret(p)) {

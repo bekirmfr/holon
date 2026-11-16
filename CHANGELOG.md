@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **A flow can never keep a key, however short its value.** `flow("charge", { taint:
+  ["number"], never_keep: ["cvc"] })`: a value under a key it never keeps is replaced where it
+  stands, by `‹never_keep:cvc›`, at any length, in every form a run's record holds it (a record's
+  field, a header, a JSON text's field, a query or a form, either inside a JSON text's string as a
+  host's echo has it), and a write or a send that holds it is
+  refused (state, a collection, a file, a database, a channel, a mail, a queue, a line of its log,
+  another flow's action); a request to a host is sent. A tainted value is removed by its text,
+  which a short one can't be (a CVC `737` is in an amount `1737`), so one under six characters is
+  kept; a key never kept is guarded by its place, and the amount stays. For now a flow with it
+  can't wait, and a value read out of its key into one of its own (`const c = req.json.cvc`) is
+  followed no further. `holon check` says `it never keeps: cvc`, the deploy settings list it under
+  "never keeps", and an agent's version that drops a key waits for a person (`KeepAgain`). The
+  **card-check** sample shows it.
 - **A run that computed with a secret is checked offline, and its record marks what it computed.**
   Everything a run computed from a secret was left out of its record whole, by the graph alone
   (the step's outputs, the header it was sent in, the answer), and `holon verify` never ran such a

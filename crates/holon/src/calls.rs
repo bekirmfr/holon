@@ -108,6 +108,13 @@ impl Caller<'_> {
         if secrets::secret_in(input, self.vault).is_some() || self.fed.input(path, 0) != taint::Taint::Clean {
             return failure("refused", "a secret, or what is computed from one, can't be sent to another flow");
         }
+        // A value this flow never keeps, under its key, isn't handed to another flow, whose log
+        // and writes would keep it (never_keep.rs). Its own action's run is its own, redacted so.
+        if flow != self.slug
+            && let Some(key) = never_keep::held(input, &self.permit.never_keep)
+        {
+            return failure("refused", format!("what is sent holds {key:?}, which this flow never keeps: it isn't handed to another flow"));
+        }
         let Some(host) = self.store.1.host.get() else { return failure("failed", "this server has no deployments to call") };
         let by = match self.unrecorded {
             true => format!("flow {}, run {} (unrecorded: not in its log)", self.slug, self.run),

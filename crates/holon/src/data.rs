@@ -237,7 +237,8 @@ pub fn request_record(
 /// wherever the entry holds what its run had ([`LogEntry::values_mut`]), whatever started it: a
 /// record's field (a request's header, query or path parameter, a message's, an input's, an
 /// answer's, a row's), a header's `[name, value]` pair, a JSON text at any depth (a body, a call's
-/// answer), and a query or a form's `name=value` (a URL, a form body); all of it when it holds
+/// answer), and a query or a form's `name=value` (a URL, a form body), either of these two inside a
+/// JSON text's string too (a host's echo of a request's body); all of it when it holds
 /// more than one value. What a credential holds is tainted with it: what follows its scheme
 /// (`Bearer …`), what a Basic one decodes to and its password alone, each cookie's value, a set
 /// cookie's. A value shorter than a secret may be can't be told apart from ordinary text, so it
@@ -245,6 +246,24 @@ pub fn request_record(
 /// that.
 pub(crate) fn tainted(declared: &[String], entry: &mut crate::recorder::LogEntry, lines: &[(String, Value)], marked: &crate::secrets::Redactor) -> Vec<(String, String)> {
     let keys: Vec<&str> = holon_core::ALWAYS_TAINTED.iter().copied().chain(declared.iter().map(String::as_str)).collect();
+    found_at(&keys, entry, lines, marked)
+}
+
+/// The values of the keys a flow never keeps (`never_keep`) wherever a run's entry or its lines hold
+/// them, found as [`tainted`] finds a tainted key's, each with its key: those as long as a secret
+/// may be, which the host keeps out of what it records by their text too (`Redactor::never_kept`),
+/// besides where each stands under its key, at any length (`never_keep.rs`).
+pub(crate) fn never_kept(never_keep: &[String], entry: &mut crate::recorder::LogEntry, lines: &[(String, Value)], marked: &crate::secrets::Redactor) -> Vec<(String, String)> {
+    if never_keep.is_empty() {
+        return Vec::new();
+    }
+    let keys: Vec<&str> = never_keep.iter().map(String::as_str).collect();
+    found_at(&keys, entry, lines, marked)
+}
+
+/// [`tainted`]'s finding, for `keys`.
+fn found_at(keys: &[&str], entry: &mut crate::recorder::LogEntry, lines: &[(String, Value)], marked: &crate::secrets::Redactor) -> Vec<(String, String)> {
+    let keys = keys.to_vec();
     let mut found: Vec<(String, String)> = Vec::new();
     entry.values_mut(&mut |v| svalue_tainted(v, &keys, &mut found));
     for s in entry.texts_mut() {
@@ -378,6 +397,8 @@ fn json_tainted(json: &serde_json::Value, keys: &[&str], found: &mut Vec<(String
             }
         }
         serde_json::Value::Array(items) => items.iter().for_each(|v| json_tainted(v, keys, found)),
+        // A JSON text or a query inside a string: a host that echoes a request answers so.
+        serde_json::Value::String(t) => text_tainted(t, keys, found),
         _ => {}
     }
 }

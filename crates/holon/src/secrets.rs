@@ -1036,6 +1036,10 @@ pub(crate) fn mark(name: &str, shown: Option<&str>) -> String {
 pub(crate) struct Redactor {
     /// (value, mark), longest value first, so a value containing another is replaced whole.
     pairs: Vec<(String, String)>,
+    /// The keys its run's flow never keeps (`never_keep.rs`): each value under one is stood in for
+    /// where it stands, before any value is replaced by its text, and the stand-in (one of
+    /// `pairs`) is then written as its mark.
+    places: Option<crate::never_keep::Places>,
 }
 
 impl Redactor {
@@ -1055,7 +1059,7 @@ impl Redactor {
             })
             .collect();
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        Redactor { pairs, places: None }
     }
 
     /// The credentials a run's calls answered ([`answered_tokens`]), as `‹token:answer field #a1b2c3d4›`:
@@ -1072,7 +1076,7 @@ impl Redactor {
             pairs.extend(std::iter::once((value.clone(), mark.clone())).chain(escaped.map(|e| (e, mark))));
         }
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        Redactor { pairs, places: None }
     }
 
     /// What a run computed from its secrets ([`born`]), each as `‹derived #7c1e9a02›`, the start
@@ -1086,7 +1090,7 @@ impl Redactor {
             pairs.extend(std::iter::once((value.clone(), mark.clone())).chain(escaped.map(|e| (e, mark))));
         }
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        Redactor { pairs, places: None }
     }
 
     /// A run's tokens, as `‹token:name›`: a token is a bearer credential for its waiting point.
@@ -1094,7 +1098,7 @@ impl Redactor {
         let mut pairs: Vec<(String, String)> =
             tokens.iter().map(|(name, token)| (token.clone(), format!("‹token:{name}›"))).collect();
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        Redactor { pairs, places: None }
     }
 
     /// A run's tainted values (`data::tainted`), each as `‹taint:key›`, the key it was found at;
@@ -1108,7 +1112,22 @@ impl Redactor {
             pairs.extend(std::iter::once((value.clone(), mark.clone())).chain(escaped.map(|e| (e, mark))));
         }
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        Redactor { pairs, places: None }
+    }
+
+    /// A run's values its flow never keeps: each where it stands under its key, at any length
+    /// (`places`), as `‹never_keep:key›`; and each found there that is as long as a secret may be
+    /// (`values`, `data::never_kept`) by its text too, as a tainted one is, as it reads inside JSON
+    /// text too, and a number that is one as it is written.
+    pub(crate) fn never_kept(places: Option<crate::never_keep::Places>, values: &[(String, String)]) -> Redactor {
+        let mut pairs: Vec<(String, String)> = places.as_ref().map(crate::never_keep::Places::pairs).unwrap_or_default();
+        for (key, value) in values {
+            let mark = crate::never_keep::mark(key);
+            let escaped = serde_json::to_string(value.as_str()).ok().map(|q| q[1..q.len() - 1].to_string()).filter(|e| e != value);
+            pairs.extend(std::iter::once((value.clone(), mark.clone())).chain(escaped.map(|e| (e, mark))));
+        }
+        pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+        Redactor { pairs, places }
     }
 
     /// The tokens a run's starts were handed (`calls::handed`), each as `‹token:name›`, as the
@@ -1116,20 +1135,21 @@ impl Redactor {
     pub(crate) fn handed(handed: &[(String, String)]) -> Redactor {
         let mut pairs: Vec<(String, String)> = handed.iter().map(|(name, token)| (token.clone(), format!("‹token:{name}›"))).collect();
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        Redactor { pairs, places: None }
     }
 
     /// This and `other` together: an entry is redacted once, so a mark one of them writes is
     /// never read by the other as a run's own text.
     pub(crate) fn and(mut self, other: Redactor) -> Redactor {
         self.pairs.extend(other.pairs);
+        self.places = self.places.or(other.places);
         self.pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
         self
     }
 
     /// Whether it has nothing to replace.
     pub(crate) fn is_empty(&self) -> bool {
-        self.pairs.is_empty()
+        self.pairs.is_empty() && self.places.is_none()
     }
 
     /// Whether `s` holds any of its values.
@@ -1139,6 +1159,9 @@ impl Redactor {
 
     pub(crate) fn text(&self, s: &str) -> String {
         let mut out = s.to_string();
+        if let Some(places) = &self.places {
+            places.text(&mut out);
+        }
         for (value, mark) in &self.pairs {
             if out.contains(value.as_str()) {
                 out = out.replace(value.as_str(), mark);
@@ -1193,7 +1216,7 @@ impl Redactor {
         // text, goes where the number was, and the text stays JSON, so what reads it reads the rest.
         let t = s.trim_start();
         if (t.starts_with('{') || t.starts_with('['))
-            && self.pairs.iter().any(|(value, mark)| mark.starts_with(TAINT_MARK) && value.parse::<f64>().is_ok() && s.contains(value.as_str()))
+            && self.pairs.iter().any(|(value, mark)| is_keyed(mark) && value.parse::<f64>().is_ok() && s.contains(value.as_str()))
             && let Ok(mut json) = serde_json::from_str::<serde_json::Value>(t)
         {
             let mut escaped = false;
@@ -1233,7 +1256,7 @@ impl Redactor {
             serde_json::Value::String(s) => *s = text(s, escaped),
             serde_json::Value::Number(n) => {
                 let written = n.to_string();
-                if let Some((_, mark)) = self.pairs.iter().find(|(value, mark)| mark.starts_with(TAINT_MARK) && *value == written) {
+                if let Some((_, mark)) = self.pairs.iter().find(|(value, mark)| is_keyed(mark) && *value == written) {
                     *json = serde_json::Value::String(mark.clone());
                 }
             }
@@ -1256,7 +1279,7 @@ impl Redactor {
                 escaped |= e;
             }
         });
-        if self.pairs.iter().any(|(_, mark)| mark.starts_with(TAINT_MARK)) {
+        if self.pairs.iter().any(|(_, mark)| is_keyed(mark)) {
             self.tainted_numbers(v);
         }
         escaped
@@ -1268,7 +1291,7 @@ impl Redactor {
         match v {
             SValue::Number(n) => {
                 let written = format!("{n}");
-                if let Some((_, mark)) = self.pairs.iter().find(|(value, mark)| mark.starts_with(TAINT_MARK) && *value == written) {
+                if let Some((_, mark)) = self.pairs.iter().find(|(value, mark)| is_keyed(mark) && *value == written) {
                     *v = SValue::Text(mark.clone());
                 }
             }
@@ -1283,6 +1306,9 @@ impl Redactor {
     /// it: with each value marked, and the run's own look-alikes of a mark escaped. Applied once,
     /// where the entry is logged, with every value the entry is redacted of (`and`).
     pub(crate) fn entry(&self, e: &mut LogEntry) {
+        if let Some(places) = &self.places {
+            places.entry(e);
+        }
         let mut escaped = false;
         e.values_mut(&mut |v: &mut SValue| escaped |= self.logged_svalue(v));
         for read in &mut e.reads {
@@ -1340,13 +1366,19 @@ pub(crate) fn texts_mut(v: &mut SValue, f: &mut impl FnMut(&mut String)) {
 }
 
 /// What follows a mark's `‹`: the kinds of value the log writes a mark in place of.
-const MARKED: [&str; 4] = ["secret:", "token:", "taint:", "derived #"];
+const MARKED: [&str; 5] = ["secret:", "token:", "taint:", "derived #", "never_keep:"];
 
 /// How a tainted value's mark begins: `‹taint:number›`.
 const TAINT_MARK: &str = "‹taint:";
 
+/// Whether `mark` is one of a value found under a key (`‹taint:number›`, `‹never_keep:cvc›`): a
+/// number that is its value is marked too.
+fn is_keyed(mark: &str) -> bool {
+    mark.starts_with(TAINT_MARK) || mark.starts_with(crate::never_keep::MARK)
+}
+
 /// Whether `s` starts with what reads as a mark the log writes: a run of `‹` before `secret:`,
-/// `token:`, `taint:` or `derived #`.
+/// `token:`, `taint:`, `derived #` or `never_keep:`.
 fn reads_as_mark(s: &str) -> bool {
     let rest = s.trim_start_matches('‹');
     rest.len() < s.len() && MARKED.iter().any(|kind| rest.starts_with(kind))

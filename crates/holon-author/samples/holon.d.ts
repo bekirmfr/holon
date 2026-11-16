@@ -56,6 +56,13 @@ declare module "holon" {
      *  `authorization`, `proxy-authorization`, `cookie` and `set-cookie` always are. Each once;
      *  a version that drops one asks a person when an agent deploys it. */
     taint?: string[]
+    /** Keys whose values the host never keeps, guarded by where they stand (under their key),
+     *  whatever their length: what a run is recorded with shows `‹never_keep:cvc›` there, and a
+     *  write or a send that holds the key is refused (a request to a host is sent). For now a
+     *  flow with it can't wait, and a value read out of its key is followed no further. A key is
+     *  here or in `taint`, not both; a version that drops one asks a person when an agent
+     *  deploys it. */
+    never_keep?: string[]
     /** The flow's tags: lowercase letters, digits and `-`, up to 40 of them each. Whoever is bound
      *  on a tag acts on every flow deployed with it; a version that adds one asks for approval. */
     tags?: string[]

@@ -108,6 +108,7 @@ as; its options are the deploy settings:
 | `limits: { run_budget_ms: "1m", request_timeout_ms: "50s", max_requests: 100 }` | Any other limit of the deploy settings, by its name there (see [Permissions](../reference/permissions.md#limits)). A `_ms` or `_seconds` limit takes a duration as text or a whole number in its unit, the others a whole number. More than the host's default asks for approval. |
 | `browsers: ["https://app.example"]` | The web origins allowed to call the flow from a browser (CORS), or `"*"`. One origin may be written alone, `browsers: "*"`. |
 | `taint: ["x-api-key", "number"]` | Keys whose values the server never keeps of the flow's runs, each once (see **Tainted keys**, below). The editor's deployment settings list them under "keeps out of its records", where a key is added or removed. |
+| `never_keep: ["cvc", "pin"]` | Keys whose values the server never keeps, guarded by where they stand, whatever their length; each once, and none of them tainted too (see **Keys never kept**, below). The editor's deployment settings list them under "never keeps". |
 | `tags: ["payments"]` | The flow's tags: lowercase letters, digits and `-`, up to 40 of them each. Whoever is bound on a tag acts on every flow deployed with it ([People and access](../guides/people.md)). A version that adds a tag asks for approval, and the review says who the tag lets in. |
 
 **Tainted keys.** The values of the keys a flow taints are kept out of everything the server keeps
@@ -124,6 +125,33 @@ has it, under any key or inside text. One shorter than six characters is kept as
 PIN: too short to find safely in other text). What the flow writes stays as written in its state,
 a collection, a database or a file: a later run that reads it back under a tainted key is logged
 without it, one that reads it under another key isn't.
+
+**Keys never kept.** A key a flow never keeps (`never_keep: ["cvc"]`) is guarded by where its
+value stands, under the key, not by what the value looks like, so a short one is guarded too. A
+tainted value is found once and then removed by its text wherever the run has it, which a short
+value can't be: a CVC `737` is also in an amount `1737`, so a tainted value under six characters
+is kept as it is. A value never kept is replaced where it stands, at any length, by
+`‹never_keep:cvc›`, in every form a run's record holds it under its key: a record's field at any
+depth (the key any case), a header, a JSON text's field at any depth (a body, a call's answer, a
+text the flow built; only the value's own bytes change), a query's or a form's `name=value`,
+and either inside a JSON text's string (a host that echoes the request answers so). A
+value of six characters or more is also removed by its text everywhere, as a tainted one is.
+Nothing else is touched: beside a CVC `737`, the amount `1737` stays as it was.
+
+A write or a send that holds the key in one of those forms is refused, as a write of a secret is,
+and the run goes on without it: state, a collection, a file, a database, a channel, a mail, a
+queue, a line of the flow's log, a call or a start of another flow's action. A request to a host
+is sent with it (sending a card's CVC to the payment processor is why the flow takes it), and its
+record is redacted as the rest. A version that drops a key, or moves it back to `taint`, asks a
+person when an agent deploys it; moving a key from `taint` here asks nothing. A key is in one list
+or the other: `"cvc" is never kept, so it needn't be tainted too`, said where it is tainted.
+
+What this doesn't do yet: a flow that never keeps a key can't wait (`await event`, `await
+approval`), since a waiting run is stored whole until it goes on, the value with it; the mistake
+is said where it waits. And a value read out of its key into a value of its own (`const c =
+req.json.cvc`) stands under no key: `state.c = c` or `console.log(c)` keeps it. Following it
+through the flow is the next stage. The value is in the server's memory while the run goes on, as
+everything the run has is. The **card-check** sample shows it.
 
 ## Names and literals
 

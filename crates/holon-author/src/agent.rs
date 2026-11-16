@@ -646,6 +646,9 @@ A FILE (NAME.holon.ts: its imports, then flow(…), then its handlers)
   flow("notes-api", { port: 8102 })             its name (what it deploys as) and its settings:
                                                 port, keep: { runs, days }, browsers, limits,
                                                 taint: ["x-api-key"] (keys the log never holds),
+                                                never_keep: ["cvc"] (keys never kept, at any length,
+                                                by where they stand; a write or a send that holds
+                                                one is refused; such a flow can't wait yet),
                                                 tags: ["payments"] (who is bound on one acts on it)
   The imports name everything that outlives a run or comes from outside it; the body uses only
   names they gave. An import names, it grants nothing: what the flow may do is worked out from

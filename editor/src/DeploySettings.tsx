@@ -4,7 +4,7 @@
 // deployed with it. The deployment is named after the flow, so there is no separate slug.
 
 import { useEffect, useState, type CSSProperties } from "react";
-import { alwaysTainted, manifestTrigger, taintKeyProblem } from "./holon";
+import { alwaysTainted, manifestTrigger, neverKeepKeyProblem, taintKeyProblem } from "./holon";
 import { useDryRun, type DryRunReport } from "./DryRun";
 import { useCan } from "./can";
 import {
@@ -39,6 +39,9 @@ export type FlowSettings = {
   /** The keys whose values it keeps out of its records (`taint: ["x-api-key"]`), as added, beside
    *  those every flow does: part of the unit it deploys as. */
   taint?: string[];
+  /** The keys whose values it never keeps (`never_keep: ["cvc"]`), guarded by where they stand,
+   *  whatever their length, none of them tainted too: part of the unit it deploys as. */
+  never_keep?: string[];
 };
 
 /** A flow's `browsers` setting as the list the server takes. */
@@ -473,16 +476,18 @@ function AgentsMayReadLogs({ capabilities, settings, setSettings, readOnly = fal
  * The keys whose values the flow keeps out of its records (`taint`), as a list across the panel:
  * the ones every flow does, fixed, then its own, each removed with its ×, and a field that adds one
  * once core's rule and the list take it. Editing it rewrites the text's `flow(...)` line, as the
- * port does.
+ * port does. With `field` `never_keep`, the keys it never keeps, the same way: none fixed, and
+ * none of them in the other list.
  */
-function TaintKeys({ settings, setSettings, readOnly = false }: { settings: FlowSettings; setSettings: (s: FlowSettings) => void; readOnly?: boolean }) {
+function TaintKeys({ settings, setSettings, readOnly = false, field = "taint" }: { settings: FlowSettings; setSettings: (s: FlowSettings) => void; readOnly?: boolean; field?: "taint" | "never_keep" }) {
   const [draft, setDraft] = useState("");
-  const keys = settings.taint ?? [];
+  const never = field === "never_keep";
+  const keys = settings[field] ?? [];
   const key = draft.trim();
-  const problem = key === "" ? null : taintKeyProblem(key, keys);
+  const problem = key === "" ? null : never ? neverKeepKeyProblem(key, keys, settings.taint ?? []) : taintKeyProblem(key, keys, settings.never_keep ?? []);
   const set = (next: string[]) => {
-    const { taint: _, ...rest } = settings;
-    setSettings(next.length > 0 ? { ...rest, taint: next } : rest);
+    const { [field]: _, ...rest } = settings;
+    setSettings(next.length > 0 ? { ...rest, [field]: next } : rest);
   };
   const add = () => {
     if (key === "" || problem) return;
@@ -494,13 +499,17 @@ function TaintKeys({ settings, setSettings, readOnly = false }: { settings: Flow
     <>
       <span
         style={{ gridColumn: "1 / -1", marginTop: 4 }}
-        title="keys whose values the host never keeps of any run: a header, a query or path parameter, a body field, a message. Its records show ‹taint:key› in their place"
+        title={
+          never
+            ? "keys whose values the host never keeps, guarded where they stand under the key, whatever their length: a write or a send that holds one is refused (a request to a host is sent). Its records show ‹never_keep:key› in their place. A flow with one can't wait yet"
+            : "keys whose values the host never keeps of any run: a header, a query or path parameter, a body field, a message. Its records show ‹taint:key› in their place"
+        }
       >
-        keeps out of its records
+        {never ? "never keeps" : "keeps out of its records"}
       </span>
-      <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }} aria-label="taint keys">
+      <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }} aria-label={never ? "never_keep keys" : "taint keys"}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-          {alwaysTainted().map((k) => (
+          {!never && alwaysTainted().map((k) => (
             <span key={k} style={{ ...chip, color: "var(--faint)", borderStyle: "dashed" }} title="every flow keeps it out">
               {k}
             </span>
@@ -511,8 +520,8 @@ function TaintKeys({ settings, setSettings, readOnly = false }: { settings: Flow
               {!readOnly && (
                 <button
                   onClick={() => set(keys.filter((x) => x !== k))}
-                  aria-label={`stop keeping ${k} out`}
-                  title={`record the values of ${k} again`}
+                  aria-label={never ? `stop never keeping ${k}` : `stop keeping ${k} out`}
+                  title={never ? `keep the values of ${k} again` : `record the values of ${k} again`}
                   style={{ border: "none", background: "none", color: "var(--faint)", cursor: "pointer", padding: 0, fontSize: 11, lineHeight: 1 }}
                 >
                   ×
@@ -524,8 +533,8 @@ function TaintKeys({ settings, setSettings, readOnly = false }: { settings: Flow
         {!readOnly && (
           <input
             value={draft}
-            placeholder="add a key (x-api-key), Enter"
-            aria-label="add a taint key"
+            placeholder={never ? "add a key (cvc), Enter" : "add a key (x-api-key), Enter"}
+            aria-label={never ? "add a key it never keeps" : "add a taint key"}
             autoComplete="off"
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -659,6 +668,7 @@ export function DeploySettings({
               </>
             )}
             {(!hideDefaults || !!settings.taint?.length) && <TaintKeys settings={settings} setSettings={setSettings} readOnly={readOnly} />}
+            {(!hideDefaults || !!settings.never_keep?.length) && <TaintKeys settings={settings} setSettings={setSettings} readOnly={readOnly} field="never_keep" />}
             {clocks.length > 0 && (
               <>
                 <span title="its every nodes: each runs its group on its own period">clocks</span>

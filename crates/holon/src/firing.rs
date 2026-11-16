@@ -811,6 +811,12 @@ fn run_attempt(
             eprintln!("holon: refused {cap:?}: a copy from the folder {from:?}, which this deployment doesn't read");
             return false;
         }
+        // A value its flow never keeps, under its key (never_keep.rs), beside a secret's: read off
+        // the payload as the run made it, before anything of it is marked.
+        if let Some(why) = never_keep::refused(cap, payload, &permit.never_keep) {
+            eprintln!("holon: {why}");
+            return false;
+        }
         // A file too: another deployment that reads it logs its text, redacted only of its own
         // secrets, and a part of it read is kept as it is.
         if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) | Capability::ChannelSend(key) | Capability::MailSend(key) | Capability::QueueSend(key) | Capability::FileWrite(key) = cap {
@@ -862,7 +868,18 @@ fn run_attempt(
     let run = FiredRun {
         outputs: outcome.outputs,
         performed: host.performed,
-        lines: host.logs,
+        // A line that holds a value its flow never keeps, under its key, isn't written.
+        lines: host
+            .logs
+            .into_iter()
+            .filter(|(level, line)| match never_keep::refused(&Capability::Log(level.clone()), line, &permit.never_keep) {
+                Some(why) => {
+                    eprintln!("holon: {why}");
+                    false
+                }
+                None => true,
+            })
+            .collect(),
         timeline: timer.timeline,
         rounds: outcome.rounds,
         error: failed_read
@@ -1057,10 +1074,10 @@ pub(crate) fn log_or_count(
     let mut made = None;
     let failure = match counted.error {
         Some(_) => {
-            let (secrets, taint) = redaction_of(deployments, slug)?;
+            let (secrets, taint, never_keep) = keys_of(deployments, slug)?;
             let mut e = (entry.take().expect("not made yet"))();
             let lines = e.lines.clone();
-            let redactor = redactor_of(&mut e, &lines, tokens(), &secrets, &taint);
+            let redactor = redactor_with(&mut e, &lines, tokens(), &secrets, &taint, &never_keep);
             made = Some(e);
             Some(redactor)
         }
@@ -1074,13 +1091,13 @@ pub(crate) fn log_or_count(
         if !count_if_unrecorded(dep, &counted, declared, redact).1 {
             None
         } else if sends {
-            Some((Arc::clone(&dep.channels), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), tainted_keys(dep)))
+            Some((Arc::clone(&dep.channels), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), tainted_keys(dep), never_kept_keys(dep)))
         } else {
             return Some(Logged { seq: None, kept: Ok(()) });
         }
     };
-    if let Some((channels, secrets, folders, taint)) = sending {
-        send_unlogged(&channels, &folders, entry(), |e| redactor_of(e, &[], tokens(), &secrets, &taint));
+    if let Some((channels, secrets, folders, taint, never_keep)) = sending {
+        send_unlogged(&channels, &folders, entry(), |e| redactor_with(e, &[], tokens(), &secrets, &taint, &never_keep));
         return Some(Logged { seq: None, kept: Ok(()) });
     }
     log_run(deployments, slug, entry(), tokens(), declared)
@@ -1091,12 +1108,26 @@ fn tainted_keys(dep: &Deployment) -> Vec<String> {
     dep.server.as_ref().map(|s| s.taint.clone()).unwrap_or_default()
 }
 
+/// The keys `dep`'s flow never keeps (`holon_core::Server::never_keep`).
+fn never_kept_keys(dep: &Deployment) -> Vec<String> {
+    dep.server.as_ref().map(|s| s.never_keep.clone()).unwrap_or_default()
+}
+
 /// What redacting `slug`'s runs takes: its secrets and the keys its flow taints. None: no such
-/// deployment.
+/// deployment. (A run that waits, whose redaction this is for, is of a flow that never keeps no
+/// key: one that does can't wait.)
 pub(crate) fn redaction_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Option<(Arc<Mutex<secrets::Resolved>>, Vec<String>)> {
+    keys_of(deployments, slug).map(|(secrets, taint, _)| (secrets, taint))
+}
+
+/// A deployment's secrets, the keys its flow taints and those it never keeps.
+type Keys = (Arc<Mutex<secrets::Resolved>>, Vec<String>, Vec<String>);
+
+/// [`redaction_of`], and the keys its flow never keeps.
+fn keys_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Option<Keys> {
     let table = deployments.lock().unwrap();
     let dep = table.get(slug)?;
-    Some((Arc::clone(&dep.secrets), tainted_keys(dep)))
+    Some((Arc::clone(&dep.secrets), tainted_keys(dep), never_kept_keys(dep)))
 }
 
 /// What `entry` is logged redacted of: the run's own values (`tokens`), the deployment's secrets,
@@ -1105,9 +1136,20 @@ pub(crate) fn redaction_of(deployments: &Mutex<BTreeMap<String, Deployment>>, sl
 /// (`data::tainted`), each as its mark. One taken for a secret or a token stays marked as that:
 /// of two marks for one value, the one named first here is written.
 pub(crate) fn redactor_of(entry: &mut LogEntry, lines: &[(String, Value)], tokens: Redactor, secrets: &Arc<Mutex<secrets::Resolved>>, taint: &[String]) -> Redactor {
+    redactor_with(entry, lines, tokens, secrets, taint, &[])
+}
+
+/// [`redactor_of`], and the values of the keys its flow never keeps (`never_keep`): each where it
+/// stands under its key, at any length, and each as long as a secret may be by its text too
+/// (`Redactor::never_kept`), as `‹never_keep:key›`. Joined to the same redactor (`and`), so
+/// the entry is marked in one pass: each value under such a key is stood in for while the entry
+/// is as the run had it (`never_keep::Places`, before the pass may write a JSON text again), and
+/// the pass writes the stand-in as its mark, never as a run's look-alike of one.
+pub(crate) fn redactor_with(entry: &mut LogEntry, lines: &[(String, Value)], tokens: Redactor, secrets: &Arc<Mutex<secrets::Resolved>>, taint: &[String], never_keep: &[String]) -> Redactor {
     let marked = tokens.and(Redactor::of(secrets)).and(Redactor::answers(&entry.answered.0, secrets)).and(Redactor::born(&entry.born));
+    let never = data::never_kept(never_keep, entry, lines, &marked);
     let found = data::tainted(taint, entry, lines, &marked);
-    marked.and(Redactor::tainted(&found))
+    marked.and(Redactor::tainted(&found)).and(Redactor::never_kept(crate::never_keep::Places::new(never_keep), &never))
 }
 
 /// An unrecorded run's packs (channels.rs): what it sent, or for a part that settled waiting what
@@ -1204,8 +1246,8 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
     let lines = std::mem::take(&mut entry.lines);
     // What it is redacted of, made before the table's lock is taken: finding its tainted values
     // walks it.
-    let (secrets, taint) = redaction_of(deployments, slug)?;
-    let redactor = redactor_of(&mut entry, &lines, tokens, &secrets, &taint);
+    let (secrets, taint, never_keep) = keys_of(deployments, slug)?;
+    let redactor = redactor_with(&mut entry, &lines, tokens, &secrets, &taint, &never_keep);
     let (log, channels, permit, folders, session, level, only_counted) = {
         let mut table = deployments.lock().unwrap();
         let dep = table.get_mut(slug)?;

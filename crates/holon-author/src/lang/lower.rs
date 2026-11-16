@@ -351,6 +351,8 @@ struct Lowerer<'a> {
     ticks: Vec<Block>,
     /// Whether the block being lowered is a websocket's: it runs and is done, so it doesn't wait.
     socket: bool,
+    /// The first key the flow never keeps (`never_keep: ["cvc"]`), if it has one: it can't wait.
+    never_keeps: Option<String>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -414,6 +416,7 @@ impl<'a> Lowerer<'a> {
             routes: vec![],
             ticks: vec![],
             socket: false,
+            never_keeps: file.headers.iter().find_map(|h| if let HeaderKind::NeverKeep(k) = &h.kind { k.first().cloned() } else { None }),
         }
     }
 
@@ -580,6 +583,7 @@ impl<'a> Lowerer<'a> {
                 HeaderKind::Browsers(o) => s.browsers = Some(o.join(" ")).filter(|b| !b.is_empty()),
                 HeaderKind::Tags(t) => s.tags = t.clone(),
                 HeaderKind::Taint(k) => s.taint = k.clone(),
+                HeaderKind::NeverKeep(k) => s.never_keep = k.clone(),
                 HeaderKind::Optional(Consent::Secret(n)) => optional.push(format!("SecretRead({n:?})")),
                 HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::State(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::Mail(_) | HeaderKind::Feed(_) | HeaderKind::Queue(_) => {}
                 HeaderKind::Calls(flow) => self.check_calls(flow, h.span, file)?,
@@ -2119,6 +2123,9 @@ impl<'a> Lowerer<'a> {
                 }
                 if matches!(self.cur().kind, FrameKind::Route { .. }) {
                     return err(e.span, ROUTE_WAITS);
+                }
+                if let Some(key) = &self.never_keeps {
+                    return err(e.span, crate::flow::never_keep_waits(key));
                 }
                 let mut params = vec![("name".to_string(), name.text.clone())];
                 if let Some(x) = expires {
@@ -5730,10 +5737,11 @@ route.get("/x", () => {
         assert_eq!(got.names[&node.id], "x");
     }
 
-    /// What a flow's server unit holds of its settings, its `tags` and the keys it `taint`s, lowers
-    /// into the settings (tags sorted, keys as written) and into the server unit as a frozen param,
-    /// which a flow without them hasn't, and onto no node; core reads it back. Each mistake is said
-    /// where it is, and settings a canvas holds are held to the same rules.
+    /// What a flow's server unit holds of its settings, its `tags`, the keys it `taint`s and those
+    /// it `never_keep`s, lowers into the settings (tags sorted, keys as written) and into the server
+    /// unit as a frozen param, which a flow without them hasn't, and onto no node; core reads it
+    /// back. Each mistake is said where it is (a key in both lists where it is tainted), and
+    /// settings a canvas holds are held to the same rules.
     #[test]
     fn unit_settings_lower_into_the_settings_and_the_server_unit() {
         let text = |field: &str| format!("import {{ flow, route }} from \"holon\"\n\nflow(\"f\", {{ port: 8200{field} }})\n\nroute.get(\"/x\", () => 1)\n");
@@ -5744,14 +5752,26 @@ route.get("/x", () => {
             let read = holon_core::read_server(&unit, &store).unwrap();
             (unit, read)
         };
-        let held = |name: &str, s: UnitSettings<'_>| if name == "tags" { s.tags.to_vec() } else { s.taint.to_vec() };
-        let read_back = |name: &str, s: &holon_core::Server| if name == "tags" { s.tags.clone() } else { s.taint.clone() };
+        let held = |name: &str, s: UnitSettings<'_>| match name {
+            "tags" => s.tags.to_vec(),
+            "taint" => s.taint.to_vec(),
+            _ => s.never_keep.to_vec(),
+        };
+        let read_back = |name: &str, s: &holon_core::Server| match name {
+            "tags" => s.tags.clone(),
+            "taint" => s.taint.clone(),
+            _ => s.never_keep.clone(),
+        };
         let plain = compiled(&text("")).doc;
         let (plain_unit, read) = unit_of(&plain);
-        assert!(plain_unit.params.iter().all(|p| p.name() != "tags" && p.name() != "taint") && read.tags.is_empty() && read.taint.is_empty(), "no params without them");
+        assert!(
+            plain_unit.params.iter().all(|p| !["tags", "taint", "never_keep"].contains(&p.name())) && read.tags.is_empty() && read.taint.is_empty() && read.never_keep.is_empty(),
+            "no params without them"
+        );
         for (name, field, as_held, param) in [
             ("tags", ", tags: [\"payments\", \"ops-2\"]", ["ops-2", "payments"], "ops-2 payments"),
             ("taint", ", taint: [\"x-api-key\", \"number\"]", ["x-api-key", "number"], "x-api-key number"),
+            ("never_keep", ", never_keep: [\"pin\", \"cvc\"]", ["pin", "cvc"], "pin cvc"),
         ] {
             let doc = compiled(&text(field)).doc;
             assert_eq!(held(name, doc.unit_settings()), as_held, "{name}: the settings");
@@ -5762,6 +5782,7 @@ route.get("/x", () => {
             assert!(doc.nodes.iter().all(|n| n.param(name).is_empty()), "{name}: on no node");
         }
         let (tags, taint) = ("tags are in quotes: tags: [\"payments\"]", "taint lists keys in quotes: taint: [\"x-api-key\", \"number\"]");
+        let never = "never_keep lists keys in quotes: never_keep: [\"cvc\", \"pin\"]";
         for (field, col, said) in [
             (", tags: [\"Payments\"]", 32, "\"Payments\" isn't a tag: lowercase letters, digits and -, up to 40 of them"),
             (", tags: [\"\"]", 32, "\"\" isn't a tag: lowercase letters, digits and -, up to 40 of them"),
@@ -5774,15 +5795,62 @@ route.get("/x", () => {
             (", taint: [\"number\", \"number\"]", 43, "\"number\" is tainted once"),
             (", taint: [name]", 33, taint),
             (", taint: \"number\"", 32, taint),
+            (", never_keep: [\"a b\"]", 38, "\"a b\" isn't a key: a name of up to 128 characters, no spaces"),
+            (", never_keep: [\"cvc\", \"cvc\"]", 45, "\"cvc\" is listed once"),
+            (", never_keep: [name]", 38, never),
+            (", never_keep: \"cvc\"", 37, never),
+            // A key in both lists: said where it is tainted, the one to take out.
+            (", taint: [\"number\", \"cvc\"], never_keep: [\"cvc\"]", 43, "\"cvc\" is never kept, so it needn't be tainted too"),
+            (", never_keep: [\"cvc\"], taint: [\"cvc\"]", 54, "\"cvc\" is never kept, so it needn't be tainted too"),
         ] {
             assert_eq!(error(&text(field)), (3, col, said.to_string()), "{field}");
         }
-        assert_eq!(error(&text(", labels: []")).2, "a flow's settings are port, keep, browsers, limits, taint and tags, not \"labels\"");
+        assert_eq!(error(&text(", labels: []")).2, "a flow's settings are port, keep, browsers, limits, taint, never_keep and tags, not \"labels\"");
         // Keys a canvas's settings hold (the editor's deploy panel writes them) are checked the same.
-        for (more, said) in [("a b", "\"a b\" isn't a key to taint: a name of up to 128 characters, no spaces"), ("number", "\"number\" is tainted once")] {
-            let mut doc = compiled(&text(", taint: [\"number\"]")).doc;
-            doc.server.as_mut().unwrap().taint.push(more.into());
-            assert_eq!(derive_server(&doc.nodes, &doc.edges, &mut MapResolver::new(), "8200", doc.unit_settings()).errors, [said], "{more}");
+        for (list, more, said) in [
+            ("taint", "a b", "\"a b\" isn't a key to taint: a name of up to 128 characters, no spaces"),
+            ("taint", "number", "\"number\" is tainted once"),
+            ("never_keep", "a b", "\"a b\" isn't a key to never keep: a name of up to 128 characters, no spaces"),
+            ("never_keep", "cvc", "\"cvc\" is listed once"),
+            ("never_keep", "number", "\"number\" is never kept, so it needn't be tainted too"),
+        ] {
+            let mut doc = compiled(&text(", taint: [\"number\"], never_keep: [\"cvc\"]")).doc;
+            let settings = doc.server.as_mut().unwrap();
+            if list == "taint" {
+                settings.taint.push(more.into())
+            } else {
+                settings.never_keep.push(more.into())
+            }
+            assert_eq!(derive_server(&doc.nodes, &doc.edges, &mut MapResolver::new(), "8200", doc.unit_settings()).errors, [said], "{list} {more}");
+        }
+    }
+
+    /// **Guards:** a flow that never keeps a key and waits (`await event`, `await approval`) is
+    /// refused where it waits, saying why and that it is a limit for now; a canvas whose settings
+    /// say so is refused at each handler that waits; the same flow without `never_keep` lowers.
+    /// **Why:** a waiting run is stored whole until it goes on (durable.rs), what it holds under
+    /// the key with it: the record's guard by place doesn't reach that store yet (stage B).
+    /// **If it fails:** a flow with `never_keep` deploys a wait, and a CVC lies in the waiting
+    /// run's store until it goes on, against what the setting says.
+    #[test]
+    fn a_flow_that_never_keeps_a_key_cant_wait_yet() {
+        let src = |never: &str, wait: &str| {
+            format!(
+                "import {{ action, approval, event, flow, route }} from \"holon\"\n\nflow(\"f\", {{ port: 8200{never} }})\n\nroute.post(\"/a\", (req) => pay(req.json))\n\nexport const pay = action(async (order) => {{\n  const d = await {wait}\n  return d\n}})\n"
+            )
+        };
+        let said = crate::flow::never_keep_waits("cvc");
+        assert!(said.contains("can't wait yet") && said.contains("for now"), "{said}");
+        for wait in ["event(\"paid\")", "approval(\"payout\")"] {
+            let plain = compiled(&src("", wait)).doc;
+            assert_eq!(error(&src(", never_keep: [\"cvc\"]", wait)), (8, 13, said.clone()), "{wait}");
+            // A canvas: its handler that waits is named.
+            let mut doc = plain.clone();
+            doc.server.as_mut().unwrap().never_keep = vec!["cvc".into()];
+            let errors = derive_server(&doc.nodes, &doc.edges, &mut MapResolver::new(), "8200", doc.unit_settings()).errors;
+            assert_eq!(errors, [format!("action pay: {said}")], "{wait}");
+            let errors = derive_server(&plain.nodes, &plain.edges, &mut MapResolver::new(), "8200", plain.unit_settings()).errors;
+            assert!(errors.is_empty(), "{wait}: {errors:?}");
         }
     }
 
@@ -5801,7 +5869,7 @@ route.get("/x", () => {
                 moved.push(name);
             }
         }
-        assert_eq!(moved, ["card-vault", "approved-payout"]);
+        assert_eq!(moved, ["card-vault", "card-check", "approved-payout"]);
     }
 
     #[test]

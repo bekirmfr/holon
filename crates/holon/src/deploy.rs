@@ -96,6 +96,8 @@ struct Previous {
     browsers: Vec<String>,
     /// The keys its server taints.
     taint: Vec<String>,
+    /// The keys its server never keeps.
+    never_keep: Vec<String>,
     /// Its server's handlers, by label: each one's unit.
     handlers: BTreeMap<String, Hash>,
 }
@@ -107,6 +109,7 @@ fn previous_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) ->
             unit: Some(d.unit),
             browsers: d.browsers.clone(),
             taint: d.server.as_ref().map(|s| s.taint.clone()).unwrap_or_default(),
+            never_keep: d.server.as_ref().map(|s| s.never_keep.clone()).unwrap_or_default(),
             handlers: d.server.iter().flat_map(|s| s.handlers()).map(|(label, _, h)| (label, h)).collect(),
         },
         None => Previous::default(),
@@ -122,9 +125,18 @@ fn browsers_added(browsers: &[String], previous: &[String]) -> Vec<String> {
 
 /// The keys the slug's deployment taints that `taint`, a version's, doesn't, as items a person
 /// approves for an agent (`Untaint("number")`): its runs' values under them are recorded from then
-/// on, which an agent that reads the log would see.
-fn untainted(taint: &[String], previous: &[String]) -> Vec<String> {
-    previous.iter().filter(|k| !taint.contains(k)).map(|k| format!("Untaint({k:?})")).collect()
+/// on, which an agent that reads the log would see. One it never keeps now is kept out more
+/// strictly, which asks nothing.
+fn untainted(taint: &[String], never_keep: &[String], previous: &[String]) -> Vec<String> {
+    previous.iter().filter(|k| !taint.contains(k) && !never_keep.contains(k)).map(|k| format!("Untaint({k:?})")).collect()
+}
+
+/// The keys the slug's deployment never keeps that `never_keep`, a version's, doesn't, as items a
+/// person approves for an agent (`KeepAgain("cvc")`): its runs' values under them may be kept and
+/// recorded from then on (tainted only, a short one is recorded as it is), which an agent that
+/// reads the log would see.
+fn kept_again(never_keep: &[String], previous: &[String]) -> Vec<String> {
+    previous.iter().filter(|k| !never_keep.contains(k)).map(|k| format!("KeepAgain({k:?})")).collect()
 }
 
 /// What deploying `unit` needs a person to approve (what policy and the previous grant don't
@@ -378,6 +390,13 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
             return err(400, format!("{named} opens this flow's WebSocket {}: it can't be optional", w.path));
         }
     }
+    // A flow that never keeps a key doesn't wait, for now: a waiting run is stored whole until it
+    // goes on, and what it holds under the key with it (the language says so where it waits).
+    if let Some(key) = server.never_keep.first()
+        && caps.iter().any(|c| matches!(c, Capability::Await(_) | Capability::Approval(_)))
+    {
+        return err(400, format!("a flow that never keeps {key:?} can't wait yet: a waiting run is stored whole until it goes on, and what it holds under the key would be stored with it"));
+    }
     // Agents may run only actions it has.
     if let Some(name) = body.requirements.agents.iter().find(|n| server.action(n).is_none()) {
         return err(400, format!("agents may run {name:?}, but it has no action {name:?}"));
@@ -414,7 +433,8 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     let (mut needed, withheld) = approval_needed(policy, &manifest, &previous, Some(&server), &body.slug, unit_hash, &resolver, !approves);
     if !approves {
         needed.extend(browsers_added(&body.browsers, &previous.browsers));
-        needed.extend(untainted(&server.taint, &previous.taint));
+        needed.extend(untainted(&server.taint, &server.never_keep, &previous.taint));
+        needed.extend(kept_again(&server.never_keep, &previous.never_keep));
         needed.extend(borrowed.into_iter().map(|(item, _)| item));
     }
     let missing: Vec<String> = needed.into_iter().filter(|item| !body.acknowledge.contains(item)).collect();
@@ -459,7 +479,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
             .map(|(name, n)| (name.clone(), *n))
             .collect();
     }
-    let permit = Arc::new(Permit::new(unit_hash, &grant, policy));
+    let permit = Arc::new(Permit::new(unit_hash, &grant, policy).never_keeping(Some(&server)));
     if let Some(why) = durable::refuses_waits(root_unit, &resolver, &permit) {
         return err(400, format!("this host can't grant that: {why}"));
     }
@@ -788,6 +808,7 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
     let server = read_server(root_unit, &resolver).ok();
     let (mut needs, withheld) = approval_needed(policy, &manifest, &previous, server.as_ref(), &body.slug, unit_hash, &resolver, proposes);
     let taint: Vec<String> = server.as_ref().map(|s| s.taint.clone()).unwrap_or_default();
+    let never_keep: Vec<String> = server.as_ref().map(|s| s.never_keep.clone()).unwrap_or_default();
     // What it runs of other flows that `who` may not run: refused to a person who approves,
     // waiting for someone who may when proposed.
     let borrowed = borrowed(deployments, &manifest.items(), &body.slug, who);
@@ -801,7 +822,8 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
         .collect();
     if proposes {
         needs.extend(browsers_added(&body.browsers, &previous.browsers));
-        needs.extend(untainted(&taint, &previous.taint));
+        needs.extend(untainted(&taint, &never_keep, &previous.taint));
+        needs.extend(kept_again(&never_keep, &previous.never_keep));
         needs.extend(borrowed.iter().map(|(item, _)| item.clone()));
     }
     let items = manifest.items();
@@ -832,7 +854,7 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
     let sent = holon_core::sent_secrets(root_unit, &resolver);
     let touches = touches::touches(&server, &touches::Ask { now: now.as_deref(), then: &then, needs: &needing, withheld: &withholding, optional: &optional, sent: &sent, unready: &unready, waits: &waits });
     let settings = match &asked_now {
-        Some(a) => touches::settings([&a.browsers, &body.browsers], [&previous.taint, &taint]),
+        Some(a) => touches::settings([&a.browsers, &body.browsers], [&previous.taint, &taint], [&previous.never_keep, &never_keep]),
         None => serde_json::json!([]),
     };
     Ok(serde_json::json!({

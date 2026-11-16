@@ -45,6 +45,8 @@ const THING = {
   hop: <><circle cx="6" cy="12" r="2.5" /><circle cx="18" cy="12" r="2.5" /><path d="M8.5 12h7M13 9.5l2.5 2.5-2.5 2.5" /></>,
   eye: <><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z" /><circle cx="12" cy="12" r="2.5" /></>,
   eyeOff: <><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z" /><circle cx="12" cy="12" r="2.5" /><path d="M4 4l16 16" /></>,
+  // Kept again: an archive box, a lid over what goes in.
+  archive: <><rect x="3" y="4" width="18" height="5" rx="1" /><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4" /></>,
   gauge: <><path d="M4 16a8 8 0 1 1 16 0" /><path d="m12 16 4-5" /></>,
   code: <path d="M8 7 3 12l5 5M16 7l5 5-5 5M13.5 5l-3 14" />,
   chip: <><rect x="7" y="7" width="10" height="10" rx="1.5" /><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4" /></>,
@@ -109,6 +111,7 @@ const KINDS: Record<string, { thing: Thing; does?: Does; label?: (arg: string) =
   RunsAction: { thing: "hop", label: (a) => a.replace("/", ".") },
   Unrecorded: { thing: "eyeOff" },
   Untaint: { thing: "eye" },
+  KeepAgain: { thing: "archive" },
   Browser: { thing: "window", label: (a) => (a === "*" ? "any site" : a.replace(/^https?:\/\//, "")) },
   Tag: { thing: "tag" },
 };

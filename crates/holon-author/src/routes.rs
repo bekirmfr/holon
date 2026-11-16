@@ -836,8 +836,8 @@ fn caller_unit(handler: Hash, inputs: &[Port], outputs: &[Port], params: Vec<Par
 
 /// A server unit over the given endpoints, clock handlers, file handlers and actions, in that order, with `port` when it
 /// has a route, and the keys the flow taints (joined by single spaces, set only when there is one,
-/// so a flow without hashes as it always did; core reads them, `Server::taint`), and its tags,
-/// the same way (`Server::tags`), both from its settings. Core's `read_server` re-checks
+/// so a flow without hashes as it always did; core reads them, `Server::taint`), those it never
+/// keeps (`Server::never_keep`) and its tags (`Server::tags`), the same way, all from its settings. Core's `read_server` re-checks
 /// everything on deploy.
 pub fn server_unit(handlers: Vec<Hash>, port: Option<u16>, settings: UnitSettings) -> Unit {
     let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
@@ -847,6 +847,9 @@ pub fn server_unit(handlers: Vec<Hash>, port: Option<u16>, settings: UnitSetting
     }
     if !settings.taint.is_empty() {
         params.push(frozen("taint", &settings.taint.join(" ")));
+    }
+    if !settings.never_keep.is_empty() {
+        params.push(frozen("never_keep", &settings.never_keep.join(" ")));
     }
     if !settings.tags.is_empty() {
         params.push(frozen("tags", &settings.tags.join(" ")));
