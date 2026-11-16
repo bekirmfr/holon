@@ -1620,34 +1620,53 @@ mod tests {
     /// at once than a quarter.
     #[test]
     fn passwords_are_checked_a_few_at_once_and_the_rest_wait_or_are_told_busy() {
-        // Slots of its own, so other tests' passwords aren't held up: two run, one waits.
-        let slots = std::sync::Arc::new(Slots::new(2, 1, Duration::from_millis(300)));
-        let (release, wait) = std::sync::mpsc::channel::<()>();
-        let wait = std::sync::Arc::new(Mutex::new(wait));
-        let held: Vec<_> = (0..2)
-            .map(|_| {
-                let (slots, wait) = (std::sync::Arc::clone(&slots), std::sync::Arc::clone(&wait));
-                std::thread::spawn(move || slots.run(|| Ok(wait.lock().unwrap().recv_timeout(Duration::from_secs(10)).ok())))
-            })
-            .collect();
-        let taken = |running, waiting| {
-            while *slots.taken.lock().unwrap() != (Taken { running, waiting }) {
-                std::thread::sleep(Duration::from_millis(5));
+        use std::sync::Arc;
+        // Slots of their own, so other tests' passwords aren't held up: two run, one waits. Two
+        // checks hold both until they are let go.
+        let taken = |slots: &Slots, running, waiting| assert!(crate::tests::soon(|| *slots.taken.lock().unwrap() == (Taken { running, waiting })), "{running} running, {waiting} waiting");
+        let hold = |slots: &Arc<Slots>| {
+            let (release, wait) = std::sync::mpsc::channel::<()>();
+            let wait = Arc::new(Mutex::new(wait));
+            let held: Vec<_> = (0..2)
+                .map(|_| {
+                    let (slots, wait) = (Arc::clone(slots), Arc::clone(&wait));
+                    std::thread::spawn(move || slots.run(|| Ok(wait.lock().unwrap().recv().ok())))
+                })
+                .collect();
+            taken(slots, 2, 0);
+            (release, held)
+        };
+        let let_go = |release: std::sync::mpsc::Sender<()>, held: Vec<std::thread::JoinHandle<Result<Option<()>, String>>>| {
+            for _ in &held {
+                release.send(()).unwrap();
+            }
+            for h in held {
+                h.join().unwrap().unwrap();
             }
         };
-        taken(2, 0);
+        let slots = Arc::new(Slots::new(2, 1, Duration::from_millis(300)));
+        let (release, held) = hold(&slots);
         let started = Instant::now();
         assert_eq!(slots.run(|| Ok(())).unwrap_err(), BUSY);
         assert!(started.elapsed() >= Duration::from_millis(250), "it waited its turn first");
-        // One waits: one more is told at once.
+        let_go(release, held);
+        taken(&slots, 0, 0);
+        // One waits: one more is told at once. Here the line waits an hour, so "at once" is
+        // "while the one in line still waits", whatever the machine's load.
+        let slots = Arc::new(Slots::new(2, 1, Duration::from_secs(3600)));
+        let (release, held) = hold(&slots);
         let waiter = {
-            let slots = std::sync::Arc::clone(&slots);
+            let slots = Arc::clone(&slots);
             std::thread::spawn(move || slots.run(|| Ok(7)))
         };
-        taken(2, 1);
-        let started = Instant::now();
-        assert_eq!(slots.run(|| Ok(())).unwrap_err(), BUSY);
-        assert!(started.elapsed() < Duration::from_millis(250), "the line is full: told at once");
+        taken(&slots, 2, 1);
+        let one_more = {
+            let slots = Arc::clone(&slots);
+            std::thread::spawn(move || slots.run(|| Ok(())))
+        };
+        assert!(crate::tests::soon(|| one_more.is_finished()), "the line is full: told at once, not after its wait");
+        assert_eq!(one_more.join().unwrap().unwrap_err(), BUSY);
+        assert!(!waiter.is_finished(), "while the one in line waits");
         // A slot freed while one waits: it goes on.
         release.send(()).unwrap();
         assert_eq!(waiter.join().unwrap(), Ok(7), "given the slot freed");
@@ -1655,7 +1674,7 @@ mod tests {
         for h in held {
             h.join().unwrap().unwrap();
         }
-        taken(0, 0);
+        taken(&slots, 0, 0);
         // The server's own.
         assert_eq!((CHECKS_AT_ONCE, CHECKS_WAITING, CHECKS_FROM_ONE, CHECK_WAIT), (4, 64, 8, Duration::from_secs(30)));
     }
@@ -1672,7 +1691,7 @@ mod tests {
             let held: Vec<_> = (0..CHECKS_FROM_ONE)
                 .map(|i| {
                     let (a, wait) = (&a, &wait);
-                    s.spawn(move || a.counted((format!("name-{i}"), here.into()), "passwords", || Ok(wait.lock().unwrap().recv_timeout(Duration::from_secs(10)).is_err())))
+                    s.spawn(move || a.counted((format!("name-{i}"), here.into()), "passwords", || Ok(wait.lock().unwrap().recv().is_err())))
                 })
                 .collect();
             while a.failures.lock().unwrap().from.get(here) != Some(&CHECKS_FROM_ONE) {

@@ -1585,7 +1585,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("create table t (i integer, r real, s text, b blob, n integer, big integer)").unwrap();
         conn.execute("insert into t values (?1, ?2, ?3, ?4, ?5, ?6)", rusqlite::params![7, 2.5, "x", vec![1u8, 255], None::<i64>, i64::MAX]).unwrap();
-        let soon = || Instant::now() + Duration::from_secs(5);
+        let soon = || Instant::now() + crate::tests::EVENTUALLY;
         let mut g = Gather::new("select * from t", true, 10, 1 << 20);
         select(&conn, "select * from t", &[], soon(), &mut g).unwrap();
         let Value::Record(row) = &g.out[0] else { panic!() };
@@ -1602,6 +1602,7 @@ mod tests {
         let many = "select * from t, t as u, t as v";
         assert!(select(&conn, many, &[], soon(), &mut Gather::new(many, false, 5, 1 << 20)).unwrap_err().contains("max_db_rows"));
         let slow = "with recursive c(n) as (select 1 union all select n + 1 from c) select count(*) from c";
+        // not a bound: the statement's own deadline, which it is meant to run past
         assert!(select(&conn, slow, &[], Instant::now() + Duration::from_millis(50), &mut Gather::new(slow, true, 5, 1 << 20)).unwrap_err().contains("db_statement_ms"));
     }
 

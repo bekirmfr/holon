@@ -243,6 +243,12 @@ pub enum Claim {
 pub trait Waits {
     /// The event delivered to waiting point `name`, if one has been.
     fn event(&self, name: &str) -> Option<Value>;
+    /// The event delivered to the waiting point `at` as the run reaches it: by default, the one
+    /// delivered to its name (`event`). A host that holds what was delivered to what waits there
+    /// (`holon verify`: an approval's decisions to the steps it asks for) sees the point whole.
+    fn event_at(&mut self, at: &Waiting) -> Option<Value> {
+        self.event(&at.name)
+    }
     /// The token that resumes waiting point `name`: the same every time this run asks.
     fn token(&mut self, name: &str) -> String;
     /// The answer to a collection read (`{collection, get}` or `{collection, list}`), from the
@@ -514,21 +520,22 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
     }
     fn answer(&mut self, path: &[u32], request: &Value) -> Answer {
         if let Some(name) = text_field(request, "await") {
-            let event = self.waits.event(name);
+            let number = |key: &str| match request {
+                Value::Record(r) => match r.get(key) {
+                    Some(Value::Number(n)) => Some(*n as u64),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let expires = number("expires").unwrap_or(holon_core::MAX_AWAIT_SECONDS);
+            let shows = match request {
+                Value::Record(r) => r.get("shows").cloned(),
+                _ => None,
+            };
+            let at = Waiting { name: name.to_string(), expires, approval: text_field(request, "steps").map(str::to_string), shows, path: path.to_vec() };
+            let event = self.waits.event_at(&at);
             if event.is_none() && !self.waiting.iter().any(|w| w.name == name) {
-                let number = |key: &str| match request {
-                    Value::Record(r) => match r.get(key) {
-                        Some(Value::Number(n)) => Some(*n as u64),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                let expires = number("expires").unwrap_or(holon_core::MAX_AWAIT_SECONDS);
-                let shows = match request {
-                    Value::Record(r) => r.get("shows").cloned(),
-                    _ => None,
-                };
-                self.waiting.push(Waiting { name: name.to_string(), expires, approval: text_field(request, "steps").map(str::to_string), shows, path: path.to_vec() });
+                self.waiting.push(at);
             }
             // An event not yet delivered is not yet: what waits on it waits too.
             return event.map_or(Answer::NotYet, Answer::Value);
@@ -1007,10 +1014,13 @@ mod tests {
         let started = Instant::now();
         let out = run_rounds(&each, &[Some(xs.clone()), Some(xs)], &[], &r, &mut host, &Echo::default(), &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
         let took = started.elapsed();
+        // The error is a step's own word that it found the time up: a round that only computes
+        // and runs its work out ends with none, the clock being read only as it steps. How soon
+        // after the budget it stopped isn't held: on a loaded machine anything takes longer.
         assert_eq!(out.error, Some(RunError::TimeBudget { budget }), "stopped for its time, within its steps");
         assert_eq!(out.outputs, vec![None]);
         assert!(out.rounds.is_empty() && host.0.is_empty(), "nothing sent or performed");
-        assert!(took < Duration::from_secs(2), "stopped near its budget, not after its work: {took:?}");
+        assert!(took >= budget, "stopped at its budget, not before it: {took:?}");
     }
 
     /// A request inside a mapped function is sent for each item, in one round, each at its own

@@ -2420,6 +2420,7 @@ mod tests {
             (Capability::FileWrite(folder.into()), payload)
         };
         let take = |reads: &[collections::Read], performed: &[(Capability, Value)]| {
+            // not a bound: the locks' own deadline, under test (what is free is taken at once, what is held is refused at it)
             folders.all.locks.take(folders.commit_locks(reads, performed), std::time::Instant::now() + Duration::from_millis(30))
         };
         let read_b = take(&[asked("inbox", "read", "b.txt")], &[]).unwrap();

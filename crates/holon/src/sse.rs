@@ -682,6 +682,7 @@ pub(crate) mod stand_in {
         loop {
             let lines: Vec<String> = {
                 let sent = inner.sent.lock().unwrap();
+                // not a bound: a tick of the stand-in's loop, which looks again
                 let sent = if sent.len() > next { sent } else { inner.more.wait_timeout(sent, Duration::from_millis(100)).unwrap().0 };
                 sent[next.min(sent.len())..].iter().map(|(_, l)| l.clone()).collect()
             };
@@ -834,16 +835,20 @@ mod tests {
         assert_eq!(next_event(&mut conn).data, "a");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        // It sends nothing more until the test is done with it (not for 3 s, which a loaded
+        // machine may take to read).
+        let (done, quiet_until) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
             let (mut c, _) = listener.accept().unwrap();
             let mut buf = [0u8; 1024];
             let _ = c.read(&mut buf);
             c.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n").unwrap();
-            std::thread::sleep(Duration::from_secs(3));
+            let _ = quiet_until.recv();
         });
         let quiet = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
         let mut conn = open(&quiet, &[], None, Duration::from_millis(300)).unwrap();
         assert!(conn.next_event().unwrap_err().starts_with("nothing came for"));
+        drop(done);
     }
 
     #[test]

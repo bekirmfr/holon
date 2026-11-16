@@ -1274,12 +1274,8 @@ mod tests {
         LogEntry { run_id: run.into(), at_ms: firing::started_now().0, ..Default::default() }
     }
 
-    fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
-        let until = Instant::now() + Duration::from_secs(10);
-        while !done() {
-            assert!(Instant::now() < until, "{what}");
-            std::thread::sleep(Duration::from_millis(20));
-        }
+    fn wait_for(what: &str, done: impl FnMut() -> bool) {
+        assert!(crate::tests::soon(done), "{what}");
     }
 
     #[test]

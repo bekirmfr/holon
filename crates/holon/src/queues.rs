@@ -1047,11 +1047,7 @@ mod tests {
     }
 
     fn until(what: impl Fn() -> bool) {
-        let end = Instant::now() + Duration::from_secs(10);
-        while !what() {
-            assert!(Instant::now() < end, "it didn't come to pass");
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        assert!(crate::tests::soon(what), "it didn't come to pass");
     }
 
     fn entry(run: &str) -> LogEntry {
@@ -1083,7 +1079,9 @@ mod tests {
         q.release("app", 4);
         assert!(sqs.messages("payouts").is_empty(), "a sync through 3 doesn't cover 4");
         q.release("app", 5);
-        until(|| sqs.messages("payouts").len() == 2 && sqs.messages("retries.fifo").len() == 2);
+        // Waited for as it is read below: the sender counts a send once the stand-in has answered
+        // it, a moment after the stand-in has it (and two counted are two the stand-in has).
+        until(|| q.sent("app", "payouts").0.sent == 2 && sqs.messages("retries.fifo").len() == 2);
         assert_eq!(sqs.messages("payouts").iter().map(|m| m.body.as_str()).collect::<Vec<_>>(), ["one", "two"]);
         let fifo = sqs.messages("retries.fifo");
         assert_eq!(fifo.iter().map(|m| (m.body.as_str(), m.group.as_deref())).collect::<Vec<_>>(), [("again", Some("acct_1")), ("mine", Some("app"))], "its group, else the deployment's");

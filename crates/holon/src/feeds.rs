@@ -1186,11 +1186,7 @@ mod tests {
     }
 
     fn until(what: impl Fn() -> bool) {
-        let by = std::time::Instant::now() + Duration::from_secs(5);
-        while !what() {
-            assert!(std::time::Instant::now() < by, "it didn't come");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        assert!(crate::tests::soon(what), "it didn't come");
     }
 
     #[test]

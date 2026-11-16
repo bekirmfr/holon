@@ -343,7 +343,7 @@ impl Exporter {
                 let why = response.into_string().unwrap_or_default();
                 Err(format!("the witness answered {code}: {}", why.trim()))
             }
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(format!("the witness can't be reached: {}", crate::outbound::said(&e))),
         }
     }
 
