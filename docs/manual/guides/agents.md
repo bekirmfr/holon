@@ -39,7 +39,9 @@ token was last used. `setup` makes it at once when the server is running, and sa
 holon mcp signs in to http://127.0.0.1:7420 as bma-agent, an agent owned by bma.
 ```
 
-`--agent NAME` signs in as another agent instead (made if it isn't there): one per host, say.
+`--agent NAME` signs in as another agent instead (made if it isn't there): one per host, say. One
+there already is taken only when it is yours: an agent someone else owns is refused, saying whose
+it is (its owner makes your machine a token on the People page).
 
 ### A server on another machine
 

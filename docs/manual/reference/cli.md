@@ -1162,7 +1162,7 @@ hosts Holon knows and keeps your own. See [Working with agents](../guides/agents
 | `HOST…` | the hosts to set up (`holon mcp hosts` lists them) |
 | `--all` | every host found on this machine |
 | `--server PORT\|URL` | a server you don't run: asks for an agent's token, checks it is one, and keeps it in `~/.holon/tokens.json` |
-| `--agent NAME` | on a server you run, sign in as the agent `NAME` (made if it isn't there) rather than `<your user>-agent` |
+| `--agent NAME` | on a server you run, sign in as the agent `NAME` (made if it isn't there; one there already only if it is yours) rather than `<your user>-agent` |
 | `--project DIR` | the hosts' project files in `DIR` |
 | `--name NAME` | the entry's name (default `holon`), for a second server |
 | `--print` | show the entry and where it goes; write nothing |
