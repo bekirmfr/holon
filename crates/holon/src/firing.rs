@@ -421,10 +421,12 @@ impl RunLocked {
         }
         let mut held = RunLocked { _guards: f.all.locks.take(wanted, deadline)?, remote: Vec::new(), holder };
         for (database, exclusive, label) in remote {
+            let mut waiting = None;
             while !database.hold_run(&held.holder, exclusive) {
                 if std::time::Instant::now() + claims::POLL >= deadline {
                     return Err(label);
                 }
+                waiting.get_or_insert_with(|| f.all.locks.waiters.enter());
                 std::thread::sleep(claims::POLL);
             }
             held.remote.push((database, exclusive));

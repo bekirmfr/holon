@@ -702,9 +702,53 @@ mod tests {
     /// How many secrets the form with many reads, each followed by a walk of its own.
     const SECRETS: usize = 100;
 
-    /// How long every entry together may take over one text of [`DOUBLING`], in a debug build:
-    /// what was doubling took past it twenty levels in.
-    const IN_TIME: std::time::Duration = std::time::Duration::from_secs(20);
+    /// Longer than this, an entry still reading a text here is taken to be hung: a guard, so work
+    /// gone wild fails a test rather than holding the suite, never a measure of the work (that is
+    /// counted, [`Work`]). Far past what any reading here takes on a loaded machine.
+    const HUNG: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// How deep each form of [`DOUBLING`] is read before as deep as it may be: deep enough that
+    /// work doubling with each level is past what anything here allows (2^16 paths, each walk's
+    /// visits past [`holon_core::taint::MAX_VISITS`]), and shallow enough that such work still
+    /// ends, to be counted, rather than reading on to [`HUNG`] at sixty levels.
+    const COUNTED: usize = 16;
+
+    /// What reading a text through every entry took, counted on the thread that read it.
+    #[derive(Clone, Copy, Debug)]
+    struct Work {
+        /// The questions asked about the flow (each a `taint::Visits` of its own).
+        questions: usize,
+        /// The nodes their walks visited between them.
+        visits: usize,
+        /// The ports `numeric` took up, asking whether a sum is a number.
+        asks: usize,
+    }
+
+    /// What every entry says of `text` ([`compiled`], fmt's too), read in the editor as well
+    /// ([`read_in_the_editor`]), and the [`Work`] that took: on a thread of its own, as deep as the
+    /// reader's, which the entries read on rather than starting one ([`super::on_deep_stack`]),
+    /// so its tallies are this reading's alone. Past [`HUNG`] it panics, naming `what`.
+    fn read_counted(what: &str, text: &str) -> (Vec<(&'static str, Vec<String>)>, Work) {
+        use std::sync::mpsc::RecvTimeoutError;
+        let (said, read) = std::sync::mpsc::channel();
+        let reading = text.to_string();
+        std::thread::Builder::new()
+            .name(what.to_string())
+            .stack_size(super::DEEP_STACK)
+            .spawn(move || {
+                super::DEEP.with(|deep| deep.set(true));
+                let entries = compiled(&reading, true);
+                read_in_the_editor(&reading);
+                let (questions, visits) = holon_core::taint::tally();
+                let _ = said.send((entries, Work { questions, visits, asks: crate::lang::lower::asks::so_far() }));
+            })
+            .unwrap();
+        match read.recv_timeout(HUNG) {
+            Ok(read) => read,
+            Err(RecvTimeoutError::Timeout) => panic!("{what}: the entries still read it after {HUNG:?}: hung"),
+            Err(e) => panic!("{what}: an entry failed ({e})"),
+        }
+    }
 
     /// Whether `message` is the bound's: the count's, or the reader's for what follows one another.
     fn the_bound(message: &str) -> bool {
@@ -853,9 +897,13 @@ mod tests {
     /// above).
     /// Guards: no entry that reads a flow's text (the command line's check and fmt, the language
     /// server's mistakes, hover and completion, an agent's check, the editor's wasm) does work
-    /// that doubles with each level the text nests: each form that did, as deep as the reader
-    /// takes it up to 60 levels, is read by every entry in [`IN_TIME`] together, and none says the
-    /// nesting bound. fmt lays the layout's forms out or says it can't in time.
+    /// that doubles with each level the text nests. Each form that did, as deep as the reader
+    /// takes it up to 60 levels, is read by every entry, and its work counted ([`Work`]): as many
+    /// questions about where its secrets go as one level deep, and as for one secret with a
+    /// hundred; each question's walks within what one may visit; `numeric`'s asks at most the
+    /// levels times one level's. None says the nesting bound, and fmt lays the layout's forms
+    /// out or says it can't in time (Oxfmt's work isn't counted: its bound is
+    /// `format::layout_nesting`'s, and [`HUNG`] the guard).
     /// Why: a function using one that uses one… twice each was followed at every path, so the
     /// walk that finds where a secret goes, at `POST /deploy`, the preview, `holon check` and each
     /// run, was 2^k: eighteen levels took 2.8 s, twenty-four minutes; `a1 = a0 + a0`, `a2 = a1 +
@@ -867,29 +915,39 @@ mod tests {
     /// `format::layout_nesting`).
     #[test]
     fn no_entry_doubles_its_work_with_each_level_a_text_nests() {
+        use holon_core::taint::MAX_VISITS;
+        // The questions one secret's form asks, for the form with a hundred more.
+        let mut one_secret = None;
         for &(name, form) in DOUBLING {
             let past_the_bound = |n: usize| ts::parse(&form(n)).err().is_some_and(|e| the_bound(&e.message));
             let n = (1..=60).rev().find(|&n| !past_the_bound(n)).expect("taken one level deep");
             assert!(n >= 20, "{name}: refused {} deep", n + 1);
+            let (_, shallow) = read_counted(&format!("{name}, 1 deep"), &form(1));
+            // Shallower first: work that doubles ends there, and is counted.
+            let mut deep = shallow;
+            let mut entries = vec![];
+            for levels in [COUNTED, n] {
+                (entries, deep) = read_counted(&format!("{name}, {levels} deep"), &form(levels));
+                println!("{name}, {levels} deep: {deep:?}; 1 deep: {shallow:?}");
+                // A question for each level (a walk with a budget of its own at each function)
+                // would visit up to all one may at each.
+                assert_eq!(deep.questions, shallow.questions, "{name}: {levels} deep asks {} questions, 1 deep {}", deep.questions, shallow.questions);
+                // Each question's walks visit what one may, and a few more: the remaining
+                // children of the functions they are in as the last is taken, each taken as not
+                // followed at once.
+                assert!(deep.visits <= deep.questions * 2 * MAX_VISITS, "{name}, {levels} deep: {} visits for {} questions", deep.visits, deep.questions);
+                // Each sum asked once at each use: linear in the levels (twice the levels times
+                // one level's at most), where asking again at each use was 2^levels.
+                assert!(deep.asks <= 2 * levels * shallow.asks.max(1), "{name}: numeric took up {} ports {levels} deep, {} at 1", deep.asks, shallow.asks);
+            }
             let text = form(n);
-            let started = std::time::Instant::now();
-            let (said, read) = std::sync::mpsc::channel();
-            let reading = text.clone();
-            std::thread::Builder::new()
-                .name(format!("{name}, {n} deep"))
-                .stack_size(4 << 20)
-                .spawn(move || {
-                    let entries = compiled(&reading, true);
-                    read_in_the_editor(&reading);
-                    let _ = said.send(entries);
-                })
-                .unwrap();
-            let entries = match read.recv_timeout(IN_TIME) {
-                Ok(entries) => entries,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!("{name}, {n} deep: the entries took more than {IN_TIME:?}"),
-                Err(e) => panic!("{name}, {n} deep: an entry failed ({e})"),
-            };
-            println!("{name}, {n} deep: {:?}", started.elapsed());
+            match (name, one_secret) {
+                ("functions used twice", _) => one_secret = Some(deep.questions),
+                // A secret's walk with a budget of its own would ask a question for each.
+                ("many secrets through functions used twice", Some(one)) => assert_eq!(deep.questions, one, "{name}: {} questions, {one} for one secret", deep.questions),
+                ("many secrets through functions used twice", None) => panic!("the form with one secret comes first"),
+                _ => {}
+            }
             for (entry, said) in &entries {
                 assert!(!said.iter().any(|m| the_bound(m)), "{name}, {n} deep: {entry} says the nesting bound: {said:?}");
                 if *entry == "format" {
@@ -911,7 +969,7 @@ mod tests {
     /// Why: past it fmt refuses a text, so it must sit far above any flow written to be read.
     /// If it fails: a sample nests its calls, templates and functions written in place deeper
     /// than it needs (name a part of it), or the bound is too low for flows people write, and
-    /// raising it must keep `no_entry_doubles_its_work_with_each_level_a_text_nests` in time.
+    /// raising it must keep `no_entry_doubles_its_work_with_each_level_a_text_nests` passing.
     #[test]
     fn the_samples_lay_out_far_below_fmts_bound() {
         let mut most = (0, "");
@@ -925,13 +983,13 @@ mod tests {
 
     /// Guards: the count reads every text to its end, whatever it holds: each ASCII character and
     /// a few past it, at a text's start, between words, after a value, after `(`, `,` and `=`, at
-    /// a line's start, in a template's `${`, a string and a private name, each read in time.
+    /// a line's start, in a template's `${`, a string and a private name, each read to its end.
     /// Why: `#` begins a word in the count (a private name's, `#x`) but was no part of one, so at a
     /// `#` in code the word it read was empty and it read the same place again, forever: `holon
     /// check`, the language server as `#` was typed, an agent's check and the editor's tab hung on
     /// `a #b`, before anything said a word.
     /// The count's loop refuses a turn that reads nothing (`Refused::Stuck`), so a branch that
-    /// forgets to move fails here at once, naming the byte; without that floor, by the deadline.
+    /// forgets to move fails here at once, naming the byte; without that floor, at [`HUNG`].
     /// If it fails: the count reads nothing of the character named where it stands: make it a
     /// token of some kind, as the parser does.
     #[test]
@@ -952,7 +1010,7 @@ mod tests {
         });
         let mut last = String::new();
         loop {
-            match reading.recv_timeout(std::time::Duration::from_secs(5)) {
+            match reading.recv_timeout(HUNG) {
                 Ok((text, None)) => last = text,
                 Ok((text, Some(at))) => panic!("the count went no further than byte {at} of {text:?}"),
                 Err(RecvTimeoutError::Disconnected) => break,

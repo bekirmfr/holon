@@ -637,7 +637,8 @@ describe("a request no route matched", () => {
       ev.free();
     }
     expect(withRoutes).toBeGreaterThan(0);
-  });
+    // Every sample is built here, so its time grows with each one added: a limit that fits a single case doesn't fit it on a busy machine.
+  }, 30_000);
 });
 
 describe("why a run failed", () => {

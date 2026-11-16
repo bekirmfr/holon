@@ -225,33 +225,53 @@ const MAX_DEPTH: usize = 128;
 /// dexpaprika's), and a few tens of milliseconds of walking.
 pub const MAX_VISITS: usize = 1 << 16;
 
-/// What the walks over one flow may still visit ([`MAX_VISITS`]): one for all the walks a
-/// question about the flow takes (each secret's, and what is answered to it), so a flow reading
-/// many secrets doesn't walk its paths once for each.
-#[derive(Debug)]
+/// What the walks over one flow have visited, of the [`MAX_VISITS`] they may: one for all the
+/// walks a question about the flow takes (each secret's, and what is answered to it), so a flow
+/// reading many secrets doesn't walk its paths once for each.
+#[derive(Debug, Default)]
 pub struct Visits(Cell<usize>);
 
-impl Default for Visits {
-    fn default() -> Visits {
-        Visits(Cell::new(MAX_VISITS))
+impl Visits {
+    /// One visit taken. Counted past [`MAX_VISITS`] too: a walk that goes on once they are spent
+    /// shows in what was taken ([`tally`]).
+    fn take(&self) {
+        self.0.set(self.0.get().saturating_add(1));
+    }
+
+    /// Whether all are taken: a function not yet followed isn't.
+    fn spent(&self) -> bool {
+        self.0.get() >= MAX_VISITS
+    }
+
+    /// How many the walks took.
+    pub fn taken(&self) -> usize {
+        self.0.get()
     }
 }
 
-impl Visits {
-    /// One visit taken.
-    fn take(&self) {
-        self.0.set(self.0.get().saturating_sub(1));
-    }
+thread_local! {
+    /// The questions asked on this thread ([`Visits`] made and let go) and the visits their walks
+    /// took between them ([`tally`]).
+    static TALLY: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
 
-    /// Whether none is left: a function not yet followed isn't.
-    fn spent(&self) -> bool {
-        self.0.get() == 0
+/// A question's visits are added to its thread's [`tally`] as it ends.
+impl Drop for Visits {
+    fn drop(&mut self) {
+        let taken = self.taken();
+        TALLY.with(|t| {
+            let (questions, visits) = t.get();
+            t.set((questions + 1, visits.saturating_add(taken)));
+        });
     }
+}
 
-    /// How many the walks took of [`MAX_VISITS`].
-    pub fn taken(&self) -> usize {
-        MAX_VISITS - self.0.get()
-    }
+/// The questions about flows asked on this thread so far, and the visits their walks took between
+/// them: for tests to hold a reading of a text to its work by, counted rather than timed
+/// (holon-author's `no_entry_doubles_its_work_with_each_level_a_text_nests`). Nothing else reads it,
+/// and no limit is taken from it.
+pub fn tally() -> (usize, usize) {
+    TALLY.with(Cell::get)
 }
 
 /// The nodes of one run that a secret reaches, by path (child indices from the run's root, as

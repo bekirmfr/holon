@@ -642,13 +642,17 @@ mod tests {
         let out = local(&big).perform(&request("POST", &format!("https://{big}/"), "four"), &tight);
         assert_eq!(field(&out, "error"), &Value::Text("too_large".into()));
 
-        let slow = serve(|_| {
-            std::thread::sleep(Duration::from_millis(400));
+        // It answers once the test is done with it (not after 400 ms, which a loaded machine may
+        // take before the client's 100 ms are up).
+        let (done, late_until) = std::sync::mpsc::channel::<()>();
+        let slow = serve(move |_| {
+            let _ = late_until.recv();
             ok("late")
         });
         let quick = Limits { request_timeout: Duration::from_millis(100), ..Limits::request_run() };
         let out = local(&slow).perform(&request("GET", &format!("https://{slow}/"), ""), &quick);
         assert_eq!(field(&out, "error"), &Value::Text("timeout".into()), "{out:?}");
+        drop(done);
     }
 
     #[test]

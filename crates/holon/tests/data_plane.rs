@@ -9,6 +9,10 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// Longer than this, what a test waits for is taken never to come: a guard so a hang fails the
+/// test, never a measure of how long anything took (on a loaded machine anything takes longer).
+const EVENTUALLY: Duration = Duration::from_secs(60);
+
 const HOLON: &str = env!("CARGO_BIN_EXE_holon");
 
 /// A server of the test's own: its home a fresh folder, stopped and taken away when dropped.
@@ -28,6 +32,7 @@ impl Server {
         let home = std::env::temp_dir().join(format!("holon-data-plane-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&home).unwrap();
         let port = free_port();
+        let said = home.with_extension("err");
         let child = Command::new(HOLON)
             .args(["serve", "--at", &format!("127.0.0.1:{port}"), "--root-key", &format!("file:{}", home.join("root.key").display())])
             .args(options)
@@ -35,15 +40,11 @@ impl Server {
             .env_remove("HOLON_DATA")
             .env_remove("HOLON_RUN_DIR")
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(std::fs::File::create(&said).unwrap())
             .spawn()
             .expect("holon serve starts");
-        let server = Server { child, home, port };
-        let until = Instant::now() + Duration::from_secs(60);
-        while TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(Instant::now() < until, "holon serve answers on {port}");
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        let mut server = Server { child, home, port };
+        answering(&mut server.child, port, &said);
         server
     }
 
@@ -59,7 +60,7 @@ impl Server {
             .output()
             .expect("holon deploy runs");
         assert!(out.status.success(), "{name} deploys: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-        let until = Instant::now() + Duration::from_secs(30);
+        let until = Instant::now() + EVENTUALLY;
         while status(&raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes())) == 0 {
             assert!(Instant::now() < until, "{name} answers on {port}");
             std::thread::sleep(Duration::from_millis(100));
@@ -72,6 +73,7 @@ impl Drop for Server {
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.home);
+        let _ = std::fs::remove_file(self.home.with_extension("err"));
     }
 }
 
@@ -79,11 +81,39 @@ fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
+/// Waits [`EVENTUALLY`] for `holon serve` (`child`) to answer on `port`: an answer, not a
+/// connection taken. It takes connections once it has its port, before it has written the run
+/// file its user's commands sign in with (local.rs), and answers them after (main.rs: the run
+/// file published, then the server run), so a command sent once a connection is taken can find
+/// no run file, and is told the server isn't set up. If it ends first, fails at once with how it
+/// ended and what it said (its stderr, kept in `said`), rather than waiting out the guard with
+/// nothing to say.
+fn answering(child: &mut Child, port: u16, said: &std::path::Path) {
+    let by = Instant::now() + EVENTUALLY;
+    let words = || std::fs::read_to_string(said).unwrap_or_default();
+    while status(&raw_http(port, b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")) == 0 {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("holon serve ended before it answered on {port} ({status}): {}", words());
+        }
+        assert!(Instant::now() < by, "holon serve answers on {port}: {}", words());
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// `request` sent to `port` and the whole answer read, or nothing if no connection is taken.
 fn raw_http(port: u16, request: &[u8]) -> String {
-    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
-    stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+    raw_http_then(port, request, || {})
+}
+
+/// [`raw_http`], calling `sent` once the request is written.
+fn raw_http_then(port: u16, request: &[u8], sent: impl FnOnce()) -> String {
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+        sent();
+        return String::new();
+    };
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     let _ = stream.write_all(request);
+    sent();
     let mut out = Vec::new();
     let _ = stream.read_to_end(&mut out);
     String::from_utf8_lossy(&out).into_owned()
@@ -130,10 +160,11 @@ route.get("/hi", () => "hi", {{ log: "unrecorded" }})
 "#
     );
     server.deploy("beside", &beside, other, "/hi");
-    let spin = move |n: u32| {
+    let spin_then = move |n: u32, sent: &dyn Fn()| {
         let body = format!("{{\"n\":{n}}}");
-        raw_http(port, format!("POST /spin HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
+        raw_http_then(port, format!("POST /spin HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes(), sent)
     };
+    let spin = move |n: u32| spin_then(n, &|| {});
     // What it is, the status it is answered, and how it is sent to a port. Beside the runs: a
     // request refused before its body is read, on their port, and another deployment's route.
     type Probe = (&'static str, u16, fn(u16) -> String);
@@ -151,15 +182,22 @@ route.get("/hi", () => "hi", {{ log: "unrecorded" }})
     let alone = started.elapsed();
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
     for count in [1, cores + 4] {
+        // The requests beside them go once every run's request is written, which the server
+        // reads at once: not a quarter of a spin later, a wait a loaded machine may spend before
+        // the runs are sent.
+        let (sent, all_sent) = std::sync::mpsc::channel::<()>();
         let runs: Vec<_> = (0..count)
             .map(|_| {
+                let sent = sent.clone();
                 std::thread::spawn(move || {
-                    let answered = spin(N);
+                    let answered = spin_then(N, &|| sent.send(()).unwrap());
                     (answered, Instant::now())
                 })
             })
             .collect();
-        std::thread::sleep(alone / 4);
+        for _ in 0..count {
+            all_sent.recv().unwrap();
+        }
         let asked = Instant::now();
         let beside: Vec<_> = probes
             .iter()
@@ -242,7 +280,7 @@ route.get("/hi", () => "hi", {{ log: "unrecorded" }})
     assert!(statuses.iter().all(|s| [200, 500, 503].contains(s)), "each answered: {statuses:?}");
     assert!(statuses.iter().any(|&s| s != 200), "eight at once, past the server's memory, all answered whole: {statuses:?}");
     // The log is written as the runs end, behind their answers.
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + EVENTUALLY;
     loop {
         let runs = log();
         if runs.contains("--max-memory") {
@@ -254,7 +292,7 @@ route.get("/hi", () => "hi", {{ log: "unrecorded" }})
 
     // The server goes on, its memory let go.
     assert_eq!(status(&raw_http(port, b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")), 200);
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + EVENTUALLY;
     loop {
         let answered = parse(&body);
         if status(&answered) == 200 {

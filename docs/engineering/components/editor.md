@@ -170,6 +170,16 @@ edits, checks and formats files.
 - **One worker.** The end-to-end suite runs one test at a time (`workers: 1`) against one
   server, its deployments shared between tests; `CLOCK_SLUGS` names the clock samples to stop by
   hand, so a new clock sample keeps ticking unless added.
+- **A page's first load waits on its own.** On CI's slow runner a new browser context took 15 to
+  25 s to load the editor (its core's wasm 4 to 13.5 s to fetch, then compiled), past the 15 s an
+  `expect` waits. The page says it is loading (`aria-busy` on AuthGate's "connecting" and on the
+  editor's body until the catalog is in), and `fixtures.ts` waits for that to end, up to two
+  minutes, after every page's `goto` and `reload` (`settled`; the accounts tests, on a context
+  of their own, call `editorLoaded` after each sign-in). A new test that loads the editor some
+  other way waits the same.
+- **Every read of the server is past the HTTP cache** (`ask` in `server.ts`, `cache: "no-store"`):
+  through it, Chrome let one request for an address go at a time, and a held read of `/auth/me`
+  held the access version a page follows past what a test waits.
 - **A drag in an overlay waits for its view to stop moving.** An overlay fits its view again
   240 ms after it opens, animated over 200 ms (`CompositeOverlay.tsx`), and at its zoom a handle
   is a few pixels wide: a test's `dragTo` begun meanwhile aims where the handle was, and misses.
@@ -210,16 +220,22 @@ tests when run at `f5f3b39`. Most run against the real wasm core, loaded from `e
 missing asset) and `the_built_in_editor_is_served`.
 
 **End to end** (`npm run e2e`, Playwright; CI's `e2e.yml` on main, nightly, and a pull request
-labelled `e2e` or a release's: two shards, `--fully-parallel`, traces kept on failure). Sixteen
-files, 90 tests counted by their `test(` calls; the sweep skips `atlas-notes` and `ledger-watch`
-without `HOLON_TEST_MONGODB` and `HOLON_TEST_POSTGRES`
+labelled `e2e` or a release's: two shards, `--fully-parallel`, traces kept on failure). Eighteen
+files, 131 tests as `npx playwright test --list` counts them on 2026-11-16, 23 of them the
+sweep's; the sweep skips `atlas-notes` and `ledger-watch` without `HOLON_TEST_MONGODB` and
+`HOLON_TEST_POSTGRES`
 ([Resilience §4](../themes/resilience.md), [Testing](../themes/testing.md)).
 
 - `sweep.e2e.ts`: every sample `samples.rs` lists, with no browser: its text deployed with
   `holon deploy` (which builds the unit the editor's Deploy builds), its port moved, a request
-  sent to it and found in its log, then removed. One test, a step a sample, about a minute; its
-  failures are listed together, each by its sample's name (as one test, it weighs as one in the
-  shards' split by count).
+  sent to it and found in its log, then removed. A test for every four samples, each sample a
+  step with a limit of its own (120 s), the test's limit theirs together, so the sweep's bound
+  grows with the samples and a slow runner fails the sample that is slow; a test's failures are
+  listed together, each by its sample's name. Four to a test because the shards cut the tests,
+  in file order, into halves by count, and four samples take about one editor test's time on
+  CI (3.6 s a sample, 16 s an editor test, main on 2026-11-16): the shards' halves then come
+  out about even. The first test compares the samples the tests hold with the ones
+  `holon new --help` lists from `samples.rs`'s compiled list, so a sample without a test fails.
 - `samples.e2e.ts`: "the library lists every sample" (the titles read from `samples.rs`, so none
   is left out); then a test per feature only the editor shows, opened from the flows page and
   deployed through the consent screen, most replaying a run exactly in view mode.
