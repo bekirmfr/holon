@@ -11868,7 +11868,9 @@ fn support_inbox_receives_and_answers_through_one_mail_logged_in_with_oauth() {
 
 // ── Feeds (host-capabilities 1.6a) ──
 
-/// Wait until `holds`, for 10 seconds at most.
+/// Wait until `holds`, [`EVENTUALLY`] at most ([`soon`]). It looks again within milliseconds, so
+/// what is read right after must be what was waited for, or follow from it without another thread
+/// having to act.
 fn eventually(what: &str, holds: impl FnMut() -> bool) {
     assert!(soon(holds), "never: {what}");
 }
@@ -11926,7 +11928,11 @@ fn price_feed_runs_on_each_event_and_opens_again_from_where_it_was() {
     let (_, prices, _) = data_call(&state, &slug, "GET", "/prices", "");
     let prices: serde_json::Value = serde_json::from_str(&prices).unwrap();
     assert_eq!((prices["ACME"]["price"].clone(), prices["BOLT"]["price"].clone()), (serde_json::json!(11), serde_json::json!(3)), "{prices}");
-    let live = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])));
+    // Where the feed is moves once a run's record is written, a moment after (subscriptions.rs):
+    // waited for as it is read.
+    let live = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])));
+    eventually("at 3", || live()["feeds"][0]["position"] == "3");
+    let live = live();
     assert_eq!((live["feeds"][0]["status"].as_str(), live["feeds"][0]["position"].as_str()), (Some("connected"), Some("3")), "{live}");
     assert_eq!(live["feeds"][0]["label"], "on feed prices", "{live}");
 
@@ -12101,8 +12107,9 @@ fn trading_bot_keeps_the_newest_price_and_places_each_order_once() {
     assert_eq!((placed[0]["client_oid"].as_str(), placed[0]["price"].as_str(), placed[0]["size"].as_str()), (Some(id.as_str()), Some("100"), Some("2")));
     let orders = call("GET", "/orders", "");
     assert_eq!((orders["placed"][&id]["exchange"].as_str(), orders["placed"][&id]["approved_by"].as_str()), (Some("ex-1"), Some("under the limit")), "{orders}");
-    // BTC's newest took the place of the one that waited, ahead of ETH's.
-    assert_eq!(live()["position"], "ETH-USD/1");
+    // BTC's newest took the place of the one that waited, ahead of ETH's. Where the feed is moves
+    // once a run's record is written, a moment after: waited for as it is read.
+    eventually("at ETH-USD/1", || live()["position"] == "ETH-USD/1");
 
     // The price under the level again: placed already, nothing sent.
     price("BTC-USD", "95", 5);
@@ -12686,7 +12693,11 @@ fn payout_events_runs_each_message_once_and_sends_a_failed_payouts_retry_to_its_
     eventually("passed over", || events().contains(&format!("passed over a message of payout_events it ran already ({first})")));
     eventually("deleted again", || sqs.messages("payout-events").is_empty());
     assert_eq!(runs().len(), 4, "run once");
-    let shown = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/queues"), vec![])));
+    // The sender counts a send once the queue has answered it, a moment after the queue has it:
+    // waited for as it is read.
+    let shown = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/queues"), vec![])));
+    eventually("both retries counted sent", || shown()["sending"][0]["sent"] == 2);
+    let shown = shown();
     let (listening, sending) = (&shown["listening"][0], &shown["sending"][0]);
     assert_eq!((listening["queue"].as_str(), listening["status"].as_str(), listening["run"].as_u64(), listening["passed_over"].as_u64()), (Some("payout_events"), Some("receiving"), Some(4), Some(1)), "{shown}");
     assert_eq!((sending["queue"].as_str(), sending["sent"].as_u64(), sending["waiting"].as_u64()), (Some("payout_retries"), Some(2), Some(0)), "{shown}");
