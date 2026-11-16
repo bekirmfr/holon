@@ -94,6 +94,7 @@ import { useApprovals } from "./useApprovals";
 import { useCan, useHostPages, type Answer } from "./can";
 import { LibraryPage } from "./LibraryPage";
 import { format, parentOf, same, type Route } from "./routes";
+import { PageBoundary } from "./ui/Boundary";
 import { KeysDialog, pick, useKeys } from "./ui/Keys";
 import { usePaletteRuns } from "./usePaletteRuns";
 import { CommandPalette } from "./ui/CommandPalette";
@@ -1394,6 +1395,7 @@ function Canvas({
         </span>
       </div>
       <div className={atStatements ? "hl-canvas__flow hl-canvas__flow--statements" : "hl-canvas__flow"}>
+        <PageBoundary what="The canvas" resetKey={String(activeId)}>
         <CanvasHead
           level={canvasLevel.level}
           onLevel={canvasLevel.setLevel}
@@ -1483,6 +1485,7 @@ function Canvas({
           </div>
         )}
         {compositeOverlay.render(flowName ?? "untitled")}
+        </PageBoundary>
       </div>
       {textPane.open &&<TextPane key={activeId} {...textPane.pane} onInspect={setWord} onCaret={canvasLevel.setCaret} />}
       <Inspector
@@ -1594,6 +1597,7 @@ function Canvas({
           bottom-left panel on the canvas itself; it moved here wholesale — one home, not two. */}
       {shown !== "canvas" && (
         <div className="hl-pagebox">
+        <PageBoundary what="This page" resetKey={format(route)}>
           {shown === "editor-home" && (
             <EditorHome
               flows={homeFlows}
@@ -1747,6 +1751,7 @@ function Canvas({
               }}
             />
           )}
+        </PageBoundary>
         </div>
       )}
     </div>

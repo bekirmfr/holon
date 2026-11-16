@@ -153,6 +153,10 @@ edits, checks and formats files.
   whoever was to decide them. It says it couldn't read the list, and why; Approvals' tab counts
   say "?". `unread.test.tsx` reads every handler of a failed read and finds none that sets a list
   to none, save where none is the truth (R44).
+- **A part that throws says so in its place** (`ui/Boundary.tsx`): each page and the canvas are
+  held by a boundary, the rest of the console by the root's. A page that threw blanked the whole
+  editor and the open flows' unsaved changes with it; now it says its error, with **Try again**,
+  and is tried again once another page opens (R44).
 - **Served by the server.** One process and one port: on a machine without a screen, start the
   server and open it from any browser (`editor.rs`).
 - **End-to-end clicks are dispatched** (`dispatchEvent("click")`): a forced click lands on

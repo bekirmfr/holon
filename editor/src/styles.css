@@ -1825,3 +1825,11 @@ td .hl-flow__button, .hl-flows__do .hl-flow__button, .hl-flow__section > h2 .hl-
   .hl-logs__line { flex-wrap: wrap; gap: 2px 8px; }
   .hl-logs__text { flex-basis: 100%; }
 }
+
+/* What failed to draw, said in its place (ui/Boundary.tsx). */
+.hl-crash { padding: 24px; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; max-width: 760px; }
+.hl-crash--root { margin: 48px auto; }
+.hl-crash__head { margin: 0; font-size: 18px; color: var(--bad); }
+.hl-crash__message { margin: 0; font-family: var(--mono); white-space: pre-wrap; color: var(--ink); }
+.hl-crash__where { color: var(--muted); font-size: var(--fs-xs, 11px); max-width: 100%; }
+.hl-crash__where pre { white-space: pre-wrap; max-height: 240px; overflow: auto; }
