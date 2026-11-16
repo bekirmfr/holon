@@ -564,7 +564,7 @@ impl StoredWaiting {
     /// principal already decided a step of it (one principal, one step, and once within it).
     /// Once it is decided (declined, or every step filled), the decision to deliver; none while
     /// it waits for more. One decided already (a run lock turned it away, firing.rs) stands, and
-    /// is delivered again whoever decides next.
+    /// is delivered again by whoever decides next and may (`StoredWaiting::again`).
     fn take(&mut self, d: Decided) -> Result<Option<Value>, String> {
         if self.decided() {
             return Ok(Some(self.decision(false)));
@@ -1553,7 +1553,7 @@ impl StoredWaiting {
     /// `by`'s decision on it: the step it names, or the one open step `by` may fill; none when
     /// the run's `excluded` keeps them out. The step taken, and the decision to deliver once it is
     /// decided; the status and why when it can't be decided. One decided already (its delivery
-    /// turned away) is delivered again, whichever step is named.
+    /// turned away) is delivered again, by one who may fill a step of it (`again`).
     fn decide(&mut self, excluded: &Excluded, by: &Decider, decision: Decision) -> Result<(u8, Option<Value>), (u16, String)> {
         let name = &self.name;
         if self.is_event() {
@@ -1565,7 +1565,7 @@ impl StoredWaiting {
         if let Some(why) = excluded.excludes(by, name, &steps) {
             return Err((403, why));
         }
-        let slot = if self.decided() { decision.slot.unwrap_or(0) } else { self.pick(&steps, excluded, by, decision.slot)? };
+        let slot = if self.decided() { self.again(&steps, excluded, by, decision.slot)? } else { self.pick(&steps, excluded, by, decision.slot)? };
         let role = steps.slots().nth(usize::from(slot)).and_then(|(_, _, s)| s.role.clone());
         // What let them: the binding of the step's role, or of run.decide for a step without one.
         let (binding, access) = (by.holds)(role.as_deref()).map_or((None, None), |b| (Some(b.binding), Some(b.access)));
@@ -1597,6 +1597,34 @@ impl StoredWaiting {
             ([], _) => Err((403, format!("{} may fill none of the open steps of {:?}: {}", by.who, self.name, open.iter().map(|s| fills(s).unwrap_err()).collect::<Vec<_>>().join("; ")))),
             (more, _) => Err((409, format!("{} may fill {} of {:?}: say which, with slot", by.who, said(more), self.name))),
         }
+    }
+
+    /// The step `by` delivers a decision already made through, again (a run lock turned its
+    /// delivery away, firing.rs): the one named, or else one they decided, or else the first they
+    /// may fill. As deciding it would be, a step takes its kind and role, and the run's starter
+    /// only where it says so (`Excluded::may_fill`): whoever could decide none of it doesn't push
+    /// the run on. Nothing new is kept (`take`), so whether a step is open, and one principal one
+    /// step, don't apply.
+    fn again(&self, steps: &Steps, excluded: &Excluded, by: &Decider, named: Option<u8>) -> Result<u8, (u16, String)> {
+        let slots = self.slots();
+        let fills = |n: u8| {
+            let (_, _, slot) = steps.slots().nth(usize::from(n)).expect("a slot of the steps");
+            excluded.may_fill(by, slot, &self.step_said(&slots, n))
+        };
+        if let Some(n) = named {
+            slots.get(usize::from(n)).ok_or((409, format!("{:?} has {} steps, from slot 0: there is no slot {n}", self.name, slots.len())))?;
+            return fills(n).map(|()| n).map_err(|why| (403, why));
+        }
+        let theirs = |n: u8| self.decisions.iter().any(|d| d.who == by.who && d.slot == n);
+        let order = slots.iter().filter(|s| theirs(s.slot)).chain(slots.iter().filter(|s| !theirs(s.slot)));
+        let mut whys = Vec::new();
+        for s in order {
+            match fills(s.slot) {
+                Ok(()) => return Ok(s.slot),
+                Err(why) => whys.push(why),
+            }
+        }
+        Err((403, format!("{} may fill none of the steps of {:?}: {}", by.who, self.name, whys.join("; "))))
     }
 }
 
@@ -1885,6 +1913,32 @@ mod tests {
         assert_eq!(w.decisions.len(), 1, "the refused approval isn't kept");
     }
 
+    /// T6's cast: who's who, their kind, and the roles they are bound to where the approval is. The
+    /// admin holds everything, and no role by name; sam starts the runs that have a starter. quill
+    /// is sam's agent, and ana made pip's token: each is one party with them (`t6_parties`).
+    const CAST: &[(&str, Kind, &[&str])] = &[
+        ("ana", Kind::Person, &["reviewer"]),
+        ("ben", Kind::Person, &["reviewer"]),
+        ("cy", Kind::Person, &["approver"]),
+        ("dee", Kind::Person, &["reviewer", "approver"]),
+        ("pip", Kind::Agent, &["classifier"]),
+        ("quill", Kind::Agent, &["classifier", "drafter"]),
+        ("root", Kind::Person, &[]),
+        ("sam", Kind::Person, &["reviewer"]),
+        ("scout", Kind::Agent, &["classifier", "drafter"]),
+    ];
+
+    fn t6_parties() -> Arc<Parties> {
+        Arc::new(Parties::of(&[("pip", &[("ana", "ana made pip's token \"pip\"")]), ("quill", &[("sam", "sam owns quill")]), ("scout", &[])]))
+    }
+
+    /// One of the cast deciding `decision`, as the decide route would (`holds`, their roles).
+    fn decided_by(w: &mut StoredWaiting, excluded: &Excluded, who: &str, decision: Decision) -> Result<(u8, Option<Value>), (u16, String)> {
+        let (_, kind, roles) = CAST.iter().find(|(name, ..)| *name == who).unwrap();
+        let holds = |role: Option<&str>| role.is_none_or(|r| roles.contains(&r)).then_some(Bound { binding: 1, access: 1 });
+        w.decide(excluded, &Decider { who, kind: *kind, holds: &holds, via: None }, decision)
+    }
+
     /// **T6** (docs/L4s/approval-steps-plan.md §7): who decides which step of an approval, over a
     /// cast and steps of each shape (a chain, any order, a step of two, people alone), and the
     /// parties among them (the audit's R18: one party a step, the starter's kept out but where a
@@ -1895,21 +1949,7 @@ mod tests {
     #[test]
     fn each_step_is_decided_in_its_order_by_its_kind_and_role() {
         use serde_json::json;
-        // Who's who: their kind, and the roles they are bound to where the approval is. The admin
-        // holds everything, and no role by name; sam starts the runs that have a starter. quill is
-        // sam's agent, and ana made pip's token: each is one party with them.
-        let cast: &[(&str, Kind, &[&str])] = &[
-            ("ana", Kind::Person, &["reviewer"]),
-            ("ben", Kind::Person, &["reviewer"]),
-            ("cy", Kind::Person, &["approver"]),
-            ("dee", Kind::Person, &["reviewer", "approver"]),
-            ("pip", Kind::Agent, &["classifier"]),
-            ("quill", Kind::Agent, &["classifier", "drafter"]),
-            ("root", Kind::Person, &[]),
-            ("sam", Kind::Person, &["reviewer"]),
-            ("scout", Kind::Agent, &["classifier", "drafter"]),
-        ];
-        let parties = Arc::new(Parties::of(&[("pip", &[("ana", "ana made pip's token \"pip\"")]), ("quill", &[("sam", "sam owns quill")]), ("scout", &[])]));
+        let (cast, parties) = (CAST, t6_parties());
         let chain = "agent:classifier>person:reviewer>person:approver";
         let (ok, no) = (|slot: u8, decides: bool| Ok((slot, decides)), |code: u16, why: &'static str| Err((code, why)));
         // (who, the step named, approves), then what it does.
@@ -2148,6 +2188,92 @@ mod tests {
         let mut w = StoredWaiting { name: "payout".into(), expires_at: 100, steps: chain.into(), decisions: Vec::new(), shown: None };
         let refused = w.decide(&excluded, &Decider { who, kind, holds: &holds, via: None }, Decision { approve: true, slot: None, reason: None, note: None, at: 1 });
         assert_eq!(refused, Err((403, "quill and sam, who deployed the version this run is on, are one party (sam owns quill): on this host, someone else decides its approval \"payout\"".into())));
+    }
+
+    /// A decision a run lock turned away is delivered again by the next to decide it, and only by
+    /// one who could have decided a step of it. The oracle is the first decision: for each decided
+    /// approval below, each of T6's cast, and each step named, delivering it again is let, or
+    /// refused with the same status and sentence, as deciding that step would be had it been
+    /// open (the steps before it filled by others, of no one's party); none named, it is let when
+    /// some step would be. Delivered again, it is the same decision, and nothing new is kept.
+    #[test]
+    fn a_decided_approval_is_delivered_again_only_by_one_who_could_decide_it() {
+        let chain = "agent:classifier>person:reviewer>person:approver";
+        // The steps, who started the run, whether a step may take them, the host's exclusions, and
+        // the decisions that decide it.
+        type Row = (&'static str, Option<&'static str>, bool, Excluded, Vec<(&'static str, Option<u8>, bool)>);
+        let host = |deployer: Option<&str>, no_agents: bool| Excluded { deployer: deployer.map(String::from), no_agents, parties: t6_parties(), ..Default::default() };
+        let rows: Vec<Row> = vec![
+            (chain, Some("sam"), true, host(None, false), vec![("scout", None, true), ("ana", None, true), ("cy", None, true)]),
+            (chain, None, true, host(None, false), vec![("scout", None, true), ("dee", None, true), ("cy", None, false)]),
+            ("person:reviewer+person:approver", None, true, host(None, false), vec![("cy", Some(1), true), ("dee", Some(0), true)]),
+            ("person:reviewer*2>person:approver", None, true, host(None, false), vec![("ana", None, true), ("ben", None, true), ("dee", None, true)]),
+            ("person:reviewer>person:approver^", Some("dee"), true, host(None, false), vec![("ana", None, true), ("dee", None, true)]),
+            ("person:reviewer>person:approver^", Some("dee"), false, host(None, false), vec![("ana", None, true), ("cy", None, true)]),
+            ("agent:drafter^>person:reviewer^", Some("sam"), true, host(None, false), vec![("quill", None, true), ("sam", None, true)]),
+            ("agent:classifier>person:reviewer^", Some("sam"), true, host(None, false), vec![("scout", None, true), ("sam", None, false)]),
+            ("person*2", Some("sam"), true, host(None, false), vec![("root", None, true), ("ana", None, false)]),
+            (chain, None, true, host(Some("sam"), false), vec![("scout", None, true), ("ana", None, true), ("cy", None, true)]),
+            ("person:reviewer>person:approver", None, true, host(None, true), vec![("ana", None, true), ("cy", None, true)]),
+        ];
+        let mut refused = 0;
+        for (steps, starter, starter_steps, host, decisions) in rows {
+            let excluded = Excluded { starter: starter.map(String::from), no_starter_steps: !starter_steps, ..host };
+            let mut w = StoredWaiting { name: "payout".into(), expires_at: 100, steps: steps.into(), decisions: Vec::new(), shown: None };
+            let decision = |slot: Option<u8>, approve: bool| Decision { approve, slot, reason: (!approve).then(|| "not this vendor".into()), note: None, at: 10 };
+            for (who, slot, approve) in decisions {
+                decided_by(&mut w, &excluded, who, decision(slot, approve)).unwrap_or_else(|e| panic!("{steps}: {who} decides: {e:?}"));
+            }
+            assert!(w.decided(), "{steps}: decided");
+            let given = w.decision(false);
+            let slots = w.slots();
+            // Deciding step `n` first, as `who`: the steps of each stage before its own filled by
+            // others, and its own open.
+            let first = |who: &str, n: u8| {
+                let stage = slots[usize::from(n)].stage;
+                let mut open = StoredWaiting { decisions: Vec::new(), ..w.clone() };
+                for s in slots.iter().filter(|s| s.stage < stage) {
+                    for i in 0..s.people {
+                        let kind = if s.kind == "agent" { Kind::Agent } else { Kind::Person };
+                        open.decisions.push(Decided { slot: s.slot, who: format!("other-{}-{i}", s.slot), kind, role: s.role.clone(), at: 1, approved: true, reason: None, note: None, binding: None, access: None, via: None });
+                    }
+                }
+                decided_by(&mut open, &excluded, who, decision(Some(n), true)).map(|(slot, _)| slot)
+            };
+            for (who, ..) in CAST {
+                let again = |named: Option<u8>| {
+                    let mut later = w.clone();
+                    let got = decided_by(&mut later, &excluded, who, decision(named, true));
+                    assert_eq!(later.decisions, w.decisions, "{steps}: {who} delivering it again keeps nothing new");
+                    if let Ok((_, taken)) = &got {
+                        assert_eq!(taken.as_ref(), Some(&given), "{steps}: {who} delivers the same decision");
+                    }
+                    got.map(|(slot, _)| slot)
+                };
+                let mut some = None;
+                for n in 0..slots.len() as u8 {
+                    let (got, want) = (again(Some(n)), first(who, n));
+                    assert_eq!(got, want, "{steps}: {who} delivers it again through slot {n} as they would decide it");
+                    some = some.or(want.ok());
+                    refused += usize::from(got.is_err());
+                }
+                let none = again(None);
+                assert_eq!(none.is_ok(), some.is_some(), "{steps}: {who}, no step named: {none:?}");
+                if let Ok(n) = none {
+                    assert!(first(who, n).is_ok(), "{steps}: {who}, no step named, through one they could decide");
+                    let theirs = w.decisions.iter().find(|d| d.who == *who && first(who, d.slot).is_ok());
+                    assert_eq!(theirs.map_or(n, |d| d.slot), n, "{steps}: {who}, no step named, through the one they decided");
+                } else {
+                    assert_eq!(none.unwrap_err().0, 403, "{steps}: {who}");
+                }
+                let past = slots.len() as u8;
+                let mut open = StoredWaiting { decisions: Vec::new(), ..w.clone() };
+                let want = decided_by(&mut open, &excluded, who, decision(Some(past), true)).map(|(slot, _)| slot);
+                assert!(want.is_err(), "{steps}: {who}: {want:?}");
+                assert_eq!(again(Some(past)), want, "{steps}: {who}, a step it hasn't");
+            }
+        }
+        assert!(refused > 50, "most of the cast is refused somewhere: {refused}");
     }
 
     /// Who deployed the version a run is on, which `exclude_deployer` keeps from its approvals:

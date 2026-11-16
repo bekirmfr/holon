@@ -121,7 +121,9 @@ as `can::holding` finds only what a binding of the document holds). Once as many
 the run is claimed, as a token claims it, and `resume_parked` gives it the decision as its event:
 `{approved, by, decisions}`, with `declined_by` and `reason` for a decline. The event is made from
 the decisions kept (`StoredWaiting::take`), so a decline a run lock turned away is still the
-decision when someone decides again. So the resumed part's log entry, and what `holon verify` and a
+decision when someone decides again. Only someone who could have decided a step of it delivers it
+again (`StoredWaiting::again`: the step's kind and role, and the starter only where a step takes
+them, as for a first decision), and nothing new is kept. So the resumed part's log entry, and what `holon verify` and a
 replay read, hold who decided. Each decision is in the activity log too (`approved`, `declined`).
 
 People decide in the editor's Approvals (Runs waiting) or with `holon decide <slug> <run> <name>
