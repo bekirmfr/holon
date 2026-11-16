@@ -2720,10 +2720,11 @@ const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR
   unbroken, that every unit is what its hash says, and that every run, run again from its log
   entry, produces what the log says it did. Exits 0 when it all checks, 1 when anything doesn't,
   3 when nothing fails but not everything was checked: some runs couldn't be run again, or some
-  runs' states checked (it says which, and why), 2 when it can't read the export.
+  runs' states couldn't be checked (it says which, and why), 2 when it can't read the export.
 
-  --head HEX               a head a witness holds: check it is in the export, so no run up to
-                           it was changed or removed
+  --head HEX               a head a witness holds: check it is in the export, so no run in the
+                           export, from its oldest up to that head, was changed or removed
+                           (of runs a trimmed log no longer holds, it says nothing)
   --files DIR              where the files the runs read are, for those whose log keeps only
                            their hashes: each is found by its hash, wherever it is under DIR
   --data DIR               for an export the server keeps sealed (a backup's archive, a removed
@@ -3178,6 +3179,21 @@ examples:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guards: the command line reference says what `holon verify --help` says a witnessed head
+    /// proves, and what it doesn't.
+    /// Why: the two were written apart; the reference said only that the head is in the export,
+    /// and the usage was corrected without it (audit R49).
+    #[test]
+    fn the_references_head_proves_what_the_usage_says() {
+        let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let usage = words(USAGE);
+        let head = usage.split("--head HEX a head a witness holds: check it is in the export, ").nth(1).expect("the usage's --head");
+        let proves = head[..head.find("--files").expect("--files after --head")].trim_end();
+        let cli = words(&std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/manual/reference/cli.md")).unwrap());
+        let said = format!("`--head` checks that a head a witness holds is in the export, {proves}.");
+        assert!(cli.contains(&said), "docs/manual/reference/cli.md's holon verify should say: {said}");
+    }
 
     /// Guards: what an entry says of its secrets holds together (`listed_secrets`). Its list is a
     /// kind and a commitment for a version it names; a mark of the version a run was given of a

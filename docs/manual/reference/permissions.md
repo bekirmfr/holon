@@ -130,8 +130,9 @@ can change both columns
 | `keep_runs` | runs the deployment's log keeps, the newest | 500 (`--keep-runs`) | 20000 |
 | `keep_run_days` | days the deployment's log keeps a run | 3650 (any age) | 3650 |
 
-A run fails and performs nothing when it takes more than `max_steps` steps between two of its
-outbound calls (or before the first, or after the last), when its `js()` functions want more than
+A run fails, and its writes and sends aren't performed (the requests it made before then have
+gone out), when it takes more than `max_steps` steps between two of its outbound calls (or before
+the first, or after the last), when its `js()` functions want more than
 `max_fuel` instructions in all within one of those stretches, when it comes to hold more than
 `max_memory` bytes within one, or when it is past its time budget (`run_budget_ms`, the whole
 run's): the steps, instructions and bytes are counted within each stretch, and the time is read
