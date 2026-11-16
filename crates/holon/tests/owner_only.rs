@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// Longer than this, what a test waits for is taken never to come: a guard so a hang fails the
+/// test, never a measure of how long anything took (on a loaded machine anything takes longer).
+const EVENTUALLY: Duration = Duration::from_secs(60);
+
 const HOLON: &str = env!("CARGO_BIN_EXE_holon");
 
 fn free_port() -> u16 {
@@ -20,7 +24,7 @@ fn free_port() -> u16 {
 /// `request` sent to `port` and the whole answer read, or nothing if no connection is taken.
 fn raw_http(port: u16, request: &[u8]) -> String {
     let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
-    stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     let _ = stream.write_all(request);
     let mut out = Vec::new();
     let _ = stream.read_to_end(&mut out);
@@ -147,7 +151,7 @@ route.get("/done/:token", () => "done", {{ resumes: "done" }})
     let at = server.port.to_string();
     server.holon(&["deploy", &file, "--server", &at, "--approve"]);
     server.holon(&["flows", "save", &file, "--name", "kept-copy", "--server", &at]);
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + EVENTUALLY;
     while status(&post(flow_port, "/bump", "{}")) != 200 {
         assert!(Instant::now() < until, "kept answers on {flow_port}");
         std::thread::sleep(Duration::from_millis(100));

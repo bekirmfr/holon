@@ -195,6 +195,7 @@ mod tests {
         assert!(*flag);
         drop(flag);
         assert!(woke.join().is_err());
+        // not a bound: the wait is meant to time out; what is held is that the lock is taken again after
         let (flag, _) = ready.wait_timeout(lock.lock().unwrap(), Duration::from_millis(1)).unwrap();
         assert!(*flag, "and the lock is taken again after");
         assert!(lock.try_lock().is_none(), "held");

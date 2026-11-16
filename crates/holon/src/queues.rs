@@ -1029,11 +1029,7 @@ mod tests {
     }
 
     fn until(what: impl Fn() -> bool) {
-        let end = Instant::now() + Duration::from_secs(10);
-        while !what() {
-            assert!(Instant::now() < end, "it didn't come to pass");
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        assert!(crate::tests::soon(what), "it didn't come to pass");
     }
 
     fn entry(run: &str) -> LogEntry {

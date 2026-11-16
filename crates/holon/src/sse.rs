@@ -681,6 +681,7 @@ pub(crate) mod stand_in {
         loop {
             let lines: Vec<String> = {
                 let sent = inner.sent.lock().unwrap();
+                // not a bound: a tick of the stand-in's loop, which looks again
                 let sent = if sent.len() > next { sent } else { inner.more.wait_timeout(sent, Duration::from_millis(100)).unwrap().0 };
                 sent[next.min(sent.len())..].iter().map(|(_, l)| l.clone()).collect()
             };

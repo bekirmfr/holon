@@ -256,6 +256,7 @@ mod tests {
     #[test]
     fn readers_share_a_writer_holds_alone_and_a_wait_is_bounded() {
         let locks = Locks::default();
+        // not a bound: the locks' own deadline, under test (what is free is taken at once, what is held is refused at it)
         let soon = || Instant::now() + Duration::from_millis(30);
         let r1 = locks.take(vec![wanted("a", Mode::Shared)], soon()).unwrap();
         let r2 = locks.take(vec![wanted("a", Mode::Shared)], soon()).unwrap();
@@ -270,6 +271,7 @@ mod tests {
     #[test]
     fn one_that_waits_too_long_holds_none_of_what_it_took() {
         let locks = Locks::default();
+        // not a bound: the locks' own deadline, under test (what is free is taken at once, what is held is refused at it)
         let soon = || Instant::now() + Duration::from_millis(30);
         let b = locks.take(vec![wanted("b", Mode::Exclusive)], soon()).unwrap();
         // `a` is taken before `b`, and let go when `b` can't be.
@@ -282,6 +284,7 @@ mod tests {
     fn a_folder_held_whole_waits_for_writers_of_its_files_not_readers() {
         use Mode::*;
         let locks = Locks::default();
+        // not a bound: the locks' own deadline, under test (what is free is taken at once, what is held is refused at it)
         let soon = || Instant::now() + Duration::from_millis(30);
         // A writer of one file and a reader of another hold the folder by intent, together.
         let writer = locks.take(vec![wanted("f", IntentExclusive), wanted("f/a", Exclusive)], soon()).unwrap();
@@ -318,8 +321,8 @@ mod tests {
                             .filter(|i| seed >> i & 1 == 1)
                             .map(|i| wanted(&format!("r{}", (i + seed as usize / 64) % 5), [Mode::IntentShared, Mode::IntentExclusive, Mode::Shared, Mode::Exclusive][(seed >> (2 * i + 8) & 3) as usize]))
                             .collect();
-                        let held = locks.take(set, Instant::now() + Duration::from_secs(10));
-                        assert!(held.is_ok(), "waited ten seconds: {held:?}");
+                        let held = locks.take(set, Instant::now() + crate::tests::EVENTUALLY);
+                        assert!(held.is_ok(), "waited a minute: {held:?}");
                     }
                 });
             }
@@ -334,6 +337,7 @@ mod tests {
         // Two servers: two tables, one file.
         let (one, two) = (Locks::default(), Locks::default());
         let at = |mode| Wanted { address: "folder".into(), label: "folder".into(), mode, file: Some(file.clone()) };
+        // not a bound: the locks' own deadline, under test (what is free is taken at once, what is held is refused at it)
         let soon = || Instant::now() + Duration::from_millis(40);
         let held = one.take(vec![at(Mode::Exclusive)], soon()).unwrap();
         assert!(two.take(vec![at(Mode::Shared)], soon()).is_err(), "the other server waits for it");

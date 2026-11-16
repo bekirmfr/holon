@@ -3998,7 +3998,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> Option<(String, Vec<u8>)> {
 fn raw_http(port: u16, request: &[u8]) -> String {
     use std::io::Write;
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     stream.write_all(request).unwrap();
     let mut out = Vec::new();
     let _ = stream.read_to_end(&mut out);
@@ -4123,8 +4123,9 @@ fn no_deployments_callers_hold_more_of_the_data_plane_than_its_share() {
         let answered = get(beside_port, "/hi");
         // A WebSocket's message waits for a place, not refused and not run past the share.
         let stream = std::net::TcpStream::connect(("127.0.0.1", held_port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
         let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{held_port}/ws").into_client_request().unwrap(), stream).unwrap();
+        // not a bound: nothing is to come in it (the message waits for a place)
         ws.get_mut().set_read_timeout(Some(Duration::from_millis(300))).unwrap();
         ws.send(Message::text("m1")).unwrap();
         let early = ws.read();
@@ -4144,7 +4145,7 @@ fn no_deployments_callers_hold_more_of_the_data_plane_than_its_share() {
             assert!(done.starts_with("HTTP/1.1 200") && done.ends_with("slow"), "{done}");
         }
         // The message ran once a place was free, and every place is given back.
-        ws.get_mut().set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        ws.get_mut().set_read_timeout(Some(EVENTUALLY)).unwrap();
         let echoed = match ws.read().unwrap() {
             Message::Text(t) => serde_json::from_str::<serde_json::Value>(&t).unwrap_or_else(|_| serde_json::Value::String(t.to_string())),
             other => panic!("{other:?}"),
@@ -4193,7 +4194,7 @@ fn no_deployments_callers_hold_more_of_the_data_plane_than_its_share() {
         .into_iter()
         .map(|path| {
             let mut caller = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-            caller.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            caller.set_read_timeout(Some(EVENTUALLY)).unwrap();
             caller.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
             let mut head = Vec::new();
             let mut piece = [0u8; 1024];
@@ -4279,18 +4280,19 @@ fn no_server_holds_more_connections_open_than_its_total() {
     };
     // One place: a connection to "one", answered and kept alive.
     let mut kept = std::net::TcpStream::connect(("127.0.0.1", one)).unwrap();
-    kept.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    kept.set_read_timeout(Some(EVENTUALLY)).unwrap();
     kept.write_all(b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
     let first = answered(&mut kept);
     assert!(first.starts_with("HTTP/1.1 200"), "{first}");
     // The other: a WebSocket open on "other", switched, and talking.
     let stream = std::net::TcpStream::connect(("127.0.0.1", other)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{other}/ws").into_client_request().unwrap(), stream).unwrap();
     ws.send(tungstenite::Message::text("m1")).unwrap();
     assert!(matches!(ws.read(), Ok(tungstenite::Message::Text(t)) if t.contains("echo m1")));
     // A third caller waits: nothing answers it while both are open.
     let mut third = std::net::TcpStream::connect(("127.0.0.1", one)).unwrap();
+    // not a bound: nothing is to come in it
     third.set_read_timeout(Some(Duration::from_millis(700))).unwrap();
     third.write_all(b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").unwrap();
     let early = answered(&mut third);
@@ -4299,7 +4301,7 @@ fn no_server_holds_more_connections_open_than_its_total() {
     ws.close(None).unwrap();
     while ws.read().is_ok() {}
     drop(ws);
-    third.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    third.set_read_timeout(Some(EVENTUALLY)).unwrap();
     let late = answered(&mut third);
     assert!(late.starts_with("HTTP/1.1 200") && late.ends_with("hi"), "the third, once the WebSocket closed: {late:?}");
     drop(kept);
@@ -4328,7 +4330,7 @@ fn a_websocket_runs_its_blocks_through_a_real_socket() {
     let sockets = Arc::clone(&state.deployments.lock().unwrap()[&slug].sockets);
     let open = |path: &str, origin: Option<&str>| -> Result<WebSocket<TcpStream>, u16> {
         let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
         let mut request = format!("ws://127.0.0.1:{port}{path}").into_client_request().unwrap();
         if let Some(origin) = origin {
             request.headers_mut().insert("origin", origin.parse().unwrap());
@@ -4479,7 +4481,7 @@ route.websocket(\"/room/:name\", {{
     sync_listeners(&state);
     let open = |path: &str| {
         let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
         match tungstenite::client(format!("ws://127.0.0.1:{port}{path}").into_client_request().unwrap(), stream) {
             Ok((ws, _)) => Ok(ws),
             Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(r))) => Err(r.status().as_u16()),
@@ -4769,7 +4771,7 @@ on.file.created(inbox, (f) => {{
     let hit = || Some(status(&get("/hit")));
     let socket = || {
         let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
         match tungstenite::client(format!("ws://127.0.0.1:{port}/hello").into_client_request().unwrap(), stream) {
             Ok(_) => Some(101),
             Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(r))) => Some(r.status().as_u16()),
@@ -6147,7 +6149,7 @@ export const look = action((input) => notes[input.id])
     // A WebSocket's message.
     let ws_number = "6011000000000004";
     let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{port}/ws").into_client_request().unwrap(), stream).unwrap();
     ws.send(Message::text(format!(r#"{{"number":"{ws_number}"}}"#))).unwrap();
     let echoed = loop {
@@ -7113,6 +7115,11 @@ pub(crate) fn soon(mut done: impl FnMut() -> bool) -> bool {
 /// rather than hanging it.
 const GATE_HOLDS: Duration = Duration::from_secs(20);
 
+/// The longest a test watches for what it waits on while a shut [`Gate`] holds a call (calls out
+/// at once, runs counted waiting): less than the gate holds one ([`GATE_HOLDS`]), so the call it
+/// waits behind wasn't let go meanwhile.
+const GATE_WAITS: Duration = Duration::from_secs(15);
+
 /// What a test holds `/slow` calls with, to see what happens while one is out without timing it:
 /// on a loaded machine (a sweep on every core beside it) "it took under 780 ms" fails, where "both
 /// calls were out at once" doesn't. Open, as it starts, a call answers after 400 ms; shut, once
@@ -7157,11 +7164,10 @@ impl Gate {
         self.calls.lock().unwrap().out
     }
 
-    /// Whether `n` calls were out at once, waiting up to 15 s for them (less than a shut gate
-    /// holds one, so none of them was let go meanwhile).
+    /// Whether `n` calls were out at once, waiting up to [`GATE_WAITS`] for them.
     fn out_at_once(&self, n: usize) -> bool {
         let calls = self.calls.lock().unwrap();
-        self.changed.wait_timeout_while(calls, Duration::from_secs(15), |c| c.out < n).unwrap().0.out >= n
+        self.changed.wait_timeout_while(calls, GATE_WAITS, |c| c.out < n).unwrap().0.out >= n
     }
 
     /// One `/slow` call, answered once this returns.
@@ -7191,10 +7197,10 @@ fn waiting(state: &AppState) -> usize {
     own + state.folders.claims.waiters.now() + state.folders.locks.waiters.now()
 }
 
-/// Whether `n` runs of `state` wait at once for another's key or lock, watching up to 15 s (less
-/// than a shut gate holds a call, so the one they wait for wasn't let go meanwhile).
+/// Whether `n` runs of `state` wait at once for another's key or lock, watching up to
+/// [`GATE_WAITS`].
 fn waiting_at_once(state: &AppState, n: usize) -> bool {
-    let until = std::time::Instant::now() + Duration::from_secs(15);
+    let until = std::time::Instant::now() + GATE_WAITS;
     while waiting(state) < n {
         if std::time::Instant::now() > until {
             return false;
@@ -7247,7 +7253,7 @@ fn second_meets_first<A: Send, B: Send>(state: &AppState, gate: &Gate, first: im
         let a = s.spawn(first);
         let out = gate.out_at_once(1);
         let b = s.spawn(second);
-        let until = std::time::Instant::now() + Duration::from_secs(15);
+        let until = std::time::Instant::now() + GATE_WAITS;
         while out && !b.is_finished() && waiting(state) == 0 && std::time::Instant::now() < until {
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -7464,17 +7470,113 @@ fn sleeps_between_spawns(code: &str) -> Vec<usize> {
         .collect()
 }
 
+/// The deadlines a test may give a wait of its own under [`EVENTUALLY`], by name: the [`Gate`]'s.
+/// A run gives up on an answer after 30 s, so a shut gate lets its call go before that
+/// ([`GATE_HOLDS`]), and a test watches for less than the gate holds ([`GATE_WAITS`]).
+const NAMED_CAPS: [&str; 2] = ["GATE_HOLDS", "GATE_WAITS"];
+
+/// The milliseconds `expr` (made [`inert`]) gives a duration, literally (`Duration::from_secs(5)`,
+/// `from_millis`, `from_micros`, `from_nanos`) or by a const of `consts`: the least, if any.
+fn least_millis(expr: &str, consts: &[(String, u128)]) -> Option<u128> {
+    let mut least: Option<u128> = None;
+    for (unit, per) in [("from_secs(", 1_000_000_000u128), ("from_millis(", 1_000_000), ("from_micros(", 1_000), ("from_nanos(", 1)] {
+        for (at, _) in expr.match_indices(unit) {
+            let written: String = expr[at + unit.len()..].chars().take_while(|c| c.is_ascii_digit() || *c == '_').collect();
+            let digits: String = written.chars().filter(|c| *c != '_').collect();
+            if expr[at + unit.len() + written.len()..].trim_start().starts_with(')')
+                && let Ok(n) = digits.parse::<u128>()
+            {
+                least = Some(least.map_or(n * per / 1_000_000, |l| l.min(n * per / 1_000_000)));
+            }
+        }
+    }
+    let words = expr.split(|c: char| !(c.is_alphanumeric() || c == '_'));
+    for word in words {
+        if let Some((_, ms)) = consts.iter().find(|(name, _)| name == word) {
+            least = Some(least.map_or(*ms, |l| l.min(*ms)));
+        }
+    }
+    least
+}
+
+/// The `Duration` consts `whole` (a file, made [`inert`]) defines, with their milliseconds.
+fn duration_consts(whole: &str) -> Vec<(String, u128)> {
+    whole
+        .lines()
+        .filter_map(|l| {
+            let (_, after) = l.split_once("const ")?;
+            let (name, rest) = after.split_once(':')?;
+            let (ty, value) = rest.split_once('=')?;
+            (ty.trim().ends_with("Duration") && name.trim().chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')).then_some(())?;
+            Some((name.trim().to_string(), least_millis(value, &[])?))
+        })
+        .collect()
+}
+
+/// Each deadline under [`EVENTUALLY`] in `code` (a file's test code, made [`inert`]) given to a
+/// wait whose passing fails a test: `recv_timeout`, `wait_timeout(_while)`, `set_read_timeout`,
+/// `set_write_timeout`, or `Instant::now() + d`, `d` a literal or one of `whole`'s consts (the
+/// file whole, made inert). Not one of [`NAMED_CAPS`], nor one that `text` (the file as written)
+/// says `not a bound:` of, on its line or in the comment above it: a product's own deadline
+/// under test, whose passing is what the test holds, or a tick of a stand-in's loop. Its line,
+/// and what it waits.
+fn short_deadlines(code: &str, whole: &str, text: &str) -> Vec<(usize, String)> {
+    let consts = duration_consts(whole);
+    let written: Vec<&str> = text.lines().collect();
+    let marked = |line: usize| {
+        let says = |l: &str| l.contains("not a bound:");
+        written.get(line - 1).is_some_and(|l| says(l)) || (0..line - 1).rev().map(|i| written[i].trim_start()).take_while(|l| l.starts_with("//")).any(says)
+    };
+    let mut found = vec![];
+    for form in [".recv_timeout(", ".wait_timeout(", ".wait_timeout_while(", ".set_read_timeout(", ".set_write_timeout(", "Instant::now() +"] {
+        for (at, _) in code.match_indices(form) {
+            // What it waits: a call's arguments, or what is added to now, to the end of its expression.
+            let from = at + form.len();
+            let (mut depth, mut end) = (i32::from(form.ends_with('(')), code.len());
+            for (j, c) in code[from..].char_indices() {
+                match c {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => depth -= 1,
+                    ',' | ';' | '\n' if depth == 0 => {
+                        end = from + j;
+                        break;
+                    }
+                    _ => {}
+                }
+                if depth < 0 || (depth == 0 && form.ends_with('(')) {
+                    end = from + j;
+                    break;
+                }
+            }
+            let waits = &code[from..end];
+            let line = code[..at].matches('\n').count() + 1;
+            let named = NAMED_CAPS.iter().any(|cap| waits.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == *cap));
+            if !named && least_millis(waits, &consts).is_some_and(|ms| ms < EVENTUALLY.as_millis()) && !marked(line) {
+                found.push((line, format!("{}{}{}", form.trim_start_matches('.'), if form.ends_with('+') { " " } else { "" }, waits.split_whitespace().collect::<Vec<_>>().join(" "))));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
 /// Guards: no test holds a measured time from above (`elapsed() < 5 s`, `took < deadline + 2 s`,
-/// `waited_ms < 250`), and none orders two threads with a sleep between their spawns, in any
-/// crate's tests.
+/// `waited_ms < 250`), nor waits under a minute for what is to come (`recv_timeout(5 s)`, a read
+/// timeout of 10 s, a loop `until` ten seconds from now): a deadline that fails a test is a bound
+/// from above whatever call it hides in. And none orders two threads with a sleep between their
+/// spawns. In any crate's tests.
 /// Why: on a loaded machine (a sweep on every core beside the suite) anything takes longer, and a
 /// second thread started 60 ms after the first may come after the first is done: 102 tests failed
 /// with 408 under a short body deadline in one run, and races "ordered" by a sleep raced the other
 /// way (audit R50). What a test holds is an order of events: a [`Gate`] holding a call out while
 /// the second run comes, a run counted as waiting (`sync::Waiters`), [`soon`] for what is
-/// due; a lower bound (it waited the deadline) holds under any load.
-/// If it fails: a test bounds a time from above, or sleeps between two spawns: hold what happened
-/// instead, with the tools above.
+/// due; a lower bound (it waited the deadline) holds under any load. What a test waits for, it
+/// waits [`EVENTUALLY`] for: a guard against a hang, not a measure.
+/// If it fails: a test bounds a time from above, waits less than [`EVENTUALLY`] for what is to
+/// come, or sleeps between two spawns: hold what happened instead, with the tools above, and wait
+/// [`EVENTUALLY`] (a const of the file's own in an integration test). A deadline of the product's
+/// that the test holds it to (a lock refused at it, a statement run past it), or a stand-in's
+/// tick, says `not a bound:` and why, in a comment on or above its line.
 #[test]
 fn no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep() {
     // The sweep's own eyes, on code it must and must not see.
@@ -7511,6 +7613,34 @@ fn no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep() {
     ] {
         assert!(sleeps(fine).is_empty(), "not a sleep between spawns: {fine}");
     }
+    let deadlines = |text: &str| short_deadlines(&inert(text), &inert(text), text).into_iter().map(|(line, _)| line).collect::<Vec<_>>();
+    for (short, line) in [
+        ("let r = rx.recv_timeout(Duration::from_secs(5));", 1),
+        ("stream.set_read_timeout(Some(Duration::from_millis(700))).unwrap();", 1),
+        ("const WAIT: Duration = Duration::from_secs(20);\nlet x = rx.recv_timeout(WAIT);", 2),
+        ("let until = std::time::Instant::now() + Duration::from_secs(10);", 1),
+        ("let (g, _) = cv.wait_timeout_while(g, std::time::Duration::from_secs(15), |c| !c.done).unwrap();", 1),
+        ("let held = rx\n    .recv_timeout(\n        Duration::from_secs(1),\n    );", 2),
+        ("let (g, _) = cv.wait_timeout(g, Duration::from_millis(1_500)).unwrap();", 1),
+        ("// A comment that says nothing of it.\nlet r = rx.recv_timeout(Duration::from_secs(5));", 2),
+    ] {
+        assert_eq!(deadlines(short), [line], "a short deadline unseen: {short}");
+    }
+    for fine in [
+        "let r = rx.recv_timeout(Duration::from_secs(60));",
+        "let r = rx.recv_timeout(EVENTUALLY);",
+        "const GATE_HOLDS: Duration = Duration::from_secs(20);\nlet r = rx.recv_timeout(GATE_HOLDS);",
+        "// not a bound: the locks' own deadline, under test\nlet soon = || Instant::now() + Duration::from_millis(30);",
+        "// not a bound: a tick of the stand-in's loop,\n// which looks again\nlet g = cv.wait_timeout(g, Duration::from_millis(100));",
+        "let soon = || Instant::now() + Duration::from_millis(30); // not a bound: refused at it",
+        "let said = \"rx.recv_timeout(Duration::from_secs(1))\";",
+        "let r = rx.recv_timeout(d);",
+        "let t = Instant::now() + timeout;",
+        "let far = Instant::now() + Duration::from_secs(3600);",
+        "// rx.recv_timeout(Duration::from_secs(1))",
+    ] {
+        assert!(deadlines(fine).is_empty(), "not a short deadline: {fine}");
+    }
     let only_tests = test_code("crates/x/src/a.rs", &inert("fn f() {\n    assert!(t.elapsed() < cap);\n}\n#[cfg(test)]\nmod tests {\n    fn g() {\n        assert!(t.elapsed() < cap);\n    }\n}\nfn h() {\n    assert!(t.elapsed() < cap);\n}\n"));
     assert_eq!(upper_bounds(&only_tests).iter().map(|(line, _)| *line).collect::<Vec<_>>(), [7], "only a test module's, at its own line");
 
@@ -7531,11 +7661,14 @@ fn no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep() {
     let mut found = Vec::new();
     for path in &files {
         let shown = path.strip_prefix(crates).unwrap().display().to_string().replace('\\', "/");
-        let code = test_code(&shown, &inert(&std::fs::read_to_string(path).unwrap()));
+        let text = std::fs::read_to_string(path).unwrap();
+        let whole = inert(&text);
+        let code = test_code(&shown, &whole);
         found.extend(upper_bounds(&code).into_iter().map(|(line, condition)| format!("{shown}:{line}: holds a time from above: {condition}")));
+        found.extend(short_deadlines(&code, &whole, &text).into_iter().map(|(line, waits)| format!("{shown}:{line}: waits less than EVENTUALLY: {waits}")));
         found.extend(sleeps_between_spawns(&code).into_iter().map(|line| format!("{shown}:{line}: a sleep between two spawns")));
     }
-    assert!(found.is_empty(), "tests that hold how long something took, not what happened (hold an order of events: Gate, Waiters, soon):\n{}", found.join("\n"));
+    assert!(found.is_empty(), "tests that hold how long something took, not what happened (hold an order of events: Gate, Waiters, soon; wait EVENTUALLY):\n{}", found.join("\n"));
     assert!(files.len() > 150, "the sweep read the source: {}", files.len());
 }
 
@@ -11417,7 +11550,7 @@ fn unquoted(data: &str) -> String {
 }
 
 fn wait_for_mail(sink: &smtp::sink::Sink, n: usize) -> Vec<smtp::sink::Got> {
-    let until = std::time::Instant::now() + Duration::from_secs(10);
+    let until = std::time::Instant::now() + EVENTUALLY;
     loop {
         let got = sink.got.lock().unwrap().clone();
         if got.len() >= n {
@@ -11494,7 +11627,7 @@ fn approval_mail_mails_the_link_then_the_approval_through_its_binding() {
     let link: String = unquoted(&got[2].data).split("http://127.0.0.1:8186").nth(1).unwrap().chars().take_while(|c| !c.is_whitespace()).collect();
     assert_eq!(data_call(&state, &slug, "POST", &link, "").0, 200);
     let events = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
-    let until = std::time::Instant::now() + Duration::from_secs(10);
+    let until = std::time::Instant::now() + EVENTUALLY;
     while !events().contains("gave up mailing") {
         assert!(std::time::Instant::now() < until, "{}", events());
         std::thread::sleep(Duration::from_millis(20));
@@ -12330,7 +12463,7 @@ fn site_serves_a_built_app_from_its_folder() {
     // And cut when it changes while it is sent: the caller gets less than its length, and the
     // timeline says so.
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     stream.write_all(b"GET /assets/big.txt HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").unwrap();
     let mut first = [0u8; 1024];
     let n = stream.read(&mut first).unwrap();
@@ -12835,7 +12968,7 @@ fn a_channel_streams_each_runs_packs_to_its_subscribers() {
     // A subscriber: the response's headers, then its events, a line at a time.
     let subscribe = |path: &str, last: Option<&str>| {
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
         let last = last.map(|id| format!("Last-Event-ID: {id}\r\n")).unwrap_or_default();
         stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{last}\r\n").as_bytes()).unwrap();
         let mut reader = BufReader::new(stream);
@@ -12948,7 +13081,7 @@ fn a_streamed_reply_forwards_the_upstream_as_it_arrives() {
         let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
         stream.write_all(format!("{head}{}", piece("data: a\n\n")).as_bytes()).unwrap();
         stream.flush().unwrap();
-        let _ = seen_rx.recv_timeout(Duration::from_secs(10));
+        let _ = seen_rx.recv_timeout(EVENTUALLY);
         stream.write_all(format!("{}0\r\n\r\n", piece("data: b\n\n")).as_bytes()).unwrap();
     });
     let mut state = test_state();
@@ -12962,7 +13095,7 @@ fn a_streamed_reply_forwards_the_upstream_as_it_arrives() {
     sync_listeners(&state);
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     stream.write_all(b"POST /ask HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
     let mut reader = BufReader::new(stream);
     let mut head = String::new();
@@ -13011,7 +13144,7 @@ fn a_streamed_reply_whose_call_fails_answers_with_its_status() {
     sync_listeners(&state);
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     stream.write_all(b"POST /ask HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
     let mut answer = String::new();
     let _ = stream.read_to_string(&mut answer);
@@ -13036,7 +13169,7 @@ fn a_piped_call_sends_its_answer_to_the_channel_as_it_arrives() {
         let head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
         stream.write_all(format!("{head}{}", piece("Rivers run")).as_bytes()).unwrap();
         stream.flush().unwrap();
-        let _ = seen_rx.recv_timeout(Duration::from_secs(10));
+        let _ = seen_rx.recv_timeout(EVENTUALLY);
         stream.write_all(format!("{}0\r\n\r\n", piece(" to the sea.")).as_bytes()).unwrap();
     });
     let mut state = test_state();
@@ -13050,7 +13183,7 @@ fn a_piped_call_sends_its_answer_to_the_channel_as_it_arrives() {
     sync_listeners(&state);
 
     let mut live = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    live.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    live.set_read_timeout(Some(EVENTUALLY)).unwrap();
     live.write_all(b"GET /live HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
     let mut live = BufReader::new(live);
     let mut head = String::new();

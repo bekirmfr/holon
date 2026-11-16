@@ -9,6 +9,10 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// Longer than this, what a test waits for is taken never to come: a guard so a hang fails the
+/// test, never a measure of how long anything took (on a loaded machine anything takes longer).
+const EVENTUALLY: Duration = Duration::from_secs(60);
+
 const HOLON: &str = env!("CARGO_BIN_EXE_holon");
 
 /// A server of the test's own: its home a fresh folder, stopped and taken away when dropped.
@@ -59,7 +63,7 @@ impl Server {
             .output()
             .expect("holon deploy runs");
         assert!(out.status.success(), "{name} deploys: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-        let until = Instant::now() + Duration::from_secs(30);
+        let until = Instant::now() + EVENTUALLY;
         while status(&raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes())) == 0 {
             assert!(Instant::now() < until, "{name} answers on {port}");
             std::thread::sleep(Duration::from_millis(100));
@@ -90,7 +94,7 @@ fn raw_http_then(port: u16, request: &[u8], sent: impl FnOnce()) -> String {
         sent();
         return String::new();
     };
-    stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     let _ = stream.write_all(request);
     sent();
     let mut out = Vec::new();
@@ -259,7 +263,7 @@ route.get("/hi", () => "hi", {{ log: "unrecorded" }})
     assert!(statuses.iter().all(|s| [200, 500, 503].contains(s)), "each answered: {statuses:?}");
     assert!(statuses.iter().any(|&s| s != 200), "eight at once, past the server's memory, all answered whole: {statuses:?}");
     // The log is written as the runs end, behind their answers.
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + EVENTUALLY;
     loop {
         let runs = log();
         if runs.contains("--max-memory") {
@@ -271,7 +275,7 @@ route.get("/hi", () => "hi", {{ log: "unrecorded" }})
 
     // The server goes on, its memory let go.
     assert_eq!(status(&raw_http(port, b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")), 200);
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + EVENTUALLY;
     loop {
         let answered = parse(&body);
         if status(&answered) == 200 {

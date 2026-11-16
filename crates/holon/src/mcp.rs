@@ -2476,7 +2476,7 @@ mod tests {
             String::from_utf8(said[..whole].to_vec()).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
         };
         let until = |said: &Said, what: &str, found: &dyn Fn(&Value) -> bool| {
-            let by = std::time::Instant::now() + Duration::from_secs(6);
+            let by = std::time::Instant::now() + crate::tests::EVENTUALLY;
             while std::time::Instant::now() < by {
                 if lines(said).iter().any(found) {
                     return;

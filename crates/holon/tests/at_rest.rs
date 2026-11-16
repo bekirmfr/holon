@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
+/// Longer than this, what a test waits for is taken never to come: a guard so a hang fails the
+/// test, never a measure of how long anything took (on a loaded machine anything takes longer).
+const EVENTUALLY: Duration = Duration::from_secs(60);
+
 const HOLON: &str = env!("CARGO_BIN_EXE_holon");
 
 fn free_port() -> u16 {
@@ -20,7 +24,7 @@ fn free_port() -> u16 {
 /// `request` sent to `port` and the whole answer read, or nothing if no connection is taken.
 fn raw_http(port: u16, request: &[u8]) -> String {
     let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
-    stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     let _ = stream.write_all(request);
     let mut out = Vec::new();
     let _ = stream.read_to_end(&mut out);
@@ -53,9 +57,9 @@ fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Wait up to `secs` for `done`, saying `what` if it never is.
+/// Wait up to `secs` for `done` ([`EVENTUALLY`] at least), saying `what` if it never is.
 fn until(what: &str, secs: u64, mut done: impl FnMut() -> bool) {
-    let by = Instant::now() + Duration::from_secs(secs);
+    let by = Instant::now() + Duration::from_secs(secs).max(EVENTUALLY);
     while !done() {
         assert!(Instant::now() < by, "{what}");
         std::thread::sleep(Duration::from_millis(200));
@@ -198,6 +202,7 @@ fn putting_off_sqs() -> u16 {
             // Closed gently: what the client still sends is read to its end, so the close is no
             // reset that loses the answer.
             let _ = stream.shutdown(std::net::Shutdown::Write);
+            // not a bound: past it the stand-in stops reading what the client still sends
             let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
             while stream.read(&mut buf).is_ok_and(|n| n > 0) {}
         }
@@ -241,6 +246,7 @@ impl Server {
         #[cfg(unix)]
         {
             let _ = Command::new("kill").args(["-TERM", &self.child.id().to_string()]).status();
+            // not a bound: past it the server is killed, which leaves what a crash leaves, as this stop may
             let by = Instant::now() + Duration::from_secs(30);
             while self.child.try_wait().unwrap().is_none() && Instant::now() < by {
                 std::thread::sleep(Duration::from_millis(100));
@@ -378,9 +384,9 @@ route.post("/keep", (req) => {{
         server.holon(&["deploy", &file.display().to_string(), "--approve"]);
     }
     let body = format!(r#"{{"text":"{canary}"}}"#);
-    until("kept answers", 30, || status(&post(kept_port, "/bump", &body)) == 200);
-    until("gone answers", 30, || status(&post(gone_port, "/keep", &body)) == 200);
-    until("rolled answers", 30, || status(&post(rolled_port, "/keep", &body)) == 200);
+    until("kept answers", 60, || status(&post(kept_port, "/bump", &body)) == 200);
+    until("gone answers", 60, || status(&post(gone_port, "/keep", &body)) == 200);
+    until("rolled answers", 60, || status(&post(rolled_port, "/keep", &body)) == 200);
     for _ in 0..100 {
         assert_eq!(status(&post(rolled_port, "/keep", &body)), 200);
     }
@@ -515,7 +521,7 @@ route.post("/bump", () => {{
     )
     .unwrap();
     server.holon(&["deploy", &file.display().to_string(), "--approve"]);
-    until("shop answers", 30, || status(&post(shop_port, "/bump", "{}")) == 200);
+    until("shop answers", 60, || status(&post(shop_port, "/bump", "{}")) == 200);
     for _ in 0..3 {
         assert_eq!(status(&post(shop_port, "/bump", "{}")), 200);
     }
@@ -539,7 +545,7 @@ route.post("/bump", () => {{
     // A second server on the same folder refuses to start, rather than write keys.json over this
     // one's; and the root isn't rotated under a running server.
     let mut second = serve(&home, &root, free_port(), Stdio::piped());
-    let by = Instant::now() + Duration::from_secs(30);
+    let by = Instant::now() + EVENTUALLY;
     while second.try_wait().unwrap().is_none() {
         if Instant::now() > by {
             let _ = second.kill();

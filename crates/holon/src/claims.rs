@@ -582,6 +582,7 @@ mod tests {
     #[test]
     fn a_key_is_held_by_one_run_at_a_time_and_a_listing_covers_its_items() {
         let claims = Claims::default();
+        // not a bound: the claims' own deadline, under test (a free key is taken at once, a held one is refused at it)
         let soon = || Instant::now() + Duration::from_millis(30);
         assert!(claims.acquire(&[item("c", "k")], "a", soon()).is_ok());
         assert_eq!(claims.acquire(&[item("c", "k")], "b", soon()), Err(item("c", "k")));
