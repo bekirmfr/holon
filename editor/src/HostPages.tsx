@@ -70,6 +70,7 @@ import { limitMeaning } from "./policyMeans";
 import { about, input, primary, quiet, row, small } from "./hostStyles";
 
 import { format, RESOURCES_LABELS, RESOURCES_TABS, type ResourcesTab } from "./routes";
+import { Said } from "./SecretSaid";
 
 /** What holding a resource for whole runs costs, said where it is set. */
 const RUN_LOCK_COST = "every run that writes it goes one at a time, for its whole length, across every deployment bound to it";
@@ -1359,7 +1360,9 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
             .filter((o) => kind === "everything" || o.kind === kind)
             .map((o) => (
               <div key={o.item} style={{ ...row, flexWrap: "wrap" }} title={o.item}>
-                <span style={{ color: "var(--ink)", flex: 1, minWidth: 200 }}>{describeItem(o.item)}</span>
+                <span style={{ color: "var(--ink)", flex: 1, minWidth: 200 }}>
+                  <Said item={o.item} />
+                </span>
                 {o.holders.map((h) => (
                   <button key={h.slug} style={{ ...small, textDecoration: h.revoked ? "line-through" : "none" }} title={h.revoked ? `${h.slug}: revoked; open its card` : `open ${h.slug}'s card`} onClick={() => onOpenDeployment(h.slug)}>
                     {h.slug} →

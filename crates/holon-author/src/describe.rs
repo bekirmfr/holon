@@ -93,20 +93,56 @@ pub fn describe_item(item: &str) -> String {
 /// Where a secret is sent, as core's `sent_secrets` names it, in words: a host as its address
 /// (`https://api.example.com`), a database read's database as `the database "shop"`.
 pub fn describe_destination(destination: &str) -> String {
+    if destination == holon_core::CALLERS {
+        return "its callers".to_string();
+    }
     match destination.strip_prefix("db:") {
         Some(database) => format!("the database \"{database}\""),
         None => format!("https://{destination}"),
     }
 }
 
+/// Where a secret goes, in words: each part is there when it goes somewhere.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SentTo {
+    /// Where the secret itself is sent: "https://api.example.com and the database "shop"".
+    pub own: Option<String>,
+    /// Where what is answered to it goes (its `answer:` destinations): "its callers and
+    /// https://api.example.com".
+    pub answers: Option<String>,
+    /// Where a hash or a signature made with it goes (its `made:` destinations).
+    pub made: Option<String>,
+}
+
+impl SentTo {
+    /// What the approval says after "read the secret "k"": ", and send it to …; what is answered
+    /// to it goes to …; a hash or signature made with it goes to …", each part when there is one;
+    /// nothing for a secret that goes nowhere.
+    pub fn said_after_read(&self) -> String {
+        let mut said = self.own.as_ref().map(|own| format!(", and send it to {own}")).unwrap_or_default();
+        for clause in self.clauses() {
+            said.push_str(&format!("; {clause}"));
+        }
+        said
+    }
+
+    /// Where what is answered to it and what is made with it go, a clause each: "what is
+    /// answered to it goes to …", "a hash or signature made with it goes to …".
+    pub fn clauses(&self) -> Vec<String> {
+        let answers = self.answers.as_ref().map(|to| format!("what is answered to it goes to {to}"));
+        let made = self.made.as_ref().map(|to| format!("a hash or signature made with it goes to {to}"));
+        answers.into_iter().chain(made).collect()
+    }
+}
+
 /// Where a secret goes, as core's `sent_secrets` lists it, in words ([`describe_destination`]):
-/// where it is sent itself ("https://api.example.com and the database "shop""), and where what
-/// is answered to it goes (its `answer:` destinations), each when there is one.
-pub fn describe_sent_to(to: &BTreeSet<String>) -> (Option<String>, Option<String>) {
+/// where it is sent itself, where what is answered to it goes (its `answer:` destinations) and
+/// where a hash or a signature made with it goes (its `made:` ones), each when there is one.
+pub fn describe_sent_to(to: &BTreeSet<String>) -> SentTo {
     let listed = |to: Vec<&str>| -> Option<String> {
-        // The hosts, then the databases.
+        // Its callers, then the hosts, then the databases.
         let mut to = to;
-        to.sort_by_key(|d| d.starts_with("db:"));
+        to.sort_by_key(|d| if *d == holon_core::CALLERS { 0 } else if d.starts_with("db:") { 2 } else { 1 });
         let to: Vec<String> = to.into_iter().map(describe_destination).collect();
         match to.split_last() {
             None => None,
@@ -114,26 +150,21 @@ pub fn describe_sent_to(to: &BTreeSet<String>) -> (Option<String>, Option<String
             Some((last, _)) => Some(last.clone()),
         }
     };
-    let (answers, own): (Vec<&String>, Vec<&String>) = to.iter().partition(|d| d.starts_with(holon_core::ANSWER));
-    (listed(own.iter().map(|d| d.as_str()).collect()), listed(answers.iter().filter_map(|d| d.strip_prefix(holon_core::ANSWER)).collect()))
+    let marked = |mark: &str| listed(to.iter().filter_map(|d| d.strip_prefix(mark)).collect());
+    SentTo { own: listed(to.iter().map(String::as_str).filter(|d| holon_core::is_own_destination(d)).collect()), answers: marked(holon_core::ANSWER), made: marked(holon_core::MADE) }
 }
 
 /// `item` in words (as [`describe_item`]), and beside a secret it reads, where the flow sends
-/// it, and where what is answered to it goes (core's `sent_secrets`, [`describe_sent_to`]): "read
-/// the secret "k", and send it to https://auth.example.com; what is answered to it goes to
-/// https://api.example.com". It isn't an item of its own; the approval says it here so a person
-/// sees where each secret goes.
+/// it, where what is answered to it goes and where a hash or a signature made with it goes
+/// (core's `sent_secrets`, [`describe_sent_to`]): "read the secret "k", and send it to
+/// https://auth.example.com; what is answered to it goes to https://api.example.com". It isn't
+/// an item of its own; the approval says it here so a person sees where each secret goes.
 pub fn describe_item_sending(item: &str, sent: &BTreeMap<String, BTreeSet<String>>) -> String {
     let said = describe_item(item);
     let name = item.strip_prefix("SecretRead(\"").and_then(|i| i.strip_suffix("\")"));
-    let Some(to) = name.and_then(|n| sent.get(n)) else {
-        return said;
-    };
-    match describe_sent_to(to) {
-        (Some(own), Some(answers)) => format!("{said}, and send it to {own}; what is answered to it goes to {answers}"),
-        (Some(own), None) => format!("{said}, and send it to {own}"),
-        (None, Some(answers)) => format!("{said}; what is answered to it goes to {answers}"),
-        (None, None) => said,
+    match name.and_then(|n| sent.get(n)) {
+        Some(to) => format!("{said}{}", describe_sent_to(to).said_after_read()),
+        None => said,
     }
 }
 
@@ -154,6 +185,38 @@ pub fn describe_secret_sink(secret: &str, sink: &holon_core::Capability) -> Stri
         MailSend(_) => format!("would mail the secret \"{secret}\" ({what}): the host refuses it"),
         RunsAction(_) => format!("would hand the secret \"{secret}\" to another flow ({what}): the host refuses it"),
         _ => format!("{what}, with the secret \"{secret}\""),
+    }
+}
+
+/// What a route says of answering its caller with what is answered to the secret `secret`, as
+/// the canvas marks it. No approval of its own: the secret's read says where it goes.
+pub fn describe_answer_answered(secret: &str) -> String {
+    format!("answers its caller with what is answered to the secret \"{secret}\"")
+}
+
+/// What a route says of answering its caller with a hash or a signature made with the secret
+/// `secret`, as the canvas marks it.
+pub fn describe_made_answered(secret: &str) -> String {
+    format!("answers its caller with a hash or signature made with the secret \"{secret}\"")
+}
+
+/// What a sink does with a hash or a signature made with the secret `secret` (core's
+/// `SecretFed::made_of`), as the canvas marks it: "sends a hash or signature made with the secret
+/// "k" to https://api.example.com". Nothing is refused: it isn't the secret.
+pub fn describe_made_sink(secret: &str, sink: &holon_core::Capability) -> String {
+    use holon_core::Capability::*;
+    let what = describe_item(&holon_core::consent_name(sink));
+    let made = format!("a hash or signature made with the secret \"{secret}\"");
+    match sink {
+        HttpRequest(host) => format!("sends {made} to https://{host}"),
+        DbRead(table) => match table.split_once('/') {
+            Some((database, table)) => format!("sends {made} to the database \"{database}\", reading its table \"{table}\""),
+            None => format!("{what}, with {made}"),
+        },
+        StateWrite(_) | CollectionWrite(_) | FileWrite(_) | DbWrite(_) | ChannelSend(_) => format!("keeps {made} ({what})"),
+        MailSend(_) => format!("mails {made} ({what})"),
+        RunsAction(_) => format!("hands {made} to another flow ({what})"),
+        _ => format!("{what}, with {made}"),
     }
 }
 

@@ -796,7 +796,8 @@ Done when:
    replay changed a decision. Each place they got stuck is fixed, or listed here as next.
 
 **0.1.0 is cut when M3 is met.** Until then, the next piece of work is chosen by what stands
-between here and M3: a feature no step above needs waits.
+between here and M3: a feature no step above needs waits. What a buyer's read found to stand in
+the way is listed in §7c, under "Before M3".
 
 ### 7a. Review findings, triaged against this direction
 The 2026-10-21 project review is sorted by what matters for a **single-user backend builder with a
@@ -883,6 +884,75 @@ budget. Listeners bind `127.0.0.1` unless the operator opens another address (`-
 Left for later: these limits as host policy and per-deployment grants (they are host-wide constants
 today), HTTP/2, and TLS (terminate it in front, e.g. a reverse proxy, until then). The control plane
 keeps `rouille`, so its future-incompatibility warnings remain until it moves too.
+
+### 7c. Product gaps from a buyer's read (2026-11-13)
+The whole manual was read the way a buyer would read it, for two audiences: payment ops at a fintech
+(M3's target) and small SaaS builders with user accounts and payments. Each gap below was checked
+against the docs and the code on `main` at `7077129a`. They are sorted by what stands between here
+and M3, as this section's rule asks.
+
+**Before M3: the job's own questions.** The partner's first question is "what happened to *this*
+payment?".
+- **A run can't be found by what it carried.** The run log's filter (`ViewPanes.tsx:507-515`)
+  matches the run number, label, URL, session, status and error text, and only over the runs
+  loaded. It doesn't search body fields or headers, so a customer's email or an order id finds
+  nothing. `holon history --cell/--item` finds only runs that changed a value. What to build: a
+  search over request fields, on the server, across the whole log. This needs a tainted value's
+  keyed fingerprint (below) so that a tainted field can be found without being stored.
+- **Runs past 500 are dropped without a word.** `--keep-runs` is 500 and `backup` is `none` by
+  default (`reference/server.md:190`). What to build: setup asks for a backup folder, and
+  `holon serve` and the admin page warn while a recorded deployment has none. This is cheap and
+  closes the review's "keeps a record of every run" row.
+- **A resumed `await` run writes over what changed while it waited.** This is the review's H8, and
+  the manual now says "for now" (`reference.md:983-985`). A database commit is checked, so the
+  approved-payout sample is safe. A payout flow that keeps balances in a collection isn't. It must
+  be fixed before a partner's job puts `await` in front of a collection write. Until then, say it
+  in `await`'s guide.
+
+**After M3, for a payment-ops pilot that grows**
+- **Archived runs are verify-only.** The backup's `holon-archive-…json.gz` files pass
+  `holon verify`, but nothing opens them in view mode or searches across them. A 60-day-old run
+  means picking a file by its sequence range. What to build: view mode and the run search above
+  read the backup folder too.
+- **Taint's edges.**
+  - A tainted value shorter than six characters is logged as it is (a CVC, a PIN;
+    `reference.md:115`). Below six, keep the in-text search off, but still blank the value where
+    it sits under its own key.
+  - A tainted value written to state is stored in plain form, and logged again if a later run
+    reads it back under a key that isn't tainted (`reference.md:116-118`). This is the same class
+    as the review's H2 and H3: taint isn't carried through storage.
+  - What to build: a keyed fingerprint on a taint mark, as secrets have. `holon check` would also
+    note likely-personal keys (`email`, `phone`, `iban`, `name`, `address`) that aren't tainted.
+- **Getting audit data out.** Nothing streams to a SIEM: `--log-stdout` carries `console.log`
+  lines only, and `access.versions.jsonl`, `secrets.audit.jsonl` and `holon activity` stay on the
+  server's disk. A fintech's security review will ask for this. What to build: one JSON-lines
+  stream of control-plane and audit events, to stdout or a file to ship.
+- **No failover for a server's own `data/`.** Several servers can share one Postgres, MySQL or
+  MongoDB database, but each server's `data/` folder is single. This is stated honestly already;
+  it stays an answer, not a build item, until a partner needs more. TLS ending at the proxy is by
+  design (`guides/public-https.md`).
+
+**Not for M3: a direction to decide.** Accounts in a flow's own app. There is no password-hashing
+leaf (argon2id guards only Holon's own sign-in), no JWT issuing (only `jwt_verify` and
+`jwt_decode`), no sessions, and no rate limit on a flow's port. A SaaS with user accounts needs an
+outside identity provider today. Until this is decided, the README should say "bring your
+identity provider" in place of leaving the reader to find out. Building it (a `password_hash` and
+`password_verify` pair, `jwt_sign` under a secret, a session collection, and a per-route rate
+limit) is a second audience, and §7's rule says it waits.
+
+**Docs that mislead an evaluator** (cheap; batch them with the next docs pass)
+- README "Checking runs" (`README.md:321-322`) says a run that used a secret "can't be run again"
+  and is counted. The manual (`guides/checking-runs.md:171-177`) says the run is checked, with the
+  log's kept outputs standing in, and only runs whose such outputs weren't kept are counted.
+- The secrets key's default: `reference/cli.md:175` says "the OS key store". On Linux it is a
+  file (`reference/server.md`, the secrets key).
+- Strict throughput: `reference.md:796` gives about 1,600 requests a second on a Windows desktop
+  SSD. `engineering/themes/performance.md` gives about 10,000 on a Linux server. Both are true.
+  Say both in the reference, with the reason for the gap: the sync's cost on a drive with
+  power-loss protection.
+- The README undersells the manual. Retention and backup, taint, several servers on one database,
+  and the integrations (four database engines, mail with OAuth, SQS, feeds, Vault, OIDC) are all
+  missing from "What a flow can do". An evaluator reading only the README misses them.
 
 ---
 

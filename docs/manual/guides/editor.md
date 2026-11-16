@@ -125,9 +125,29 @@ A flow tab is a canvas of nodes and wires.
 - **Secrets.** Every node a secret's value reaches where it leaves the computation is marked 🔑,
   with what it does with it: a request it is sent in ("sends the secret "slack_webhook_path" to
   https://hooks.slack.com"), a database read it is a value of, a write or a call the host
-  refuses, the route's answer; and where what a call answers to it goes ("sends what is answered
-  to the secret "client_secret" to https://httpbin.dev"). A placed holon is marked for what its
-  insides do. A node that only computes with it (an HMAC, Stripe's verify) isn't.
+  refuses, the route's answer; where what a call answers to it goes ("sends what is answered
+  to the secret "client_secret" to https://httpbin.dev", "answers its caller with what is
+  answered to the secret "client_secret""); and where a hash or a signature made with it goes
+  ("answers its caller with a hash or signature made with the secret "signing_key""). A placed
+  holon is marked for what its insides do. A node that only computes with it (an HMAC whose
+  result is only compared, Stripe's verify) isn't. Wherever what a flow may do is listed (the
+  **It may** strip above the canvas, the deploy question, a flow's status and settings, the
+  Inspector, the Library, the host's holdings), a line of a secret has the same 🔑 before it and
+  is in the secret's colour, so it is the first thing read; in the strip and the deploy question
+  it says where the secret goes and where what is made with it goes, as the approval does.
+- **The It may strip.** Above the canvas, what the draft may do, each thing a short pill: an icon
+  for what it reaches (a call out ↗, requests coming in, a state's cell, a collection's rows, a
+  folder, a database, a channel, a mail, a queue, a key for a secret, a clock…), a small second
+  one for what is done to it (a pencil: written; two arrows: read and written; an arrow out:
+  sent on or answered with; a bolt: a run on each one that comes), and its name
+  (`api.example.com`, `orders`, `stripe_key`). Point at a pill, or reach it with **Tab**, and a
+  tip shows the whole sentence at once, as the approval says it, a line for each part: "read the
+  secret "stripe_key", and send it to https://api.stripe.com", then where what is answered to it
+  or made with it goes; under it, what its mark means and the item as the manifest writes it.
+  **Esc** puts the tip away.
+  A new item is framed and marked **new**, one the deployed version had and the draft doesn't is
+  struck through, and a secret's pill is in the secret's colour, with the arrow when the secret,
+  or something made with it, goes anywhere.
 
 ### Holons on the canvas
 
