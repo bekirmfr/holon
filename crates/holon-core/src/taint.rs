@@ -38,7 +38,18 @@
 //! refused; each is followed from where it is made ([`SecretFed::made_of`],
 //! [`SecretFed::answers_of`]) to where it leaves, and the approval says that too, beside the
 //! secret: "…; a hash or signature made with it goes to its callers".
+//!
+//! A walk follows every path through the graph, and a function used twice is followed twice, each
+//! use at its own path, since the host asks of a node by its path: so a function that uses one that
+//! uses one… twice each is 2^k paths, and twenty such levels are a million. The walks one question
+//! about a flow takes (one for each secret, for what is answered to it and what is made with it,
+//! and each route's of those) visit at most [`MAX_VISITS`] nodes between them ([`Visits`]); past
+//! it, a function not yet followed is taken as not followed at all, as a `map`'s function is:
+//! everything under it derived, every effect it could make carrying the secret, every host it could
+//! call sent it. That says more than the flow does, never less (audit R17: `POST /deploy`, the
+//! preview, `holon check` and each run that reads a secret walk its flow).
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::{capabilities, capabilities_of, child_refs, declaration_of, kind::ident, read_server, Capabilities, Capability, Hash, Resolver, Type, Unit, UnitBody, BOUNDARY};
@@ -134,6 +145,40 @@ const HTTP_ANSWERED: &[&str] = &["http_request", "http_upload", "http_stream"];
 /// Deeper than this, a composite is taken as computing with whatever reaches it.
 const MAX_DEPTH: usize = 128;
 
+/// The nodes the walks over one flow may visit between them ([`Visits`]): far more than a flow
+/// written to be read has paths (the samples' most, every walk of a question together, is 2,065:
+/// dexpaprika's), and a few tens of milliseconds of walking.
+pub const MAX_VISITS: usize = 1 << 16;
+
+/// What the walks over one flow may still visit ([`MAX_VISITS`]): one for all the walks a
+/// question about the flow takes (each secret's, and what is answered to it), so a flow reading
+/// many secrets doesn't walk its paths once for each.
+#[derive(Debug)]
+pub struct Visits(Cell<usize>);
+
+impl Default for Visits {
+    fn default() -> Visits {
+        Visits(Cell::new(MAX_VISITS))
+    }
+}
+
+impl Visits {
+    /// One visit taken.
+    fn take(&self) {
+        self.0.set(self.0.get().saturating_sub(1));
+    }
+
+    /// Whether none is left: a function not yet followed isn't.
+    fn spent(&self) -> bool {
+        self.0.get() == 0
+    }
+
+    /// How many the walks took of [`MAX_VISITS`].
+    pub fn taken(&self) -> usize {
+        MAX_VISITS - self.0.get()
+    }
+}
+
 /// The nodes of one run that a secret reaches, by path (child indices from the run's root, as
 /// the timeline and the outbound exchanges name them).
 #[derive(Default, Debug, Clone)]
@@ -176,12 +221,23 @@ enum Follow {
 impl SecretFed {
     /// Follow the secrets through `root`, whose inputs are clean (a request, nothing).
     pub fn of(root: &Unit, resolver: &impl Resolver) -> SecretFed {
-        SecretFed::walk(root, resolver, None)
+        SecretFed::of_within(root, resolver, &Visits::default())
+    }
+
+    /// [`of`](SecretFed::of), visiting no more than `visits` has left.
+    pub fn of_within(root: &Unit, resolver: &impl Resolver, visits: &Visits) -> SecretFed {
+        SecretFed::walk(root, resolver, None, visits)
     }
 
     /// Follow only the secret named `name`: what its value reaches, the others taken as clean.
     pub fn of_secret(root: &Unit, resolver: &impl Resolver, name: &str) -> SecretFed {
-        SecretFed::walk(root, resolver, Some(name))
+        SecretFed::of_secret_within(root, resolver, name, &Visits::default())
+    }
+
+    /// [`of_secret`](SecretFed::of_secret), visiting no more than `visits` has left: one of the
+    /// walks a question about the flow takes.
+    pub fn of_secret_within(root: &Unit, resolver: &impl Resolver, name: &str, visits: &Visits) -> SecretFed {
+        SecretFed::walk(root, resolver, Some(name), visits)
     }
 
     /// Follow what is answered to the secret `name`: the answers of the requests and reads its
@@ -191,11 +247,16 @@ impl SecretFed {
     /// can't tell the field, so it follows the whole answer, but a response's `status` read
     /// straight off the request, which is a number the far side chose and no token.
     pub fn answers_of(root: &Unit, resolver: &impl Resolver, name: &str) -> SecretFed {
-        let asked = SecretFed::of_secret(root, resolver, name).asked;
+        SecretFed::answers_of_within(root, resolver, name, &Visits::default())
+    }
+
+    /// [`answers_of`](SecretFed::answers_of), visiting no more than `visits` has left.
+    pub fn answers_of_within(root: &Unit, resolver: &impl Resolver, name: &str, visits: &Visits) -> SecretFed {
+        let asked = SecretFed::of_secret_within(root, resolver, name, visits).asked;
         if asked.is_empty() {
             return SecretFed::default();
         }
-        SecretFed::walk_from(root, resolver, Some(name), Some((&asked, Follow::Answers)))
+        SecretFed::walk_from(root, resolver, Some(name), Some((&asked, Follow::Answers)), visits)
     }
 
     /// Follow what is made with the secret `name` and is clean: each hash or signature of it
@@ -207,20 +268,25 @@ impl SecretFed {
     /// What a host answers a request that carried one isn't followed: a signed request's answer
     /// is the far side's, not the signature.
     pub fn made_of(root: &Unit, resolver: &impl Resolver, name: &str) -> SecretFed {
-        let made = SecretFed::of_secret(root, resolver, name).made;
+        SecretFed::made_of_within(root, resolver, name, &Visits::default())
+    }
+
+    /// [`made_of`](SecretFed::made_of), visiting no more than `visits` has left.
+    pub fn made_of_within(root: &Unit, resolver: &impl Resolver, name: &str, visits: &Visits) -> SecretFed {
+        let made = SecretFed::of_secret_within(root, resolver, name, visits).made;
         if made.is_empty() {
             return SecretFed::default();
         }
-        SecretFed::walk_from(root, resolver, Some(name), Some((&made, Follow::Made)))
+        SecretFed::walk_from(root, resolver, Some(name), Some((&made, Follow::Made)), visits)
     }
 
-    fn walk(root: &Unit, resolver: &impl Resolver, only: Option<&str>) -> SecretFed {
-        SecretFed::walk_from(root, resolver, only, None)
+    fn walk(root: &Unit, resolver: &impl Resolver, only: Option<&str>, visits: &Visits) -> SecretFed {
+        SecretFed::walk_from(root, resolver, only, None, visits)
     }
 
-    fn walk_from(root: &Unit, resolver: &impl Resolver, only: Option<&str>, from: Option<(&BTreeSet<Vec<u32>>, Follow)>) -> SecretFed {
+    fn walk_from(root: &Unit, resolver: &impl Resolver, only: Option<&str>, from: Option<(&BTreeSet<Vec<u32>>, Follow)>, visits: &Visits) -> SecretFed {
         let mut fed = SecretFed::default();
-        let mut walk = Walk { resolver, only, from, holds_secret: HashMap::new() };
+        let mut walk = Walk { resolver, only, from, holds_secret: HashMap::new(), visits, capabilities: HashMap::new() };
         let inputs = vec![Taint::Clean; root.inputs.len()];
         walk.unit(root, &inputs, &mut Vec::new(), &mut fed);
         fed
@@ -298,6 +364,11 @@ struct Walk<'r, R> {
     from: Option<(&'r BTreeSet<Vec<u32>>, Follow)>,
     /// Whether a unit (by hash) reads a followed secret anywhere in its closure.
     holds_secret: HashMap<Hash, bool>,
+    /// What the walk may still visit.
+    visits: &'r Visits,
+    /// Each unit taken as not followed, by its place in memory (the resolver's, for the walk):
+    /// what its closure could do, worked out once however many paths reach it.
+    capabilities: HashMap<usize, Capabilities>,
 }
 
 impl<R: Resolver> Walk<'_, R> {
@@ -337,6 +408,7 @@ impl<R: Resolver> Walk<'_, R> {
 
     /// The taint of `unit`'s outputs, given its inputs'; what it reaches is recorded in `fed`.
     fn unit(&mut self, unit: &Unit, inputs: &[Taint], path: &mut Vec<u32>, fed: &mut SecretFed) -> Vec<Taint> {
+        self.visits.take();
         let most = inputs.iter().copied().max().unwrap_or_default();
         let reads = self.reads(unit) && self.from.is_none();
         let follows = self.from.map(|(_, follow)| follow);
@@ -454,7 +526,8 @@ impl<R: Resolver> Walk<'_, R> {
     /// effect it could make.
     fn opaque(&mut self, unit: &Unit, path: &[u32], fed: &mut SecretFed) {
         fed.opaque.push(path.to_vec());
-        let caps = capabilities(unit, self.resolver);
+        let resolver = self.resolver;
+        let caps = self.capabilities.entry(std::ptr::from_ref(unit) as usize).or_insert_with(|| capabilities(unit, resolver));
         if caps.iter().any(|c| destination_of(&c).is_some()) {
             fed.asked.insert(path.to_vec());
         }
@@ -471,7 +544,8 @@ impl<R: Resolver> Walk<'_, R> {
         if inputs.iter().all(|t| *t == Taint::Clean) && !answers_inside && !children.iter().any(|c| self.holds(c)) {
             return vec![Taint::Clean; unit.outputs.len()];
         }
-        if path.len() >= MAX_DEPTH {
+        // Too deep, or the walks have visited all they may: not followed.
+        if path.len() >= MAX_DEPTH || self.visits.spent() {
             self.opaque(unit, path, fed);
             return derived;
         }
@@ -534,11 +608,12 @@ impl<R: Resolver> Walk<'_, R> {
 /// its own. Each is a permission, `SecretAnswer("name")`, which a person approves at deploy.
 pub fn answered_secrets(root: &Unit, resolver: &impl Resolver) -> BTreeSet<String> {
     let mut answered = BTreeSet::new();
+    let visits = Visits::default();
     for endpoint in endpoints_of(root, resolver) {
         for cap in capabilities(endpoint, resolver).iter() {
             if let Capability::SecretRead(name) = cap
                 && !answered.contains(&name)
-                && SecretFed::of_secret(endpoint, resolver, &name).reaches_output(0)
+                && SecretFed::of_secret_within(endpoint, resolver, &name, &visits).reaches_output(0)
             {
                 answered.insert(name);
             }
@@ -564,6 +639,11 @@ pub fn answered_secrets(root: &Unit, resolver: &impl Resolver) -> BTreeSet<Strin
 /// ([`CALLERS`]): a token or a signature handed to whoever calls leaves the flow as surely as one
 /// sent to a host. A secret that only does that is listed, though it is sent nowhere itself.
 pub fn sent_secrets(root: &Unit, resolver: &impl Resolver) -> BTreeMap<String, BTreeSet<String>> {
+    sent_secrets_within(root, resolver, &Visits::default())
+}
+
+/// [`sent_secrets`], its walks visiting no more than `visits` has left between them.
+pub fn sent_secrets_within(root: &Unit, resolver: &impl Resolver, visits: &Visits) -> BTreeMap<String, BTreeSet<String>> {
     let mut sent = BTreeMap::new();
     // What answers a caller: a route, and a websocket's open and message blocks.
     let mut endpoints = endpoints_of(root, resolver);
@@ -573,13 +653,13 @@ pub fn sent_secrets(root: &Unit, resolver: &impl Resolver) -> BTreeMap<String, B
     }
     for cap in capabilities(root, resolver).iter() {
         if let Capability::SecretRead(name) = cap {
-            let mut to = SecretFed::of_secret(root, resolver, &name).sent;
-            to.extend(SecretFed::answers_of(root, resolver, &name).sent.into_iter().map(|d| format!("{ANSWER}{d}")));
-            to.extend(SecretFed::made_of(root, resolver, &name).sent.into_iter().map(|d| format!("{MADE}{d}")));
-            if endpoints.iter().any(|endpoint| SecretFed::answers_of(endpoint, resolver, &name).reaches_output(0)) {
+            let mut to = SecretFed::of_secret_within(root, resolver, &name, visits).sent;
+            to.extend(SecretFed::answers_of_within(root, resolver, &name, visits).sent.into_iter().map(|d| format!("{ANSWER}{d}")));
+            to.extend(SecretFed::made_of_within(root, resolver, &name, visits).sent.into_iter().map(|d| format!("{MADE}{d}")));
+            if endpoints.iter().any(|endpoint| SecretFed::answers_of_within(endpoint, resolver, &name, visits).reaches_output(0)) {
                 to.insert(format!("{ANSWER}{CALLERS}"));
             }
-            if endpoints.iter().any(|endpoint| SecretFed::made_of(endpoint, resolver, &name).reaches_output(0)) {
+            if endpoints.iter().any(|endpoint| SecretFed::made_of_within(endpoint, resolver, &name, visits).reaches_output(0)) {
                 to.insert(format!("{MADE}{CALLERS}"));
             }
             if !to.is_empty() {
@@ -596,9 +676,13 @@ pub fn sent_secrets(root: &Unit, resolver: &impl Resolver) -> BTreeMap<String, B
 /// asks this, every time it reads a secret; an approval asks the other, once.
 pub fn sent_itself(root: &Unit, resolver: &impl Resolver) -> BTreeMap<String, BTreeSet<String>> {
     let mut sent = BTreeMap::new();
+    // Its walks are one question's, on one budget ([`Visits`]): a run reading many secrets
+    // doesn't walk its paths once for each. They are a part of `sent_secrets`'s, taken in its
+    // order, so what this says a secret is sent to is what the approval says or less.
+    let visits = Visits::default();
     for cap in capabilities(root, resolver).iter() {
         if let Capability::SecretRead(name) = cap {
-            let to = SecretFed::of_secret(root, resolver, &name).sent;
+            let to = SecretFed::of_secret_within(root, resolver, &name, &visits).sent;
             if !to.is_empty() {
                 sent.insert(name, to);
             }

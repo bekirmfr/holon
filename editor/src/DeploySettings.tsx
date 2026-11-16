@@ -61,6 +61,7 @@ const LIMITS: [string, string][] = [
   ["max_memory", "memory held between outbound calls (bytes)"],
   ["max_await_seconds", "longest wait (s)"],
   ["max_waiting_runs", "runs waiting at once"],
+  ["max_concurrent_runs", "runs answered at once"],
   ["max_call_depth", "flows calling flows, deep"],
   ["inline_file_bytes", "file read whole (bytes)"],
   ["max_file_read_bytes", "file reads per run (bytes)"],

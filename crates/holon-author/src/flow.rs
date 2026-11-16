@@ -521,32 +521,35 @@ pub fn secret_lines(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, por
             }
         }
     };
+    // Every walk below is one question about the flow: they visit what core lets one question
+    // visit between them (`taint::MAX_VISITS`), not that once for each secret.
+    let visits = holon_core::taint::Visits::default();
     for (label, handler, trace, answers) in &handlers {
         // A route's answer: the first output that isn't an effect.
         let response = handler.outputs.iter().position(|p| p.ty != holon_core::Type::Effect).unwrap_or(0) as u32;
         for cap in holon_core::capabilities(handler, &*store).iter() {
             let holon_core::Capability::SecretRead(name) = cap else { continue };
-            let fed = holon_core::taint::SecretFed::of_secret(handler, &*store, &name);
+            let fed = holon_core::taint::SecretFed::of_secret_within(handler, &*store, &name, &visits);
             for (path, sink) in fed.sinks() {
                 if let Some(&child) = path.first() {
                     mark(label, trace, child, crate::describe::describe_secret_sink(&name, sink));
                 }
             }
             // What is answered to it: the token a token exchange answers, an API's echo.
-            for (path, sink) in holon_core::taint::SecretFed::answers_of(handler, &*store, &name).sinks() {
+            for (path, sink) in holon_core::taint::SecretFed::answers_of_within(handler, &*store, &name, &visits).sinks() {
                 if let Some(&child) = path.first() {
                     mark(label, trace, child, crate::describe::describe_answer_sink(&name, sink));
                 }
             }
             // What is made with it: a hash, a signature.
-            let made = holon_core::taint::SecretFed::made_of(handler, &*store, &name);
+            let made = holon_core::taint::SecretFed::made_of_within(handler, &*store, &name, &visits);
             for (path, sink) in made.sinks() {
                 if let Some(&child) = path.first() {
                     mark(label, trace, child, crate::describe::describe_made_sink(&name, sink));
                 }
             }
             if let (true, UnitBody::Composite { edges, .. }) = (*answers, &handler.body) {
-                let answered = holon_core::taint::SecretFed::answers_of(handler, &*store, &name);
+                let answered = holon_core::taint::SecretFed::answers_of_within(handler, &*store, &name, &visits);
                 for e in edges.iter().filter(|e| e.to_child == holon_core::BOUNDARY && e.to_port == response && e.from_child != holon_core::BOUNDARY) {
                     let reaches = |fed: &holon_core::taint::SecretFed| fed.output(&[e.from_child], e.from_port as usize) > holon_core::taint::Taint::Clean;
                     if reaches(&fed) {
