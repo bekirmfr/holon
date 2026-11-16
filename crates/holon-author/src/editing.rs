@@ -1007,11 +1007,13 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
     // nowhere (or the text doesn't compile).
     let sent_to = |name: &str| -> String {
         let sent = commands::sent_of(source);
-        match sent.get(name).map(crate::describe::describe_sent_to) {
-            Some((Some(own), Some(answers))) => format!(" This flow sends it to {own}; what is answered to it goes to {answers}."),
-            Some((Some(own), None)) => format!(" This flow sends it to {own}."),
-            Some((None, Some(answers))) => format!(" What is answered to it goes to {answers}."),
-            _ => String::new(),
+        let Some(to) = sent.get(name).map(crate::describe::describe_sent_to) else { return String::new() };
+        let said: Vec<String> = to.own.iter().map(|own| format!("this flow sends it to {own}")).chain(to.clauses()).collect();
+        let said = said.join("; ");
+        let mut letters = said.chars();
+        match letters.next() {
+            Some(first) => format!(" {}{}.", first.to_uppercase(), letters.as_str()),
+            None => String::new(),
         }
     };
 
@@ -1603,7 +1605,7 @@ mod tests {
         assert!(says(STRIPE, "stripe.verify", 0).contains("a verified Stripe webhook"), "stripe");
         assert!(says(STRIPE, "JSON.stringify", 0).contains("JSON in and out"), "JSON");
         assert!(hover(STRIPE, at(STRIPE, "JSON.stringify", 0, 5)).unwrap().text.contains("json_stringify("), "its leaf");
-        assert!(says(LICENSE, "license_key)", 0).contains("This flow sends it to the database \"vendor\"."), "a query's parameter");
+        assert!(says(LICENSE, "license_key)", 0).contains("This flow sends it to the database \"vendor\"; what is answered to it goes to its callers."), "a query's parameter");
         assert!(says(LICENSE, "vendor.one", 0).contains("a database of this flow, `database:vendor`"), "a database");
         assert_eq!(hover(SLUGS, at(SLUGS, "\"-\"", 0, 1)), None, "inside a string");
         assert_eq!(hover(SLUGS, at(SLUGS, "published.receipt", 0, 10)), None, "a field of a value");

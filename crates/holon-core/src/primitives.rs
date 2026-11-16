@@ -288,9 +288,11 @@ fn effect(sink: String, payload: Value) -> Option<Value> {
 }
 
 /// Whether the list leaf `op` builds of `inputs` (present, in port order) is within
-/// [`MAX_ITEMS`] items, and what `fill` copies of its value within [`MAX_BYTES`]: found from
+/// [`MAX_ITEMS`] items, and what `fill` copies of its value, or `list` of a value handed to it at
+/// several ports, within [`MAX_BYTES`]: found from
 /// their lengths before anything is copied. A list grown by joining others doubles a step, and a
-/// value filled into each item of a list is that many copies of it. Every other leaf that makes
+/// value filled into each item of a list, or wired to each port of one, is that many copies of
+/// it. Every other leaf that makes
 /// a list makes it no longer than one it was given, or than `MAX_ITEMS` ([`MAX_ITEMS`]'s leaves);
 /// a text joined of others is checked as it is joined ([`texts::within`]).
 fn sized(op: Op, inputs: &[&Value], params: &[Param]) -> bool {
@@ -318,8 +320,23 @@ fn sized(op: Op, inputs: &[&Value], params: &[Param]) -> bool {
             }
             _ => true,
         },
+        Op::List => copies_within(inputs, MAX_BYTES),
         _ => true,
     }
+}
+
+/// Whether the copies a leaf makes of a value it is handed at several of its ports are within
+/// `most` bytes in all, for each such value. One wire into many ports is one value held and that
+/// many copies made in a step: `[s, s, …]` of a 16 MiB text at a thousand ports is 16 GiB. Values
+/// handed once each are held already, and a copy of them all is no more than they are, so only a
+/// value handed twice or more is measured.
+fn copies_within(inputs: &[&Value], most: usize) -> bool {
+    if inputs.len() < 2 {
+        return true;
+    }
+    let mut by_place: smallvec::SmallVec<[&Value; 8]> = inputs.iter().copied().collect();
+    by_place.sort_unstable_by_key(|v| std::ptr::from_ref::<Value>(v) as usize);
+    by_place.chunk_by(|a, b| std::ptr::eq(*a, *b)).all(|same| same.len() < 2 || lists::size_within(same[0], most / same.len()))
 }
 
 /// [`compute`], the primitive's [`Op`] already found (`name` is its name, which a few read):
@@ -2297,6 +2314,8 @@ mod tests {
         let attributes = |values: usize| txt(&format!("<a{}/>", (2..values).map(|i| format!(" a{i}=''")).collect::<String>()));
         let texts = |values: usize| txt(&format!("<a>{}x</a>", "x<b/>".repeat((values - 3) / 3)));
         let closed = |elements: usize| txt(&format!("<a>{}x</a>", "<b/>".repeat(elements)));
+        // A CSV of one column, its name `name` bytes long, over `rows` rows.
+        let named = |name: usize, rows: usize| txt(&format!("{}\n{}", "h".repeat(name), "x\n".repeat(rows)));
         let (t, b, n) = (MAX_TEXT, MAX_BYTES, MAX_ITEMS);
         // Each leaf, its params, its inputs making the most, its inputs making one more, and how
         // long what it makes at the most is.
@@ -2321,6 +2340,9 @@ mod tests {
             ("csv_parse", vec![p("header", "none"), p("separator", ",")], vec![commas(n - 2)], vec![commas(n - 1)], 1),
             // Rows of a field each, each line ended.
             ("csv_parse", vec![p("header", "none"), p("separator", ",")], vec![txt(&"a\n".repeat(n / 2))], vec![txt(&"a\n".repeat(n / 2 + 1))], n / 2),
+            // Records by a name 64 KiB long, each with its own copy of it: as many bytes of names
+            // as joined bytes may be.
+            ("csv_parse", vec![p("header", "first_row"), p("separator", ",")], vec![named(b / 1024, 1024)], vec![named(b / 1024, 1025)], 1024),
             // An element of elements, each its list and its name.
             ("xml_parse", vec![], vec![xml(n)], vec![xml(n + 2)], n / 2),
             // An element of attributes: its name and its record.
@@ -2342,6 +2364,43 @@ mod tests {
             assert_eq!(given(most).as_ref().map(length), Some(long), "{name}: given, what it makes at the most");
             assert_eq!(given(past), None, "{name}: given, one past the most");
         }
+    }
+
+    /// Guards: no leaf that takes any number of inputs, handed one value at every one of many
+    /// ports, makes more of it than a value may be: nothing, or a value within the most its kind
+    /// may hold (`MAX_BYTES` copied, a text of `MAX_TEXT` units).
+    /// Why: one wire into many ports is one value held and a copy made for each port, in one
+    /// step, before the round's memory is looked at again. `[s, s, …]` of a 16 MiB text at a
+    /// thousand ports was 16 GiB, and the process aborted with every deployment in it; a flow's
+    /// text can say that with no permission to ask for.
+    /// If it fails: the named leaf copies each input without measuring those handed to it more
+    /// than once (`copies_within` in `sized`), or a new such leaf isn't held there.
+    #[test]
+    fn no_leaf_handed_one_value_at_many_ports_copies_more_than_a_value_may_be() {
+        let ports = 64;
+        let most = MAX_BYTES.max(3 * MAX_TEXT);
+        let big = [
+            txt(&"a".repeat(MAX_BYTES / ports + 1)),
+            Value::Bytes(vec![0; MAX_BYTES / ports + 1]),
+            list(vec![txt(&"a".repeat(1 << 16)); 32]),
+            Value::Record((0..32).map(|i| (format!("k{i}"), txt(&"a".repeat(1 << 16)))).collect()),
+        ];
+        for name in crate::catalog::VARIADIC {
+            let Some(op) = Op::of(name) else { continue };
+            for v in &big {
+                let inputs = vec![v; ports];
+                let given = compute_given(op, name, inputs.iter().map(|v| Cow::Borrowed(*v)).collect(), &[]).ok();
+                for made in [compute(name, &inputs, &[]), given].into_iter().flatten() {
+                    assert!(lists::size_within(&made, most), "{name}: of one value at {ports} ports, it made more than {most} bytes");
+                }
+            }
+        }
+        // At the most, `list` still makes it: 64 copies of a text, as many bytes as may be copied.
+        let fits = txt(&"a".repeat(MAX_BYTES / ports));
+        assert!(compute("list", &vec![&fits; ports], &[]).is_some(), "list: 64 copies coming to MAX_BYTES");
+        // Values handed once each are held already: a list of them is made whatever they come to.
+        let each: Vec<Value> = (0..ports).map(|_| txt(&"a".repeat(MAX_BYTES / ports + 1))).collect();
+        assert!(compute("list", &each.iter().collect::<Vec<_>>(), &[]).is_some(), "list: of values handed once each");
     }
 
     #[test]

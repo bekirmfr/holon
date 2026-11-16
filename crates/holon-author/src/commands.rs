@@ -80,6 +80,32 @@ pub fn starts_nothing(c: &Lowered, store: &mut MapResolver) -> bool {
     server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.feeds.is_empty() && server.queues.is_empty() && server.websockets.is_empty() && server.actions.is_empty()
 }
 
+/// What the flow does with each secret, node by node, in the words the web console marks its
+/// canvas with ([`crate::flow::secret_lines`]): where one is sent, a write or a call the host
+/// refuses, a route's answer. Each under its handler, with the line of the text the node is on.
+/// `holon check` and an agent's `check` tool print these, so a person at the canvas, a person at
+/// a terminal and an agent read the same of a flow; nothing when it does none of them.
+pub(crate) fn with_its_secrets(c: &Lowered, store: &mut MapResolver) -> Vec<String> {
+    let said = crate::flow::secret_lines(&c.doc.nodes, &c.doc.edges, store, port_of(c), c.doc.unit_settings());
+    if said.is_empty() {
+        return vec![];
+    }
+    let mut out = vec!["with its secrets:".to_string()];
+    for s in said {
+        let at = match (s.handler.is_empty(), c.spans.get(&s.node)) {
+            (false, Some(span)) => format!("{}, line {}: ", s.handler, span.start.line),
+            (false, None) => format!("{}: ", s.handler),
+            (true, Some(span)) => format!("line {}: ", span.start.line),
+            (true, None) => String::new(),
+        };
+        let line = format!("  {at}{}", s.line);
+        if !out.contains(&line) {
+            out.push(line);
+        }
+    }
+    out
+}
+
 /// What `check` says of a flow nothing would start.
 pub const STARTS_NOTHING: &str = "nothing would start a run: add a route, a websocket, a clock, a file, mail, feed or queue handler or an action (an action runs by hand: `export const run = action((input) => { … })`)";
 
@@ -228,6 +254,7 @@ pub fn check(file: &str, source: &str) -> Report {
     let mut unrecorded: Vec<String> = unrecorded.filter(|(_, log)| log.as_str() == "unrecorded").map(|(label, _)| format!("  {}", describe_item(&format!("Unrecorded({label:?})")))).collect();
     unrecorded.sort();
     out.extend(unrecorded);
+    out.extend(with_its_secrets(&c, &mut store));
     out.extend(while_it_runs(&caps));
     // Where a lazy feed handler is moves once its record is on disk: a crash runs again what the
     // last sync didn't cover (host-capabilities L4 §5.9.4).
@@ -418,17 +445,203 @@ mod tests {
     }
 
     /// A route that answers with a secret may do that, said apart from reading it; one that only
-    /// signs with a secret doesn't answer with it.
+    /// signs with a secret doesn't answer with it, and its read says where the signature goes.
     #[test]
     fn check_says_a_route_answers_with_a_secret() {
         let text = "import { base64, flow, hmac_sha256, route, status } from \"holon\"\nimport key from \"secret:key\"\nimport token from \"secret:token\"\n\nflow(\"leaky\", { port: 8102 })\n\nroute.get(\"/plain\", () => base64(token))\n\nroute.post(\"/sign\", (req) => hmac_sha256(key, req.body) ?? status(400))\n";
         let r = check("leaky.holon.ts", text);
         assert_eq!(r.code, 0, "{r:?}");
         let may = r.out.iter().position(|l| l == "it may:").unwrap_or_else(|| panic!("{:?}", r.out));
+        let listed: Vec<&String> = r.out[may + 1..].iter().take_while(|l| l.starts_with("  ")).collect();
         assert_eq!(
-            r.out[may + 1..],
-            ["  receive requests", "  answer its callers with the secret \"token\", or with what is computed from it", "  read the secret \"key\"", "  read the secret \"token\""]
+            listed,
+            [
+                "  receive requests",
+                "  answer its callers with the secret \"token\", or with what is computed from it",
+                "  read the secret \"key\"; a hash or signature made with it goes to its callers",
+                "  read the secret \"token\""
+            ]
         );
+    }
+
+    /// A hash or a comparison of a part of a secret answers with the secret, as the part would:
+    /// `secure_equals(k.slice(0, n), p)` says how it begins, `sha256(k.slice(0, 1))` its first
+    /// character by a table of 256. Of the secret whole, neither does: a comparison says nothing
+    /// more, and a hash or a signature is said as that, beside the read.
+    #[test]
+    fn check_says_a_route_answers_with_a_secret_it_hashes_or_compares_a_part_of() {
+        let may = |imports: &str, route: &str| {
+            let text = format!("import {{ flow, route, {imports} }} from \"holon\"\nimport k from \"secret:k\"\n\nflow(\"part\", {{ port: 8103 }})\n\n{route}\n");
+            let r = check("part.holon.ts", &text);
+            assert_eq!(r.code, 0, "{r:?}");
+            let at = r.out.iter().position(|l| l == "it may:").unwrap_or_else(|| panic!("{:?}", r.out));
+            r.out[at + 1..].iter().take_while(|l| l.starts_with("  ")).cloned().collect::<Vec<String>>()
+        };
+        let answers = ["  receive requests", "  answer its callers with the secret \"k\", or with what is computed from it", "  read the secret \"k\""];
+        let reads = ["  receive requests", "  read the secret \"k\""];
+        let makes = ["  receive requests", "  read the secret \"k\"; a hash or signature made with it goes to its callers"];
+        assert_eq!(may("secure_equals, text_length", "route.get(\"/b\", (req) => secure_equals(k.slice(0, text_length(req.query.p)), req.query.p))"), answers);
+        assert_eq!(may("sha256", "route.get(\"/h\", () => sha256(k.slice(0, 1)))"), answers);
+        assert_eq!(may("hmac_sha256", "route.get(\"/m\", (req) => hmac_sha256(k.slice(0, 4), req.query.p))"), answers);
+        assert_eq!(may("secure_equals", "route.get(\"/w\", (req) => secure_equals(k, req.query.p))"), reads);
+        // A key kept as base64 signs as the key: its bytes are the secret whole, spelled another way.
+        assert_eq!(may("hmac_sha256, text_to_bytes", "route.get(\"/k\", (req) => hmac_sha256(text_to_bytes(k, { encoding: \"base64\" }), req.query.p))"), makes);
+        assert_eq!(may("sha256", "route.get(\"/s\", () => sha256(k))"), makes);
+    }
+
+    /// Guards: what `holon check` prints under "with its secrets:" is what the web console marks
+    /// on the canvas, line for line, for every sample and for a flow that does each kind of thing
+    /// with a secret: sends it to a host, keeps it in its state (refused), hands it to another
+    /// flow (refused), answers its caller with it. Each line says its handler and the line of the
+    /// text its node is on.
+    /// Why: the canvas said "would keep the secret … : the host refuses it" and "would hand the
+    /// secret … to another flow … : the host refuses it" on a node, and `holon check` and an
+    /// agent's `check` tool said neither: an agent writing a flow learned of a refused write or
+    /// call only when the run didn't make it, and a person at a terminal read less than one at
+    /// the canvas.
+    /// If it fails: `check` no longer prints from `flow::secret_lines`, which the canvas's marks
+    /// are made of, or drops or rewords a line: say there what both show.
+    #[test]
+    fn check_says_of_a_flows_secrets_what_the_canvas_marks() {
+        // The lines check prints after "with its secrets:", each without its place.
+        let printed = |file: &str, text: &str| -> Vec<String> {
+            let r = check(file, text);
+            assert_eq!(r.code, 0, "{file}: {r:?}");
+            let Some(at) = r.out.iter().position(|l| l == "with its secrets:") else { return vec![] };
+            r.out[at + 1..].iter().take_while(|l| l.starts_with("  ")).map(|l| l.trim_start().to_string()).collect()
+        };
+        let marked = |file: &str, text: &str| -> Vec<String> {
+            let mut store = MapResolver::new();
+            let c = compile(file, text, &mut store).unwrap_or_else(|r| panic!("{r:?}"));
+            crate::flow::secret_marks(&c.doc.nodes, &c.doc.edges, &mut store, port_of(&c), c.doc.unit_settings()).into_values().flatten().collect()
+        };
+        let same = |file: &str, text: &str| {
+            let (said, marks) = (printed(file, text), marked(file, text));
+            for mark in &marks {
+                assert!(said.iter().any(|l| l.ends_with(mark.as_str())), "{file}: the canvas marks {mark:?}, and check prints {said:?}");
+            }
+            for line in &said {
+                assert!(marks.iter().any(|m| line.ends_with(m.as_str())), "{file}: check prints {line:?}, and the canvas marks {marks:?}");
+            }
+            said
+        };
+        for sample in crate::samples::samples() {
+            same(&format!("{}.holon.ts", sample.name), sample.text);
+        }
+        let text = "import { flow, route } from \"holon\"\nimport state from \"state\"\nimport k from \"secret:k\"\nimport example from \"host:api.example.com\"\nimport { charge } from \"flow:billing\"\n\nflow(\"marks\", { port: 8199 })\n\nroute.get(\"/x\", async () => {\n  const sent = await example.get(\"/v1\", { headers: { authorization: `Bearer ${k}` } })\n  state.kept = k\n  const paid = await charge({ key: k })\n  return { key: k, status: sent.status, paid: paid.error }\n})\n";
+        let said = same("marks.holon.ts", text);
+        for (place, line) in [
+            ("GET /x, line 10: ", "sends the secret \"k\" to https://api.example.com"),
+            ("GET /x, line 11: ", "would keep the secret \"k\" (write its state \"kept\"): the host refuses it"),
+            ("GET /x, line 12: ", "would hand the secret \"k\" to another flow (run the action charge of the flow billing): the host refuses it"),
+            ("GET /x, line ", "answers its caller with the secret \"k\" (approved apart, at deploy)"),
+        ] {
+            assert!(said.iter().any(|l| l.starts_with(place) && l.ends_with(line)), "{place}{line}: {said:?}");
+        }
+        // A flow that reads no secret, or only computes with one, says nothing of them.
+        assert!(printed("hello.holon.ts", HELLO).is_empty());
+    }
+
+    /// Guards: `check` says, beside a secret's read, where what the flow makes with it goes when
+    /// that is clean and leaves the flow all the same: a hash or a signature of it, and what a
+    /// host answered a request that carried it, each to the route's own callers or to a host; and
+    /// under "with its secrets:" the handler and line that does it. A comparison says nothing.
+    /// Why: a route answering `hmac_sha256(k, req.query.msg)` signed whatever its caller sent,
+    /// and one answering the access token a host gave for the secret handed out a live token,
+    /// and `check`, the editor and the approval all said only `read the secret "k"`.
+    /// If it fails: core's `sent_secrets` lost a destination (`made:`, `answer:`, `@callers`), or
+    /// `describe::describe_sent_to` or `flow::secret_lines` stopped saying one.
+    #[test]
+    fn check_says_where_what_a_flow_makes_with_a_secret_goes() {
+        let flow = |imports: &str, hosts: &str, route: &str| {
+            format!("import {{ flow, route{imports} }} from \"holon\"\nimport k from \"secret:k\"\n{hosts}\nflow(\"made\", {{ port: 8198 }})\n\nroute.get(\"/x\", {route})\n")
+        };
+        let far = "import far from \"host:auth.example.com\"\nimport api from \"host:api.example.com\"\n";
+        // What check says of the secret under "it may", and each line under "with its secrets:".
+        let said = |text: &str| -> (String, Vec<String>) {
+            let r = check("made.holon.ts", text);
+            assert_eq!(r.code, 0, "{r:?}");
+            let read = r.out.iter().find(|l| l.trim_start().starts_with("read the secret \"k\"")).unwrap_or_else(|| panic!("{:?}", r.out)).trim_start().to_string();
+            let lines = match r.out.iter().position(|l| l == "with its secrets:") {
+                Some(at) => r.out[at + 1..].iter().take_while(|l| l.starts_with("  ")).map(|l| l.split_once(": ").map_or(l.as_str(), |(_, line)| line).to_string()).collect(),
+                None => vec![],
+            };
+            (read, lines)
+        };
+        let token = "const got = await far.post(\"/token\", { body: `secret=${k}` })";
+        for (what, text, read, lines) in [
+            (
+                "a hash, answered",
+                flow(", sha256", "", "() => ({ v: sha256(k) })"),
+                "read the secret \"k\"; a hash or signature made with it goes to its callers",
+                vec!["answers its caller with a hash or signature made with the secret \"k\""],
+            ),
+            (
+                "a signature of what the caller sent, answered",
+                flow(", hmac_sha256", "", "(req) => ({ v: hmac_sha256(k, req.query.msg ?? \"\") })"),
+                "read the secret \"k\"; a hash or signature made with it goes to its callers",
+                vec!["answers its caller with a hash or signature made with the secret \"k\""],
+            ),
+            (
+                "a signature in a request's header",
+                flow(", hmac_sha256", far, "async (req) => (await api.post(\"/hook\", { headers: { \"x-sig\": hmac_sha256(k, req.body) }, body: req.body })).status"),
+                "read the secret \"k\"; a hash or signature made with it goes to https://api.example.com",
+                vec!["sends a hash or signature made with the secret \"k\" to https://api.example.com"],
+            ),
+            (
+                "a token, answered",
+                flow("", far, &format!("async () => {{\n  {token}\n  return {{ token: JSON.parse(got.body).access_token }}\n}}")),
+                "read the secret \"k\", and send it to https://auth.example.com; what is answered to it goes to its callers",
+                vec!["sends the secret \"k\" to https://auth.example.com", "answers its caller with what is answered to the secret \"k\""],
+            ),
+            (
+                "a token, answered and sent on",
+                flow("", far, &format!("async () => {{\n  {token}\n  const t = JSON.parse(got.body).access_token\n  await api.get(\"/me\", {{ headers: {{ authorization: `Bearer ${{t}}` }} }})\n  return {{ token: t }}\n}}")),
+                "read the secret \"k\", and send it to https://auth.example.com; what is answered to it goes to its callers and https://api.example.com",
+                vec![
+                    "sends the secret \"k\" to https://auth.example.com",
+                    "sends what is answered to the secret \"k\" to https://api.example.com",
+                    "answers its caller with what is answered to the secret \"k\"",
+                ],
+            ),
+            (
+                "a comparison, answered",
+                flow(", secure_equals", "", "(req) => ({ ok: secure_equals(k, req.query.guess ?? \"\") })"),
+                "read the secret \"k\"",
+                vec![],
+            ),
+            (
+                "a signature compared with ===",
+                flow(", hmac_sha256", "", "(req) => ({ ok: hmac_sha256(k, req.body) === req.headers[\"x-sig\"] })"),
+                "read the secret \"k\"",
+                vec![],
+            ),
+            (
+                "a response's status, answered",
+                flow("", far, &format!("async () => {{\n  {token}\n  return {{ status: got.status, ok: got.status === 200 }}\n}}")),
+                "read the secret \"k\", and send it to https://auth.example.com",
+                vec!["sends the secret \"k\" to https://auth.example.com"],
+            ),
+            (
+                "a response's body, answered",
+                flow("", far, &format!("async () => {{\n  {token}\n  return got.body\n}}")),
+                "read the secret \"k\", and send it to https://auth.example.com; what is answered to it goes to its callers",
+                vec!["sends the secret \"k\" to https://auth.example.com", "answers its caller with what is answered to the secret \"k\""],
+            ),
+            (
+                "a signature only compared",
+                flow(", hmac_sha256, secure_equals", "", "(req) => ({ ok: secure_equals(hmac_sha256(k, req.body), req.headers[\"x-sig\"] ?? \"\") })"),
+                "read the secret \"k\"",
+                vec![],
+            ),
+        ] {
+            let (said_read, mut said_lines) = said(&text);
+            assert_eq!(said_read, read, "{what}");
+            let mut lines: Vec<String> = lines.into_iter().map(String::from).collect();
+            said_lines.sort();
+            lines.sort();
+            assert_eq!(said_lines, lines, "{what}");
+        }
     }
 
     /// The canvas marks every sink a secret reaches, by node: the request it is sent in, the state
@@ -459,13 +672,26 @@ mod tests {
         let exchange = marks_of(include_str!("../samples/client-credentials.holon.ts"));
         assert_eq!(exchange.get("got"), Some(&vec!["sends the secret \"client_secret\" to https://demo.duendesoftware.com".to_string()]), "{exchange:?}");
         assert_eq!(exchange.get("called"), Some(&vec!["sends what is answered to the secret \"client_secret\" to https://httpbin.dev".to_string()]), "{exchange:?}");
-        assert_eq!(exchange.len(), 2, "{exchange:?}");
+        // And the route answers with what the API said to the token: its callers get it.
+        assert_eq!(exchange.get("respond"), Some(&vec!["answers its caller with what is answered to the secret \"client_secret\"".to_string()]), "{exchange:?}");
+        assert_eq!(exchange.len(), 3, "{exchange:?}");
+        // A signature answered: the route's answer is marked; the hmac that makes it isn't.
+        let signs = marks_of(include_str!("../samples/sign-payload.holon.ts"));
+        assert_eq!(signs.into_values().collect::<Vec<_>>(), vec![vec!["answers its caller with a hash or signature made with the secret \"signing_key\"".to_string()]]);
         let echoed = marks_of(include_str!("../samples/echoed-key.holon.ts"));
         assert_eq!(echoed.get("passed"), Some(&vec!["sends what is answered to the secret \"demo_key\" to https://postman-echo.com".to_string()]), "{echoed:?}");
 
         // A database read the key is a parameter of: the key goes to the database.
         let license = marks_of(include_str!("../samples/license-check.holon.ts"));
-        assert_eq!(license.into_values().collect::<Vec<_>>(), vec![vec!["sends the secret \"license_key\" to the database \"vendor\", reading its table \"licenses\"".to_string()]]);
+        let mut license: Vec<Vec<String>> = license.into_values().collect();
+        license.sort();
+        assert_eq!(
+            license,
+            vec![
+                vec!["answers its caller with what is answered to the secret \"license_key\"".to_string()],
+                vec!["sends the secret \"license_key\" to the database \"vendor\", reading its table \"licenses\"".to_string()],
+            ]
+        );
     }
 
     /// Beside each secret, where the flow sends it: stripe-to-slack posts its Slack path to Slack,
