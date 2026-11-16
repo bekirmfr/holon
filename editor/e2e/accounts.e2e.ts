@@ -282,13 +282,14 @@ test("a provider's sign-in that expires is signed in again in a pop-up, the open
   const cy = await someoneElse(browser);
   await cy.goto(EDITOR);
   await cy.getByRole("button", { name: `sign in through ${new URL(ISSUER).host}` }).click();
-  // An ID token good for 40 s: the editor holds it expired half a minute early.
-  await cy.getByRole("link", { name: "sign in as cy@example.com for 40 s", exact: true }).click();
+  // An ID token good for 90 s: the editor holds it expired half a minute early, a minute in, time
+  // enough on a slow runner to load the editor and open a draft before it does.
+  await cy.getByRole("link", { name: "sign in as cy@example.com for 90 s", exact: true }).click();
   await editorLoaded(cy);
   await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
   await unsavedDraft(cy);
   const again = cy.getByRole("dialog", { name: "sign in again" });
-  await expect(again).toContainText("Your sign-in ended", { timeout: 40_000 });
+  await expect(again).toContainText("Your sign-in ended", { timeout: 90_000 });
   const popup = cy.waitForEvent("popup");
   await again.getByRole("button", { name: `sign in through ${new URL(ISSUER).host}` }).click();
   const provider = await popup;

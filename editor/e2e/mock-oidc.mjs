@@ -3,7 +3,7 @@
 // slot's, ports.mjs), it publishes its discovery document and its key (an RSA key made at startup,
 // never kept), shows a page to pick who to sign in as (no passwords: it is a test fixture), and
 // trades the code for an ID token once the PKCE verifier matches: good for ten minutes, or for
-// the seconds picked ("for 40 s", to see one expire). Nothing here is fit for anything but tests.
+// the seconds picked ("for 90 s", to see one expire). Nothing here is fit for anything but tests.
 
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { createServer } from "node:http";
@@ -56,7 +56,7 @@ createServer((req, res) => {
       if (lifetime) next.searchParams.set("lifetime", String(lifetime));
       return `<p><a href="${escape(next.toString())}">sign in as ${escape(email)}${lifetime ? ` for ${lifetime} s` : ""}</a></p>`;
     };
-    return send(res, 200, "text/html", `<!doctype html><title>test sign-in</title><h1>test sign-in</h1>${["ada@example.com", "cy@example.com", "eve@example.com"].map((e) => pick(e)).join("")}${pick("cy@example.com", 40)}`);
+    return send(res, 200, "text/html", `<!doctype html><title>test sign-in</title><h1>test sign-in</h1>${["ada@example.com", "cy@example.com", "eve@example.com"].map((e) => pick(e)).join("")}${pick("cy@example.com", 90)}`);
   }
   if (url.pathname === "/token" && req.method === "POST") {
     let raw = "";
