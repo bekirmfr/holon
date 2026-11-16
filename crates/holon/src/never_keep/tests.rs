@@ -188,6 +188,87 @@ fn a_value_never_kept_is_replaced_where_it_stands_in_every_form_and_place_at_any
     assert!(cases > 1000, "{cases}");
 }
 
+/// **Guards:** whatever spelling of a key a flow can read as that key, the value under it is
+/// replaced, in every place the record keeps a request: the key written plainly, with JSON's
+/// `\u` escapes (in part or whole), percent-encoded in a query or a form (in part or whole, beside
+/// a `+`), in another case, a JSON text nested in a JSON string, a `?` in a form's value; as the
+/// raw body, a URL, the request the host builds (its parsed query, its headers), the value
+/// `JSON.parse` gives, and inside a JSON string. Each row is first held to the flow: the host's
+/// own reading (`data::request_record`, core's JSON parser) finds the key there. Then the CVC is
+/// nowhere in the entry and its mark is.
+/// **Why:** the caller chooses the spelling: a shortcut that passed by a text whose raw bytes
+/// don't name the key kept `{"\u0063vc":"739"}` and `%63vc=739` whole, though the flow read both
+/// as `cvc`.
+/// **If it fails:** the row names a spelling and a place the record keeps the CVC in: the key is
+/// compared before it is decoded there (`replace_text`'s shortcut, `spelled_as_read`, the query's
+/// pairs), or that text isn't read as what it is.
+#[test]
+fn whatever_spelling_a_flow_reads_as_the_key_is_replaced_wherever_the_request_is_kept() {
+    const CVC: &str = "739";
+    // (the spelling, JSON (true) or a query or a form, the text)
+    let rows: Vec<(&str, bool, String)> = vec![
+        ("plain", true, r#"{"cvc":"739","amount":1250}"#.into()),
+        (r"a \u escape", true, r#"{"\u0063vc":"739","amount":1250}"#.into()),
+        (r"all \u escapes", true, r#"{"amount":1250,"\u0063\u0076\u0063":"739"}"#.into()),
+        ("a number", true, r#"{"\u0063vc":739}"#.into()),
+        ("mixed case", true, r#"{"CvC":"739"}"#.into()),
+        (r"a \/ and an escape elsewhere", true, r#"{"url":"a\/b","cvc":"739"}"#.into()),
+        ("nested in a JSON string", true, r#"{"data":"{\"\\u0063vc\":\"739\"}"}"#.into()),
+        ("a query, plain", false, "cvc=739&amount=1250".into()),
+        ("percent-encoded", false, "amount=1250&%63vc=739".into()),
+        ("percent-encoded whole", false, "%63%76%63=739".into()),
+        ("percent-encoded, a + beside", false, "note=a+b&c%76c=739".into()),
+        ("mixed case", false, "CVC=739".into()),
+        ("a ? in a later value", false, "cvc=739&next=?x".into()),
+        ("a fragment after", false, "x=1&%43vc=739#top".into()),
+    ];
+    // Whether the flow reads `key` from what `v` holds (either case, as never_keep compares), a
+    // JSON text in a string read again.
+    fn reads(v: &holon_core::Value) -> bool {
+        match v {
+            holon_core::Value::Record(fields) => fields.iter().any(|(k, x)| k.eq_ignore_ascii_case(KEY) || reads(x)),
+            holon_core::Value::List(xs) => xs.iter().any(reads),
+            holon_core::Value::Text(t) => holon_core::parse_json(t).is_some_and(|v| reads(&v)),
+            _ => false,
+        }
+    }
+    let headers = vec![("CVC".to_string(), CVC.to_string())];
+    let mut cases = 0;
+    for (what, json, text) in &rows {
+        // The host's own reading of it, as a body and as a query.
+        let as_query = crate::data::request_record("POST", "/pay", BTreeMap::new(), text, &headers, "");
+        let as_body = crate::data::request_record("POST", "/pay", BTreeMap::new(), "", &headers, text);
+        // (Without the header, which names the key whatever the row.)
+        let flow_reads = match json {
+            true => holon_core::parse_json(text).is_some_and(|v| reads(&v)),
+            false => reads(&crate::data::request_record("POST", "/pay", BTreeMap::new(), text, &[], "")),
+        };
+        assert!(flow_reads, "{what}: the flow doesn't read {text} as {KEY}: not a row");
+        let mut places: Vec<(&str, SValue)> = vec![
+            ("the raw body", SValue::Record(vec![("body".into(), SValue::Text(text.clone()))])),
+            ("the request the host builds of a body", SValue::from_core(&as_body)),
+            ("inside a JSON string", SValue::Text(serde_json::to_string(&serde_json::json!({ "data": text })).unwrap())),
+        ];
+        match json {
+            true => places.push(("the value JSON.parse gives", SValue::from_core(&holon_core::parse_json(text).unwrap()))),
+            false => {
+                places.push(("a URL", SValue::Record(vec![("url".into(), SValue::Text(format!("/pay?{text}")))])));
+                places.push(("the request the host builds of a query", SValue::from_core(&as_query)));
+            }
+        }
+        for (place, v) in places {
+            let mut e = LogEntry { request: Some(v.clone()), outputs: vec![Some(v)], ..LogEntry::default() };
+            if !json {
+                e.url = Some(format!("/pay?{text}"));
+            }
+            let got = serde_json::to_string(&redacted(e)).unwrap();
+            assert!(!got.contains(CVC) && got.contains(&mark(KEY)), "{what}, {place}: {text} is kept as {got}");
+            cases += 1;
+        }
+    }
+    assert!(cases >= 60, "{cases}");
+}
+
 /// **Guards:** a text a run received that reads as the mark of a value never kept is written
 /// escaped, as a look-alike of any mark is, and reads back as the run had it; the log's own mark
 /// reads back as a mark.

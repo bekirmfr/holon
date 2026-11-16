@@ -32,7 +32,8 @@ fn key_of<'k>(keys: &'k [String], name: &str) -> Option<&'k str> {
     keys.iter().map(String::as_str).find(|k| k.eq_ignore_ascii_case(name))
 }
 
-/// Whether `s` names any of `keys`, either case: a text that names none is passed by unread.
+/// Whether `s` names any of `keys`, either case, as it is written: a text that names none is passed
+/// by unread, but only where how it is written is how it reads ([`spelled_as_read`]).
 fn names_any(s: &str, keys: &[String]) -> bool {
     keys.iter().any(|k| s.as_bytes().windows(k.len()).any(|w| w.eq_ignore_ascii_case(k.as_bytes())))
 }
@@ -82,32 +83,60 @@ fn walk(v: &mut SValue, keys: &[String], put: &dyn Fn(&str) -> String, hits: &mu
 pub(crate) fn replace_text(s: &mut String, keys: &[String], put: &dyn Fn(&str) -> String) -> Vec<String> {
     let t = s.trim_start();
     let json = t.starts_with('{') || t.starts_with('[');
-    if !(json || s.contains('=')) || !names_any(s, keys) {
+    if !(json || s.contains('=')) || (spelled_as_read(s) && !names_any(s, keys)) {
         return Vec::new();
     }
     // Each span (`[start, end)`) with what it is replaced by and the keys that made it, in the
     // text's order.
     let mut spans: Vec<Span> = Vec::new();
-    if json && serde_json::from_str::<serde_json::Value>(t).is_ok() {
+    // JSON as the flow reads it (`JSON.parse`, `req.json`: core's parser), or as serde does: a
+    // text either reads is scanned, so one only the flow's parser takes isn't read as a query.
+    if json && (holon_core::parse_json(s).is_some() || serde_json::from_str::<serde_json::Value>(t).is_ok()) {
         Scan { s, i: 0, keys, put }.value(true, &mut spans);
     } else {
-        let start = s.find('?').map_or(0, |q| q + 1);
-        let end = s[start..].find('#').map_or(s.len(), |h| start + h);
-        let mut at = start;
-        for pair in s[start..end].split('&') {
-            if let Some(eq) = pair.find('=')
-                && let Some(key) = key_of(keys, crate::data::percent_decode(pair[..eq].trim()).as_str())
-            {
-                spans.push((at + eq + 1, at + pair.len(), put(key), vec![key.to_string()]));
+        // A query or a form: its pairs read from the whole text (a form's body) and from after its
+        // first `?` (a URL's query, as the host splits it), each name percent-decoded, `+` a
+        // space, as the host decodes `req.query`. Both readings, so a `?` in a form's value, or an
+        // `=` in a URL's path, hides no pair; where they overlap, the span covers both.
+        let q = s.find('?');
+        let end = q.and_then(|q| s[q..].find('#').map(|h| q + h)).unwrap_or(s.len());
+        for start in [0].into_iter().chain(q.map(|q| q + 1)) {
+            let mut at = start;
+            for pair in s[start..end.max(start)].split('&') {
+                if let Some(eq) = pair.find('=') {
+                    let name = &pair[..eq];
+                    let name = name.rsplit_once('?').map_or(name, |(_, after)| after);
+                    if let Some(key) = key_of(keys, crate::data::percent_decode(name.trim()).as_str()) {
+                        spans.push((at + eq + 1, at + pair.len(), put(key), vec![key.to_string()]));
+                    }
+                }
+                at += pair.len() + 1;
             }
-            at += pair.len() + 1;
         }
+        spans.sort_by_key(|(a, b, ..)| (*a, std::cmp::Reverse(*b)));
+        let mut merged: Vec<Span> = Vec::new();
+        for span in spans {
+            match merged.last_mut() {
+                Some(last) if span.0 < last.1 => last.1 = last.1.max(span.1),
+                _ => merged.push(span),
+            }
+        }
+        spans = merged;
     }
     // From the last, so the earlier ones stay where they are.
     for (a, b, with, _) in spans.iter().rev() {
         s.replace_range(*a..*b, with);
     }
     spans.into_iter().flat_map(|(_, _, _, keys)| keys).collect()
+}
+
+/// Whether every name in `s` reads as it is written: no `\` (a JSON escape, `"\u0063vc"` read as
+/// `cvc`), no `%` (a query's or a form's escape, `%63vc`) and no `+` (a space there). Only then
+/// does a text that doesn't name a key as written name none as read (`names_any`, either case,
+/// is a superset of the flow's exact `req.json.cvc` and `req.query.cvc`), and is passed by
+/// unread; any other is read whole, its names decoded first.
+fn spelled_as_read(s: &str) -> bool {
+    !s.contains(['\\', '%', '+'])
 }
 
 /// A span of a text (`[start, end)`), what it is replaced by, and the keys that made it.
@@ -128,7 +157,7 @@ pub(crate) fn held(v: &holon_core::Value, keys: &[String]) -> Option<String> {
 /// a secret is listed in its record by a keyed hash (`secrets::born`), and such a text's hash
 /// would be the value a few tries away (a CVC is a thousand), so none is listed for it.
 pub(crate) fn in_text(s: &str, keys: &[String]) -> bool {
-    !keys.is_empty() && names_any(s, keys) && !replace_text(&mut s.to_string(), keys, &|_| String::new()).is_empty()
+    !keys.is_empty() && !replace_text(&mut s.to_string(), keys, &|_| String::new()).is_empty()
 }
 
 /// Whether what an effect of `cap` is given is kept, or handed on to what keeps it: a state, a
