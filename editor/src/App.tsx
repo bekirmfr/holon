@@ -94,6 +94,7 @@ import { useApprovals } from "./useApprovals";
 import { useCan, useHostPages, type Answer } from "./can";
 import { LibraryPage } from "./LibraryPage";
 import { format, nothingToReopen, parentOf, same, type Route } from "./routes";
+import { reopening } from "./reopen";
 import { KeysDialog, pick, useKeys } from "./ui/Keys";
 import { usePaletteRuns } from "./usePaletteRuns";
 import { CommandPalette } from "./ui/CommandPalette";
@@ -775,9 +776,10 @@ function Canvas({
       if (at.slug === slug && at.view) return onMode("edit");
       const open = tabOf(slug);
       if (open !== null) return switchTab(open);
-      const rec = await getFlow(slug).catch(() => null);
-      if (rec) return void (await onOpenFlow(rec));
-      if (deployments.some((d) => d.slug === slug)) return onView(slug);
+      // What it is now, asked of the server (reopen.ts): the page's own lists may not have come yet.
+      const found = await reopening(slug);
+      if (found.kind === "saved") return void (await onOpenFlow(found.flow));
+      if (found.kind === "deployed") return onView(slug);
       toast(nothingToReopen(slug, samples().find((s) => s.name === slug)?.title), "bad");
     })()
       .catch((e: unknown) => toast(e instanceof Error ? e.message : String(e), "bad"))
