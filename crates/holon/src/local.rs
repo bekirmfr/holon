@@ -342,27 +342,13 @@ impl Answer {
 /// ([`target`]), signed in as [`admin_call`] is: the answer, whatever its status; or, said on
 /// stderr, the exit code to end with when there was none.
 pub(crate) fn send(who: &str, server: Option<&str>, method: &str, path: &str, body: Option<(&str, Vec<u8>)>) -> Result<Answer, i32> {
-    let target = target(server).map_err(|e| {
+    let said = |e: String| {
         eprintln!("{who}: {e}");
         1
-    })?;
-    let Target { server, token, from } = target;
-    let mut request = ureq::request(method, &format!("{server}{path}")).timeout(Duration::from_secs(60));
-    if let Some(token) = &token {
-        request = request.set("Authorization", &format!("Bearer {token}"));
-    }
-    let answered = match body {
-        Some((content_type, bytes)) => request.set("Content-Type", content_type).send_bytes(&bytes),
-        None => request.call(),
     };
-    let (status, response) = match answered {
-        Ok(r) => (r.status(), r),
-        Err(ureq::Error::Status(code, r)) => (code, r),
-        Err(e) => {
-            eprintln!("{who}: can't reach {server}: {e}");
-            return Err(1);
-        }
-    };
+    let target = target(server).map_err(said)?;
+    let (status, response) = request(&target, method, path, body.as_ref().map(|(t, b)| (*t, b.as_slice())), Duration::from_secs(60)).map_err(said)?;
+    let Target { server, from, .. } = target;
     // An answer that can't be read whole is no answer: said, never taken as an empty one (which
     // a command printed as `null`, and ended 0).
     match read_answer(response.into_reader(), MAX_ANSWER) {
@@ -374,13 +360,34 @@ pub(crate) fn send(who: &str, server: Option<&str>, method: &str, path: &str, bo
     }
 }
 
+/// `method` `path` sent to `target`'s server, signed in with its token, given `timeout`: its
+/// status and the answer, whatever the status; or why there is none, told as
+/// [`crate::outbound::said`] tells a failed call, without the token a line break in it would
+/// echo (`HOLON_TOKEN`, a session kept). The one road a command takes to a server, but
+/// `holon deploy`'s and `holon mcp`'s own.
+pub(crate) fn request(target: &Target, method: &str, path: &str, body: Option<(&str, &[u8])>, timeout: Duration) -> Result<(u16, ureq::Response), String> {
+    let mut call = ureq::request(method, &format!("{}{path}", target.server)).timeout(timeout);
+    if let Some(token) = &target.token {
+        call = call.set("Authorization", &format!("Bearer {token}"));
+    }
+    let answered = match body {
+        Some((content_type, bytes)) => call.set("Content-Type", content_type).send_bytes(bytes),
+        None => call.call(),
+    };
+    match answered {
+        Ok(r) => Ok((r.status(), r)),
+        Err(ureq::Error::Status(code, r)) => Ok((code, r)),
+        Err(e) => Err(format!("can't reach {}: {}", target.server, crate::outbound::said(&e))),
+    }
+}
+
 /// The most of a server's answer a command reads: a deployment's runs, state or history as JSON,
 /// with the requests' bodies in it. Past it the command says so and fails.
-const MAX_ANSWER: u64 = 1 << 30;
+pub(crate) const MAX_ANSWER: u64 = 1 << 30;
 
 /// A server's answer read whole, as text: or why it couldn't be (it broke off, it isn't text, it
 /// is longer than `most` bytes).
-fn read_answer(from: impl std::io::Read, most: u64) -> Result<String, String> {
+pub(crate) fn read_answer(from: impl std::io::Read, most: u64) -> Result<String, String> {
     use std::io::Read as _;
     let mut bytes = Vec::new();
     from.take(most.saturating_add(1)).read_to_end(&mut bytes).map_err(|e| format!("it broke off ({e})"))?;

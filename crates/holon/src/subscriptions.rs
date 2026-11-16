@@ -771,8 +771,7 @@ mod tests {
             let s = Arc::clone(&s);
             thread::spawn(move || s.push(event(Value::Number(0.0), Some("SOL"), Some("s1"))))
         };
-        thread::sleep(Duration::from_millis(100));
-        assert_eq!(waiting(&s).len(), 3, "SOL waits");
+        assert!(crate::tests::soon(|| waiting(&s).len() == 3), "SOL waits: {:?}", waiting(&s));
         assert_eq!(s.pop().unwrap().id.as_deref(), Some("b3"));
         assert!(pusher.join().unwrap());
         assert_eq!(waiting(&s).last(), Some(&(Some("s1".into()), 0, 0)));

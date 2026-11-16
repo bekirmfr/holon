@@ -314,6 +314,8 @@ struct AppState {
     sweeps: storage::Sweeps,
     /// What the last check of every run log found, since the server started (summary.rs).
     checked: Mutex<Option<summary::Check>>,
+    /// The replays running, how many at once and for how long (verify/replay.rs).
+    replays: verify::Replays,
 }
 
 impl AppState {
@@ -1256,6 +1258,7 @@ fn serve(args: Vec<String>) {
         editor: editor::Source::pick(editor_dir.map(paths::normalize)),
         sweeps: storage::Sweeps::default(),
         checked: Default::default(),
+        replays: Default::default(),
     };
     sync_listeners(&state);
 

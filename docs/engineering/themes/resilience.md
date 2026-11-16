@@ -66,13 +66,25 @@ deployment's log has its own lock, and the line is made before taking it.
   callers that stopped reading big files held the pool for good. A streamed reply's run still waits
   on its caller for each piece, at most the deadline: then its caller is gone, and the run reads
   the rest of its upstream (bounded by the call's own limits) and ends.
+- **Clocks.** A clock's tick goes on by itself, and the deadlines of waiting runs have a thread of
+  their own (scheduler.rs): a tick waiting on a call holds its own clock alone. Until R34 the loop
+  waited for every tick it started, then looked at the deadlines: one tick waiting 30 s held every
+  clock and every deadline on the server as long.
 - **Limits.** CPU is shared: 64 connections of `crunch` slow every route ("overload", RA §2.1).
   The pool runs as many runs as are computing, up to its 448 places, the cores shared among
   them; what one run may compute is its round's budgets (B5). A run whose caller went away is not
   stopped: it holds its place until it ends, within its run budget.
+- **Mailboxes.** Each mailbox's look is a thread of its own, which the watcher doesn't wait for
+  (`inbox.rs`): before, the looks were joined each tick, so one mailbox's server that didn't
+  answer (30 s a step), or one message long to read, held every other mailbox's look. A message
+  is read in one pass, whatever it holds (core's `mail::received`), and one whose look is cut off
+  twice is moved without a run, not read at every look and restart.
 - **Tests.** `nothing_a_run_computes_holds_up_the_data_plane` (`crates/holon/tests/data_plane.rs`),
   `one_deployments_log_doesnt_hold_up_another`, `a_fire_in_progress_does_not_stall_the_table`,
-  `no_deployments_callers_hold_more_of_the_data_plane_than_its_share`.
+  `no_deployments_callers_hold_more_of_the_data_plane_than_its_share`,
+  `a_mailbox_holds_no_other_and_a_message_that_cuts_its_look_off_is_read_twice`,
+  `a_slow_run_the_clock_loop_starts_holds_no_other_clock_or_deadline`, and core's
+  `a_message_is_read_in_time_its_size_bounds_whatever_it_holds`.
 
 ### G2b. The server keeps to its memory and its open files
 
@@ -293,8 +305,10 @@ line never written, and a second of `lazy` lines unsynced.
   ctrl+c exits at once, as a power loss. A message a socket sends while it stops isn't run; a
   waiting run's deadline that passes while it stops is delivered once it is back.
 - **Tests.** `a_server_told_to_stop_starts_no_run_and_finishes_the_one_going_on` (every way a run
-  starts that a test drives without a far side, before and after the stop, and a run with its
-  call out as it is told; and a sweep holding every file that starts runs to asking),
+  starts that a test drives without a far side, before and after the stop, and runs with their
+  calls out as it is told, an action's and a clock's tick on its own thread, which no pass of
+  the clock waits for: each goes on to its line, counted at the door; and a sweep holding every
+  file that starts runs to asking),
   `the_door_closes_only_on_no_runs_and_a_run_is_counted_or_turned_away` (runs racing the drain),
   `the_drain_waits_for_the_last_run_saying_how_many_are_left`.
 

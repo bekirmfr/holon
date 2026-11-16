@@ -7,7 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "./fixtures";
-import { deploy, flowRow, gotoPage, openSample } from "./helpers";
+import { deploy, expectVerified, flowRow, gotoPage, openSample } from "./helpers";
 
 test("a flow's runs: newest first, filtered, the chain checked, a run opened", async ({ page, request }) => {
   await openSample(page, "Hello API");
@@ -62,7 +62,7 @@ test("a flow's runs: newest first, filtered, the chain checked, a run opened", a
   const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
   const verified = execFileSync(holon, ["verify", file], { encoding: "utf8" });
   expect(verified).toContain(`run ${newest} alone`);
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
   await record.getByRole("button", { name: "Step through in the editor" }).click();
   await expect(page).toHaveURL(new RegExp(`#editor\\.hello-api\\.view\\.run-${newest}$`));
   await expect(page.locator(".hl-view__bottom")).toContainText(`#${newest}`);

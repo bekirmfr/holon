@@ -808,6 +808,8 @@ impl<'a> Lowerer<'a> {
         // Each port, and whether its sources are asked already: it is known once they are.
         let mut asking = vec![((id, output), false)];
         while let Some((port, sources_asked)) = asking.pop() {
+            #[cfg(test)]
+            asks::count();
             if known.contains_key(&port) {
                 continue;
             }
@@ -3189,6 +3191,28 @@ fn literal_json(e: &Expr) -> Option<serde_json::Value> {
         ExprKind::Paren(inner) => return literal_json(inner),
         _ => return None,
     })
+}
+
+/// The ports [`Lowerer::numeric`] took up on this thread, each time it took one: for tests to hold
+/// that asking whether a sum is a number does no more work as the sums nest deeper, counted rather
+/// than timed (`nesting.rs`'s `no_entry_doubles_its_work_with_each_level_a_text_nests`).
+#[cfg(test)]
+pub(crate) mod asks {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ASKS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// One port taken up.
+    pub(crate) fn count() {
+        ASKS.with(|a| a.set(a.get() + 1));
+    }
+
+    /// The ports taken up on this thread so far.
+    pub(crate) fn so_far() -> usize {
+        ASKS.with(Cell::get)
+    }
 }
 
 #[cfg(test)]

@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **A run that computed with a secret is checked offline, and its record marks what it computed.**
+  Everything a run computed from a secret was left out of its record whole, by the graph alone
+  (the step's outputs, the header it was sent in, the answer), and `holon verify` never ran such a
+  run again: it said the step was "too large, or too deep". Now a text of 6 characters or more
+  that a step computed from a secret is written as `‹derived #7c1e9a02›` wherever the run's record
+  holds it, found by its value as a secret is, and the entry lists each such value by a keyed hash
+  only the server can make (`derived`); one value has one mark through a run and another in the
+  next. `holon verify` runs the run again on the marks. A value no mark stands for (a true or
+  false, a number, bytes, a short text) is withheld as before with what follows from it, and the
+  check says that is why the run wasn't run again. A hash or a signature of a part of a secret is
+  such a value and is marked; one of the secret whole is kept as it is.
+- **`holon verify` says what it took from the log, and holds it to itself.** A step fed a secret
+  can't be computed without it, so its record is taken. The check now computes on the marks the
+  steps that only move a secret (into a text, a list, a record) or compare it whole
+  (`secure_equals`), and names each one it did take, by its leaf and what it was fed:
+  "hmac_sha256 fed the secret api_token v1 #4fb07bc6: 1 node in 1 run: 0, as recorded". What it
+  takes must be the leaf's: as many outputs as the leaf has, each of its type, a `sha256` or an
+  `hmac_sha256` of 32 bytes in the node's encoding (or the one mark of a value computed from a
+  secret), and one record for one leaf fed the same inputs across the export. A line that says
+  other differs.
+- **A run's entry commits to each secret it was given.** A run's entry named a secret's value by
+  a version and a 32-bit fingerprint only the server can make: nothing held the server to that
+  value. Each value now has a salt of its own (drawn once, sealed in the secrets store, the same
+  after a restart), and the entry carries a commitment to the value beside its list of secrets
+  (`committed`: SHA-256 over the secret's owner, name and version, the salt and the value).
+  `holon verify` holds an export to it: every mark of a secret in a line reads the fingerprint
+  its list has, and one value has one commitment across the export. The export's format stays
+  `holon-runs/1`, and a line logged before reads as it did.
 - **A `#` in a flow's code no longer hangs what reads it.** The count that bounds how deep a
   text nests read nothing at a `#` outside a string or a comment (`a #b`, a private name) and
   read the same place again, forever: `holon check`, the language server as `#` was typed, an
@@ -93,6 +121,83 @@
   matches says nothing, and a response's `status` alone isn't counted. Flows that sign a request
   or answer with what an API answered read one clause longer; the **sign-payload** sample shows
   it.
+- **`holon verify` exits 3 when a run's state couldn't be checked.** A state not checked (a
+  resumed part with nothing to hold it to, a commit whose numbering can't be followed, a run with
+  no run before it in an export that begins mid-log) ended `ok`, exit 0, as if checked; a commit's
+  cell or number changed, with no witness, could make verify check less and still end 0. Now it
+  ends `INCOMPLETE` and exits 3, as an export with a run not run again does. The log's first run,
+  which began from nothing, is checked in an export from the first line, so a whole log can still
+  end 0. ([Checking runs](docs/manual/guides/checking-runs.md#the-state-run-to-run))
+- **`holon verify` holds each run's line to the run, and says what only the chain holds.** A line
+  changed and the lines after it chained again (by someone holding the server's data, with no
+  witness) passed wherever verify read the line rather than making it again: an error and a
+  status put in, a step's outputs or rounds, what a run answered, the points it waits at, the
+  state it left, what a resumed run was delivered. Now every line must be one the server writes
+  (`run 7 ISN'T A LINE THE SERVER WRITES: …`, exit 1), and verify makes each of those again
+  from the run: its steps round by round, its answer as the line keeps it, where it waits, the
+  state it left (a resumed part's and a run's beside others' too: the state the commit before
+  its own left, its writes applied), and an approval's decisions, replayed by the server's own
+  rules against the steps the run asked for and whoever started it. What no run again can make
+  (when it ran and for how long, its session, its commit's cell and number, its tries, who
+  called it, its grant) is the server's account, held by the chain alone: without `--head`, the
+  report says so, and the guide lists each. A run whose snapshot the store couldn't take names
+  the state it left by its hash all the same. ([Checking runs](docs/manual/guides/checking-runs.md#what-only-the-chain-holds))
+- **A run's record keeps out what a secret chose to ask by.** In a run whose log can't mark
+  what it computed from a secret, a read by one (a collection's key, a file's name computed from
+  it) keeps which collection, folder or database it read and withholds the rest of what it asked
+  and found, but a database's rows; a header named by one withholds the request's headers whole;
+  and `sort` and `unique` of a list holding a secret give something computed from it. Which way
+  a choice by a secret went (`key.startsWith("live_") ? a : b`) shows in the run's steps, as any
+  choice's does: whoever approves a flow reads what it chooses by. In any run, a key a secret chose is withheld where the log lists what the run claimed and
+  in the 503 a run kept waiting on it answers, and a read that failed by one says only that it
+  failed. A route that reads
+  its flow's own data by a secret asks `SecretAnswer`, as whether it found, waited or failed tells
+  its caller something of it; a deployed flow that does waits for it to be granted. A database's
+  answer to a secret stays the database's, its failing included, as its approval says.
+- **A replay is held to what the deployment's runs are granted, and as a whole.** Each replayed
+  run gets the run time and the count of requests a run of its kind is granted, where it had an
+  hour and any number; a run that sends or reads what its run didn't stops there; a replay runs for
+  30 seconds at most, counting the runs it didn't reach (`not_reached`: "12 not reached in time" in
+  `holon replay`, the agent's tool and the editor); and the server runs two at a time, a third
+  answered 503. A replay needs no approval and anyone who may read a deployment starts one, an
+  agent too: one could hold a thread of the control plane for hours.
+- **One mail stops no mailbox.** A message is read in time its size bounds, whatever it holds:
+  an encoded word in a subject, a name or a file name (`=?utf-8?q?…?=`) is read in one pass,
+  where one of many `=?` that didn't close read on to the end of the header for each (a 5 MB
+  subject took minutes), and a message's first 1,000 parts are read, the rest left out. Each
+  mailbox is looked at on a thread of its own, which the watcher doesn't wait for: a server that
+  doesn't answer, or a long message or run, holds that mailbox's next look and no other's, where
+  every mailbox's look waited for the slowest. And a message is noted taken up before it is read: a look cut off
+  before its run is over (a restart, a failure reading it) tries it once more, then moves it
+  without a run, on the timeline, where before it was read again at every look and after every
+  restart.
+- **Postgres requires TLS to another machine.** A connection that named no `sslmode` took
+  libpq's `prefer`, so anyone on the path could answer "no TLS" and read it, a cleartext password
+  too. It is now required unless the database is on the same machine or the URL says otherwise;
+  a server without TLS is refused saying so, and that `?sslmode=disable` is the owner's to write.
+- **A value inside a MongoDB `$expr` is data.** A text starting with `$` there names a field:
+  `{ $expr: { $eq: ["$owner", who] } }` with `who` = `"$owner"` matched every document. Each value
+  computed into an expression goes in as `$literal`.
+- **A cloud's metadata service is never reached.** With private addresses granted, a flow could
+  call 169.254.169.254, where a cloud hands out the machine's credentials. It, the rest of
+  169.254.0.0/16, `100.100.100.200` and `fd00:ec2::254` are refused however written (mapped,
+  6to4, NAT64, and the forms that hide an IPv4 address).
+- **A redirect to another host carries none of the flow's headers.** It carried `content-type`,
+  `accept`, `accept-language` and `user-agent`, and a secret a flow put in one of them went to a
+  host its approval doesn't name. No body goes there either, so none says what one is.
+- **A header no request can carry is named, never echoed.** A token with a stray line break or
+  control character (a `VAULT_TOKEN`, an SQS session token, a header a flow computed from a
+  secret) came back whole in the error, which reaches a run's record, the timeline, the live status
+  and the console: ureq's message is the header's whole line. Every failed call is now told one
+  way (`outbound::said`), naming no header's value. A Vault that answers with a redirect isn't
+  followed, as its token went along, and a plain `http://` `VAULT_ADDR` to another machine (`HTTP://`
+  too) is said once on the server's output, naming its host and never a name or password before an
+  `@`.
+- **A slow clock tick holds its own clock alone.** The clock loop waited for every tick it started
+  before the next pass, and looked at waiting runs' deadlines after it on the same thread: one tick
+  waiting 30 s on a call held every deployment's clocks, and every deadline, as long. Each tick now
+  goes on by itself (a clock isn't fired again over its own tick), and the deadlines have a thread
+  of their own.
 - **`/health` says when the server can't keep what it is asked to, and a stop has a deadline.**
   `GET /health` answers 503 `not ok: ` and what fails while the deployments file can't be
   written or the run logs can't be synced to disk (before, it said `ok` throughout, and a deploy

@@ -265,7 +265,7 @@ impl Conn {
             _ => failed.then_some(500),
         };
         let body = match on {
-            _ if run.secret_fed.derives_output(0) => Some(crate::taint::WITHHELD.to_string()),
+            _ if run.withholds_output(0) => Some(crate::taint::WITHHELD.to_string()),
             "close" => None,
             _ => Some(recorder::body_text(&answer.body)),
         };
@@ -317,7 +317,7 @@ impl Conn {
 /// What a `message` block's output sends back, as an action's answer is read: its value, or a
 /// `respond` envelope's body when its status is 200; text as it is, anything else as JSON. Nothing
 /// for no value, a write alone, another status, or a value with no JSON form.
-fn reply_of(output: Option<&Value>) -> Option<String> {
+pub(crate) fn reply_of(output: Option<&Value>) -> Option<String> {
     let value = match output? {
         Value::Effect { .. } => return None,
         Value::Record(f) if matches!(f.get("status"), Some(Value::Number(_))) => match f.get("status") {

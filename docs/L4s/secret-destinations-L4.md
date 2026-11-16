@@ -32,7 +32,7 @@ chain; it can follow one secret alone (`SecretFed::of_secret`).
 | An action's answer | Withheld and redacted: `deploy.rs` |
 | A route's answer | Only where approved, `SecretAnswer("name")`: `listeners.rs` |
 | An outbound HTTP request (path, headers, body) | To the hosts the flow names and a person approved; **the approval says which secret goes to which** (§2), and the host holds a run to it (§5) |
-| A redirect of such a request, to another host | Without the flow's headers but those that say what the body is (`CARRIED_ELSEWHERE`), and not followed when it would resend a body (§4) |
+| A redirect of such a request, to another host | Without the flow's headers (since R33: before, those that said what the body is went along, `CARRIED_ELSEWHERE`), and not followed when it would resend a body (§4) |
 | A database read's parameters (`d.one("… $1", secret.x)`) | Sent to the database, and said so: "send it to the database "vendor"" (§2) |
 | What a call answers to it (a token, an echo) | Followed, and said: "what is answered to it goes to https://api" (§2) |
 

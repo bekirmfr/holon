@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
-use crate::sync::{Condvar, Mutex};
+use crate::sync::{Condvar, Mutex, Waiters};
 use std::time::{Duration, Instant};
 
 use holon_core::Value;
@@ -145,6 +145,20 @@ impl ClaimKey {
     }
 }
 
+impl ClaimKey {
+    /// How the key is said (a run's log, a busy answer): as it is, or, where a read a secret
+    /// reached gave it (`chosen`), with what names the item, row or file withheld.
+    pub(crate) fn shown(&self, chosen: bool) -> String {
+        let withheld = crate::taint::WITHHELD;
+        match self {
+            ClaimKey::Item { collection, .. } if chosen => format!("{collection}[{withheld}]"),
+            ClaimKey::Row { name, table, .. } if chosen => format!("{name}/{table}[{withheld}]"),
+            ClaimKey::File { name, .. } if chosen => format!("{name}/{withheld}"),
+            _ => self.to_string(),
+        }
+    }
+}
+
 impl fmt::Display for ClaimKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -172,10 +186,14 @@ pub(crate) fn take_shared(all: &folders::Folders, keys: &[ClaimKey], run: &str, 
         Some(d) => drop(all.claims.acquire(keys, run, d)?),
         None => all.claims.try_acquire(keys, run)?,
     }
+    let mut waiting = None;
     loop {
         match all.databases.claim_in_databases(keys, run) {
             Ok(()) => return Ok(started.elapsed()),
-            Err(_) if deadline.is_some_and(|d| Instant::now() + POLL < d) => std::thread::sleep(POLL),
+            Err(_) if deadline.is_some_and(|d| Instant::now() + POLL < d) => {
+                waiting.get_or_insert_with(|| all.claims.waiters.enter());
+                std::thread::sleep(POLL)
+            }
             Err(key) => {
                 all.claims.release(keys, run);
                 return Err(key);
@@ -196,13 +214,17 @@ pub(crate) fn wait_shared(all: &folders::Folders, keys: &[ClaimKey], run: &str, 
     if !all.claims.wait_free(keys, run, deadline) {
         return false;
     }
+    let mut waiting = None;
     loop {
         match all.databases.claim_in_databases(keys, run) {
             Ok(()) => {
                 all.databases.unclaim_in_databases(keys, run);
                 return true;
             }
-            Err(_) if Instant::now() + POLL < deadline => std::thread::sleep(POLL),
+            Err(_) if Instant::now() + POLL < deadline => {
+                waiting.get_or_insert_with(|| all.claims.waiters.enter());
+                std::thread::sleep(POLL)
+            }
             Err(_) => return false,
         }
     }
@@ -213,6 +235,8 @@ pub(crate) fn wait_shared(all: &folders::Folders, keys: &[ClaimKey], run: &str, 
 pub(crate) struct Claims {
     table: Mutex<BTreeMap<ClaimKey, String>>,
     changed: Condvar,
+    /// The runs waiting here now for a key another holds, a database's included ([`take_shared`]).
+    pub(crate) waiters: Waiters,
 }
 
 impl Claims {
@@ -227,6 +251,7 @@ impl Claims {
     pub(crate) fn acquire(&self, keys: &[ClaimKey], run: &str, deadline: Instant) -> Result<Duration, ClaimKey> {
         let started = Instant::now();
         let mut table = self.table.lock().unwrap();
+        let mut waiting = None;
         loop {
             match Self::blocker(&table, keys, run) {
                 None => {
@@ -239,6 +264,7 @@ impl Claims {
                     let Some(left) = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) else {
                         return Err(k.clone());
                     };
+                    waiting.get_or_insert_with(|| self.waiters.enter());
                     table = self.changed.wait_timeout(table, left).unwrap().0;
                 }
             }
@@ -268,10 +294,12 @@ impl Claims {
     /// Wait, until `deadline`, while another run holds any of `keys`: whether they came free.
     pub(crate) fn wait_free(&self, keys: &[ClaimKey], run: &str, deadline: Instant) -> bool {
         let mut table = self.table.lock().unwrap();
+        let mut waiting = None;
         while Self::blocker(&table, keys, run).is_some() {
             let Some(left) = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) else {
                 return false;
             };
+            waiting.get_or_insert_with(|| self.waiters.enter());
             table = self.changed.wait_timeout(table, left).unwrap().0;
         }
         true
@@ -299,6 +327,8 @@ impl Claims {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ClaimRecord {
     pub(crate) key: ClaimKey,
+    /// A read a secret reached gave it: said withheld ([`ClaimKey::shown`]).
+    pub(crate) chosen: bool,
     pub(crate) waited: Duration,
     /// The run found what it read changed once it held the key (or let go to wait for it), and ran
     /// again from the new state, having sent nothing on this attempt.
@@ -309,8 +339,13 @@ pub(crate) struct ClaimRecord {
 }
 
 impl ClaimRecord {
-    fn new(key: ClaimKey, waited: Duration, overtaken: bool) -> ClaimRecord {
-        ClaimRecord { key, waited, overtaken, taken: Instant::now(), held: None }
+    fn new(key: ClaimKey, chosen: bool, waited: Duration, overtaken: bool) -> ClaimRecord {
+        ClaimRecord { key, chosen, waited, overtaken, taken: Instant::now(), held: None }
+    }
+
+    /// Its key as the run's log says it ([`ClaimKey::shown`]).
+    pub(crate) fn shown(&self) -> String {
+        self.key.shown(self.chosen)
     }
 }
 
@@ -364,6 +399,9 @@ pub(crate) struct Claiming {
     deadline: Instant,
     held: Vec<ClaimKey>,
     pub(crate) records: Vec<ClaimRecord>,
+    /// What the run's secrets reach (taint.rs), if it was given any: a key a read they reach
+    /// gave is said withheld.
+    fed: Option<crate::taint::SecretFed>,
 }
 
 impl fmt::Debug for Claiming {
@@ -383,8 +421,15 @@ impl Claiming {
         run: String,
         wait: Duration,
         records: Vec<ClaimRecord>,
+        fed: Option<crate::taint::SecretFed>,
     ) -> Claiming {
-        Claiming { cell, store, writable, readable, shared, run, deadline: Instant::now() + wait, held: Vec::new(), records }
+        Claiming { cell, store, writable, readable, shared, run, deadline: Instant::now() + wait, held: Vec::new(), records, fed }
+    }
+
+    /// Whether a read a secret reaches gave `key` (its item's key, a file's name, a row's).
+    fn chosen(&self, key: &ClaimKey, reads: &[collections::Read]) -> bool {
+        let Some(fed) = &self.fed else { return false };
+        reads.iter().any(|r| fed.fed(&r.path) > crate::taint::Taint::Clean && self.keys_of(std::slice::from_ref(r)).contains(key))
     }
 
     /// The keys `reads` touch that this run may write.
@@ -446,8 +491,9 @@ impl Claiming {
             match taken {
                 Ok(()) => self.held.extend(group),
                 Err(key) if self.held.is_empty() => {
-                    self.records.push(ClaimRecord::new(key.clone(), started.elapsed(), false));
-                    return Claim::Busy { key: key.to_string() };
+                    let chosen = self.chosen(&key, reads);
+                    self.records.push(ClaimRecord::new(key.clone(), chosen, started.elapsed(), false));
+                    return Claim::Busy { key: key.shown(chosen) };
                 }
                 Err(key) => {
                     // Holding some and needing one another run holds: let go, wait for it, run again.
@@ -457,17 +503,19 @@ impl Claiming {
                         Some(all) => wait_shared(all, one, &self.run, self.deadline),
                         None => cell.claims.wait_free(one, &self.run, self.deadline),
                     };
-                    self.records.push(ClaimRecord::new(key.clone(), started.elapsed(), free));
-                    return if free { Claim::Overtaken } else { Claim::Busy { key: key.to_string() } };
+                    let chosen = self.chosen(&key, reads);
+                    self.records.push(ClaimRecord::new(key.clone(), chosen, started.elapsed(), free));
+                    return if free { Claim::Overtaken } else { Claim::Busy { key: key.shown(chosen) } };
                 }
             }
         }
         let waited = started.elapsed();
+        let chosen: Vec<bool> = new.iter().map(|key| self.chosen(key, reads)).collect();
         if self.still_as_read(&new, reads) {
-            self.records.extend(new.into_iter().map(|key| ClaimRecord::new(key, waited, false)));
+            self.records.extend(new.into_iter().zip(chosen).map(|(key, chosen)| ClaimRecord::new(key, chosen, waited, false)));
             Claim::Held
         } else {
-            self.records.extend(new.into_iter().map(|key| ClaimRecord::new(key, waited, true)));
+            self.records.extend(new.into_iter().zip(chosen).map(|(key, chosen)| ClaimRecord::new(key, chosen, waited, true)));
             self.release_all();
             Claim::Overtaken
         }
@@ -568,6 +616,7 @@ mod tests {
     #[test]
     fn a_key_is_held_by_one_run_at_a_time_and_a_listing_covers_its_items() {
         let claims = Claims::default();
+        // not a bound: the claims' own deadline, under test (a free key is taken at once, a held one is refused at it)
         let soon = || Instant::now() + Duration::from_millis(30);
         assert!(claims.acquire(&[item("c", "k")], "a", soon()).is_ok());
         assert_eq!(claims.acquire(&[item("c", "k")], "b", soon()), Err(item("c", "k")));
@@ -609,20 +658,20 @@ mod tests {
     }
 
     /// A run waiting for a key is woken when it is let go, not when its deadline passes: with a
-    /// deadline of ten seconds and the key released after fifty milliseconds, it holds the key
-    /// well within a second. (How long it waited is not asserted: on a loaded machine the waiter
-    /// may not have started by the time the key is released.)
+    /// deadline an hour off and the key released once the run waits for it (its `waiters`), it
+    /// holds the key long before. Nothing here is timed: on a loaded machine "released after 50
+    /// ms" may come before the waiter has started, "released once it waits" doesn't.
     #[test]
     fn a_waiting_run_is_woken_by_the_release() {
         let claims = std::sync::Arc::new(Claims::default());
         claims.acquire(&[item("c", "k")], "a", Instant::now()).unwrap();
         let waiter = std::sync::Arc::clone(&claims);
-        let started = Instant::now();
-        let t = std::thread::spawn(move || waiter.acquire(&[item("c", "k")], "b", Instant::now() + Duration::from_secs(10)));
-        std::thread::sleep(Duration::from_millis(50));
+        let t = std::thread::spawn(move || waiter.acquire(&[item("c", "k")], "b", Instant::now() + Duration::from_secs(3600)));
+        assert!(crate::tests::soon(|| claims.waiters.now() == 1), "b waits for the key");
         claims.release(&[item("c", "k")], "a");
-        let waited = t.join().unwrap().unwrap();
-        assert!(started.elapsed() < Duration::from_secs(2), "woken by the release, not the deadline: {waited:?}");
+        assert!(crate::tests::soon(|| t.is_finished()), "woken by the release, not the deadline");
+        t.join().unwrap().unwrap();
         assert_eq!(claims.held(), vec![item("c", "k")], "held by b now");
+        assert_eq!(claims.waiters.now(), 0, "and no longer counted as waiting");
     }
 }
