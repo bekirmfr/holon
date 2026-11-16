@@ -808,7 +808,6 @@ fn everything_else(world: &World, callers: &[Caller], found: &mut Found) {
     run(ada, "stop", &["stop", "logged"], "");
     run(ada, "remove", &["remove", "logged", "--yes", "--forget"], "");
     run(ada, "key forget", &["key", "forget", "logged"], "");
-    drop(run);
     for (row, args, input) in [("logout", vec!["logout"], String::new()), ("login", vec!["login", "--name", "wes"], format!("{PW}\n"))] {
         let out = world.holon(wes, &args, &input, None);
         assert_eq!(out.code, 0, "holon {args:?} as wes: {}", out.said);
