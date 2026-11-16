@@ -239,7 +239,9 @@ impl Access {
             }
             match accounts.through_provider(&oidc.issuer, &identity.subject, identity.email.as_deref()) {
                 Ok(who) => Ok(who),
-                Err(Some(name)) => Err(err(403, format!("{name}'s email is yours at your identity provider, but {name} signs in as someone else there: ask an admin to set {name}'s email again, which matches whoever signs in with it next"))),
+                // Not named: whoever holds an address learns that its account here isn't theirs,
+                // not whose it is (a name here is half of a password guess).
+                Err(Some(_)) => Err(err(403, format!("the account here with {} signs in as someone else at your identity provider: ask an admin to set that account's email again, which matches whoever signs in with it next", identity.email.as_deref().unwrap_or("your email")))),
                 Err(None) => match (identity.email, identity.unverified) {
                     (None, Some(email)) => Err(err(403, format!("your identity provider gave {email} but didn't say it verified it: an account here is matched by an email the provider vouches for (email_verified); ask your provider's admin"))),
                     (email, _) => {
@@ -385,6 +387,63 @@ mod tests {
         assert_eq!(call(&access, "GET", "/flows", Some(&unsaid)), Err(403), "an email not said to be verified");
         let expired = token(serde_json::json!({ "email": "cy@example.com", "exp": crate::deploy::epoch_now() - 3600 }));
         assert_eq!(call(&access, "GET", "/flows", Some(&expired)), Err(401));
+    }
+
+    /// A sign-in through a provider that is refused names no account here, whichever way it is
+    /// refused: an email an account here has, another subject signing in with it; a subject tied
+    /// to a disabled account; a disabled account's email; an email the provider didn't say it
+    /// verified; one no account has; none at all. Whoever holds an address learns whether it is
+    /// theirs here, never whose it is. Each refusal still says what to do.
+    #[test]
+    fn a_refused_provider_sign_in_names_no_account() {
+        use crate::oidc::tests::{provider, token};
+        let accounts = Arc::new(Accounts::memory());
+        accounts.setup(&accounts.setup_code().unwrap(), "orla", PW).unwrap();
+        for (name, email) in [("piet", "two@example.com"), ("quin", "three@example.com"), ("rafe", "four@example.com")] {
+            accounts.accept(&accounts.invite(name, Role::Editor.name(), None, "orla").unwrap(), PW).unwrap();
+            accounts.set_email(name, Some(email.into()), "orla").unwrap();
+        }
+        accounts.set_email("orla", Some("one@example.com".into()), "orla").unwrap();
+        accounts.add("sian-bot", Kind::Agent, "agent", "orla", "orla").unwrap();
+        accounts.add("tove-ci", Kind::Service, "editor", "orla", "orla").unwrap();
+        accounts.use_oidc(provider());
+        let access = Access::new(Arc::clone(&accounts), vec![], vec![]);
+        let answer = |claims: serde_json::Value| {
+            let headers = vec![("Host".to_string(), "localhost:7420".to_string()), ("Authorization".to_string(), format!("Bearer {}", token(claims)))];
+            match access.admit(&Request::fake_http("GET", "/flows", headers, vec![])) {
+                Ok(c) => Ok(c.name),
+                Err(r) => Err((r.status_code, String::from_utf8(crate::tests::body_bytes(r)).unwrap())),
+            }
+        };
+        // piet and quin sign in once, tying them to their subjects; then quin and rafe are disabled.
+        for name in ["piet", "quin"] {
+            let email = accounts.principals().into_iter().find(|p| p.name == name).unwrap().email.unwrap();
+            let first = answer(serde_json::json!({ "sub": format!("sub-{name}"), "email": email, "email_verified": true }));
+            assert_eq!(first, Ok(Some(name.to_string())), "{name} signs in");
+        }
+        accounts.set_disabled("quin", true).unwrap();
+        accounts.set_disabled("rafe", true).unwrap();
+        let names: Vec<String> = accounts.principals().into_iter().map(|p| p.name).collect();
+        assert_eq!(names.len(), 6, "{names:?}");
+        let refused = [
+            ("another subject with piet's email", serde_json::json!({ "sub": "sub-other", "email": "two@example.com", "email_verified": true }), "email again"),
+            ("the same, written otherwise", serde_json::json!({ "sub": "sub-other", "email": "TWO@Example.com", "email_verified": true }), "email again"),
+            ("quin's subject, quin disabled", serde_json::json!({ "sub": "sub-quin", "email": "three@example.com", "email_verified": true }), "ask an admin"),
+            ("rafe's email, rafe disabled", serde_json::json!({ "sub": "sub-new", "email": "four@example.com", "email_verified": true }), "ask an admin"),
+            ("orla's email, not said to be verified", serde_json::json!({ "sub": "sub-new", "email": "one@example.com" }), "email_verified"),
+            ("piet's email, not said to be verified", serde_json::json!({ "sub": "sub-other", "email": "two@example.com", "email_verified": false }), "email_verified"),
+            ("an email no account has", serde_json::json!({ "sub": "sub-new", "email": "nobody@example.com", "email_verified": true }), "ask an admin"),
+            ("no email", serde_json::json!({ "sub": "sub-new" }), "ask an admin"),
+        ];
+        for (what, claims, says) in refused {
+            let Err((status, body)) = answer(claims) else { panic!("{what}: let in") };
+            assert_eq!(status, 403, "{what}: {body}");
+            let words: Vec<&str> = body.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_')).collect();
+            for name in &names {
+                assert!(!words.contains(&name.as_str()), "{what}: names {name}: {body}");
+            }
+            assert!(body.contains(says), "{what}: says what to do ({says}): {body}");
+        }
     }
 
     #[test]

@@ -75,7 +75,9 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   email, only when the provider says it verified it (`email_verified` true); a token that doesn't
   say signs no one in, and is told why. An email set later, or one the provider gives another
   subject, isn't a way in: another subject with a matched person's email is refused, until an
-  admin sets that email again (`set_email` clears the match). Setting the provider takes holding
+  admin sets that email again (`set_email` clears the match). A refusal names no account here:
+  it says the account with that email signs in as someone else, or that none has it, never whose
+  it is, since a name is half of a password guess. Setting the provider takes holding
   what each person holds (`POST /admin/oidc`, auth.rs), since it says who each of them is. An ID
   token is good wherever it is shown until it expires, so signing out with one keeps its hash
   refused until then (`Book::ended`, `end_provider_sign_in`; forgotten past its expiry).
@@ -501,6 +503,8 @@ What is not defended, or only partly:
   `a_token_the_provider_signed_for_this_client_says_who` and
   `signed_in_through_a_provider_is_matched_by_email_then_by_subject` (an email not said to be
   verified signs no one in; another subject with a matched email is no one),
+  `a_refused_provider_sign_in_names_no_account` (each way a provider's sign-in is refused, none
+  naming an account in the book),
   `a_provider_sign_in_is_the_subject_its_email_first_matched`, `no_one_gives_or_changes_more_than_they_hold`
   and `every_route_that_changes_a_principal_holds_its_caller_to_what_they_hold` (a sweep of the
   route table: every route that changes a principal or what it holds has a case, or says why not).
