@@ -209,7 +209,7 @@ mod tests {
         let started = Instant::now();
         let ended = watch(scripted(vec![vec![proposal(4, "tide", "waiting")]]), "tide", Some(Duration::from_millis(60)), FAST, |_| {});
         assert!(matches!(ended, Ok(Ended::Waiting(_))), "{ended:?}");
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() >= Duration::from_millis(60), "it waited the time asked");
         // A server that can't be reached ends it with the code `cmdline` gave.
         assert_eq!(watch(|| Err(1), "tide", None, FAST, |_| {}), Err(1));
     }

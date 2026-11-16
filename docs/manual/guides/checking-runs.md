@@ -74,14 +74,17 @@ notes-api: 42 runs, runs 1 to 42
   chain: unbroken
   head: 3f9c2a7be01d is the newest run's
   events: 3, chain unbroken from the first
-  re-ran 42 runs: each produced what its log entry says
-  3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret or a resume token (not computed again)
+  held by the chain alone, not by running each run again (a witnessed head holds it too): when it began, how long it took, when each step began, when each step ended, its run session, which load of the state it committed to, its commit's number, how many times it ran again before its commit landed (its tries), who called it (the server's account of its caller), the grant it ran under (by its hash), when each call began, when each call ended, the rest of each hash of a value computed from a secret, past what its mark shows (only the secret makes the value again), the commitments to its secrets (only a secret and its salt make one again)
+  re-ran 42 runs: each produced what its log entry says, 3 of them given what the log kept for a step (named below)
+  3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret, a token or a tainted value (not computed again):
+    hmac_sha256 fed the secret stripe_key v3 #a1b2c3d4: 3 nodes in 3 runs: 4, 17, 30, as recorded
+  40 runs: 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, … called out: what each call was answered is as recorded, held by the chain alone (and a witnessed head)
   2 runs: 9, 31 checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)
   secrets: 38 outbound requests carried one, each to a host its approval shows it going to
   tokens: 12 outbound requests carried what a call answered to a secret, each to a host its approval shows that going to
-  state: 41 runs began from the state the run before them left, 42 left what their writes make of the one they began with
-  state not checked (1 run: 1), where it began: no run before it here
+  state: run 1 began from nothing, as a log's first does; 41 runs began from the state the run before them left, 42 left what their writes make of the one they began with
 ok
+  (40 runs: 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, … called out: what their calls were answered is the log's say-so, held by the chain)
 ```
 
 `verify` checks that:
@@ -91,15 +94,26 @@ ok
    report lists it, `run 17 isn't in the file: the server couldn't write its line, and the line
    after says so`. The server numbers runs one after another, so runs missing that no line says
    were lost were removed, and the lines after them chained again: `runs 5 to 7 MISSING`;
-2. every unit in the export is what its hash says;
-3. every run, run again from its log entry through the same core, produced what the log says:
-   the same outputs, the same effects, the same status. Outbound calls are answered from the log,
-   so nothing is sent. A run that failed is run again too: what it computed is checked, what its
-   writes made of its state, and its status, unless that is its failure's;
-4. each run's state follows from the one before: it began from the state the run before it left,
+2. every line is one the server writes: a kind of run there is, with that kind's fields (a
+   request's method, URL and status; what was delivered only on a resumed part's), each value one
+   a run holds, each commit numbered once, and a numbered commit naming the state it left. One
+   that isn't says why: `run 7 ISN'T A LINE THE SERVER WRITES: …`;
+3. every unit in the export is what its hash says;
+4. every run, run again from its log entry through the same core, produced what the log says:
+   the same outputs, effects and status, the same answer (its body, as the line keeps it), the
+   same steps in the same rounds (its timeline: what each step gave, or why it gave nothing), and
+   the same points it waits at. Outbound calls are answered from the log, so nothing is sent:
+   what each was answered is the log's say-so, which no run again makes, held by the chain alone
+   (and a witnessed head), and the report says so of the runs that called out, `ok` or not. A
+   run that failed is run again too: what it computed is checked, what its writes made of its
+   state, and its status, unless that is its failure's. What a resumed run was delivered is held
+   to what it waited for: an approval's decisions, taken in the order they came, are ones its
+   steps take, each on a step there is and open as it came, by someone who decided no other step
+   of it, of the step's kind and role, and whoever started the run only on a step that takes them;
+5. each run's state follows from the one before: it began from the state the run before it left,
    and left what its writes make of the state it began with (see
    [The state, run to run](#the-state-run-to-run));
-5. every outbound request that carried a secret (the log marks where it stood:
+6. every outbound request that carried a secret (the log marks where it stood:
    `‹secret:stripe_key v3 #…›`) went to a host the flow's unit sends that secret to: what its
    approval showed ("read the secret "stripe_key", and send it to https://api.stripe.com"). A
    request the host refused before it left went nowhere. So did every request that carried a
@@ -107,7 +121,8 @@ ok
    what is answered to that secret going to ("…; what is answered to it goes to
    https://api.example.com").
 
-It exits 0 when everything checks and every run was run again, and 1 when anything doesn't
+It exits 0 when everything checks, every run was run again and every run's state checked, and 1
+when anything doesn't
 check, with what failed:
 
 ```
@@ -119,13 +134,45 @@ check, with what failed:
 FAILED
 ```
 
-When nothing fails but some runs couldn't be run again (see below), it exits 3: nothing in the
-export was found changed, and not all of it was checked. The report says which runs, and why:
+When nothing fails but some runs couldn't be run again (see below), or a run's state couldn't be
+checked ([The state, run to run](#the-state-run-to-run)), it exits 3: nothing in the export was
+found changed, and not all of it was checked, so a script reading the exit code doesn't take it
+as checked. The report says which runs, and why:
 
 ```
   not re-run (1 run: 12): it read inbox/sales.csv, whose text the export doesn't hold (its folder keeps hashes, the server no longer keeps it, or the export left it out): give it with --files
 INCOMPLETE: nothing here fails, but not every run was run again (said above)
 ```
+
+### What only the chain holds
+
+What `holon verify` checks without a witness is everything a run makes: run again, it computes
+what it did, answered, waited for and left, and every line must be one the server writes. What
+only a witness holds is the rest of a line, the server's account of when, where and for whom it
+ran, which no run again can make. Someone who holds the server's data can change those fields and
+chain the lines after them again: without a witnessed head that passes, and with one it fails
+([Witnesses](#witnesses)). Without `--head`, the report says so (`held by the chain alone, …`).
+
+| Field | What it is | Why running the run again can't make it | What holds it |
+|---|---|---|---|
+| `at_ms`, `duration_ms` | when the run began, and how long it took | the clock is the server's, read as it ran | the chain, and so a witness |
+| the timeline's `start_us`, `end_us` | when each step began and ended | the same: a step's time is the server's | the chain, and so a witness |
+| each call's `start_us`, `end_us` | when each outbound call began and ended | the same | the chain, and so a witness |
+| what each call was answered | the status, headers and body a host gave a call, as the log keeps them | run again, a call is answered from the log and nothing is sent: what the host said is the log's account of it | the chain, and so a witness; the report names the runs that called out |
+| `derived`, past each mark | the rest of each hash of a value computed from a secret | only the secret makes the value again; `verify` holds each mark to the start of a hash the entry lists | the chain, and so a witness |
+| `committed` | the commitments to the secrets the run was given | only a secret and its salt make one again; `verify` holds one value to one commitment across the export | the chain, and so a witness |
+| `session` | the run session it ran in | the deployment's own count of each time it was started or restored, which no run sees | the chain, and so a witness |
+| `commit`'s `cell` and `n` | which load of the state it committed to, and its commit's number | they number commits as they landed beside other runs; they say which run's state it began after, so changed, `verify` may check less of its state, and says which runs it didn't | the chain, and so a witness |
+| `retries` | how many times it ran again before its commit landed | a try that was overtaken leaves nothing but the answers it got, which the last try is given | the chain, and so a witness |
+| `by` | who called it | the caller is the server's account: nothing in a run makes it | the chain, and so a witness; an approval's decisions are held to it (below) |
+| `grant` | the grant it ran under, by its hash | the export holds the units the runs ran, not the grants | the chain, and so a witness |
+
+`by` is only the server's account of its caller: nothing in the run makes it, and nothing in an
+export can check who sent a request. An approval's decisions are held to it, as their run's
+starter (whoever started a run decides only a step that takes them), but that it was they who
+started it is the server's word. So is who each person deciding is, and whether the role binding
+each decision names let them; and so are the host's own settings for approvals (whoever deployed
+the version kept out, no agents, no step for whoever started the run), which no log holds.
 
 ### The state, run to run
 
@@ -136,11 +183,18 @@ that what its writes make of the state it began with is the state it left. So a 
 changed between runs, or a run's writes dropped, without the report saying where, even in a log
 chained again after the change.
 
-What it doesn't check, it says, by why:
+The log's first run began from nothing: an empty state, after no commit. In an export from the
+log's first line, that is checked: it says `run 1 began from nothing, as a log's first does`.
 
-- the first run here, which began from a state no run here left; in a log trimmed to its newest
-  runs, so are those that ran beside it and began after a commit older than every one here,
-  whose run's line is gone;
+What it doesn't check, it says, by why, and the export is then INCOMPLETE (exit 3), as one with a
+run not run again is:
+
+- a run with no run before it here, in an export that begins after the log's first run (a log
+  trimmed to its newest runs, one run's export): what it began from, the runs before it would
+  check. In a trimmed log, so are those that ran beside it and began after a commit older than
+  every one here, whose run's line is gone. Export from the first run to have it checked;
+- in an export from the log's first line, a run with no run before it whose line says it began
+  from a state, or after a commit, as no log's first run does;
 - a run after a deploy, a stop, or a restore of a version's state, which put a state in place
   (the events say which). After a restore of a run's state, the next run is checked: it began
   from the state that run left;
@@ -168,13 +222,27 @@ and its own (`commit`): the run before a run is the one whose commit it began af
 line is, and a run no other commit landed beside is checked whole, however close its times. A log
 written before entries said so is taken by each line's place and times.
 
-A node that computed with a secret, a resume token or a tainted value (a signature, a token
-check, a caller's API key: [tainted keys](../language/reference.md#imports-and-settings)) can't be
-computed again: the log never holds their values, only a placeholder. What the log kept for that
+A node fed a secret, a resume token or a tainted value (a caller's API key:
+[tainted keys](../language/reference.md#imports-and-settings)) gets a placeholder where the value
+was: the log never holds it. A node that only moves the value (into a text, a record, a list) is
+computed with the placeholder, and so is a `secure_equals` of it, since a caller's token is the
+secret exactly when the log shows it as the secret's mark; what the log recorded for such a node
+is held to what it gives, and a record that says other differs. A node that computes with what
+the value holds (a signature, a hash, an encoding) can't be computed again, nor can a check of a
+token that isn't the secret, of which the log keeps only that it came. What the log kept for that
 node stands in, as in the editor's replay, and the rest of the run is checked against it: the
 answer built from a signature, the effects, the status. The report says which runs were checked
-that way, and for how many nodes. What such a node produced is taken from the log, not checked:
-a run whose signature check the log says passed is checked as if it had.
+that way, and names each such step: its leaf, the secret or token it was fed (a secret by its
+name, version and fingerprint, as the run's entry has them), how many nodes and in which runs,
+`hmac_sha256 fed the secret stripe_key v3 #a1b2c3d4: 3 nodes in 3 runs: 4, 17, 30, as recorded`.
+What is taken from the log is still held to itself: a leaf gives the same for the same inputs,
+so two runs that record other for one leaf fed the same message under the same secret can't both
+be the leaf's, and the later one differs (`what the log recorded for hmac_sha256, taken from it:
+run 4 recorded other for the same inputs`); and a recorded signature that isn't 32 bytes is no
+HMAC's, whatever the secret (`the shape of what the log recorded for a step taken from it`).
+The line that counts the runs that matched says how many matched given such a step. What such a
+node produced is taken from the log, not checked: a run whose signature check the log says passed
+is checked as if it had, and the named line is where the report says so.
 
 A run's id is made from what it received. When that held a secret or a token (a bearer token
 equal to a secret, a resume link's token in its path), the id can't be made again either: the log
@@ -191,16 +259,55 @@ logged before this was escaped read every look-alike as a placeholder, as they d
 The log keeps such a node's outputs only when they can't give the secret away. A one-way leaf
 (`sha256`, `hmac_sha256`, `secure_equals`) fed the secret whole gives nothing of it away, as it
 is or spelled another way (a key kept as base64 and signed with as bytes); fed a part of it, what
-it gives says the part, and is kept out as the part is. A hash or a signature kept in the log is
-still something made with the secret: where the flow sends one, or which route answers with one,
-is in its approval ("…; a hash or signature made with it goes to its callers"). A value that holds the
-secret as it is gets the placeholder. But a value computed from the secret (base64 of it for a
-Basic auth header, a field of a JSON secret, a slice) no longer holds it literally, and a true or
-false computed from it (`key.startsWith(p)`, `key === v`), or what it chose (`rec[key]`,
-`key ? a : b`), says something of it: the log keeps no outputs for that node. An outbound request built from one is logged with
-those parts reading `‹withheld: computed from a secret›`, and so are the run's own outputs, its
-response body and any other effect built from one. Such a value is never kept: a state,
-collection, database, channel or file write of it is refused, as a write of the secret itself is.
+it gives says the part, and is computed from the secret like any other value below. A hash or a
+signature kept in the log is still something made with the secret: where the flow sends one, or
+which route answers with one, is in its approval ("…; a hash or signature made with it goes to
+its callers"). A value that holds the secret as it is gets the placeholder. A value computed from the secret (base64 of it for a Basic
+auth header, a trimmed or encoded copy) no longer holds it literally, so the log gives it a mark
+of its own, as it does a secret: `‹derived #7c1e9a02›`, written wherever the run had the value
+(the step that made it, a header it was sent in, what the far side echoed back, the answer). The
+run's entry lists each such value by a whole hash (`derived`), of which the mark is the first
+eight digits: an HMAC keyed by the salts of the secrets the run was given and bound to the run's
+id. One value has one mark throughout a run and another in the next run; without the secrets'
+salts the hash says nothing of the value. `verify` takes the step that made the value as
+recorded and names it (`base64 fed the secret api_password v1 #…`), computes every later step
+that only moves the value on its mark, and compares what the run sent and answered, marks and
+all. It also checks that every such mark in a line is the start of a hash the entry lists.
+
+A mark stands for a text of 6 characters or more. A true or false computed from a secret
+(`key.startsWith(p)`, `key === v`), a number (`key.length`), bytes, a list, a field of a JSON
+secret, a shorter text, and what a secret chose (`rec[key]`, `key ? a : b`) can't be marked, and
+nor can what is computed inside a function applied to each item, inside a module, or deeper than
+the log records a run's steps. For a run with any of those the log keeps no outputs for the
+nodes that may compute from a secret; an outbound request built from one is logged with those
+parts reading `‹withheld: computed from a secret›`, and so are the run's own outputs, its
+response body and any other effect built from one. `verify` doesn't run such a run again, and
+says which step and which secret: "`text_contains` computed a true or false from the secret
+api_password: only a text of 6 characters or more is carried through a replay". To keep a run
+checked, keep facts like that out of the secret (a setting of its own beside it), and compare a
+secret whole with `secure_equals`.
+
+A step that gives a secret, or a value computed from one, larger than the log keeps of a step
+(16 KiB) makes a run like that too: on its mark the step is shorter, and the record can't show
+it as the run had it. Each entry says whether its record withholds (`withheld`), and `verify`
+holds the line to that both ways: one that says it marked every such value fails where a step
+that gives a secret's value, or one computed from it, has no outputs; one that says it withholds
+fails where it keeps a step that may compute from a secret, or where the run had none.
+
+A run's steps show which way a choice went, a choice by a secret included:
+`key.startsWith("live_") ? a : b` lists the steps of the branch it took. That is by design:
+whoever approves a flow reads what it chooses by, and reading a run's steps is a grant of its
+own. What a secret chose to ask by is kept out of the log of a run like that. A read by one (a
+collection's item under a key computed from it, a file it names) keeps which collection, folder or database it read and withholds the rest of what
+it asked and what it found, but a database's rows. A header whose name is computed from one
+withholds the request's headers, names and all. And `sort` and `unique` of a list that holds a
+secret give something computed from it: where it came in the order. In any run, a key a secret
+chose reads `seen[‹withheld: computed from a secret›]` where the log lists what the run claimed,
+and in the 503 a run kept waiting on it answers; a read that failed by one says only that the
+read failed.
+
+A value computed from a secret is never kept, marked or not: a state, collection, database,
+channel or file write of it is refused, as a write of the secret itself is.
 A part of a file a run read that holds a secret isn't kept in the log, and a file text that holds
 one isn't shipped in the export: verify asks for the file, as it does for a folder that keeps
 hashes. Given it, such a run differs, since the log holds the secret's placeholder where the file
@@ -216,13 +323,14 @@ cache one; a run that tried is counted as one that wrote a secret's value. The s
 request that held no secret is an ordinary value. Only those field names are recognised.
 
 Some runs can't be run again at all, and are counted, not failed; an export with any exits 3: a
-run whose such node the log keeps no outputs for (computed from a secret, larger than 16 KiB, or
-deeper than the log's timeline records), a run that panicked (its record says what it did by then
+run whose such node the log keeps no outputs for (it computed from a secret something no mark
+stands for, or the node's outputs are larger than 16 KiB or deeper than the log's timeline
+records), a run that panicked (its record says what it did by then
 isn't in it, and must say it did nothing), a run that failed and, run again, gets further than its
 entry says (a budget ran out, a claim waited too long, or the server dropped what it did past a
 limit of its own), a run
-that read a file whose text the export doesn't hold, and a run that wrote a secret's value (which
-the server refused). A failed run's entry may say less than the run does again, never other: the
+that read a file whose text the export doesn't hold, and a run that wrote a secret's value, or
+one computed from it (which the server refused). A failed run's entry may say less than the run does again, never other: the
 same run id, each output it keeps as computed, what it did and sent the start of what it does
 again, and the status it answered either that or a failure's (a 5xx, or 409 for an unmet
 `expect:`). One that says other differs, as a run that didn't fail would. A request no route took, and a run turned away before it began (a resource
