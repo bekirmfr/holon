@@ -2,8 +2,13 @@
 // in its flow's tab (that tab's edit copy set aside until edit mode) or a tab of its own. Edit:
 // the flow as edited, put back as it was left; for a tab opened to view, the saved flow of that
 // name, else a draft of what is deployed. What view mode then shows is useViewMode.tsx's.
+//
+// A switch that reads the server first (view mode's document, the run, a saved flow) shows what
+// it read only if nothing moved meanwhile: no later switch asked, the same tab active. Answered
+// after the person went back to edit (the e2e's slow runner), it would put view mode back over
+// their edit; after they picked another tab, take them back to this one.
 
-import { useCallback, type MutableRefObject } from "react";
+import { useCallback, useRef, type MutableRefObject } from "react";
 import type { Edge, Viewport } from "@xyflow/react";
 import { restoreDocument } from "./docUnits";
 import { blankTab, settingsOf, type FlowMeta, type Mode, type TabState } from "./tabs";
@@ -62,17 +67,30 @@ export function useModeSwitch({
   const viewing = flow.viewing;
   const flowName = flow.name;
 
+  // The switches asked, counted, and the tab active now: a switch whose read answers after either
+  // moved shows nothing.
+  const asked = useRef(0);
+  const activeNow = useRef(activeId);
+  activeNow.current = activeId;
+  const ask = useCallback(() => {
+    const mine = ++asked.current;
+    const tab = activeNow.current;
+    return () => mine === asked.current && tab === activeNow.current;
+  }, []);
+
   const onView = useCallback(
     async (slug: string, seq?: number) => {
+      const still = ask();
       let doc: FlowDocument;
       try {
         doc = await getDeployedDocument(slug);
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        if (still()) setError(e instanceof Error ? e.message : String(e));
         return;
       }
       // Opened on a run (an action's view run): that run selected, when the log has it.
       const run = seq === undefined ? null : await getLog(slug, seq - 1).then((l) => l.entries.find((e) => e.seq === seq) ?? null, () => null);
+      if (!still()) return;
       // A unit that won't decode just stays unresolvable, like on Open.
       restoreDocument(doc, ev);
       const open = tabOf(slug);
@@ -102,12 +120,13 @@ export function useModeSwitch({
         },
       });
     },
-    [ev, tabOf, activeId, captureTab, stash, showTab, deployments, setError],
+    [ask, ev, tabOf, activeId, captureTab, stash, showTab, deployments, setError],
   );
 
   const onEditMode = useCallback(async () => {
     const before = beforeView.current;
     if (!viewing) return;
+    const still = ask();
     if (before) {
       beforeView.current = null;
       viewDoc.current = null;
@@ -136,8 +155,8 @@ export function useModeSwitch({
       }
     }
     if (!t && doc) t = tabFromDocument(flowName, doc, false);
-    if (t) showTab(activeId, t);
-  }, [viewing, flowName, beforeView, viewDoc, history, restoring, setNodes, setEdges, setViewport, bump, tabFromDocument, showTab, activeId, setViewing, setViewTrace, setInspectNode, setSelectedRun, setStep]);
+    if (t && still()) showTab(activeId, t);
+  }, [ask, viewing, flowName, beforeView, viewDoc, history, restoring, setNodes, setEdges, setViewport, bump, tabFromDocument, showTab, activeId, setViewing, setViewTrace, setInspectNode, setSelectedRun, setStep]);
 
   const onMode = useCallback(
     (m: Mode) => {
