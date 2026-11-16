@@ -466,17 +466,25 @@ fn to_hyper(answer: DataResponse) -> hyper::Response<Answer> {
 }
 
 /// A response with `status`, `headers` and `body`. A header the flow set that isn't valid HTTP is
-/// a 500, not a malformed response.
+/// a 500, not a malformed response. Every data-plane answer is built here (a test holds that no
+/// other place builds one), so each goes out with `X-Content-Type-Options: nosniff`: a browser
+/// takes it as the type it says, and a JSON answer that echoes what its caller sent isn't run as a
+/// page or a script (audit R51). A flow that sets the header keeps its own. Whether a flow's page
+/// may be framed is the flow's to say (a widget is meant to be): its own headers.
 fn with_headers(status: u16, headers: &[(String, String)], body: Answer) -> hyper::Response<Answer> {
     let mut builder = hyper::Response::builder().status(status);
     for (name, value) in headers {
         builder = builder.header(name, value);
+    }
+    if !headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("x-content-type-options")) {
+        builder = builder.header("x-content-type-options", "nosniff");
     }
     builder.body(body).unwrap_or_else(|_| {
         let r = DataResponse::json_error(500, "the handler set a header that isn't valid HTTP");
         let mut response = hyper::Response::new(Answer::Whole(Full::new(Bytes::from(r.body))));
         *response.status_mut() = hyper::StatusCode::INTERNAL_SERVER_ERROR;
         response.headers_mut().insert(hyper::header::CONTENT_TYPE, hyper::header::HeaderValue::from_static("application/json"));
+        response.headers_mut().insert(hyper::header::X_CONTENT_TYPE_OPTIONS, hyper::header::HeaderValue::from_static("nosniff"));
         response
     })
 }

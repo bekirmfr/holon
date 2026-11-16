@@ -18,6 +18,10 @@ mod deploy_review;
 mod frames;
 mod scopes;
 mod tags;
+/// A flow's answers are sent nosniff, built in one place (R51).
+mod sniffing;
+/// Where a resource or the data is, only to whoever may bind or view the host (R51).
+mod whereabouts;
 /// What a handler's text does, against what the same text does as JavaScript.
 mod semantics;
 
@@ -10989,7 +10993,7 @@ fn remittance_mail_settles_invoices_from_authenticated_mail_and_moves_each_messa
     assert_eq!(log_entries(&state, &slug).iter().filter(|e| e["kind"] == "mail").count(), 0, "what was there at the first look isn't new");
     assert_eq!(imap.folders.lock().unwrap().of("INBOX").len(), 1, "nor moved");
     let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
-    assert!(events.contains(&format!("listens to the mailbox of remit (imap://127.0.0.1:{} INBOX), what it holds now (1 message) isn't run on", imap.port)), "{events}");
+    assert!(events.contains("listens to the mailbox of remit (its folder INBOX), what it holds now (1 message) isn't run on"), "{events}");
 
     // INV-1 paid in full, INV-2 short; the same from someone the mailbox's server didn't vouch
     // for; and the first again.
@@ -11201,7 +11205,7 @@ fn price_feed_runs_on_each_event_and_opens_again_from_where_it_was() {
     eventually("a fourth run", || runs().len() == 4);
     assert_eq!(feed.asked().len(), 3, "read on, not opened again");
     let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
-    assert!(events.contains(&format!("listens to the feed prices ({})", feed.url("/events"))), "{events}");
+    assert!(events.contains("listens to the feed prices\"") && !events.contains(&feed.url("")), "{events}");
     assert!(events.contains("passed over an event of prices it ran already (3)"), "{events}");
     assert!(events.contains("passed over an event of prices past 1 MiB"), "{events}");
     let (_, prices, _) = data_call(&state, &slug, "GET", "/prices", "");
@@ -11843,7 +11847,7 @@ fn ledger_watch_listens_on_its_channel_and_reads_what_it_missed() {
         let b = balances();
         assert_eq!((b["acct_1"]["balance"].as_str(), b["acct_1"]["entries"].as_u64(), b["acct_1"]["read"].as_u64(), b["acct_1"]["last"].as_u64()), (Some("112.25"), Some(5), Some(1), Some(5)), "{b}");
         let said = events();
-        assert!(said.contains(&format!("listens to the feed entries ({address})")), "{said}");
+        assert!(said.contains("listens to the feed entries\"") && !said.contains(&address), "{said}");
 
         // Its runs check offline, the ledger's rows read as each run read them.
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();

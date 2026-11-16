@@ -776,13 +776,15 @@ pub(crate) fn now_ms() -> u64 {
 }
 
 /// `GET /deployments/<slug>/feeds`: each feed its handlers listen to, and what its connection is
-/// doing.
-pub(crate) fn handle_get_feeds(state: &AppState, slug: &str) -> Response {
+/// doing. Where it is, and a connection's error as it names it, only for `sees_where` (whoever may
+/// bind, web console L4, Q4); anyone else is told the error with the feed named in its place.
+pub(crate) fn handle_get_feeds(state: &AppState, slug: &str, sees_where: bool) -> Response {
     let listened: Vec<(String, String)> = match state.deployments.lock().unwrap().get(slug) {
         Some(d) => d.server.as_ref().map(|s| s.feeds.iter().map(|f| (f.feed.clone(), f.label.clone())).collect()).unwrap_or_default(),
         None => return err(404, format!("no deployment {slug:?}")),
     };
     let feeds = &state.folders.feeds;
+    let places = if sees_where { Vec::new() } else { state.folders.whereabouts(slug) };
     let shown: Vec<serde_json::Value> = listened
         .into_iter()
         .map(|(feed, label)| {
@@ -796,6 +798,9 @@ pub(crate) fn handle_get_feeds(state: &AppState, slug: &str) -> Response {
                 l["label"] = serde_json::json!(label);
                 shown = l;
             }
+            if !sees_where {
+                folders::left_where(&mut shown, &places);
+            }
             shown
         })
         .collect();
@@ -804,8 +809,14 @@ pub(crate) fn handle_get_feeds(state: &AppState, slug: &str) -> Response {
 
 // ── admin ──
 
-fn shown(name: &str, deployment: Option<&str>, b: &Binding) -> serde_json::Value {
-    let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "url": b.url, "address": b.address, "headers": b.headers, "buffer": b.buffer, "idle": b.idle, "on_full": b.on_full });
+/// A binding as the admin panel and `holon feed list` show it. Where it is (its address, and the
+/// sources its URL and headers are read from) only for `sees_where`: whoever may bind (web console
+/// L4, Q4).
+fn shown(name: &str, deployment: Option<&str>, b: &Binding, sees_where: bool) -> serde_json::Value {
+    let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "buffer": b.buffer, "idle": b.idle, "on_full": b.on_full });
+    if sees_where {
+        (shown["url"], shown["address"], shown["headers"]) = (serde_json::json!(b.url), serde_json::json!(b.address), serde_json::json!(b.headers));
+    }
     let extra = serde_json::json!({ "key": b.key, "sequence": b.sequence, "subscribe": b.subscribe, "heartbeat": b.heartbeat, "every": b.every, "id": b.id, "only": b.only, "resume": b.resume, "database": b.database, "channel": b.channel });
     for (k, v) in extra.as_object().into_iter().flatten() {
         let empty = v.is_null() || v.as_array().is_some_and(Vec::is_empty) || v.as_object().is_some_and(serde_json::Map::is_empty) || v.as_u64() == Some(0);
@@ -821,9 +832,10 @@ fn labelled(name: &str, deployment: Option<&str>) -> String {
 }
 
 /// `/admin/feeds` (list, bind), `/admin/feeds/<name>` (unbind; `?deployment=<slug>` for a
-/// deployment's own), or None for any other path. Only an admin gets this far (can.rs); what
-/// they do goes in the activity log.
-pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Response> {
+/// deployment's own), or None for any other path. The gate (can.rs) let the caller this far;
+/// `sees_where` says whether they may bind, and so see where each feed is. What they do goes in
+/// the activity log.
+pub(crate) fn route(state: &AppState, request: &Request, by: &str, sees_where: bool) -> Option<Response> {
     let url = request.url();
     let method = request.method();
     let all = &state.folders.feeds;
@@ -831,8 +843,8 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
         return Some(match method {
             "GET" => {
                 let bound = all.all();
-                let server = bound.server.iter().map(|(n, b)| shown(n, None, b));
-                let own = bound.deployments.iter().flat_map(|(s, bs)| bs.iter().map(move |(n, b)| shown(n, Some(s), b)));
+                let server = bound.server.iter().map(|(n, b)| shown(n, None, b, sees_where));
+                let own = bound.deployments.iter().flat_map(|(s, bs)| bs.iter().map(move |(n, b)| shown(n, Some(s), b, sees_where)));
                 Response::json(&server.chain(own).collect::<Vec<_>>())
             }
             "POST" => {
@@ -859,7 +871,7 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                             let detail = crate::events::Detail { name: Some(b.name.clone()), ..Default::default() };
                             crate::events::note(&state.deployments, slug, "binding", format!("bound the feed {}", b.name), Some(by), detail);
                         }
-                        Response::json(&shown(&b.name, b.deployment.as_deref(), &f))
+                        Response::json(&shown(&b.name, b.deployment.as_deref(), &f, sees_where))
                     }
                     Err(e) => e,
                 }
@@ -971,9 +983,12 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     };
     let line = |f: &serde_json::Value| {
         let headers: Vec<String> = f["headers"].as_object().into_iter().flatten().map(|(h, s)| format!("{h} from {}", s.as_str().unwrap_or(""))).collect();
-        let reads = match f["database"].as_str() {
-            Some(db) => format!("listens on {} (the database {db})", f["address"].as_str().unwrap_or("")),
-            None => format!("reads {} (from {})", f["address"].as_str().unwrap_or(""), f["url"].as_str().unwrap_or("")),
+        // Where it is, to whoever may bind (web console L4, Q4).
+        let reads = match (f["database"].as_str(), f["address"].as_str()) {
+            (Some(db), Some(at)) => format!("listens on {at} (the database {db})"),
+            (Some(db), None) => format!("listens on the database {db}"),
+            (None, Some(at)) => format!("reads {at} (from {})", f["url"].as_str().unwrap_or("")),
+            (None, None) => "reads a feed (where, to whoever may bind)".to_string(),
         };
         let mut said = vec![f["name"].as_str().unwrap_or("").to_string(), reads];
         if !headers.is_empty() {
@@ -1200,7 +1215,7 @@ mod tests {
         assert_eq!(b.only["type"], vec!["ticker".to_string(), "snapshot".into()]);
         assert_eq!(b.subscribe[0], "env:HOLON_SECRET_TICKER_HELLO", "the source is kept, not what it holds");
         assert!(feed.heard().is_empty(), "the check sends no subscription");
-        let shown = shown("ticker", None, &b).to_string();
+        let shown = shown("ticker", None, &b, true).to_string();
         assert!(!shown.contains("s3cret") && !shown.contains("k3y") && shown.contains("\"on_full\":\"latest\""), "{shown}");
         // A connection sends its subscription, the source read, then runs what --only says.
         let mut link = all.connect(&b, None).unwrap();
@@ -1268,7 +1283,7 @@ mod tests {
         until(|| feed.heard().len() == 3);
         drop(link);
         assert_eq!(feed.heard(), ["{\"op\":\"subscribe\"}", "{\"op\":\"subscribe\",\"from\":41}", "{\"op\":\"hello\",\"from\":41}"]);
-        let shown = shown("posts", None, &b).to_string();
+        let shown = shown("posts", None, &b, true).to_string();
         assert!(shown.contains("\"resume\":{\"message\":[") && shown.contains("env:HOLON_SECRET_HELLO") && !shown.contains("s3cret"), "{shown}");
         // A feed that replays from the cursor sends its message again: the stand-in does.
         let b = bind(&["query:cursor"], &[]);
@@ -1310,7 +1325,7 @@ mod tests {
         assert_eq!((b.sequence.as_deref(), b.key.as_deref()), (Some("data.n"), None));
         let a = Asked { sequence: Some("trade_id".into()), key: Some("product_id".into()), only: vec!["type=match".into()], ..asked("env:HOLON_SECRET_TRADES") };
         let b = all.bind("trades", &a, None, None).unwrap();
-        assert!(shown("trades", None, &b).to_string().contains("\"sequence\":\"trade_id\""));
+        assert!(shown("trades", None, &b, true).to_string().contains("\"sequence\":\"trade_id\""));
         let mut link = all.connect(&b, None).unwrap();
         until(|| ws.asked().len() == 2);
         ws.text(r#"{"type":"match","product_id":"BTC-USD","trade_id":104}"#);

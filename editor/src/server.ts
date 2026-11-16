@@ -364,19 +364,21 @@ export async function listTables(name: string, deployment: string | null): Promi
 /** A mail resource bound (mails.rs): where its SMTP server's URL is read from (env:…, vault:…) and
  *  where it points, without the login; its sender; and every address it may send to (empty when
  *  it only receives); the mailbox it receives in, if it does; and where its token comes from, for
- *  a server whose URL names a user and no password (OAuth: Microsoft 365, Google Workspace). */
-export type MailEntry = { name: string; deployment: string | null; smtp: string; address: string; from: string; to: string[]; mailbox: Mailbox | null; oauth?: OAuthSource | null };
+ *  a server whose URL names a user and no password (OAuth: Microsoft 365, Google Workspace).
+ *  Where its servers are (`smtp`, `address`, `oauth`, the mailbox's `imap` and `address`) goes only
+ *  to whoever may bind; anyone else is told `sends`. */
+export type MailEntry = { name: string; deployment: string | null; smtp?: string; address?: string; sends?: boolean; from: string; to: string[]; mailbox: Mailbox | null; oauth?: OAuthSource | null };
 /** Where a mail's token comes from: where the token request is read from, and where it is sent
  *  (without the client's login or the query). */
 export type OAuthSource = { source: string; address: string };
 /** A mailbox a mail receives in: where its IMAP server's URL is read from, where it points, the
  *  folder read, where each message is moved after its run, whose verdict counts, and how often
  *  (seconds) it is looked at. */
-export type Mailbox = { imap: string; address: string; folder: string; done: string; verdict_from?: string; every: number };
+export type Mailbox = { imap?: string; address?: string; folder: string; done: string; verdict_from?: string; every: number };
 /** A mail to bind: `to` as addresses, `*@domain` or `*`, with commas; `imap` (with its folder,
  *  done and verdict_from, empty for the defaults) to receive; `oauth`, where its token request is
  *  read from. */
-export type MailBinding = Pick<MailEntry, "name" | "deployment" | "smtp" | "from"> & { to: string; imap?: string; folder?: string; done?: string; verdict_from?: string; oauth?: string };
+export type MailBinding = Pick<MailEntry, "name" | "deployment" | "from"> & { smtp: string; to: string; imap?: string; folder?: string; done?: string; verdict_from?: string; oauth?: string };
 export const listMails = async () => asJson<MailEntry[]>(await api(`${BASE}/admin/mails`));
 export const bindMail = async (m: MailBinding) => asJson<MailEntry>(await post(`${BASE}/admin/mails`, m));
 export async function unbindMail(name: string, deployment: string | null): Promise<void> {
@@ -398,9 +400,10 @@ export type OnFull = "wait" | "skip" | "latest";
 export type FeedEntry = {
   name: string;
   deployment: string | null;
-  url: string;
-  address: string;
-  headers: Record<string, string>;
+  /** Where it is, and the sources its URL and headers are read from: only to whoever may bind. */
+  url?: string;
+  address?: string;
+  headers?: Record<string, string>;
   buffer: number;
   idle: number;
   on_full: OnFull;
@@ -472,8 +475,9 @@ export async function feedStates(slug: string): Promise<FeedState[]> {
 export type QueueEntry = {
   name: string;
   deployment: string | null;
-  url: string;
-  address: string;
+  /** Where it is, and the source its URL is read from: only to whoever may bind. */
+  url?: string;
+  address?: string;
   fifo: boolean;
   largest: number;
   visibility: number;

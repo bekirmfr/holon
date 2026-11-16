@@ -653,7 +653,8 @@ pub(crate) mod stand_in {
         let mut out = conn;
         inner.asked.lock().unwrap().push(head.clone());
         match path.as_str() {
-            "/events" => {}
+            // Its events at /events, or at any path ending so (a test's mark in a feed's address).
+            p if p.ends_with("/events") => {}
             "/plain" => {
                 let _ = out.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nhi");
                 return;

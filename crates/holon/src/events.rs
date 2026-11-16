@@ -251,7 +251,14 @@ impl Deployment {
 
 /// Note an event on `slug`'s timeline, if it is deployed (a secret may be set before it is: the
 /// secret's own audit holds that). Takes the deployments lock.
+///
+/// Every viewer of the flow reads its timeline, and where a binding is goes only to whoever may
+/// bind (web console L4, Q4): a connection's error that names one (a feed's address, a mail
+/// server's) names the binding instead (folders.rs's `unplaced`, audit R51). Its bindings are read
+/// with the table's lock let go, so no binding's lock is taken under it.
 pub(crate) fn note(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, kind: &str, what: String, by: Option<&str>, detail: Detail) {
+    let Some(folders) = deployments.lock().unwrap().get(slug).map(|d| std::sync::Arc::clone(&d.folders.all)) else { return };
+    let what = crate::folders::unplaced(&what, &folders.whereabouts(slug));
     if let Some(dep) = deployments.lock().unwrap().get_mut(slug) {
         dep.note(kind, what, by, detail);
     }

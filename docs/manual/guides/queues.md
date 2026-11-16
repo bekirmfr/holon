@@ -159,6 +159,10 @@ The editor's Try a request says, for each queue a deployment listens to, what it
 }
 ```
 
+`address` goes only to whoever may bind resources, and so does where `holon queue list` and the
+Resources page say a queue is; anyone else is told the rest, and an `error` that named the address
+names the queue in its place, as the timeline does for everyone.
+
 `status` is `receiving` or `unreachable` (with `error`); `kept` counts the failed runs' messages
 left for the redrive. What was sent is counted since the server started.
 

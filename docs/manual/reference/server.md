@@ -229,6 +229,19 @@ can't be guessed.
 What a role may not do is refused with 403, saying why. A path the control plane has no route for
 is answered 404, once its caller has signed in (401 before).
 
+Where the host's resources are goes only to whoever may bind them (`resource.bind`, an admin's): a
+folder's path; a database's, a mail server's, a feed's and a queue's address; and the sources their
+URLs, headers and logins are read from. Anyone else who may view resources (`resource.view`), or a
+flow that uses one, is told what each does (a database's access, whom a mail sends as and to and
+the folder it reads, a feed's buffer) and not where it is. A flow's timeline, which everyone who
+views the flow reads, names the binding where a connection's error named its address (`lost the
+feed prices: the feed prices answered 404`), and so do its feeds' and queues' listings to whoever
+may not bind. Where the server keeps its data goes to whoever views the host (`host.view`):
+deleting a deployment answers anyone else where its records are within the data folder
+(`deployments.logs/removed/shop-runs-1762963200000.json.gz`). `GET /summary`, and the answer to a
+check of the run logs (`POST /summary/check`), name only the deployments whose runs their caller
+may view.
+
 A role is bound to a principal on the server when it is invited or added with one, and in place
 of it when it is changed. What is bound is kept apart from the accounts, in `access.json` beside
 them (`.holon-access.json` beside `.holon-accounts.json`), and each change is a new version, kept
@@ -525,6 +538,11 @@ server or these ports listen beyond loopback. It has no sign-in: a flow guards i
 
 A browser page from another site may call the routes only if the flow lists its origin in
 `browsers` (or the deploy settings' **web pages from**).
+
+Every answer is sent with `X-Content-Type-Options: nosniff`, so a browser takes it as the type it
+says: JSON that echoes what its caller sent isn't run as a page. A flow that sets the header keeps
+its own. Whether a flow's page may be shown in another site's frame is the flow's to say, with its
+own headers (`X-Frame-Options`, `Content-Security-Policy: frame-ancestors`): a widget is meant to be.
 
 Every request is a run in the log, even one no route took.
 

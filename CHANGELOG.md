@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Where a resource is goes only to whoever may bind it, and a flow's answers are sent
+  `nosniff`.** A feed's, a queue's and a mail server's address, and the sources their URLs, headers
+  and logins are read from, were shown to anyone who could view resources, and a flow's timeline
+  and its feeds' and queues' listings showed them to anyone who could view the flow. Now they go
+  only to whoever may bind (`resource.bind`), as a folder's path and a database's address already
+  did: anyone else is told what each does, and a connection's error names the binding where it
+  named the address. Deleting a deployment says where its records are kept in full to whoever
+  views the host, and within the data folder to anyone else. `GET /summary`'s last check and `POST
+  /summary/check` name only the deployments whose runs their caller may view; they named every
+  deployment and its head. Every answer of a flow's port carries `X-Content-Type-Options: nosniff`
+  (a flow's own kept). The timeline says `listens to the feed prices`, without its address.
+
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

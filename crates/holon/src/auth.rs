@@ -147,8 +147,9 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     if !url.starts_with("/auth/") && !url.starts_with("/admin/") && url != "/people" && !url.starts_with("/people/") {
         return None;
     }
-    // Where a folder or a database is, only to whoever may bind one (web console L4, Q4).
-    let sees_where = crate::can::can(caller, crate::can::Action::ResourceBind, &crate::can::Resource::Host).is_ok();
+    // Where a folder, a database, a mail, a feed or a queue is, only to whoever may bind one (web
+    // console L4, Q4).
+    let sees_where = crate::can::sees_where(caller);
     // The folders an admin binds (folders.rs): a server without accounts has them too.
     if let Some(response) = crate::folders::route(state, request, caller.name.as_deref().unwrap_or(""), sees_where) {
         return Some(response);
@@ -169,15 +170,15 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
         return Some(response);
     }
     // And the mail resources (mails.rs).
-    if let Some(response) = crate::mails::route(state, request, caller.name.as_deref().unwrap_or("")) {
+    if let Some(response) = crate::mails::route(state, request, caller.name.as_deref().unwrap_or(""), sees_where) {
         return Some(response);
     }
     // And the feeds (feeds.rs).
-    if let Some(response) = crate::feeds::route(state, request, caller.name.as_deref().unwrap_or("")) {
+    if let Some(response) = crate::feeds::route(state, request, caller.name.as_deref().unwrap_or(""), sees_where) {
         return Some(response);
     }
     // And the queues (queues.rs).
-    if let Some(response) = crate::queues::route(state, request, caller.name.as_deref().unwrap_or("")) {
+    if let Some(response) = crate::queues::route(state, request, caller.name.as_deref().unwrap_or(""), sees_where) {
         return Some(response);
     }
     // Who holds what (grants.rs): a server without accounts has deployments too.

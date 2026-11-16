@@ -133,22 +133,22 @@ function useBound(imported: Imported, slug: string | null, may: boolean): string
         : imported.kind === "folder"
           ? listFolders().then((all) => {
               const e = pick(all);
-              return e && `${e.path}, ${e.access}, ${whose(e)}`;
+              return e && [e.path, e.access, whose(e)].filter(Boolean).join(", ");
             })
           : imported.kind === "mail"
             ? listMails().then((all) => {
                 const e = pick(all);
-                return e && `${e.address}, from ${e.from}, ${whose(e)}`;
+                return e && [e.address, `from ${e.from}`, whose(e)].filter(Boolean).join(", ");
               })
             : imported.kind === "feed"
               ? listFeeds().then((all) => {
                   const e = pick(all);
-                  return e && `${e.address}, ${whose(e)}`;
+                  return e && [e.address, whose(e)].filter(Boolean).join(", ");
                 })
               : imported.kind === "queue"
                 ? listQueues().then((all) => {
                     const e = pick(all);
-                    return e && `${e.address}, ${whose(e)}`;
+                    return e && [e.address, whose(e)].filter(Boolean).join(", ");
                   })
                 : null;
     if (!ask) return;

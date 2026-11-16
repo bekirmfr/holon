@@ -283,7 +283,7 @@ fn listen(shared: &Arc<Shared>, store: &SharedStore, deployments: &Arc<Mutex<BTr
             }
         };
         if !listened {
-            shared.note(deployments, format!("listens to the queue {queue} ({})", binding.address));
+            shared.note(deployments, format!("listens to the queue {queue}"));
             listened = true;
         } else if failing {
             shared.note(deployments, format!("receives from the queue {queue} again"));

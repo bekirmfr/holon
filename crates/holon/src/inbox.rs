@@ -177,7 +177,7 @@ fn look_once(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deploymen
             1 => "1 message".to_string(),
             n => format!("{n} messages"),
         };
-        note(deployments, slug, mail, format!("listens to the mailbox of {mail} ({} {}), {anew}what it holds now ({held}) isn't run on", mailbox.address, mailbox.folder));
+        note(deployments, slug, mail, format!("listens to the mailbox of {mail} (its folder {}), {anew}what it holds now ({held}) isn't run on", mailbox.folder));
         session.logout();
         return Ok(());
     }
