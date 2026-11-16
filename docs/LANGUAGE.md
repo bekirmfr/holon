@@ -536,7 +536,8 @@ before it waits: `shows: { account: account.id, amount: asked.amount }` is the l
 see what the run was started with: the action's argument, a request's record without its headers,
 or what a source delivered; a run a clock started shows nothing. Either is kept when the run parks,
 as its log keeps it: a field tainted by a secret's mark redacted as the log redacts it
-(`‹taint:card›`), a value a secret may have made withheld whole, one past 16 KiB its size instead.
+(`‹taint:card›`), a value a secret may have made as its mark (`‹derived #7c1e9a02›`) or, where no
+mark stands for it, withheld whole, one past 16 KiB its size instead.
 Runs waiting lists it under the point (the editor's Approvals and the flow's Waiting, `holon
 decide`, `holon mcp`'s `runs`), and whoever holds `run.decide` on a flow's approvals without
 `run.view` lists only the runs waiting at an approval they may decide, those points alone: the
@@ -2893,7 +2894,9 @@ its value), a list past 1,048,576 items (`MAX_ITEMS`: `append`, `cons`, `extend`
 `flat`), or read more values than that out of one text or bytes (`split`, `json_parse`,
 `csv_parse`, `xml_parse`, `bytes_to_list`) gives nothing, refused before it is made. What a run
 computes is bounded by its host besides, between two of its outbound calls: `max_steps` steps
-(each node evaluated, each item a function is applied to), `max_fuel` instructions of its `js()`
+(each node evaluated, each item a function is applied to, and a step for each 32 items or 128
+bytes a leaf reads or makes, at every level, so `xs.filter(x => xs.includes(x))` takes the square of its steps as
+it takes the square of its time), `max_fuel` instructions of its `js()`
 calls, and `max_memory` bytes held, counted as they are made; past any, the run fails and performs
 nothing (`docs/manual/reference/permissions.md`). No construct performs an effect during
 evaluation; effects are values that the

@@ -3224,6 +3224,174 @@
   [0, 17] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== basic-auth · GET /call · input 0
+  [0, 1] Text("/headers")
+  [0, 2] Record({})
+  [0, 3] Text("Basic ")
+  [0, 4] Text("holon:")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/call"), "qu… #ae135804dd3b4e01 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 12] ·
+  [0, 13] Record({})
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16, 0] Record({})
+  [0, 16, 1] Number(200.0)
+  [0, 16, 2] Record({"status": Number(200.0)})
+  [0, 16, 3] ·
+  [0, 16, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 16] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== basic-auth · GET /call · input 1
+  [0, 1] Text("/headers")
+  [0, 2] Record({})
+  [0, 3] Text("Basic ")
+  [0, 4] Text("holon:")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #38c552dbd1e1bb09 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 12] ·
+  [0, 13] Record({})
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16, 0] Record({})
+  [0, 16, 1] Number(200.0)
+  [0, 16, 2] Record({"status": Number(200.0)})
+  [0, 16, 3] ·
+  [0, 16, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 16] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== basic-auth · GET /call · input 2
+  [0, 1] Text("/headers")
+  [0, 2] Record({})
+  [0, 3] Text("Basic ")
+  [0, 4] Text("holon:")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #62629e5a2f9e38b2 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 12] ·
+  [0, 13] Record({})
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16, 0] Record({})
+  [0, 16, 1] Number(200.0)
+  [0, 16, 2] Record({"status": Number(200.0)})
+  [0, 16, 3] ·
+  [0, 16, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 16] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== basic-auth · GET /kind · input 0
+  [0, 4] Text("/status/200")
+  [0, 5] Record({})
+  [0, 1] ·
+  [0, 2] Text("live_")
+  [0, 3] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/kind"), "qu… #b40cad699c4bb237 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 8] ·
+  [0, 9] Record({})
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12, 0] Record({})
+  [0, 12, 1] Number(200.0)
+  [0, 12, 2] Record({"status": Number(200.0)})
+  [0, 12, 3] ·
+  [0, 12, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 12] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== basic-auth · GET /kind · input 1
+  [0, 4] Text("/status/200")
+  [0, 5] Record({})
+  [0, 1] ·
+  [0, 2] Text("live_")
+  [0, 3] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #2bbe7b22063e303f | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 8] ·
+  [0, 9] Record({})
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12, 0] Record({})
+  [0, 12, 1] Number(200.0)
+  [0, 12, 2] Record({"status": Number(200.0)})
+  [0, 12, 3] ·
+  [0, 12, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 12] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== basic-auth · GET /kind · input 2
+  [0, 4] Text("/status/200")
+  [0, 5] Record({})
+  [0, 1] ·
+  [0, 2] Text("live_")
+  [0, 3] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #5ef3c1740dace048 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 8] ·
+  [0, 9] Record({})
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12, 0] Record({})
+  [0, 12, 1] Number(200.0)
+  [0, 12, 2] Record({"status": Number(200.0)})
+  [0, 12, 3] ·
+  [0, 12, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 12] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == license-check · GET /license · input 0
   [0, 0, 0] Record({})
   [0, 0, 1] Record({"after": Text("a")})

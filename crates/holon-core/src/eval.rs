@@ -168,7 +168,10 @@ pub trait Observer {
     /// One step of the evaluation: a node about to be evaluated (fired, decided, held or stood
     /// in for), or a `map`'s or `fold`'s function about to be applied to an item. `false` stops
     /// it there: that node or item gives absent, as does every one after it that is asked, so
-    /// what a host allows a round (`max_steps`) bounds its work, whatever the graph computes.
+    /// what a host allows a round (`max_steps`) bounds its work, whatever the graph computes. A
+    /// leaf's work beyond its node's step, a step for each 32 items or 128 bytes it reads or
+    /// makes ([`primitives::reading`](crate::primitives)), is taken as steps too
+    /// ([`take_steps`](Observer::take_steps)), before it reads and once it has made.
     /// Asked before a node is held or stood in for, so a run again that stands in for a node
     /// counts no more than the run it checks did. Yes (the default) counts nothing.
     fn step(&mut self) -> bool {
@@ -206,8 +209,10 @@ pub trait Observer {
 
 /// The steps ([`Observer::step`]) a round may take when its host says nothing else: a second or a
 /// few of computing (a release build took 10 to 20 million plain steps a second, and 3 million
-/// that each build a record). The host's `max_steps` limit; a flow may ask for more, to
-/// [`MAX_STEPS_CEILING`].
+/// that each build a record). A leaf's work is steps too, one for each 32 items or 128 bytes it
+/// reads or makes, so a leaf that scans a list or a text for each item of another is held to
+/// this as plain steps are, at about 100 ns a step. The host's `max_steps` limit; a flow may ask
+/// for more, to [`MAX_STEPS_CEILING`].
 pub const DEFAULT_MAX_STEPS: u64 = 10_000_000;
 /// The most steps any grant gives a round. `holon verify` runs a run again held to it, so a run
 /// within any grant's steps is run again in full.
@@ -264,11 +269,12 @@ impl Budgeted {
         Budgeted { at_most: crate::memory::held().saturating_add(bytes), ..self }
     }
 
-    /// Whether the thread holds more than it may: once it has, for good, so a round stopped for
-    /// its memory doesn't go on as what it drops frees some.
+    /// Whether the thread holds more than it may, or a leaf of the round stopped for memory
+    /// ([`memory::room`](crate::memory::room)): once it has, for good, so a round stopped for its
+    /// memory doesn't go on as what it drops frees some.
     #[inline]
     fn over_memory(&mut self) -> bool {
-        if !self.out_of_memory && crate::memory::held() > self.at_most {
+        if !self.out_of_memory && (crate::memory::held() > self.at_most || crate::memory::stopped().is_some()) {
             self.out_of_memory = true;
         }
         self.out_of_memory
@@ -390,6 +396,40 @@ fn heavy(v: &Value) -> bool {
         Value::List(xs) => xs.len() > 8 || !xs.iter().all(small),
         Value::Record(fields) => fields.len() > 8 || !fields.values().all(small),
         Value::Sum { .. } | Value::Effect { .. } => true,
+    }
+}
+
+/// `steps` more steps of the observer's, for work a node does beyond its one
+/// ([`primitives::reading`], [`primitives::making`]): false when it has fewer, and the node then
+/// gives absent, as a node whose own step is refused. Taken in as many batches as the observer
+/// gives ([`Observer::take_steps`] may give fewer than asked while it has more), and none asked
+/// for none, so a node of small values asks nothing more.
+#[inline]
+fn charge(observer: &mut impl Observer, steps: u64) -> bool {
+    let mut left = steps;
+    while left > 0 {
+        let taken = observer.take_steps(u32::try_from(left).unwrap_or(u32::MAX));
+        if taken == 0 {
+            return false;
+        }
+        left = left.saturating_sub(u64::from(taken));
+    }
+    true
+}
+
+/// The value a leaf made, if the steps of making it are had ([`charge`]): a leaf that built on
+/// a value given to it (`grew`) made only what it added, which it read, and is charged nothing
+/// more.
+fn made(value: Option<Value>, grew: bool, observer: &mut impl Observer) -> Option<Value> {
+    value.filter(|v| grew || charge(observer, primitives::making(v)))
+}
+
+/// An item of a higher-order leaf's list as its own: moved out when the list was given, else
+/// copied, and the copy charged as made ([`made`]).
+fn own_item(item: Cow<'_, Value>, observer: &mut impl Observer) -> Option<Value> {
+    match item {
+        Cow::Owned(v) => Some(v),
+        Cow::Borrowed(v) => made(Some(v.clone()), false, observer),
     }
 }
 
@@ -662,13 +702,14 @@ fn eval_as(
         // contract, and the firing rule it serves says the opposite ("a wired input absent,
         // nothing fires"). This arm is the contract, stated once, where absence is visible.
         // (Inside a composite it is a choice, decided by `choice_next` without getting here.)
-        (Body::Coalesce, _) => smallvec![Slot::of(inputs.iter().flatten().next().map(|v| (*v).clone()))],
+        // What it passes on is a copy, and charged as one ([`made`]).
+        (Body::Coalesce, _) => smallvec![Slot::of(made(inputs.iter().flatten().next().map(|v| (*v).clone()), false, observer))],
         // `and` and `or` read their inputs in order and stop at the one that decides, so one past
         // it may be absent: the choice's rule, over every input at once.
         (Body::Leaf { .. }, _) if matches!(kind.choice, Some(Which::And | Which::Or)) => {
             let which = kind.choice.expect("matched");
             match choose(which, inputs.len(), |p| Some(In::of_value(inputs.get(p).copied().flatten()))) {
-                Chosen::Done(slot, _) => smallvec![slot.owned()],
+                Chosen::Done(slot, _) => smallvec![Slot::of(made(slot.owned().into_value(), false, observer))],
                 Chosen::Need(_) => unreachable!("every input is given"),
             }
         }
@@ -676,6 +717,10 @@ fn eval_as(
         // can't run: the language's `throw new Error(message)`, its message for the run's log.
         (Body::Fail, _) => {
             if let Some(Some(message)) = inputs.first() {
+                // Its message written as text is `to_text`'s work, charged as it is.
+                if !charge(observer, primitives::reading(Op::ToText, [(*message, false)]).0) {
+                    return smallvec![Slot::Absent];
+                }
                 let reason = match message {
                     Value::Text(t) => t.clone(),
                     other => primitives::compute("to_text", &[other], &[]).map_or_else(String::new, |t| if let Value::Text(t) = t { t } else { String::new() }),
@@ -698,7 +743,13 @@ fn eval_as(
                 return smallvec![Slot::Absent];
             }
             let present: SmallVec<[&Value; 4]> = inputs.iter().flatten().copied().collect();
-            smallvec![Slot::of(op.and_then(|op| primitives::compute_op(op, name, &present, &unit.params)))]
+            // Its work is charged as steps: what it reads before it reads it, what it makes once
+            // made ([`primitives::reading`]).
+            let Some(op) = op else { return smallvec![Slot::Absent] };
+            if !charge(observer, primitives::reading(op, present.iter().map(|v| (*v, false))).0) {
+                return smallvec![Slot::Absent];
+            }
+            smallvec![Slot::of(made(primitives::compute_op(op, name, &present, &unit.params), false, observer))]
         }
         (_, UnitBody::Composite { children, edges }) => eval_composite(unit, children, edges, &mut lent(inputs), resolver, observer, path),
         // A module body: the engine behind the resolver runs it (docs/L4s/wasm-module-L4.md §5);
@@ -738,7 +789,7 @@ fn eval_given<'r>(unit: &'r Unit, kind: &NodeKind, args: &mut Args<'_>, resolver
         (Body::Json(json), _) => smallvec![eval_json(json, &mut args[..n], &unit.params, resolver, observer, path)],
         (_, UnitBody::Composite { children, edges }) => eval_composite(unit, children, edges, &mut args[..n], resolver, observer, path),
         (Body::Leaf { variadic, op: Some(op) }, UnitBody::Primitive { name }) if args.iter().any(|a| matches!(a, Some(Cow::Owned(v)) if heavy(v))) => {
-            smallvec![leaf_given(op, name, variadic, &mut args[..n], &unit.params)]
+            smallvec![leaf_given(op, name, variadic, &mut args[..n], &unit.params, observer)]
         }
         // Nothing given worth building on (a `fold` of numbers), or a node that only reads: lent,
         // as always.
@@ -748,10 +799,15 @@ fn eval_given<'r>(unit: &'r Unit, kind: &NodeKind, args: &mut Args<'_>, resolver
 
 /// A leaf computed on `args`, building on what is given: what is given is the leaf's; what is
 /// lent stays where it is, for the caller's next application (a `map`'s extras). Apart from
-/// [`eval_given`], so the recursion through it doesn't carry this frame.
+/// [`eval_given`], so the recursion through it doesn't carry this frame. Its work is charged as a
+/// lent leaf's is, less what it builds on of what it is given ([`primitives::reading`]).
 #[inline(never)]
-fn leaf_given(op: Op, name: &str, variadic: bool, args: &mut [Option<Cow<'_, Value>>], params: &[Param]) -> Slot {
+fn leaf_given(op: Op, name: &str, variadic: bool, args: &mut [Option<Cow<'_, Value>>], params: &[Param], observer: &mut impl Observer) -> Slot {
     if variadic && args.iter().any(Option::is_none) {
+        return Slot::Absent;
+    }
+    let (reads, grew) = primitives::reading(op, args.iter().flatten().map(|a| (a.as_ref(), matches!(a, Cow::Owned(_)))));
+    if !charge(observer, reads) {
         return Slot::Absent;
     }
     let present = args
@@ -762,7 +818,7 @@ fn leaf_given(op: Op, name: &str, variadic: bool, args: &mut [Option<Cow<'_, Val
             None => None,
         })
         .collect();
-    Slot::of(primitives::compute_given(op, name, present, params).ok())
+    Slot::of(made(primitives::compute_given(op, name, present, params).ok(), grew, observer))
 }
 
 /// What a leaf that produced nothing hands back of what it was given, by port ([`give_to_leaf`]).
@@ -770,9 +826,10 @@ type Back = SmallVec<[(usize, Value); 2]>;
 
 /// A leaf, child of a composite, computed on `args` some of which are given ([`Prepared::fire_giving`]):
 /// its outputs, and when it produces nothing, what it was given, by port, to be put back where it
-/// was kept. Apart from `fire_giving`, so the recursion through it doesn't carry this frame.
+/// was kept. Apart from `fire_giving`, so the recursion through it doesn't carry this frame. Its
+/// work is charged as [`leaf_given`]'s is.
 #[inline(never)]
-fn give_to_leaf(op: Op, name: &str, variadic: bool, args: Args<'_>, params: &[Param]) -> (Slots, Back) {
+fn give_to_leaf(op: Op, name: &str, variadic: bool, args: Args<'_>, params: &[Param], observer: &mut impl Observer) -> (Slots, Back) {
     let back = |args: Args| -> Back {
         args.into_iter()
             .enumerate()
@@ -785,12 +842,18 @@ fn give_to_leaf(op: Op, name: &str, variadic: bool, args: Args<'_>, params: &[Pa
     if variadic && args.iter().any(Option::is_none) {
         return (smallvec![Slot::Absent], back(args));
     }
+    let (reads, grew) = primitives::reading(op, args.iter().flatten().map(|a| (a.as_ref(), matches!(a, Cow::Owned(_)))));
+    if !charge(observer, reads) {
+        return (smallvec![Slot::Absent], back(args));
+    }
     // Present inputs in port order, as a lent leaf computes on them; what comes back is what went
     // in, in order, each put back at its own port.
     let ports: SmallVec<[usize; 4]> = (0..args.len()).filter(|&p| args[p].is_some()).collect();
     let present = args.into_iter().flatten().collect();
     match primitives::compute_given(op, name, present, params) {
-        Ok(v) => (smallvec![Slot::Value(v)], Back::new()),
+        // What it made, charged; past the steps it has, nothing, as for any node refused a step.
+        // What it was given is in what it made, and goes with it.
+        Ok(v) => (smallvec![Slot::of(made(Some(v), grew, observer))], Back::new()),
         Err(returned) => {
             let mut at: Args = smallvec![None; ports.last().map_or(0, |&p| p + 1)];
             for (v, p) in returned.into_iter().zip(ports) {
@@ -1956,8 +2019,15 @@ impl<'r> Prepared<'r> {
                     Some(nested) => nested.run(child.outputs.len(), &mut lent(gathered), resolver, observer, path),
                     None => smallvec![Slot::Absent; child.outputs.len()],
                 },
-                // A `const`: what it computed once.
-                (Body::Leaf { .. }, Some(many)) if many.consts[ci].is_some() => many.consts[ci].iter().cloned().collect(),
+                // A `const`: what it computed once, copied, and charged as a copy ([`made`]).
+                (Body::Leaf { .. }, Some(many)) if many.consts[ci].is_some() => {
+                    let kept: Slots = many.consts[ci].iter().cloned().collect();
+                    if kept.iter().all(|slot| slot.value().is_none_or(|v| charge(observer, primitives::making(v)))) {
+                        kept
+                    } else {
+                        smallvec![Slot::Absent; child.outputs.len()]
+                    }
+                }
                 _ => eval_as(child, kind, gathered, resolver, observer, path),
             },
         })
@@ -2022,7 +2092,7 @@ impl<'r> Prepared<'r> {
                 let mut args: Args = given.into_iter().enumerate().map(|(p, v)| v.map(Cow::Owned).or_else(|| self.read(ci, p, scratch, inputs).value().map(Cow::Borrowed))).collect();
                 open_triggers(child, &mut args, || Cow::Borrowed(&open), |p| incoming.wired(ci as u32, p as u32));
                 match (kind.body, &child.body) {
-                    (Body::Leaf { variadic, op: Some(op) }, UnitBody::Primitive { name }) if !kind.takes_trigger => give_to_leaf(op, name, variadic, args, &child.params),
+                    (Body::Leaf { variadic, op: Some(op) }, UnitBody::Primitive { name }) if !kind.takes_trigger => give_to_leaf(op, name, variadic, args, &child.params, observer),
                     (Body::Composite, _) => match many.nested(ci, child, resolver) {
                         Some(nested) => (nested.run(child.outputs.len(), &mut args, resolver, observer, path), Back::new()),
                         None => (smallvec![Slot::Absent; child.outputs.len()], Back::new()),
@@ -2512,6 +2582,8 @@ fn eval_test(test: Test, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param]
     let Some(unit) = function(params, resolver) else { return Slot::Absent };
     let unit = Ready::of(unit, resolver);
     let (list, extra) = inputs.split_at_mut(1);
+    // What it keeps of a lent list it copies, and is charged so.
+    let lent = matches!(list[0], Some(Cow::Borrowed(_)));
     let Some(items) = Items::of(take_given(&mut list[0])) else { return Slot::Absent };
     let mut asks = Asks::new(observer);
     // Item `k`'s answer: true or false, or the slot that stops the leaf.
@@ -2542,7 +2614,8 @@ fn eval_test(test: Test, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param]
             } else if absent {
                 Slot::Absent
             } else {
-                Slot::Value(Value::List(kept))
+                let kept = Value::List(kept);
+                Slot::of(made(Some(kept), !lent, &mut asks))
             }
         }
         Test::Any | Test::All => {
@@ -2560,15 +2633,23 @@ fn eval_test(test: Test, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param]
         Test::Find | Test::FindIndex | Test::FindLast | Test::FindLastIndex => {
             let backward = matches!(test, Test::FindLast | Test::FindLastIndex);
             let mut items = items.enumerate();
+            let mut found = None;
             while let Some((k, item)) = if backward { items.next_back() } else { items.next() } {
                 match answer(k, &item) {
-                    Ok(true) if test.keeps_items() => return Slot::Value(item.into_owned()),
-                    Ok(true) => return Slot::Value(Value::Number(k as f64)),
+                    Ok(true) => {
+                        found = Some((k, item));
+                        break;
+                    }
                     Ok(false) => {}
                     Err(stop) => return stop,
                 }
             }
-            if test.keeps_items() { Slot::Absent } else { Slot::Value(Value::Number(-1.0)) }
+            match found {
+                Some((_, item)) if test.keeps_items() => Slot::of(own_item(item, &mut asks)),
+                Some((k, _)) => Slot::Value(Value::Number(k as f64)),
+                None if test.keeps_items() => Slot::Absent,
+                None => Slot::Value(Value::Number(-1.0)),
+            }
         }
     }
 }
@@ -2591,6 +2672,12 @@ fn eval_sort_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolve
     let unit = Ready::of(unit, resolver);
     let (list, extra) = inputs.split_at_mut(1);
     let list = take_given(&mut list[0]).expect("checked present");
+    // Its order, a position for each item and as many to merge them in, set up before any is
+    // compared: a unit of work an item.
+    let Value::List(xs) = list.as_ref() else { unreachable!("checked to be a list") };
+    if !charge(observer, xs.len() as u64 / primitives::UNITS_PER_STEP) {
+        return Slot::Absent;
+    }
     let mut asks = Asks::new(observer);
     let order = {
         let Value::List(xs) = list.as_ref() else { unreachable!("checked to be a list") };
@@ -2617,7 +2704,11 @@ fn eval_sort_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolve
             let mut xs: Vec<Option<Value>> = xs.into_iter().map(Some).collect();
             order.into_iter().map(|k| xs[k].take().expect("each item once")).collect()
         }
-        Cow::Borrowed(Value::List(xs)) => order.into_iter().map(|k| xs[k].clone()).collect(),
+        Cow::Borrowed(Value::List(xs)) => {
+            // Copied, and charged as made.
+            let sorted = Value::List(order.into_iter().map(|k| xs[k].clone()).collect());
+            return Slot::of(made(Some(sorted), false, &mut asks));
+        }
         _ => unreachable!("checked to be a list"),
     }))
 }
@@ -2650,7 +2741,10 @@ fn eval_group_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolv
             apply(&unit, &mut args, resolver, &mut asks, path, k)
         };
         match key {
-            Slot::Value(Value::Text(key)) => groups.entry(key).or_default().push(item.into_owned()),
+            Slot::Value(Value::Text(key)) => match own_item(item, &mut asks) {
+                Some(item) => groups.entry(key).or_default().push(item),
+                None => return Slot::Absent,
+            },
             Slot::Pending => pending = true,
             _ => absent = true,
         }
@@ -2687,6 +2781,12 @@ fn eval_json(json: Json, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param]
     let Some(unit) = function(params, resolver) else { return Slot::Absent };
     let unit = Ready::of(unit, resolver);
     let (first, extra) = inputs.split_at_mut(1);
+    // What it parses or lays out is charged as the leaf's is ([`primitives::reading`]), and what
+    // it makes once made; each application of its function takes its step as a `map`'s does.
+    let read = primitives::reading(if json == Json::Parse { Op::JsonParse } else { Op::JsonStringify }, first[0].as_deref().map(|v| (v, false))).0;
+    if !charge(observer, read) {
+        return Slot::Absent;
+    }
     let mut asks = Asks::new(observer);
     let mut applied = 0;
     let mut answer = |key: &str, value: &Value| -> Result<Option<Value>, Slot> {
@@ -2715,8 +2815,10 @@ fn eval_json(json: Json, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param]
             replaced.and_then(|v| crate::json::stringify_laid_out(&v, &crate::json::Layout { gap: crate::json::gap(param("indent")), keys: None })).map(Value::Text)
         }),
     };
+    // Its steps given back before what it made is charged.
+    drop(asks);
     match done {
-        Ok(Some(v)) => Slot::Value(v),
+        Ok(Some(v)) => Slot::of(made(Some(v), false, observer)),
         Ok(None) => Slot::Absent,
         Err(stop) => stop,
     }
@@ -2898,7 +3000,8 @@ fn eval_fold(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: 
     let unit = Ready::of(unit, resolver);
 
     let (head, extra) = inputs.split_at_mut(2);
-    let mut acc = take_given(&mut head[0]).map(Cow::into_owned).expect("checked present");
+    // A lent start is copied, and charged so ([`own_item`]).
+    let Some(mut acc) = take_given(&mut head[0]).and_then(|start| own_item(start, observer)) else { return Slot::Absent };
     let mut asks = Asks::new(observer);
     // A list given to the fold gives each item to its application too.
     let Some(items) = Items::of(take_given(&mut head[1])) else { return Slot::Absent };
@@ -3977,12 +4080,25 @@ mod tests {
         };
         let half = txt(&"x".repeat(512 * KB));
         let items = list(vec![txt(""); 32]);
-        // Each with the most steps it may take in 4 MiB: the nodes up to the one making 4 MiB and
-        // the next; the map's and the fold's a step of their own and eight items of 512 KiB.
+        // Each with the most steps it may take in 4 MiB, a node's step and its work's
+        // (`primitives::reading` and `making`): the nodes up to the one making 4 MiB, each reading
+        // two halves of what it makes, and the next; the map's and the fold's a step of their own,
+        // and eight items each reading the 512 KiB text, and two more. The map's items make a copy
+        // of it; the fold's add it to the text it builds on, and its first copies the empty text it
+        // starts from, so makes what it adds.
+        let concat = |s: &Value, given: bool| primitives::reading(Op::Concat, [(s, given), (s, false)]).0;
+        let doubled: u64 = (0..6)
+            .map(|i| {
+                let s = txt(&"x".repeat((64 * KB) << i));
+                1 + concat(&s, false) + primitives::making(&txt(&"x".repeat((128 * KB) << i)))
+            })
+            .sum();
+        let mapped = 1 + primitives::reading(Op::List, [(&txt(""), false), (&half, false)]).0 + primitives::making(&list(vec![txt(""), half.clone()]));
+        let folded = 1 + primitives::reading(Op::Concat, [(&txt("x"), true), (&txt(""), false), (&half, false)]).0;
         let cases: [(&str, &Unit, Vec<Option<Value>>, u64); 3] = [
-            ("nodes", &doubling, vec![Some(txt(&"x".repeat(64 * KB)))], 7),
-            ("map", &copies, vec![Some(items.clone()), Some(half.clone())], 1 + 8 + 2),
-            ("fold", &growing, vec![Some(txt("")), Some(items), Some(half)], 1 + 8 + 2),
+            ("nodes", &doubling, vec![Some(txt(&"x".repeat(64 * KB)))], doubled + 1),
+            ("map", &copies, vec![Some(items.clone()), Some(half.clone())], 1 + 10 * mapped),
+            ("fold", &growing, vec![Some(txt("")), Some(items), Some(half.clone())], 1 + 10 * folded + primitives::making(&half)),
         ];
         for (what, unit, inputs, most) in cases {
             // Within 64 MiB: what no budget gives, every step taken.

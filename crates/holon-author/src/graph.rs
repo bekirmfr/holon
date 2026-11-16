@@ -138,7 +138,8 @@ struct Block<'a> {
 /// The text's graph: by statement, or with `every` node a row of its own.
 pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
     let file = ts::parse(source).map_err(|e| e.to_string())?;
-    let lowered = lower(&file).map_err(|e| e.to_string())?;
+    // Lowered on a stack with room for what the count lets through, as `lang::compile` is.
+    let lowered = crate::lang::nesting::on_deep_stack(|| lower(&file)).map_err(|e| e.to_string())?;
     let lines: Vec<&str> = source.lines().collect();
     let line_text = |n: u32| lines.get(n as usize - 1).map(|l| l.trim()).unwrap_or_default().to_string();
     // `len` characters from `from` on its line.

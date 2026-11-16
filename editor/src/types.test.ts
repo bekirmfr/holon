@@ -57,7 +57,8 @@ describe("holon.d.ts, read by TypeScript", () => {
     expect(samples.length).toBeGreaterThan(50);
     const flows = Object.fromEntries(samples.map((f) => [`/flows/${f}`, readFileSync(join(SAMPLES, f), "utf8")]));
     expect(refused(check(flows))).toEqual([]);
-  });
+    // Every sample is type-checked here, so its time grows with each one added: a limit that fits a single case doesn't fit it on a busy machine.
+  }, 30_000);
 
   it("type-checks every flow of the manual", () => {
     const flows: Record<string, string> = {};

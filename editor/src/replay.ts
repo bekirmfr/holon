@@ -49,12 +49,13 @@ export type NodeTrace = {
   issue?: Issue;
 };
 
-/** Whether `v` carries a secret's or token's placeholder anywhere (the log's redaction). */
+/** Whether `v` carries a placeholder anywhere (the log's redaction): a secret's, a token's, or
+ *  that of a value the run computed from a secret (`‹derived #7c1e9a02›`). */
 export function hasPlaceholder(v: WValue | null): boolean {
   if (v === null) return false;
   switch (v.type) {
     case "Text":
-      return v.value.includes("‹secret:") || v.value.includes("‹token:") || v.value.includes("‹file:");
+      return v.value.includes("‹secret:") || v.value.includes("‹token:") || v.value.includes("‹derived #") || v.value.includes("‹file:");
     case "List":
       return v.value.some(hasPlaceholder);
     case "Record":

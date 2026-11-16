@@ -15,7 +15,6 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::fmt::Write as _;
 
 use unicode_normalization::UnicodeNormalization;
 
@@ -442,13 +441,14 @@ pub(crate) fn replace(count: &str, s: &str, a: &str, b: &str) -> Option<Value> {
     // but `` $` `` at the first match and `$'` at the last: what is written grows with every part
     // at every match, so the bound on it bounds the work as well, however many parts there are.
     let rep: Vec<Part<'_>> = parts(b).into_iter().filter(|part| !(a.is_empty() && matches!(part, Part::Matched))).collect();
+    let literal = literal_units(&rep);
     // Every unit boundary, the halves of a pair among them: the pieces are units, not characters.
     if all && a.is_empty() && s.chars().any(|c| c.len_utf16() == 2) {
         let su: Vec<u16> = s.encode_utf16().collect();
         let n = su.len();
         let mut total = n;
         for p in 0..=n {
-            total = total.saturating_add(substituted_units(&rep, p, n, 0));
+            total = total.saturating_add(substituted_units(&rep, literal, p, n, 0));
             if total > MAX_TEXT {
                 return None;
             }
@@ -480,7 +480,7 @@ pub(crate) fn replace(count: &str, s: &str, a: &str, b: &str) -> Option<Value> {
     let (mut total, mut last, mut at_units) = (n - matches.len() * m, 0, 0);
     for &at in &matches {
         at_units += units(&s[last..at]);
-        total = total.saturating_add(substituted_units(&rep, at_units, n, m));
+        total = total.saturating_add(substituted_units(&rep, literal, at_units, n, m));
         if total > MAX_TEXT {
             return None;
         }
@@ -507,15 +507,22 @@ pub(crate) fn replace(count: &str, s: &str, a: &str, b: &str) -> Option<Value> {
 }
 
 /// How many units a replacement writes for a match `m` units long at unit `at` of a text `n` long.
-fn substituted_units(rep: &[Part<'_>], at: usize, n: usize, m: usize) -> usize {
+fn substituted_units(rep: &[Part<'_>], literal: usize, at: usize, n: usize, m: usize) -> usize {
     rep.iter()
         .map(|part| match part {
-            Part::Literal(l) => units(l),
+            Part::Literal(_) => 0,
             Part::Matched => m,
             Part::Before => at,
             Part::After => n - at - m,
         })
-        .fold(0usize, usize::saturating_add)
+        .fold(literal, usize::saturating_add)
+}
+
+/// The units of `rep`'s literal parts, which every substitution writes: counted once, not at each
+/// match (a replacement of 64 KiB counted at each of a text's places was 2 ms before the bound
+/// stopped it).
+fn literal_units(rep: &[Part<'_>]) -> usize {
+    rep.iter().map(|part| if let Part::Literal(l) = part { units(l) } else { 0 }).fold(0usize, usize::saturating_add)
 }
 
 /// `s.normalize(form)`: Unicode normalization form `"NFC"`, `"NFD"`, `"NFKC"` or `"NFKD"`.
@@ -552,9 +559,13 @@ pub(crate) fn uri_encode(set: &str, s: &str) -> Option<Value> {
         if c.is_ascii_alphanumeric() || "-_.!~*'()".contains(c) || (keeps_reserved && RESERVED.contains(c)) {
             out.push(c);
         } else {
+            // Written in place: a `write!` for each byte was 65 ns of it.
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
             let mut buf = [0; 4];
             for b in c.encode_utf8(&mut buf).bytes() {
-                let _ = write!(out, "%{b:02X}");
+                out.push('%');
+                out.push(char::from(HEX[usize::from(b >> 4)]));
+                out.push(char::from(HEX[usize::from(b & 0xf)]));
             }
         }
     }

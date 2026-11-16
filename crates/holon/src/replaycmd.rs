@@ -116,13 +116,13 @@ fn count(r: &Value, k: &str) -> u64 {
 }
 
 /// A replay's answer as lines: the count, then each run that differs or can't be told, newest
-/// first.
+/// first. The runs it didn't reach before its deadline are counted too.
 pub(crate) fn lines(slug: &str, r: &Value) -> Vec<String> {
-    let replayed = count(r, "replayed");
-    if replayed == 0 {
+    let (replayed, not_reached) = (count(r, "replayed"), count(r, "not_reached"));
+    if replayed + not_reached == 0 {
         return vec![format!("\"{slug}\" has no runs yet to replay this version on.")];
     }
-    let mut summary = vec![format!("{replayed} replayed"), format!("{} same", count(r, "same"))];
+    let mut summary = if replayed > 0 { vec![format!("{replayed} replayed"), format!("{} same", count(r, "same"))] } else { Vec::new() };
     match count(r, "differ") {
         0 => {}
         1 => summary.push("1 differs".into()),
@@ -131,9 +131,14 @@ pub(crate) fn lines(slug: &str, r: &Value) -> Vec<String> {
     if count(r, "cant_tell") > 0 {
         summary.push(format!("{} can't tell", count(r, "cant_tell")));
     }
+    // The oldest, left when the replay's time ran out.
+    if not_reached > 0 {
+        summary.push(format!("{not_reached} not reached in time"));
+    }
+    let asked = replayed + not_reached;
     let mut out = vec![format!(
         "This version replayed on \"{slug}\"'s last {}, offline (nothing sent or written): {}",
-        if replayed == 1 { "run".to_string() } else { format!("{replayed} runs") },
+        if asked == 1 { "run".to_string() } else { format!("{asked} runs") },
         summary.join(" · ")
     )];
     for run in r.get("runs").and_then(Value::as_array).into_iter().flatten() {

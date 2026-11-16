@@ -61,15 +61,21 @@ another program holds is said on the deployment (`listen_error`). `serve_flow` m
 to a route (`match_route`), answers 503 for a deployment not running, and fires the endpoint with
 the request record, the clock and random numbers sourced. It runs on the blocking pool, however
 short: nothing computes on a data-plane worker ([G2](../themes/resilience.md#g2-a-deployment-cant-slow-another)).
+Each run takes a place in its deployment's share (`max_concurrent_runs`): past it, or past the
+data plane's total, the request is a 503 with `Retry-After: 1`. A write a caller doesn't take
+within 30 s closes its connection.
 `POST /deployments/<slug>/request` (the editor's "send live") goes through the same `serve_data`
 over the control plane.
 
 ### Clocks
 
-`spawn_clock_scheduler` starts one thread that, every second, calls `run_due_clock_ticks` and then
-`expire_waiting`. A clock of a running deployment is due when its `clock_due` (one per `every`
-handler, `server.clocks`) has passed; every due tick of the pass fires on its own scoped thread,
-and the pass ends when all have. `fire_one_clock_tick` fires the handler with no inputs, `Clock` (the tick's epoch seconds) and `Random`
+`spawn_clock_scheduler` starts two threads, each acting every second: one starts the clocks due
+(`start_due_clock_ticks`), the other expires the waiting runs past their deadlines
+(`expire_waiting`), so neither waits on a call the other's run makes. A clock of a running
+deployment is due when its `clock_due` (one per `every` handler, `server.clocks`) has passed; each
+due tick fires on a thread of its own, unless the clock's last tick still goes on (`Ticking`, by
+deployment and label: a clock is never fired over its own tick), and the pass doesn't wait for
+them. Tests drive a pass that does (`run_due_clock_ticks`, with a controlled `now`). `fire_one_clock_tick` fires the handler with no inputs, `Clock` (the tick's epoch seconds) and `Random`
 sourced and the clock budget, logs a `tick` under the handler's label, keeps the last 20 ticks
 (`history`), and sets the next due a period after the pass's `now`. `arm_clocks` makes every clock
 due at once: at deploy, at load, and when a deployment runs again. **Tick now** is
@@ -92,13 +98,18 @@ alone, a file two handlers are for starting a run of each, logged as `file` unde
 
 `inbox.rs` is the same for a mail handler (`on.mail(remit, (m) => …)`, host-capabilities L4
 §5.2.4): a thread looks every second for the mailboxes running deployments listen to whose
-binding's `--every` has come round, logs in over IMAP (`imap.rs`; with a password, or with the
-OAuth token `oauth.rs` asks for and keeps, through `Mails::open_mailbox`), and starts one run for each
-message that came since, 20 a look at most, its message read by core (`mail::received`) the run's
-input as `MailArrival("remit")`. Once the run is over the message is moved to the binding's
-`--done`; its UID is noted first, so a move a crash cut off is made at the next look. What the
-folder holds at the first look is seen, not run on, and a second copy of a message is moved without
-a run. What each deployment has seen is in `mail-seen/<slug>/<mail>.json` beside its log; a look
+binding's `--every` has come round, and starts a look at each no look is at, on a thread of its
+own, waiting for none (`Looking` frees its mailbox however the look ends, and how it went is noted
+at the next tick): one mailbox's server that doesn't answer, or its long message or run, holds no
+other's. A look logs in over IMAP (`imap.rs`; with a password, or with the OAuth token `oauth.rs`
+asks for and keeps, through `Mails::open_mailbox`), and starts one run for each message that came
+since, 20 a look at most, its message read by core (`mail::received`, in one pass, 1,000 parts at
+most) the run's input as `MailArrival("remit")`. Once the run is over the message is moved to the
+binding's `--done`; its UID is noted first, so a move a crash cut off is made at the next look.
+Before a message is read it is noted taken up (`Seen::taken`, with how many looks took it), the
+note dropped once its run is over: a look cut off in between is tried again, and after `TRIES`
+(2) the message is moved without a run. What the folder holds at the first look is seen, not run
+on, and a second copy of a message is moved without a run. What each deployment has seen is in `mail-seen/<slug>/<mail>.json` beside its log; a look
 that fails is on the timeline once, and again when the mailbox reads again. Logged as `mail` under
 the label.
 
@@ -236,13 +247,13 @@ syncs the same way but has no one to answer.
 
 ## 4. Reach and limits
 
-- **A clock pass waits for its slowest tick.** `run_due_clock_ticks` joins every tick of a pass
-  before the next pass begins, so one slow tick delays every other deployment's next tick, and
-  expiry, until it ends. Since B5 that has an end: what a tick computes is held to its round's
-  `max_steps`, `max_fuel` and `max_memory` (about a second by default, 10–20 s at the ceilings),
-  and its calls to their timeouts; before, a tick that looped without end stopped every clock and
-  every deadline on the server. Each due tick is a thread of its own, unbounded (the code names
-  it: a bounded pool is the fix if fan-out grows).
+- **A slow tick holds its own clock alone.** A tick waiting on a call delays that clock's next
+  tick (it isn't fired over itself), not another clock's, not the next pass, not a deadline. Until
+  R34 a pass joined every tick it started and expiry ran after it on the same thread, so one tick
+  waiting 30 s on a call held every clock and every deadline on the server as long. Threads are
+  one per clock at most. Expiry resumes each timed-out run on its own thread in turn
+  (`durable::expire_waiting`): a resumed run that waits on a call holds the other deadlines, not
+  the clocks.
 - **Clocks drift and skip.** The next tick is due a period after the pass's `now`, checked once a
   second; periods are whole seconds; a tick late by more than a period is one tick, not several.
 - **Files are polled**, every second where the OS gives notices and every 30 s regardless: a dropped
