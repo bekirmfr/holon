@@ -75,9 +75,18 @@ fn free_port() -> u16 {
 
 /// `request` sent to `port` and the whole answer read, or nothing if no connection is taken.
 fn raw_http(port: u16, request: &[u8]) -> String {
-    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
+    raw_http_then(port, request, || {})
+}
+
+/// [`raw_http`], calling `sent` once the request is written.
+fn raw_http_then(port: u16, request: &[u8], sent: impl FnOnce()) -> String {
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+        sent();
+        return String::new();
+    };
     stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
     let _ = stream.write_all(request);
+    sent();
     let mut out = Vec::new();
     let _ = stream.read_to_end(&mut out);
     String::from_utf8_lossy(&out).into_owned()
@@ -124,10 +133,11 @@ route.get("/hi", () => "hi", {{ log: "unrecorded" }})
 "#
     );
     server.deploy("beside", &beside, other, "/hi");
-    let spin = move |n: u32| {
+    let spin_then = move |n: u32, sent: &dyn Fn()| {
         let body = format!("{{\"n\":{n}}}");
-        raw_http(port, format!("POST /spin HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
+        raw_http_then(port, format!("POST /spin HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes(), sent)
     };
+    let spin = move |n: u32| spin_then(n, &|| {});
     // What it is, the status it is answered, and how it is sent to a port. Beside the runs: a
     // request refused before its body is read, on their port, and another deployment's route.
     type Probe = (&'static str, u16, fn(u16) -> String);
@@ -145,15 +155,22 @@ route.get("/hi", () => "hi", {{ log: "unrecorded" }})
     let alone = started.elapsed();
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
     for count in [1, cores + 4] {
+        // The requests beside them go once every run's request is written, which the server
+        // reads at once: not a quarter of a spin later, a wait a loaded machine may spend before
+        // the runs are sent.
+        let (sent, all_sent) = std::sync::mpsc::channel::<()>();
         let runs: Vec<_> = (0..count)
             .map(|_| {
+                let sent = sent.clone();
                 std::thread::spawn(move || {
-                    let answered = spin(N);
+                    let answered = spin_then(N, &|| sent.send(()).unwrap());
                     (answered, Instant::now())
                 })
             })
             .collect();
-        std::thread::sleep(alone / 4);
+        for _ in 0..count {
+            all_sent.recv().unwrap();
+        }
         let asked = Instant::now();
         let beside: Vec<_> = probes
             .iter()

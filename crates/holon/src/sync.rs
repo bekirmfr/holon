@@ -121,6 +121,37 @@ impl Condvar {
     }
 }
 
+/// How many threads wait at one place now (a claim, a lock), each counted from when it first
+/// finds itself blocked until it stops waiting. A test watches it to let the run it waits for go
+/// on once it waits, not after a sleep it hopes was long enough: on a loaded machine "the second
+/// started 60 ms after the first" doesn't hold, "the second waits for the first" does (tests.rs,
+/// `Gate`).
+#[derive(Debug, Default)]
+pub(crate) struct Waiters(std::sync::atomic::AtomicUsize);
+
+impl Waiters {
+    /// One more waiting, until what this answers is dropped.
+    pub(crate) fn enter(&self) -> Waiting<'_> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Waiting(self)
+    }
+
+    /// How many wait now.
+    #[cfg(test)]
+    pub(crate) fn now(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// One thread counted as waiting, until dropped.
+pub(crate) struct Waiting<'a>(&'a Waiters);
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0 .0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

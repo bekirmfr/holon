@@ -163,8 +163,17 @@ route.get("/done/:token", () => "done", {{ resumes: "done" }})
     for _ in 0..300 {
         assert_eq!(status(&post(flow_port, "/bump", "{}")), 200);
     }
-    // Console lines are written about once a second, on a thread of their own (logs.rs).
-    std::thread::sleep(Duration::from_millis(2500));
+    // Console lines are written about once a second, on a thread of their own (logs.rs): looked
+    // for until they are there, not slept for.
+    let until = Instant::now() + Duration::from_secs(60);
+    while !{
+        let mut files = Vec::new();
+        files_under(&home, &mut files);
+        files.iter().any(|f| f.to_string_lossy().replace('\\', "/").ends_with("deployments.logs/kept.console.jsonl"))
+    } {
+        assert!(Instant::now() < until, "console lines written");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     let mut files = Vec::new();
     files_under(&home, &mut files);

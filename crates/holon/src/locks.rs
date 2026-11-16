@@ -23,7 +23,7 @@
 //!   at most its `commit_wait`, past which it lets go of every lock it took and says which
 //!   resource it waited for.
 
-use crate::sync::Condvar;
+use crate::sync::{Condvar, Waiters};
 use std::time::Instant;
 
 use crate::*;
@@ -118,6 +118,9 @@ pub(crate) struct Wanted {
 #[derive(Debug, Default)]
 pub(crate) struct Locks {
     table: Mutex<BTreeMap<String, Arc<Lock>>>,
+    /// The runs waiting here now for a lock another holds, another server's included (a
+    /// database's run lock, firing.rs).
+    pub(crate) waiters: Waiters,
 }
 
 #[derive(Debug, Default)]
@@ -184,12 +187,12 @@ impl Locks {
         let mut guards = Vec::with_capacity(merged.len());
         for (address, w) in merged {
             let lock = Arc::clone(self.table.lock().unwrap().entry(address.clone()).or_default());
-            if !lock.acquire(w.mode, until) {
+            if !lock.acquire(w.mode, until, &self.waiters) {
                 return Err(w.label);
             }
             // Held from here: let go if the OS lock can't be had in time.
             let mut guard = Guard { lock, mode: w.mode, _file: None };
-            match w.file.as_deref().map(|f| os_lock(f, w.mode, until)).transpose() {
+            match w.file.as_deref().map(|f| os_lock(f, w.mode, until, &self.waiters)).transpose() {
                 Ok(file) => {
                     guard._file = file.flatten();
                     guards.push(guard);
@@ -202,8 +205,9 @@ impl Locks {
 }
 
 impl Lock {
-    fn acquire(&self, mode: Mode, until: Instant) -> bool {
+    fn acquire(&self, mode: Mode, until: Instant, waiters: &Waiters) -> bool {
         let mut held = self.held.lock().unwrap();
+        let mut waiting = None;
         loop {
             if mode.fits(&held) {
                 match mode {
@@ -213,6 +217,7 @@ impl Lock {
                 return true;
             }
             let Some(left) = until.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) else { return false };
+            waiting.get_or_insert_with(|| waiters.enter());
             held = self.freed.wait_timeout(held, left).unwrap().0;
         }
     }
@@ -221,15 +226,19 @@ impl Lock {
 /// The OS lock on `path`, shared or exclusive, waiting until `until` at most: `Err` past it.
 /// A file that can't be opened (a folder on read-only media) stands for no lock: the server's own
 /// lock still holds, and a write there fails on its own.
-fn os_lock(path: &Path, mode: Mode, until: Instant) -> Result<Option<std::fs::File>, ()> {
+fn os_lock(path: &Path, mode: Mode, until: Instant, waiters: &Waiters) -> Result<Option<std::fs::File>, ()> {
     let Ok(file) = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path) else {
         return Ok(None);
     };
+    let mut waiting = None;
     loop {
         let tried = if mode.os_exclusive() { file.try_lock() } else { file.try_lock_shared() };
         match tried {
             Ok(()) => return Ok(Some(file)),
-            Err(std::fs::TryLockError::WouldBlock) if Instant::now() < until => std::thread::sleep(Duration::from_millis(2)),
+            Err(std::fs::TryLockError::WouldBlock) if Instant::now() < until => {
+                waiting.get_or_insert_with(|| waiters.enter());
+                std::thread::sleep(Duration::from_millis(2))
+            }
             Err(std::fs::TryLockError::WouldBlock) => return Err(()),
             Err(std::fs::TryLockError::Error(_)) => return Ok(None),
         }
