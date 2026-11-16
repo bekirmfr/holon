@@ -179,7 +179,8 @@ const MOVES: &[&str] = &[
 /// The leaves that say whether a value is another, as a whole. `same_value` does too, but what it
 /// says is computed from a secret as the taint walk has it, so the log withholds whatever follows
 /// from it and a check has nothing to hold the rest of the run to: it stays off this list until
-/// the log marks such values (docs/L4s/secret-verification-L4.md §8.1 A).
+/// the log marks such values (docs/engineering/capabilities/secrets.md, "What is derived is
+/// marked, or withheld").
 const COMPARES: &[&str] = &["secure_equals"];
 
 /// How `leaf` treats a value handed to it whole, if computing it on a mark is exact

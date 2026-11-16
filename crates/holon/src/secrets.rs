@@ -57,7 +57,7 @@ pub(crate) struct Resolved {
     /// name → the salt of its current value: 32 random bytes, drawn when the value was first
     /// seen and sealed in the store (`SecretStore::salt_of`). What a run's record will commit
     /// its secrets with, and key the marks of what it computes from them
-    /// (docs/L4s/secret-verification-L4.md §8.1, items A and H). Not there for a value whose
+    /// (docs/engineering/capabilities/secrets.md, "A salt for each value"). Not there for a value whose
     /// kept salt doesn't open.
     pub(crate) salts: BTreeMap<String, Zeroizing<[u8; 32]>>,
     /// name → what a run given its current value records of it (`recorder::Committed`): where

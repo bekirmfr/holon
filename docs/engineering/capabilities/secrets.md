@@ -79,8 +79,7 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   value, each with its length. Whoever later holds the value and its salt computes it again;
   without the salt it says nothing of the value. `holon verify` holds an export to it as far as
   it can without the value: one value, one commitment in every run, and each mark of a secret
-  set here reading the fingerprint its entry lists (`verify::listed_secrets`)
-  ([secret verification](../../L4s/secret-verification-L4.md) §8.1, items F and H).
+  set here reading the fingerprint its entry lists (`verify::listed_secrets`).
 - **The server's own** are kept under `SERVER` (`*`) and read by a deployment with none of its
   own of that name; `--to` caps where one may go (`SecretStore::refuses` at deploy).
 - **Redacted.** `Redactor::of(vault)` pairs each current and retired value, and its JSON-escaped
