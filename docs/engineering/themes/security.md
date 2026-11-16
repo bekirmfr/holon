@@ -32,7 +32,13 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
 - **Passwords**: at least `MIN_PASSWORD` (10) characters, kept as argon2id hashes. `MAX_FAILURES`
   (5) wrong in a row lock the name, for the address they came from (`sign_in_from`: the name and
   the client's address), for `LOCKED_FOR` (a minute); sign-ins in flight count toward it, so
-  sending them at once doesn't buy more tries. Tries older than a minute are forgotten once more
+  sending them at once doesn't buy more tries. A name has a ceiling from every address together
+  too: past `NAME_MAX_WRONG` (20) wrong in `NAME_WINDOW` (a quarter of an hour; in flight
+  counting), it is refused from each address it hasn't signed in from (`NameTries`, the latest
+  `KNOWN_KEPT` (8) kept in memory) until the window ends, so guesses spread over many addresses
+  are capped (about two thousand a name a day) and its owner still signs in where they did
+  before. Setup codes have none: no address set the server up before, so one would let anyone
+  keep it from being set up. Tries older than a minute are forgotten once more
   than `TRIES_KEPT` (4,096) are kept (`forget_old_tries`). A name with no account is checked
   against `stand_in_hash`, so a refusal takes as long either way. No more than `CHECKS_AT_ONCE`
   (4) passwords are hashed or checked at once, on as many threads kept for it (`checking`,
@@ -437,8 +443,10 @@ What is not defended, or only partly:
   A proxy that forwards the name it was reached by needs that name given (`--allow-host`).
 - **The control plane's limits under load**: each request still has a thread of its own (rouille's
   default), and a stream's answer, once its handler returns, isn't among the `MAX_IN_FLIGHT`; a
-  sign-in's lock is per client, so many addresses each get their tries (5 a minute a name each),
-  and so do their places at once (64 each): many addresses together still fill them. Behind a
+  sign-in's lock is per client, so many addresses each get their tries (5 a minute a name each,
+  20 a quarter of an hour a name from all of them, `NAME_MAX_WRONG`), and so do their places at
+  once (64 each): many addresses together still fill them. Past a name's ceiling, someone signing
+  in from an address it never signed in from (since the server started) waits out the quarter. Behind a
   proxy the server trusts (`--trust-proxy`), each client it forwards for is its own; behind one
   it doesn't, they are all the proxy, the lock is the name's for everyone and the places are the
   proxy's 64, as setting up is (the server says so once, at the first request forwarded). A
@@ -477,6 +485,8 @@ What is not defended, or only partly:
   any case), `every_way_in_that_takes_a_secret_counts_its_wrong_guesses` (each from an address,
   and in from another),
   `wrong_passwords_lock_a_name_for_their_address_only_and_old_tries_are_forgotten`,
+  `a_ways_in_guesses_have_a_ceiling_however_they_are_spread` (spread over addresses, and sent at
+  once; in where it signed in before),
   `passwords_are_checked_a_few_at_once_and_the_rest_wait_or_are_told_busy` (and told at once
   while the line is full), `one_address_has_a_few_checked_at_once_under_any_names`,
   `what_a_cheap_check_refuses_waits_for_no_password_check`,

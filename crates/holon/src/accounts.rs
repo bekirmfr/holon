@@ -15,7 +15,8 @@
 //!   - a **person** (viewer, editor or admin) signs in with a password, kept as an argon2id hash,
 //!     through an identity provider, or through the run file. Signing in gives a session token
 //!     (`hs_…`, for 7 days); a few wrong passwords in a row lock that name for a minute, from
-//!     their address; signing out of a provider's sign-in keeps its ID token refused until it
+//!     their address, and many from anywhere lock it for a quarter of an hour, but where it
+//!     signed in before (`NAME_MAX_WRONG`); signing out of a provider's sign-in keeps its ID token refused until it
 //!     expires;
 //!   - an **agent** (agent or viewer) and a **service** (viewer or editor) sign in with their own
 //!     API tokens (`ht_…`), and have an owner, the person answerable for them.
@@ -51,6 +52,18 @@ pub(crate) const MIN_PASSWORD: usize = 10;
 /// Wrong passwords in a row before a name is locked, and for how long.
 const MAX_FAILURES: u32 = 5;
 const LOCKED_FOR: Duration = Duration::from_secs(60);
+
+/// A ceiling on a name's wrong passwords from every address together: past `NAME_MAX_WRONG` in
+/// `NAME_WINDOW`, it is refused from each address it hasn't signed in from, until the window
+/// ends. Guesses spread over many addresses (each under `MAX_FAILURES`) are capped, about two
+/// thousand a day, and its owner isn't kept out where they signed in before (`NameTries::known`).
+/// Setup codes have none: no address has set up the server before, so a ceiling would let anyone
+/// on the network keep it from being set up, and the code (about 40 bits) at `MAX_FAILURES` a
+/// minute from each address takes a million addresses months.
+const NAME_MAX_WRONG: u32 = 20;
+const NAME_WINDOW: Duration = Duration::from_secs(15 * 60);
+/// How many addresses a name has signed in from are kept, the latest.
+const KNOWN_KEPT: usize = 8;
 
 /// What a principal is (docs/L4s/access-and-approvals-L4.md §3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -385,6 +398,18 @@ struct Tries {
     last: Option<Instant>,
 }
 
+/// A name's wrong passwords from every address together, in the window that began `since`, and
+/// how many are being checked now (each counts as wrong until it is known not to be); and the
+/// addresses it signed in from, which its ceiling (`NAME_MAX_WRONG`) doesn't keep out. Kept in
+/// memory: after a restart, its owner's address is known again once they sign in.
+#[derive(Default)]
+struct NameTries {
+    wrong: u32,
+    checking: u32,
+    since: Option<Instant>,
+    known: Vec<String>,
+}
+
 /// When each principal was last seen and each token last used, as requests come in (`saw`): known
 /// at once in memory, and written into the book with the next change to it, or once one of the
 /// principal's is a minute newer than what was last written for them (`SEEN_KEPT_EVERY`), so a
@@ -413,6 +438,8 @@ struct Failures {
     /// By what was tried (a name, or `SETTING_UP`), as `tried` keeps it, and where from (the
     /// client's address, or `CHANGING`).
     tries: HashMap<(String, String), Tries>,
+    /// By name, as `tried` keeps it, from every address together: signing in's ceiling.
+    names: HashMap<String, NameTries>,
     /// How many are checked, or wait to be, from each address: at most `CHECKS_FROM_ONE`.
     from: HashMap<String, u32>,
 }
@@ -430,9 +457,13 @@ fn tried(what: &str, from: &str) -> (String, String) {
 
 /// Forget the tries no longer locking, checking or recent (a minute), once there are more than
 /// `TRIES_KEPT`: sign-ins under ever new names can't grow the map for good.
-fn forget_old_tries(failures: &mut HashMap<(String, String), Tries>) {
-    if failures.len() > TRIES_KEPT {
-        failures.retain(|_, t| t.checking > 0 || t.locked.is_some_and(|at| at.elapsed() < LOCKED_FOR) || t.last.is_some_and(|at| at.elapsed() < LOCKED_FOR));
+fn forget_old_tries(failures: &mut Failures) {
+    if failures.tries.len() > TRIES_KEPT {
+        failures.tries.retain(|_, t| t.checking > 0 || t.locked.is_some_and(|at| at.elapsed() < LOCKED_FOR) || t.last.is_some_and(|at| at.elapsed() < LOCKED_FOR));
+    }
+    // A name signed in somewhere is kept: only names with accounts are, so they are few.
+    if failures.names.len() > TRIES_KEPT {
+        failures.names.retain(|_, n| n.checking > 0 || !n.known.is_empty() || n.since.is_some_and(|at| at.elapsed() < NAME_WINDOW));
     }
 }
 
@@ -1017,15 +1048,17 @@ impl Accounts {
     /// checked for it as may still go wrong (so tries sent at once can't try more than MAX_FAILURES
     /// before the lock), or while `CHECKS_FROM_ONE` are being checked from where it came, under any
     /// name (so one address can't take the line every sign-in waits in). A wrong one counts, and
-    /// the MAX_FAILURES-th locks the key for LOCKED_FOR; a right one clears it. `check` says
-    /// whether it was right, or that it couldn't be checked (the server busy), which counts as
-    /// neither.
+    /// the MAX_FAILURES-th locks the key for LOCKED_FOR; a right one clears it. Signing in has a
+    /// ceiling per name too, from every address together (`NAME_MAX_WRONG`). `check` says whether
+    /// it was right, or that it couldn't be checked (the server busy), which counts as neither.
     fn counted(&self, (what, from): (String, String), wrong: &str, check: impl FnOnce() -> Result<bool, String>) -> Result<bool, String> {
         let setting_up = what == SETTING_UP;
+        // A password change is counted by name already (`CHANGING`), and setup codes have none.
+        let ceiling = !setting_up && from != CHANGING;
         let key = tried(&what, &from);
         {
             let mut failures = hold(&self.failures);
-            forget_old_tries(&mut failures.tries);
+            forget_old_tries(&mut failures);
             if failures.from.get(&key.1).is_some_and(|n| *n >= CHECKS_FROM_ONE) {
                 return Err("the server is busy checking others sent from your address: try again in a moment".into());
             }
@@ -1037,6 +1070,17 @@ impl Accounts {
             if tries.wrong + tries.checking >= MAX_FAILURES {
                 return Err("too many tries at once: wait a moment, then try again".into());
             }
+            if ceiling {
+                let name = failures.names.entry(key.0.clone()).or_default();
+                if name.since.is_none_or(|at| at.elapsed() >= NAME_WINDOW) {
+                    (name.wrong, name.since) = (0, Some(Instant::now()));
+                }
+                if name.wrong + name.checking >= NAME_MAX_WRONG && !name.known.contains(&key.1) {
+                    return Err(format!("too many wrong {wrong} for this name, from many places: sign in from where you did before, or wait a quarter of an hour"));
+                }
+                name.checking += 1;
+            }
+            let tries = failures.tries.entry(key.clone()).or_default();
             tries.checking += 1;
             *failures.from.entry(key.1.clone()).or_default() += 1;
         }
@@ -1046,6 +1090,19 @@ impl Accounts {
             *n -= 1;
             if *n == 0 {
                 failures.from.remove(&key.1);
+            }
+        }
+        if let Some(name) = failures.names.get_mut(&key.0).filter(|_| ceiling) {
+            name.checking -= 1;
+            match right {
+                Ok(false) => name.wrong += 1,
+                Ok(true) if !name.known.contains(&key.1) => {
+                    name.known.push(key.1.clone());
+                    if name.known.len() > KNOWN_KEPT {
+                        name.known.remove(0);
+                    }
+                }
+                _ => {}
             }
         }
         let tries = failures.tries.entry(key.clone()).or_default();
@@ -1793,16 +1850,21 @@ mod tests {
         let mut held = a.failures.lock().unwrap();
         let kept: Vec<usize> = held.tries.keys().map(|(what, _)| what.len()).collect();
         assert!(kept.len() >= 2 && kept.iter().all(|&n| n == 64), "each try kept under a digest: {kept:?}");
-        let failures = &mut held.tries;
+        assert!(held.names.keys().all(|what| what.len() == 64), "each name's ceiling under a digest too");
         let old = Instant::now() - LOCKED_FOR - Duration::from_secs(1);
+        let long_ago = Instant::now() - NAME_WINDOW - Duration::from_secs(1);
         for i in 0..=TRIES_KEPT {
-            failures.insert(tried(&format!("name-{i}"), "203.0.113.9"), Tries { wrong: 1, last: Some(old), ..Tries::default() });
+            held.tries.insert(tried(&format!("name-{i}"), "203.0.113.9"), Tries { wrong: 1, last: Some(old), ..Tries::default() });
+            held.names.insert(tried(&format!("name-{i}"), "").0, NameTries { wrong: 1, since: Some(long_ago), ..NameTries::default() });
         }
-        failures.insert(tried("fresh", "203.0.113.9"), Tries { wrong: 1, last: Some(Instant::now()), ..Tries::default() });
-        forget_old_tries(failures);
-        assert!(failures.contains_key(&tried("fresh", "203.0.113.9")), "a recent try is kept");
-        assert!(failures.contains_key(&tried("ada", "203.0.113.9")), "and a lock");
-        assert!(failures.len() < 10, "the old ones forgotten: {}", failures.len());
+        held.tries.insert(tried("fresh", "203.0.113.9"), Tries { wrong: 1, last: Some(Instant::now()), ..Tries::default() });
+        held.names.insert(tried("fresh", "").0, NameTries { wrong: 1, since: Some(Instant::now()), ..NameTries::default() });
+        forget_old_tries(&mut held);
+        assert!(held.tries.contains_key(&tried("fresh", "203.0.113.9")), "a recent try is kept");
+        assert!(held.tries.contains_key(&tried("ada", "203.0.113.9")), "and a lock");
+        assert!(held.tries.len() < 10, "the old ones forgotten: {}", held.tries.len());
+        assert!(held.names.contains_key(&tried("fresh", "").0) && held.names.contains_key(&tried("ada", "").0), "a name tried in its window, and one signed in, are kept");
+        assert!(held.names.len() < 10, "the old names forgotten: {}", held.names.len());
     }
 
     /// No more than `CHECKS_AT_ONCE` passwords are checked at once; one more waits its turn, and
@@ -2049,6 +2111,59 @@ mod tests {
         is_counted("signing in", |right| a.sign_in_from("ada", if right { PW } else { "wrong password!" }, here).map(drop));
         a.sign_in_from("ada", PW, elsewhere).expect("signing in, from elsewhere");
         is_counted("the current password, to change it", |right| a.change_password("ada", if right { PW } else { "wrong password!" }, "a new good password", Some(&first)));
+    }
+
+    /// However a way in's guesses are spread, they have a ceiling. Signing in: NAME_MAX_WRONG wrong
+    /// passwords for a name, each address under MAX_FAILURES, refuse it from a new address, the
+    /// right password too, sent at once or one by one; where it signed in before, it still signs
+    /// in, and another name isn't touched. A password change is counted by name wherever it comes
+    /// from; a setup code is counted by address only (`NAME_MAX_WRONG` says why).
+    #[test]
+    fn a_ways_in_guesses_have_a_ceiling_however_they_are_spread() {
+        let at = |n: u32| format!("198.51.100.{n}");
+        let spread = |guess: &dyn Fn(&str) -> String| {
+            // MAX_FAILURES - 1 from each address: none of them locks.
+            (0..NAME_MAX_WRONG).map(|n| guess(&at(n / (MAX_FAILURES - 1)))).collect::<Vec<_>>()
+        };
+        let (a, _) = set_up();
+        a.invite("bob", "editor", None, "ada").map(|link| a.accept(&link, PW).unwrap()).unwrap();
+        a.sign_in_from("ada", PW, "203.0.113.9").expect("ada signs in from their usual address");
+        let refused = spread(&|from| a.sign_in_from("ada", "wrong password!", from).unwrap_err());
+        assert!(refused.iter().all(|e| e.contains("don't match")), "each told so: {refused:?}");
+        let new = "192.0.2.77";
+        let past = a.sign_in_from("ada", PW, new).unwrap_err();
+        assert!(past.contains("too many wrong passwords for this name"), "the right one, from a new address: {past}");
+        assert!(a.sign_in_from("ada", "wrong password!", at(0).as_str()).unwrap_err().contains("for this name"), "from one that guessed");
+        assert!(a.sign_in_from("ada", PW, "203.0.113.9").is_ok(), "from where ada signed in before");
+        assert!(a.sign_in_from("bob", PW, new).is_ok(), "another name isn't touched");
+        // Once the window is over, a new address signs in again.
+        a.failures.lock().unwrap().names.get_mut(&tried("ada", "").0).unwrap().since = Some(Instant::now() - NAME_WINDOW);
+        assert!(a.sign_in_from("ada", PW, new).is_ok(), "the window over");
+        // Sent at once from as many addresses: no more than NAME_MAX_WRONG are checked.
+        let (b, _) = set_up();
+        let start = std::sync::Barrier::new(2 * NAME_MAX_WRONG as usize);
+        let checked = std::thread::scope(|s| {
+            let runs: Vec<_> = (0..2 * NAME_MAX_WRONG)
+                .map(|n| {
+                    let (b, start) = (&b, &start);
+                    s.spawn(move || {
+                        start.wait();
+                        b.sign_in_from("ada", "wrong password!", &format!("192.0.2.{n}")).unwrap_err()
+                    })
+                })
+                .collect();
+            runs.into_iter().map(|r| r.join().unwrap()).filter(|e| e.contains("don't match")).count()
+        });
+        assert!(checked <= NAME_MAX_WRONG as usize, "{checked} checked at once");
+        // A password change: by name, wherever it comes from.
+        let (c, first) = set_up();
+        is_counted("the current password, to change it", |right| c.change_password("ada", if right { PW } else { "wrong password!" }, "a new good password", Some(&first)));
+        // A setup code: by address only.
+        let d = Accounts::memory();
+        let code = d.setup_code().unwrap();
+        let refused = spread(&|from| d.setup_from("WRONG-CODE", "ada", PW, from).unwrap_err());
+        assert!(refused.iter().all(|e| !e.contains("too many")), "{refused:?}");
+        d.setup_from(&code, "ada", PW, "192.0.2.77").expect("the setup code, from a new address");
     }
 
     /// The tripwire every test that hashes or checks a password runs: none does it holding one of

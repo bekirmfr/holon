@@ -403,8 +403,11 @@ of "payout": each step of an approval is someone else's`).
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the
   name for a minute, from the address they came from (its owner still signs in from elsewhere;
   behind a proxy, the address it forwarded for if the server trusts it, `--trust-proxy`, and
-  otherwise every address is the proxy's), and five wrong setup codes lock setting up from
-  that address the same way. A few passwords are checked at once: past that, a sign-in waits its
+  otherwise every address is the proxy's). Twenty wrong for one name in a quarter of an hour, from
+  every address together, refuse it for the rest of that quarter from each address it hasn't
+  signed in from, so guesses spread over many addresses are capped and its owner still signs in
+  where they did before. Five wrong setup codes lock setting up from that address the same way
+  (by address only: no address has set the server up before). A few passwords are checked at once: past that, a sign-in waits its
   turn, and past thirty seconds is told the server is busy (503). While 64 wait, or 8 from one
   address (an IPv6 address by its /64), whatever the names, one more is told so at once: a flood
   of sign-ins keeps sign-ins waiting, never the rest of what the server answers. An invite link is
