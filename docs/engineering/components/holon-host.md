@@ -41,11 +41,13 @@ whole evaluation: an `http_request` (or a call to another flow) whose request is
 observer for its answer; those with none yet are collected, sent between rounds by a `Performer`
 (`perform_all`: hosts in parallel, at most `per_host_concurrency` to each, calls to one flow one at
 a time), and the flow is evaluated again with the answers. A round that asks for nothing new is
-the last, and only its effects are performed; a run still waiting at an `await` performs nothing.
+the last, and only its effects are performed; a run still waiting at an `await` performs no
+effect (the requests of its rounds before have gone out).
 Before anything is sent, `Waits::claim` lets the host claim the keys the run read
 ([key claims L4](../../L4s/key-claims-L4.md)); a claim overtaken ends the attempt with nothing
-sent. Past `max_requests` or `run_budget` the run fails and performs nothing, and no request
-outlasts the run (each round's `request_timeout` is cut to what is left). `prior` answers an
+sent. Past `max_requests` or `run_budget` the run fails: its effects aren't performed and that
+round's requests aren't sent, but the rounds before it have sent theirs. No request outlasts
+the run (each round's `request_timeout` is cut to what is left). `prior` answers an
 earlier part of the same run from its record (a resumed run), and `Recorded` answers a whole run
 from its record (replay and `holon verify`).
 

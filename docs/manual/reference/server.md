@@ -35,9 +35,11 @@ In the data folder (`--data`, `HOLON_DATA`):
 | `holon.toml` | the policy | `--policy` |
 | `host.key` | the key resume tokens are signed with | `--host-key` |
 
-Every file the server writes there is readable only by the server's user, and a data folder it
-makes is that user's alone. One there already that other users can read is said at start, with
-the command that makes it yours alone (`chmod 700 …`); the server leaves it as it is. The server
+Every file the server writes there is readable only by the server's user. On Unix a data folder
+it makes is that user's alone too, and one there already that other users can read is said at
+start, with the command that makes it yours alone (`chmod 700 …`); the server leaves it as it is.
+On Windows a folder it makes takes the access rules of the folder it is in, and nothing is said of
+one open to others: put the data folder where only the server's user can read. The server
 refuses to start when a file with secrets or tokens in it can't be read, rather than starting
 without it.
 
@@ -131,7 +133,7 @@ and in the log as it ends.
 `holon.toml` in the data folder (or `--policy PATH`) says what this server may ever grant, and
 what it grants without asking. A missing or empty file means the defaults. It is read at start;
 `POST /permissions/reload` reads it again (a file that doesn't parse then changes nothing). The
-editor shows it but doesn't edit it.
+editor shows it, and changes only its `[storage]` settings (the admin page).
 
 ```toml
 [limits]
@@ -216,8 +218,8 @@ to the current ceilings whenever the server loads.
 Everyone signs in; there is no trust for requests from this machine. A new server prints a
 setup code (`XXXX-XXXX`, or `HOLON_SETUP_CODE`); whoever enters it in the editor is the first
 admin. Until then the server answers everything but setting up with 403, but for an agent or a
-service made already (below); five wrong codes in a row refuse setting up for a minute, so the code
-can't be guessed.
+service made already (below); five wrong codes in a row from one address refuse setting up from
+there for a minute, so the code can't be guessed at speed.
 
 | Role | May |
 |---|---|
@@ -587,13 +589,15 @@ holds a head the server's disk lost. See [Checking runs](../guides/checking-runs
 
 Every run has a time budget (25 seconds for a request, 60 for a clock run or a new file, by
 default), a number
-of outbound requests, and size limits on what it sends and receives. A run past its budget fails,
-and performs nothing. The defaults and ceilings are in [Permissions](permissions.md#limits).
+of outbound requests, and size limits on what it sends and receives. A run past its budget fails:
+its writes and sends aren't performed, though the requests it made before then have gone out.
+The defaults and ceilings are in [Permissions](permissions.md#limits).
 
 Every run's memory together, with the server's caches, is held to `--max-memory` (half the
 machine's memory by default, or three quarters of what its container may hold, whichever is
 less; `holon serve` says what it holds itself to as it starts). A run that is going on as the
-server passes it fails, its error ending `(--max-memory)`, and performs nothing; a request that
-comes meanwhile is answered 503 with `Retry-After: 1`. A parse of a big body (`JSON.parse`,
-`csv_parse`, `xml_parse`) stops as it passes either the run's `max_memory` or the server's, not
-once it is done.
+server passes it fails, its error ending `(--max-memory)`, and its writes and sends aren't
+performed (the requests it made before then have gone out); a request that comes meanwhile is
+answered 503 with `Retry-After: 1`. A parse of a big body (`JSON.parse`, `csv_parse`,
+`xml_parse`) stops as it passes either the run's `max_memory` or the server's, not once it is
+done.

@@ -182,8 +182,8 @@ tick. Each handler is a run of its own, and the state is the flow's, shared by a
 `/status` reads what the clock wrote. `state.visits = …` in the route never looks at the request,
 and is still the route's: a handler is everything tied to its trigger.
 
-`export const reset = action(…)` is run by hand, by its name, from the editor or a script, never
-from the network: it zeroes the count when a person runs it. See [Actions](../guides/actions.md)
+`export const reset = action(…)` is run by its name, from the editor or a script, or started by
+the flow's own handlers; no request reaches it by a path of its own: it zeroes the count when a person runs it. See [Actions](../guides/actions.md)
 and the [reference](reference.md#clocks-files-and-actions).
 
 ## Calling other services
@@ -437,8 +437,8 @@ route.post("/report", (req) => {
 ```
 
 The flow names the folders, never a path. A flow can also run on files instead of requests:
-`on.file.created(drop, (f) => { … })` runs once for each new file in the folder `drop`, with the
-file's handle as `f`. See [Files on the host](../guides/files.md).
+`on.file.created(drop, (f) => { … })` runs for each file new or changed in the folder `drop`, once it
+stops changing, with the file's handle as `f`. See [Files on the host](../guides/files.md).
 
 ## Databases
 

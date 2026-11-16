@@ -109,11 +109,11 @@ fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry,
 
 /// Why the log withheld what `entry`'s run computed from a secret, so that it isn't run again:
 /// which leaf, from which secret, and why no mark stands for what it gave. The leaf is one that
-/// makes something of a secret (`SecretFed::makes`) and ran; one whose output is declared as
-/// something a mark can't be (a number, a true or false, a list) is named before one that gives
-/// a text, which may have been too short, or held by a step too large to keep even with its
-/// marks (`secrets::Measured`): the line doesn't say which. A run that computed where the log
-/// follows no steps says that.
+/// computes something of its own from a secret (`SecretFed::computes`) and ran; one whose output
+/// is declared as something a mark can't be (a number, a true or false, a list) is named before
+/// one that gives a text, which may have been too short, or held by a step too large to keep
+/// even with its marks (`secrets::Measured`): the line doesn't say which. A run that computed
+/// where the log follows no steps says that.
 fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::SecretFed, entry: &LogEntry) -> String {
     if !fed.followed_to(recorder::Timer::DEPTH) {
         return "it computed with a secret inside a function applied to each item, inside a module, or deeper than the log records a run's steps: the values made there can't each be marked, so the log withholds them, and only the secret could compute them again".into();
@@ -134,7 +134,7 @@ fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::
             _ => None,
         })
     };
-    let ran: Vec<(&[u32], &holon_core::Unit)> = fed.makers().filter(|path| entry.timeline.iter().any(|t| t.path == *path)).filter_map(|path| Some((path, unit_at(path)?))).collect();
+    let ran: Vec<(&[u32], &holon_core::Unit)> = fed.computing().filter(|path| entry.timeline.iter().any(|t| t.path == *path)).filter_map(|path| Some((path, unit_at(path)?))).collect();
     let Some((path, unit, what)) = ran.iter().find_map(|(path, unit)| Some((*path, *unit, Some(gives(unit, path)?)))).or(ran.first().map(|(path, unit)| (*path, *unit, None))) else {
         return WITHHELD_NODE.into();
     };
@@ -2799,10 +2799,11 @@ const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR
   unbroken, that every unit is what its hash says, and that every run, run again from its log
   entry, produces what the log says it did. Exits 0 when it all checks, 1 when anything doesn't,
   3 when nothing fails but not everything was checked: some runs couldn't be run again, or some
-  runs' states checked (it says which, and why), 2 when it can't read the export.
+  runs' states couldn't be checked (it says which, and why), 2 when it can't read the export.
 
-  --head HEX               a head a witness holds: check it is in the export, so no run up to
-                           it was changed or removed
+  --head HEX               a head a witness holds: check it is in the export, so no run in the
+                           export, from its oldest up to that head, was changed or removed
+                           (of runs a trimmed log no longer holds, it says nothing)
   --files DIR              where the files the runs read are, for those whose log keeps only
                            their hashes: each is found by its hash, wherever it is under DIR
   --data DIR               for an export the server keeps sealed (a backup's archive, a removed
@@ -3257,6 +3258,21 @@ examples:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guards: the command line reference says what `holon verify --help` says a witnessed head
+    /// proves, and what it doesn't.
+    /// Why: the two were written apart; the reference said only that the head is in the export,
+    /// and the usage was corrected without it (audit R49).
+    #[test]
+    fn the_references_head_proves_what_the_usage_says() {
+        let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let usage = words(USAGE);
+        let head = usage.split("--head HEX a head a witness holds: check it is in the export, ").nth(1).expect("the usage's --head");
+        let proves = head[..head.find("--files").expect("--files after --head")].trim_end();
+        let cli = words(&std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/manual/reference/cli.md")).unwrap());
+        let said = format!("`--head` checks that a head a witness holds is in the export, {proves}.");
+        assert!(cli.contains(&said), "docs/manual/reference/cli.md's holon verify should say: {said}");
+    }
 
     /// Guards: what an entry says of its secrets holds together (`listed_secrets`). Its list is a
     /// kind and a commitment for a version it names; a mark of the version a run was given of a

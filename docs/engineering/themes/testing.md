@@ -145,8 +145,8 @@ A slower path that is still right would pass every test above; these fail instea
   deadline), a panic asked for in the run and in the request's handler before it. Calm, faulted,
   calm again: the run fails, its caller is told 500, it is logged as failed, the deployment beside
   it runs, and what drives runs goes on. It replaced the test of the two request rows alone.
-- `one_deployments_log_doesnt_hold_up_another`: another deployment answers in under 400 ms while a
-  busy log is written and cut back.
+- `one_deployments_log_doesnt_hold_up_another`: another deployment answers while a busy
+  deployment's log lock is held (it waits on the lock's release, not on a time).
 - `a_fire_in_progress_does_not_stall_the_table`: a regression (a persist held the table's lock
   waiting on a state lock). The other of its kind, a panic under a state lock that poisoned it for
   every later request (an effect written to state), is a row of
