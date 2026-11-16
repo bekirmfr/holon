@@ -893,10 +893,12 @@ epilogue, never read\r\n";
         ];
         for (row, message) in rows {
             // Read on a thread of its own, so a read that goes on fails the row rather than
-            // holding the suite (what is left of it ends with the test binary).
+            // holding the suite (what is left of it ends with the test binary). A minute, as
+            // holon's tests wait for what is to come (`EVENTUALLY`): a guard against a hang,
+            // not a measure.
             let (sent, read) = std::sync::mpsc::channel();
             std::thread::spawn(move || sent.send(received(message.as_bytes(), "")));
-            let m = read.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| panic!("{row}: not read in 10 s"));
+            let m = read.recv_timeout(std::time::Duration::from_secs(60)).unwrap_or_else(|_| panic!("{row}: not read in a minute"));
             if row == "many parts of one name" {
                 let Some(Value::Record(attachments)) = field(&m, "attachments") else { panic!("{row}") };
                 assert_eq!(attachments.len(), MAX_PARTS, "{row}: the parts walked");

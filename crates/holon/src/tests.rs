@@ -13002,7 +13002,6 @@ fn remittance_mail_settles_invoices_from_authenticated_mail_and_moves_each_messa
 #[test]
 fn a_mailbox_holds_no_other_and_a_message_that_cuts_its_look_off_is_read_twice() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Instant;
     let imap = imap::stand_in::start("remit", "s3cret", true);
     // A server that takes the connection and never says a word.
     let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -13049,17 +13048,14 @@ fn a_mailbox_holds_no_other_and_a_message_that_cuts_its_look_off_is_read_twice()
     put("r1");
     let quiet = text.replace("import remit from \"mail:remit\"", "import silent from \"mail:silent\"").replace("on.mail(remit,", "on.mail(silent,").replace("flow(\"remittance-mail\", { port: 8188 })", "flow(\"remittance-silent\", { port: 8189 })");
     let silent_slug = deploy_text(&state, &quiet, "");
-    let started = Instant::now();
     let mut first = inbox::tick(&state.store, &state.deployments, &state.deployments_path, &mut looks, true);
-    assert!(started.elapsed() < Duration::from_secs(5), "a tick waits for no look: {:?}", started.elapsed());
     let at = |slug: &str, mail: &str| (slug.to_string(), mail.to_string());
+    // The silent server holds its look until it is let go, below: the tick came back first.
+    assert!(first.iter().any(|(key, look)| *key == at(&silent_slug, "silent") && !look.is_finished()), "a tick waits for no look");
     let answered = first.iter().position(|(key, _)| *key == at(&remit, "remit")).expect("a look at the mailbox that answers");
     first.remove(answered).1.join().unwrap();
     assert_eq!(runs(), 1, "its message ran while the other's look waits");
-    let connected = Instant::now();
-    while held.lock().unwrap().is_empty() && connected.elapsed() < Duration::from_secs(5) {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    eventually("the silent server's look is connected", || !held.lock().unwrap().is_empty());
     assert_eq!(held.lock().unwrap().len(), 1, "the silent server's look is connected");
     assert!(inbox::going(&looks).contains(&at(&silent_slug, "silent")), "and still waits");
     assert!(inbox::tick(&state.store, &state.deployments, &state.deployments_path, &mut looks, false).is_empty(), "no second look at a mailbox one is at, and the other isn't due");
