@@ -1637,8 +1637,10 @@ it reaches it as an input after the item (§5.9): `tax` here.
   is imported once.
 - **Identifiers** are TypeScript's. Any name may be bound; names aren't in the hash (§7), except a
   function's parameters, which are its ports.
-- **Numbers:** a finite decimal: `0`, `86400`, `2.5`, `1e3`, `1_000_000` (the separators are left
-  out of the value). A minus before a number is part of it (`-1`); before any other value it is
+- **Numbers:** a finite decimal: `0`, `86400`, `2.5`, `1e3`, `1_000_000`. A number is its value,
+  however it is spelled: `1e3`, `1_000` and `0x3e8` are one number, `1000`, and `0.10` is `0.1`,
+  in the flow as JavaScript writes the value; a key `1e3` is the key `"1000"`, as in JavaScript.
+  A minus before a number is part of it (`-1`); before any other value it is
   `x * -1` (§5.6). No infinity, no NaN, since `const` refuses them.
 - **Texts:** `"…"` or `'…'` with JavaScript's escapes, and template literals, `` `Hello, ${name}` ``,
   whose `${…}` parts are any expression (§5.5).
@@ -2187,7 +2189,7 @@ Rules the table implies:
 
 | Written | Lowers to |
 |---|---|
-| `1`, `-2.5`, `1_000` | `const{type: Number, value: "<as written, without separators>"}` |
+| `1`, `-2.5`, `1_000` | `const{type: Number, value: "<the value as JavaScript writes it>"}`: `1_000` and `1e3` are `"1000"`, `0.10` is `"0.1"`, so a number's spelling, which `fmt` rewrites, is never part of a unit |
 | `"text"`, `'text'` | `const{type: Text, value: …}` |
 | `true`, `false` | `const{type: Boolean, value: …}` |
 | `` `Hello, ${name}!` `` | one `concat` over the pieces: `const` for each literal piece, `as_text(expr)` for each `${…}`; a template that is one `${expr}` with no literal text is `as_text(expr)` alone, and one with no `${…}` is a text |
@@ -2938,7 +2940,9 @@ decides.
   semicolons, 100 columns, a list that doesn't fit broken one item to a line with a trailing comma,
   an object the text broke kept broken, a function passed last hugged by its call, a chain of
   calls that doesn't fit broken one call to a line. It keeps every comment and a blank line where
-  the text had one, and an object's key quoted or not as written. It rewrites `var` to `const` (or
+  the text had one, an object's key quoted or not as written, and the parentheses around a side
+  that holds the same operator, `(a + b) + c` or `a && (b && c)` (§5.6), which Prettier takes out
+  or nests the other way. It rewrites `var` to `const` (or
   `let` where it is assigned again) and `==` to `===`, outside a `js()` body, which it lays out as
   JavaScript. It writes a text only once that text is the same program but for its layout and
   compiles to the same flow but for its `js()` bodies' text, its comments all there.

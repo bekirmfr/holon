@@ -3441,7 +3441,7 @@ impl<'s, 't> Reader<'s, 't> {
             js::Expression::UnaryExpression(u) => match u.operator {
                 js::UnaryOperator::LogicalNot => ok(ExprKind::Not(Box::new(self.cond(&u.argument)?))),
                 js::UnaryOperator::UnaryNegation => match self.unwrap(&u.argument) {
-                    js::Expression::NumericLiteral(n) => ok(ExprKind::Number { value: -n.value, text: format!("-{}", number_text(n)) }),
+                    js::Expression::NumericLiteral(n) => ok(ExprKind::Number { value: -n.value, text: holon_core::number_text(-n.value) }),
                     // `x * -1`, exact at `-0` where `0 - x` isn't; in parentheses, one node.
                     _ => {
                         let x = self.expr(&u.argument)?;
@@ -5387,15 +5387,12 @@ fn declares_method(m: &str) -> bool {
     holon_core::METHODS.contains(&m)
 }
 
-/// A number as the lowering reads it: its digits as written, without `_` separators.
+/// A number as the lowering reads it: its value, spelled as JavaScript spells it
+/// (`holon_core::number_text`), whatever the text wrote: `0.10`, `.1` and `1e-1` are `0.1`, `1e3`
+/// and `1_000` are `1000`. The spelling is layout, which fmt rewrites, and a key `1e3` is the
+/// key `"1000"` in JavaScript too.
 fn number_text(n: &js::NumericLiteral) -> String {
-    match &n.raw {
-        Some(raw) if n.base == js::NumberBase::Decimal || n.base == js::NumberBase::Float => raw.as_str().replace('_', ""),
-        _ => {
-            let v = n.value;
-            if v.fract() == 0.0 && v.abs() < 1e15 { format!("{}", v as i64) } else { format!("{v}") }
-        }
-    }
+    holon_core::number_text(n.value)
 }
 
 /// A number as written, `2.5` or `1e3`: digits, a decimal part, an exponent.
@@ -6310,6 +6307,33 @@ mod tests {
         // And fmt lays it out, as the same flow (which it checks), once for good.
         let laid = super::super::format::format(ts).unwrap_or_else(|e| panic!("{what}: fmt: {e}\n{ts}"));
         assert_eq!(super::super::format::format(&laid).unwrap_or_else(|e| panic!("{what}: fmt again: {e}\n{laid}")), laid, "{what}: fmt again changed it");
+    }
+
+    /// **Guards:** a number literal is its value however it is spelled: `0.10`, `.1` and `1e-1`
+    /// are one unit, `1e3`, `1_000` and `0x3e8` another, negated too, and a key `1e3` is the key
+    /// `"1000"`, as in JavaScript.
+    /// **Why:** the lowering kept a number as written, so `0.10` and `0.1` were two units, and fmt,
+    /// which writes `0.1`, refused the first as "a mistake in fmt"; `({ 1e3: "a" })[1000]` was
+    /// absent (audit R48, E5).
+    /// **If it fails:** the spelling named lowers to another unit than JavaScript's own spelling
+    /// of its value.
+    #[test]
+    fn a_number_is_its_value_however_it_is_spelled() {
+        let text = |n: &str| format!("import {{ flow, route }} from \"holon\"\n\nflow(\"n\", {{ port: 8000 }})\n\nroute.get(\"/n\", () => [{n}, -{n}, {{ {n}: \"key\" }}])\n");
+        for (plain, spellings) in [
+            ("0.1", &["0.10", ".1", "1e-1", "1E-1", "0.1_0"][..]),
+            ("1000", &["1e3", "1E3", "1_000", "0x3e8", "0o1750", "0b1111101000", "1000.0", "1000.", "1e+3"]),
+            ("0.5", &[".5", "5e-1", "0.50", "0.500_0"]),
+            ("1e+21", &["1e21", "1000000000000000000000"]),
+            ("1.5e-7", &["0.00000015", "15e-8"]),
+        ] {
+            for s in spellings {
+                same_unit(&format!("{s} as {plain}"), &text(s), &text(plain));
+            }
+        }
+        // `-0` is `0`, as core's values are: the two are equal.
+        let alone = |n: &str| format!("import {{ flow, route }} from \"holon\"\n\nflow(\"n\", {{ port: 8000 }})\n\nroute.get(\"/n\", () => {n})\n");
+        same_unit("-0 as 0", &alone("-0"), &alone("0"));
     }
 
     /// Each construct, beside the same flow written plainly: a `const` a node, a ternary for an
