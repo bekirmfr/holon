@@ -161,6 +161,16 @@
   `holon replay`, the agent's tool and the editor); and the server runs two at a time, a third
   answered 503. A replay needs no approval and anyone who may read a deployment starts one, an
   agent too: one could hold a thread of the control plane for hours.
+- **One mail stops no mailbox.** A message is read in time its size bounds, whatever it holds:
+  an encoded word in a subject, a name or a file name (`=?utf-8?q?…?=`) is read in one pass,
+  where one of many `=?` that didn't close read on to the end of the header for each (a 5 MB
+  subject took minutes), and a message's first 1,000 parts are read, the rest left out. Each
+  mailbox is looked at on a thread of its own, which the watcher doesn't wait for: a server that
+  doesn't answer, or a long message or run, holds that mailbox's next look and no other's, where
+  every mailbox's look waited for the slowest. And a message is noted taken up before it is read: a look cut off
+  before its run is over (a restart, a failure reading it) tries it once more, then moves it
+  without a run, on the timeline, where before it was read again at every look and after every
+  restart.
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

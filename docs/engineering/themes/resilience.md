@@ -70,9 +70,16 @@ deployment's log has its own lock, and the line is made before taking it.
   The pool runs as many runs as are computing, up to its 448 places, the cores shared among
   them; what one run may compute is its round's budgets (B5). A run whose caller went away is not
   stopped: it holds its place until it ends, within its run budget.
+- **Mailboxes.** Each mailbox's look is a thread of its own, which the watcher doesn't wait for
+  (`inbox.rs`): before, the looks were joined each tick, so one mailbox's server that didn't
+  answer (30 s a step), or one message long to read, held every other mailbox's look. A message
+  is read in one pass, whatever it holds (core's `mail::received`), and one whose look is cut off
+  twice is moved without a run, not read at every look and restart.
 - **Tests.** `nothing_a_run_computes_holds_up_the_data_plane` (`crates/holon/tests/data_plane.rs`),
   `one_deployments_log_doesnt_hold_up_another`, `a_fire_in_progress_does_not_stall_the_table`,
-  `no_deployments_callers_hold_more_of_the_data_plane_than_its_share`.
+  `no_deployments_callers_hold_more_of_the_data_plane_than_its_share`,
+  `a_mailbox_holds_no_other_and_a_message_that_cuts_its_look_off_is_read_twice`, and core's
+  `a_message_is_read_in_time_its_size_bounds_whatever_it_holds`.
 
 ### G2b. The server keeps to its memory and its open files
 

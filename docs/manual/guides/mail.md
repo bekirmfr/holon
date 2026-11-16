@@ -198,9 +198,13 @@ on.mail(support, (m) => {
 | `message_id` | its `Message-ID` without the `<>`; for a message with none, `sha256:` and the hash of its bytes |
 | `text` | its text, `""` when it has none |
 | `html` | its HTML, when it has some |
-| `attachments` | a record of each attachment's file name to its content: a text for text, JSON, XML and CSV, bytes for anything else |
+| `attachments` | a record of each attachment's file name to its content: a text for text, JSON, XML and CSV, bytes for anything else; two of one name are `a.csv` and `a (2).csv` |
 | `authenticated` | `true` when the mailbox's own server says the domain in `From:` sent it |
 | `verdict` | `{ spf, dkim, dmarc }` as that server wrote them, `"none"` for each it didn't |
+
+Anyone can send a mailbox a message, and it is read before its run has a budget, so it is read in
+time its size bounds, whatever it holds: its first 1,000 parts (texts, HTML and attachments) are
+read, and those after them left out; parts nested past 20 deep are left out too.
 
 ### Who sent it
 
@@ -221,9 +225,15 @@ arrival: one a sender wrote further down, or under another name, is never believ
   moved to `--done`. A run that failed is moved too: its record says why.
 - What the folder holds when the flow is deployed isn't run on: the deployment's timeline says
   `listens to the mailbox of remit (…): what it holds now (3 messages) isn't run on`.
+- Each mailbox is looked at on its own: a server that doesn't answer (30 seconds a step), a
+  long message or a long run hold back that mailbox's next look, and no other's.
 - Never twice: a message is noted before it is moved, so one whose move a crash cut off is moved
   at the next look, not run on again; and a second copy of one (its `message_id` among the last
   1,000 run on) is moved without a run, on the timeline.
+- A message is noted, too, once it is fetched and before it is read: if the look is cut off
+  before its run is over (the server restarts, or reading it fails), the next look tries it
+  again. Cut off twice, it is moved without a run, on the timeline, so a message that brings its
+  look down isn't read at every look: move it back to the folder to run it.
 - A message over 10 MiB is moved without a run, on the timeline.
 - A look that can't log in, or loses the connection, is tried at the next; the timeline says so
   once, and again when the mailbox is read again.

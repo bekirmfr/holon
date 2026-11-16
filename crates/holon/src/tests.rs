@@ -12177,6 +12177,122 @@ fn remittance_mail_settles_invoices_from_authenticated_mail_and_moves_each_messa
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **Guards:** a look at a mailbox holds no other, and a message that cuts its look off is read
+/// twice, not at every look. Two deployments listen to a mailbox each: one at a server that takes
+/// the connection and never answers, one at a server that does. A tick of the watcher returns at
+/// once; the second mailbox's message runs while the first's look still waits, and a tick after
+/// starts no second look at it. Then, on the second mailbox: a message whose look is cut off as it
+/// takes it up (as a crash would) is tried again at the next look; cut off twice, it is moved
+/// without a run and the timeline says so; cut off once, the next look runs it. Once the silent
+/// server lets go, its look's failure is noted at the next tick.
+/// **Why:** the looks were joined each tick, so one mailbox (a server that doesn't answer, 30 s a
+/// step; a message long to read) held every other's; and a message was noted only after it was
+/// read and run, so one that brought its look down (or the server) was read again at every look
+/// and after every restart.
+/// **If it fails:** the tick waits for a look again (the first assertion), starts a look at a
+/// mailbox one is at already, a look cut off leaves no note of the message it took up (or one
+/// that ended leaves its mailbox marked as looked at), or the tries are counted off by one.
+#[test]
+fn a_mailbox_holds_no_other_and_a_message_that_cuts_its_look_off_is_read_twice() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
+    let imap = imap::stand_in::start("remit", "s3cret", true);
+    // A server that takes the connection and never says a word.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let silent_port = silent.local_addr().unwrap().port();
+    silent.set_nonblocking(true).unwrap();
+    let (held, stop) = (Arc::new(Mutex::new(Vec::new())), Arc::new(AtomicBool::new(false)));
+    let acceptor = std::thread::spawn({
+        let (held, stop) = (Arc::clone(&held), Arc::clone(&stop));
+        move || {
+            while !stop.load(Ordering::SeqCst) {
+                match silent.accept() {
+                    Ok((conn, _)) => held.lock().unwrap().push(conn),
+                    Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                }
+            }
+        }
+    });
+    let dir = std::env::temp_dir().join(format!("holon-imap-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    // Both bound where a server answers (a binding logs in), the second then pointed at the silent one.
+    let sources = |silent: u16| format!("HOLON_SECRET_REMIT_IMAP=imap://remit:s3cret@127.0.0.1:{}\nHOLON_SECRET_SILENT_IMAP=imap://remit:s3cret@127.0.0.1:{silent}\n", imap.port);
+    std::fs::write(&env, sources(imap.port)).unwrap();
+    let mut state = claims_state("");
+    let mails = mails::Mails::memory().with_sources(secret_sources::Sources::new(Some(env.clone())).unwrap());
+    state.folders = Arc::new(folders::Folders::memory().with_mails(mails));
+    state.folders.mails.serve(Arc::clone(&state.deployments));
+    for (name, url) in [("remit", "env:HOLON_SECRET_REMIT_IMAP"), ("silent", "env:HOLON_SECRET_SILENT_IMAP")] {
+        let bind = serde_json::json!({ "name": name, "imap": url, "verdict_from": "mx.acme.com" });
+        assert_eq!(route(&state, &req("POST", "/admin/mails", serde_json::to_vec(&bind).unwrap())).status_code, 200);
+    }
+    std::fs::write(&env, sources(silent_port)).unwrap();
+    let text = include_str!("../../holon-author/samples/remittance-mail.holon.ts");
+    let remit = deploy_text(&state, text, "");
+    let mut looks = inbox::Looks::default();
+    let look = |looks: &mut inbox::Looks| inbox::run_mail(&state.store, &state.deployments, &state.deployments_path, looks);
+    look(&mut looks);
+    let runs = || log_entries(&state, &remit).iter().filter(|e| e["kind"] == "mail").count();
+    let events = |slug: &str| body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    let put = |id: &str| imap.folders.lock().unwrap().put("INBOX", &remittance(id, "billing@customer.example", "mx.acme.com", "INV-1,100.00"));
+    let held_by = |folder: &str| imap.folders.lock().unwrap().of(folder).len();
+
+    // A mailbox whose server doesn't answer holds no other.
+    put("r1");
+    let quiet = text.replace("import remit from \"mail:remit\"", "import silent from \"mail:silent\"").replace("on.mail(remit,", "on.mail(silent,").replace("flow(\"remittance-mail\", { port: 8188 })", "flow(\"remittance-silent\", { port: 8189 })");
+    let silent_slug = deploy_text(&state, &quiet, "");
+    let started = Instant::now();
+    let mut first = inbox::tick(&state.store, &state.deployments, &state.deployments_path, &mut looks, true);
+    assert!(started.elapsed() < Duration::from_secs(5), "a tick waits for no look: {:?}", started.elapsed());
+    let at = |slug: &str, mail: &str| (slug.to_string(), mail.to_string());
+    let answered = first.iter().position(|(key, _)| *key == at(&remit, "remit")).expect("a look at the mailbox that answers");
+    first.remove(answered).1.join().unwrap();
+    assert_eq!(runs(), 1, "its message ran while the other's look waits");
+    let connected = Instant::now();
+    while held.lock().unwrap().is_empty() && connected.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(held.lock().unwrap().len(), 1, "the silent server's look is connected");
+    assert!(inbox::going(&looks).contains(&at(&silent_slug, "silent")), "and still waits");
+    assert!(inbox::tick(&state.store, &state.deployments, &state.deployments_path, &mut looks, false).is_empty(), "no second look at a mailbox one is at, and the other isn't due");
+
+    // A message whose look is cut off as it takes it up: tried again; cut off twice, moved
+    // without a run.
+    let r2 = put("r2");
+    for _ in 0..inbox::TRIES {
+        inbox::cut_off_at(&looks, r2);
+        look(&mut looks);
+        assert_eq!((runs(), held_by("INBOX")), (1, 1), "cut off: no run, not moved");
+        assert!(!inbox::going(&looks).contains(&at(&remit, "remit")), "a look cut off leaves its mailbox free");
+    }
+    assert!(events(&remit).contains("couldn't read the mailbox of remit: a look at it was cut off"), "{}", events(&remit));
+    look(&mut looks);
+    assert_eq!((runs(), held_by("INBOX"), held_by("Processed")), (1, 0, 2), "moved without a run");
+    let said = events(&remit);
+    assert!(said.contains(&format!("moved a message to Processed without a run: the {} looks that took it up were cut off before its run was over", inbox::TRIES)), "{said}");
+    // Cut off once: the next look runs it.
+    let r3 = put("r3");
+    inbox::cut_off_at(&looks, r3);
+    look(&mut looks);
+    assert_eq!(runs(), 1, "cut off");
+    look(&mut looks);
+    assert_eq!((runs(), held_by("INBOX"), held_by("Processed")), (2, 0, 3), "tried again, it runs");
+
+    // The silent server lets go: its look's failure is noted at the next tick.
+    stop.store(true, Ordering::SeqCst);
+    acceptor.join().unwrap();
+    held.lock().unwrap().clear();
+    for (_, look) in first {
+        look.join().unwrap();
+    }
+    assert!(inbox::going(&looks).is_empty());
+    let _ = inbox::tick(&state.store, &state.deployments, &state.deployments_path, &mut looks, false);
+    let said = events(&silent_slug);
+    assert!(said.contains("couldn't read the mailbox of silent"), "{said}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ── Mailboxes that log in with OAuth (host-capabilities 1.3c) ──
 
 /// A request to a support mailbox: from `from`, its verdict written by `verdict_by`.

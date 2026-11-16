@@ -95,13 +95,18 @@ alone, a file two handlers are for starting a run of each, logged as `file` unde
 
 `inbox.rs` is the same for a mail handler (`on.mail(remit, (m) => …)`, host-capabilities L4
 §5.2.4): a thread looks every second for the mailboxes running deployments listen to whose
-binding's `--every` has come round, logs in over IMAP (`imap.rs`; with a password, or with the
-OAuth token `oauth.rs` asks for and keeps, through `Mails::open_mailbox`), and starts one run for each
-message that came since, 20 a look at most, its message read by core (`mail::received`) the run's
-input as `MailArrival("remit")`. Once the run is over the message is moved to the binding's
-`--done`; its UID is noted first, so a move a crash cut off is made at the next look. What the
-folder holds at the first look is seen, not run on, and a second copy of a message is moved without
-a run. What each deployment has seen is in `mail-seen/<slug>/<mail>.json` beside its log; a look
+binding's `--every` has come round, and starts a look at each no look is at, on a thread of its
+own, waiting for none (`Looking` frees its mailbox however the look ends, and how it went is noted
+at the next tick): one mailbox's server that doesn't answer, or its long message or run, holds no
+other's. A look logs in over IMAP (`imap.rs`; with a password, or with the OAuth token `oauth.rs`
+asks for and keeps, through `Mails::open_mailbox`), and starts one run for each message that came
+since, 20 a look at most, its message read by core (`mail::received`, in one pass, 1,000 parts at
+most) the run's input as `MailArrival("remit")`. Once the run is over the message is moved to the
+binding's `--done`; its UID is noted first, so a move a crash cut off is made at the next look.
+Before a message is read it is noted taken up (`Seen::taken`, with how many looks took it), the
+note dropped once its run is over: a look cut off in between is tried again, and after `TRIES`
+(2) the message is moved without a run. What the folder holds at the first look is seen, not run
+on, and a second copy of a message is moved without a run. What each deployment has seen is in `mail-seen/<slug>/<mail>.json` beside its log; a look
 that fails is on the timeline once, and again when the mailbox reads again. Logged as `mail` under
 the label.
 

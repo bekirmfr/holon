@@ -13,6 +13,10 @@
 //!   binding's (`--verdict-from`) is read: the mailbox's server writes its own on top as the mail
 //!   comes in, so one further down, or under another name, is a sender's and never believed.
 //!   `authenticated` is its `dmarc=pass` for the domain of the one address in `From:`.
+//! - **Read in one pass.** A message is anyone's to send, and read before any budget a run has,
+//!   so nothing in it is read more than a few times over, whatever it holds: an encoded word
+//!   reads no further than its parts' `?`s ([`encoded_word`]), and [`MAX_PARTS`] parts are
+//!   walked at most (which bounds, too, the names tried for attachments of one name).
 
 use std::collections::BTreeMap;
 
@@ -20,6 +24,11 @@ use crate::Value;
 
 /// How deep parts nest before what is further in is left out.
 const MAX_DEPTH: usize = 20;
+
+/// How many parts are walked before those after them are left out: a message's every part is an
+/// attachment, a text or an html, handed to the run whole. It bounds, too, the names an
+/// attachment of a name already given tries (`a (2).csv`, `a (3).csv`…): a thousand at most.
+const MAX_PARTS: usize = 1000;
 
 /// The message `raw` as `on.mail` receives it: `from`, `name`, `to`, `cc`, `subject`, `date`
 /// (when it is one), `message_id`, `text`, `html` (when there is one), `attachments`,
@@ -88,6 +97,8 @@ struct Found {
     text: Option<String>,
     html: Option<String>,
     attachments: BTreeMap<String, Value>,
+    /// The parts walked so far ([`MAX_PARTS`]).
+    parts: usize,
 }
 
 /// An entity's headers (names in lowercase, values unfolded, in order) and its body: the headers
@@ -125,11 +136,15 @@ fn walk(headers: &[(String, String)], body: &[u8], depth: usize, found: &mut Fou
     let kind = if kind.contains('/') { kind } else { "text/plain".to_string() };
     if let Some(boundary) = params.get("boundary").filter(|_| kind.starts_with("multipart/") && depth < MAX_DEPTH) {
         for part in parts(body, boundary) {
+            if found.parts >= MAX_PARTS {
+                break;
+            }
             let (h, b) = split(part);
             walk(&h, b, depth + 1, found);
         }
         return;
     }
+    found.parts += 1;
     let (disposition, disposition_params) = parameters(field("content-disposition").unwrap_or(""));
     let named = disposition_params.get("filename").or_else(|| params.get("name")).map(|n| base_name(n)).filter(|n| !n.is_empty());
     let bytes = transfer_decoded(body, field("content-transfer-encoding").unwrap_or(""));
@@ -415,16 +430,21 @@ fn words(s: &str) -> String {
     out + rest
 }
 
-/// The encoded word `s` starts with, decoded, and what follows it.
+/// The encoded word `s` starts with, decoded, and what follows it: `=?charset?encoding?text?=`,
+/// none of its parts holding a `?` or a space (RFC 2047: Q encodes a `?`, B has none). So a try
+/// reads no further than its third `?`, or a space: a header of many `=?` that don't close is
+/// read in one pass, where each read on to the next `?=`, to the end.
 fn encoded_word(s: &str) -> Option<(String, &str)> {
-    let body = s.strip_prefix("=?")?;
-    let (charset, body) = body.split_once('?')?;
-    let (encoding, body) = body.split_once('?')?;
-    let end = body.find("?=")?;
-    let (text, after) = (&body[..end], &body[end + 2..]);
-    if text.contains(char::is_whitespace) || charset.contains(char::is_whitespace) {
-        return None;
+    /// A part: what comes before the next `?`, and what after it; none if a space comes first.
+    fn part(s: &str) -> Option<(&str, &str)> {
+        let end = s.find(|c: char| c == '?' || c.is_whitespace())?;
+        s[end..].starts_with('?').then(|| (&s[..end], &s[end + 1..]))
     }
+    let body = s.strip_prefix("=?")?;
+    let (charset, body) = part(body)?;
+    let (encoding, body) = part(body)?;
+    let (text, after) = part(body)?;
+    let after = after.strip_prefix('=')?;
     // RFC 2231's language, `UTF-8*en`, says nothing about the bytes.
     let charset = charset.split('*').next().unwrap_or(charset).to_ascii_lowercase();
     let bytes = match encoding {
@@ -838,6 +858,56 @@ epilogue, never read\r\n";
         }
         let nested = format!("Content-Type: multipart/mixed; boundary=b\r\n\r\n{}", "--b\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n".repeat(40));
         let _ = received(nested.as_bytes(), "");
+    }
+
+    /// **Guards:** a message is read in time its size bounds, whatever it holds: anyone may send
+    /// one, and it is read on the mailbox's look before any budget a run has. A row for each
+    /// road that read it more than once over, each about a megabyte: encoded words that never
+    /// close, in the subject and in a display name; words a space cuts, and words whose text
+    /// holds a `?`, in an attachment's name; and many parts of one name, past [`MAX_PARTS`]. Each
+    /// is read well inside ten seconds (a debug build), and the parts as many as are walked,
+    /// named `a.csv`, `a (2).csv`, ….
+    /// **Why:** each `=?` read on to the next `?=`, to the end when none came, and each part of a
+    /// name already given tried every number from 2, for as many parts as came: a 5 to 10 MB
+    /// message took minutes to hours on the look, held every mailbox's (they were joined), and
+    /// again after each restart.
+    /// **If it fails:** the row named is read more than once over: `encoded_word` reads past a
+    /// part's `?` or a space, or `walk` walks past `MAX_PARTS`.
+    #[test]
+    fn a_message_is_read_in_time_its_size_bounds_whatever_it_holds() {
+        const MB: usize = 1 << 20;
+        let header = |name: &str, unit: &str| format!("{name}: {}\r\n", unit.repeat(MB / unit.len()));
+        let parts = |count: usize| {
+            let part = "--b\r\nContent-Type: text/csv\r\nContent-Disposition: attachment; filename=a.csv\r\n\r\nx\r\n";
+            format!("Content-Type: multipart/mixed; boundary=b\r\n\r\n{}--b--\r\n", part.repeat(count))
+        };
+        let rows: [(&str, String); 5] = [
+            ("words that never close, in the subject", header("Subject", "=?x") + "\r\nhi\r\n"),
+            ("words that never close, in a name", header("From", "=?x") + " <a@x.example>\r\n\r\nhi\r\n"),
+            ("words a space cuts", header("Subject", "=?a?q?x ") + "\r\nhi\r\n"),
+            (
+                "words whose text holds a ?",
+                format!("Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Disposition: attachment; filename=\"{}\"\r\n\r\nx\r\n--b--\r\n", "=?a?q?x?".repeat(MB / 8)),
+            ),
+            ("many parts of one name", parts(MB / 80)),
+        ];
+        for (row, message) in rows {
+            // Read on a thread of its own, so a read that goes on fails the row rather than
+            // holding the suite (what is left of it ends with the test binary).
+            let (sent, read) = std::sync::mpsc::channel();
+            std::thread::spawn(move || sent.send(received(message.as_bytes(), "")));
+            let m = read.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| panic!("{row}: not read in 10 s"));
+            if row == "many parts of one name" {
+                let Some(Value::Record(attachments)) = field(&m, "attachments") else { panic!("{row}") };
+                assert_eq!(attachments.len(), MAX_PARTS, "{row}: the parts walked");
+                for name in ["a.csv", "a (2).csv", "a (1000).csv"] {
+                    assert!(attachments.contains_key(name), "{row}: {name}");
+                }
+            }
+        }
+        // And words still read as written: a part ends at its `?`.
+        assert_eq!(words("=?utf-8?q?a?= =?utf-8?b?Yg==?="), "ab");
+        assert_eq!(words("=?utf-8?q?a?b?="), "=?utf-8?q?a?b?=", "a text holding a ? isn't a word");
     }
 
     /// Charsets and dates as mailers write them.
