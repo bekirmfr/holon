@@ -140,8 +140,11 @@ A flow tab is a canvas of nodes and wires.
   folder, a database, a channel, a mail, a queue, a key for a secret, a clock…), a small second
   one for what is done to it (a pencil: written; two arrows: read and written; an arrow out:
   sent on or answered with; a bolt: a run on each one that comes), and its name
-  (`api.example.com`, `orders`, `stripe_key`). Rest the pointer on a pill for the whole sentence,
-  as the approval says it: "read the secret "stripe_key", and send it to https://api.stripe.com".
+  (`api.example.com`, `orders`, `stripe_key`). Point at a pill, or reach it with **Tab**, and a
+  tip shows the whole sentence at once, as the approval says it, a line for each part: "read the
+  secret "stripe_key", and send it to https://api.stripe.com", then where what is answered to it
+  or made with it goes; under it, what its mark means and the item as the manifest writes it.
+  **Esc** puts the tip away.
   A new item is framed and marked **new**, one the deployed version had and the draft doesn't is
   struck through, and a secret's pill is in the secret's colour, with the arrow when the secret,
   or something made with it, goes anywhere.

@@ -3,8 +3,10 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { initSync } from "../wasm/holon_wasm.js";
 import { describeItem } from "./holon";
 import { MayStrip, stripPills } from "./MayStrip";
@@ -76,6 +78,10 @@ describe("every kind of thing a flow may do", () => {
 });
 
 describe("the It may strip", () => {
+  beforeAll(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  });
+
   const sent = { k: ["made:@callers"], t: ["auth.example.com", "answer:@callers"] };
 
   it("shows each item as a pill, its sentence in its title and for a screen reader", () => {
@@ -91,16 +97,72 @@ describe("the It may strip", () => {
       />,
     );
     const sentence = "read the secret &quot;t&quot;, and send it to https://auth.example.com; what is answered to it goes to its callers";
-    expect(strip).toContain(`title="${sentence} (new)"`);
     expect(strip).toContain(`<span class="hl-may__said">${sentence}</span>`);
+    // No title: the tip shows it at once, and a title would show it again a second later.
+    expect(strip).not.toContain("title=");
     expect(strip).toContain('<span class="hl-may__label" aria-hidden="true">t</span>');
     expect(strip).toContain('data-thing="key"');
     expect(strip).toContain('data-does="send"');
-    expect(strip).toContain('title="call https://auth.example.com"');
+    expect(strip).toContain('<span class="hl-may__said">call https://auth.example.com</span>');
     expect(strip).toContain('<span class="hl-may__label" aria-hidden="true">auth.example.com</span>');
     // A gone secret: its words alone, and no arrow (what it was sent to isn't the draft's to say).
-    expect(strip).toContain('title="read the secret &quot;old&quot; (no longer)"');
+    expect(strip).toContain('<span class="hl-may__said">read the secret &quot;old&quot;</span><span class="hl-may__tag">no longer</span>');
     expect(strip.match(/data-does="send"/g)?.length).toBe(1);
+  });
+
+  it("shows a pill's whole sentence at once, in a tip, on hover and on focus, and puts it away", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() =>
+      root.render(
+        <MayStrip
+          deployed
+          sent={sent}
+          items={[
+            { item: 'SecretRead("t")', change: "new" },
+            { item: 'StateRead("count")', change: "same" },
+            { item: 'StateWrite("count")', change: "same" },
+            { item: 'SecretRead("old")', change: "gone" },
+          ]}
+        />,
+      ),
+    );
+    const pill = (item: string) => container.querySelector<HTMLElement>(`[data-item='${item}']`)!;
+    const tip = () => document.querySelector(".hl-may__tip");
+    const lines = () => [...document.querySelectorAll(".hl-may__tip-line")].map((l) => l.textContent);
+    expect(tip()).toBeNull();
+    // On hover, at once: no wait, and a line for each part of the sentence.
+    act(() => void pill('SecretRead("t")').dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    expect(lines()).toEqual(['read the secret "t", and send it to https://auth.example.com', "what is answered to it goes to its callers"]);
+    expect(tip()!.className).toContain("hl-may__tip--secret");
+    expect(tip()!.querySelector(".hl-may__tip-mark")!.textContent).toBe("new: a person approves it when this is deployed");
+    expect(tip()!.querySelector(".hl-may__tip-item")!.textContent).toBe('SecretRead("t")');
+    // What a screen reader hears is in the pill: the tip is for the eye only.
+    expect(tip()!.getAttribute("aria-hidden")).toBe("true");
+    act(() => void pill('SecretRead("t")').dispatchEvent(new MouseEvent("mouseout", { bubbles: true })));
+    expect(tip()).toBeNull();
+    // By the keyboard: a pill takes the focus, and its tip shows; a read and its write, a line each.
+    const both = pill('StateRead("count") StateWrite("count")');
+    expect(both.tabIndex).toBe(0);
+    act(() => both.focus());
+    expect(lines()).toEqual(['read its state "count"', 'write its state "count"']);
+    expect(tip()!.querySelector(".hl-may__tip-mark")).toBeNull();
+    // Esc puts it away; so does the focus leaving.
+    act(() => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+    expect(tip()).toBeNull();
+    act(() => pill('SecretRead("old")').focus());
+    expect(lines()).toEqual(['read the secret "old"']);
+    expect(tip()!.querySelector(".hl-may__tip-mark")!.textContent).toContain("no longer");
+    act(() => pill('SecretRead("old")').blur());
+    expect(tip()).toBeNull();
+    // And the strip scrolling under it.
+    act(() => both.focus());
+    expect(tip()).not.toBeNull();
+    act(() => void container.querySelector(".hl-may")!.dispatchEvent(new Event("scroll", { bubbles: true })));
+    expect(tip()).toBeNull();
+    act(() => root.unmount());
+    container.remove();
   });
 
   it("joins a thing's read and its write into one pill, when both changed alike", () => {

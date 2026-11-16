@@ -55,7 +55,8 @@ describe("a secret's line", () => {
     expect(strip).toContain("read the secret &quot;t&quot;, and send it to https://auth.example.com; what is answered to it goes to its callers");
     expect(strip.match(/hl-may__chip--secret/g)?.length).toBe(3);
     // Each a pill (mayPill.test.tsx): the sentence is its title, and another's isn't a secret's.
-    expect(strip).toContain('class="hl-may__chip hl-may__chip--same" title="read the clock" data-item="Clock"');
+    expect(strip).toContain('class="hl-may__chip hl-may__chip--same" data-item="Clock"');
+    expect(strip).toContain('<span class="hl-may__said">read the clock</span>');
   });
 });
 

@@ -1304,7 +1304,26 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-may__icon { flex: none; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .hl-may__icon--does { width: 9px; height: 9px; margin-left: -2px; stroke-width: 2.4; opacity: 0.75; }
 .hl-may__label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
-/* The sentence a pill stands for: heard, not seen (it is the pill's title too). */
+.hl-may__chip:hover, .hl-may__chip:focus-visible { border-color: var(--border-strong); outline: none; }
+.hl-may__chip:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+/* A pill's tip (MayStrip.tsx): the whole sentence, at once, drawn on the page so the strip's
+   scrolling never clips it. */
+.hl-may__tip {
+  position: fixed; z-index: 2000; display: grid; gap: 4px; padding: 8px 10px; min-width: 180px;
+  color: var(--ink); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28); font-size: 12px; line-height: 1.4; white-space: normal; pointer-events: none;
+}
+.hl-may__tip-head { display: flex; align-items: center; gap: 5px; font-weight: 600; overflow-wrap: anywhere; }
+.hl-may__tip-head .hl-may__icon { width: 14px; height: 14px; }
+.hl-may__tip-head .hl-may__icon--does { width: 10px; height: 10px; }
+.hl-may__tip--secret .hl-may__tip-head { color: var(--secret); }
+.hl-may__tip--secret { border-color: color-mix(in srgb, var(--secret) 55%, var(--border-strong)); }
+.hl-may__tip-line { color: var(--body); overflow-wrap: anywhere; }
+.hl-may__tip-mark { font-size: 11px; }
+.hl-may__tip-mark--new { color: var(--warn-ink); }
+.hl-may__tip-mark--gone { color: var(--faint); }
+.hl-may__tip-item { font-family: var(--mono); font-size: 10px; color: var(--faint); overflow-wrap: anywhere; }
+/* The sentence a pill stands for: heard, not seen (its tip shows it). */
 .hl-may__said { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .hl-may__chip--new { border-color: var(--warn); background: var(--warn-bg); color: var(--ink); }
 .hl-may__chip--gone { color: var(--faint); text-decoration: line-through; }
