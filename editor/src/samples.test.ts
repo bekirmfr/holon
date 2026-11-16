@@ -82,7 +82,8 @@ describe("sample flows", () => {
     }
     const ports = samples().flatMap((s) => (s.port ? [s.port] : []));
     expect(new Set(ports).size, "each server its own port").toBe(ports.length);
-  });
+    // Every sample is built here, so its time grows with each one added: a limit that fits a single case doesn't fit it on a busy machine.
+  }, 30_000);
 
   it("are laid out on the compiler's grid, so they open tidied (canvasTidy.compilerLaid)", () => {
     for (const s of samples()) {

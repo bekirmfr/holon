@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test as base, expect } from "@playwright/test";
+import { test as base, expect, type Page } from "@playwright/test";
 import { PORTS, RUN_DIR, SAMPLE_SHIFT } from "./ports.mjs";
 
 export { PORTS, RUN_DIR, SAMPLE_SHIFT };
@@ -48,7 +48,67 @@ export const ISSUER = `http://127.0.0.1:${PORTS.oidc}`;
 export const FOLDERS = join(tmpdir(), `holon-e2e-folders-${PORTS.server}`);
 export const ADMIN = { name: "e2e", password: "e2e-password-0123" };
 
+/** How long the editor may take to load in a page: its core (the wasm, built unoptimized for the
+ *  tests) downloads and compiles before any of its pages shows. In a fresh browser context on CI's
+ *  slow runner that took up to 25 s, past the 15 s an expectation waits. */
+export const LOADING = 120_000;
+/** The editors the tests open: the main test server's, and the accounts tests'. */
+const EDITORS = [`http://localhost:${PORTS.editor}`, FRESH_EDITOR];
+
+/** Once `page`, loaded, has settled: the editor's page there, and nothing on it saying it's busy
+ *  (`aria-busy`: signing in deciding, the editor's core loading). What a test then expects within
+ *  15 s is what the page shows once loaded. A page away from the editors isn't waited for. Every
+ *  page the fixtures give settles so after each goto and reload. */
+export async function settled(page: Page): Promise<void> {
+  if (!EDITORS.some((at) => page.url().startsWith(at))) return;
+  await page.waitForFunction(() => !!document.getElementById("root")?.firstElementChild && !document.querySelector('[aria-busy="true"]'), undefined, {
+    timeout: LOADING,
+    polling: 100,
+  });
+}
+
+/** Once the editor shows in `page`, signed in, its core loaded: after signing in, joining or
+ *  setting up, which load it without a navigation. */
+export async function editorLoaded(page: Page): Promise<void> {
+  await expect(page.locator('.hl-body[aria-busy="false"]')).toBeAttached({ timeout: LOADING });
+}
+
+const settling = new WeakSet<Page>();
+/** `page`, settling after each goto and reload (`settled`). */
+function settles(page: Page): Page {
+  if (settling.has(page)) return page;
+  settling.add(page);
+  const goto = page.goto.bind(page);
+  const reload = page.reload.bind(page);
+  page.goto = async (url, options) => {
+    const res = await goto(url, options);
+    await settled(page);
+    return res;
+  };
+  page.reload = async (options) => {
+    const res = await reload(options);
+    await settled(page);
+    return res;
+  };
+  return page;
+}
+
 export const test = base.extend<object, { adminToken: string; agentToken: string }>({
+  /** The browser, whose every context's pages settle after each load (`settled`): another
+   *  person's editor, opened in a context of its own, as the test's own page. */
+  browser: [
+    async ({ browser }, use) => {
+      const newContext = browser.newContext.bind(browser);
+      browser.newContext = async (options) => {
+        const context = await newContext(options);
+        const newPage = context.newPage.bind(context);
+        context.newPage = async () => settles(await newPage());
+        return context;
+      };
+      await use(browser);
+    },
+    { scope: "worker" },
+  ],
   /** A session of the test server's admin, for calls to its control plane: one per worker, since
    *  signing in hashes the password (argon2, slow in the debug build the tests run) and no test
    *  here ends it (the accounts tests sign out on a server of their own). */
@@ -91,7 +151,7 @@ export const test = base.extend<object, { adminToken: string; agentToken: string
   ],
   page: async ({ page, adminToken }, use) => {
     await page.addInitScript((session) => localStorage.setItem("holon.session", session), JSON.stringify({ token: adminToken, name: ADMIN.name, kind: "person", role: "admin" }));
-    await use(page);
+    await use(settles(page));
   },
 });
 

@@ -99,7 +99,7 @@ impl Grant {
 }
 
 /// Whether `host` (`127.0.0.1:8080`, `[::1]`, `localhost`) is this machine.
-fn is_loopback(host: &str) -> bool {
+pub(crate) fn is_loopback(host: &str) -> bool {
     let name = match host.strip_prefix('[') {
         Some(rest) => rest.split(']').next().unwrap_or(""),
         None => host.rsplit_once(':').map_or(host, |(h, _)| h),
@@ -176,7 +176,7 @@ fn ask(grant: &Grant, refresh: Option<&str>) -> Result<Given, Failure> {
         Ok(a) if a.status() == 200 => a,
         Ok(a) => return Err(Failure::Permanent(format!("{at} answered {} to the token request, not a token", a.status()))),
         Err(ureq::Error::Status(code, a)) => return Err(refused(&at, code, a)),
-        Err(ureq::Error::Transport(t)) => return Err(Failure::Temporary(format!("{at} can't be reached: {}", t.message().map_or_else(|| t.kind().to_string(), str::to_string)))),
+        Err(ureq::Error::Transport(t)) => return Err(Failure::Temporary(format!("{at} can't be reached: {}", crate::outbound::transport_said(&t)))),
     };
     let body = Zeroizing::new(answer.into_string().map_err(|e| Failure::Temporary(format!("{at}'s answer broke off: {e}")))?);
     let json: serde_json::Value = serde_json::from_str(&body).map_err(|_| Failure::Permanent(format!("{at} answered something that isn't a token")))?;
