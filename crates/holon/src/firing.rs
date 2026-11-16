@@ -589,7 +589,9 @@ fn count_commit(cell: &claims::StateCell, run: &mut FiredRun) {
 /// in commit order and a run that changed nothing writes nothing (a read costs no fsync). A run
 /// whose change wasn't kept fails, as one whose file didn't land does: its state is in place, but
 /// the server starts again from the one before. One that changed nothing loses only a snapshot
-/// to restore to, and says so.
+/// to restore to, and says so. Either way its line names the state it left, by the hash its
+/// snapshot would have: every commit counted names one (`holon verify` holds it to that, audit
+/// R26), and a restore to it says its snapshot isn't in the store.
 fn keep_state(cell: &claims::StateCell, run: &mut FiredRun, live: &State, store: &SharedStore) {
     let changed = run.start_state.as_ref().is_some_and(|start| changed_from(start, live));
     match cell.save(live, store) {
@@ -599,8 +601,13 @@ fn keep_state(cell: &claims::StateCell, run: &mut FiredRun, live: &State, store:
             }
             run.state_after = Some(hex);
         }
-        Err(e) if changed => not_all_written(run, vec![format!("the state it left wasn't kept: {e}")]),
-        Err(e) => eprintln!("holon: run {}: the state it left wasn't kept: {e}", run.run_id),
+        Err(e) => {
+            match changed {
+                true => not_all_written(run, vec![format!("the state it left wasn't kept: {e}")]),
+                false => eprintln!("holon: run {}: the state it left wasn't kept: {e}", run.run_id),
+            }
+            run.state_after = crate::restore::snapshot_hash(live).ok();
+        }
     }
 }
 

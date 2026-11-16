@@ -908,8 +908,9 @@ server keeps on disk (a backup's, a removed deployment's records) is sealed unde
 opens with the `keys.json` of the data folder it came from (`--data`, else this machine's
 server's) and its root key (`--root-key`: `os`, `env:VAR` or `file:PATH`, as the server's; the OS
 key store if not given); without them it says which it needs. Exits 0 when it all checks, every
-run run again; 1 when something doesn't check; 3 when nothing fails but some runs couldn't be run
-again (it says which, and why); 2 for a file it can't read.
+run run again and every run's state checked; 1 when something doesn't check; 3 when nothing fails
+but not everything was checked, some runs not run again or some states not checked (it says
+which, and why); 2 for a file it can't read.
 
 ## `holon history`
 

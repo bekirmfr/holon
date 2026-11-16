@@ -74,14 +74,14 @@ notes-api: 42 runs, runs 1 to 42
   chain: unbroken
   head: 3f9c2a7be01d is the newest run's
   events: 3, chain unbroken from the first
+  held by the chain alone, not by running each run again (a witnessed head holds it too): when it began, how long it took, when each step began, when each step ended, its run session, which load of the state it committed to, its commit's number, how many times it ran again before its commit landed (its tries), who called it (the server's account of its caller), the grant it ran under (by its hash)
   re-ran 42 runs: each produced what its log entry says, 3 of them given what the log kept for a step (named below)
   3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret, a token or a tainted value (not computed again):
     hmac_sha256 fed the secret stripe_key v3 #a1b2c3d4: 3 nodes in 3 runs: 4, 17, 30, as recorded
   2 runs: 9, 31 checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)
   secrets: 38 outbound requests carried one, each to a host its approval shows it going to
   tokens: 12 outbound requests carried what a call answered to a secret, each to a host its approval shows that going to
-  state: 41 runs began from the state the run before them left, 42 left what their writes make of the one they began with
-  state not checked (1 run: 1), where it began: no run before it here
+  state: run 1 began from nothing, as a log's first does; 41 runs began from the state the run before them left, 42 left what their writes make of the one they began with
 ok
 ```
 
@@ -92,15 +92,24 @@ ok
    report lists it, `run 17 isn't in the file: the server couldn't write its line, and the line
    after says so`. The server numbers runs one after another, so runs missing that no line says
    were lost were removed, and the lines after them chained again: `runs 5 to 7 MISSING`;
-2. every unit in the export is what its hash says;
-3. every run, run again from its log entry through the same core, produced what the log says:
-   the same outputs, the same effects, the same status. Outbound calls are answered from the log,
-   so nothing is sent. A run that failed is run again too: what it computed is checked, what its
-   writes made of its state, and its status, unless that is its failure's;
-4. each run's state follows from the one before: it began from the state the run before it left,
+2. every line is one the server writes: a kind of run there is, with that kind's fields (a
+   request's method, URL and status; what was delivered only on a resumed part's), each value one
+   a run holds, each commit numbered once, and a numbered commit naming the state it left. One
+   that isn't says why: `run 7 ISN'T A LINE THE SERVER WRITES: …`;
+3. every unit in the export is what its hash says;
+4. every run, run again from its log entry through the same core, produced what the log says:
+   the same outputs, effects and status, the same answer (its body, as the line keeps it), the
+   same steps in the same rounds (its timeline: what each step gave, or why it gave nothing), and
+   the same points it waits at. Outbound calls are answered from the log, so nothing is sent. A
+   run that failed is run again too: what it computed is checked, what its writes made of its
+   state, and its status, unless that is its failure's. What a resumed run was delivered is held
+   to what it waited for: an approval's decisions, taken in the order they came, are ones its
+   steps take, each on a step there is and open as it came, by someone who decided no other step
+   of it, of the step's kind and role, and whoever started the run only on a step that takes them;
+5. each run's state follows from the one before: it began from the state the run before it left,
    and left what its writes make of the state it began with (see
    [The state, run to run](#the-state-run-to-run));
-5. every outbound request that carried a secret (the log marks where it stood:
+6. every outbound request that carried a secret (the log marks where it stood:
    `‹secret:stripe_key v3 #…›`) went to a host the flow's unit sends that secret to: what its
    approval showed ("read the secret "stripe_key", and send it to https://api.stripe.com"). A
    request the host refused before it left went nowhere. So did every request that carried a
@@ -108,7 +117,8 @@ ok
    what is answered to that secret going to ("…; what is answered to it goes to
    https://api.example.com").
 
-It exits 0 when everything checks and every run was run again, and 1 when anything doesn't
+It exits 0 when everything checks, every run was run again and every run's state checked, and 1
+when anything doesn't
 check, with what failed:
 
 ```
@@ -120,13 +130,41 @@ check, with what failed:
 FAILED
 ```
 
-When nothing fails but some runs couldn't be run again (see below), it exits 3: nothing in the
-export was found changed, and not all of it was checked. The report says which runs, and why:
+When nothing fails but some runs couldn't be run again (see below), or a run's state couldn't be
+checked ([The state, run to run](#the-state-run-to-run)), it exits 3: nothing in the export was
+found changed, and not all of it was checked, so a script reading the exit code doesn't take it
+as checked. The report says which runs, and why:
 
 ```
   not re-run (1 run: 12): it read inbox/sales.csv, whose text the export doesn't hold (its folder keeps hashes, the server no longer keeps it, or the export left it out): give it with --files
 INCOMPLETE: nothing here fails, but not every run was run again (said above)
 ```
+
+### What only the chain holds
+
+What `holon verify` checks without a witness is everything a run makes: run again, it computes
+what it did, answered, waited for and left, and every line must be one the server writes. What
+only a witness holds is the rest of a line, the server's account of when, where and for whom it
+ran, which no run again can make. Someone who holds the server's data can change those fields and
+chain the lines after them again: without a witnessed head that passes, and with one it fails
+([Witnesses](#witnesses)). Without `--head`, the report says so (`held by the chain alone, …`).
+
+| Field | What it is | Why running the run again can't make it | What holds it |
+|---|---|---|---|
+| `at_ms`, `duration_ms` | when the run began, and how long it took | the clock is the server's, read as it ran | the chain, and so a witness |
+| the timeline's `start_us`, `end_us` | when each step began and ended | the same: a step's time is the server's | the chain, and so a witness |
+| `session` | the run session it ran in | the deployment's own count of each time it was started or restored, which no run sees | the chain, and so a witness |
+| `commit`'s `cell` and `n` | which load of the state it committed to, and its commit's number | they number commits as they landed beside other runs; they say which run's state it began after, so changed, `verify` may check less of its state, and says which runs it didn't | the chain, and so a witness |
+| `retries` | how many times it ran again before its commit landed | a try that was overtaken leaves nothing but the answers it got, which the last try is given | the chain, and so a witness |
+| `by` | who called it | the caller is the server's account: nothing in a run makes it | the chain, and so a witness; an approval's decisions are held to it (below) |
+| `grant` | the grant it ran under, by its hash | the export holds the units the runs ran, not the grants | the chain, and so a witness |
+
+`by` is only the server's account of its caller: nothing in the run makes it, and nothing in an
+export can check who sent a request. An approval's decisions are held to it, as their run's
+starter (whoever started a run decides only a step that takes them), but that it was they who
+started it is the server's word. So is who each person deciding is, and whether the role binding
+each decision names let them; and so are the host's own settings for approvals (whoever deployed
+the version kept out, no agents, no step for whoever started the run), which no log holds.
 
 ### The state, run to run
 
@@ -137,11 +175,18 @@ that what its writes make of the state it began with is the state it left. So a 
 changed between runs, or a run's writes dropped, without the report saying where, even in a log
 chained again after the change.
 
-What it doesn't check, it says, by why:
+The log's first run began from nothing: an empty state, after no commit. In an export from the
+log's first line, that is checked: it says `run 1 began from nothing, as a log's first does`.
 
-- the first run here, which began from a state no run here left; in a log trimmed to its newest
-  runs, so are those that ran beside it and began after a commit older than every one here,
-  whose run's line is gone;
+What it doesn't check, it says, by why, and the export is then INCOMPLETE (exit 3), as one with a
+run not run again is:
+
+- a run with no run before it here, in an export that begins after the log's first run (a log
+  trimmed to its newest runs, one run's export): what it began from, the runs before it would
+  check. In a trimmed log, so are those that ran beside it and began after a commit older than
+  every one here, whose run's line is gone. Export from the first run to have it checked;
+- in an export from the log's first line, a run with no run before it whose line says it began
+  from a state, or after a commit, as no log's first run does;
 - a run after a deploy, a stop, or a restore of a version's state, which put a state in place
   (the events say which). After a restore of a run's state, the next run is checked: it began
   from the state that run left;
