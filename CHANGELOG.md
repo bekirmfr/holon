@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **The approval says where a hash, a signature or a host's answer made with a secret goes.** A
+  route answering `hmac_sha256(key, req.query.msg)` signs whatever its caller sends, and one
+  answering the token a host gave for a secret hands out a live token; both are clean (a flow
+  must sign what it sends, and use what it is answered), and until now `holon check`, the editor
+  and the approval said only `read the secret "key"`. Each is now followed from where it is made
+  to where it leaves, and said beside the secret's read: "…; a hash or signature made with it
+  goes to its callers", "… goes to https://api.example.com", "…; what is answered to it goes to
+  its callers". `holon check` names the route under "with its secrets:", and the canvas marks
+  the node. Nothing new is refused or withheld. A route that only says whether a signature
+  matches says nothing, and a response's `status` alone isn't counted. Flows that sign a request
+  or answer with what an API answered read one clause longer; the **sign-payload** sample shows
+  it.
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with
