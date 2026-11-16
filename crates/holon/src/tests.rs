@@ -8231,11 +8231,17 @@ route.post("/sign", (req) => hmac_sha256(signing_key, req.body) ?? status(400))
     let (came_to, ok) = rechained(&|v| v["committed"]["signing_key"]["commitment"] = serde_json::json!("not one"));
     assert_eq!(came_to, verify::Rerun::Differs("what its entry says the secret \"signing_key\" is held to isn't a kind and a commitment".into()));
     assert!(!ok);
-    // Taken out: a run from before commitments has none, and that alone fails nothing.
+    // Taken out: the key that marks what a run computes from a secret is made of a
+    // commitment's salt, and the server withholds without one, so a line that withholds
+    // nothing and commits to no secret isn't the server's (R63).
     let (came_to, ok) = rechained(&|v| {
         v.as_object_mut().unwrap().remove("committed");
     });
-    assert_eq!((came_to, ok), (verify::Rerun::Matched, true));
+    assert_eq!(
+        came_to,
+        verify::Rerun::Differs("its line says it withholds nothing the run computed from a secret, and commits to no secret: the server has no key to mark such values without one".into())
+    );
+    assert!(!ok);
 }
 
 /// What `verify` takes from the log it can't compute again, but a leaf is a function of its
@@ -8640,6 +8646,8 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
     for name in ["liv", "tes"] {
         std::fs::write(dir.join(name), [0xff, 0xfe, 0x00]).unwrap();
     }
+    // And a text past what a line keeps inline, kept by its hash.
+    std::fs::write(dir.join("five"), "a note of five. ".repeat(320)).unwrap();
     let folder = serde_json::json!({ "name": "notes", "path": dir.display().to_string() });
     assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&folder).unwrap())).status_code, 200);
     // And a database a row reads by a value computed from the secret: no row has it.
@@ -8647,10 +8655,36 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
     std::fs::create_dir_all(&db).unwrap();
     let keys = serde_json::json!({ "name": "keys", "path": db.join("keys.db").display().to_string(), "schema": "create table tokens (k text not null)" });
     assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&keys).unwrap())).status_code, 200);
+    // Two secrets that differ in every way a row looks at: how long, how they begin.
+    // The first shorter than its marks, the second longer.
+    let secrets = ["live_alpha-key", "test_bravo-another-secret-value-22"];
+    // A step holding a value computed from the secret beside what the caller sent, the two
+    // sized so that, as the run had it, the step fits a record's limit with the shorter secret
+    // and not with the longer: as its record writes it, the value as its mark, it fits with
+    // either, and is kept with either (R63). Sized so it fits as the run had it with the
+    // shorter, and not with its mark, longer than the value: left out with either, and the
+    // record withholds (`secrets::born`), the same for both. Given look-alikes of a mark, sized
+    // so it fits with the value's mark but not with each look-alike escaped as written: the
+    // same.
+    let encoded = |s: &str| holon_core::bytes_text(s.as_bytes(), "base64").unwrap();
+    let step = |k: &str, pad: &str| {
+        let record = holon_core::Value::Record(BTreeMap::from([("k".to_string(), holon_core::Value::Text(k.into())), ("pad".to_string(), holon_core::Value::Text(pad.into()))]));
+        serde_json::to_string(&[Some(crate::wire::SValue::from_core(&record))]).unwrap().len()
+    };
+    let most = recorder::Timer::MAX_RECORDED_BYTES;
+    let mark = format!("{}{}›", secrets::DERIVED_MARK, "0".repeat(8));
+    let large = "x".repeat(most - step(&mark, ""));
+    assert!(step(&encoded(secrets[0]), &large) <= most && step(&encoded(secrets[1]), &large) > most, "the large row straddles the limit");
+    let tight = "x".repeat(most - step(&encoded(secrets[0]), ""));
+    assert!(step(&mark, &tight) > most && step(&encoded(secrets[1]), &tight) > most, "the tight row fits only the shorter, unmarked");
+    let alike = "‹secret:";
+    let alikes = alike.repeat((most - step(&mark, "")) / alike.len());
+    assert!(step(&mark, &alikes) <= most && step(&mark, &alikes.replace('‹', "‹‹")) > most, "the look-alikes fit only unescaped");
     // (the route, what it does with the secret `k`, what a caller sends given the secret,
     // whether its record marks every value it computed)
-    type Sent = fn(&str) -> String;
-    let nothing: Sent = |_| String::new();
+    type Sent<'a> = &'a dyn Fn(&str) -> String;
+    let nothing: Sent = &|_: &str| String::new();
+    let (large, tight, alikes) = (|_: &str| large.clone(), |_: &str| tight.clone(), |_: &str| alikes.clone());
     let rows: Vec<(&str, &str, Sent, bool)> = vec![
         ("basic", "const got = await host.get(\"/a\", { headers: { authorization: `Basic ${btoa(`user:${k}`)}` } })\n  return { status: got.status }", nothing, true),
         (
@@ -8662,7 +8696,7 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         ("body", "const got = await host.post(\"/a\", { body: JSON.stringify({ auth: btoa(k), n: 1 }) })\n  return { status: got.status }", nothing, true),
         ("answer", "return { header: `Basic ${btoa(k)}` }", nothing, true),
         ("twice", "const got = await host.post(\"/a\", { body: `${btoa(k)}.${btoa(btoa(k))}` })\n  return { status: got.status }", nothing, true),
-        ("check", "const ok = secure_equals(req.body, btoa(k))\n  return (ok ? { ok } : undefined) ?? status(401)", |k| holon_core::bytes_text(k.as_bytes(), "base64").unwrap(), true),
+        ("check", "const ok = secure_equals(req.body, btoa(k))\n  return (ok ? { ok } : undefined) ?? status(401)", &|k: &str| holon_core::bytes_text(k.as_bytes(), "base64").unwrap(), true),
         // Asked across rounds on marks (a call fed one is asked again, R61): a value computed
         // from the secret after a call's answer; a second call fed a mark and the first's
         // answer; a database read by a value computed from it (its line's reads answer it).
@@ -8681,10 +8715,15 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         // A hash of a part of it says the part (a table of the parts finds it): computed from
         // it, as the part is, and a text, so marked.
         ("hashed", "const got = await host.get(\"/a\", { headers: { \"x-h\": sha256(k.slice(0, 12)) } })\n  return { status: got.status }", nothing, true),
+        // A part that is the whole of the first secret and not of the second: a value computed
+        // from a secret that is the secret itself is written with the secret's mark, so the
+        // record tells a secret of 20 characters or fewer from a longer one (R65, the owner's to
+        // weigh). The records differ in that mark's kind and nothing else.
+        ("whole", "const got = await host.get(\"/a\", { headers: { \"x-h\": sha256(k.slice(0, 20)) } })\n  return { status: got.status }", nothing, true),
         // Whether a part of it is what the caller sent, one way or not: a true or false. (The
         // caller sends what is no part of either: a text that is one is marked where it came in,
         // as any value the run computed is, and the two records would differ by that.)
-        ("part", "return { ok: String(secure_equals(req.body, k.slice(0, 8))) }", |_| "no-part-of-it".to_string(), false),
+        ("part", "return { ok: String(secure_equals(req.body, k.slice(0, 8))) }", &|_: &str| "no-part-of-it".to_string(), false),
         // Spelled as bytes and back: bytes have no mark, so what follows is withheld.
         ("bytes", "const got = await host.post(\"/a\", { body: bytes_to_text(text_to_bytes(k)) })\n  return { status: got.status }", nothing, false),
         ("ternary", "const got = await host.get(\"/a\", { headers: { \"x-mode\": k.startsWith(\"live_\") ? \"live mode\" : \"test mode\" } })\n  return { status: got.status }", nothing, false),
@@ -8701,6 +8740,13 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
             nothing,
             false,
         ),
+        ("large", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &large, true),
+        ("tight", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &tight, false),
+        ("lookalike", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &alikes, false),
+        // A value computed from it beside a file's text the log keeps by its hash: the step that
+        // gives the two isn't kept, as the file is the log's already, and the check computes it
+        // on the marks.
+        ("filed", "const text = notes[\"five\"]\n  const got = await host.post(\"/a\", { body: JSON.stringify({ auth: btoa(k), text }) })\n  return { status: got.status }", nothing, true),
     ];
     // And a route that writes the collection the rows read, never called: the deployment may write
     // it, so a run that reads it claims what it read before it calls out.
@@ -8710,8 +8756,6 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         "import {{ bytes_to_text, flow, route, secure_equals, sha256, status, text_to_bytes }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\nimport seen from \"collection:seen\"\nimport notes from \"folder:notes\"\nimport keys from \"database:keys\"\n\nflow(\"whatever\", {{ port: 18301 }})\n\n{routes}"
     );
     let slug = deploy_text(&state, &text, &host);
-    // Two secrets that differ in every way a row looks at: how long, how they begin.
-    let secrets = ["live_alpha-secret-value-1", "test_bravo-another-secret-value-22"];
     for secret in secrets {
         let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
         assert_eq!(route(&state, &set).status_code, 200);
@@ -8781,6 +8825,15 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
                 wrong.push(format!("{path}: its steps don't show the branch it took"));
             }
             at.retain(|d| !d.starts_with(".timeline"));
+        }
+        // R65: the step that gave the whole of the first secret is written with its mark, where
+        // the second's part is a computed value's. Once that is fixed, this is a plain row.
+        if *path == "whole" {
+            let one_mark = |d: &String| d.starts_with(".timeline[") && d.ends_with(r#".value: "‹secret:k›" | "‹derived›""#);
+            if !at.iter().any(one_mark) {
+                wrong.push(format!("{path}: the whole secret is no longer written with its mark: R65 is fixed, make this a plain row"));
+            }
+            at.retain(|d| !one_mark(d));
         }
         if !at.is_empty() {
             wrong.push(format!("{path}: two secrets, two records:\n  {}", at.join("\n  ")));
@@ -9517,9 +9570,9 @@ fn no_line_changed_and_chained_again_passes_as_checked() {
         free_port()
     );
     let counted = deploy_text(&state, &text, &host);
-    // And one that sends its secret as it is, a secret too large for the log to keep the step that
-    // gives it (its mark is not): its record withholds, and the line that says it doesn't is
-    // refused (R61).
+    // And one that sends its secret as it is, a secret larger than the log keeps of a step: the
+    // step that gives it is kept as the record writes it, on its mark, so its record marks it
+    // and withholds nothing, as for a short secret, and the check runs it again (R63).
     let text = format!(
         "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\n\nflow(\"large\", {{ port: {} }})\n\nroute.post(\"/big\", async (req) => {{\n  const got = await host.post(\"/a\", {{ body: k }})\n  return {{ status: got.status, n: req.body }}\n}})\n",
         free_port()
@@ -9614,7 +9667,8 @@ export const pay = action(async (order) => {
             false => assert!(honest.ok() && honest.complete(), "{slug} as the server wrote it:\n{}", verify::describe(&honest, None)),
         }
         // Each run that called out is said so, an `ok` with it: what a call was answered is the
-        // line's say-so (R61). And the flow whose secret is too large to keep says it withholds.
+        // line's say-so (R61). And the flow whose secret is larger than a step's record keeps its
+        // step on the mark (R63).
         let said = verify::describe(&honest, None);
         let called = [calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), reads.as_str()].contains(&slug);
         // The reading flow's line holds what it read, and what it claimed before it called out.
@@ -9623,7 +9677,7 @@ export const pay = action(async (order) => {
         }
         assert_eq!(said.contains("called out: what their calls were answered is the log's say-so"), called, "{slug}:\n{said}");
         if slug == large {
-            assert!(export.lines.iter().all(|l| l.contains("\"withheld\":true")), "{slug}: a line says it keeps each step that gives its secret");
+            assert!(export.lines.iter().all(|l| !l.contains("\"withheld\":true") && l.contains("‹secret:k ")), "{slug}: a line withholds, or keeps no step with its secret's mark");
         }
         let counts = per_flow.entry(slug.to_string()).or_default();
         let values: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();

@@ -248,12 +248,73 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
     // Two values under one mark would read as one.
     whole &= values.windows(2).all(|pair| pair[0].0[..8] != pair[1].0[..8]);
     // And each step that gives a secret's value, or one computed from it, kept its outputs: one
-    // too large to keep as the run had it (a mark is shorter) would read, in a record marked
-    // whole, as one taken out, which `holon verify` refuses (R61), asking the same of each step
-    // (`SecretFed::holds`). A call that sends one gives what the host answered, kept whole in
-    // the record's rounds.
+    // too large to keep as its record writes it ([`Measured`]: each such value as its mark,
+    // whatever the secret) would read, in a record marked whole, as one taken out, which
+    // `holon verify` refuses (R61), asking the same of each step (`SecretFed::holds`). A call
+    // that sends one gives what the host answered, kept whole in the record's rounds.
     whole &= timeline.iter().filter(|n| fed.holds(&n.path)).all(|n| n.outputs.is_some());
     crate::recorder::Born { values, whole }
+}
+
+/// Each step of a run that may hold a secret's value, or a text computed from one
+/// (`SecretFed::holds`), measured as its record writes it, for the run's timer to keep the step
+/// when it fits so (`recorder::Measure`, R63). As the run had it, such a step is longer by as
+/// much as its secret is: kept for a short one and left out for a long one, its record would
+/// withhold for the one and not the other ([`born`]'s last clause), and so say which it had.
+/// As written, each such value is its mark, as long for one secret as for another: the
+/// deployment's secrets as [`Redactor::of`] marks them, and each text the run computed from
+/// them so far as [`Redactor::born`] does, noted from the steps [`born`] notes them from, as
+/// each gives it (none for a run with no key, whose record marks none); and a look-alike of a
+/// mark in the run's own text escaped, as written. Not the marks only its whole entry makes
+/// known (its tokens, the credentials its calls answered, its tainted values): those write a
+/// step it keeps longer, never take it out, so whether a step is kept for its size is decided
+/// here, once.
+pub(crate) struct Measured {
+    fed: crate::taint::SecretFed,
+    key: Option<Zeroizing<Vec<u8>>>,
+    run: String,
+    marks: Redactor,
+}
+
+impl Measured {
+    /// For the run `run` (its id), its secrets' values written as `marks` ([`Redactor::of`]),
+    /// its marks for what it computes from them made under `key` ([`derived_key`]).
+    pub(crate) fn new(fed: crate::taint::SecretFed, key: Option<Zeroizing<Vec<u8>>>, run: String, marks: Redactor) -> Measured {
+        Measured { fed, key, run, marks }
+    }
+}
+
+impl crate::recorder::Measure for Measured {
+    fn fits(&mut self, path: &[u32], outputs: &[Option<SValue>]) -> Option<bool> {
+        if let Some(key) = &self.key
+            && self.fed.makes(path)
+        {
+            let marks = &self.marks;
+            let values: Vec<(String, String)> = outputs
+                .iter()
+                .enumerate()
+                .filter(|(port, _)| self.fed.output(path, *port).is_derived())
+                .filter_map(|(_, output)| match output {
+                    Some(SValue::Text(text)) if text.chars().count() >= MIN_SECRET_LEN && !marks.pairs.iter().any(|(value, _)| value == text) => {
+                        Some((derived_hash(key, &self.run, text), text.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !values.is_empty() {
+                let marks = std::mem::replace(&mut self.marks, Redactor { pairs: Vec::new() });
+                self.marks = marks.and(Redactor::born(&crate::recorder::Born { values, whole: true }));
+            }
+        }
+        if !self.fed.holds(path) {
+            return None;
+        }
+        let mut written = outputs.to_vec();
+        for v in written.iter_mut().flatten() {
+            self.marks.logged_svalue(v);
+        }
+        Some(crate::recorder::fits(&written))
+    }
 }
 
 /// What a run given `value`, the version `v` of `owner`'s secret `name`, records of it.

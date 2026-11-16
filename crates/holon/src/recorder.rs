@@ -462,7 +462,8 @@ pub struct NodeTiming {
     pub round: u32,
     /// Its outputs, as the run produced them: what a replay shows for a node it can't recompute
     /// (one fed a secret, which is never logged). Redacted like the rest of the entry; left out
-    /// when any of them is larger than [`Timer::MAX_RECORDED_BYTES`].
+    /// when their JSON is larger than [`Timer::MAX_RECORDED_BYTES`]: for a step that may hold a
+    /// secret's value, or a text computed from one, as the record writes it ([`Measure`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outputs: Option<Vec<Option<SValue>>>,
     /// Why a module at this node gave nothing (the engine's words: out of fuel, a trap, a js
@@ -489,6 +490,20 @@ pub struct Timer {
     /// Whether it keeps anything: off for a run that won't be logged (an unrecorded handler's,
     /// docs/L4s/request-path-L4.md §4.5 a), which then times and copies nothing.
     on: bool,
+    /// What measures a step whose record writes it another way than the run had it
+    /// (`secrets::Measured`): none for a run given no secret, each step counted as it is.
+    measure: Option<Box<dyn Measure>>,
+}
+
+/// Whether a step's outputs fit as its run's record writes them, for a step it writes another
+/// way than the run had it: one that may hold a secret's value, or a text computed from one,
+/// each written as its mark (`secrets::Measured`). Whether such a step is kept, and so whether
+/// its record withholds (`secrets::born`), then reads the same whatever the secret: a mark is
+/// as long for a long value as for a short one (R63).
+pub(crate) trait Measure {
+    /// Whether `outputs`, which the node at `path` gave, fit as the record writes them; none for
+    /// a step it writes as the run had it, counted as it is.
+    fn fits(&mut self, path: &[u32], outputs: &[Option<SValue>]) -> Option<bool>;
 }
 
 impl Timer {
@@ -498,12 +513,17 @@ impl Timer {
     pub const MAX_RECORDED_BYTES: usize = 16 * 1024;
 
     pub fn new() -> Timer {
-        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new(), reason: None, on: true }
+        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new(), reason: None, on: true, measure: None }
     }
 
     /// One that keeps nothing: its timeline stays empty.
     pub fn off() -> Timer {
         Timer { on: false, ..Timer::new() }
+    }
+
+    /// This one, keeping each step `measure` measures when it says the step fits (R63).
+    pub(crate) fn measured(self, measure: Box<dyn Measure>) -> Timer {
+        Timer { measure: Some(measure), ..self }
     }
 
     fn now_us(&self) -> f64 {
@@ -577,6 +597,12 @@ impl std::io::Write for Counted {
     }
 }
 
+/// Whether `outputs`' JSON is at most [`Timer::MAX_RECORDED_BYTES`]: counted as it is written,
+/// nowhere.
+pub(crate) fn fits(outputs: &[Option<SValue>]) -> bool {
+    serde_json::to_writer(Counted { n: 0, most: Timer::MAX_RECORDED_BYTES }, outputs).is_ok()
+}
+
 impl holon_core::Observer for Timer {
     fn enter(&mut self, path: &[u32]) {
         if self.on && path.len() <= Self::DEPTH {
@@ -592,8 +618,13 @@ impl holon_core::Observer for Timer {
             // JSON written nowhere (interpreter-path-L4.md, step 2).
             let surely = outputs_bound(outputs).is_some_and(|n| n <= Self::MAX_RECORDED_BYTES);
             let outputs: Vec<Option<SValue>> = outputs.iter().map(|o| o.value().map(SValue::from_core)).collect();
-            let fits = surely || serde_json::to_writer(Counted { n: 0, most: Self::MAX_RECORDED_BYTES }, &outputs).is_ok();
-            self.produced = fits.then_some(outputs);
+            // One that may hold a secret's value, or a text computed from one, as the record
+            // writes it: by its marks, not by how long the secret is (R63).
+            let kept = match self.measure.as_mut().and_then(|m| m.fits(path, &outputs)) {
+                Some(kept) => kept,
+                None => surely || fits(&outputs),
+            };
+            self.produced = kept.then_some(outputs);
         }
     }
     fn leave(&mut self, path: &[u32]) {

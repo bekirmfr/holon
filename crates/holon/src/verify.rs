@@ -87,7 +87,7 @@ pub(crate) const NOT_HELD: &[(&str, &str)] = &[
 ];
 
 /// What a mark stands for, as a reason for a run not run again ends: said once, here.
-pub(crate) const MARK_STANDS_FOR: &str = "only a text of 6 characters or more is carried through a replay";
+pub(crate) const MARK_STANDS_FOR: &str = "only a text of 6 characters or more, in a step the log keeps, is carried through a replay";
 
 /// Why a run that came out other than its entry says isn't said to differ, if the log left out
 /// what it would take to run it again: the outputs of a node that may compute from a secret,
@@ -111,7 +111,9 @@ fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry,
 /// which leaf, from which secret, and why no mark stands for what it gave. The leaf is one that
 /// makes something of a secret (`SecretFed::makes`) and ran; one whose output is declared as
 /// something a mark can't be (a number, a true or false, a list) is named before one that gives
-/// a text. A run that computed where the log follows no steps says that.
+/// a text, which may have been too short, or held by a step too large to keep even with its
+/// marks (`secrets::Measured`): the line doesn't say which. A run that computed where the log
+/// follows no steps says that.
 fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::SecretFed, entry: &LogEntry) -> String {
     if !fed.followed_to(recorder::Timer::DEPTH) {
         return "it computed with a secret inside a function applied to each item, inside a module, or deeper than the log records a run's steps: the values made there can't each be marked, so the log withholds them, and only the secret could compute them again".into();
@@ -148,7 +150,7 @@ fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::
     };
     match what {
         Some(what) => format!("{leaf} computed {what} from {from}: {MARK_STANDS_FOR}"),
-        None => format!("{leaf} computed from {from} a value no mark stands for (too short, or not a text): {MARK_STANDS_FOR}"),
+        None => format!("{leaf} computed from {from} a value no mark stands for (too short, or not a text), or one a step too large to keep held, even marked: {MARK_STANDS_FOR}"),
     }
 }
 
@@ -1728,9 +1730,24 @@ fn rerun(
     let given_one = entry.secrets.keys().any(|name| caps.iter().any(|c| matches!(c, Capability::SecretRead(s) if s == *name)));
     let fed = if given_one { taint::SecretFed::of(root, resolver) } else { taint::SecretFed::default() };
     // A line that says its record withholds keeps nothing that may be computed from a secret,
-    // and is one that computed with one: else it says other than the server writes.
-    if entry.withheld && (fed.is_empty() || entry.timeline.iter().any(|t| t.outputs.is_some() && fed.derives(&t.path))) {
-        return Rerun::Differs("its line says it withholds what the run computed from a secret, and keeps a step that may hold it, or computed with none".into());
+    // and is one that computed with one: else it says other than the server writes. Nor is it
+    // one where nothing made the record withhold (`secrets::born`): given a secret it had a
+    // key for (it commits to one), each step that may compute from one followed and none of
+    // them run, and each step that may hold one kept.
+    let nothing_withheld = given_one
+        && !entry.committed.is_empty()
+        && !entry.timeline.is_empty()
+        && fed.followed_to(recorder::Timer::DEPTH)
+        && !entry.timeline.iter().any(|t| fed.derives(&t.path))
+        && entry.timeline.iter().filter(|t| fed.holds(&t.path)).all(|t| t.outputs.is_some());
+    if entry.withheld && (fed.is_empty() || nothing_withheld || entry.timeline.iter().any(|t| t.outputs.is_some() && fed.derives(&t.path))) {
+        return Rerun::Differs("its line says it withholds what the run computed from a secret, and keeps a step that may hold it, computed with none, or did nothing that makes it withhold".into());
+    }
+    // And one that says it withholds nothing had a key to mark what it computed with: the
+    // server has one just where the entry commits to a secret (its salt), and withholds
+    // without one.
+    if !entry.withheld && given_one && !fed.is_empty() && entry.committed.is_empty() {
+        return Rerun::Differs("its line says it withholds nothing the run computed from a secret, and commits to no secret: the server has no key to mark such values without one".into());
     }
     // The steps it took, as the log keeps them.
     kept.extend(folders::written_texts(&host.performed).into_iter().filter_map(|t| carried_text(&Value::Text(t.to_string()))));
@@ -2719,7 +2736,7 @@ pub(crate) fn keys_for(data: Option<&str>, root_key: Option<&str>) -> Result<std
 /// `holon verify <export.json> [--head <hex>] [--files DIR] [--data DIR] [--root-key SOURCE]`:
 /// check an export, say what was found, and exit 0 only if it checks, every run in it run again
 /// and every run's state checked; 3 if nothing in it fails, but some runs couldn't be run again or
-/// some states checked; 1 if anything doesn't check.
+/// some states couldn't be checked; 1 if anything doesn't check.
 pub(crate) fn run(args: &[String]) -> i32 {
     let mut file = None;
     let mut head = None;

@@ -724,6 +724,12 @@ fn run_attempt(
 
     let mut host = RecordingHost::new();
     let mut timer = if waits.unrecorded { recorder::Timer::off() } else { recorder::Timer::new() };
+    // A step that may hold a secret's value, or what is computed from one, kept when it fits as
+    // its record writes it, each such value as its mark: whether it is kept, and so whether the
+    // record withholds, doesn't say how long the secret is (R63).
+    if !secret_fed.is_empty() && !waits.unrecorded {
+        timer = timer.measured(Box::new(secrets::Measured::new(secret_fed.clone(), born_key.clone(), run_hex.clone(), Redactor::of(secrets))));
+    }
     // Outbound requests go only where the grant allows, within its limits.
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
     // What this attempt will hold before it sends anything: the keys it reads that it may write,

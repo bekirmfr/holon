@@ -290,16 +290,20 @@ nodes that may compute from a secret; an outbound request built from one is logg
 parts reading `‹withheld: computed from a secret›`, and so are the run's own outputs, its
 response body and any other effect built from one. `verify` doesn't run such a run again, and
 says which step and which secret: "`text_contains` computed a true or false from the secret
-api_password: only a text of 6 characters or more is carried through a replay". To keep a run
-checked, keep facts like that out of the secret (a setting of its own beside it), and compare a
-secret whole with `secure_equals`.
+api_password: only a text of 6 characters or more, in a step the log keeps, is carried through a
+replay". To keep a run checked, keep facts like that out of the secret (a setting of its own
+beside it), and compare a secret whole with `secure_equals`.
 
-A step that gives a secret, or a value computed from one, larger than the log keeps of a step
-(16 KiB) makes a run like that too: on its mark the step is shorter, and the record can't show
-it as the run had it. Each entry says whether its record withholds (`withheld`), and `verify`
+A step that gives a secret, or a value computed from one, is kept when it fits what the log keeps
+of a step (16 KiB) as the record writes it, each such value as its mark: whether it is kept says
+nothing of how long the secret is. One larger than that even so makes a run like that too, the
+same for any secret. Each entry says whether its record withholds (`withheld`), and `verify`
 holds the line to that both ways: one that says it marked every such value fails where a step
-that gives a secret's value, or one computed from it, has no outputs; one that says it withholds
-fails where it keeps a step that may compute from a secret, or where the run had none.
+that gives a secret's value, or one computed from it, has no outputs, or where it commits to no
+secret (without a commitment's salt there is no key to mark one with); one that says it
+withholds fails where it keeps a step that may compute from a secret, where the run had none, or
+where nothing in it made its record withhold (no step computed from a secret, and each that
+gives one kept).
 
 A run's steps show which way a choice went, a choice by a secret included:
 `key.startsWith("live_") ? a : b` lists the steps of the branch it took. That is by design:
