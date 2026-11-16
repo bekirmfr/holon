@@ -408,28 +408,33 @@ pub(crate) fn served_status(status: u16, file: &data::Served, if_none_match: Opt
 /// on the next call.
 pub(crate) fn sync_listeners(state: &AppState) {
     let Some(listeners) = &state.listeners else { return };
-    let wanted: BTreeMap<String, u16> = state
+    // Each with its share's size as its grant says (`max_concurrent_runs`): a listener's share
+    // reads it again only when the table is free (dataplane::Share).
+    let wanted: BTreeMap<String, (u16, usize)> = state
         .deployments
         .lock()
         .unwrap()
         .iter()
         .filter(|(_, d)| d.life.status != Status::Stopped)
-        .filter_map(|(slug, d)| d.server.as_ref().and_then(|s| s.port).map(|port| (slug.clone(), port)))
+        .filter_map(|(slug, d)| {
+            let most = usize::try_from(d.permit.durable.max_concurrent_runs).unwrap_or(usize::MAX);
+            d.server.as_ref().and_then(|s| s.port).map(|port| (slug.clone(), (port, most)))
+        })
         .collect();
     let mut running = listeners.lock().unwrap();
     running.retain(|slug, (port, stop)| {
-        let keep = wanted.get(slug) == Some(port);
+        let keep = wanted.get(slug).map(|(wanted, _)| *wanted) == Some(*port);
         if !keep {
             let _ = stop.send(true);
         }
         keep
     });
     let mut failed = BTreeMap::new();
-    for (slug, port) in wanted {
+    for (slug, (port, most)) in wanted {
         if running.contains_key(&slug) {
             continue;
         }
-        match dataplane::start_listener(state, &slug, port) {
+        match dataplane::start_listener(state, &slug, port, most) {
             Ok(stop) => {
                 running.insert(slug, (port, stop));
             }

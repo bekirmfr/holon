@@ -219,6 +219,7 @@ Host defaults follow what the systems a flow talks to already expect:
 | Response header size | 64 KiB | 256 KiB | Above common server limits (8–16 KiB per line), well below abuse. |
 | Longest wait at one `await` (`max_await_seconds`) ✅ | 30 days | 90 days | A month covers the usual waits (Stripe retries a webhook for 3 days; approvals and invoices run to weeks); 90 days is core's longest `expires`. |
 | Runs waiting at once, per deployment (`max_waiting_runs`) ✅ | 10,000 | 100,000 | Bounds what one deployment keeps on disk and lists; the old fixed cap is the default. |
+| Runs answered at once, per deployment (`max_concurrent_runs`) ✅ | 64 | 448 | A deployment's share of the data plane's 512 threads: a flood, or runs held on a slow upstream, get 503s to retry and leave the rest to other deployments. 448 is the data plane's whole share for runs. |
 | A file read whole, or a range of one (`inline_file_bytes`) ✅ | 1 MiB | 16 MiB | Its text enters the run and the log; a bigger file is read by handle, lines or slice. |
 | File reads per run (`max_file_read_bytes`) ✅ | 64 MiB | 1 GiB | Bounds what one run holds in memory; a read past it fails the run. |
 | File writes and copies per run (`max_file_write_bytes`) ✅ | 1 GiB | 1 TiB | A copy by handle is how a big file moves; a run past it fails before any write lands. |
@@ -878,6 +879,9 @@ strings and bytes), so `axum` would add nothing. Every connection and request is
 | Body read timeout | 30 s | Matches the outbound request timeout; a slow body gets `408`. |
 | Request body | 10 MiB | As §4.2.1 sets for inbound (matching the outbound limit); over it is `413`, before reading when `Content-Length` says so. |
 | Connections per listener | 1,024 | Past it, connections wait in the OS accept queue instead of each taking a thread. |
+| Connections in all | 4,096, or what the open-file limit leaves past 256 (raised to the hard limit on unix) | Every listener's together, a WebSocket's while it is open (audit R16): past it, connections wait in the accept queue, and the server never runs out of files. |
+| A failed accept | tried again after 5 ms, doubling to 1 s | A loop that tried again at once spun on a core, printing each failure. |
+| Memory in all | `--max-memory`: half the machine's, or 3/4 of its container's | Every run's together (the allocator's process count): past it a run fails and a request is answered 503 before its body is read (audit R16). |
 
 A run is synchronous, so the handler runs on the runtime's blocking pool, bounded by its run
 budget. Listeners bind `127.0.0.1` unless the operator opens another address (`--data-host 0.0.0.0`).

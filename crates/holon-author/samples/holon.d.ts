@@ -526,6 +526,7 @@ declare module "holon" {
     max_memory?: number
     max_await_seconds?: number | Duration
     max_waiting_runs?: number
+    max_concurrent_runs?: number
     max_call_depth?: number
     inline_file_bytes?: number
     max_file_read_bytes?: number

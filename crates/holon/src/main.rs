@@ -25,7 +25,7 @@
 //! (local.rs); docs/engineering/themes/security.md says what each guards and what it doesn't.
 
 /// Counts the bytes each thread holds, so a round is held to the memory it is granted
-/// (`max_memory`, holon_core::memory).
+/// (`max_memory`, holon_core::memory), and the server to what it may hold in all (`--max-memory`).
 #[global_allocator]
 static ALLOCATOR: holon_core::memory::Counting<std::alloc::System> = holon_core::memory::Counting(std::alloc::System);
 
@@ -44,6 +44,7 @@ mod at_rest;
 mod auth;
 mod bindings;
 mod blobs;
+mod bounds;
 mod calls;
 mod can;
 mod changes;
@@ -548,6 +549,9 @@ const SERVE_USAGE: &str = "usage: holon serve [options]
                            (default 256M) [HOLON_FLOW_CACHE]
   --value-cache SIZE       memory kept for values runs read from disk, such as 64M; 0 keeps
                            none (default 64M) [HOLON_VALUE_CACHE]
+  --max-memory SIZE        memory the server holds in all, such as 4G: past it, a run fails and
+                           a request is answered 503 (default half the machine's, or 3/4 of its
+                           container's) [HOLON_MAX_MEMORY]
   --export-heads URL       send each run's head to a witness [HOLON_EXPORT_HEADS; its token in
                            HOLON_EXPORT_HEADS_TOKEN]
   --root-key SOURCE        where the root key is kept, which opens everything the server seals
@@ -732,6 +736,9 @@ fn serve(args: Vec<String>) {
     // How much memory values read from disk may keep (`--value-cache SIZE`, or HOLON_VALUE_CACHE;
     // units.rs's `ValueCache`).
     let mut value_cache: Option<String> = std::env::var("HOLON_VALUE_CACHE").ok().filter(|v| !v.trim().is_empty());
+    // How much memory the whole server may hold for its runs to go on (`--max-memory SIZE`, or
+    // HOLON_MAX_MEMORY; bounds.rs, holon_core::memory).
+    let mut max_memory: Option<String> = std::env::var("HOLON_MAX_MEMORY").ok().filter(|v| !v.trim().is_empty());
     // A witness every run's head goes to (`--export-heads URL`, or HOLON_EXPORT_HEADS; heads.rs).
     let mut export_heads: Option<String> = std::env::var("HOLON_EXPORT_HEADS").ok().filter(|v| !v.trim().is_empty());
     while let Some(a) = args.next() {
@@ -778,6 +785,12 @@ fn serve(args: Vec<String>) {
             value_cache = args.next();
             if value_cache.is_none() {
                 eprintln!("--value-cache needs a size: 64M, 1G, or 0 to keep none");
+                std::process::exit(2);
+            }
+        } else if a == "--max-memory" {
+            max_memory = args.next();
+            if max_memory.is_none() {
+                eprintln!("--max-memory needs a size: 512M, 4G");
                 std::process::exit(2);
             }
         } else if a == "--data-host" {
@@ -1059,6 +1072,24 @@ fn serve(args: Vec<String>) {
             }
         }
     }
+    // The most the server holds for its runs to go on: past it a round fails, as for its own
+    // `max_memory`, and a request waits for none (bounds.rs). Half the machine by default.
+    let cap = match max_memory {
+        Some(v) => match verify::budget_of(&v) {
+            Some(bytes) if bytes >= bounds::LEAST_MAX_MEMORY => Some(bytes),
+            _ => {
+                eprintln!("holon: --max-memory (or HOLON_MAX_MEMORY) needs a size of at least 64M: 512M or 4G, not {v:?}");
+                std::process::exit(2);
+            }
+        },
+        None => bounds::default_max_memory(),
+    };
+    if let Some(bytes) = cap {
+        holon_core::memory::set_process_cap(bytes);
+        println!("holon: holds itself to {} of memory (--max-memory)", folders::size_text(bytes));
+    }
+    data_limits.max_connections_total = bounds::max_connections_total();
+    data_limits.connections = Arc::new(tokio::sync::Semaphore::new(data_limits.max_connections_total));
     let policy = Arc::new(Policy::load(&policy_at).unwrap_or_else(|e| refuse_to_start(e)));
     let dotenv_path = dotenv_arg.clone().map(std::path::PathBuf::from);
     let sources = secret_sources::Sources::new(dotenv_path.clone()).unwrap_or_else(|e| refuse_to_start(e));
