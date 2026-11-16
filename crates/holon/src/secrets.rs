@@ -935,16 +935,129 @@ pub(crate) fn secret_in(v: &holon_core::Value, vault: &Vault) -> Option<String> 
 }
 
 /// The names of every secret in `vault` whose value, current or retired, occurs in `v`, in the
-/// order [`secret_in`] finds the first.
+/// order [`secret_in`] finds the first. In any spelling JSON gives it ([`holds_spelled`]): a
+/// secret with a quote in it, written out with `json_stringify`, is still the secret.
 pub(crate) fn secrets_in(v: &holon_core::Value, vault: &Vault) -> Vec<String> {
     let vault = vault.lock().unwrap();
     let mut found: Vec<String> = vec![];
     for (name, value) in vault.current.iter().chain(vault.retired.iter().map(|(name, _, value)| (name, value))) {
-        if !found.contains(name) && value_holds(v, &|s: &str| s.contains(value.as_str())) {
+        if !found.contains(name) && value_holds(v, &|s: &str| holds_spelled(s, value.as_str())) {
             found.push(name.clone());
         }
     }
     found
+}
+
+/// How long a spelling of a value is looked for: each time a value with something JSON escapes
+/// is written out, its backslashes double, so a spelling this long is some fifteen deep, and
+/// longer than any one text a flow builds that way. Not a depth: how deep a mark is put in place
+/// must not depend on what the secret holds, or a record's shape would say so. Past it, and for
+/// any other writer's spelling, a text that still holds the value is found by undoing its escapes
+/// ([`holds_spelled`]), and the record withholds it whole ([`RESPELLED`]).
+const SPELLED_LONG: usize = 64 * 1024;
+
+/// `value` as it is, then as it reads written out as JSON text once, twice and so on: a quote, a
+/// backslash, a newline or another control character in it is escaped each time, and the value
+/// as it was no longer appears (a stringified payload inside a JSON body is two deep). A value
+/// with none of those has one spelling. What finds a value by its text looks for each of these:
+/// the record ([`Redactor`]) to write its mark there, in place.
+pub(crate) fn spellings(value: &str) -> Vec<String> {
+    let mut out = vec![value.to_string()];
+    // (Each one is longer than the last, so it ends; the count is a guard, never reached.)
+    while out.len() < 64 {
+        let last = out.last().expect("it begins with one");
+        let Ok(quoted) = serde_json::to_string(last.as_str()) else { break };
+        let next = &quoted[1..quoted.len() - 1];
+        if next == last || next.len() > SPELLED_LONG {
+            break;
+        }
+        out.push(next.to_string());
+    }
+    out
+}
+
+/// `s` with one level of JSON's escapes undone wherever one stands (`\"`, `\\`, `\/`, `\n` and
+/// the other letters, `\u0022`, a pair of surrogates), if it has any: what a text held before it
+/// was last written out as JSON, whoever wrote it and however (`\u0022` for a quote is as good
+/// as `\"`). Not a parse: the text needn't be JSON, and an escape is undone inside or outside
+/// a string.
+fn unspelled(s: &str) -> Option<String> {
+    if !s.contains('\\') {
+        return None;
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let hex4 = |at: usize| -> Option<u32> {
+        let digits: String = chars.get(at..at + 4)?.iter().collect();
+        u32::from_str_radix(&digits, 16).ok().filter(|_| digits.chars().all(|c| c.is_ascii_hexdigit()))
+    };
+    let mut out = String::with_capacity(s.len());
+    let (mut i, mut changed) = (0, false);
+    while i < chars.len() {
+        if chars[i] != '\\' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let plain = match chars.get(i + 1) {
+            Some(c @ ('"' | '\\' | '/')) => Some((*c, 2)),
+            Some('n') => Some(('\n', 2)),
+            Some('r') => Some(('\r', 2)),
+            Some('t') => Some(('\t', 2)),
+            Some('b') => Some(('\u{8}', 2)),
+            Some('f') => Some(('\u{c}', 2)),
+            Some('u') => match hex4(i + 2) {
+                // A pair of surrogates is one character.
+                Some(high @ 0xD800..=0xDBFF) if chars.get(i + 6) == Some(&'\\') && chars.get(i + 7) == Some(&'u') => hex4(i + 8)
+                    .filter(|low| (0xDC00..=0xDFFF).contains(low))
+                    .and_then(|low| char::from_u32(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)))
+                    .map(|c| (c, 12)),
+                Some(code) => char::from_u32(code).map(|c| (c, 6)),
+                None => None,
+            },
+            _ => None,
+        };
+        match plain {
+            Some((c, took)) => {
+                out.push(c);
+                i += took;
+                changed = true;
+            }
+            None => {
+                out.push('\\');
+                i += 1;
+            }
+        }
+    }
+    changed.then_some(out)
+}
+
+/// Whether `s` satisfies `found`, as it is or with its JSON escapes undone, once, again, and so on
+/// until none is left ([`unspelled`]): each time a text is written out as JSON it gains a level,
+/// and undone that many times it is the text it was. A text with no backslash is looked at once.
+pub(crate) fn spelled_any(s: &str, found: &dyn Fn(&str) -> bool) -> bool {
+    if found(s) {
+        return true;
+    }
+    let mut text = match unspelled(s) {
+        Some(text) => text,
+        None => return false,
+    };
+    // Each time undoes at least one escape, so it ends; a text of nothing but backslashes halves.
+    loop {
+        if found(&text) {
+            return true;
+        }
+        match unspelled(&text) {
+            Some(next) => text = next,
+            None => return false,
+        }
+    }
+}
+
+/// Whether `s` holds `value` in any spelling JSON gives it, however deep ([`spelled_any`]): what
+/// a guard asks before a value is written or sent, where a secret must not go in any spelling.
+pub(crate) fn holds_spelled(s: &str, value: &str) -> bool {
+    !value.is_empty() && spelled_any(s, &|text: &str| text.contains(value))
 }
 
 /// Whether any text in `v`, a record's keys included, satisfies `found`.
@@ -1034,8 +1147,33 @@ pub(crate) fn mark(name: &str, shown: Option<&str>) -> String {
 
 /// Replaces each secret value with its mark ([`mark`]).
 pub(crate) struct Redactor {
-    /// (value, mark), longest value first, so a value containing another is replaced whole.
+    /// (value, mark), longest value first, so a value containing another is replaced whole. A
+    /// value is here in each spelling JSON gives it ([`spellings`]).
     pairs: Vec<(String, String)>,
+    /// (value, what a text is written as that still holds it): a value as it is, for the texts
+    /// that hold it in a spelling no pair has (deeper than [`spellings`] goes, or another
+    /// writer's: `\u0022` for a quote). Such a text is withheld whole ([`RESPELLED`]).
+    whole: Vec<(String, String)>,
+}
+
+/// How a text is written that holds a value the record never keeps in a spelling no mark could
+/// be put in place of: `‹respelled:secret:name›`, the whole text. A mark of its own kind, so a caller
+/// who sends the same reads as a look-alike, and `holon verify` takes a step fed one from the
+/// log, as it does one fed any value the log doesn't hold.
+pub(crate) const RESPELLED: &str = "‹respelled:";
+
+/// The pairs for `value` written as `mark`: one for each of its spellings.
+fn spelled(value: &str, mark: &str) -> impl Iterator<Item = (String, String)> + use<> {
+    let mark = mark.to_string();
+    spellings(value).into_iter().map(move |spelling| (spelling, mark.clone()))
+}
+
+/// What a text that still holds `value` is written as, if `value` is one a text could hold
+/// unmarked: long enough to be told from chance ([`MIN_SECRET_LEN`]), or one JSON spells another
+/// way. `kind`, `name`: what the record calls it, as its mark does (`secret:k`,
+/// `token:answer access_token`, `taint:authorization`).
+fn held_whole(value: &str, kind: &str, name: &str) -> Option<(String, String)> {
+    (value.chars().count() >= MIN_SECRET_LEN || spellings(value).len() > 1).then(|| (value.to_string(), format!("{RESPELLED}{kind}:{name}›")))
 }
 
 impl Redactor {
@@ -1046,16 +1184,20 @@ impl Redactor {
             .iter()
             .map(|(name, value)| (mark(name, vault.shown.get(name).map(String::as_str)), value))
             .chain(vault.retired.iter().map(|(name, shown, value)| (mark(name, Some(shown)), value)))
-            .flat_map(|(mark, value)| {
-                // As it is, and as it reads inside JSON text (a request's body, a value written
-                // out with `json_stringify`), where a quote, a backslash or a newline in it is
-                // escaped and the value as it is no longer appears.
-                let escaped = serde_json::to_string(value.as_str()).ok().map(|q| q[1..q.len() - 1].to_string()).filter(|e| e != value.as_str());
-                std::iter::once((value.to_string(), mark.clone())).chain(escaped.map(|e| (e, mark)))
-            })
+            // As it is, and as it reads inside JSON text however deep (a request's body, a value
+            // written out with `json_stringify`, a stringified payload inside one), where a
+            // quote, a backslash or a newline in it is escaped and the value as it is no longer
+            // appears.
+            .flat_map(|(mark, value)| spelled(value.as_str(), &mark))
             .collect();
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        let whole = vault
+            .current
+            .iter()
+            .chain(vault.retired.iter().map(|(name, _, value)| (name, value)))
+            .filter_map(|(name, value)| held_whole(value.as_str(), "secret", name))
+            .collect();
+        Redactor { pairs, whole }
     }
 
     /// The credentials a run's calls answered ([`answered_tokens`]), as `‹token:answer field #a1b2c3d4›`:
@@ -1068,11 +1210,11 @@ impl Redactor {
                 Some(prints) => format!("‹token:{name} #{}›", prints.fingerprint(value)),
                 None => format!("‹token:{name}›"),
             };
-            let escaped = serde_json::to_string(value.as_str()).ok().map(|q| q[1..q.len() - 1].to_string()).filter(|e| e != value.as_str());
-            pairs.extend(std::iter::once((value.clone(), mark.clone())).chain(escaped.map(|e| (e, mark))));
+            pairs.extend(spelled(value, &mark));
         }
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        let whole = tokens.iter().filter_map(|(name, value)| held_whole(value, "token", name)).collect();
+        Redactor { pairs, whole }
     }
 
     /// What a run computed from its secrets ([`born`]), each as `‹derived #7c1e9a02›`, the start
@@ -1082,19 +1224,21 @@ impl Redactor {
         let mut pairs: Vec<(String, String)> = Vec::new();
         for (hash, value) in &born.values {
             let mark = format!("{DERIVED_MARK}{}›", &hash[..8]);
-            let escaped = serde_json::to_string(value.as_str()).ok().map(|q| q[1..q.len() - 1].to_string()).filter(|e| e != value);
-            pairs.extend(std::iter::once((value.clone(), mark.clone())).chain(escaped.map(|e| (e, mark))));
+            pairs.extend(spelled(value, &mark));
         }
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        // A value that JSON spells another way leaves its run's record withholding ([`born`]), so
+        // none of these is held whole.
+        Redactor { pairs, whole: Vec::new() }
     }
 
     /// A run's tokens, as `‹token:name›`: a token is a bearer credential for its waiting point.
     pub(crate) fn tokens(tokens: &BTreeMap<String, String>) -> Redactor {
         let mut pairs: Vec<(String, String)> =
-            tokens.iter().map(|(name, token)| (token.clone(), format!("‹token:{name}›"))).collect();
+            tokens.iter().flat_map(|(name, token)| spelled(token, &format!("‹token:{name}›"))).collect();
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        let whole = tokens.iter().filter_map(|(name, token)| held_whole(token, "token", name)).collect();
+        Redactor { pairs, whole }
     }
 
     /// A run's tainted values (`data::tainted`), each as `‹taint:key›`, the key it was found at;
@@ -1104,19 +1248,20 @@ impl Redactor {
         let mut pairs: Vec<(String, String)> = Vec::new();
         for (key, value) in values {
             let mark = format!("{TAINT_MARK}{key}›");
-            let escaped = serde_json::to_string(value.as_str()).ok().map(|q| q[1..q.len() - 1].to_string()).filter(|e| e != value);
-            pairs.extend(std::iter::once((value.clone(), mark.clone())).chain(escaped.map(|e| (e, mark))));
+            pairs.extend(spelled(value, &mark));
         }
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        let whole = values.iter().filter_map(|(key, value)| held_whole(value, "taint", key)).collect();
+        Redactor { pairs, whole }
     }
 
     /// The tokens a run's starts were handed (`calls::handed`), each as `‹token:name›`, as the
     /// run's own are: the same name may come from several starts.
     pub(crate) fn handed(handed: &[(String, String)]) -> Redactor {
-        let mut pairs: Vec<(String, String)> = handed.iter().map(|(name, token)| (token.clone(), format!("‹token:{name}›"))).collect();
+        let mut pairs: Vec<(String, String)> = handed.iter().flat_map(|(name, token)| spelled(token, &format!("‹token:{name}›"))).collect();
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        let whole = handed.iter().filter_map(|(name, token)| held_whole(token, "token", name)).collect();
+        Redactor { pairs, whole }
     }
 
     /// This and `other` together: an entry is redacted once, so a mark one of them writes is
@@ -1124,7 +1269,24 @@ impl Redactor {
     pub(crate) fn and(mut self, other: Redactor) -> Redactor {
         self.pairs.extend(other.pairs);
         self.pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+        self.whole.extend(other.whole);
         self
+    }
+
+    /// What `written`, a text with every spelling a pair has already marked, is written as if it
+    /// still holds a value once its escapes are undone: that value's [`RESPELLED`], the whole
+    /// text. None: it holds none, and stays as written.
+    fn respelled(&self, written: &str) -> Option<&str> {
+        if !written.contains('\\') {
+            return None;
+        }
+        // The first it holds, by the order the values came in: a secret before a token.
+        let held: std::cell::Cell<Option<&str>> = std::cell::Cell::new(None);
+        spelled_any(written, &|text: &str| {
+            held.set(self.whole.iter().find(|(value, _)| text.contains(value.as_str())).map(|(_, mark)| mark.as_str()));
+            held.get().is_some()
+        });
+        held.get()
     }
 
     /// Whether it has nothing to replace.
@@ -1134,7 +1296,7 @@ impl Redactor {
 
     /// Whether `s` holds any of its values.
     pub(crate) fn holds(&self, s: &str) -> bool {
-        self.pairs.iter().any(|(value, _)| !value.is_empty() && s.contains(value.as_str()))
+        self.pairs.iter().any(|(value, _)| !value.is_empty() && s.contains(value.as_str())) || self.respelled(s).is_some()
     }
 
     pub(crate) fn text(&self, s: &str) -> String {
@@ -1144,7 +1306,10 @@ impl Redactor {
                 out = out.replace(value.as_str(), mark);
             }
         }
-        out
+        match self.respelled(&out) {
+            Some(whole) => whole.to_string(),
+            None => out,
+        }
     }
 
     pub(crate) fn svalue(&self, v: &mut SValue) {
@@ -1187,7 +1352,8 @@ impl Redactor {
         // Nothing to mark and nothing that reads as a mark: the text stays as it is, uncopied
         // (interpreter-path-L4.md, step 2).
         if !s.contains('‹') && self.pairs.iter().all(|(value, _)| value.is_empty() || !s.contains(value.as_str())) {
-            return None;
+            // Unless it holds one in a spelling no pair has: then it is withheld whole.
+            return self.respelled(s).map(|whole| write_marked(&[(whole, true)]));
         }
         // JSON holding a tainted number as a number (a body's `"number": 4111…`): its mark, a
         // text, goes where the number was, and the text stays JSON, so what reads it reads the rest.
@@ -1216,6 +1382,10 @@ impl Redactor {
             at = p + self.pairs[k].0.len();
         }
         pieces.push((&s[at..], false));
+        // What is left between the marks may still hold a value, spelled as no pair has it.
+        if let Some(whole) = pieces.iter().filter(|(_, mark)| !mark).find_map(|(text, _)| self.respelled(text)) {
+            return Some(write_marked(&[(whole, true)]));
+        }
         Some(write_marked(&pieces))
     }
 
@@ -1340,7 +1510,7 @@ pub(crate) fn texts_mut(v: &mut SValue, f: &mut impl FnMut(&mut String)) {
 }
 
 /// What follows a mark's `‹`: the kinds of value the log writes a mark in place of.
-const MARKED: [&str; 4] = ["secret:", "token:", "taint:", "derived #"];
+const MARKED: [&str; 5] = ["secret:", "token:", "taint:", "derived #", "respelled:"];
 
 /// How a tainted value's mark begins: `‹taint:number›`.
 const TAINT_MARK: &str = "‹taint:";
