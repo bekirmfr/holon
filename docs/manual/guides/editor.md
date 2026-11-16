@@ -130,7 +130,11 @@ A flow tab is a canvas of nodes and wires.
   answered to the secret "client_secret""); and where a hash or a signature made with it goes
   ("answers its caller with a hash or signature made with the secret "signing_key""). A placed
   holon is marked for what its insides do. A node that only computes with it (an HMAC whose
-  result is only compared, Stripe's verify) isn't.
+  result is only compared, Stripe's verify) isn't. Wherever what a flow may do is listed (the
+  **It may** strip above the canvas, the deploy question, a flow's status and settings, the
+  Inspector, the Library, the host's holdings), a line of a secret has the same 🔑 before it and
+  is in the secret's colour, so it is the first thing read; in the strip and the deploy question
+  it says where the secret goes and where what is made with it goes, as the approval does.
 
 ### Holons on the canvas
 

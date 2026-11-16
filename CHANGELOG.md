@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A secret's lines stand out wherever what a flow may do is listed.** In the editor, each line
+  of a secret (reading one, where it is sent, where what is answered to it or made with it goes,
+  a route that answers with one) has a 🔑 before it and is in the secret's colour: in the It may
+  strip, the deploy question, a flow's status and settings, the Inspector, the Library and the
+  host's holdings. The canvas's marks on the nodes a secret reaches use the same colour. The It
+  may strip now says where the draft sends each secret, as the approval will, before anything is
+  sent to a server.
 - **The approval says where a hash, a signature or a host's answer made with a secret goes.** A
   route answering `hmac_sha256(key, req.query.msg)` signs whatever its caller sends, and one
   answering the token a host gave for a secret hands out a live token; both are clean (a flow
