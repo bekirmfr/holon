@@ -1120,7 +1120,9 @@ impl Accounts {
     }
 
     /// Who a bearer token is: a session's person, or an API token's agent or service; neither
-    /// when disabled. Who it is is seen now, and the API token used (`saw`).
+    /// when disabled, nor an agent or a service while its owner is (it acts for them: whoever was
+    /// stopped doesn't go on through what they own). Enabling them lets its tokens in again. Who
+    /// it is is seen now, and the API token used (`saw`).
     pub(crate) fn who(&self, token: &str) -> Option<Who> {
         let hash = hash_of(token);
         let now = epoch_now();
@@ -1135,6 +1137,9 @@ impl Accounts {
                 return None;
             };
             let p = book.users.iter().find(|p| p.name == *name && !p.disabled)?;
+            if p.owner.as_deref().is_some_and(|o| book.users.iter().any(|u| u.name == o && u.disabled)) {
+                return None;
+            }
             (Who { name: p.name.clone(), kind: p.kind }, id)
         };
         self.saw(&who.name, id.as_deref(), now);
@@ -1602,7 +1607,8 @@ impl Accounts {
         })
     }
 
-    /// Disable `name` (their sessions end) or enable them again.
+    /// Disable `name` (their sessions end, and what they own's tokens are refused: `who`) or
+    /// enable them again.
     pub(crate) fn set_disabled(&self, name: &str, disabled: bool) -> Result<(), String> {
         // What is bound stays as it is: no new version, so none is made by anyone.
         self.change_access("", "", None, |book, _| {
@@ -2178,12 +2184,33 @@ mod tests {
         assert!(a.remove("bob", "ada").unwrap_err().contains("bob owns ci: give it another owner first"));
         a.set_owner("ci", "ada").unwrap();
         a.remove("bob", "ada").unwrap();
-        // Disabling an owner leaves what they own as it was.
-        a.invite("eve", "admin", None, "ada").unwrap();
-        a.set_owner("claude", "eve").unwrap();
-        a.set_disabled("eve", true).unwrap();
-        let (token, _) = a.create_token("claude", "the agent", "ada").unwrap();
-        assert_eq!(a.who(&token).map(|w| w.name), Some("claude".into()));
+    }
+
+    /// A token speaks for someone only while everyone it acts for may: a person's session while
+    /// they aren't disabled, an agent's or a service's token while neither it nor its owner is.
+    /// Each row disables one of them, and enabling it lets the token in again; what wasn't
+    /// disabled stays as it was (the agent isn't disabled by its owner).
+    #[test]
+    fn a_token_speaks_only_while_whoever_it_acts_for_may() {
+        for kind in [Kind::Agent, Kind::Service] {
+            let role = if kind == Kind::Agent { "agent" } else { "editor" };
+            for stopped in ["eve", "bot"] {
+                let (a, _) = set_up();
+                let link = a.invite("eve", "editor", None, "ada").unwrap();
+                let (session, _) = a.accept(&link, PW).unwrap();
+                a.add("bot", kind, role, "eve", "ada").unwrap();
+                let (token, _) = a.create_token("bot", "the bot", "eve").unwrap();
+                let speaks = |a: &Accounts, session: &str| (a.who(session).map(|w| w.name), a.who(&token).map(|w| w.name));
+                assert_eq!(speaks(&a, &session), (Some("eve".into()), Some("bot".into())), "{kind:?}: both, before");
+                a.set_disabled(stopped, true).unwrap();
+                let eve = (stopped != "eve").then(|| "eve".to_string());
+                assert_eq!(speaks(&a, &session), (eve, None), "{kind:?}, {stopped} disabled: the bot's token is refused");
+                assert_eq!(a.principal("bot").map(|p| p.disabled), Some(stopped == "bot"), "{kind:?}: only {stopped} is disabled");
+                a.set_disabled(stopped, false).unwrap();
+                let session = if stopped == "eve" { a.sign_in("eve", PW).unwrap().0 } else { session };
+                assert_eq!(speaks(&a, &session), (Some("eve".into()), Some("bot".into())), "{kind:?}, {stopped} enabled: the same token again");
+            }
+        }
     }
 
     /// This machine's run file is the account that set the server up (the plan's D45): tied in the

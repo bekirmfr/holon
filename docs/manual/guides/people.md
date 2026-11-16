@@ -70,7 +70,8 @@ holon people add ana --person --role editor
 
 which prints the link. Later, on the same page (or with `holon people set` and `reset`): change
 their role, **reset** their password (a new link; their sign-ins end), **disable** them (they are
-signed out, and can't sign in until enabled), or remove them. The server never lets the last
+signed out, and can't sign in until enabled; the tokens of the agents and services they own are
+refused until then too), or remove them. The server never lets the last
 admin go. While access changes wait for people, someone who decides runs or holds what is an
 admin's is reset as [No one takes over someone](#no-one-takes-over-someone) says.
 

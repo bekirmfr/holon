@@ -245,7 +245,7 @@ pub(crate) fn people_lines(v: &Value) -> Vec<String> {
         let note = match (p["disabled"] == true, p["invited"] == true, p["owner_disabled"] == true) {
             (true, _, _) => "disabled",
             (_, true, _) => "invited, not joined yet",
-            (_, _, true) => "its owner is disabled",
+            (_, _, true) => "its owner is disabled: its tokens are refused",
             _ => "",
         };
         rows.push(vec![
@@ -343,7 +343,7 @@ mod tests {
                 "name  kind     holds                                  owner  email            since                by",
                 "ada   person   admin                                  -      -                1970-01-01T00:00:00  -",
                 "bob   person   viewer, editor on payout via payments  -      bob@example.com  1970-01-01T00:01:00  ada  invited, not joined yet",
-                "ci    service  -                                      bob    -                1970-01-01T00:00:00  ada  its owner is disabled",
+                "ci    service  -                                      bob    -                1970-01-01T00:00:00  ada  its owner is disabled: its tokens are refused",
             ]
         );
         assert_eq!(token_lines(&people), ["", "token  of  label         made                 by", "ab12   ci  CI on GitHub  1970-01-01T00:00:00  ada"]);

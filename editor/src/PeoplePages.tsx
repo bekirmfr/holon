@@ -616,8 +616,11 @@ function AgentsList({ me, a }: { me: string; a: Access }) {
             </select>
             <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
               <HeldElsewhere p={p} />
-              {p.owner_disabled && <span style={{ color: "var(--warn)" }}>its owner is disabled</span>}
-              {p.disabled && <span style={{ color: "var(--bad)" }}>{p.owner_disabled ? " · " : ""}disabled: its tokens are refused</span>}
+              {p.disabled ? (
+                <span style={{ color: "var(--bad)" }}>disabled: its tokens are refused</span>
+              ) : (
+                p.owner_disabled && <span style={{ color: "var(--bad)" }}>its owner is disabled: its tokens are refused</span>
+              )}
             </span>
             <Seen what="last seen" at={p.last_seen} />
             <button style={small} aria-label={`make a token for ${p.name}`} {...gateOf(mayTokens(can, p, me), { title: "a new token for it, shown once" })} onClick={() => makeToken(p, dialog, act, setMade)}>
@@ -1019,7 +1022,7 @@ function PrincipalView({ name, me, a }: { name: string; me: string; a: Access })
     owns.length > 0 && `owns ${owns.join(", ")}`,
     p.invited && "invited, link not used yet",
     p.disabled && "disabled",
-    p.owner_disabled && "its owner is disabled",
+    p.owner_disabled && "its owner is disabled: its tokens are refused",
     `added ${utc(p.created_at)}${p.created_by ? ` by ${p.created_by}` : ""}`,
     `last seen ${seenSaid(p.last_seen, Date.now()).text}`,
   ].filter(Boolean);

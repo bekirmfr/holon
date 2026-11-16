@@ -92,7 +92,9 @@ struct Principal {
 - **A server without accounts** (the tests') stays open, with no principal. Anything that needs a
   person (deciding, §8) is refused there, as today.
 - **Owners.** An agent or service has an owner, a person. Disabling the owner doesn't disable the
-  agent, but the People page flags it ("its owner is disabled"). Only a principal holding
+  agent, but its tokens are refused until the owner is enabled again (it acts for them: whoever
+  was stopped doesn't go on through what they own), and the People page says so ("its owner is
+  disabled: its tokens are refused"). Only a principal holding
   `people.manage` on it, or its owner, makes or revokes its tokens.
 - **Ways in.** Whoever made the link a person's password was last set from (an invite, a reset),
   or set the email a provider matches them by, could act as them: who used a link can't be told.
