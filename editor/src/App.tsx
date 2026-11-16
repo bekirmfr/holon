@@ -562,6 +562,19 @@ function Canvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint]);
   const flowCapabilities = useMemo(() => flowCaps ?? [], [flowCaps]);
+  // Where the canvas's flow sends each secret it reads, and what is made with it (core's
+  // `sent_secrets`): the It may strip says it beside the secret, as the approval will.
+  const flowSent = useMemo(() => {
+    try {
+      const { nodes: ns, edges: es } = live.current;
+      if (ns.length === 0) return undefined;
+      return ev.sent_secrets(flowUnitHash(ns, es, ev, settings.port, settings)) as Record<string, string[]>;
+    } catch {
+      return undefined;
+    }
+    // live.current is read on purpose, as `flowCaps` above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint]);
   // The queues it sends to, by name: Try a request says what their messages came to.
   const sendsTo = useMemo(() => flowCapabilities.flatMap((c) => /^QueueSend\("(.*)"\)$/.exec(c)?.[1] ?? []), [flowCapabilities]);
   // What each node does with a secret (a request it is sent in, a write the host refuses, the
@@ -1328,7 +1341,7 @@ function Canvas({
       />
     )}
     <div className="hl-edit">
-    {!viewing && shown === "canvas" && <MayStrip items={mayItems} deployed={deployedUnit !== undefined} />}
+    {!viewing && shown === "canvas" && <MayStrip items={mayItems} deployed={deployedUnit !== undefined} sent={flowSent} />}
     {viewing && shown === "canvas" && <RunStrip slug={viewing} run={flow.selectedRun} unit={deployments.find((d) => d.slug === viewing)?.unit} />}
     <div
       className={[

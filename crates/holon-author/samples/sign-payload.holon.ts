@@ -4,6 +4,11 @@
 // the body in base64. The key is never in the run log, yet holon verify checks each run from the
 // signature its log entry kept.
 //
+// A signature isn't the key, and whoever is handed one holds what the key's owner signed: this
+// route signs whatever its caller sends. So its approval says where the signature goes, beside
+// the key: "read the secret "signing_key"; a hash or signature made with it goes to its callers",
+// and holon check names the route that does it. Nothing is refused; a person reads it and decides.
+//
 // Before it works, set its secret in the flow's Settings:
 //   signing_key   any secret of 6 characters or more to sign with
 //

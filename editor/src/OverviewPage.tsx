@@ -11,7 +11,6 @@ import { useEffect, useState, type ReactNode } from "react";
 import { routeOf, said, type Approval, type Reviewable } from "./approvals";
 import { isApproval } from "./decisions";
 import { describeItem } from "./holon";
-import { itemParts } from "./holdings";
 import { checkChains, getWarnings, type DeploymentEntry, type HostWarning } from "./server";
 import { chainSaid, failedShare, greeting, hostLine, liveOf, tookSaid } from "./overview";
 import { MayCount, StateChips, startsOn, SummaryCells, time, useSummary, versionWaiting } from "./FlowCells";
@@ -20,6 +19,7 @@ import { ActivityList } from "./Pages";
 import { useToast, type Notify } from "./ui/Toast";
 import { useCan } from "./can";
 import type { WaitingRunOf } from "./useApprovals";
+import { isSecretItem, saidAsText } from "./SecretSaid";
 
 const short = (hash: string) => (hash ? `${hash.slice(0, 4)}…${hash.slice(-4)}` : "–");
 
@@ -316,8 +316,8 @@ function Change({ a }: { a: Reviewable }) {
         </span>
       )}
       {needs.slice(0, 2).map((n) => (
-        <span key={n} className={`hl-chip ${itemParts(n).kind === "SecretRead" ? "hl-chip--secret" : "hl-chip--ext"}`} title="a new permission it asks for">
-          {describeItem(n)}
+        <span key={n} className={`hl-chip ${isSecretItem(n) ? "hl-chip--secret" : "hl-chip--ext"}`} title="a new permission it asks for">
+          {saidAsText(n, describeItem(n))}
         </span>
       ))}
       <span className="hl-needs__said">

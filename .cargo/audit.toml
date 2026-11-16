@@ -1,0 +1,18 @@
+# What `cargo audit` (ci.yml's `audit` job) is told not to fail on, each with why. An advisory
+# is listed here only when it can't reach Holon as it uses the crate, or while its fix is on its
+# way under a name: take a line out when its reason stops holding.
+[advisories]
+ignore = [
+    # rsa, the Marvin attack: timing of operations with a private key. holon-core uses rsa only to
+    # verify a JWT's signature with a public key (jwt.rs: RsaPublicKey, pkcs1v15 and pss
+    # verifying keys); no private key is ever loaded. No release of rsa 0.9 fixes it.
+    "RUSTSEC-2023-0071",
+    # crypto-bigint, timing of operations meant to be constant-time: reached only through rsa,
+    # for the public-key verification above.
+    "RUSTSEC-2026-0387",
+    # libsqlite3-sys, the SQLite it bundles (CVE-2026-119375): a crafted database file and its
+    # -wal leak process memory. It reaches a database binding whose file someone else can write.
+    # Its fix is rusqlite past 0.32 (libsqlite3-sys 0.39 or newer), the audit register's R40,
+    # with Codebase review, 2026-11-15: take this line out with that upgrade.
+    "RUSTSEC-2026-0459",
+]

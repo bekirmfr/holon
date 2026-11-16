@@ -256,6 +256,10 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
     }
     let status = (entry.kind == "request").then(|| data::respond(outcome.outputs.first().and_then(Option::as_ref)).status);
     if let Some(e) = &outcome.error {
+        // The server short of memory says nothing of the version: every run's memory together.
+        if let holon_host::RunError::ServerMemory { .. } = e {
+            return Replay::CantTell(format!("the server was short of memory as it ran: {}", e.message()));
+        }
         let why = match e {
             holon_host::RunError::StepBudget { .. } | holon_host::RunError::FuelBudget { .. } | holon_host::RunError::MemoryBudget { .. } => {
                 format!("it doesn't finish within what the deployment is granted: {}", e.message())

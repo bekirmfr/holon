@@ -116,7 +116,16 @@ it may:
 
 A websocket is listed under its server with the blocks it has, `WebSocket /room/:name: open,
 message, close`. A flow that touches nothing outside says `it only computes: it reads and changes
-nothing outside`. Each mistake goes to stderr as `file:line:col: message`, with the line and a caret
+nothing outside`. A flow that does something with a secret says what, under `with its secrets:`,
+each line with its handler and the line of the text: where the secret is sent (`POST /stripe, line
+11: sends the secret "slack_webhook_path" to https://hooks.slack.com`), a route that answers its
+caller with it, where what a call answered to it goes and where a hash or a signature made with it
+goes (`answers its caller with a hash or signature made with the secret "signing_key"`), and a
+write or a call the host will refuse when the run tries it (`would keep the
+secret "k" (write its state "kept"): the host refuses it`, `would hand the secret "k" to another
+flow (…): the host refuses it`). These are the lines the editor marks the canvas's nodes with, and
+an agent's `check` tool prints them too, so a refused write is known before the flow runs. They
+are cautious: a value that may hold the secret is marked, so the exit code stays 0. Each mistake goes to stderr as `file:line:col: message`, with the line and a caret
 under the place, and the exit code is 1.
 
 ### `holon show`
@@ -135,7 +144,9 @@ holon fmt <file>
 
 Lays the file out in the canonical form, as Prettier does, at 100 columns and without
 semicolons, keeping its comments and blank lines. It writes only a text that compiles to the same
-flow.
+flow, and one whose calls, templates and functions written in place nest 20 deep at most, a
+function counting twice ([the reference](../language/reference.md#files) says why): past it, it
+says where to name a part.
 
 ### `holon types`
 
@@ -173,6 +184,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--log-size SIZE`, `--log-files N`, `--log-rate N` | how each deployment's log lines are kept: the size of each file (`64K` at least; default `2M`), how many files (1 to 10; default 3), and the most lines a second it writes (default 1000), the rest dropped and counted; or `HOLON_LOG_SIZE`, `HOLON_LOG_FILES`, `HOLON_LOG_RATE` ([`holon logs`](#holon-logs)) |
 | `--flow-cache SIZE` | memory kept for the flows runs have loaded, so a run doesn't read its flow from the store again: `64M`, `1G`, or `0` to keep none (default `256M`; or `HOLON_FLOW_CACHE`). What it counts is the memory a flow takes once loaded (measured within a few percent, rounded up so it keeps a little less, never more), each unit once, however many flows place it; past the size, the flows used least recently are let go and load again when next run. Beside it, the store keeps the values runs read from disk (a collection's items, state), up to `--value-cache` |
 | `--value-cache SIZE` | memory kept for the values runs read from the store's disk (a collection's items and trie, a file's text by hash), so a read doesn't open the file again: `64M`, `1G`, or `0` to keep none (default `64M`; or `HOLON_VALUE_CACHE`). What it counts is the memory a value takes in it. Past the size, the values used least recently are let go |
+| `--max-memory SIZE` | the memory the server holds in all, every run's together with its caches: `512M`, `4G` (at least `64M`; or `HOLON_MAX_MEMORY`). Past it a run fails, its error saying so (`holon verify` reads it as one not run to its end, as one stopped for time), and a request is answered `503` with `Retry-After: 1` until the runs let some go. Default: half the machine's memory, or three quarters of what its container may hold, whichever is less ([Limits a run has](server.md#limits-a-run-has)) |
 | `--export-heads URL` | send each run's head to a witness (or `HOLON_EXPORT_HEADS`); its token in `HOLON_EXPORT_HEADS_TOKEN` |
 | `--root-key os\|env:VAR\|file:PATH` | where the root key is kept, which opens what the server seals in its data folder (`keys.json`); never in the folder (default: the OS key store) |
 | `--new-root-key` | print a fresh key for `--root-key env:VAR`, and exit |
@@ -1179,6 +1191,7 @@ Code extension starts it.
 | `HOLON_KEEP_RUNS` | `holon serve --keep-runs` |
 | `HOLON_FLOW_CACHE` | `holon serve --flow-cache` |
 | `HOLON_VALUE_CACHE` | `holon serve --value-cache` |
+| `HOLON_MAX_MEMORY` | `holon serve --max-memory` |
 | `HOLON_SETUP_CODE` | the first admin's setup code |
 | `HOLON_EXPORT_HEADS`, `HOLON_EXPORT_HEADS_TOKEN` | the witness heads are sent to, and its token |
 | `HOLON_SECRET_<NAME>` | values for secrets whose source is env |

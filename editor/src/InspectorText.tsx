@@ -13,6 +13,7 @@ import { KIND_WORD, rowKey } from "./StatementGraph";
 import { samples } from "./samples";
 import { listDatabases, listFeeds, listFolders, listMails, listQueues, listSecrets, listServerSecrets } from "./server";
 import { useCan } from "./can";
+import { Said } from "./SecretSaid";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -84,7 +85,7 @@ function MayRows({ may, fresh, none }: { may: RowMay[]; fresh: Set<string>; none
     <ul className="hl-itext__may">
       {may.map((m) => (
         <li key={m.item} title={m.item}>
-          {m.said}
+          <Said item={m.item} said={m.said} />
           {fresh.has(m.item) && <span className="hl-itext__new"> · new: needs approval</span>}
         </li>
       ))}
@@ -262,7 +263,7 @@ function ImportSection({
             <ul className="hl-itext__may">
               {done.map((d) => (
                 <li key={`${d.item} ${d.line}`} title={d.item}>
-                  {d.said} <span className="hl-itext__dim">· line {d.line}</span>
+                  <Said item={d.item} said={d.said} /> <span className="hl-itext__dim">· line {d.line}</span>
                   {fresh.has(d.item) && <span className="hl-itext__new"> · new: needs approval</span>}
                 </li>
               ))}

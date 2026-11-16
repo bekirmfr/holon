@@ -7,6 +7,7 @@ import { catalogOf, listListings, listingOf, marketplaceUrl, placeListing, publi
 import { getFlow } from "./server";
 import { signedIn } from "./signin";
 import { describeItem, type Evaluator } from "./holon";
+import { saidAsText } from "./SecretSaid";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 
 type Dialogs = { confirm: (message: string, action?: string) => Promise<boolean>; prompt: (message: string, initial?: string) => Promise<string | null> };
@@ -66,7 +67,7 @@ export function useMarketplace({ refreshOn, ev, dialog }: { refreshOn: unknown; 
       if (!listing) return "that listing is gone from the marketplace";
       const lines = [`Place "${listing.name}" from the marketplace?`, "", listing.description, `published by ${listing.publisher}`];
       if (listing.yanked) lines.push("", "This version was yanked by its publisher: use it only if you know why.");
-      lines.push("", listing.manifest.length > 0 ? "It may:" : "It only computes: it reads and changes nothing outside.", ...listing.manifest.map((m) => `• ${describeItem(m)}`));
+      lines.push("", listing.manifest.length > 0 ? "It may:" : "It only computes: it reads and changes nothing outside.", ...listing.manifest.map((m) => `• ${saidAsText(m, describeItem(m))}`));
       if (!(await dialog.confirm(lines.join("\n"), "Place"))) return null;
       return placeListing(listing, ev, nodeId, position);
     },

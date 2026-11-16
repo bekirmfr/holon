@@ -1651,7 +1651,7 @@ pub(crate) struct Sender<'a> {
 }
 
 /// Where a run's secrets may be sent: each to the hosts its flow's approval shows it going to
-/// (core's `sent_secrets`). A request holding a secret's value, as it is, bound for another host
+/// (core's `sent_itself`: the secret's own destinations of `sent_secrets`, at one walk a secret). A request holding a secret's value, as it is, bound for another host
 /// isn't sent: the graph shows where a secret goes, but not a value it can't follow, such as one
 /// a call answered back (an API echoing a header) and the flow passed on. Nor is one holding the
 /// server's (the deployment has none of its own) bound for a host the admin didn't say it may go
@@ -1677,12 +1677,12 @@ impl SecretSends<'_> {
             if let Some(Some(cap)) = server.get(name)
                 && !cap.contains(&host)
             {
-                let may = holon_author::describe::describe_sent_to(cap).0.unwrap_or_else(|| "nowhere".to_string());
+                let may = holon_author::describe::describe_sent_to(cap).own.unwrap_or_else(|| "nowhere".to_string());
                 return Some(outbound::failure("blocked_secret", format!("the server's secret {name:?} isn't sent to {host}: an admin said it may go only to {may}")));
             }
         }
         let name = held.into_iter().find(|name| !self.sent.get(name).is_some_and(|hosts| hosts.contains(&host)))?;
-        let shown = self.sent.get(&name).and_then(|to| holon_author::describe::describe_sent_to(to).0).unwrap_or_else(|| "nowhere".to_string());
+        let shown = self.sent.get(&name).and_then(|to| holon_author::describe::describe_sent_to(to).own).unwrap_or_else(|| "nowhere".to_string());
         Some(outbound::failure("blocked_secret", format!("the secret {name:?} isn't sent to {host}: this flow's approval shows it going to {shown}")))
     }
 }

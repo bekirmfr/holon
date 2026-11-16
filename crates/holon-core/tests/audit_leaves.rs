@@ -468,6 +468,10 @@ fn large() -> Vec<Value> {
         txt(&"\u{0}".repeat(n)),
         txt(&",".repeat(n)),
         txt(&"a,".repeat(n / 2)),
+        // A CSV of one long name over many short rows, each row's record its own copy of the
+        // name: 512 MiB of names from these 64 KiB, were it made; and one whose names are made.
+        txt(&format!("{}\n{}", "h".repeat(n / 2), "x\n".repeat(n / 4))),
+        txt(&format!("{}\n{}", "h".repeat(1024), "x\n".repeat(n / 4))),
         txt(&json),
         txt(&xml),
         txt(&"\u{df}".repeat(n / 2)),
@@ -513,7 +517,9 @@ fn allowance(leaf: &str) -> usize {
         "fill" | "gunzip" | "unzip" => MAX_BYTES,
         // Values read out of one text or bytes: up to MAX_ITEMS, a hundred bytes or so each while
         // they are read.
-        "split" | "json_parse" | "csv_parse" | "xml_parse" | "bytes_to_list" => 128 * MAX_ITEMS,
+        "split" | "json_parse" | "xml_parse" | "bytes_to_list" => 128 * MAX_ITEMS,
+        // And each row's own copy of the first row's names: up to MAX_BYTES of them.
+        "csv_parse" => 128 * MAX_ITEMS + MAX_BYTES,
         _ => 0,
     }
 }
@@ -636,4 +642,119 @@ fn no_step_of_a_pure_leaf_makes_more_than_sixteen_times_what_it_is_handed_or_its
         .map(|(_, made, given, what)| format!("{what}: made {made} bytes, handed {given}"))
         .collect();
     assert!(over.is_empty(), "{} leaves made more than their bound in a step:\n{}", over.len(), over.join("\n"));
+}
+
+/// Counts the steps an evaluation takes: its nodes, its functions' applications and its leaves'
+/// work (`take_steps`, less what is given back).
+struct Counted(u64);
+impl holon_core::Observer for Counted {
+    fn step(&mut self) -> bool {
+        self.0 += 1;
+        true
+    }
+    fn take_steps(&mut self, want: u32) -> u32 {
+        self.0 += u64::from(want);
+        want
+    }
+    fn give_back(&mut self, steps: u32) {
+        self.0 -= u64::from(steps);
+    }
+}
+
+/// The least of `times` timings of `f`: what it takes when nothing else on the machine slows it.
+fn least(times: usize, mut f: impl FnMut()) -> Duration {
+    (0..times)
+        .map(|_| {
+            let started = Instant::now();
+            f();
+            started.elapsed()
+        })
+        .min()
+        .unwrap_or_default()
+}
+
+/// What a node of two numbers takes: the least of many timings, each of many evaluations, so the
+/// clock's grain (100 ns on Windows) is not what is measured.
+fn a_node() -> Duration {
+    let r = MapResolver::new();
+    let add = interface_of("add").unwrap();
+    let inputs = [Some(num(1.0)), Some(num(2.0))];
+    least(64, || {
+        for _ in 0..256 {
+            drop(eval(&add, &inputs, &r));
+        }
+    }) / 256
+}
+
+/// The most a step of a pure leaf may take, as many times what a node of two numbers takes. The
+/// slowest leaves take 10 to 20 times it in a release build, a few what a debug build makes of
+/// them.
+const NODES_PER_STEP: u32 = if cfg!(debug_assertions) { 64 } else { 32 };
+
+/// Each pure leaf's slowest step over [`large`] values, alone, in pairs and at every pair of its
+/// ports, as many times `node` as it is (its time over the steps it counts, the made value's drop
+/// with it), with the steps and the inputs. Each evaluation is timed once as it is counted, and
+/// one that seems past [`NODES_PER_STEP`] is timed again, the least of five, so a pause of the
+/// machine's isn't a leaf's.
+fn sweep_work(node: Duration) -> Vec<(String, f64, u64, String)> {
+    let mut r = MapResolver::new();
+    let fns = functions(&mut r);
+    let pool = large();
+    let mut rng = Rng(0x5851_f42d_4c95_7f2d);
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut worst = Vec::new();
+    for (label, unit) in variants(&fns) {
+        let mut most = (0f64, 0u64, String::new());
+        for inputs in sets_of_large(unit.inputs.len(), &pool, &mut rng) {
+            let mut steps = Counted(0);
+            let started = Instant::now();
+            let Ok(out) = catch_unwind(AssertUnwindSafe(|| holon_core::eval_observed(&unit, &inputs, &r, &mut steps).into_vec())) else { continue };
+            drop(out);
+            let mut took = started.elapsed();
+            let per_step = |took: Duration| took.as_secs_f64() / steps.0.max(1) as f64 / node.as_secs_f64();
+            if per_step(took) > f64::from(NODES_PER_STEP) / 2.0 {
+                took = least(5, || drop(eval(&unit, &inputs, &r)));
+            }
+            if per_step(took) > most.0 {
+                let shown = inputs.iter().map(|v| v.as_ref().map(|v| short(&format!("{v:?}"))).unwrap_or("-".into())).collect::<Vec<_>>().join(", ");
+                most = (per_step(took), steps.0, shown);
+            }
+        }
+        worst.push((label.clone(), most.0, most.1, format!("{label} ({})", most.2)));
+    }
+    std::panic::set_hook(hook);
+    worst.sort_by(|a, b| b.1.total_cmp(&a.1));
+    worst
+}
+
+/// **Guards:** no step of any pure leaf, in any form its parameters give it, over large values
+/// alone, in pairs and at every pair of its ports, takes more than [`NODES_PER_STEP`] times what a
+/// node of two numbers takes: a leaf's work is charged as steps, one for each so much of what it
+/// reads and makes (`primitives::reading`, `making`), and set up or counted out where that is its
+/// work (`counted`).
+///
+/// **Why:** a round's `max_steps` bounds its work only if a step is of the order of a node's work.
+/// A node was one step whatever its leaf did, so `items.filter((x) => items.includes(x))` over
+/// 80,000 items computed for 42 seconds in a count of steps a small loop takes, and nothing that
+/// counts steps (a replay's grant, a deployment's `max_steps`) bounded it.
+///
+/// **If it fails:** the report names each leaf, its time per step and the inputs. Charge what that
+/// leaf does with them in `primitives::reading` (a weight for what it does to each unit it reads,
+/// or a cost it sets up whatever it is handed), or make the leaf do less: check what it is handed
+/// before it copies it, and copy only what it answers.
+#[test]
+fn no_step_of_a_pure_leaf_takes_more_than_a_few_nodes_work() {
+    let node = a_node();
+    let worst = std::thread::Builder::new().stack_size(2 * 1024 * 1024).spawn(move || sweep_work(node)).unwrap().join().unwrap();
+    println!("a node of two numbers: {node:?}");
+    for (_, per, steps, what) in worst.iter().take(12) {
+        println!("{per:>6.1} nodes a step, {steps:>9} steps  {what}");
+    }
+    let over: Vec<String> = worst
+        .iter()
+        .filter(|(_, per, _, _)| *per > f64::from(NODES_PER_STEP))
+        .map(|(_, per, steps, what)| format!("{what}: {per:.0} nodes a step over {steps} steps"))
+        .collect();
+    assert!(over.is_empty(), "{} leaves took more than {NODES_PER_STEP} nodes' time a step:\n{}", over.len(), over.join("\n"));
 }
