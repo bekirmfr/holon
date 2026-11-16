@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **`/health` says when the server can't keep what it is asked to, and a stop has a deadline.**
+  `GET /health` answers 503 `not ok: ` and what fails while the deployments file can't be
+  written or the run logs can't be synced to disk (before, it said `ok` throughout, and a deploy
+  answered while the file couldn't be written was lost on the next start). Each, and a witness
+  that doesn't take the runs' heads, is an admin's warning with why and what to do (`holon host`,
+  the admin page, `GET /admin/warnings`), where before each was one line on stderr. A stop waits
+  for the runs going on up to `--stop-within` (default `1m`; `HOLON_STOP_WITHIN`), then syncs
+  what is written and exits with status 1, the runs it cut off taken as a crash's by the next
+  start; before, one long run held it until a service manager killed it, unsynced. A new guide,
+  [running it as a service](docs/manual/guides/running-as-a-service.md): systemd, containers and
+  Windows, where a service's root key goes, and how long each should wait for a stop.
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

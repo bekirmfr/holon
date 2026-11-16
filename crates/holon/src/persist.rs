@@ -19,10 +19,15 @@ use crate::*;
 /// was held throughout, so one deployment mid-fire (holding its state lock) or one slow disk
 /// write stalled every endpoint and the clock scheduler. `PERSIST` serializes whole
 /// snapshot-and-write passes, so an older snapshot can never land on disk after a newer one.
+///
+/// How it went is noted for the admin's warnings and `/health` (failing.rs): a write that fails,
+/// or a waiting run left out, until a write keeps everything.
 pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<String, Deployment>>) {
     static PERSIST: Mutex<()> = Mutex::new(());
+    let place = path;
     let Some(path) = path.at() else { return };
     let _persist = PERSIST.lock().unwrap();
+    let mut left_out: Vec<String> = Vec::new();
     let records: Vec<DeploymentRecord> = deployments
         .lock()
         .unwrap()
@@ -66,6 +71,7 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
                                 Ok(kept) => Some(ParkedRun { sent: dep.channels.waiting_sent(&p.run_id), ..kept }),
                                 Err(e) => {
                                     eprintln!("warning: waiting run {} of {slug:?} not kept: it can't be sealed: {e}", p.run_id);
+                                    left_out.push(format!("waiting run {} of {slug:?} isn't kept: it can't be sealed: {e}", p.run_id));
                                     None
                                 }
                             }
@@ -75,16 +81,22 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
             }
         })
         .collect();
-    match serde_json::to_vec_pretty(&records) {
+    let written = match serde_json::to_vec_pretty(&records) {
         Ok(bytes) => {
             // Sealed under the server's keys, owner-only: it holds the flows' documents, grants
             // and what their waiting runs need.
-            if let Err(e) = crate::at_rest::write_table(path, crate::at_rest::role::DEPLOYMENTS, &bytes) {
+            crate::at_rest::write_table(path, crate::at_rest::role::DEPLOYMENTS, &bytes).map_err(|e| {
                 eprintln!("warning: failed to persist deployments to {path:?}: {e}");
-            }
+                format!("{}: {e}", path.display())
+            })
         }
-        Err(e) => eprintln!("warning: failed to serialize deployments: {e}"),
-    }
+        Err(e) => {
+            eprintln!("warning: failed to serialize deployments: {e}");
+            Err(format!("it can't be made: {e}"))
+        }
+    };
+    let kept = written.and_then(|()| if left_out.is_empty() { Ok(()) } else { Err(left_out.join("; ")) });
+    crate::failing::note(place, crate::failing::Writer::Deployments, &kept);
 }
 
 /// Where deployment `slug`'s state is kept for the deployments file at `path`: a file beside its

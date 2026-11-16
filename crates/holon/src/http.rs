@@ -203,8 +203,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return response;
     }
 
+    // "ok", or 503 "not ok: " and what fails, without an error's text, to anyone (failing.rs).
     if method == "GET" && url == "/health" {
-        return Response::text("ok");
+        let (status, says) = crate::failing::health(&state.deployments_path);
+        return Response::text(says).with_status_code(status);
     }
 
     // The version this host runs, for the console's host card.

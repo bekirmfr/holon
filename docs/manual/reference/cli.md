@@ -174,6 +174,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--flow-cache SIZE` | memory kept for the flows runs have loaded, so a run doesn't read its flow from the store again: `64M`, `1G`, or `0` to keep none (default `256M`; or `HOLON_FLOW_CACHE`). What it counts is the memory a flow takes once loaded (measured within a few percent, rounded up so it keeps a little less, never more), each unit once, however many flows place it; past the size, the flows used least recently are let go and load again when next run. Beside it, the store keeps the values runs read from disk (a collection's items, state), up to `--value-cache` |
 | `--value-cache SIZE` | memory kept for the values runs read from the store's disk (a collection's items and trie, a file's text by hash), so a read doesn't open the file again: `64M`, `1G`, or `0` to keep none (default `64M`; or `HOLON_VALUE_CACHE`). What it counts is the memory a value takes in it. Past the size, the values used least recently are let go |
 | `--export-heads URL` | send each run's head to a witness (or `HOLON_EXPORT_HEADS`); its token in `HOLON_EXPORT_HEADS_TOKEN` |
+| `--stop-within TIME` | how long a stop waits for the runs going on: `30s`, `2m`, `0s` not waiting (default `1m`; or `HOLON_STOP_WITHIN`). Past it, the server syncs what is written and exits with status 1, the runs still going on cut off as a crash cuts them, and the next start says which deployments they may have left part-done. A service manager's own wait must be longer ([running it as a service](../guides/running-as-a-service.md)) |
 | `--root-key os\|env:VAR\|file:PATH` | where the root key is kept, which opens what the server seals in its data folder (`keys.json`); never in the folder (default: the OS key store) |
 | `--new-root-key` | print a fresh key for `--root-key env:VAR`, and exit |
 | `--dotenv FILE` | a `.env` file `HOLON_SECRET_*` values are also read from, again every minute while the server runs ([Secrets from a `.env` file](../guides/deploying.md#secrets-from-a-env-file)) |
@@ -1179,6 +1180,7 @@ Code extension starts it.
 | `HOLON_KEEP_RUNS` | `holon serve --keep-runs` |
 | `HOLON_FLOW_CACHE` | `holon serve --flow-cache` |
 | `HOLON_VALUE_CACHE` | `holon serve --value-cache` |
+| `HOLON_STOP_WITHIN` | `holon serve --stop-within` |
 | `HOLON_SETUP_CODE` | the first admin's setup code |
 | `HOLON_EXPORT_HEADS`, `HOLON_EXPORT_HEADS_TOKEN` | the witness heads are sent to, and its token |
 | `HOLON_SECRET_<NAME>` | values for secrets whose source is env |

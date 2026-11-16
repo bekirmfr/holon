@@ -266,14 +266,16 @@ pub(crate) struct Warning {
     pub(crate) todo: String,
 }
 
-/// What the host should warn of now: each disk past `[storage] warn_at`, with the flow that grew
-/// most since the store was last counted; a cache at its size for most of the last hour; sweeping
-/// off with the store past a tenth of its disk.
+/// What the host should warn of now: a writer that fails (the deployments file, the logs' sync,
+/// the witness); each disk past `[storage] warn_at`, with the flow that grew most since the store
+/// was last counted; a cache at its size for most of the last hour; sweeping off with the store
+/// past a tenth of its disk.
 pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
     let policy = state.policy();
     let at = policy.storage.warn_at;
     let size = |b: u64| folders::size_text(b);
-    let mut out = Vec::new();
+    let mut out: Vec<Warning> = crate::failing::now(&state.deployments_path).into_iter().map(|(w, e)| writer_warning(w, &e)).collect();
+    out.extend(crate::heads::failing().map(|(w, why)| witness_warning(&w, &why)));
     let watch = state.sweeps.watch.lock().unwrap();
     let fastest = watch.grew.iter().max_by_key(|(_, g)| **g).filter(|(_, g)| **g > 0).map(|(slug, g)| (slug.clone(), *g));
     let full = watch.caches.len() >= LOOKS_AN_HOUR / 12;
@@ -356,6 +358,37 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
         }
     }
     out
+}
+
+/// The warning a writer that fails is (failing.rs): what it is, why, and what is lost meanwhile.
+pub(crate) fn writer_warning(writer: crate::failing::Writer, why: &str) -> Warning {
+    use crate::failing::Writer;
+    let todo = |again: &str| format!("make room, or make the data folder writable again (holon host shows its disks); {again}; GET /health answers 503 until then");
+    match writer {
+        Writer::Deployments => Warning {
+            key: "write:deployments".into(),
+            says: format!("the deployments file can't be written ({why}): a deploy, a grant, a pause or a waiting run kept now is lost when the server starts again"),
+            todo: todo("it is written again at the next change, and every second while runs are counted"),
+        },
+        Writer::Logs => Warning {
+            key: "write:logs".into(),
+            says: format!("the run logs can't be synced to disk ({why}): a strict run answers 500 until they are, and a lazy run's newest lines may be lost to a power loss"),
+            todo: todo("it is tried again every second"),
+        },
+    }
+}
+
+/// The warning a witness that doesn't take the runs' heads is (heads.rs).
+pub(crate) fn witness_warning(witness: &crate::heads::Witness, why: &str) -> Warning {
+    let taken = if witness.taken_ms.is_some() { "" } else { "; it has taken none since the server started" };
+    Warning {
+        key: "witness".into(),
+        says: format!("the witness at {} doesn't take the runs' heads ({why}): {} wait{taken}", witness.address, witness.waiting),
+        todo: format!(
+            "check the witness is up and takes this server's token (HOLON_EXPORT_HEADS_TOKEN); the heads wait on disk and are sent again, each deployment's newest kept once more than {} wait. The flows run on: GET /health doesn't say this",
+            crate::heads::MAX_PENDING
+        ),
+    }
 }
 
 impl Sweeps {

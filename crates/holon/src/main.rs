@@ -75,6 +75,7 @@ mod editor;
 mod durable;
 mod engines;
 mod events;
+mod failing;
 mod mongo;
 mod firing;
 mod fixtures;
@@ -550,6 +551,8 @@ const SERVE_USAGE: &str = "usage: holon serve [options]
                            none (default 64M) [HOLON_VALUE_CACHE]
   --export-heads URL       send each run's head to a witness [HOLON_EXPORT_HEADS; its token in
                            HOLON_EXPORT_HEADS_TOKEN]
+  --stop-within TIME       how long a stop waits for the runs going on, 30s or 2m (default 1m):
+                           past it, they are cut off as a crash cuts them [HOLON_STOP_WITHIN]
   --root-key SOURCE        where the root key is kept, which opens everything the server seals
                            in its data folder (keys.json): os, the OS key store (the default);
                            env:VAR; or file:PATH. Never in the data folder; keep a copy apart
@@ -721,6 +724,8 @@ fn serve(args: Vec<String>) {
     let mut data_limits = dataplane::DataLimits::default();
     // How many runs each deployment's log keeps (`--keep-runs N`, or HOLON_KEEP_RUNS; recorder.rs).
     let mut keep_runs: Option<String> = std::env::var("HOLON_KEEP_RUNS").ok().filter(|v| !v.trim().is_empty());
+    // How long a stop waits for the runs going on (`--stop-within`, or HOLON_STOP_WITHIN; stopping.rs).
+    let mut stop_within: Option<String> = std::env::var("HOLON_STOP_WITHIN").ok().filter(|v| !v.trim().is_empty());
     // What the flows' log lines are kept and said as (`--log-stdout`, `--log-size`, `--log-files`,
     // `--log-rate`, or HOLON_LOG_*; logs.rs).
     let mut log_stdout = std::env::var("HOLON_LOG_STDOUT").is_ok_and(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"));
@@ -754,6 +759,12 @@ fn serve(args: Vec<String>) {
             keep_runs = args.next();
             if keep_runs.is_none() {
                 eprintln!("--keep-runs needs a number of runs (at least 1)");
+                std::process::exit(2);
+            }
+        } else if a == "--stop-within" {
+            stop_within = args.next();
+            if stop_within.is_none() {
+                eprintln!("--stop-within needs how long a stop waits for the runs going on: 30s or 2m");
                 std::process::exit(2);
             }
         } else if a == "--log-stdout" {
@@ -899,6 +910,13 @@ fn serve(args: Vec<String>) {
             }
         }
     }
+    let stop_within = match stop_within {
+        None => stopping::STOP_WITHIN,
+        Some(v) => stopping::parse_within(&v).unwrap_or_else(|e| {
+            eprintln!("holon: --stop-within (or HOLON_STOP_WITHIN): {e}");
+            std::process::exit(2);
+        }),
+    };
 
     let mut log_caps = logs::Caps { stdout: log_stdout, ..logs::Caps::default() };
     if let Some(v) = log_size {
@@ -1234,9 +1252,23 @@ fn serve(args: Vec<String>) {
     stopping::wait_until_told();
     let state = state_cell.get().expect("set above");
     state.store.1.stop();
-    println!("holon: stopping: no new runs, {} going on (ctrl+c again stops at once)", stopping::DOOR.runs());
-    stopping::drain(&stopping::DOOR, Duration::from_secs(5), |left| println!("holon: stopping: {left} run(s) still going on"));
+    println!(
+        "holon: stopping: no new runs, {} going on, waited for up to {} (ctrl+c again stops at once)",
+        stopping::DOOR.runs(),
+        stopping::within_text(stop_within)
+    );
+    let drained = stopping::drain(&stopping::DOOR, Duration::from_secs(5), stop_within, |left| println!("holon: stopping: {left} run(s) still going on"));
     match sync_to_disk(&state.deployments, &state.deployments_path) {
+        // Runs went on past the wait: what is written is on disk, and no mark is left, so the
+        // next start takes the runs cut off as a crash's (stopping.rs).
+        Ok(()) if !drained => {
+            eprintln!(
+                "holon: stopped after {}: {} run(s) still going on were cut off, as a crash cuts them; the next start says which deployments they may have left part-done (--stop-within waits longer)",
+                stopping::within_text(stop_within),
+                stopping::DOOR.runs()
+            );
+            std::process::exit(1);
+        }
         Ok(()) => {
             // Every line on disk: the next start takes this for a stop, not a crash.
             if let Err(e) = stopping::mark_stopped(&state.deployments_path) {
@@ -1263,7 +1295,10 @@ fn sync_to_disk(deployments: &Mutex<BTreeMap<String, Deployment>>, kept_at: &Pla
     if counted {
         persist_deployments(kept_at, deployments);
     }
-    recorder::sync_logs(deployments).and_then(|()| heads::sync())
+    let synced = recorder::sync_logs(deployments).and_then(|()| heads::sync());
+    // A warning to an admin, and /health "not ok", until a sync goes through (failing.rs).
+    failing::note(kept_at, failing::Writer::Logs, &synced);
+    synced
 }
 
 /// Why the data folder `dir` is a warning, if it is: other users of this machine may read it
