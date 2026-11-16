@@ -4,8 +4,10 @@
 // licences, in a database an admin binds, says what each key unlocks. The flow asks the database
 // which plan its key unlocks: the key is the query's $1, never in its text, and goes to the
 // database's server with it. Its approval says so: "read the secret "license_key", and send it to
-// the database "vendor"", and the canvas marks the read. The row it answers is what the database
-// said, not the key, so answering with it isn't answering with the secret.
+// the database "vendor"; what is answered to it goes to its callers", and the canvas marks the
+// read. The row it answers is what the database said, not the key, so answering with it isn't
+// answering with the secret, and asks no approval of its own; the approval still says the row
+// goes to whoever calls.
 //
 // Before it works, an admin binds the database, with a licence in it:
 //   holon database add vendor ~/holon-vendor.db --schema "create table if not exists licenses

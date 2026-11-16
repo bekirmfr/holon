@@ -61,6 +61,9 @@ another program holds is said on the deployment (`listen_error`). `serve_flow` m
 to a route (`match_route`), answers 503 for a deployment not running, and fires the endpoint with
 the request record, the clock and random numbers sourced. It runs on the blocking pool, however
 short: nothing computes on a data-plane worker ([G2](../themes/resilience.md#g2-a-deployment-cant-slow-another)).
+Each run takes a place in its deployment's share (`max_concurrent_runs`): past it, or past the
+data plane's total, the request is a 503 with `Retry-After: 1`. A write a caller doesn't take
+within 30 s closes its connection.
 `POST /deployments/<slug>/request` (the editor's "send live") goes through the same `serve_data`
 over the control plane.
 

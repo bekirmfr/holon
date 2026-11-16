@@ -126,11 +126,9 @@ pub(crate) struct Ask<'a> {
 /// What a secret's read does, with where the code sends it, as the approval says it: "read, and
 /// send it to https://hooks.slack.com; what is answered to it goes to https://api.example.com".
 fn read_sending(name: &str, sent: &BTreeMap<String, BTreeSet<String>>) -> String {
-    match sent.get(name).map(holon_author::describe::describe_sent_to) {
-        Some((Some(own), Some(answers))) => format!("read, and send it to {own}; what is answered to it goes to {answers}"),
-        Some((Some(own), None)) => format!("read, and send it to {own}"),
-        Some((None, Some(answers))) => format!("read; what is answered to it goes to {answers}"),
-        _ => "read".to_string(),
+    match sent.get(name) {
+        Some(to) => format!("read{}", holon_author::describe::describe_sent_to(to).said_after_read()),
+        None => "read".to_string(),
     }
 }
 

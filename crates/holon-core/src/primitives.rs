@@ -288,9 +288,11 @@ fn effect(sink: String, payload: Value) -> Option<Value> {
 }
 
 /// Whether the list leaf `op` builds of `inputs` (present, in port order) is within
-/// [`MAX_ITEMS`] items, and what `fill` copies of its value within [`MAX_BYTES`]: found from
+/// [`MAX_ITEMS`] items, and what `fill` copies of its value, or `list` of a value handed to it at
+/// several ports, within [`MAX_BYTES`]: found from
 /// their lengths before anything is copied. A list grown by joining others doubles a step, and a
-/// value filled into each item of a list is that many copies of it. Every other leaf that makes
+/// value filled into each item of a list, or wired to each port of one, is that many copies of
+/// it. Every other leaf that makes
 /// a list makes it no longer than one it was given, or than `MAX_ITEMS` ([`MAX_ITEMS`]'s leaves);
 /// a text joined of others is checked as it is joined ([`texts::within`]).
 fn sized(op: Op, inputs: &[&Value], params: &[Param]) -> bool {
@@ -318,8 +320,324 @@ fn sized(op: Op, inputs: &[&Value], params: &[Param]) -> bool {
             }
             _ => true,
         },
+        Op::List => copies_within(inputs, MAX_BYTES),
         _ => true,
     }
+}
+
+/// Whether the copies a leaf makes of a value it is handed at several of its ports are within
+/// `most` bytes in all, for each such value. One wire into many ports is one value held and that
+/// many copies made in a step: `[s, s, …]` of a 16 MiB text at a thousand ports is 16 GiB. Values
+/// handed once each are held already, and a copy of them all is no more than they are, so only a
+/// value handed twice or more is measured.
+fn copies_within(inputs: &[&Value], most: usize) -> bool {
+    if inputs.len() < 2 {
+        return true;
+    }
+    let mut by_place: smallvec::SmallVec<[&Value; 8]> = inputs.iter().copied().collect();
+    by_place.sort_unstable_by_key(|v| std::ptr::from_ref::<Value>(v) as usize);
+    by_place.chunk_by(|a, b| std::ptr::eq(*a, *b)).all(|same| same.len() < 2 || lists::size_within(same[0], most / same.len()))
+}
+
+/// The units a step of a leaf's work is ([`reading`], [`making`]): a list's item read or copied is
+/// one, about what comparing two numbers takes (3 ns), so a step is about what a node of a few small
+/// values takes (100 to 200 ns).
+pub const UNITS_PER_STEP: u64 = 32;
+/// The bytes of a text or bytes a unit is: a step for each 128 read or copied.
+pub const BYTES_PER_UNIT: u64 = 4;
+/// What copying a record's field is besides its key's bytes and its value: its key's allocation
+/// and its place in the tree, about 130 ns (a record of 2,048 fields copied in 260 µs).
+const FIELD: u64 = 16;
+/// What copying a text, bytes or an option's or effect's payload is besides its bytes: its own
+/// allocation.
+const ALLOC: u64 = 4;
+
+/// A value's outer level, in units: a list's items, a record's fields, a text's or bytes' bytes,
+/// an effect's or an option's payload's. Found in constant time, for a leaf that reads only that
+/// level (moves a list's items, counts a record's fields, scans a list for a value).
+fn outer(v: &Value) -> u64 {
+    match v {
+        Value::List(xs) => xs.len() as u64,
+        Value::Record(r) => r.len() as u64,
+        Value::Text(t) => t.len() as u64 / BYTES_PER_UNIT,
+        Value::Bytes(b) => b.len() as u64 / BYTES_PER_UNIT,
+        Value::Effect { payload, .. } | Value::Sum { payload, .. } => outer(payload),
+        Value::Number(_) | Value::Boolean(_) => 0,
+    }
+}
+
+/// A value whole, in units, as a leaf that walks it reads it (one that compares it, hashes it):
+/// each item and field, and each text's and bytes' bytes, at every level. Found by walking it,
+/// which takes less than the leaf's own walk of it.
+fn walked(v: &Value) -> u64 {
+    walked_as(v, 0)
+}
+
+/// What writing a number as text is, in units: its shortest digits found and written, 200 to 600
+/// ns (`number_text`).
+const NUMBER_TEXT: u64 = UNITS_PER_STEP;
+/// What adding a number as a decimal is: written as text, read as digits and added, about 800 ns
+/// (`decimal_sum`).
+const NUMBER_DECIMAL: u64 = 4 * UNITS_PER_STEP;
+/// How many times a byte of a text a parser reads (`json_parse`, `csv_parse`, `xml_parse`) is what
+/// walking it is: each value it reads made, about 100 ns for a field of a few bytes.
+const PARSED: u64 = 8;
+/// How many times a byte of a key, or a signature, public-key cryptography reads is what walking
+/// it is: an RSA signature of 512 bytes is about 150 µs to check.
+const KEYED: u64 = 64;
+
+/// What writing a byte of bytes as its number is, in units (`to_number` of bytes reads them as
+/// their numbers joined by commas): about 20 ns.
+const BYTE_TEXT: u64 = 4;
+
+/// [`walked`], a number `number` units: a leaf that writes each number as text does more for it
+/// than for the item it is, and for each byte of bytes, written as its number ([`BYTE_TEXT`]).
+fn walked_as(v: &Value, number: u64) -> u64 {
+    match v {
+        Value::List(xs) => xs.iter().fold(0u64, |n, x| n.saturating_add(1 + walked_as(x, number))),
+        Value::Record(r) => r.iter().fold(0u64, |n, (k, x)| n.saturating_add(1 + k.len() as u64 / BYTES_PER_UNIT).saturating_add(walked_as(x, number))),
+        Value::Text(t) => t.len() as u64 / BYTES_PER_UNIT,
+        Value::Bytes(b) if number > 0 => (b.len() as u64).saturating_mul(BYTE_TEXT),
+        Value::Bytes(b) => b.len() as u64 / BYTES_PER_UNIT,
+        Value::Effect { payload, .. } | Value::Sum { payload, .. } => walked_as(payload, number),
+        Value::Number(_) => number,
+        Value::Boolean(_) => 0,
+    }
+}
+
+/// A value's parts below its own level, in units: what a leaf that puts it a level down walks to
+/// know it still nests within [`MAX_VALUE_DEPTH`] ([`fits`]), however little else it reads of it.
+fn nested(v: &Value) -> u64 {
+    match v {
+        Value::List(xs) => xs.iter().fold(0u64, |n, x| n.saturating_add(1 + nested(x))),
+        Value::Record(r) => r.values().fold(0u64, |n, x| n.saturating_add(1 + nested(x))),
+        Value::Effect { payload, .. } | Value::Sum { payload, .. } => 1 + nested(payload),
+        Value::Number(_) | Value::Boolean(_) | Value::Text(_) | Value::Bytes(_) => 0,
+    }
+}
+
+/// A value whole, in units, as copying it takes: [`walked`], and an allocation for each text, bytes
+/// and payload, and a field's allocation and place for each of a record's ([`FIELD`]). A value a
+/// node answers is its own, so one made of a value it was lent is a copy of it, at every level.
+fn copied(v: &Value) -> u64 {
+    match v {
+        Value::List(xs) => xs.iter().fold(0u64, |n, x| n.saturating_add(1 + copied(x))),
+        Value::Record(r) => r.iter().fold(0u64, |n, (k, x)| n.saturating_add(FIELD + k.len() as u64 / BYTES_PER_UNIT).saturating_add(copied(x))),
+        Value::Text(t) => ALLOC + t.len() as u64 / BYTES_PER_UNIT,
+        Value::Bytes(b) => ALLOC + b.len() as u64 / BYTES_PER_UNIT,
+        Value::Effect { payload, .. } | Value::Sum { payload, .. } => ALLOC.saturating_add(copied(payload)),
+        Value::Number(_) | Value::Boolean(_) => 0,
+    }
+}
+
+/// How leaf `op` reads what it is handed, for its work ([`reading`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reads {
+    /// A part: an item, a field, a length, a choice between values, a test of a value's kind. What
+    /// it answers is still made, and charged so ([`making`]).
+    Part,
+    /// The outer level: it moves or counts a list's items or a record's fields, or a text's bytes
+    /// one by one, without looking into them; what it copies of them it makes, and is charged so.
+    Outer,
+    /// A list (its first input), for the value its second is: each item compared with it, which
+    /// is no more than the value, at most.
+    Scan,
+    /// Every level of each: written as text, compared, hashed, sorted.
+    Whole,
+}
+
+fn reads(op: Op, first: Option<&Value>) -> Reads {
+    match op {
+        Op::Const
+        | Op::Get
+        | Op::Head
+        | Op::Length
+        | Op::IsEmpty
+        | Op::IsList
+        | Op::TypeOf
+        | Op::IsTruthy
+        | Op::Select
+        | Op::Guard
+        | Op::Default
+        | Op::Field
+        | Op::Lookup
+        | Op::Has
+        | Op::BytesLength
+        | Op::Pair
+        | Op::Some
+        | Op::None
+        | Op::Coalesce
+        | Op::Fail
+        | Op::And
+        | Op::Or
+        | Op::Not => Reads::Part,
+        Op::At | Op::Slice => match first {
+            Some(Value::List(_) | Value::Bytes(_)) => Reads::Part,
+            _ => Reads::Outer,
+        },
+        Op::Includes | Op::IndexOf | Op::LastIndexOf => match first {
+            Some(Value::List(_)) => Reads::Scan,
+            _ => Reads::Outer,
+        },
+        Op::List
+        | Op::Append
+        | Op::Extend
+        | Op::Cons
+        | Op::Tail
+        | Op::Reverse
+        | Op::ToSpliced
+        | Op::WithItem
+        | Op::Fill
+        | Op::CopyWithin
+        | Op::Flat
+        | Op::Indices
+        | Op::Entries
+        | Op::Keys
+        | Op::Values
+        | Op::FromEntries
+        | Op::Record
+        | Op::WithField
+        | Op::WithoutField
+        | Op::Insert
+        | Op::Remove
+        | Op::Merge
+        | Op::Range
+        | Op::Concat
+        | Op::BytesConcat
+        | Op::BytesToList
+        | Op::ListToBytes
+        | Op::Repeat
+        | Op::Pad
+        // Counts a text's UTF-16 units: each of its bytes read.
+        | Op::TextLength => Reads::Outer,
+        _ => Reads::Whole,
+    }
+}
+
+/// How many times what walking input `port` is a whole-reading leaf `op` does with each of its
+/// units ([`reading`]): a number it writes as text, a text it parses or searches, a key it checks
+/// a signature with.
+fn walking(op: Op, port: usize, v: &Value) -> u64 {
+    match (op, port) {
+        // Numbers written as text.
+        (Op::ToText | Op::AsText | Op::JsonStringify | Op::CsvFormat | Op::XmlFormat | Op::ToNumber | Op::NumberTest | Op::Join, _) => walked_as(v, NUMBER_TEXT),
+        (Op::DecimalSum, _) => walked_as(v, NUMBER_DECIMAL),
+        // Each item written as text to be compared so, and compared about log₂ n times.
+        (Op::Sort, _) => match v {
+            Value::List(xs) => walked_as(v, NUMBER_TEXT).saturating_add(walked(v).saturating_mul(u64::from(xs.len().max(2).ilog2()))),
+            _ => walked(v),
+        },
+        (Op::Unique, _) => match v {
+            Value::List(xs) => walked(v).saturating_mul(u64::from(xs.len().max(2).ilog2())),
+            _ => walked(v),
+        },
+        // A text read value by value, or searched at each of its places.
+        (Op::JsonParse | Op::CsvParse | Op::XmlParse, 0) => walked(v).saturating_mul(PARSED),
+        (Op::Replace, 0) => walked(v).saturating_mul(BYTES_PER_UNIT),
+        // A key, or a signature, checked or used.
+        (Op::JwtVerify | Op::PgpEncrypt, 1) | (Op::PgpVerify, 1 | 2) | (Op::PgpKey, 0) => walked(v).saturating_mul(KEYED),
+        _ => walked(v),
+    }
+}
+
+/// Whether leaf `op` given its input at `port` builds on it for what it adds to it, not for what
+/// it is: `append` pushes onto a given list, `insert` adds to a given record, `concat` grows a
+/// given text, `get` moves an item out of a given list. A leaf given a list it shifts (`cons`,
+/// `tail`), turns (`reverse`) or sorts does the work of its length, given or not.
+fn builds_on(op: Op, port: usize) -> bool {
+    match op {
+        Op::Append | Op::Extend | Op::Concat | Op::WithField | Op::WithoutField | Op::Insert | Op::Remove | Op::WithItem | Op::Merge => port == 0,
+        Op::Head | Op::Get | Op::Field | Op::Lookup | Op::Some | Op::Default | Op::At => port == 0,
+        Op::Select => port == 1 || port == 2,
+        Op::Pair | Op::List => true,
+        _ => false,
+    }
+}
+
+/// Work a leaf does that what it reads and makes doesn't measure, in units: a count it is handed
+/// that it steps through, and what it sets up whatever it is handed. `business_day_add` looks at
+/// each day it passes (up to 100,000 business days, 140,000 days); `decimal_div` and
+/// `decimal_round` work out each digit to the scale they are given (up to 1,000), each digit a long
+/// division's step. `gzip` and `zip` set up a compressor's tables (20 µs), `gunzip` and `unzip` a
+/// decompressor's; public-key cryptography does its arithmetic (50 µs and more); `number_format`
+/// and the decimals write a number's digits in full (up to 10 µs).
+fn counted(op: Op, inputs: &[&Value]) -> u64 {
+    // A count past what the leaf takes it refuses before stepping through any: nothing to charge.
+    let number = |i: usize, most: f64| match inputs.get(i) {
+        Some(Value::Number(n)) if n.abs() <= most => n.abs() as u64,
+        _ => 0,
+    };
+    let set_up = match op {
+        Op::Gzip | Op::Zip => 8 * UNITS_PER_STEP,
+        Op::Gunzip | Op::Unzip => 2 * UNITS_PER_STEP,
+        Op::JwtVerify | Op::PgpEncrypt | Op::PgpVerify | Op::PgpKey => 64 * UNITS_PER_STEP,
+        Op::NumberFormat | Op::DecimalAdd | Op::DecimalSub | Op::DecimalMul | Op::DecimalDiv | Op::DecimalRound | Op::DecimalCompare => 4 * UNITS_PER_STEP,
+        _ => 0,
+    };
+    set_up.saturating_add(match op {
+        Op::BusinessDayAdd => number(1, crate::dates::MAX_BUSINESS_DAYS).saturating_mul(2),
+        Op::DecimalDiv => number(2, crate::decimals::DECIMAL_DIGITS as f64).saturating_mul(UNITS_PER_STEP / 2),
+        Op::DecimalRound => number(1, crate::decimals::DECIMAL_DIGITS as f64).saturating_mul(UNITS_PER_STEP / 8),
+        _ => 0,
+    })
+}
+
+/// The steps leaf `op` takes beyond its node's one to read its present `inputs`, in port order,
+/// each with whether it is given (eval.rs, `leaf_given`), and whether what it makes grows from one
+/// given to it, so is not made anew ([`making`]). A step for each [`UNITS_PER_STEP`] units of what
+/// it reads ([`reads`]): nothing of what it reads a part of; the outer level of what it moves or
+/// counts ([`outer`]); each item of a list it scans, at most what it looks for ([`walked`]); and
+/// every level of what it walks. A value it builds on ([`builds_on`]) it doesn't read, and a value
+/// it is lent that it adds to that one it copies ([`copied`]). `sort` and `unique` compare each item
+/// about log₂ n times. And a count it steps through ([`counted`]).
+///
+/// A node is otherwise one step whatever its leaf does, and a leaf that scans what it is handed
+/// (`includes`, `index_of`, a text's `replace`) called for each item of a list is a square of work
+/// in a count of steps: a step limit that counts nodes bounds nothing a request can make it
+/// compute. Charged so, a step is of the order of a node of a few small values, and a round's
+/// `max_steps` bounds its work. `holon-core/tests/audit_leaves.rs` holds every pure leaf to it.
+pub(crate) fn reading<'v>(op: Op, inputs: impl IntoIterator<Item = (&'v Value, bool)>) -> (u64, bool) {
+    let inputs: smallvec::SmallVec<[(&Value, bool); 4]> = inputs.into_iter().collect();
+    let how = reads(op, inputs.first().map(|(v, _)| *v));
+    let grows = inputs.iter().enumerate().any(|(port, (_, given))| *given && builds_on(op, port));
+    let mut units = counted(op, &inputs.iter().map(|(v, _)| *v).collect::<smallvec::SmallVec<[&Value; 4]>>());
+    let down = down(op);
+    for (port, (v, given)) in inputs.iter().enumerate() {
+        let read = if *given && builds_on(op, port) {
+            0
+        } else if grows {
+            // Added to a value it builds on: copied into it.
+            copied(v)
+        } else {
+            match how {
+                Reads::Part => 0,
+                Reads::Outer => outer(v),
+                // Each item compared with what it looks for: nothing when there are none.
+                Reads::Scan if port == 0 => match outer(v) {
+                    0 => 0,
+                    items => items.saturating_mul(1 + inputs.get(1).map_or(0, |(x, _)| walked(x))),
+                },
+                Reads::Scan => 0,
+                Reads::Whole => walking(op, port, v),
+            }
+        };
+        // What it puts a level down it walks to know it nests within the bound, given or not.
+        let walked_down = match down {
+            Down::All => nested(v),
+            Down::Input(i) if i == port => nested(v),
+            _ => 0,
+        };
+        units = units.saturating_add(read).saturating_add(walked_down);
+    }
+    (units / UNITS_PER_STEP, grows)
+}
+
+/// The steps a node takes beyond its one to make `made`, a value it answers that it built or
+/// copied of what it was lent: one for each [`UNITS_PER_STEP`] units of it whole, as copying it
+/// takes ([`copied`]). A leaf that built on a value given to it ([`reading`]) made only what it
+/// added, and is not charged this; nor is a value moved, not copied.
+pub(crate) fn making(made: &Value) -> u64 {
+    copied(made) / UNITS_PER_STEP
 }
 
 /// [`compute`], the primitive's [`Op`] already found (`name` is its name, which a few read):
@@ -794,7 +1112,7 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             [Value::List(xs), start, rest @ ..] if rest.len() < 3 => {
                 let count = optional_number(rest.first().copied())?;
                 let items = rest.get(1).map_or(Some(&[][..]), |items| as_list(items))?;
-                Some(Value::List(lists::to_spliced(xs.clone(), as_number(start)?, count, items.to_vec())))
+                Some(Value::List(lists::to_spliced_lent(xs, as_number(start)?, count, items)))
             }
             _ => None,
         },
@@ -802,21 +1120,21 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             let [Value::List(xs), i, v] = inputs else { return None };
             let i = as_number(i)?;
             // In range before anything is copied.
-            lists::position(i, xs.len())?;
-            lists::with_item(xs.clone(), i, (*v).clone()).map(Value::List)
+            let k = lists::position(i, xs.len())?;
+            Some(Value::List(xs.iter().enumerate().map(|(j, x)| if j == k { (*v).clone() } else { x.clone() }).collect()))
         }
         // `start` unwired is 0, `end` the length.
         Op::Fill => match inputs {
             [Value::List(xs), v, rest @ ..] if rest.len() < 3 => {
                 let (start, end) = optional_range(rest)?;
-                Some(Value::List(lists::fill(xs.clone(), v, start, end)))
+                Some(Value::List(lists::fill_lent(xs, v, start, end)))
             }
             _ => None,
         },
         Op::CopyWithin => match inputs {
             [Value::List(xs), target, rest @ ..] if rest.len() < 3 => {
                 let (start, end) = optional_range(rest)?;
-                Some(Value::List(lists::copy_within(xs.clone(), as_number(target)?, start, end)))
+                Some(Value::List(lists::copy_within_lent(xs, as_number(target)?, start, end)))
             }
             _ => None,
         },
@@ -826,7 +1144,8 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         }
         Op::Flat => {
             let [Value::List(xs)] = inputs else { return None };
-            Some(Value::List(lists::flat(xs.clone(), lists::flat_depth(param(params, "depth")?)?)))
+            let depth = lists::flat_depth(param(params, "depth")?)?;
+            Some(Value::List(lists::flat(xs.clone(), depth)))
         }
         Op::IsList => {
             let [x] = inputs else { return None };
@@ -850,15 +1169,14 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         }
         Op::WithField => {
             let [Value::Record(fields), v] = inputs else { return None };
-            let mut fields = fields.clone();
-            fields.insert(param(params, "name")?.to_string(), (*v).clone());
+            let name = param(params, "name")?;
+            let mut fields = records::without(fields, name);
+            fields.insert(name.to_string(), (*v).clone());
             Some(Value::Record(fields))
         }
         Op::WithoutField => {
             let [Value::Record(fields)] = inputs else { return None };
-            let mut fields = fields.clone();
-            fields.remove(param(params, "name")?);
-            Some(Value::Record(fields))
+            Some(Value::Record(records::without(fields, param(params, "name")?)))
         }
         Op::Keys => {
             let [Value::Record(fields)] = inputs else { return None };
@@ -873,15 +1191,13 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         }
         Op::Insert => {
             let [Value::Record(fields), Value::Text(key), v] = inputs else { return None };
-            let mut fields = fields.clone();
+            let mut fields = records::without(fields, key);
             fields.insert(key.clone(), (*v).clone());
             Some(Value::Record(fields))
         }
         Op::Remove => {
             let [Value::Record(fields), Value::Text(key)] = inputs else { return None };
-            let mut fields = fields.clone();
-            fields.remove(key);
-            Some(Value::Record(fields))
+            Some(Value::Record(records::without(fields, key)))
         }
 
         // ── records (records.rs): JavaScript's Object functions, `in`, spread, `typeof` and
@@ -2297,6 +2613,8 @@ mod tests {
         let attributes = |values: usize| txt(&format!("<a{}/>", (2..values).map(|i| format!(" a{i}=''")).collect::<String>()));
         let texts = |values: usize| txt(&format!("<a>{}x</a>", "x<b/>".repeat((values - 3) / 3)));
         let closed = |elements: usize| txt(&format!("<a>{}x</a>", "<b/>".repeat(elements)));
+        // A CSV of one column, its name `name` bytes long, over `rows` rows.
+        let named = |name: usize, rows: usize| txt(&format!("{}\n{}", "h".repeat(name), "x\n".repeat(rows)));
         let (t, b, n) = (MAX_TEXT, MAX_BYTES, MAX_ITEMS);
         // Each leaf, its params, its inputs making the most, its inputs making one more, and how
         // long what it makes at the most is.
@@ -2321,6 +2639,9 @@ mod tests {
             ("csv_parse", vec![p("header", "none"), p("separator", ",")], vec![commas(n - 2)], vec![commas(n - 1)], 1),
             // Rows of a field each, each line ended.
             ("csv_parse", vec![p("header", "none"), p("separator", ",")], vec![txt(&"a\n".repeat(n / 2))], vec![txt(&"a\n".repeat(n / 2 + 1))], n / 2),
+            // Records by a name 64 KiB long, each with its own copy of it: as many bytes of names
+            // as joined bytes may be.
+            ("csv_parse", vec![p("header", "first_row"), p("separator", ",")], vec![named(b / 1024, 1024)], vec![named(b / 1024, 1025)], 1024),
             // An element of elements, each its list and its name.
             ("xml_parse", vec![], vec![xml(n)], vec![xml(n + 2)], n / 2),
             // An element of attributes: its name and its record.
@@ -2342,6 +2663,43 @@ mod tests {
             assert_eq!(given(most).as_ref().map(length), Some(long), "{name}: given, what it makes at the most");
             assert_eq!(given(past), None, "{name}: given, one past the most");
         }
+    }
+
+    /// Guards: no leaf that takes any number of inputs, handed one value at every one of many
+    /// ports, makes more of it than a value may be: nothing, or a value within the most its kind
+    /// may hold (`MAX_BYTES` copied, a text of `MAX_TEXT` units).
+    /// Why: one wire into many ports is one value held and a copy made for each port, in one
+    /// step, before the round's memory is looked at again. `[s, s, …]` of a 16 MiB text at a
+    /// thousand ports was 16 GiB, and the process aborted with every deployment in it; a flow's
+    /// text can say that with no permission to ask for.
+    /// If it fails: the named leaf copies each input without measuring those handed to it more
+    /// than once (`copies_within` in `sized`), or a new such leaf isn't held there.
+    #[test]
+    fn no_leaf_handed_one_value_at_many_ports_copies_more_than_a_value_may_be() {
+        let ports = 64;
+        let most = MAX_BYTES.max(3 * MAX_TEXT);
+        let big = [
+            txt(&"a".repeat(MAX_BYTES / ports + 1)),
+            Value::Bytes(vec![0; MAX_BYTES / ports + 1]),
+            list(vec![txt(&"a".repeat(1 << 16)); 32]),
+            Value::Record((0..32).map(|i| (format!("k{i}"), txt(&"a".repeat(1 << 16)))).collect()),
+        ];
+        for name in crate::catalog::VARIADIC {
+            let Some(op) = Op::of(name) else { continue };
+            for v in &big {
+                let inputs = vec![v; ports];
+                let given = compute_given(op, name, inputs.iter().map(|v| Cow::Borrowed(*v)).collect(), &[]).ok();
+                for made in [compute(name, &inputs, &[]), given].into_iter().flatten() {
+                    assert!(lists::size_within(&made, most), "{name}: of one value at {ports} ports, it made more than {most} bytes");
+                }
+            }
+        }
+        // At the most, `list` still makes it: 64 copies of a text, as many bytes as may be copied.
+        let fits = txt(&"a".repeat(MAX_BYTES / ports));
+        assert!(compute("list", &vec![&fits; ports], &[]).is_some(), "list: 64 copies coming to MAX_BYTES");
+        // Values handed once each are held already: a list of them is made whatever they come to.
+        let each: Vec<Value> = (0..ports).map(|_| txt(&"a".repeat(MAX_BYTES / ports + 1))).collect();
+        assert!(compute("list", &each.iter().collect::<Vec<_>>(), &[]).is_some(), "list: of values handed once each");
     }
 
     #[test]
