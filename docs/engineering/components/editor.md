@@ -141,8 +141,9 @@ edits, checks and formats files.
 - **A question waits before it takes an answer** (`Dialog.tsx`'s `ARM_MS`, 500 ms, Chrome's
   guard on its own prompts): a deploy's consent opened a moment after Ctrl+D, which sits beside
   Ctrl+S, and the next Enter or `y` typed for the page approved it unread. A key pressed while it
-  waits starts the wait again, its answers look disabled till then, no is taken at once, and a
-  held key never answers. End-to-end tests answer with `enter(page)` (`e2e/helpers.ts`), which
+  waits starts the wait again, its answers look disabled till then (to a screen reader, described
+  by why, and an answer too soon is said not taken), no is taken at once, and a held key never
+  answers. End-to-end tests answer with `enter(page)` (`e2e/helpers.ts`), which
   waits as a click does by itself (R43).
 - **What can't be taken back, or changes what someone may do, is asked first**: a removal, an
   unbinding, a token revoked, a person disabled, a role or an owner picked from a list.

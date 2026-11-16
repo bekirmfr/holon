@@ -70,6 +70,12 @@ export function useOptionalDialog(): Dialogs | null {
  *  enough not to be noticed by whoever reads the question first. */
 export const ARM_MS = 500;
 
+/** Why its answers are dimmed while a question waits, as a screen reader says it (each answer is
+ *  described by it then): what the dimming says to whoever sees it. */
+export const WAIT_SAID = "Not yet: it takes an answer a moment after it shows, and after the last key pressed.";
+/** Said aloud (a polite status) when an answer comes while it waits, and isn't taken. */
+export const TOO_SOON = "Too soon: not taken. Answer again in a moment.";
+
 /** `armMs`: how long a question waits before it takes an answer (`ARM_MS`); a test of something
  *  else gives 0, and its questions take one at once. */
 export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNode; armMs?: number }) {
@@ -80,6 +86,9 @@ export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNo
   const cancel = useRef<HTMLButtonElement>(null);
   const ok = useRef<HTMLButtonElement>(null);
   const question = useId();
+  const waitNote = useId();
+  // Said to a screen reader when an answer comes too soon: what it saw dimmed, in words.
+  const [tooSoon, setTooSoon] = useState("");
 
   // Whether the question takes an answer yet: `armed` for what it shows, `armedNow` for the key or
   // click that comes before the render does.
@@ -106,6 +115,7 @@ export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNo
   const show = useCallback(
     (a: Ask) => {
       setAsk(a);
+      setTooSoon("");
       wait();
     },
     [wait],
@@ -138,7 +148,10 @@ export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNo
       if (accepted !== false && blocked) return;
       // Too soon: kept from it, and it waits again (a click on an answer, or Space on it, comes
       // here as Enter and the letters do).
-      if (accepted !== false && !armedNow.current) return wait();
+      if (accepted !== false && !armedNow.current) {
+        setTooSoon((was) => (was === TOO_SOON ? `${TOO_SOON}\u00a0` : TOO_SOON));
+        return wait();
+      }
       if (ask.kind === "notice") ask.resolve();
       else if (ask.kind === "confirm") ask.resolve(accepted !== false);
       else if (ask.kind === "choose") ask.resolve(accepted === false ? null : accepted === true ? ask.answers.length - 1 : accepted);
@@ -215,7 +228,10 @@ export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNo
   } as const;
   // An answer while the question waits: shown disabled, and kept from it (`close`). It keeps the
   // focus it starts with, so Enter can answer once the wait is over.
-  const waiting: { "aria-disabled"?: true; style?: CSSProperties } = armed ? {} : { "aria-disabled": true, style: { opacity: 0.5, cursor: "default" } };
+  // Described by why, for whoever hears it rather than sees it dimmed.
+  const waiting: { "aria-disabled"?: true; "aria-describedby"?: string; style?: CSSProperties } = armed
+    ? {}
+    : { "aria-disabled": true, "aria-describedby": waitNote, style: { opacity: 0.5, cursor: "default" } };
 
   return (
     <DialogContext.Provider value={{ confirm, prompt, choose, notice }}>
@@ -255,6 +271,13 @@ export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNo
             }}
           >
             <div id={question} style={{ whiteSpace: "pre-line", maxHeight: (ask.kind === "confirm" || ask.kind === "notice") && ask.body ? "30vh" : "60vh", overflowY: "auto", flexShrink: 0 }}>{ask.message}</div>
+            {/* For a screen reader: why its answers are dimmed, and that one came too soon. */}
+            <span id={waitNote} hidden>
+              {WAIT_SAID}
+            </span>
+            <span role="status" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clipPath: "inset(50%)", whiteSpace: "nowrap" }}>
+              {tooSoon}
+            </span>
             {(ask.kind === "confirm" || ask.kind === "notice") && ask.body && <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>{ask.body}</div>}
             {ask.kind === "prompt" && (
               <input
@@ -285,6 +308,7 @@ export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNo
                   onClick={() => close(true)}
                   aria-keyshortcuts={[letters[0]?.toUpperCase(), "Enter", "Escape"].filter(Boolean).join(" ")}
                   aria-disabled={waiting["aria-disabled"]}
+                  aria-describedby={waiting["aria-describedby"]}
                   style={{ ...button, color: "var(--accent-ink)", background: "var(--accent)", border: "none", ...waiting.style }}
                 >
                   {letters[0] && <Kbd k={letters[0]} />}
@@ -303,6 +327,7 @@ export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNo
                       onClick={() => close(i)}
                       aria-keyshortcuts={[letters[i]?.toUpperCase(), last ? "Enter" : ""].filter(Boolean).join(" ") || undefined}
                       aria-disabled={waiting["aria-disabled"]}
+                      aria-describedby={waiting["aria-describedby"]}
                       style={{
                         ...(last
                           ? { ...button, color: "var(--accent-ink)", background: "var(--accent)", border: "none" }
@@ -334,6 +359,7 @@ export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNo
                 title={blocked ? (required ?? undefined) : undefined}
                 aria-keyshortcuts={ask.kind === "confirm" ? "Y Enter" : "Enter"}
                 aria-disabled={blocked ? undefined : waiting["aria-disabled"]}
+                aria-describedby={blocked ? undefined : waiting["aria-describedby"]}
                 style={{ ...button, color: "var(--accent-ink)", background: "var(--accent)", border: "none", ...waiting.style, ...(blocked ? { opacity: 0.5, cursor: "not-allowed" } : {}) }}
               >
                 {ask.kind === "confirm" && <Kbd k="y" />}

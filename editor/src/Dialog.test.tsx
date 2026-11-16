@@ -11,7 +11,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import ts from "typescript";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { ARM_MS, DialogProvider, useDialog } from "./Dialog";
+import { ARM_MS, DialogProvider, TOO_SOON, useDialog, WAIT_SAID } from "./Dialog";
 import { lap, press } from "./ui/pressKey";
 
 beforeAll(() => {
@@ -394,6 +394,23 @@ describe("a question that opens while you type", () => {
       expect(answered, `Enter on ${name} once the wait is over`).toEqual(answer);
       expect(dialog()).toBeNull();
     }
+  });
+
+  it.each(KINDS)("$kind: a screen reader hears why its answers wait, and that one came too soon", async ({ open, answers }) => {
+    const d = mount(ARM_MS);
+    await ask(() => open(d));
+    const status = () => dialog()!.querySelector('[role="status"]')!.textContent;
+    const described = (el: Element) => (el.getAttribute("aria-describedby") ?? "").split(" ").map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
+    const answering = Object.entries(answers).filter(([name, a]) => a !== UNANSWERED && name !== "Cancel" && name !== "field");
+    for (const [name] of answering) expect(described(control(name)), `${name}, dimmed, says why`).toBe(WAIT_SAID);
+    expect(status(), "nothing said before an answer comes").toBe("");
+    const [first] = answering[0];
+    control(first).focus();
+    key("Enter");
+    await flush();
+    expect(status(), "an answer too soon is said not taken").toBe(TOO_SOON);
+    later(ARM_MS);
+    for (const [name] of answering) expect(control(name).getAttribute("aria-describedby"), `${name}, taking answers, says nothing more`).toBeNull();
   });
 
   it("waits again after each key pressed while it waits, and takes no answer from a held key", async () => {
