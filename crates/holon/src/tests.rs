@@ -1737,7 +1737,8 @@ fn a_run_of_every_kind_finds_the_handler_it_ran_by_its_kind_and_label() {
 }
 
 /// A replayed version's outbound requests are answered by what the run was answered to the same
-/// request, wherever the version asks it from; one the run never sent can't be told.
+/// request, wherever the version asks it from; one the run never sent can't be told, and is named
+/// as it would go on the wire: plain HTTP to a host granted it, where the request says `https://`.
 #[test]
 fn a_replay_answers_a_request_the_run_sent_and_cant_tell_one_it_didnt() {
     use std::io::Write;
@@ -1789,7 +1790,8 @@ export const call = action(async (path) => {{
   const s = await api.get(\"/more\")
   return [r, s]");
     assert_eq!(r["cant_tell"], 1, "{r}");
-    assert!(r["runs"][0]["why"][0].as_str().unwrap().starts_with(&format!("it sends GET https://{host}/more")), "{r}");
+    // Named as it would go on the wire: plain HTTP, as the grant has it, where the request says https.
+    assert!(r["runs"][0]["why"][0].as_str().unwrap().starts_with(&format!("it sends GET http://{host}/more")), "{r}");
 }
 
 /// **Guards:** a replay needs no approval, and anyone who may read a deployment starts one with a
@@ -7004,7 +7006,7 @@ fn a_replay_computes_with_a_secret_on_a_budget_of_its_own() {
         let loaded = units::closure(&state.store, unit).unwrap_or_else(|_| panic!("the version's units"));
         let resolver = holon_module::WithEngine::new(&loaded, holon_module::shared());
         // No deadline to speak of: each run held to `limits` alone.
-        let r = verify::replay(&export, unit, &resolver, 1, &verify::Granted { request: limits, clock: limits }, std::time::Instant::now() + Duration::from_secs(3600));
+        let r = verify::replay(&export, unit, &resolver, 1, &verify::Granted { request: limits, clock: limits }, std::time::Instant::now() + Duration::from_secs(3600), &BTreeSet::new());
         (r.differ, r.cant_tell, r.runs[0].why.join("; "))
     };
     let computed = |r: (usize, usize, String)| r.0 == 1 && r.2 == "its answer";
@@ -12075,6 +12077,104 @@ fn remittance(id: &str, from: &str, verdict_by: &str, lines: &str) -> Vec<u8> {
          invoice,amount\r\n{lines}\r\n--b1--\r\n"
     )
     .into_bytes()
+}
+
+// ── Secrets in what an integration says (R33) ──
+
+/// **Guards:** a secret given to an integration is in nothing it says when it fails, and goes
+/// nowhere a redirect points. A canary through each road: a flow's request whose header holds it
+/// with a line break (a header no request can carry); Vault's token, refused the same way, and
+/// sent a redirect; an SQS queue's session token; the witness's token; a Postgres password where
+/// TLS is required and the server refuses it; the command line's token, as `holon deploy`,
+/// `holon mcp` and every other command (`holon export` among them, through `local::request`) sign
+/// in with it. Each fails, saying why, and none says the canary; the host Vault redirects to is
+/// never asked.
+/// **Why:** ureq's message for a header it refuses is the header's whole line (`invalid header
+/// 'X-Vault-Token: …'`), and it went into the error as it was: a `VAULT_TOKEN` or an SQS session
+/// token with a stray `\r` reached the timeline, the live status and the console. And Vault's read
+/// followed a redirect, its token along.
+/// **If it fails:** the row named says the canary: a failure there is told some other way than
+/// `outbound::said` (or `transport_said`), or Vault follows a redirect again.
+#[test]
+fn a_secret_is_in_nothing_an_integration_says_when_it_fails() {
+    use std::io::{Read, Write};
+    use holon_host::{Limits, Performer};
+    use zeroize::Zeroizing;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const CANARY: &str = "cAnArY-5ecret";
+    let unsendable = format!("{CANARY}\r\nx");
+    let mut said: Vec<(&str, String)> = Vec::new();
+
+    // A flow's request, a header holding it.
+    let nowhere: BTreeSet<String> = ["127.0.0.1:9".to_string()].into();
+    let o = outbound::Outbound { allowed: nowhere.clone(), revoked: BTreeSet::new(), plain_http: nowhere, allow_private: true };
+    let request = Value::Record(BTreeMap::from([
+        ("method".to_string(), Value::Text("GET".into())),
+        ("url".to_string(), Value::Text("http://127.0.0.1:9/".into())),
+        ("headers".to_string(), Value::Record(BTreeMap::from([("x-api-key".to_string(), Value::Text(unsendable.clone()))]))),
+        ("body".to_string(), Value::Text(String::new())),
+    ]));
+    said.push(("a flow's request", format!("{:?}", o.perform(&request, &Limits::request_run()))));
+
+    // Vault's token, refused; and a Vault that sends the read elsewhere.
+    let vault = secret_sources::Reference::parse("vault:secret/payments#signing").unwrap();
+    let refused = secret_sources::Sources::of(&[("VAULT_ADDR", "http://127.0.0.1:9"), ("VAULT_TOKEN", &unsendable)]).fetch(&vault).map(|_| ());
+    said.push(("Vault's token", format!("{refused:?}")));
+    let asked_elsewhere = Arc::new(AtomicBool::new(false));
+    let elsewhere = rouille::Server::new("127.0.0.1:0", {
+        let asked = Arc::clone(&asked_elsewhere);
+        move |_| {
+            asked.store(true, Ordering::SeqCst);
+            rouille::Response::json(&serde_json::json!({ "data": { "data": { "signing": "x" } } }))
+        }
+    })
+    .unwrap();
+    let there = format!("http://{}", elsewhere.server_addr());
+    let (_elsewhere, stop_elsewhere) = elsewhere.stoppable();
+    let redirecting = rouille::Server::new("127.0.0.1:0", move |r| rouille::Response::redirect_307(format!("{there}{}", r.url()))).unwrap();
+    let addr = format!("http://{}", redirecting.server_addr());
+    let (_redirecting, stop_redirecting) = redirecting.stoppable();
+    let redirected = secret_sources::Sources::of(&[("VAULT_ADDR", &addr), ("VAULT_TOKEN", CANARY)]).fetch(&vault).map(|_| ());
+    assert!(redirected.as_ref().is_err_and(|e| e.contains("307") && e.contains("isn't followed")), "{redirected:?}");
+    assert!(!asked_elsewhere.load(Ordering::SeqCst), "the host Vault points to is never asked, the token along");
+    said.push(("Vault, redirecting", format!("{redirected:?}")));
+    let _ = (stop_elsewhere.send(()), stop_redirecting.send(()));
+
+    // An SQS queue's session token.
+    let queue = sqs::Queue::parse(&format!("http://AKID:s3cret@127.0.0.1:9/123/q?region=us-east-1&token={CANARY}%0D%0Ax")).unwrap();
+    said.push(("an SQS queue's session token", format!("{:?}", queue.attributes().map(|_| ()))));
+
+    // The witness's token.
+    let witness = heads::Exporter::new("http://127.0.0.1:9/heads", Some(unsendable.clone()), None).unwrap();
+    witness.note(heads::Head { deployment: "d".into(), kind: "run".into(), seq: 0, head: "h".into(), at_ms: 0 });
+    said.push(("the witness's token", format!("{:?}", witness.flush())));
+
+    // A Postgres password, TLS required and refused.
+    let refusing = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let pg = refusing.local_addr().unwrap();
+    std::thread::spawn(move || {
+        if let Ok((mut conn, _)) = refusing.accept() {
+            let mut ssl_request = [0u8; 8];
+            let _ = conn.read_exact(&mut ssl_request);
+            let _ = conn.write_all(b"N");
+        }
+    });
+    let opened = engines::Remote::open(Zeroizing::new(format!("postgres://shop:{CANARY}@{pg}/shop?sslmode=require"))).map(|_| ());
+    said.push(("a Postgres password, TLS refused", format!("{opened:?}")));
+
+    // The command line's token (`HOLON_TOKEN`, a session kept), as each road to a server signs in.
+    let signed_in = || local::Target { server: "http://127.0.0.1:9".into(), token: Some(unsendable.clone()), from: local::TokenFrom::Env };
+    let deploying = mcp::Api::send(&deploycmd::Person(signed_in()), "GET", "/deployments", None);
+    said.push(("holon deploy's token", format!("{deploying:?}")));
+    let agent = mcp::Api::send(&mcp::Http::new("http://127.0.0.1:9", Some(&unsendable)), "GET", "/deployments", None);
+    said.push(("holon mcp's token", format!("{agent:?}")));
+    let command = local::request(&signed_in(), "GET", "/deployments", None, std::time::Duration::from_secs(5)).map(|(status, _)| status);
+    said.push(("a command's token (holon export's among them)", format!("{command:?}")));
+
+    for (row, text) in &said {
+        assert!(text.contains("Err") || text.contains("error"), "{row} fails: {text}");
+        assert!(!text.contains(CANARY), "{row} says the secret: {text}");
+    }
 }
 
 // ── Mail received (host-capabilities 1.3b) ──

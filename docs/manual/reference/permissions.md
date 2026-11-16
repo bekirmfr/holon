@@ -69,11 +69,13 @@ deploys with the item withheld, the handler's runs recorded, until a person gran
 
 Without `PrivateAddresses`, a call is refused when the host resolves to a private address
 (loopback, the private ranges, link-local and cloud metadata addresses, and their IPv6 forms),
-checked after DNS, on every redirect.
+checked after DNS, on every redirect. With it, a cloud's metadata service is still never reached
+(169.254.0.0/16, `100.100.100.200`, `fd00:ec2::254`, however written): it hands whoever asks
+the machine's credentials.
 
 A redirect is followed only to a host the deployment may call. To another host than the first,
-only `content-type`, `accept`, `accept-language` and `user-agent` go along: the flow's other
-headers (`authorization`, an API key) stay with the host they were meant for.
+none of the flow's headers go along, and no body: they stay with the host they were meant for
+(`authorization`, an API key, a secret put in any header).
 
 ## Limits
 

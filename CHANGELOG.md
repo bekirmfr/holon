@@ -171,6 +171,28 @@
   before its run is over (a restart, a failure reading it) tries it once more, then moves it
   without a run, on the timeline, where before it was read again at every look and after every
   restart.
+- **Postgres requires TLS to another machine.** A connection that named no `sslmode` took
+  libpq's `prefer`, so anyone on the path could answer "no TLS" and read it, a cleartext password
+  too. It is now required unless the database is on the same machine or the URL says otherwise;
+  a server without TLS is refused saying so, and that `?sslmode=disable` is the owner's to write.
+- **A value inside a MongoDB `$expr` is data.** A text starting with `$` there names a field:
+  `{ $expr: { $eq: ["$owner", who] } }` with `who` = `"$owner"` matched every document. Each value
+  computed into an expression goes in as `$literal`.
+- **A cloud's metadata service is never reached.** With private addresses granted, a flow could
+  call 169.254.169.254, where a cloud hands out the machine's credentials. It, the rest of
+  169.254.0.0/16, `100.100.100.200` and `fd00:ec2::254` are refused however written (mapped,
+  6to4, NAT64, and the forms that hide an IPv4 address).
+- **A redirect to another host carries none of the flow's headers.** It carried `content-type`,
+  `accept`, `accept-language` and `user-agent`, and a secret a flow put in one of them went to a
+  host its approval doesn't name. No body goes there either, so none says what one is.
+- **A header no request can carry is named, never echoed.** A token with a stray line break or
+  control character (a `VAULT_TOKEN`, an SQS session token, a header a flow computed from a
+  secret) came back whole in the error, which reaches a run's record, the timeline, the live status
+  and the console: ureq's message is the header's whole line. Every failed call is now told one
+  way (`outbound::said`), naming no header's value. A Vault that answers with a redirect isn't
+  followed, as its token went along, and a plain `http://` `VAULT_ADDR` to another machine (`HTTP://`
+  too) is said once on the server's output, naming its host and never a name or password before an
+  `@`.
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

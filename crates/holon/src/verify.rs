@@ -2959,35 +2959,32 @@ pub(crate) fn export(args: &[String]) -> i32 {
     };
     let server = target.server.as_str();
     let query: Vec<String> = files.into_iter().chain(run.map(|n| format!("run={n}"))).collect();
-    let url = format!("{server}/deployments/{slug}/export{}", if query.is_empty() { String::new() } else { format!("?{}", query.join("&")) });
-    let mut request = ureq::get(&url).timeout(Duration::from_secs(120));
-    if let Some(token) = &target.token {
-        request = request.set("Authorization", &format!("Bearer {token}"));
-    }
-    let body = match request.call() {
-        Ok(response) => {
-            let mut text = String::new();
-            if let Err(e) = response.into_reader().read_to_string(&mut text) {
-                eprintln!("holon export: reading the answer from {server} failed: {e}");
-                return 1;
-            }
-            text
-        }
-        Err(ureq::Error::Status(code, response)) => {
-            let body = response.into_string().unwrap_or_default();
-            let why = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v["error"].as_str().map(str::to_string))
-                .unwrap_or_else(|| body.trim().to_string());
-            eprintln!("holon export: {server} answered {code}: {why}");
-            if code == 401 {
-                eprintln!("holon export: {}", local::sign_in_hint(server, target.from));
-            }
+    let path = format!("/deployments/{slug}/export{}", if query.is_empty() { String::new() } else { format!("?{}", query.join("&")) });
+    let (code, response) = match local::request(&target, "GET", &path, None, Duration::from_secs(120)) {
+        Ok(answered) => answered,
+        Err(e) => {
+            eprintln!("holon export: {e}");
+            eprintln!("holon export: is holon serve running there? --server takes the port or address it printed");
             return 1;
         }
-        Err(e) => {
-            eprintln!("holon export: can't reach {server}: {e}");
-            eprintln!("holon export: is holon serve running there? --server takes the port or address it printed");
+    };
+    if code >= 400 {
+        let body = response.into_string().unwrap_or_default();
+        let why = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_string))
+            .unwrap_or_else(|| body.trim().to_string());
+        eprintln!("holon export: {server} answered {code}: {why}");
+        if code == 401 {
+            eprintln!("holon export: {}", local::sign_in_hint(server, target.from));
+        }
+        return 1;
+    }
+    // Read as every command reads a server's answer: whole, or said not to be.
+    let body = match local::read_answer(response.into_reader(), local::MAX_ANSWER) {
+        Ok(body) => body,
+        Err(why) => {
+            eprintln!("holon export: {server} answered {code}, and its answer couldn't be read: {why}");
             return 1;
         }
     };
