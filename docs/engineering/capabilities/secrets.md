@@ -96,18 +96,18 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   answer. A state, collection, file, database or channel write of a secret or of what is derived
   from one is refused (`firing.rs`); a call to another flow's action carrying one is `refused`
   (`calls.rs`); a route answers with one only where `SecretAnswer("name")` is granted.
-- **What is derived is marked, or withheld.** The walk names the leaves that make something of a
-  secret (`SecretFed::makes`): each whose output may be computed from one and isn't only what it
+- **What is derived is marked, or withheld.** The walk names the leaves that compute something
+  of their own from a secret (`SecretFed::computes`): each whose output may be computed from one and isn't only what it
   was handed, moved (`PASSES_LITERALLY`, less `sort` and `unique`, and less a leaf a secret
   reaches at an input that only chooses). Every derived value in a run is what such a leaf gave,
-  or holds it. After a run, `secrets::born` reads what each maker gave off the timeline: a text
+  or holds it. After a run, `secrets::born` reads what each such leaf gave off the timeline: a text
   of `MIN_SECRET_LEN` or more gets a hash, `derived_hash`: HMAC-SHA-256 under a key made of the
   salts of the secrets the run was given (`derived_key`), of the run's id and the value. The
   entry lists the hashes (`derived`), and `Redactor::born` writes `‹derived #` and the first
   eight digits wherever the run's record holds the value, a secret's own mark first where a
-  value is both. That holds for the whole record only if the makers are all there (`Born::whole`):
+  value is both. That holds for the whole record only if those leaves are all there (`Born::whole`):
   every deriving node followed and no deeper than `Timer::DEPTH` (`SecretFed::followed_to`: none
-  inside a function `map` or `fold` applies, a module), the run kept a timeline, and each maker
+  inside a function `map` or `fold` applies, a module), the run kept a timeline, and each such leaf
   gave a text a mark stands for, one that reads the same written as JSON. Otherwise the record
   withholds what may be derived, by the graph alone, as before (`WITHHELD`:
   `FiredRun::withholds_output`, `withholds_effect`, `withholds_input`; a node's outputs left out
@@ -194,7 +194,7 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
 
 ## 5. What the tests hold
 
-- holon-core taint.rs: `a_leaf_makes_something_of_a_secret_unless_it_only_moves_what_it_was_handed`.
+- holon-core taint.rs: `a_leaf_computes_from_a_secret_unless_it_only_moves_what_it_was_handed`.
 - secrets.rs: `a_value_computed_from_a_secret_has_one_mark_in_a_run_keyed_by_the_runs_salts`,
   `a_value_has_one_salt_drawn_once_sealed_and_kept_across_restarts`,
   `what_a_run_records_of_a_secret_is_where_it_is_kept_and_a_commitment_under_its_salt`,
