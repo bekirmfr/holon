@@ -73,6 +73,9 @@ pub(crate) const NOT_HELD: &[(&str, &str)] = &[
     ("commit/cell", "which load of the state it committed to"),
     ("commit/n", "its commit's number"),
     ("retries", "how many times it ran again before its commit landed (its tries)"),
+    // What other runs did: which of the keys it read another held, how long it waited, and
+    // whether one overtook it, sending it round again (`retries`).
+    ("claims", "which keys it claimed before calling out, how long each waited and was held, and whether another run overtook it"),
     ("by", "who called it (the server's account of its caller)"),
     ("grant", "the grant it ran under (by its hash)"),
     ("rounds/*/exchanges/*/start_us", "when each call began"),
@@ -1059,6 +1062,20 @@ fn check_states(
             },
             // The run whose commit it began after left the state it began from.
             Some(h) if began_after(entries, b).is_some_and(|p| p.state_after.as_ref() == Some(h)) => states.began.push(b.seq),
+            // And from no other: the commit it began after is read with the state it began from,
+            // under the state's lock (firing.rs), so where that commit's run is here, it left the
+            // state this one began from, unless a deploy, a restore, a stop or a load put one in
+            // place between them, or a line between them is lost. Not a state a run beside it by
+            // the clock left or began from: a run begun within a millisecond of the one before it
+            // is beside it, and a line's start is the chain's say-so (R62).
+            Some(_)
+                if let Some(p) = began_after(entries, b)
+                    && p.state_after.is_some()
+                    && !events.iter().any(|ev| (moves_state(ev) || ev.loaded.is_some()) && p.seq < ev.run_seq && ev.run_seq <= b.seq)
+                    && !lost.iter().any(|(from, to)| p.seq < *to && *from < b.seq) =>
+            {
+                states.breaks.push((b.seq, format!("it began after run {}'s commit, from a state other than the one that run left", p.seq)));
+            }
             Some(h) => {
                 // The run before it that committed: one that failed did only if it left a state.
                 match entries[..i].iter().rposition(|(e, _)| ran(e) && (e.error.is_none() || e.state_after.is_some())) {
@@ -1343,6 +1360,12 @@ struct Texts<'a> {
     files: &'a BTreeMap<String, PathBuf>,
 }
 
+/// Whether a read asks for a whole file (`{folder, read}`), as text or as bytes: not a part of
+/// one, a listing or a handle.
+fn reads_a_file(request: &SValue) -> bool {
+    matches!(request.clone().into_core(), Value::Record(r) if r.contains_key("folder") && r.contains_key("read"))
+}
+
 /// Whether a logged read asked for its file's bytes (`folders::reads_bytes`).
 fn reads_bytes(request: &SValue) -> bool {
     matches!(request, SValue::Record(pairs) if pairs.iter().any(|(k, v)| k == "bytes" && *v == SValue::Boolean(true)))
@@ -1353,19 +1376,37 @@ impl Texts<'_> {
     /// `Err`: none here (what the run read), or a blob that isn't the file it says.
     /// `marks`, `escaped`: an answer the entry holds is read as the run had it (`Marks::read`).
     fn answer(&self, read: &recorder::LoggedRead, marks: &Marks, escaped: bool) -> Result<Option<Value>, Rerun> {
-        let Some(file) = &read.file else { return Ok(read.answer.as_ref().map(|a| marks.read(a, escaped))) };
+        let Some(file) = &read.file else {
+            // The server keeps the hash and size of every whole file a run read (folders.rs).
+            if read.answer.is_some() && reads_a_file(&read.request) {
+                return Err(Rerun::Differs(format!("its line keeps no hash or size for {}, which it read", what(read))));
+            }
+            return Ok(read.answer.as_ref().map(|a| marks.read(a, escaped)));
+        };
         if let Some(range) = &file.range {
             return self.range(read, file, range);
         }
         if let Some(answer) = &read.answer {
-            return Ok(Some(marks.read(answer, escaped)));
+            let answer = marks.read(answer, escaped);
+            // Kept in the line as the run had it (no mark in it): it is the file the line names.
+            let bytes = match &answer {
+                Value::Text(t) => Some(t.as_bytes()),
+                Value::Bytes(b) => Some(b.as_slice()),
+                _ => None,
+            };
+            if let Some(bytes) = bytes.filter(|_| !marks.carried(&answer))
+                && (blake3::hash(bytes).to_hex().as_str() != file.hash || bytes.len() as u64 != file.size)
+            {
+                return Err(Rerun::Differs(format!("the text its line keeps for {} isn't the file it names (its hash and size)", what(read))));
+            }
+            return Ok(Some(answer));
         }
         let what = || what(read);
         if reads_bytes(&read.request) {
             return self.bytes(file, &what());
         }
         if let Some(text) = file.blob.as_ref().and_then(|b| self.blobs.get(b)) {
-            if blake3::hash(text.as_bytes()).to_hex().as_str() != file.hash {
+            if blake3::hash(text.as_bytes()).to_hex().as_str() != file.hash || text.len() as u64 != file.size {
                 return Err(Rerun::Differs(format!("the text kept for {} isn't the file it read", what())));
             }
             return Ok(Some(Value::Text(text.clone())));
@@ -1387,7 +1428,7 @@ impl Texts<'_> {
     fn bytes(&self, file: &recorder::LoggedFile, what: &str) -> Result<Option<Value>, Rerun> {
         if let Some(kept) = file.blob.as_ref().and_then(|b| self.blob_bytes.get(b)) {
             let bytes = holon_core::text_bytes(kept, "base64").ok_or_else(|| Rerun::Differs(format!("the bytes kept for {what} aren't base64")))?;
-            if blake3::hash(&bytes).to_hex().as_str() != file.hash {
+            if blake3::hash(&bytes).to_hex().as_str() != file.hash || bytes.len() as u64 != file.size {
                 return Err(Rerun::Differs(format!("the bytes kept for {what} aren't the file it read")));
             }
             return Ok(Some(Value::Bytes(bytes)));
@@ -1619,6 +1660,7 @@ fn rerun(
     }
     let mut waits = Logged {
         reads,
+        asked: vec![false; entry.reads.len()],
         events: entry.events.iter().map(|(k, v)| (k.clone(), marks.read(v, entry.escaped))).collect(),
         reached: BTreeMap::new(),
         marks: marks.clone(),
@@ -1639,6 +1681,10 @@ fn rerun(
     // Each call its line records was made: by the node at its path, with that very request.
     if network.unasked() {
         differs.push("a call its line records that no node makes run again");
+    }
+    // And each read: the server records one once, however often the run asks it (`RunWaits`).
+    if waits.unasked() {
+        differs.push("a read its line records that no node makes run again");
     }
     given.taken = observer.taken.values().cloned().collect();
     // Each node stood in for, its secrets as the run's entry shows them (their version and
@@ -2105,7 +2151,12 @@ fn round_of(round: &recorder::LoggedRound, marks: &Marks, escaped: bool) -> Roun
 /// Answers a run's waiting points, collection reads and file reads from its log entries (a file's
 /// text from the export or `--files`); its tokens as their placeholder (`Marks`).
 struct Logged {
+    /// The run's own reads first, then an earlier part's (a resumed part reads again only what it
+    /// shares).
     reads: Vec<(Vec<u32>, Value, Option<Value>)>,
+    /// Which of its own reads a node asked for, the first that matches: one asked by none, a
+    /// read put in twice among them, is one the run, run again, doesn't make.
+    asked: Vec<bool>,
     events: BTreeMap<String, Value>,
     /// Each point it reached waiting that it was delivered an event at, by name: an approval's
     /// steps, none for an event's.
@@ -2113,9 +2164,20 @@ struct Logged {
     marks: Marks,
 }
 
+impl Logged {
+    /// Whether a read of its own went unasked.
+    fn unasked(&self) -> bool {
+        self.asked.contains(&false)
+    }
+}
+
 impl Waits for Logged {
     fn read(&mut self, path: &[u32], request: &Value) -> Option<Value> {
-        self.reads.iter().find(|(p, r, _)| p == path && r == request).and_then(|(_, _, a)| a.clone())
+        let at = self.reads.iter().position(|(p, r, _)| p == path && r == request)?;
+        if let Some(asked) = self.asked.get_mut(at) {
+            *asked = true;
+        }
+        self.reads[at].2.clone()
     }
     fn event(&self, name: &str) -> Option<Value> {
         self.events.get(name).cloned()
