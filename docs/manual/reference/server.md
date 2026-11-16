@@ -502,7 +502,7 @@ A secret's source can be `env` (`HOLON_SECRET_<NAME>` in the server's environmen
 KV v2 at `VAULT_ADDR`, with `VAULT_TOKEN` and `VAULT_NAMESPACE`). Both are read again every
 minute; a value that can't be read is kept for five minutes at most. A Vault that answers with a
 redirect isn't followed (its token would go along), and a plain `http://` `VAULT_ADDR` to
-another machine is said once on the server's output: the token and the secrets go in the clear. [Secrets from a `.env`
+another machine is said once on the server's output, naming its host (never a name or password before an `@` in it): the token and the secrets go in the clear. [Secrets from a `.env`
 file](../guides/deploying.md#secrets-from-a-env-file) says where the file goes and what it holds.
 
 ## Deployed flows' servers

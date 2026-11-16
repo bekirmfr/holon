@@ -188,21 +188,58 @@ pub(crate) fn parse_dotenv(text: &str) -> BTreeMap<String, Zeroizing<String>> {
     vars
 }
 
-/// Say once, on the server's output, that `VAULT_ADDR` is plain `http://` to another machine:
-/// its token and every secret read go in the clear (Vault's dev server is plain `http://`, so it
-/// is said, not refused).
+/// Say once, on the server's output, [`plain_vault_warning`].
 fn warn_if_plain(addr: &str) {
     static SAID: std::sync::Once = std::sync::Once::new();
-    let Some(rest) = addr.strip_prefix("http://") else { return };
-    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-    if !crate::oauth::is_loopback(host) {
-        SAID.call_once(|| eprintln!("holon: VAULT_ADDR is plain http:// to {host}: its token and the secrets read from it go in the clear (https:// keeps them)"));
+    if let Some(warning) = plain_vault_warning(addr) {
+        SAID.call_once(|| eprintln!("{warning}"));
     }
+}
+
+/// What the server says when `VAULT_ADDR` is plain `http://` (in any case, as a URL's scheme is)
+/// to another machine: its token and every secret read go in the clear. Vault's dev server is
+/// plain `http://`, so it is said, not refused. None for `https://` or this machine. A name and
+/// password before an `@` in the address are never said.
+fn plain_vault_warning(addr: &str) -> Option<String> {
+    let rest = addr.get(..7).filter(|scheme| scheme.eq_ignore_ascii_case("http://")).map(|_| &addr[7..])?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host).to_ascii_lowercase();
+    (!crate::oauth::is_loopback(&host)).then(|| format!("holon: VAULT_ADDR is plain http:// to {host}: its token and the secrets read from it go in the clear (https:// keeps them)"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Guards:** a `VAULT_ADDR` that is plain `http://` to another machine is said, naming the
+    /// host and nothing before an `@`; one to this machine, or `https://`, is not.
+    /// **Why:** Vault's token and every secret read from it cross the network in the clear over
+    /// `http://`. The warning was an `eprintln` nothing tested, and it missed `HTTP://`.
+    /// **If it fails:** the row named is said where it shouldn't be, or not where it should, or
+    /// the warning says what an address holds before its `@` (a name and a password).
+    #[test]
+    fn a_plain_http_vault_on_another_machine_is_said_and_no_other_is() {
+        for (addr, said) in [
+            ("http://127.0.0.1:8200", None),
+            ("http://localhost:8200/", None),
+            ("http://LOCALHOST:8200", None),
+            ("http://[::1]:8200", None),
+            ("https://vault.example.com", None),
+            ("HTTPS://vault.example.com:8200", None),
+            ("vault.example.com:8200", None),
+            ("http://vault.example.com:8200", Some("vault.example.com:8200")),
+            ("HTTP://Vault.Example.com/v1", Some("vault.example.com")),
+            ("http://10.0.0.5:8200?x", Some("10.0.0.5:8200")),
+            ("http://ops:s3cret@vault.example.com", Some("vault.example.com")),
+        ] {
+            let warning = plain_vault_warning(addr);
+            assert_eq!(warning.is_some(), said.is_some(), "{addr}: {warning:?}");
+            if let (Some(warning), Some(host)) = (&warning, said) {
+                assert!(warning.contains(&format!("plain http:// to {host}:")), "{addr}: {warning}");
+                assert!(!warning.contains("s3cret") && !warning.contains("ops"), "{addr}: {warning}");
+            }
+        }
+    }
 
     #[test]
     fn references_parse_and_only_holon_variables_can_be_named() {

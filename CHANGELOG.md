@@ -21,8 +21,9 @@
   secret) came back whole in the error, which reaches a run's record, the timeline, the live status
   and the console: ureq's message is the header's whole line. Every failed call is now told one
   way (`outbound::said`), naming no header's value. A Vault that answers with a redirect isn't
-  followed, as its token went along, and a plain `http://` `VAULT_ADDR` to another machine is
-  said once on the server's output.
+  followed, as its token went along, and a plain `http://` `VAULT_ADDR` to another machine (`HTTP://`
+  too) is said once on the server's output, naming its host and never a name or password before an
+  `@`.
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with
