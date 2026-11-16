@@ -252,16 +252,26 @@ route.get("/hi", () => "hi", {{ log: "unrecorded" }})
     const RECORDS: usize = 100_000;
     let body = format!("[{}]", vec![r#"{"a":0}"#; RECORDS].join(","));
     let parse = move |body: &str| raw_http(port, format!("POST /parse HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
-    // What its runs' log says, the last of them.
+    // What its runs' log says, the last of them, and each that failed whole: why a run failed is
+    // its steps', which the list of runs leaves out (run.steps, R55).
     let log = || {
-        let runs = Command::new(HOLON)
-            .args(["runs", "hold", "--last", "3", "--json", "--server", &server.port.to_string()])
-            .env("HOLON_HOME", &server.home)
-            .env_remove("HOLON_DATA")
-            .env_remove("HOLON_RUN_DIR")
-            .output()
-            .expect("holon runs runs");
-        format!("{}{}", String::from_utf8_lossy(&runs.stdout), String::from_utf8_lossy(&runs.stderr))
+        let holon = |args: &[&str]| {
+            let runs = Command::new(HOLON)
+                .args(args)
+                .args(["--server", &server.port.to_string()])
+                .env("HOLON_HOME", &server.home)
+                .env_remove("HOLON_DATA")
+                .env_remove("HOLON_RUN_DIR")
+                .output()
+                .expect("holon runs runs");
+            format!("{}{}", String::from_utf8_lossy(&runs.stdout), String::from_utf8_lossy(&runs.stderr))
+        };
+        let mut said = holon(&["runs", "hold", "--last", "3", "--json"]);
+        let heads: serde_json::Value = serde_json::from_str(&said).unwrap_or_default();
+        for entry in heads["entries"].as_array().into_iter().flatten().filter(|e| e["failed"] == true) {
+            said.push_str(&holon(&["runs", "hold", "--run", &entry["seq"].to_string()]));
+        }
+        said
     };
     let answered = parse(&body);
     assert!(status(&answered) == 200 && answered.ends_with(&RECORDS.to_string()), "alone, within the server's memory: {answered:.300} {:.2000}", log());
