@@ -97,6 +97,12 @@ pub(crate) fn to_spliced(mut xs: Vec<Value>, start: f64, count: Option<f64>, ite
     xs
 }
 
+/// [`to_spliced`] of a lent list: the items it keeps and those put in copied, and only those.
+pub(crate) fn to_spliced_lent(xs: &[Value], start: f64, count: Option<f64>, items: &[Value]) -> Vec<Value> {
+    let removed = spliced(xs.len(), start, count);
+    xs[..removed.start].iter().chain(items).chain(&xs[removed.end..]).cloned().collect()
+}
+
 /// The items `to_spliced` removes from a list `len` long.
 fn spliced(len: usize, start: f64, count: Option<f64>) -> std::ops::Range<usize> {
     let from = relative(start, len);
@@ -124,6 +130,21 @@ pub(crate) fn fill(mut xs: Vec<Value>, v: &Value, start: f64, end: Option<f64>) 
     let range = slice_range(xs.len(), start, end);
     xs[range].fill(v.clone());
     xs
+}
+
+/// [`fill`] of a lent list: the items it fills over are not copied.
+pub(crate) fn fill_lent(xs: &[Value], v: &Value, start: f64, end: Option<f64>) -> Vec<Value> {
+    let range = slice_range(xs.len(), start, end);
+    xs.iter().enumerate().map(|(k, x)| if range.contains(&k) { v.clone() } else { x.clone() }).collect()
+}
+
+/// [`copy_within`] of a lent list: the items it copies over are not copied.
+pub(crate) fn copy_within_lent(xs: &[Value], target: f64, start: f64, end: Option<f64>) -> Vec<Value> {
+    let n = xs.len();
+    let (to, from) = (relative(target, n), relative(start, n));
+    let stop = end.map_or(n, |e| relative(e, n));
+    let count = stop.saturating_sub(from).min(n - to);
+    (0..n).map(|k| if (to..to + count).contains(&k) { xs[from + k - to].clone() } else { xs[k].clone() }).collect()
 }
 
 /// `xs.copyWithin(target, start, end)`: the items of relative `start..end` (`end` the length when

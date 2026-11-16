@@ -225,7 +225,7 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
             continue;
         };
         for (port, output) in outputs.iter().enumerate() {
-            if fed.output(&node.path, port) != crate::taint::Taint::Derived {
+            if !fed.output(&node.path, port).is_derived() {
                 continue;
             }
             let Some(SValue::Text(text)) = output else {
@@ -567,9 +567,9 @@ impl SecretStore {
                 continue;
             }
             let Some(cap) = caps.get(name) else { continue };
-            let outside: BTreeSet<String> = to.iter().filter(|d| !d.starts_with(holon_core::ANSWER) && !cap.contains(*d)).cloned().collect();
+            let outside: BTreeSet<String> = to.iter().filter(|d| holon_core::is_own_destination(d) && !cap.contains(*d)).cloned().collect();
             if !outside.is_empty() {
-                let (may, sends) = (holon_author::describe::describe_sent_to(cap).0, holon_author::describe::describe_sent_to(&outside).0);
+                let (may, sends) = (holon_author::describe::describe_sent_to(cap).own, holon_author::describe::describe_sent_to(&outside).own);
                 return Some(format!(
                     "the server's secret {name:?} may go only to {}, and this flow sends it to {} (set {slug:?}'s own {name}, or ask an admin to let the server's go there)",
                     may.unwrap_or_else(|| "nowhere".into()),

@@ -52,6 +52,42 @@ pub(crate) fn is_valid_slug(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// The longest a new deployment's slug may be: it names its files (`<slug>.jsonl`,
+/// `<slug>.events.jsonl`, its state head, its backups' folder), and a path has a limit.
+pub(crate) const MAX_SLUG: usize = 64;
+
+/// Why a deployment can't be made under `slug`, which none in `deployed` has yet: nothing, or
+/// what to answer. A slug names files, and on Windows and on macOS as it comes two names that
+/// differ only by case are one file: `pay` and `Pay` shared a log and a state head, so after a
+/// restart one read the other's state, and removing one removed the other's log. On Windows a
+/// device's name (`nul`, `con`, `com1`) is no file at all. One already deployed is never refused
+/// here: its next version deploys under the name it has.
+pub(crate) fn new_slug_refusal<'a>(deployed: impl Iterator<Item = &'a String>, slug: &str) -> Option<(u16, String)> {
+    const DEVICES: &[&str] = &[
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6",
+        "lpt7", "lpt8", "lpt9",
+    ];
+    let mut alike = None;
+    for other in deployed {
+        if other == slug {
+            return None;
+        }
+        if other.eq_ignore_ascii_case(slug) {
+            alike = Some(other);
+        }
+    }
+    if let Some(other) = alike {
+        return Some((409, format!("deployment {other:?} is there already, and {slug:?} differs from it only by case: their files would be the same ones where a file's name doesn't tell case apart")));
+    }
+    if slug.len() > MAX_SLUG {
+        return Some((400, format!("a slug is at most {MAX_SLUG} characters: it names the deployment's files")));
+    }
+    if DEVICES.iter().any(|d| d.eq_ignore_ascii_case(slug)) {
+        return Some((400, format!("{slug:?} is a device's name on Windows, where no file can have it: a slug names the deployment's files")));
+    }
+    None
+}
+
 /// What the slug's deployment holds now, if it is deployed.
 #[derive(Default)]
 struct Previous {
@@ -244,6 +280,11 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     let policy = &*state.policy();
     if !is_valid_slug(&body.slug) {
         return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
+    }
+    // A new slug's files are its own: said before the unit is read, and held again where it is
+    // inserted, under the lock.
+    if let Some((code, why)) = new_slug_refusal(deployments.lock().unwrap().keys(), &body.slug) {
+        return err(code, why);
     }
     // The route asked about every flow at once; this is the flow, as it is deployed now, if it
     // is, and below, as this version would make it (D22). A restore was asked about it.
@@ -440,6 +481,10 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
 
     {
         let mut deployments = deployments.lock().unwrap();
+        // Two deploys at once of slugs alike but for case both passed the look above.
+        if let Some((code, why)) = new_slug_refusal(deployments.keys(), &body.slug) {
+            return err(code, why);
+        }
         if let Some((other, _)) = deployments
             .iter()
             .find(|(other, d)| **other != body.slug && server.port.is_some() && d.server.as_ref().is_some_and(|o| o.port == server.port))
@@ -2205,3 +2250,47 @@ pub(crate) fn handle_get_sessions(
     Response::json(&reply)
 }
 
+
+#[cfg(test)]
+mod slug_tests {
+    use super::*;
+
+    /// Guards: a new deployment's slug is refused when it would share its files with another's
+    /// or name none: one that differs from a deployed slug only by case, a Windows device's name
+    /// in any case, one past [`MAX_SLUG`]; a slug deployed already is never refused, whatever it
+    /// is, so its next version deploys.
+    /// Why: a slug names the deployment's log, events and state head. `pay` and `Pay` deployed on
+    /// Windows kept one `Pay.jsonl` and one state head: after a restart `pay` read `Pay`'s state
+    /// (its counter went from 5 back to 2) and `holon verify` passed; removing either removed the
+    /// other's log. `nul` reads back as nothing, and the server then can't load its deployments.
+    /// If it fails: `new_slug_refusal` lets through a slug the file system can't tell from
+    /// another's, or the deploy no longer asks it (before the unit is read, and under the table's
+    /// lock where the deployment is inserted).
+    #[test]
+    fn a_new_slug_shares_no_file_with_another_and_names_one() {
+        let deployed: Vec<String> = ["pay", "Notes-API", "con"].map(String::from).to_vec();
+        let refusal = |slug: &str| new_slug_refusal(deployed.iter(), slug).map(|(code, _)| code);
+        // Deployed already, as it is spelled: its next version.
+        for slug in ["pay", "Notes-API", "con"] {
+            assert_eq!(refusal(slug), None, "{slug}");
+        }
+        // Another's files, by case.
+        for slug in ["Pay", "PAY", "pAy", "notes-api", "NOTES-API", "CON"] {
+            assert_eq!(refusal(slug), Some(409), "{slug}");
+        }
+        // No file at all on Windows, in any case.
+        for slug in ["nul", "NUL", "Nul", "prn", "aux", "com1", "COM9", "lpt1", "LPT9"] {
+            assert_eq!(refusal(slug), Some(400), "{slug}");
+        }
+        // A device's name inside a longer one is a file's.
+        for slug in ["null", "nul-1", "com10", "console", "payments", "pay-2", "pay_"] {
+            assert_eq!(refusal(slug), None, "{slug}");
+        }
+        assert_eq!(refusal(&"a".repeat(MAX_SLUG)), None);
+        assert_eq!(refusal(&"a".repeat(MAX_SLUG + 1)), Some(400));
+        // Every slug the samples deploy under is one a new deployment may have.
+        for sample in holon_author::samples::samples() {
+            assert!(is_valid_slug(sample.name) && new_slug_refusal(std::iter::empty(), sample.name).is_none(), "{}", sample.name);
+        }
+    }
+}

@@ -21,8 +21,10 @@ There are two things you might expose, and they are separate:
   itself: a verified signature (`stripe.verify`), or a token compared with `secure_equals` (the
   `guarded-api` sample). Everything else is answered as the flow says.
 - **Limits on a flow's port**: a body of at most 10 MiB (413 past that), 10 seconds to send the
-  headers and 30 for the body, and 1024 connections at once. There is no rate limit: put one in
-  the proxy if you need it.
+  headers and 30 for the body, 30 seconds for a caller to take each part of an answer (a caller
+  that stops reading is disconnected), 1024 connections at once, and `max_concurrent_runs` runs
+  at once (64 by default; 503 with `Retry-After` past it). There is no rate limit: put one in the
+  proxy if you need it.
 - **Forwarded headers** (`X-Forwarded-For` and the like) reach the flow as ordinary headers,
   `req.headers["x-forwarded-for"]`. Holon itself doesn't read them.
 

@@ -710,7 +710,7 @@ fn run_attempt(
         taint::SecretFed::default()
     };
     // And where each may be sent: a request holding one's value goes only there.
-    let secret_sends = (!secret_fed.is_empty()).then(|| folders::SecretSends { vault: secrets, sent: holon_core::sent_secrets(root_unit, resolver) });
+    let secret_sends = (!secret_fed.is_empty()).then(|| folders::SecretSends { vault: secrets, sent: holon_core::sent_itself(root_unit, resolver) });
 
     let mut host = RecordingHost::new();
     let mut timer = if waits.unrecorded { recorder::Timer::off() } else { recorder::Timer::new() };
@@ -1486,7 +1486,7 @@ impl FiredRun {
 
     /// [`FiredRun::withholds_output`], for what input `port` of the node at `path` was handed.
     pub(crate) fn withholds_input(&self, path: &[u32], port: usize) -> bool {
-        !self.born.whole && self.secret_fed.input(path, port) == taint::Taint::Derived
+        !self.born.whole && self.secret_fed.input(path, port).is_derived()
     }
 
     /// No run at all: an unrouted request.

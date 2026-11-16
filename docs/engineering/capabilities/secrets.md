@@ -115,7 +115,9 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   by `without_secret_derived`), and the marks it does have still cover those values wherever
   else they turn up.
 - **Where it goes.** `taint::sent_secrets` names each secret's destinations (hosts, `db:` for a
-  database read's parameters, `answer:` for what a call answers to it); the approval says them
+  database read's parameters, `answer:` for what a call answers to it, `made:` for a hash or a
+  signature made with it, and for those two `@callers` when a route answers with one); the
+  approval says them
   ("read the secret "slack_webhook_path", and send it to https://hooks.slack.com",
   `describe_item_sending`). At run time `SecretSends::refuses` turns away a request holding a
   secret's value bound elsewhere (`blocked_secret`); offline `holon verify` checks every marked

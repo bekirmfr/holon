@@ -53,12 +53,24 @@ pub(crate) fn from_owned_entries(entries: Vec<Value>) -> Value {
 /// `{ ...a, ...b }`, `Object.assign({}, a, b)`: every field of every record, a later record's
 /// where two have one; shallow (a nested record is replaced, not merged). No record is `{}`.
 pub(crate) fn merge(records: &[&Value]) -> Option<Value> {
+    // Each a record before anything is copied, and of each key only the value that stays: the
+    // last record's to have it.
+    let records = records.iter().map(|r| if let Value::Record(fs) = r { Some(fs) } else { None }).collect::<Option<Vec<_>>>()?;
     let mut fields = BTreeMap::new();
-    for r in records {
-        let Value::Record(more) = r else { return None };
-        fields.extend(more.iter().map(|(k, x)| (k.clone(), x.clone())));
+    for more in records.iter().rev() {
+        for (k, x) in more.iter() {
+            if !fields.contains_key(k) {
+                fields.insert(k.clone(), x.clone());
+            }
+        }
     }
     Some(Value::Record(fields))
+}
+
+/// A copy of `fields` without the field `name`: what a leaf that replaces or removes it keeps,
+/// the field itself not copied.
+pub(crate) fn without(fields: &BTreeMap<String, Value>, name: &str) -> BTreeMap<String, Value> {
+    fields.iter().filter(|(k, _)| k.as_str() != name).map(|(k, x)| (k.clone(), x.clone())).collect()
 }
 
 /// `Object.hasOwn(r, k)`, `k in r`, `r.hasOwnProperty(k)`: whether the record has the key, with

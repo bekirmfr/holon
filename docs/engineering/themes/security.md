@@ -411,8 +411,25 @@ What is not defended, or only partly:
   `===`, `has`), and what a leaf gives when a secret is its condition, position or key (`c ? a :
   b`, `list[i]`, `rec[k]`), is withheld in the log, answered or sent only where approved, and
   never written, as the secret is (taint.rs: `selects`). Only the one-way leaves (`sha256`,
-  `hmac_sha256`, `secure_equals`, `jwt_verify`'s key and clock) and a call's answer give out what
-  they compute from it as clean. What a run's timing says isn't covered: a flow that does more
+  `hmac_sha256`, `secure_equals`, `jwt_verify`'s key and clock), fed the secret whole, and a
+  call's answer give out what they compute from it as clean. Whole is the secret as it is, or
+  spelled another way with nothing chosen out of it (taint.rs: `RECODES`, `Taint::Recoded`: its
+  base64 or hex, its bytes, the JSON it is), so a key kept as base64 signs as the key does and
+  its signature is logged and checked. Fed a part of it (a slice, a
+  character), a one-way leaf's answer is derived: a hash of one character names it, and a
+  comparison of a prefix says how the secret begins. So is where `sort` or `unique` places it.
+  What is clean is still followed where it was made with a secret: a hash or a signature
+  (taint.rs: `MAKES`, `SecretFed::made_of`) and what a host answered a request that carried one
+  (`SecretFed::answers_of`), each to every way out, a route's own callers among them
+  (`sent_secrets`: `made:`, `answer:`, `@callers`), and the approval says where it goes beside
+  the secret's read. Neither is withheld or refused: a route answering `hmac_sha256(k,
+  req.query.msg)` signs what its caller chooses, a route answering a token exchange's answer
+  hands out a live token, and both are a person's to read and approve. A Boolean ends a
+  signature's trail (a flow comparing one a part at a time with what its caller sent would give
+  it away slowly, and nothing says so), and a response's `status` isn't what was answered. One
+  test holds the class (`what_is_made_with_a_secret_and_clean_is_followed_to_every_way_out`):
+  every leaf that gives something clean of a secret is followed or named, and every leaf that
+  does something outside the run is a sink of what is followed. What a run's timing says isn't covered: a flow that does more
   work when a secret's first character is `a` answers later.
 - **A value at the bound leaves a debug build's run thread under twice the room it takes**: a
   route walks a list about 6,000 levels deep end to end on 2 MiB in release, 23 times the bound,

@@ -73,6 +73,8 @@ it may:
   receive requests
   read the secret "slack_webhook_path", and send it to https://hooks.slack.com
   read the secret "stripe_webhook_secret"
+with its secrets:
+  POST /stripe, line 48: sends the secret "slack_webhook_path" to https://hooks.slack.com
 ```
 
 Nobody writes the manifest, so nobody can understate it. A flow can't call a host without

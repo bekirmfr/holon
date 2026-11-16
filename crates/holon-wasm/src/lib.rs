@@ -792,6 +792,14 @@ impl Evaluator {
         Ok(holon_core::deployed_capabilities(unit, &self.resolver).iter().map(|c| holon_core::consent_name(&c)).collect())
     }
 
+    /// Where each secret a unit reads goes, as a flow deploys (core's `sent_secrets`, what the
+    /// server's deploy preview answers as `sent`): secret → destinations, for the editor to say
+    /// beside the secret's read while the flow is edited, before anything is sent to a server.
+    pub fn sent_secrets(&self, hash: &str) -> Result<JsValue, JsError> {
+        let unit = self.resolve_hash(hash)?;
+        to_js(&holon_core::sent_secrets(unit, &self.resolver))
+    }
+
     /// The coarse kind-set of a unit's whole closure, by hash — core's `effects_of`, the fixed
     /// projection of `capabilities` above. Exposed as its own method rather than left for the
     /// editor to derive from `capabilities`, so `Capability::kind()`'s projection table stays

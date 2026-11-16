@@ -2,6 +2,125 @@
 
 ## Unreleased
 
+- **A run that computed with a secret is checked offline, and its record marks what it computed.**
+  Everything a run computed from a secret was left out of its record whole, by the graph alone
+  (the step's outputs, the header it was sent in, the answer), and `holon verify` never ran such a
+  run again: it said the step was "too large, or too deep". Now a text of 6 characters or more
+  that a step computed from a secret is written as `‹derived #7c1e9a02›` wherever the run's record
+  holds it, found by its value as a secret is, and the entry lists each such value by a keyed hash
+  only the server can make (`derived`); one value has one mark through a run and another in the
+  next. `holon verify` runs the run again on the marks. A value no mark stands for (a true or
+  false, a number, bytes, a short text) is withheld as before with what follows from it, and the
+  check says that is why the run wasn't run again. A hash or a signature of a part of a secret is
+  such a value and is marked; one of the secret whole is kept as it is.
+- **`holon verify` says what it took from the log, and holds it to itself.** A step fed a secret
+  can't be computed without it, so its record is taken. The check now computes on the marks the
+  steps that only move a secret (into a text, a list, a record) or compare it whole
+  (`secure_equals`), and names each one it did take, by its leaf and what it was fed:
+  "hmac_sha256 fed the secret api_token v1 #4fb07bc6: 1 node in 1 run: 0, as recorded". What it
+  takes must be the leaf's: as many outputs as the leaf has, each of its type, a `sha256` or an
+  `hmac_sha256` of 32 bytes in the node's encoding (or the one mark of a value computed from a
+  secret), and one record for one leaf fed the same inputs across the export. A line that says
+  other differs.
+- **A run's entry commits to each secret it was given.** A run's entry named a secret's value by
+  a version and a 32-bit fingerprint only the server can make: nothing held the server to that
+  value. Each value now has a salt of its own (drawn once, sealed in the secrets store, the same
+  after a restart), and the entry carries a commitment to the value beside its list of secrets
+  (`committed`: SHA-256 over the secret's owner, name and version, the salt and the value).
+  `holon verify` holds an export to it: every mark of a secret in a line reads the fingerprint
+  its list has, and one value has one commitment across the export. The export's format stays
+  `holon-runs/1`, and a line logged before reads as it did.
+- **A `#` in a flow's code no longer hangs what reads it.** The count that bounds how deep a
+  text nests read nothing at a `#` outside a string or a comment (`a #b`, a private name) and
+  read the same place again, forever: `holon check`, the language server as `#` was typed, an
+  agent's `check` and the editor's tab hung. It reads a `#` as the word it begins, and a place it
+  can't read past is refused, as Holon's fault to report, rather than read again.
+- **A text nested past the bound is refused however it is written.** The count that refuses a
+  text nested past 128 levels read some texts otherwise than the parser: `x as⏎any as⏎any…`, an
+  `else if` chain whose statements end with `;`, a `//` comment ended by a lone `\r`, U+2028 or
+  U+2029, a hashbang, Unicode's spaces, a string going on over `\r\n`, and a `/` after `}`, `of`,
+  a type's `>`, TypeScript's `!` or a `++` begun on a line. Such a text got past it as deep as it
+  liked and crashed `holon check`, the language server or an agent's `check`, or trapped the
+  editor's tab. The count now reads a text as oxc's lexer does, and refuses a `/` TypeScript
+  reads either way by what came before it: put one side in parentheses.
+- **Checking, deploying and formatting a flow take time in proportion to it.** A function using
+  one that uses one, twice each, with a secret through them, made `holon check`, a deploy and each
+  run walk every path: twenty-four such levels took minutes, and anyone who may propose a deploy could
+  hold the server's CPU with one. Now the walks that find where a secret goes stop after 65,536
+  nodes for one question, and what they haven't followed is taken as computing with the secret
+  (the approval asks for more, never less). Sums of sums as a collection's key no longer double
+  the compile at each line. And `holon fmt` refuses a text whose calls, templates and functions
+  written in place nest more than 20 in each other, a function counting twice (seven
+  `xs.map((x) => String(…))` inside each other took half a minute to lay out): name a part with a
+  `const`, as fmt says where.
+- **The server keeps to its memory and its open files.** A run was held to its own `max_memory`,
+  and nothing held the runs together: many at once, or a few parsing a megabyte or two of JSON
+  each (a parse makes about 80 times its text, all in one step), took the server's memory until
+  the system ended it. Now the server holds every run's memory together, with its caches, to
+  `--max-memory` (`HOLON_MAX_MEMORY`; by default half the machine's memory, or three quarters of
+  its container's): past it a run fails, saying so, and a request is answered `503` with
+  `Retry-After: 1` until the runs let some go. `JSON.parse`, `csv_parse` and `xml_parse` stop as
+  they pass the run's memory or the server's, not once they are done. Connections are held to
+  4,096 in all (fewer where the open-file limit leaves less room; on Linux and macOS the server
+  raises its own limit as it starts), an open WebSocket's among them, and a connection the server
+  can't take is tried again a little later rather than at once, over and over.
+- **A deployment answers at most its share of runs at once, and a caller that stops reading is
+  let go.** Every deployment's runs share the data plane's 512 threads, so one flooded with
+  requests, or whose runs wait on a slow upstream, held the others' requests queued with no
+  answer; and a caller that stopped reading a big file held a thread for good. Now a deployment
+  runs at most `max_concurrent_runs` at once (64 by default, at most 448, the data plane's total
+  for runs): past it, or past the total, a request is answered `503` with `Retry-After: 1` at once,
+  and a WebSocket's message waits its turn. A write a caller doesn't take within 30 s closes its
+  connection, whatever the answer (whole, a file, a streamed reply, a subscription), and a file is
+  sent without a thread waiting on its caller. A flow that answers more than 64 slow requests at
+  once asks for more: `flow("api", { port: 8080, limits: { max_concurrent_runs: 200 } })`.
+
+- **A step is a unit of work, and a run's time is read as it computes.** A step was a node, or an
+  item a function is applied to, whatever its leaf did, so a leaf that scans what it is handed,
+  called for each item of a list, was the square of its work in a count of steps:
+  `ids.filter(x => ids.indexOf(x) === ids.lastIndexOf(x))` over 100,000 ids held a server's
+  thread for 26 seconds within 10 million steps, and the run's time budget, read only after a
+  round that called out, never stopped it. Now a leaf also takes a step for each 32 items or fields
+  and each 128 bytes of what it reads and makes, at every level of it (a list scanned for a value,
+  each item against the value; `sort` n log n times; a number written as text, a step; a key a
+  signature is checked with, and a compressor's set-up, what they take), so a step is of the order
+  of a node's work whatever the node does: no pure leaf's step takes 20 times what a node of two
+  numbers does, about 2 µs. A leaf that answers an item, a field or a length reads only that, and
+  one that adds to a value it alone holds (`append` or `+` in a `reduce`, `insert` into a record)
+  takes the steps of what it adds. And the time budget (`run_budget_ms`) is read as a round steps,
+  so a run that only computes stops at it too, failing with `the run took longer than …` and
+  performing nothing. A run that builds or scans large values takes more steps than it did, and
+  one that took near its `max_steps` may need more (`limits: { max_steps: n }`). Leaves that copied
+  what they then dropped copy only what they answer (`with_item`, `fill`, `to_spliced`,
+  `with_field`, `insert`, `remove`, `merge`; `flat` and `copy_within` check their params first), and
+  `json_stringify` of control characters, `uri_encode` and `replace` with a long replacement are
+  many times faster.
+
+- **The It may strip is short pills.** Above the canvas, each thing a flow may do is an icon, a
+  small second one for what is done to it (written, read and written, sent on, a run on each
+  one that comes) and its name: `↗ api.example.com`, `orders`, a key and `stripe_key`. Every kind
+  has an icon of its own. The whole sentence, as the approval says it, shows at once in a tip
+  when the pointer is on a pill or the keyboard's focus is, a line for each part of it, and is
+  what a screen reader hears. A thing both read and written is one pill.
+- **A secret's lines stand out wherever what a flow may do is listed.** In the editor, each line
+  of a secret (reading one, where it is sent, where what is answered to it or made with it goes,
+  a route that answers with one) has a 🔑 before it and is in the secret's colour: in the It may
+  strip, the deploy question, a flow's status and settings, the Inspector, the Library and the
+  host's holdings. The canvas's marks on the nodes a secret reaches use the same colour. The It
+  may strip now says where the draft sends each secret, as the approval will, before anything is
+  sent to a server.
+- **The approval says where a hash, a signature or a host's answer made with a secret goes.** A
+  route answering `hmac_sha256(key, req.query.msg)` signs whatever its caller sends, and one
+  answering the token a host gave for a secret hands out a live token; both are clean (a flow
+  must sign what it sends, and use what it is answered), and until now `holon check`, the editor
+  and the approval said only `read the secret "key"`. Each is now followed from where it is made
+  to where it leaves, and said beside the secret's read: "…; a hash or signature made with it
+  goes to its callers", "… goes to https://api.example.com", "…; what is answered to it goes to
+  its callers". `holon check` names the route under "with its secrets:", and the canvas marks
+  the node. Nothing new is refused or withheld. A route that only says whether a signature
+  matches says nothing, and a response's `status` alone isn't counted. Flows that sign a request
+  or answer with what an API answered read one clause longer; the **sign-payload** sample shows
+  it.
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

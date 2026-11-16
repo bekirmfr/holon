@@ -83,7 +83,7 @@ fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::
     };
     // What a leaf's declared output says it gives, where that is no text.
     let gives = |unit: &holon_core::Unit, path: &[u32]| {
-        unit.outputs.iter().enumerate().filter(|(port, _)| fed.output(path, *port) == taint::Taint::Derived).find_map(|(_, port)| match &port.ty {
+        unit.outputs.iter().enumerate().filter(|(port, _)| fed.output(path, *port).is_derived()).find_map(|(_, port)| match &port.ty {
             holon_core::Type::Number => Some("a number"),
             holon_core::Type::Boolean => Some("a true or false"),
             holon_core::Type::List(_) | holon_core::Type::Product(_) => Some("a list"),
@@ -1748,9 +1748,11 @@ impl Asserting {
 
 /// Whether `outputs`, what the log recorded for the leaf `name`, is something that leaf can
 /// give: as many outputs as it has, each of the type it declares where it declares one, and a
-/// SHA-256 or an HMAC of one 32 bytes in the encoding its node says. Nothing is what any leaf
-/// gives when an input didn't arrive.
-fn shaped(name: &str, unit: &holon_core::Unit, outputs: &[Option<Value>]) -> bool {
+/// SHA-256 or an HMAC of one 32 bytes in the encoding its node says, or the one mark the log
+/// wrote for it (`computed`): a hash of a part of a secret, or of a value computed from one, says
+/// that part, so the record marks it as it does any value computed from a secret. Nothing is what
+/// any leaf gives when an input didn't arrive.
+fn shaped(name: &str, unit: &holon_core::Unit, outputs: &[Option<Value>], computed: &str) -> bool {
     use holon_core::Type;
     if outputs.len() != unit.outputs.len().max(1) {
         return false;
@@ -1765,6 +1767,7 @@ fn shaped(name: &str, unit: &holon_core::Unit, outputs: &[Option<Value>]) -> boo
     };
     let typed = outputs.iter().zip(&unit.outputs).all(|(o, port)| o.as_ref().is_none_or(|v| of_type(&port.ty, v)));
     let digest = || match (&outputs[0], unit.params.iter().find(|p| p.name() == "encoding").and_then(|p| p.value())) {
+        (Some(Value::Text(t)), _) if t.starts_with(computed) && t.find('›') == Some(t.len() - '›'.len_utf8()) => true,
         (Some(Value::Text(t)), Some(encoding)) => holon_core::text_bytes(t, encoding).is_some_and(|b| b.len() == 32),
         (None, _) => true,
         _ => false,
@@ -1833,7 +1836,7 @@ impl Observer for Asserting {
                 if let holon_core::UnitBody::Primitive { name } = &unit.body
                     && holon_core::capabilities_of(name, &unit.params).is_some_and(|c| c.is_pure())
                 {
-                    self.misshapen |= !shaped(name, unit, outputs);
+                    self.misshapen |= !shaped(name, unit, outputs, &self.marks.of_computed());
                     // After a node that couldn't be computed, the inputs seen here aren't the
                     // run's (two runs that signed two messages both show none): nothing to hold
                     // one record to another by.
@@ -1871,6 +1874,11 @@ impl Marks {
     /// What follows a placeholder's start for a value a run computed from a secret, up to its
     /// print (`secrets::DERIVED_MARK`, less the `‹`).
     const DERIVED: &'static str = "derived #";
+
+    /// How the mark of a value a run computed from a secret begins, as this check reads it.
+    fn of_computed(&self) -> String {
+        format!("{}{}", self.start, Marks::DERIVED)
+    }
 
     fn new() -> Marks {
         let mut tag = [0u8; 16];

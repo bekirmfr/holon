@@ -5,6 +5,7 @@
 import type { DeploymentEntry, HostPolicy, Proposal } from "./server";
 import { checkWaiting, versionName, type Verdict } from "./policyMeans";
 import { describeItem } from "./holon";
+import { Said } from "./SecretSaid";
 import { format } from "./routes";
 import { quiet } from "./hostStyles";
 
@@ -74,7 +75,7 @@ export function PolicyCheck({ policy, deployments, proposals }: { policy: HostPo
               <div key={v.item} className={`hl-policy-check__item hl-policy-check__item--${v.says}`}>
                 <span className="hl-policy-check__sign">{v.says === "refused" ? "✕" : v.says === "auto" ? "✓" : "?"}</span>
                 <span>
-                  {versionName(w)} would {said(v)}, which {v.why}
+                  {versionName(w)} would <Said item={v.item} said={said(v)} />, which {v.why}
                 </span>
               </div>
             ))}
