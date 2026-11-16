@@ -388,12 +388,14 @@ What is not defended, or only partly:
   run file (an admin token), the logs and the store, and rewrite them (local.rs says so: it
   "trusts no more than the machine already does"). An `env:` or `os` key moves that to the
   environment or the key store, not out of reach of the same user.
-- **Other users on the machine**: every file the server writes is owner-only, and the folders it
-  makes are (§2.8). A data folder made before, or by someone else, open to others is said at start
-  and not changed; its older files (a store's values, never written again) keep their mode until
+- **Other users on the machine**: every file the server writes is owner-only, and on Unix the
+  folders it makes are (§2.8; on Windows a folder it makes inherits its parent's ACL). A data
+  folder made before, or by someone else, open to others is said at start on Unix (`open_to_others`
+  reads modes; Windows isn't checked) and not changed; its older files (a store's values, never
+  written again) keep their mode until
   the admin restricts the folder. Folders inside the data folder (the logs', the state heads') are
-  made with the umask, behind the data folder's own `0o700`. On Windows, `write_atomically`'s files
-  take the folder's inherited ACL, not `restrict_to_owner`'s.
+  made with the umask, behind the data folder's own `0o700`. On Windows, `write_atomically` gives
+  each file `restrict_to_owner`'s protected DACL before writing it.
 - **A log rewritten whole**: the chain is an unkeyed hash, so whoever can write the file can write
   a consistent new one; lines before the chain (no `prev`) check only once one with a `prev` is seen.
   Only a witness holding a later head shows it, and only up to the last head sent.

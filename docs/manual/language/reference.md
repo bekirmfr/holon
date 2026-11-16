@@ -940,8 +940,8 @@ those fields (several).
 - **Budgets:** `fuel` is instructions per call (default 200M), `memory` the memory per call
   (default 16 MiB). The deploy asks for the budgets, and the server's policy caps them. A run's
   calls between two of its outbound calls run no more than `max_fuel` instructions in all (4G
-  unless the flow asks for more with `limits: { max_fuel }`); a run that wants more fails and
-  performs nothing. A call's own memory is its `memory`, freed as it answers; what it answers
+  unless the flow asks for more with `limits: { max_fuel }`); a run that wants more fails: its
+  writes and sends aren't performed, though the requests it made before that stretch are sent. A call's own memory is its `memory`, freed as it answers; what it answers
   counts toward the run's `max_memory`.
 - **Failures:** an exception, or a call that runs out of fuel, gives no value, and the run
   records why: `explain` shows it under the statement. A syntax error is found by `holon check`.

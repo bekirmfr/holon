@@ -241,8 +241,9 @@ Each file is found by its hash, wherever it is under that folder.
 
 The chain shows a run changed after the fact, unless whoever changed it also rewrote every entry
 after it. Someone who holds the server's data can do that. A **witness** stops it: another server
-that is sent each new head as it is made, and keeps them. A head the witness holds can't be
-rewritten.
+that is sent the new heads every few seconds, and keeps them. A head the witness holds can't be
+rewritten; a run newer than the last head it took, or one queued while it can't be reached, isn't
+pinned yet.
 
 Start the server with a witness to send heads to:
 

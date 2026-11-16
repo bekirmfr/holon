@@ -53,7 +53,7 @@ A handler says how its runs are recorded (CHANGELOG, RP C5):
 | Level | Guarantee | What it costs |
 |---|---|---|
 | `strict` (the default) | The record is on disk before the answer; a write or sync that fails is a 500. | The fsync: about 60% of a strict `hello` (259 of 436 µs at one connection, RP §1.3). Runs at once share one sync (4–5 per sync at 8 and 64 threads, PL 9a). |
-| `lazy` | The record reaches the OS before the answer, the disk within a second. Only for a handler that reads and answers (every capability sourced, none waits). | Making the record; the pool's hop. |
+| `lazy` | The record is written to the OS before the answer and synced within a second; a write that fails is not the caller's (it is still answered, and the next line kept says what was lost). Any handler may be lazy (8ece60b5): its requests go out and its writes land as a strict run's do; its mail, queue and channel sends wait for its line's sync. | Making the record; the pool's hop. |
 | `unrecorded` | No entry, failed or not; runs are counted (runs, failures, time, the last failure's status and redacted error). Needs approval: `Unrecorded("GET /health")`. | Nothing but the run. |
 
 Requests no route took are recorded lazily (Q12: strict would let anyone cause an fsync per

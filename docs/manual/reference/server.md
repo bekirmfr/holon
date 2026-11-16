@@ -35,9 +35,11 @@ In the data folder (`--data`, `HOLON_DATA`):
 | `holon.toml` | the policy | `--policy` |
 | `host.key` | the key resume tokens are signed with | `--host-key` |
 
-Every file the server writes there is readable only by the server's user, and a data folder it
-makes is that user's alone. One there already that other users can read is said at start, with
-the command that makes it yours alone (`chmod 700 …`); the server leaves it as it is. The server
+Every file the server writes there is readable only by the server's user. On Unix a data folder
+it makes is that user's alone too, and one there already that other users can read is said at
+start, with the command that makes it yours alone (`chmod 700 …`); the server leaves it as it is.
+On Windows a folder it makes takes the access rules of the folder it is in, and nothing is said of
+one open to others: put the data folder where only the server's user can read. The server
 refuses to start when a file with secrets or tokens in it can't be read, rather than starting
 without it.
 
@@ -577,5 +579,6 @@ holds a head the server's disk lost. See [Checking runs](../guides/checking-runs
 
 Every run has a time budget (25 seconds for a request, 60 for a clock run or a new file, by
 default), a number
-of outbound requests, and size limits on what it sends and receives. A run past its budget fails,
-and performs nothing. The defaults and ceilings are in [Permissions](permissions.md#limits).
+of outbound requests, and size limits on what it sends and receives. A run past its budget fails:
+its writes and sends aren't performed, though the requests it made before then have gone out.
+The defaults and ceilings are in [Permissions](permissions.md#limits).

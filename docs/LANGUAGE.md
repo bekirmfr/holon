@@ -1805,7 +1805,8 @@ record, what `holon runs`, revert and the witness read), and by default the line
 the run's answer: the handler is *strict*. Its option `log` says otherwise:
 
 - `"lazy"`: the run is recorded, and on disk within a second of its answer. A crash in that second
-  loses the line, and only the line: the run did nothing outside itself.
+  loses the line, not what the run did: its writes had landed and its requests had gone out (its
+  mail, queue and channel sends wait for the line to be on disk).
 - `"unrecorded"`: the run is not a line of the log, failed or not. It is counted (how many, how
   many failed, the last failure's status and error, never its request), but it isn't in the runs
   table, so it can't be replayed, reverted or explained. To see why one fails, make it `"lazy"` for

@@ -1681,8 +1681,9 @@ const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR
   3 when nothing fails but some runs couldn't be run again (it says which, and why), 2 when it
   can't read the export.
 
-  --head HEX               a head a witness holds: check it is in the export, so no run up to
-                           it was changed or removed
+  --head HEX               a head a witness holds: check it is in the export, so no run in the
+                           export, from its oldest up to that head, was changed or removed
+                           (of runs a trimmed log no longer holds, it says nothing)
   --files DIR              where the files the runs read are, for those whose log keeps only
                            their hashes: each is found by its hash, wherever it is under DIR
   --data DIR               for an export the server keeps sealed (a backup's archive, a removed
