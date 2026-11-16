@@ -234,6 +234,7 @@ describe("Replay the draft", () => {
     same: 1,
     differ: 1,
     cant_tell: 1,
+    not_reached: 0,
     runs: [
       { seq: 7, at_ms: 0, kind: "request", route: "GET /hello/:name", outcome: "same", status: 200, now_status: 200 },
       { seq: 8, at_ms: 0, kind: "request", route: "POST /orders", outcome: "differs", why: ["it answers 500, not 201"], status: 201, now_status: 500 },

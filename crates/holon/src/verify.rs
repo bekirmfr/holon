@@ -41,9 +41,9 @@ use holon_host::{Exchange, Limits, Performer, Waiting, Waits};
 use recorder::{line_hash, LogEntry};
 
 mod replay;
-pub(crate) use replay::handle_get_replay;
+pub(crate) use replay::{handle_get_replay, Replays};
 #[cfg(test)]
-pub(crate) use replay::replay;
+pub(crate) use replay::{replay, Granted};
 
 /// What an export says it is.
 pub(crate) const FORMAT: &str = "holon-runs/1";

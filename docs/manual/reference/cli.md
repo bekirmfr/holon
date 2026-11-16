@@ -233,6 +233,9 @@ This version replayed on "price-rules"'s last 3 runs, offline (nothing sent or w
   run 0  POST /price  differs: its answer
 ```
 
+A replay runs for 30 seconds at most: the runs it didn't reach by then are counted, `12 not reached
+in time`, and `--runs` with fewer reaches further back in time for each.
+
 Nothing is deployed, sent or written; only the version's units are staged on the server. It exits 0
 when no run differs, 1 when one does or it can't replay, 2 for a wrong argument, so a script can
 hold back a deploy that would answer differently. What "can't tell" means is under

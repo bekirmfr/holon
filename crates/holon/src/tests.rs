@@ -57,6 +57,7 @@ fn test_state_in(store: SharedStore, at: Place) -> AppState {
         sweeps: Default::default(),
         checked: Default::default(),
         proposals: Default::default(),
+        replays: Default::default(),
     }
 }
 
@@ -1791,6 +1792,80 @@ export const call = action(async (path) => {{
     assert!(r["runs"][0]["why"][0].as_str().unwrap().starts_with(&format!("it sends GET https://{host}/more")), "{r}");
 }
 
+/// **Guards:** a replay needs no approval, and anyone who may read a deployment starts one with a
+/// version of their own (an agent, with its `replay` tool): whatever that version does, a replay
+/// is held to what the deployment's own runs are granted, and as a whole to a deadline and to how
+/// many run at once. A row for each road past a bound: a run that sends more requests than a run
+/// of its kind is granted (the run's own request again and again, each answered from the run's);
+/// a replay whose deadline passes before its runs (each counted as not reached, and said so by
+/// `holon replay` and the agent's tool); and one replay more than the server runs at once (503,
+/// and a place given back once one ends). A run that asks what its run didn't goes no further:
+/// that is held below the server, by verify/replay.rs's own test, as nothing outside it shows it.
+/// **Why:** a replayed run had an hour and any number of requests, and nothing held a replay as a
+/// whole, nor how many ran: one GET of up to 200 runs could keep a thread of the control plane for
+/// hours, and a few of them all of it.
+/// **If it fails:** the row names the bound a replay runs past: `within` (verify/replay.rs) doesn't
+/// take the grant's requests; `replay` doesn't stop at its deadline, or doesn't count what it
+/// left; `Replays::enter` lets one more in, or `Going` doesn't give its place back.
+#[test]
+fn a_replay_is_bounded_whatever_the_version_does() {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(3) {
+            let mut stream = stream.unwrap();
+            let _ = read_request(&mut stream);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello");
+        }
+    });
+    let mut state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
+    let unit = stage_text(&state, &caller_text(&host));
+    let ack = serde_json::json!(["Action(\"call\")", format!("HttpRequest({host:?})"), format!("PlainHttp({host:?})"), "PrivateAddresses"]);
+    let requirements = serde_json::json!({ "plain_http": [host], "private_addresses": true });
+    assert_eq!(deploy_json(&state, "local", unit, serde_json::json!({ "acknowledge": ack, "requirements": requirements })).status_code, 200);
+    for path in ["/a", "/b", "/c"] {
+        assert_eq!(run_action_named(&state, "local", "call", serde_json::json!(path)).status_code, 200);
+    }
+    let granted = state.deployments.lock().unwrap()["local"].permit.request_limits.max_requests;
+    let version = |state: &AppState, body: &str| {
+        stage_text(state, &format!("import {{ action, flow }} from \"holon\"\nimport api from \"host:{host}\"\n\nflow(\"caller\")\n\nexport const call = action(async (path) => {{\n{body}\n}})\n"))
+    };
+    let replay = |state: &AppState, unit: Hash| route(state, &req("GET", &format!("/deployments/local/replay?unit={}", to_hex(&unit)), vec![]));
+    let counts = |r: &serde_json::Value| ["replayed", "same", "differ", "cant_tell", "not_reached"].map(|k| r[k].as_u64().unwrap());
+
+    // Within every bound: the run's own request, answered as it was.
+    let own = version(&state, "  const r = await api.get(path)\n  return r");
+    let r = body_json(replay(&state, own));
+    assert_eq!(counts(&r), [3, 3, 0, 0, 0], "within: {r}");
+
+    // Requests: one more than a run of its kind is granted, each the run's own, answered from it.
+    let many: String = (0..=granted).map(|i| format!("  const r{i} = await api.get(path)\n")).collect::<String>() + &format!("  return r{granted}");
+    let r = body_json(replay(&state, version(&state, &many)));
+    assert_eq!(counts(&r), [3, 0, 3, 0, 0], "requests: {r}");
+    let why = r["runs"][0]["why"][0].as_str().unwrap();
+    assert!(why.starts_with("it doesn't finish within what the deployment is granted") && why.contains(&format!("more than {granted} outbound requests")), "requests: {why}");
+
+    // The deadline: past it before the first run, none run, each counted, and said.
+    state.replays = verify::Replays::new(2, Duration::ZERO);
+    let r = body_json(replay(&state, own));
+    assert_eq!(counts(&r), [0, 0, 0, 0, 3], "deadline: {r}");
+    let said = crate::replaycmd::lines("local", &r);
+    assert!(said[0].ends_with("last 3 runs, offline (nothing sent or written): 3 not reached in time"), "deadline: {said:?}");
+
+    // At once: with every place taken, one more is turned away, and let in once one ends.
+    state.replays = verify::Replays::new(1, Duration::from_secs(30));
+    let going = state.replays.enter().expect("a place");
+    let busy = replay(&state, own);
+    assert_eq!(busy.status_code, 503, "at once");
+    assert!(busy.headers.iter().any(|(k, v)| k == "Retry-After" && v == "5"), "at once: when to try again");
+    assert!(state.replays.enter().is_none(), "at once: still taken");
+    drop(going);
+    assert_eq!(counts(&body_json(replay(&state, own))), [3, 3, 0, 0, 0], "at once: its place given back");
+    assert!(state.replays.enter().is_some(), "at once: and given back by the replay that ran");
+}
+
 /// The grant is the boundary at run time: an effect it doesn't cover isn't performed, whatever
 /// the graph says. (A grant can only lose an item by being changed under a running deployment;
 /// this sets that up directly.)
@@ -3191,6 +3266,7 @@ fn deployments_persist_across_a_simulated_restart() {
             sweeps: Default::default(),
             checked: Default::default(),
             proposals: Default::default(),
+            replays: Default::default(),
         };
         let unit = stage_text(&state, ECHO);
         let ack = serde_json::json!({ "acknowledge": ["Action(\"echo\")"] });
@@ -3224,6 +3300,7 @@ fn deployments_persist_across_a_simulated_restart() {
         sweeps: Default::default(),
         checked: Default::default(),
         proposals: Default::default(),
+        replays: Default::default(),
     };
     let ran = run_action_named(&state2, "echo", "echo", serde_json::json!("restarted"));
     assert_eq!(ran.status_code, 200);
@@ -5357,6 +5434,7 @@ fn state_persists_across_a_simulated_restart() {
             sweeps: Default::default(),
             checked: Default::default(),
             proposals: Default::default(),
+            replays: Default::default(),
         };
         let writer = stage_writer(&state, "counter");
         let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"counter\")"] });
@@ -5390,6 +5468,7 @@ fn state_persists_across_a_simulated_restart() {
         sweeps: Default::default(),
         checked: Default::default(),
         proposals: Default::default(),
+        replays: Default::default(),
     };
     assert_eq!(put(&state2, "writer", "after-restart").status_code, 200);
     let s = body_json(route(&state2, &req("GET", "/deployments/writer/state", vec![])));
@@ -6924,7 +7003,8 @@ fn a_replay_computes_with_a_secret_on_a_budget_of_its_own() {
         let unit = stage_text(&state, &signer(n));
         let loaded = units::closure(&state.store, unit).unwrap_or_else(|_| panic!("the version's units"));
         let resolver = holon_module::WithEngine::new(&loaded, holon_module::shared());
-        let r = verify::replay(&export, unit, &resolver, 1, limits);
+        // No deadline to speak of: each run held to `limits` alone.
+        let r = verify::replay(&export, unit, &resolver, 1, &verify::Granted { request: limits, clock: limits }, std::time::Instant::now() + Duration::from_secs(3600));
         (r.differ, r.cant_tell, r.runs[0].why.join("; "))
     };
     let computed = |r: (usize, usize, String)| r.0 == 1 && r.2 == "its answer";

@@ -9,12 +9,14 @@ import { useEffect, useState } from "react";
 import { follow, format, type Route } from "./routes";
 import { replayVersion, type Replayed, type RunReplayed } from "./server";
 
-/** "20 replayed · 17 same · 3 differ · 1 can't tell", leaving out what is none. */
+/** "20 replayed · 17 same · 3 differ · 1 can't tell", leaving out what is none; and the oldest
+ * runs a replay didn't reach before its time ran out (the server's, verify/replay.rs). */
 export function replaySummary(r: Replayed): string {
-  if (r.replayed === 0) return "no runs to replay yet";
-  const parts = [`${r.replayed} replayed`, `${r.same} same`];
+  if (r.replayed === 0 && r.not_reached === 0) return "no runs to replay yet";
+  const parts = r.replayed > 0 ? [`${r.replayed} replayed`, `${r.same} same`] : [];
   if (r.differ > 0) parts.push(`${r.differ} differ${r.differ === 1 ? "s" : ""}`);
   if (r.cant_tell > 0) parts.push(`${r.cant_tell} can't tell`);
+  if (r.not_reached > 0) parts.push(`${r.not_reached} not reached in time`);
   return parts.join(" · ");
 }
 

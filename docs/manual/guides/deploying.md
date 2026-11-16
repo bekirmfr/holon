@@ -322,10 +322,17 @@ where a node computes with a secret or a token, which the log never holds (a nod
 one along, or picks a field past it, computes the same and is told); one that failed then.
 
 A replay computes no more than the deployment is granted: each part of a run between two of its
-outbound calls within the deployment's `max_steps`, `max_fuel` and `max_memory`, as its own runs are
-([Permissions](../reference/permissions.md)), since a replay needs no approval. A version that
-asks for more has it once deployed; replayed, a run that needs it differs, `it doesn't finish
-within what the deployment is granted`, with the limit it ran past.
+outbound calls within the deployment's `max_steps`, `max_fuel` and `max_memory`, and the run within
+its `run_budget` and `max_requests`, as its own runs of that kind are (a request's limits, or a
+clock's: [Permissions](../reference/permissions.md)), since a replay needs no approval. A version
+that asks for more has it once deployed; replayed, a run that needs it differs, `it doesn't finish
+within what the deployment is granted`, with the limit it ran past. A run that sends a request, or
+reads something, its run didn't goes no further: it can't be told, whatever it does next.
+
+A replay as a whole runs for 30 seconds at most, and the server runs two at a time. The runs it
+hasn't reached when its time runs out, the oldest, are counted, not run: `20 replayed · 18 same ·
+2 differ · 12 not reached in time`; a run its time ran out in can't be told. A third replay while
+two run is answered 503, to try again in a moment.
 `GET /deployments/<slug>/replay?unit=<hash>&runs=N` answers the same for any version staged
 (`POST /unit`) or proposed, for anyone who may read the deployment. From a file,
 [`holon replay`](../reference/cli.md#holon-replay) stages and replays it; an agent has the

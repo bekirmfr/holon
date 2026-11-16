@@ -357,7 +357,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             }
         } else if let Some(slug) = rest.strip_suffix("/replay") {
             if method == "GET" {
-                return verify::handle_get_replay(&state.store, &state.folders, &state.deployments, slug, request);
+                return verify::handle_get_replay(&state.store, &state.folders, &state.deployments, &state.replays, slug, request);
             }
         } else if let Some(slug) = rest.strip_suffix("/document") {
             if method == "GET" {
