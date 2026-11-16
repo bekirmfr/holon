@@ -106,9 +106,9 @@ fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry,
 
 /// Why the log withheld what `entry`'s run computed from a secret, so that it isn't run again:
 /// which leaf, from which secret, and why no mark stands for what it gave. The leaf is one that
-/// makes something of a secret (`SecretFed::makes`) and ran; one whose output is declared as
-/// something a mark can't be (a number, a true or false, a list) is named before one that gives
-/// a text. A run that computed where the log follows no steps says that.
+/// computes something of its own from a secret (`SecretFed::computes`) and ran; one whose output
+/// is declared as something a mark can't be (a number, a true or false, a list) is named before
+/// one that gives a text. A run that computed where the log follows no steps says that.
 fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::SecretFed, entry: &LogEntry) -> String {
     if !fed.followed_to(recorder::Timer::DEPTH) {
         return "it computed with a secret inside a function applied to each item, inside a module, or deeper than the log records a run's steps: the values made there can't each be marked, so the log withholds them, and only the secret could compute them again".into();
@@ -129,7 +129,7 @@ fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::
             _ => None,
         })
     };
-    let ran: Vec<(&[u32], &holon_core::Unit)> = fed.makers().filter(|path| entry.timeline.iter().any(|t| t.path == *path)).filter_map(|path| Some((path, unit_at(path)?))).collect();
+    let ran: Vec<(&[u32], &holon_core::Unit)> = fed.computing().filter(|path| entry.timeline.iter().any(|t| t.path == *path)).filter_map(|path| Some((path, unit_at(path)?))).collect();
     let Some((path, unit, what)) = ran.iter().find_map(|(path, unit)| Some((*path, *unit, Some(gives(unit, path)?)))).or(ran.first().map(|(path, unit)| (*path, *unit, None))) else {
         return WITHHELD_NODE.into();
     };
