@@ -70,7 +70,7 @@ fn held(state: &AppState, token: &str, staged: &Staged, acknowledge: &Value, mea
     crate::deploy::HELD.lock().unwrap().insert(SLUG.into(), (there, waits));
     std::thread::scope(|s| {
         let deploying = s.spawn(|| deploy(state, token, staged, acknowledge));
-        let reached = arrived.recv_timeout(Duration::from_secs(10));
+        let reached = arrived.recv_timeout(EVENTUALLY);
         crate::deploy::HELD.lock().unwrap().remove(SLUG);
         reached.expect("the deploy is worked out, and held before it is put in");
         meanwhile();

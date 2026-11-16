@@ -17287,7 +17287,6 @@ fn a_client_is_whom_a_trusted_proxy_forwarded_for_and_otherwise_its_address() {
 fn behind_a_trusted_proxy_each_client_has_its_own_places_and_tries() {
     use std::io::Write as _;
     use std::net::TcpStream;
-    use std::time::Instant;
     let pw = "correct horse battery";
     for trust in [true, false] {
         let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
@@ -17301,7 +17300,7 @@ fn behind_a_trusted_proxy_each_client_has_its_own_places_and_tries() {
         let (_, stop) = server.stoppable();
         let send = |client: &str, path: &str, body: &[u8], length: usize| {
             let mut s = TcpStream::connect(at).unwrap();
-            s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            s.set_read_timeout(Some(EVENTUALLY)).unwrap();
             write!(s, "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{TEST_PORT}\r\nX-Forwarded-For: {client}\r\nContent-Type: application/json\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n").unwrap();
             s.write_all(body).unwrap();
             s
@@ -17311,24 +17310,17 @@ fn behind_a_trusted_proxy_each_client_has_its_own_places_and_tries() {
             let _ = s.read_to_string(&mut all);
             all
         };
-        let started = Instant::now();
         // A's bodies that stop part way hold A's share (a body of 1 KiB or less tiny_http reads
         // itself before handing the request on, holding no place: these say they are longer)...
         let stopped: Vec<TcpStream> = (0..2).map(|_| send("198.51.100.7", "/auth/sign-in", b"{\"a\"", 100_000)).collect();
-        while slots.taken() < 2 {
-            assert!(started.elapsed() < Duration::from_secs(5), "A's bodies are being read");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        assert!(soon(|| slots.taken() == 2), "A's bodies are being read");
         let a_again = answer(&mut send("198.51.100.7", "/auth/sign-in", b"{}", 2));
         assert!(a_again.starts_with("HTTP/1.1 503") && a_again.contains(crate::TOO_MANY_FROM_ONE), "trust {trust}: a third from A: {a_again}");
         // ...and B, another client of the proxy, is answered only when it is counted as itself.
         let b = answer(&mut send("203.0.113.9", "/auth/sign-in", b"{}", 2));
         assert_eq!(!b.starts_with("HTTP/1.1 503"), trust, "trust {trust}: B while A holds its share: {b}");
         drop(stopped);
-        while slots.taken() > 0 {
-            assert!(started.elapsed() < BODY_DEADLINE + Duration::from_secs(5), "A's places are given back");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        assert!(soon(|| slots.taken() == 0), "A's places are given back");
 
         // Five wrong passwords from A lock ada from A; from B she signs in only if B is itself.
         let sign_in = |client: &str, password: &str| {

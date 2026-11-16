@@ -2575,24 +2575,21 @@ mod tests {
         std::thread::scope(|s| {
             let a = &a;
             let changing = s.spawn(move || a.set_display("ada", Some("Ada".into())));
-            let start = Instant::now();
-            while a.writer.try_lock().is_some() {
-                assert!(start.elapsed() < Duration::from_secs(5), "the change began");
-                std::thread::sleep(Duration::from_millis(5));
-            }
+            assert!(crate::tests::soon(|| a.writer.try_lock().is_none()), "the change began");
             let (read, got) = std::sync::mpsc::channel();
             let (name, session) = (&name, &session);
             s.spawn(move || read.send(name(session)).unwrap());
-            assert_eq!(got.recv_timeout(Duration::from_secs(3)), Ok(Some("ada".into())), "read while a change is kept");
+            assert_eq!(got.recv_timeout(crate::tests::EVENTUALLY), Ok(Some("ada".into())), "read while a change is kept");
             assert_eq!(display(a), None, "the change not in place until it is kept");
             // What an access change would make is read between changes: after this one, with
             // the count of writes that names it, never the book before it beside the count after.
             let (tried, trial) = std::sync::mpsc::channel();
             s.spawn(move || tried.send(a.trial(|_| Ok(())).map(|t| t.written)).unwrap());
+            // not a bound: nothing is to come in it (the trial waits for the change under way)
             assert!(trial.recv_timeout(Duration::from_millis(300)).is_err(), "a trial waits for the change under way");
             release.send(()).unwrap();
             changing.join().unwrap().unwrap();
-            assert_eq!(trial.recv_timeout(Duration::from_secs(3)), Ok(Ok(a.written.load(Ordering::SeqCst))));
+            assert_eq!(trial.recv_timeout(crate::tests::EVENTUALLY), Ok(Ok(a.written.load(Ordering::SeqCst))));
         });
         *hold(&a.save_gate) = None;
         assert_eq!(display(&a), Some("Ada".into()));
