@@ -334,6 +334,72 @@ describe("a prompt that offers an empty answer", () => {
   });
 });
 
+describe("a question for a secret", () => {
+  // Guards: a secret typed into the console (a password, a key) is never shown. It is asked with
+  // `secret`, whose field hides it (a password field, filled by a password manager as its
+  // `autoComplete` says) and which answers it as typed; and every question in the console for a
+  // password or a key is asked so. Needed because changing a password asked the current one and
+  // the new one in a line of plain text, for anyone looking at the screen to read, and the
+  // marketplace's publish key the same. If it fails, the question it names shows what is typed
+  // into it: ask it with `secret`.
+  const type = (field: HTMLInputElement, text: string) =>
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, text);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+  it("hides what is typed, and answers it as typed", async () => {
+    const d = mount();
+    for (const fill of ["current-password", "new-password", "off"] as const) {
+      const typed = `  correct horse ${fill}  `;
+      const { answer } = await ask(() => d.secret("Your current password:", fill));
+      const field = dialog()!.querySelector("input")!;
+      expect(field.type, fill).toBe("password");
+      expect(field.getAttribute("autocomplete"), fill).toBe(fill);
+      type(field, typed);
+      expect(document.body.textContent, `${fill}: not in the page's text`).not.toContain("horse");
+      act(() => buttons().find((b) => nameOf(b) === "OK")!.click());
+      expect(await answer, `${fill}: its spaces its own`).toBe(typed);
+    }
+    // Left empty, or cancelled: none.
+    for (const press of ["OK", "Cancel"]) {
+      const { answer } = await ask(() => d.secret("A key:", "off"));
+      act(() => buttons().find((b) => nameOf(b) === press)!.click());
+      expect(await answer, press).toBeNull();
+    }
+    // A prompt after it is a line of text again, opened empty.
+    const { answer } = await ask(() => d.prompt("A name:"));
+    expect(dialog()!.querySelector("input")!.type).toBe("text");
+    expect(dialog()!.querySelector("input")!.value).toBe("");
+    act(() => buttons().find((b) => nameOf(b) === "Cancel")!.click());
+    await answer;
+  });
+
+  it("is how every password and key is asked in the console", () => {
+    const dir = join(process.cwd(), "src");
+    const files = readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f));
+    const SECRET = /password|passphrase|\bkey\b/i;
+    const asked: string[] = [];
+    const shown: string[] = [];
+    for (const file of files) {
+      const source = ts.createSourceFile(file, readFileSync(join(dir, file), "utf8"), ts.ScriptTarget.Latest, true, file.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+      const visit = (node: ts.Node) => {
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.arguments.length > 0) {
+          const where = `${file.replace(/\\/g, "/")}:${source.getLineAndCharacterOfPosition(node.getStart()).line + 1}`;
+          const how = node.expression.name.text;
+          if (how === "secret") asked.push(where);
+          if (how === "prompt" && SECRET.test(node.arguments[0].getText())) shown.push(where);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+    }
+    // A password changed (the current one, the new one twice) and the marketplace's key (twice).
+    expect(asked.length, "the console's questions for a secret are found").toBeGreaterThanOrEqual(5);
+    expect(shown).toEqual([]);
+  });
+});
+
 describe("a question that opens while you type", () => {
   // Guards: a question takes no answer but no until it has been shown ARM_MS with no key pressed,
   // for every kind and every control that answers it; a key or a click on an answer while it waits

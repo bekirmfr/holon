@@ -421,10 +421,14 @@ export function AccountDialog({ me, onStart, onClose }: { me: Me; onStart: () =>
   const kind = who?.kind ?? me.kind;
   const change = async () => {
     onClose();
-    const current = await dialog.prompt("Your current password:");
+    const current = await dialog.secret("Your current password:", "current-password");
     if (!current) return;
-    const next = await dialog.prompt("A new password (at least 10 characters):");
+    // Typed unseen, so typed twice, as setting up and an invite ask it.
+    const next = await dialog.secret("A new password (at least 10 characters):", "new-password");
     if (!next) return;
+    const again = await dialog.secret("The new password again:", "new-password", "Change password");
+    if (again === null) return;
+    if (again !== next) return dialog.notice("Not changed: the two new passwords differ.");
     try {
       await changePassword(current, next);
       await dialog.notice("Your password is changed.");

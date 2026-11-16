@@ -176,6 +176,11 @@ edits, checks and formats files.
   `?state=…&error_description=…` showed its text on the sign-in page as the console's own
   sentence. `fromUrl.test.tsx` holds every place that shows such text, with markup, a sentence
   in the console's voice, a quote mark of its own, unseen characters and a long one (EN:E4).
+- **A secret typed in is never shown** (`Dialog.tsx`'s `secret`): a question for a password or a
+  key is a password field, filled by a password manager as its `autoComplete` says, and answered
+  as typed. Changing a password asks the new one twice, as setting up and an invite do. Before,
+  change-password and the marketplace's publish key were plain lines of text on the screen.
+  `Dialog.test.tsx` sweeps the sources: no `prompt` asks for a password or a key.
 - **Served by the server.** One process and one port: on a machine without a screen, start the
   server and open it from any browser (`editor.rs`).
 - **End-to-end clicks are dispatched** (`dispatchEvent("click")`): a forced click lands on

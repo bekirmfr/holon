@@ -29,9 +29,13 @@ import { createContext, useCallback, useContext, useEffect, useId, useRef, useSt
  *  is typed, and `required` says why under the field. */
 export type Answer = "optional" | { required: string };
 
+/** How a secret's field is filled by a password manager: the account's password, a new one, or
+ *  neither (a key). */
+export type Secret = "current-password" | "new-password" | "off";
+
 type Ask =
   | { kind: "confirm"; message: string; action: string; body?: ReactNode; resolve: (ok: boolean) => void }
-  | { kind: "prompt"; message: string; initial: string; action: string; answer?: Answer; resolve: (value: string | null) => void }
+  | { kind: "prompt"; message: string; initial: string; action: string; answer?: Answer; secret?: Secret; resolve: (value: string | null) => void }
   | { kind: "choose"; message: string; answers: string[]; resolve: (at: number | null) => void }
   | { kind: "notice"; message: string; action: string; body?: ReactNode; resolve: () => void };
 
@@ -43,6 +47,10 @@ type Dialogs = {
    *  (`answer` says otherwise: an optional reason, or one that is required). `action` labels the
    *  button that answers. */
   prompt: (message: string, initial?: string, action?: string, answer?: Answer) => Promise<string | null>;
+  /** Ask for a secret (a password, a key): typed into a field that hides it, which `autoComplete`
+   *  says how a password manager fills; resolves it as typed, or null if cancelled or left empty.
+   *  Every question for one is asked so, never with `prompt` (Dialog.test.tsx). */
+  secret: (message: string, autoComplete: Secret, action?: string) => Promise<string | null>;
   /** Ask a question with several answers, the last of them the highlighted one (Enter); resolves
    *  the answer's index, or null if cancelled (Esc, or a click beside it). */
   choose: (message: string, answers: string[]) => Promise<number | null>;
@@ -132,6 +140,13 @@ export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNo
     },
     [show],
   );
+  const secret = useCallback(
+    (message: string, autoComplete: Secret, action = "OK") => {
+      setText("");
+      return new Promise<string | null>((resolve) => show({ kind: "prompt", message, initial: "", action, secret: autoComplete, resolve }));
+    },
+    [show],
+  );
   const choose = useCallback((message: string, answers: string[]) => new Promise<number | null>((resolve) => show({ kind: "choose", message, answers, resolve })), [show]);
   const notice = useCallback(
     (message: string, action = "OK", body?: ReactNode) => new Promise<void>((resolve) => show({ kind: "notice", message, action, body, resolve })),
@@ -155,7 +170,12 @@ export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNo
       if (ask.kind === "notice") ask.resolve();
       else if (ask.kind === "confirm") ask.resolve(accepted !== false);
       else if (ask.kind === "choose") ask.resolve(accepted === false ? null : accepted === true ? ask.answers.length - 1 : accepted);
-      else ask.resolve(accepted !== false && (ask.answer !== undefined || text.trim() !== "") ? text.trim() : null);
+      else {
+        // A secret as typed, its spaces its own; and not kept once answered.
+        const typed = ask.secret ? text : text.trim();
+        ask.resolve(accepted !== false && (ask.answer !== undefined || typed !== "") ? typed : null);
+        if (ask.secret) setText("");
+      }
       setAsk(null);
     },
     [ask, text, blocked, wait],
@@ -234,7 +254,7 @@ export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNo
     : { "aria-disabled": true, "aria-describedby": waitNote, style: { opacity: 0.5, cursor: "default" } };
 
   return (
-    <DialogContext.Provider value={{ confirm, prompt, choose, notice }}>
+    <DialogContext.Provider value={{ confirm, prompt, secret, choose, notice }}>
       {children}
       {ask && (
         <div
@@ -282,6 +302,9 @@ export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNo
             {ask.kind === "prompt" && (
               <input
                 ref={input}
+                type={ask.secret ? "password" : "text"}
+                autoComplete={ask.secret}
+                spellCheck={ask.secret ? false : undefined}
                 value={text}
                 onChange={(e) => setText(e.target.value)}
                 aria-required={required !== null}
