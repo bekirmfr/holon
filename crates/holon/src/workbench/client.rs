@@ -176,7 +176,13 @@ impl Client {
         let path = format!("/deployments/{}", seg(slug));
         let entry = self.deployment(slug).cloned().ok_or_else(|| format!("nothing named \"{slug}\" is deployed on {}", self.server()))?;
         let manifest = self.get(&format!("{path}/manifest"))?;
-        let log = self.get(&format!("{path}/log?limit={RUNS}"))?;
+        // A run's steps and values are run.steps' (R55). To whoever holds run.view alone, the list
+        // of runs as /log/heads says it, so the page opens and shows what they hold: the runs,
+        // the log lines, the history; a run's own tabs then say what it can't show.
+        let log = match self.get(&format!("{path}/log?limit={RUNS}")) {
+            Err(e) if e.contains("run.steps") => self.get(&format!("{path}/log/heads?limit={RUNS}"))?,
+            log => log?,
+        };
         let runs = list(&log, "entries");
         let head = log["head"].as_str().unwrap_or_default().to_string();
         let breaks = log["breaks"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();

@@ -115,6 +115,9 @@ mod restore;
 mod scheduler;
 mod storage;
 mod summary;
+// The table of every surface that reaches a server (R60): its tests, and the manual's page.
+#[cfg(test)]
+mod surfaces;
 mod sweep;
 mod sealing;
 mod stopping;

@@ -56,7 +56,9 @@ through the run file (`via: local:<your user>`). Before anyone sets the server u
 NAME` ties the run file to them, as a new version of the access document (waiting for people
 where an access change that gives more does, unless you run it through the run file); removing your account
 unties it, and while it is disabled, or tied to no one, the run file is the machine's admin and
-decides no approval.
+decides no approval. Whoever can read the run file is that admin, whatever the grants say: [What
+reaches a server](../reference/surfaces.md) lists it first, with every command and agent tool and
+what guards each.
 
 ## A teammate
 

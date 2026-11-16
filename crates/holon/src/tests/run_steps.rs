@@ -203,6 +203,125 @@ fn the_tools_are_swept() {
     assert_eq!(swept, served);
 }
 
+/// The table of every surface (R60, surfaces.rs) names only routes this file sweeps: each route a
+/// command, a subcommand or a tool calls is one of ROUTES, written as ROUTES writes it, so what
+/// holds the routes to their grants holds every surface built on them. Its tools are those
+/// `holon mcp` serves, no more and no fewer.
+#[test]
+fn every_surface_calls_only_swept_routes() {
+    use crate::surfaces::{COMMANDS, RUN_FILE, TOOLS};
+    let mut wrong = vec![];
+    for surface in COMMANDS.iter().chain(TOOLS) {
+        for route in surface.routes {
+            let (method, path) = route.split_once(' ').unwrap_or_default();
+            if !crate::can::ROUTES.iter().any(|r| (r.method, r.path) == (method, path)) {
+                wrong.push(format!("{}: {route} is no route of can.rs's ROUTES", surface.name));
+            }
+        }
+        if surface.routes.iter().collect::<BTreeSet<_>>().len() != surface.routes.len() {
+            wrong.push(format!("{}: a route named twice", surface.name));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    let served: BTreeSet<String> = crate::mcp::tool_list().as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+    let tabled: BTreeSet<String> = TOOLS.iter().map(|t| t.name.to_string()).collect();
+    assert_eq!(tabled, served);
+    assert!(RUN_FILE.routes.is_empty() && RUN_FILE.local.is_some());
+}
+
+/// The manual's page of surfaces (docs/manual/reference/surfaces.md) is the table, written out:
+/// the run file first, then what an export is, then each command and each tool with what it
+/// reaches, what guards that, and what it can show. `HOLON_BLESS=1` writes it again; until then a
+/// change to the table fails here.
+#[test]
+fn every_surface_is_in_the_manual() {
+    use crate::surfaces::{Surface, COMMANDS, RUN_FILE, TOOLS};
+    let reaches = |s: &Surface| {
+        let mut parts: Vec<String> = s.routes.iter().map(|r| format!("`{r}`")).collect();
+        parts.extend(s.local.as_ref().map(|l| l.reads.to_string()));
+        if parts.is_empty() { "nothing: text of its own".to_string() } else { parts.join(", ") }
+    };
+    let guarded = |s: &Surface| {
+        let grants = (!s.routes.is_empty()).then(|| "the grants of whoever signs in".to_string());
+        let local = s.local.as_ref().map(|l| if s.routes.is_empty() { l.guarded_by.to_string() } else { format!("besides, {}", l.guarded_by) });
+        let all: Vec<String> = grants.into_iter().chain(local).collect();
+        if all.is_empty() { "-".to_string() } else { all.join("; ") }
+    };
+    let shows = |s: &Surface| {
+        let said: Vec<String> = s
+            .shows
+            .iter()
+            .map(|w| match w {
+                crate::surfaces::Shows::RunValues => format!("a run's values: {}", w.grant()),
+                crate::surfaces::Shows::State => format!("a flow's state: {}", w.grant()),
+                crate::surfaces::Shows::LogLines => format!("log lines: {}", w.grant()),
+            })
+            .collect();
+        if said.is_empty() { "-".to_string() } else { said.join("; ") }
+    };
+    let run_file = RUN_FILE.local.as_ref().unwrap();
+    let mut text = String::from(
+        "<!-- Written from crates/holon/src/surfaces.rs, the table the tests hold every surface to:
+     HOLON_BLESS=1 cargo test -p holon every_surface_is_in_the_manual writes it again. -->
+# What reaches a server, and what guards it
+
+A Holon server keeps flows' runs, their state and the lines they log. Everything that reaches them
+does so in one of three ways: through the server's routes, held to the grants of whoever signs in
+(who may do what: [People, agents and services](../guides/people.md)); through a file on a
+machine, guarded by that machine's permissions; or neither, a command that prints text of its own.
+This page lists each surface, the `holon` commands and the tools `holon mcp` serves an agent, with
+what it reaches and what guards it. A test runs each one against a server and fails on a route it
+calls that isn't listed here, and on a command or a tool that isn't.
+
+Three grants hold what a surface can show:
+
+- a run's values (what it was sent, what each step computed): `run.steps` on the flow;
+- a flow's state (its values, a cell's changes, a session's snapshot): `state.view`;
+- the lines a flow logs: `run.view`, and an agent only where a person let agents read them (the
+  deploy settings' \"agents may read its logs\").
+
+Whoever doesn't hold one is refused, with the grant named, or is shown nothing of it. An agent is
+refused, besides, what only a person does: approving, granting, starting, stopping and deleting.
+
+## The run file
+
+",
+    );
+    text.push_str(&format!(
+        "Reaches: {}.\n\nGuarded by: {}.\n\nSo on the server's own machine, whoever can read the run file is the server's admin, whatever the\ngrants say: the grants hold the run file to nothing, and keeping the machine's accounts to those\nwho should be its admin is what guards it. A command run with an agent's or a service's token\n(HOLON_TOKEN) or a `holon login` session signs in as that instead, and is held to its grants.\n`holon access local` says which account the run file signs in as.\n\n",
+        run_file.reads, run_file.guarded_by
+    ));
+    text.push_str(
+        "## An export is a file no grant follows
+
+`holon export`, and the editor's export, write a deployment's runs to a file, with every value
+they were sent and computed. The server answers it only to whoever holds `run.steps` and
+`run.export` on the flow. Once the file is written, no grant follows it: whoever can read the file
+reads every value in it, and `holon verify` checks it with no server at all. Keep an export where
+only those who hold `run.steps` on its flow can read it.
+
+## Commands
+
+| Command | Reaches | Guarded by | Reads of what the server keeps, and the grant it takes |
+|---|---|---|---|
+",
+    );
+    for s in COMMANDS {
+        text.push_str(&format!("| `holon {}` | {} | {} | {} |\n", s.name, reaches(s), guarded(s), shows(s)));
+    }
+    text.push_str("\n## Agent tools\n\n`holon mcp` signs in as an agent: with a person's token, or with none, it refuses every tool\nbut `reference` and `check`.\n\n| Tool | Reaches | Reads of what the server keeps, and the grant it takes |\n|---|---|---|\n");
+    for s in TOOLS {
+        text.push_str(&format!("| `{}` | {} | {} |\n", s.name, reaches(s), shows(s)));
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/manual/reference/surfaces.md");
+    let kept = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
+    if kept != text && std::env::var_os("HOLON_BLESS").is_some() {
+        std::fs::write(&path, &text).unwrap();
+        return;
+    }
+    assert!(kept == text, "{} is out of date: HOLON_BLESS=1 cargo test -p holon every_surface_is_in_the_manual writes it again", path.display());
+}
+
 /// The list of runs says each run by what it names, field by field: when, what started it, its
 /// status, how long, who by, where it waits; never its URL, its error or any value of it. A field
 /// added to the log's entries is in the list only once it is named in `RunHead`.

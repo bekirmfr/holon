@@ -1637,3 +1637,110 @@ fn the_crumbs_on_top_go_back() {
     down(&mut app, r);
     assert_eq!(app.page, Page::Flows);
 }
+
+/// The editor as `token`, its calls recorded as `METHOD /path?query`.
+struct Recorded(InProcess, std::sync::Arc<crate::sync::Mutex<Vec<String>>>);
+
+impl Api for Recorded {
+    fn server(&self) -> String {
+        self.0.server()
+    }
+    fn send(&self, method: &str, path: &str, body: Option<Body>) -> Result<(u16, Vec<u8>), String> {
+        self.1.lock().unwrap().push(format!("{method} {path}"));
+        self.0.send(method, path, body)
+    }
+}
+
+/// The terminal editor shows what the server keeps only to whoever holds its grant (the audit
+/// register's R60, beside tests/surfaces.rs's sweep of the commands and tools): a run's values to
+/// run.steps, a flow's state to state.view, its log lines to run.view and an agent only where a
+/// person let agents read them. ada, an admin, sees each canary; wes, a person holding a viewer's
+/// actions but run.steps and state.view, none but the log line; scout, an agent (its role holds
+/// state.view, not run.steps), the kept one alone. Each is shown every run's every tab, a flow's
+/// state, history and log lines. The routes the editor calls are those surfaces.rs's row of
+/// `editor` names.
+#[test]
+fn the_editor_shows_what_the_server_keeps_only_to_its_grants() {
+    const CANARY: &str = "live_canary_7f3a";
+    const KEPT: &str = "kept_canary_4d2b";
+    const LOG: &str = "log_canary_9e1c";
+    let mut state = test_state();
+    let book = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    let pw = "correct horse battery";
+    let (ada, _) = book.setup(&book.setup_code().unwrap(), "ada", pw).unwrap();
+    state.access = crate::access::Access::new(std::sync::Arc::clone(&book), vec![], vec![]);
+    let glance = ["flow.view", "run.view", "run.export", "secret.list", "policy.view"].map(String::from).to_vec();
+    book.define_role(crate::bindings::RoleText { name: "glance".into(), about: None, allows: glance, kinds: vec![crate::accounts::Kind::Person] }, "ada", None).unwrap();
+    let wes = book.accept(&book.invite("wes", "glance", None, "ada").unwrap(), pw).unwrap().0;
+    let state: &'static AppState = Box::leak(Box::new(state));
+    let as_ada = InProcess(state, Some(ada.clone()));
+    let send = |method: &str, path: &str, body: serde_json::Value| crate::mcp::json_of(&as_ada, method, path, Some(Body::Json(body))).unwrap_or_else(|e| panic!("{method} {path}: {e}"));
+    send("POST", "/people", serde_json::json!({ "name": "scout", "kind": "agent", "role": "agent" }));
+    let scout = send("POST", "/people/scout/tokens", serde_json::json!({ "label": "its editor" }))["token"].as_str().unwrap().to_string();
+    let flows = [
+        ("steps", "import { action, approval, flow, route } from \"holon\"\n\nflow(\"steps\", { port: 18291 })\n\nroute.post(\"/check\", (req) => {\n  const key = req.json.key\n  return key.startsWith(\"live_\") ? \"a live key\" : \"a test key\"\n})\n\nexport const pay = action(async (order) => {\n  const decision = await approval(\"payout\", { expires: \"1h\" })\n  return decision.approved\n})\n"),
+        ("kept", "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"kept\", { port: 18292 })\n\nroute.post(\"/note\", (req) => {\n  state.note = req.json.note\n  return \"kept\"\n})\n"),
+        ("logged", "import { flow, route } from \"holon\"\n\nflow(\"logged\", { port: 18293 })\n\nroute.post(\"/say\", (req) => {\n  console.log(\"said\", req.json.word)\n  return \"said\"\n})\n"),
+    ];
+    for (slug, text) in flows {
+        let plan = holon_author::agent::plan(text).unwrap();
+        for unit in &plan.units {
+            crate::mcp::json_of(&as_ada, "POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
+        }
+        let preview = send("POST", "/deploy/preview", serde_json::json!({ "slug": slug, "unit": plan.unit }));
+        send("POST", "/deploy", serde_json::json!({ "slug": slug, "unit": plan.unit, "document": plan.document, "acknowledge": preview["needs_approval"] }));
+    }
+    let request = |slug: &str, url: &str, body: serde_json::Value| {
+        send("POST", &format!("/deployments/{slug}/request"), serde_json::json!({ "method": "POST", "url": url, "headers": [["content-type", "application/json"]], "body": body.to_string() }));
+    };
+    request("steps", &format!("/check?also={CANARY}"), serde_json::json!({ "key": CANARY }));
+    let (code, said) = as_ada.send("POST", "/trigger/steps/pay", Some(Body::Json(serde_json::json!({ "key": CANARY })))).unwrap();
+    assert_eq!(code, 202, "{}", String::from_utf8_lossy(&said));
+    request("kept", "/note", serde_json::json!({ "note": KEPT }));
+    request("logged", "/say", serde_json::json!({ "word": LOG }));
+
+    let editor = crate::surfaces::COMMANDS.iter().find(|s| s.name == "editor").unwrap();
+    for (name, token, may) in [("ada", &ada, [CANARY, KEPT, LOG].as_slice()), ("wes", &wes, [LOG].as_slice()), ("scout", &scout, [KEPT].as_slice())] {
+        let called = std::sync::Arc::new(crate::sync::Mutex::new(vec![]));
+        let mut app = App::new(None);
+        app.attach(Client::new(Box::new(Recorded(InProcess(state, Some(token.clone())), std::sync::Arc::clone(&called)))));
+        let mut seen = String::new();
+        let mut look = |app: &mut App| {
+            seen.push_str(&screen(app, 160, 60));
+            seen.push_str(&format!("{:?}", pane(app)));
+        };
+        app.open_flow("steps");
+        look(&mut app);
+        app.flow_section(Section::Runs);
+        for _ in 0..2 {
+            look(&mut app);
+            press(&mut app, KeyCode::Right);
+            for _ in 0..3 {
+                look(&mut app);
+                press(&mut app, KeyCode::Right);
+            }
+            press(&mut app, KeyCode::Left);
+            press(&mut app, KeyCode::Left);
+            press(&mut app, KeyCode::Left);
+            press(&mut app, KeyCode::Down);
+        }
+        for (slug, sections) in [("kept", [Section::Status, Section::State, Section::History, Section::Runs]), ("logged", [Section::Status, Section::Logs, Section::Runs, Section::History])] {
+            app.open_flow(slug);
+            for section in sections {
+                app.flow_section(section);
+                look(&mut app);
+                press(&mut app, KeyCode::Right);
+                look(&mut app);
+                press(&mut app, KeyCode::Right);
+                look(&mut app);
+                press(&mut app, KeyCode::Left);
+                press(&mut app, KeyCode::Left);
+            }
+        }
+        for canary in [CANARY, KEPT, LOG] {
+            assert_eq!(seen.contains(canary), may.contains(&canary), "{name} sees {canary}: {}", may.contains(&canary));
+        }
+        let strays: Vec<String> = called.lock().unwrap().iter().filter(|c| !editor.routes.iter().any(|r| crate::surfaces::calls(r, c))).cloned().collect();
+        assert!(strays.is_empty(), "the editor called, as {name}, what surfaces.rs's row of editor doesn't name: {strays:?}");
+    }
+}
