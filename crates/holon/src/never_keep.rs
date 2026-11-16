@@ -123,6 +123,14 @@ pub(crate) fn held(v: &holon_core::Value, keys: &[String]) -> Option<String> {
     replace(&mut v, keys, &|_| String::new()).into_iter().next()
 }
 
+/// Whether the text `s` holds a value under one of `keys`, by place (a JSON text's field, a
+/// query's or a form's `name=value`, either inside a JSON text's string): what a run computed from
+/// a secret is listed in its record by a keyed hash (`secrets::born`), and such a text's hash
+/// would be the value a few tries away (a CVC is a thousand), so none is listed for it.
+pub(crate) fn in_text(s: &str, keys: &[String]) -> bool {
+    !keys.is_empty() && names_any(s, keys) && !replace_text(&mut s.to_string(), keys, &|_| String::new()).is_empty()
+}
+
 /// Whether what an effect of `cap` is given is kept, or handed on to what keeps it: a state, a
 /// collection, a file, a database, a channel, a mail, a queue, the flow's log, another flow's
 /// action. A request to a host is not (sending a card's CVC to the payment processor is the

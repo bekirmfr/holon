@@ -13,8 +13,10 @@
   kept; a key never kept is guarded by its place, and the amount stays. For now a flow with it
   can't wait, and a value read out of its key into one of its own (`const c = req.json.cvc`) is
   followed no further. `holon check` says `it never keeps: cvc`, the deploy settings list it under
-  "never keeps", and an agent's version that drops a key waits for a person (`KeepAgain`). The
-  **card-check** sample shows it.
+  "never keeps", and an agent's version that drops a key waits for a person (`KeepAgain`). A text
+  computed from a secret that holds such a value under its key gets no hash in the run's record
+  (a CVC's would be a thousand tries from it): the record withholds what the run computed from a
+  secret, and `holon verify` says why it doesn't run it again. The **card-check** sample shows it.
 - **A run that computed with a secret is checked offline, and its record marks what it computed.**
   Everything a run computed from a secret was left out of its record whole, by the graph alone
   (the step's outputs, the header it was sent in, the answer), and `holon verify` never ran such a

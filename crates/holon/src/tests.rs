@@ -8632,6 +8632,8 @@ route.post("/go", (req) => {
 /// run that could be run again no longer is, or one that can't be is said to differ.
 #[test]
 fn a_runs_record_reads_the_same_whatever_its_secret() {
+    // What the card row is sent: a CVC under its key, and where its signature goes.
+    const CARD: &str = "cvc=737&amount=1737&sig=SIG";
     let (host, _) = counting_server();
     let state = claims_state("");
     // A folder whose files a row reads by a name the secret chooses: neither is text, so the
@@ -8702,20 +8704,29 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
             nothing,
             false,
         ),
+        // A text computed from it that holds a value the flow never keeps, under its key (a form
+        // with the caller's CVC, signed): no hash of it is listed, since one would be the CVC a
+        // thousand tries away for whoever holds the key; the run's record withholds what it
+        // computed instead (`secrets::born`, `never_keep::in_text`).
+        ("card", "const got = await host.post(\"/a\", { body: req.body.replace(\"SIG\", btoa(k)) })\n  return { status: got.status }", |_| CARD.to_string(), false),
     ];
     // And a route that writes the collection the rows read, never called: the deployment may write
     // it, so a run that reads it claims what it read before it calls out.
     let routes: String = rows.iter().map(|(path, body, _, _)| format!("route.post(\"/{path}\", async (req) => {{\n  {body}\n}})\n\n")).collect::<String>()
         + "route.put(\"/keep\", (req) => {\n  seen[\"last\"] = { n: 1 }\n  return { kept: true }\n})\n";
     let text = format!(
-        "import {{ bytes_to_text, flow, route, secure_equals, sha256, status, text_to_bytes }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\nimport seen from \"collection:seen\"\nimport notes from \"folder:notes\"\nimport keys from \"database:keys\"\n\nflow(\"whatever\", {{ port: 18301 }})\n\n{routes}"
+        "import {{ bytes_to_text, flow, route, secure_equals, sha256, status, text_to_bytes }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\nimport seen from \"collection:seen\"\nimport notes from \"folder:notes\"\nimport keys from \"database:keys\"\n\nflow(\"whatever\", {{ port: 18301, never_keep: [\"cvc\"] }})\n\n{routes}"
     );
     let slug = deploy_text(&state, &text, &host);
     // Two secrets that differ in every way a row looks at: how long, how they begin.
     let secrets = ["live_alpha-secret-value-1", "test_bravo-another-secret-value-22"];
+    // The key each secret's runs mark what they computed under (its salt, drawn as it is set).
+    let mut keys = Vec::new();
     for secret in secrets {
         let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
         assert_eq!(route(&state, &set).status_code, 200);
+        let salt = *state.secrets.vault(&slug).lock().unwrap().salts["k"].clone();
+        keys.push(secrets::derived_key([("k", &salt)]).unwrap());
         for (path, _, sent, _) in &rows {
             let (status, body, _) = data_call(&state, &slug, "POST", &format!("/{path}"), &sent(secret));
             // The failure row's read fails, whichever file the secret names.
@@ -8800,6 +8811,24 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
                 (false, verify::Rerun::Matched) if *path == "bytes" => {}
                 other => wrong.push(format!("{path}: {other:?}")),
             }
+        }
+    }
+    // The card row's record holds no hash the CVC could be tried against: of every CVC of three
+    // digits in the text the run computed, none is listed; what it computed of the secret alone
+    // is, under the same key (so the key here is the run's).
+    let card = rows.iter().position(|(path, ..)| *path == "card").unwrap();
+    for (n, (secret, key)) in secrets.iter().zip(&keys).enumerate() {
+        let entry = &entries[n * rows.len() + card];
+        let (run, listed) = (entry["run_id"].as_str().unwrap(), entry["derived"].as_array().cloned().unwrap_or_default());
+        let b64 = holon_core::bytes_text(secret.as_bytes(), "base64").unwrap();
+        if !listed.iter().any(|h| *h == secrets::derived_hash(key, run, &b64)) {
+            wrong.push(format!("card: what it computed of the secret alone isn't listed under the run's key: {entry}"));
+        }
+        if let Some(cvc) = (0..1000).map(|c| format!("{c:03}")).find(|c| listed.iter().any(|h| *h == secrets::derived_hash(key, run, &CARD.replace("737", c).replace("SIG", &b64)))) {
+            wrong.push(format!("card: its record lists a hash the CVC {cvc} is found from"));
+        }
+        if entry["withheld"] != true {
+            wrong.push(format!("card: its record doesn't say it withholds what it computed: {entry}"));
         }
     }
     let _ = std::fs::remove_dir_all(&dir);

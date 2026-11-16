@@ -215,7 +215,11 @@ pub(crate) fn derived_hash(key: &[u8], run: &str, value: &str) -> String {
 /// that gave a true or false, a number, bytes, a list, a short text or nothing leaves the run
 /// not whole: no mark stands for those, and what is computed from a secret is then withheld
 /// whole, as it is for a run with no key.
-pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint::SecretFed, key: Option<&[u8]>, run: &str, kept: bool) -> crate::recorder::Born {
+///
+/// So does a text that holds a value under a key its flow never keeps (`never_keep`, by place:
+/// `never_keep::in_text`): its hash would be the value a few tries away for whoever holds the
+/// key (a CVC is a thousand), so nothing is listed for it, and the graph withholds it.
+pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint::SecretFed, key: Option<&[u8]>, run: &str, kept: bool, never_keep: &[String]) -> crate::recorder::Born {
     let Some(key) = key.filter(|_| !fed.is_empty()) else { return Default::default() };
     let mut whole = kept && fed.followed_to(crate::recorder::Timer::DEPTH);
     let mut made: BTreeSet<&str> = BTreeSet::new();
@@ -232,7 +236,9 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
                 whole = false;
                 continue;
             };
-            if text.chars().count() >= MIN_SECRET_LEN {
+            if crate::never_keep::in_text(text, never_keep) {
+                whole = false;
+            } else if text.chars().count() >= MIN_SECRET_LEN {
                 made.insert(text);
                 // Found by its value, and as JSON text writes it once: one that JSON escapes (a
                 // quote, a backslash, a control character) reads another way again written out

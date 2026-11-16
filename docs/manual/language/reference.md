@@ -146,6 +146,14 @@ record is redacted as the rest. A version that drops a key, or moves it back to 
 person when an agent deploys it; moving a key from `taint` here asks nothing. A key is in one list
 or the other: `"cvc" is never kept, so it needn't be tainted too`, said where it is tainted.
 
+A run's record lists a keyed hash of each text the run computed from a secret, so that its mark
+can be checked by whoever holds the secret. A text that holds a value never kept under its key
+(a form or a JSON text with the CVC in its field, a secret's signature spliced into it) is never
+listed so: its hash would be the CVC a thousand tries away. (One that holds it in another
+encoding, base64 of such a text, isn't told yet: that is the next stage's.) The run's record withholds what it computed from
+a secret instead, as it does for a value no mark stands for, and `holon verify` says why it
+doesn't run that run again.
+
 What this doesn't do yet: a flow that never keeps a key can't wait (`await event`, `await
 approval`), since a waiting run is stored whole until it goes on, the value with it; the mistake
 is said where it waits. And a value read out of its key into a value of its own (`const c =

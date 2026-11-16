@@ -296,7 +296,12 @@ going to isn't sent (`folders::SecretSends`: `blocked_secret`).
   what it is given and for each line, `calls.rs` for another flow's action; `verify` and replay
   refuse it again), a request to a host isn't. A flow with it doesn't wait (the language, at the
   wait; `deploy.rs` for a unit made by hand), since a waiting run is stored whole. An agent's
-  version that drops a key asks `KeepAgain(key)` (`deploy::kept_again`).
+  version that drops a key asks `KeepAgain(key)` (`deploy::kept_again`). Beside S8's marks, it
+  sits in their one pass: the stand-ins go into the entry before it (structure first, as the run
+  had it), their (stand-in, mark) pairs joined to the same `Redactor` with `and`; and
+  `secrets::born` lists no hash of a computed text that holds a key's value (`never_keep::in_text`:
+  a CVC's would be a thousand tries from it), so such a run is withheld by the graph (`withheld`)
+  and `holon verify` says why it isn't run again.
 
 ### 2.7 What a flow can reach
 

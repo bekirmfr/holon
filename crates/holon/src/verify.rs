@@ -90,11 +90,11 @@ pub(crate) const MARK_STANDS_FOR: &str = "only a text of 6 characters or more is
 /// what it would take to run it again: the outputs of a node that may compute from a secret,
 /// which the run ran ([`withheld_why`]), or of a node this check asked for (`unrecorded`) that
 /// was too large or too deep to keep. None: the log kept all it keeps, and the run differs.
-fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry, unrecorded: &BTreeSet<Vec<u32>>) -> Option<String> {
+fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry, unrecorded: &BTreeSet<Vec<u32>>, never_keep: &[String]) -> Option<String> {
     let fed = taint::SecretFed::of(root, resolver);
     let derived_missing = entry.timeline.iter().any(|t| t.outputs.is_none() && fed.derives(&t.path)) || unrecorded.iter().any(|p| fed.derives(p));
     if entry.withheld && derived_missing {
-        return Some(withheld_why(root, resolver, &fed, entry));
+        return Some(withheld_why(root, resolver, &fed, entry, never_keep));
     }
     // A line that says it marked every value the run computed from a secret kept each step that
     // made one (`secrets::born`): one without is taken out, and the run differs.
@@ -108,8 +108,10 @@ fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry,
 /// which leaf, from which secret, and why no mark stands for what it gave. The leaf is one that
 /// makes something of a secret (`SecretFed::makes`) and ran; one whose output is declared as
 /// something a mark can't be (a number, a true or false, a list) is named before one that gives
-/// a text. A run that computed where the log follows no steps says that.
-fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::SecretFed, entry: &LogEntry) -> String {
+/// a text. A run that computed where the log follows no steps says that. Of a flow that never
+/// keeps some keys, a text may be withheld for holding one's value under its key, of which the
+/// record keeps no hash (`secrets::born`): said too, as the log can't tell which.
+fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::SecretFed, entry: &LogEntry, never_keep: &[String]) -> String {
     if !fed.followed_to(recorder::Timer::DEPTH) {
         return "it computed with a secret inside a function applied to each item, inside a module, or deeper than the log records a run's steps: the values made there can't each be marked, so the log withholds them, and only the secret could compute them again".into();
     }
@@ -145,7 +147,11 @@ fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::
     };
     match what {
         Some(what) => format!("{leaf} computed {what} from {from}: {MARK_STANDS_FOR}"),
-        None => format!("{leaf} computed from {from} a value no mark stands for (too short, or not a text): {MARK_STANDS_FOR}"),
+        None if never_keep.is_empty() => format!("{leaf} computed from {from} a value no mark stands for (too short, or not a text): {MARK_STANDS_FOR}"),
+        None => format!(
+            "{leaf} computed from {from} a value no mark stands for (too short, not a text, or a text holding a value under a key its flow never keeps, {}, of which the record keeps no hash): {MARK_STANDS_FOR}",
+            never_keep.join(", ")
+        ),
     }
 }
 
@@ -1808,7 +1814,7 @@ fn rerun(
         // it was, whether or not a node here asked for what the log left out (one that reads a
         // secret inside a function applied to each item is asked for nothing). For other nodes,
         // the outputs were too large or too deep to keep. Each is a different thing to be told.
-        false if let Some(why) = left_out(root, resolver, entry, &observer.unrecorded) => Rerun::Skipped(why),
+        false if let Some(why) = left_out(root, resolver, entry, &observer.unrecorded, &never_keep) => Rerun::Skipped(why),
         // Stopped by a limit verify isn't held to (its budget, the clock), or one past which the
         // server dropped what it did (a file's, a queue's size): run again, it goes further. So
         // its entry may say less than the run again does, never other: the same run, each output
