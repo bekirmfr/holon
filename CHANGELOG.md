@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The It may strip is short pills.** Above the canvas, each thing a flow may do is an icon, a
+  small second one for what is done to it (written, read and written, sent on, a run on each
+  one that comes) and its name: `↗ api.example.com`, `orders`, a key and `stripe_key`. Every kind
+  has an icon of its own. The whole sentence, as the approval says it, shows when the pointer
+  rests on a pill, and is what a screen reader hears. A thing both read and written is one pill.
 - **A secret's lines stand out wherever what a flow may do is listed.** In the editor, each line
   of a secret (reading one, where it is sent, where what is answered to it or made with it goes,
   a route that answers with one) has a 🔑 before it and is in the secret's colour: in the It may

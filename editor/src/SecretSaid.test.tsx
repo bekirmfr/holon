@@ -54,7 +54,8 @@ describe("a secret's line", () => {
     expect(strip).toContain("read the secret &quot;k&quot;; a hash or signature made with it goes to its callers");
     expect(strip).toContain("read the secret &quot;t&quot;, and send it to https://auth.example.com; what is answered to it goes to its callers");
     expect(strip.match(/hl-may__chip--secret/g)?.length).toBe(3);
-    expect(strip).toContain('class="hl-may__chip hl-may__chip--same" title="Clock">read the clock');
+    // Each a pill (mayPill.test.tsx): the sentence is its title, and another's isn't a secret's.
+    expect(strip).toContain('class="hl-may__chip hl-may__chip--same" title="read the clock" data-item="Clock"');
   });
 });
 
@@ -68,7 +69,7 @@ describe("a secret's line", () => {
 describe("every list of what a flow may do", () => {
   const WORDS_ONLY: Record<string, string> = {
     "SecretSaid.tsx": "Said itself",
-    "MayStrip.tsx": "its words go into Said",
+    "MayStrip.tsx": "a pill's title and what a screen reader hears; a secret's pill is the secret's colour (mayPill.test.tsx)",
     "App.tsx": "builds the Inspector's rows, which MayRows shows through Said",
     "canvasLevel.ts": "builds a level's rows for the same Inspector",
     "FlowCells.tsx": "a title's text: through saidAsText",

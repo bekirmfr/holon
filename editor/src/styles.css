@@ -1299,14 +1299,20 @@ code, kbd, pre, samp { font-family: var(--mono); }
 }
 .hl-may__head { color: var(--muted); letter-spacing: 0.04em; margin-right: 2px; }
 .hl-may__none { color: var(--faint); }
-.hl-may__chip { display: inline-flex; align-items: baseline; gap: 4px; padding: 0 6px; border: 1px solid var(--border); border-radius: 10px; color: var(--body); }
+.hl-may__chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border: 1px solid var(--border); border-radius: 10px; color: var(--body); white-space: nowrap; cursor: default; }
+/* A pill's icons (mayPill.tsx): the thing it reaches, then what is done to it, smaller and quieter. */
+.hl-may__icon { flex: none; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.hl-may__icon--does { width: 9px; height: 9px; margin-left: -2px; stroke-width: 2.4; opacity: 0.75; }
+.hl-may__label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+/* The sentence a pill stands for: heard, not seen (it is the pill's title too). */
+.hl-may__said { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .hl-may__chip--new { border-color: var(--warn); background: var(--warn-bg); color: var(--ink); }
 .hl-may__chip--gone { color: var(--faint); text-decoration: line-through; }
 .hl-may__tag { font-size: 10px; color: var(--warn); }
 /* A secret's item: the key and the secret's colour (SecretSaid.tsx). A new one keeps the new
    item's frame, a gone one its strike. */
 .hl-may__chip--secret:not(.hl-may__chip--new):not(.hl-may__chip--gone) { border-color: color-mix(in srgb, var(--secret) 45%, transparent); background: var(--secret-bg); }
-.hl-may__chip--gone .hl-secret-said { color: inherit; }
+.hl-may__chip--secret:not(.hl-may__chip--gone) { color: var(--secret); }
 .hl-may__chip--gone .hl-may__tag { color: var(--faint); text-decoration: none; }
 
 /* The run strip, in its place in View runs (RunStrip.tsx). */

@@ -135,6 +135,16 @@ A flow tab is a canvas of nodes and wires.
   Inspector, the Library, the host's holdings), a line of a secret has the same 🔑 before it and
   is in the secret's colour, so it is the first thing read; in the strip and the deploy question
   it says where the secret goes and where what is made with it goes, as the approval does.
+- **The It may strip.** Above the canvas, what the draft may do, each thing a short pill: an icon
+  for what it reaches (a call out ↗, requests coming in, a state's cell, a collection's rows, a
+  folder, a database, a channel, a mail, a queue, a key for a secret, a clock…), a small second
+  one for what is done to it (a pencil: written; two arrows: read and written; an arrow out:
+  sent on or answered with; a bolt: a run on each one that comes), and its name
+  (`api.example.com`, `orders`, `stripe_key`). Rest the pointer on a pill for the whole sentence,
+  as the approval says it: "read the secret "stripe_key", and send it to https://api.stripe.com".
+  A new item is framed and marked **new**, one the deployed version had and the draft doesn't is
+  struck through, and a secret's pill is in the secret's colour, with the arrow when the secret,
+  or something made with it, goes anywhere.
 
 ### Holons on the canvas
 
