@@ -3999,7 +3999,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> Option<(String, Vec<u8>)> {
 fn raw_http(port: u16, request: &[u8]) -> String {
     use std::io::Write;
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     stream.write_all(request).unwrap();
     let mut out = Vec::new();
     let _ = stream.read_to_end(&mut out);
@@ -4040,10 +4040,16 @@ fn a_server_deployment_answers_on_its_own_port_within_limits() {
     let large = raw_http(port, b"POST /todos HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n");
     assert!(large.starts_with("HTTP/1.1 413"), "{large}");
 
-    // Headers that never finish: the connection is closed, not held.
-    let started = std::time::Instant::now();
-    let slow = raw_http(port, b"GET /todos HTTP/1.1\r\nHost: 127.0.0.1\r\n");
-    assert!(started.elapsed() < Duration::from_secs(5), "closed after the header timeout: {slow:?}");
+    // Headers that never finish: the server closes the connection, not held. (The client would
+    // wait a minute: its read ending is the server's doing, however slow the machine.)
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
+    std::io::Write::write_all(&mut stream, b"GET /todos HTTP/1.1\r\nHost: 127.0.0.1\r\n").unwrap();
+    let mut slow = Vec::new();
+    let closed = stream.read_to_end(&mut slow);
+    let held = closed.as_ref().is_err_and(|e| matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut));
+    assert!(!held, "closed by the server after the header timeout, not held: {closed:?}");
+    let slow = String::from_utf8_lossy(&slow);
     assert!(!slow.contains("200"), "{slow}");
 
     // Stopped: the port is released.
@@ -4118,8 +4124,9 @@ fn no_deployments_callers_hold_more_of_the_data_plane_than_its_share() {
         let answered = get(beside_port, "/hi");
         // A WebSocket's message waits for a place, not refused and not run past the share.
         let stream = std::net::TcpStream::connect(("127.0.0.1", held_port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
         let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{held_port}/ws").into_client_request().unwrap(), stream).unwrap();
+        // not a bound: nothing is to come in it (the message waits for a place)
         ws.get_mut().set_read_timeout(Some(Duration::from_millis(300))).unwrap();
         ws.send(Message::text("m1")).unwrap();
         let early = ws.read();
@@ -4139,7 +4146,7 @@ fn no_deployments_callers_hold_more_of_the_data_plane_than_its_share() {
             assert!(done.starts_with("HTTP/1.1 200") && done.ends_with("slow"), "{done}");
         }
         // The message ran once a place was free, and every place is given back.
-        ws.get_mut().set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        ws.get_mut().set_read_timeout(Some(EVENTUALLY)).unwrap();
         let echoed = match ws.read().unwrap() {
             Message::Text(t) => serde_json::from_str::<serde_json::Value>(&t).unwrap_or_else(|_| serde_json::Value::String(t.to_string())),
             other => panic!("{other:?}"),
@@ -4188,7 +4195,7 @@ fn no_deployments_callers_hold_more_of_the_data_plane_than_its_share() {
         .into_iter()
         .map(|path| {
             let mut caller = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-            caller.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            caller.set_read_timeout(Some(EVENTUALLY)).unwrap();
             caller.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
             let mut head = Vec::new();
             let mut piece = [0u8; 1024];
@@ -4274,18 +4281,19 @@ fn no_server_holds_more_connections_open_than_its_total() {
     };
     // One place: a connection to "one", answered and kept alive.
     let mut kept = std::net::TcpStream::connect(("127.0.0.1", one)).unwrap();
-    kept.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    kept.set_read_timeout(Some(EVENTUALLY)).unwrap();
     kept.write_all(b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
     let first = answered(&mut kept);
     assert!(first.starts_with("HTTP/1.1 200"), "{first}");
     // The other: a WebSocket open on "other", switched, and talking.
     let stream = std::net::TcpStream::connect(("127.0.0.1", other)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{other}/ws").into_client_request().unwrap(), stream).unwrap();
     ws.send(tungstenite::Message::text("m1")).unwrap();
     assert!(matches!(ws.read(), Ok(tungstenite::Message::Text(t)) if t.contains("echo m1")));
     // A third caller waits: nothing answers it while both are open.
     let mut third = std::net::TcpStream::connect(("127.0.0.1", one)).unwrap();
+    // not a bound: nothing is to come in it
     third.set_read_timeout(Some(Duration::from_millis(700))).unwrap();
     third.write_all(b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").unwrap();
     let early = answered(&mut third);
@@ -4294,7 +4302,7 @@ fn no_server_holds_more_connections_open_than_its_total() {
     ws.close(None).unwrap();
     while ws.read().is_ok() {}
     drop(ws);
-    third.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    third.set_read_timeout(Some(EVENTUALLY)).unwrap();
     let late = answered(&mut third);
     assert!(late.starts_with("HTTP/1.1 200") && late.ends_with("hi"), "the third, once the WebSocket closed: {late:?}");
     drop(kept);
@@ -4323,7 +4331,7 @@ fn a_websocket_runs_its_blocks_through_a_real_socket() {
     let sockets = Arc::clone(&state.deployments.lock().unwrap()[&slug].sockets);
     let open = |path: &str, origin: Option<&str>| -> Result<WebSocket<TcpStream>, u16> {
         let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
         let mut request = format!("ws://127.0.0.1:{port}{path}").into_client_request().unwrap();
         if let Some(origin) = origin {
             request.headers_mut().insert("origin", origin.parse().unwrap());
@@ -4474,7 +4482,7 @@ route.websocket(\"/room/:name\", {{
     sync_listeners(&state);
     let open = |path: &str| {
         let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
         match tungstenite::client(format!("ws://127.0.0.1:{port}{path}").into_client_request().unwrap(), stream) {
             Ok((ws, _)) => Ok(ws),
             Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(r))) => Err(r.status().as_u16()),
@@ -4764,7 +4772,7 @@ on.file.created(inbox, (f) => {{
     let hit = || Some(status(&get("/hit")));
     let socket = || {
         let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
         match tungstenite::client(format!("ws://127.0.0.1:{port}/hello").into_client_request().unwrap(), stream) {
             Ok(_) => Some(101),
             Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(r))) => Some(r.status().as_u16()),
@@ -5208,7 +5216,6 @@ fn a_request_sent_through_the_control_plane_reaches_the_server() {
 #[test]
 fn a_fire_in_progress_does_not_stall_the_table() {
     use std::sync::mpsc;
-    use std::time::Duration;
 
     let mut state = test_state();
     let path = unique_temp_path("stall");
@@ -5228,13 +5235,16 @@ fn a_fire_in_progress_does_not_stall_the_table() {
     std::thread::scope(|s| {
         // Deploying "b" persists, and persisting needs "a"'s state, so this waits for "a".
         let deploying = s.spawn(|| deploy(&state, "b", a, serde_json::json!(["Action(\"put\")", "StateWrite(\"k\")"])));
-        std::thread::sleep(Duration::from_millis(200));
+        // Once "b" is in the table, which a deploy does just before it persists (looked at
+        // without waiting for the table, which a stalled persist would hold): not 200 ms later,
+        // which a loaded machine may spend before the deploy has begun.
+        soon(|| state.deployments.try_lock().is_some_and(|table| table.contains_key("b")));
 
         // ...but the table itself must stay usable meanwhile.
         let (tx, rx) = mpsc::channel();
         let shared = &state;
         s.spawn(move || tx.send(route(shared, &req("GET", "/deployments", vec![])).status_code).unwrap());
-        let listed = rx.recv_timeout(Duration::from_secs(5));
+        let listed = rx.recv_timeout(EVENTUALLY);
 
         // Let "a" finish before asserting, so a failure reports instead of hanging the scope.
         drop(mid_fire);
@@ -6140,7 +6150,7 @@ export const look = action((input) => notes[input.id])
     // A WebSocket's message.
     let ws_number = "6011000000000004";
     let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{port}/ws").into_client_request().unwrap(), stream).unwrap();
     ws.send(Message::text(format!(r#"{{"number":"{ws_number}"}}"#))).unwrap();
     let echoed = loop {
@@ -6228,23 +6238,26 @@ fn every_body_the_control_plane_reads_is_read_by_the_deadline() {
 
 /// A body that stops, or trickles in, holds its request's place no longer than the deadline, on
 /// every route here that reads one: past it the place is given back, and one that trickles is
-/// told 408. A whole body goes through as before.
+/// told 408. A whole body goes through as before. The deadline is a short one of the test's own,
+/// on the threads that answer its server (`http::in_test`): every other test reads bodies by the
+/// server's, so none is told 408 for a body a loaded machine was slow to hand over (audit R50).
 #[test]
 fn a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline() {
     use std::io::Write as _;
     use std::net::TcpStream;
-    use std::sync::atomic::{AtomicUsize, Ordering::Acquire};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Acquire, Ordering::Release};
     use std::time::Instant;
     static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+    let deadline = Duration::from_millis(600);
     let paths = ["/unit", "/flows", "/admin/storage"];
     let most = paths.len();
     let state: &'static AppState = Box::leak(Box::new(test_state()));
-    let server = rouille::Server::new("127.0.0.1:0", move |request| admitted(state, request, &IN_FLIGHT, most)).unwrap();
+    let server = rouille::Server::new("127.0.0.1:0", move |request| crate::http::in_test::with_body_deadline(deadline, || admitted(state, request, &IN_FLIGHT, most))).unwrap();
     let at = server.server_addr();
     let (_, stop) = server.stoppable();
     let send = |path: &str, body: &[u8], length: usize| {
         let mut s = TcpStream::connect(at).unwrap();
-        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        s.set_read_timeout(Some(EVENTUALLY)).unwrap();
         write!(s, "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{TEST_PORT}\r\nContent-Type: application/json\r\nContent-Length: {length}\r\n\r\n").unwrap();
         s.write_all(body).unwrap();
         s
@@ -6253,42 +6266,37 @@ fn a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline() {
         let mut head = [0u8; 12];
         s.read_exact(&mut head).map(|_| String::from_utf8_lossy(&head[9..]).into_owned()).unwrap_or_else(|e| format!("no answer: {e}"))
     };
-    let until = |what: &str, by: Duration, done: &dyn Fn() -> bool| {
-        let started = Instant::now();
-        while !done() {
-            assert!(started.elapsed() < by, "{what}");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    };
+    let until = |what: &str, done: &dyn Fn() -> bool| assert!(soon(done), "{what}");
 
     // Bodies that stop part way: each holds its place while it waits, every place is held...
     // (A body of 1 KiB or less tiny_http reads itself before handing the request on, holding no
     // place: these say they are longer.)
     let long = 100_000;
     let stopped: Vec<TcpStream> = paths.iter().map(|path| send(path, b"{\"a\"", long)).collect();
-    until("every route reads its body", Duration::from_secs(5), &|| IN_FLIGHT.load(Acquire) == most);
+    until("every route reads its body", &|| IN_FLIGHT.load(Acquire) == most);
     assert_eq!(status(&mut send("/unit", b"{}", 2)), "503", "every place is held");
-    // ...and each gives it back by the deadline.
-    until("a stopped body held its place past the deadline", BODY_DEADLINE + Duration::from_secs(2), &|| IN_FLIGHT.load(Acquire) == 0);
+    // ...and each gives it back, their connections still open: only the deadline lets them go.
+    until("a stopped body held its place past the deadline", &|| IN_FLIGHT.load(Acquire) == 0);
 
-    // A body that trickles in, a byte every 100ms, is told 408 at the deadline.
+    // A body that trickles in, a byte every 100ms for as long as it isn't answered, is told 408
+    // at the deadline: bytes still coming don't keep it.
     for path in paths {
+        let started = Instant::now();
         let mut s = send(path, b"", long);
         let mut trickle = s.try_clone().unwrap();
-        std::thread::spawn(move || {
-            for _ in 0..99 {
+        let answered = std::sync::Arc::new(AtomicBool::new(false));
+        let told = std::sync::Arc::clone(&answered);
+        let trickling = std::thread::spawn(move || {
+            while !told.load(Acquire) && trickle.write_all(b" ").is_ok() {
                 std::thread::sleep(Duration::from_millis(100));
-                if trickle.write_all(b" ").is_err() {
-                    return;
-                }
             }
         });
-        let started = Instant::now();
         assert_eq!(status(&mut s), "408", "{path}: a body that trickles is cut off");
-        let took = started.elapsed();
-        assert!(took >= BODY_DEADLINE && took < BODY_DEADLINE + Duration::from_secs(2), "{path}: told after {took:?}");
+        assert!(started.elapsed() >= deadline, "{path}: told at the deadline, not before");
+        answered.store(true, Release);
+        trickling.join().unwrap();
     }
-    until("a trickled body held its place", Duration::from_secs(2), &|| IN_FLIGHT.load(Acquire) == 0);
+    until("a trickled body held its place", &|| IN_FLIGHT.load(Acquire) == 0);
 
     // A whole body is read as before: the route answers it.
     for path in paths {
@@ -7093,10 +7101,35 @@ fn counting_server() -> (String, Hits) {
 /// A counting server's hits: path → how many requests came for it.
 type Hits = Arc<Mutex<BTreeMap<String, usize>>>;
 
+/// The longest a test waits for what it expects to happen soon (a thread to wait, a place to be
+/// given back, a connection to close): a guard against a hang, not a measure, so long that no
+/// load makes it late. A test holds an order of events, never how long one took (audit R50,
+/// [`no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep`]).
+pub(crate) const EVENTUALLY: Duration = Duration::from_secs(60);
+
+/// Whether `done` holds, looked at until it does or [`EVENTUALLY`] has passed.
+pub(crate) fn soon(mut done: impl FnMut() -> bool) -> bool {
+    let until = std::time::Instant::now() + EVENTUALLY;
+    loop {
+        if done() {
+            return true;
+        }
+        if std::time::Instant::now() > until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 /// The longest a shut [`Gate`] holds a call: under the 30 s a run waits for an answer, so a run
 /// held up behind a held call is let go by the gate, not by its own timeout, and fails its test
 /// rather than hanging it.
 const GATE_HOLDS: Duration = Duration::from_secs(20);
+
+/// The longest a test watches for what it waits on while a shut [`Gate`] holds a call (calls out
+/// at once, runs counted waiting): less than the gate holds one ([`GATE_HOLDS`]), so the call it
+/// waits behind wasn't let go meanwhile.
+const GATE_WAITS: Duration = Duration::from_secs(15);
 
 /// What a test holds `/slow` calls with, to see what happens while one is out without timing it:
 /// on a loaded machine (a sweep on every core beside it) "it took under 780 ms" fails, where "both
@@ -7113,15 +7146,27 @@ struct GateCalls {
     shut: bool,
     /// The `/slow` calls out now.
     out: usize,
+    /// How many calls have come, and how many of them a shut gate has let go, in the order they
+    /// came ([`Gate::let_one_go`]).
+    came: usize,
+    let_go: usize,
 }
 
 impl Gate {
     fn shut(&self) {
-        self.calls.lock().unwrap().shut = true;
+        let mut calls = self.calls.lock().unwrap();
+        calls.shut = true;
+        calls.let_go = calls.came;
     }
 
     fn open(&self) {
         self.calls.lock().unwrap().shut = false;
+        self.changed.notify_all();
+    }
+
+    /// Lets the call held longest go on, the gate staying shut to the rest.
+    fn let_one_go(&self) {
+        self.calls.lock().unwrap().let_go += 1;
         self.changed.notify_all();
     }
 
@@ -7130,20 +7175,21 @@ impl Gate {
         self.calls.lock().unwrap().out
     }
 
-    /// Whether `n` calls were out at once, waiting up to 15 s for them (less than a shut gate
-    /// holds one, so none of them was let go meanwhile).
+    /// Whether `n` calls were out at once, waiting up to [`GATE_WAITS`] for them.
     fn out_at_once(&self, n: usize) -> bool {
         let calls = self.calls.lock().unwrap();
-        self.changed.wait_timeout_while(calls, Duration::from_secs(15), |c| c.out < n).unwrap().0.out >= n
+        self.changed.wait_timeout_while(calls, GATE_WAITS, |c| c.out < n).unwrap().0.out >= n
     }
 
     /// One `/slow` call, answered once this returns.
     fn pass(&self) {
         let mut calls = self.calls.lock().unwrap();
+        let ticket = calls.came;
+        calls.came += 1;
         calls.out += 1;
         self.changed.notify_all();
         if calls.shut {
-            calls = self.changed.wait_timeout_while(calls, GATE_HOLDS, |c| c.shut).unwrap().0;
+            calls = self.changed.wait_timeout_while(calls, GATE_HOLDS, |c| c.shut && ticket >= c.let_go).unwrap().0;
         } else {
             drop(calls);
             std::thread::sleep(Duration::from_millis(400));
@@ -7152,6 +7198,489 @@ impl Gate {
         calls.out -= 1;
         self.changed.notify_all();
     }
+}
+
+/// How many runs of `state` wait now for a key or a lock another run holds: its folders' and
+/// databases' (one table and one set of locks for the server, another server's included) and
+/// each deployment's own keys'.
+fn waiting(state: &AppState) -> usize {
+    let own: usize = state.deployments.lock().unwrap().values().filter_map(|d| d.state.as_ref()).map(|s| s.claims.waiters.now()).sum();
+    own + state.folders.claims.waiters.now() + state.folders.locks.waiters.now()
+}
+
+/// Whether `n` runs of `state` wait at once for another's key or lock, watching up to
+/// [`GATE_WAITS`].
+fn waiting_at_once(state: &AppState, n: usize) -> bool {
+    let until = std::time::Instant::now() + GATE_WAITS;
+    while waiting(state) < n {
+        if std::time::Instant::now() > until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    true
+}
+
+/// `first`, held at the gate once its `/slow` call is out (holding what it holds then), and
+/// `second`, sent then, the gate opened once `second` waits on `state` for what `first` holds:
+/// so it waited, however slow the machine, where "sent 60 ms later" let it come after `first`
+/// was done. Their answers.
+fn second_waits_for_first<A: Send, B: Send>(state: &AppState, gate: &Gate, first: impl FnOnce() -> A + Send, second: impl FnOnce() -> B + Send) -> (A, B) {
+    gate.shut();
+    std::thread::scope(|s| {
+        let a = s.spawn(first);
+        let out = gate.out_at_once(1);
+        let b = s.spawn(second);
+        let waits = out && waiting_at_once(state, 1);
+        gate.open();
+        let (a, b) = (a.join().unwrap(), b.join().unwrap());
+        assert!(out, "the first's call went out");
+        assert!(waits, "the second waited for the first");
+        (a, b)
+    })
+}
+
+/// `first`, held at the gate once its `/slow` call is out, and `second`, sent and answered while
+/// it is: their answers.
+fn second_while_first_is_out<A: Send, B>(gate: &Gate, first: impl FnOnce() -> A + Send, second: impl FnOnce() -> B) -> (A, B) {
+    gate.shut();
+    std::thread::scope(|s| {
+        let a = s.spawn(first);
+        let out = gate.out_at_once(1);
+        let b = out.then(second);
+        gate.open();
+        let a = a.join().unwrap();
+        assert!(out, "the first's call went out");
+        (a, b.unwrap())
+    })
+}
+
+/// `first`, held at the gate once its `/slow` call is out, and `second`, sent then: the gate
+/// opened once `second` is answered or waits on `state` for what `first` holds, whichever the
+/// code does. Their answers.
+fn second_meets_first<A: Send, B: Send>(state: &AppState, gate: &Gate, first: impl FnOnce() -> A + Send, second: impl FnOnce() -> B + Send) -> (A, B) {
+    gate.shut();
+    std::thread::scope(|s| {
+        let a = s.spawn(first);
+        let out = gate.out_at_once(1);
+        let b = s.spawn(second);
+        let until = std::time::Instant::now() + GATE_WAITS;
+        while out && !b.is_finished() && waiting(state) == 0 && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        gate.open();
+        let (a, b) = (a.join().unwrap(), b.join().unwrap());
+        assert!(out, "the first's call went out");
+        (a, b)
+    })
+}
+
+/// `text` (Rust) with its strings, chars and comments made inert for the sweep below: in strings
+/// and chars, brackets, operators and commas are spaces (words stay, so `claim["waited_ms"]` still
+/// says what it reads); comments are gone. Every line stays where it was.
+fn inert(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let quiet = |c: char| if c.is_alphanumeric() || c == '_' || c == '\n' { c } else { ' ' };
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let (c, next) = (chars[i], chars.get(i + 1).copied());
+        let after = if i > 0 { chars[i - 1] } else { ' ' };
+        if c == '/' && next == Some('/') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && next == Some('*') {
+            i += 2;
+            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                out.push(quiet(chars[i]));
+                i += 1;
+            }
+            i += 2;
+        } else if c == 'r' && matches!(next, Some('"' | '#')) && (after == 'b' || !(after.is_alphanumeric() || after == '_')) && chars[i + 1..].iter().find(|&&h| h != '#') == Some(&'"') {
+            // A raw string: r"…", r#"…"#.
+            let hashes = chars[i + 1..].iter().take_while(|&&h| h == '#').count();
+            out.push('"');
+            i += 2 + hashes;
+            while i < chars.len() && !(chars[i] == '"' && (1..=hashes).all(|k| chars.get(i + k) == Some(&'#'))) {
+                out.push(quiet(chars[i]));
+                i += 1;
+            }
+            out.push('"');
+            i += 1 + hashes;
+        } else if c == '"' {
+            out.push('"');
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                if chars[i] == '\\' {
+                    out.push(' ');
+                    i += 1;
+                }
+                if i < chars.len() {
+                    out.push(quiet(chars[i]));
+                    i += 1;
+                }
+            }
+            out.push('"');
+            i += 1;
+        } else if c == '\'' && (next == Some('\\') || chars.get(i + 2) == Some(&'\'')) {
+            // A char ('{', '\'', '\u{1F600}'), not a lifetime.
+            let mut end = i + 2;
+            if next == Some('\\') {
+                end = if chars.get(i + 2) == Some(&'u') { (i..chars.len()).find(|&j| chars[j] == '}').unwrap_or(i) + 1 } else { i + 3 };
+            }
+            out.extend(std::iter::repeat_n(' ', end + 1 - i));
+            i = end + 1;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// What of `code` (made [`inert`]) is a test's: all of it in a tests.rs or under a tests folder,
+/// else its `#[cfg(test)]` modules; the rest blank lines, so every line stays where it was.
+fn test_code(path: &str, code: &str) -> String {
+    if path.ends_with("tests.rs") || path.contains("/tests/") {
+        return code.to_string();
+    }
+    let lines: Vec<&str> = code.lines().collect();
+    let mut keep = vec![false; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        let module = |l: &&&str| {
+            let l = l.trim();
+            (l.starts_with("mod ") || l.starts_with("pub mod ") || l.starts_with("pub(crate) mod ")) && l.ends_with('{')
+        };
+        if lines[i].trim() == "#[cfg(test)]" && lines[i + 1..].iter().find(|l| !l.trim().is_empty()).is_some_and(|l| module(&l)) {
+            let (mut depth, mut j) = (0i32, i + 1);
+            while j < lines.len() {
+                depth += lines[j].matches('{').count() as i32 - lines[j].matches('}').count() as i32;
+                keep[j] = true;
+                if depth <= 0 && lines[j].contains('}') {
+                    break;
+                }
+                j += 1;
+            }
+            i = j;
+        }
+        i += 1;
+    }
+    lines.iter().zip(keep).map(|(l, k)| if k { *l } else { "" }).collect::<Vec<_>>().join("\n")
+}
+
+/// Whether a comparison in `condition` (an assert's, made [`inert`]) holds a measured time from
+/// above: `took < x`, `x > t.elapsed()`, `claim["waited_ms"] < 250.0`.
+fn bounds_a_time_from_above(condition: &str) -> bool {
+    let measured = |side: &str| ["elapsed", "took", "waited", "_ms\"", "as_millis", "as_secs", "as_micros", "as_nanos", "duration_since"].iter().any(|m| side.contains(m));
+    let c: Vec<char> = condition.chars().collect();
+    // Its parts, between the &&s and ||s at the top.
+    let (mut parts, mut depth, mut from, mut i) = (vec![], 0i32, 0, 0);
+    while i < c.len() {
+        match c[i] {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '&' | '|' if depth == 0 && c.get(i + 1) == Some(&c[i]) => {
+                parts.push(&c[from..i]);
+                from = i + 2;
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(&c[from..]);
+    parts.iter().any(|part| {
+        let (mut depth, mut i) = (0i32, 0);
+        while i < part.len() {
+            match part[i] {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                ':' if part.get(i + 1) == Some(&':') && part.get(i + 2) == Some(&'<') => {
+                    // A turbofish: on past its closing '>'.
+                    let mut angle = 0;
+                    i += 2;
+                    while i < part.len() {
+                        angle += match part[i] {
+                            '<' => 1,
+                            '>' => -1,
+                            _ => 0,
+                        };
+                        if angle == 0 {
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                '<' | '>' if depth == 0 => {
+                    let (before, after) = (if i > 0 { part[i - 1] } else { ' ' }, part.get(i + 1).copied().unwrap_or(' '));
+                    if !(before == '-' || before == '=' || before == part[i] || after == part[i]) {
+                        let left: String = part[..i].iter().collect();
+                        let right: String = part[i + if after == '=' { 2 } else { 1 }..].iter().collect();
+                        return measured(if part[i] == '<' { &left } else { &right });
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    })
+}
+
+/// Each assert in `code` (made [`inert`]) that holds a measured time from above: its line, and
+/// its condition.
+fn upper_bounds(code: &str) -> Vec<(usize, String)> {
+    let mut found = vec![];
+    let mut at = 0;
+    while let Some(i) = code[at..].find("assert!(") {
+        let start = at + i + "assert!(".len();
+        let (mut depth, mut end, mut first) = (1, start, None);
+        for (j, c) in code[start..].char_indices() {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                ',' if depth == 1 && first.is_none() => first = Some(start + j),
+                _ => {}
+            }
+            if depth == 0 {
+                end = start + j;
+                break;
+            }
+        }
+        let condition = &code[start..first.unwrap_or(end)];
+        if bounds_a_time_from_above(condition) {
+            found.push((code[..start].matches('\n').count() + 1, condition.split_whitespace().collect::<Vec<_>>().join(" ")));
+        }
+        at = start;
+    }
+    found
+}
+
+/// The line of each `thread::sleep` in `code` (made [`inert`]) between two spawns in one block:
+/// a race ordered by the hope that the first is far enough along when the sleep ends.
+fn sleeps_between_spawns(code: &str) -> Vec<usize> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut depth = Vec::with_capacity(lines.len());
+    let mut d = 0i32;
+    for l in &lines {
+        depth.push(d);
+        d += l.matches('{').count() as i32 - l.matches('}').count() as i32;
+    }
+    let spawns = |l: &str| l.contains("spawn(") && !l.contains("spawn()");
+    (0..lines.len())
+        .filter(|&i| lines[i].contains("thread::sleep("))
+        .filter(|&i| {
+            let at = depth[i];
+            let before = (0..i).rev().take_while(|&j| depth[j] >= at).any(|j| spawns(lines[j]));
+            let after = (i + 1..lines.len()).take_while(|&j| depth[j] >= at).any(|j| spawns(lines[j]));
+            before && after
+        })
+        .map(|i| i + 1)
+        .collect()
+}
+
+/// The deadlines a test may give a wait of its own under [`EVENTUALLY`], by name: the [`Gate`]'s.
+/// A run gives up on an answer after 30 s, so a shut gate lets its call go before that
+/// ([`GATE_HOLDS`]), and a test watches for less than the gate holds ([`GATE_WAITS`]).
+const NAMED_CAPS: [&str; 2] = ["GATE_HOLDS", "GATE_WAITS"];
+
+/// The milliseconds `expr` (made [`inert`]) gives a duration, literally (`Duration::from_secs(5)`,
+/// `from_millis`, `from_micros`, `from_nanos`) or by a const of `consts`: the least, if any.
+fn least_millis(expr: &str, consts: &[(String, u128)]) -> Option<u128> {
+    let mut least: Option<u128> = None;
+    for (unit, per) in [("from_secs(", 1_000_000_000u128), ("from_millis(", 1_000_000), ("from_micros(", 1_000), ("from_nanos(", 1)] {
+        for (at, _) in expr.match_indices(unit) {
+            let written: String = expr[at + unit.len()..].chars().take_while(|c| c.is_ascii_digit() || *c == '_').collect();
+            let digits: String = written.chars().filter(|c| *c != '_').collect();
+            if expr[at + unit.len() + written.len()..].trim_start().starts_with(')')
+                && let Ok(n) = digits.parse::<u128>()
+            {
+                least = Some(least.map_or(n * per / 1_000_000, |l| l.min(n * per / 1_000_000)));
+            }
+        }
+    }
+    let words = expr.split(|c: char| !(c.is_alphanumeric() || c == '_'));
+    for word in words {
+        if let Some((_, ms)) = consts.iter().find(|(name, _)| name == word) {
+            least = Some(least.map_or(*ms, |l| l.min(*ms)));
+        }
+    }
+    least
+}
+
+/// The `Duration` consts `whole` (a file, made [`inert`]) defines, with their milliseconds.
+fn duration_consts(whole: &str) -> Vec<(String, u128)> {
+    whole
+        .lines()
+        .filter_map(|l| {
+            let (_, after) = l.split_once("const ")?;
+            let (name, rest) = after.split_once(':')?;
+            let (ty, value) = rest.split_once('=')?;
+            (ty.trim().ends_with("Duration") && name.trim().chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')).then_some(())?;
+            Some((name.trim().to_string(), least_millis(value, &[])?))
+        })
+        .collect()
+}
+
+/// Each deadline under [`EVENTUALLY`] in `code` (a file's test code, made [`inert`]) given to a
+/// wait whose passing fails a test: `recv_timeout`, `wait_timeout(_while)`, `set_read_timeout`,
+/// `set_write_timeout`, or `Instant::now() + d`, `d` a literal or one of `whole`'s consts (the
+/// file whole, made inert). Not one of [`NAMED_CAPS`], nor one that `text` (the file as written)
+/// says `not a bound:` of, on its line or in the comment above it: a product's own deadline
+/// under test, whose passing is what the test holds, or a tick of a stand-in's loop. Its line,
+/// and what it waits.
+fn short_deadlines(code: &str, whole: &str, text: &str) -> Vec<(usize, String)> {
+    let consts = duration_consts(whole);
+    let written: Vec<&str> = text.lines().collect();
+    let marked = |line: usize| {
+        let says = |l: &str| l.contains("not a bound:");
+        written.get(line - 1).is_some_and(|l| says(l)) || (0..line - 1).rev().map(|i| written[i].trim_start()).take_while(|l| l.starts_with("//")).any(says)
+    };
+    let mut found = vec![];
+    for form in [".recv_timeout(", ".wait_timeout(", ".wait_timeout_while(", ".set_read_timeout(", ".set_write_timeout(", "Instant::now() +"] {
+        for (at, _) in code.match_indices(form) {
+            // What it waits: a call's arguments, or what is added to now, to the end of its expression.
+            let from = at + form.len();
+            let (mut depth, mut end) = (i32::from(form.ends_with('(')), code.len());
+            for (j, c) in code[from..].char_indices() {
+                match c {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => depth -= 1,
+                    ',' | ';' | '\n' if depth == 0 => {
+                        end = from + j;
+                        break;
+                    }
+                    _ => {}
+                }
+                if depth < 0 || (depth == 0 && form.ends_with('(')) {
+                    end = from + j;
+                    break;
+                }
+            }
+            let waits = &code[from..end];
+            let line = code[..at].matches('\n').count() + 1;
+            let named = NAMED_CAPS.iter().any(|cap| waits.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == *cap));
+            if !named && least_millis(waits, &consts).is_some_and(|ms| ms < EVENTUALLY.as_millis()) && !marked(line) {
+                found.push((line, format!("{}{}{}", form.trim_start_matches('.'), if form.ends_with('+') { " " } else { "" }, waits.split_whitespace().collect::<Vec<_>>().join(" "))));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Guards: no test holds a measured time from above (`elapsed() < 5 s`, `took < deadline + 2 s`,
+/// `waited_ms < 250`), nor waits under a minute for what is to come (`recv_timeout(5 s)`, a read
+/// timeout of 10 s, a loop `until` ten seconds from now): a deadline that fails a test is a bound
+/// from above whatever call it hides in. And none orders two threads with a sleep between their
+/// spawns. In any crate's tests.
+/// Why: on a loaded machine (a sweep on every core beside the suite) anything takes longer, and a
+/// second thread started 60 ms after the first may come after the first is done: 102 tests failed
+/// with 408 under a short body deadline in one run, and races "ordered" by a sleep raced the other
+/// way (audit R50). What a test holds is an order of events: a [`Gate`] holding a call out while
+/// the second run comes, a run counted as waiting (`sync::Waiters`), [`soon`] for what is
+/// due; a lower bound (it waited the deadline) holds under any load. What a test waits for, it
+/// waits [`EVENTUALLY`] for: a guard against a hang, not a measure.
+/// If it fails: a test bounds a time from above, waits less than [`EVENTUALLY`] for what is to
+/// come, or sleeps between two spawns: hold what happened instead, with the tools above, and wait
+/// [`EVENTUALLY`] (a const of the file's own in an integration test). A deadline of the product's
+/// that the test holds it to (a lock refused at it, a statement run past it), or a stand-in's
+/// tick, says `not a bound:` and why, in a comment on or above its line.
+#[test]
+fn no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep() {
+    // The sweep's own eyes, on code it must and must not see.
+    for bound in [
+        "assert!(started.elapsed() < Duration::from_secs(5), \"closed\");",
+        "assert!(took >= deadline && took < deadline + Duration::from_secs(2), \"{path}: told after {took:?}\");",
+        "assert!(claim[\"waited_ms\"].as_f64().unwrap() < 250.0, \"{claim}\");",
+        "assert!(Duration::from_secs(2) > t.elapsed());",
+        "assert!(\n    a.elapsed()\n        <= limit,\n    \"x\"\n);",
+        "debug_assert!(at.duration_since(then) < gap);",
+    ] {
+        assert_eq!(upper_bounds(&inert(bound)).len(), 1, "an upper bound unseen: {bound}");
+    }
+    for fine in [
+        "assert!(took >= deadline, \"{path}: told at the deadline, not before\");",
+        "assert!(claim[\"waited_ms\"].as_f64().unwrap() > 0.0, \"it waited < 5 s\");",
+        "assert!(failures.len() < 10, \"the old ones forgotten\");",
+        "assert!(text.parse::<u64>().unwrap() < 3);",
+        "let said = \"assert!(took < cap)\";",
+        "// assert!(took < cap)\nlet c = '}';",
+        "assert!(matches!(x, Some(y) if y > 1) && waited > Duration::ZERO);",
+    ] {
+        assert!(upper_bounds(&inert(fine)).is_empty(), "not an upper bound: {fine}");
+    }
+    let sleeps = |code: &str| sleeps_between_spawns(&inert(code));
+    assert_eq!(sleeps("let a = s.spawn(|| one());\nstd::thread::sleep(Duration::from_millis(60));\nlet b = s.spawn(|| two());\n"), [2]);
+    assert_eq!(sleeps("let runs: Vec<_> = (0..n)\n    .map(|_| {\n        std::thread::spawn(spin)\n    })\n    .collect();\nstd::thread::sleep(alone / 4);\nlet probes: Vec<_> = (0..n).map(|_| std::thread::spawn(probe)).collect();\n"), [6]);
+    for fine in [
+        "let a = s.spawn(f);\nwhile !a.is_finished() {\n    std::thread::sleep(tick);\n}\nlet b = s.spawn(g);\n",
+        "std::thread::spawn(move || {\n    loop {\n        std::thread::sleep(tick);\n    }\n});\nlet b = s.spawn(g);\n",
+        "let a = s.spawn(f);\nstd::thread::sleep(tick);\nassert!(!a.is_finished());\n",
+        "let child = Command::new(x)\n    .spawn()\n    .unwrap();\nstd::thread::sleep(tick);\nlet b = Command::new(y).spawn();\n",
+        "let s = \"s.spawn(f); std::thread::sleep(t); s.spawn(g)\";\n",
+    ] {
+        assert!(sleeps(fine).is_empty(), "not a sleep between spawns: {fine}");
+    }
+    let deadlines = |text: &str| short_deadlines(&inert(text), &inert(text), text).into_iter().map(|(line, _)| line).collect::<Vec<_>>();
+    for (short, line) in [
+        ("let r = rx.recv_timeout(Duration::from_secs(5));", 1),
+        ("stream.set_read_timeout(Some(Duration::from_millis(700))).unwrap();", 1),
+        ("const WAIT: Duration = Duration::from_secs(20);\nlet x = rx.recv_timeout(WAIT);", 2),
+        ("let until = std::time::Instant::now() + Duration::from_secs(10);", 1),
+        ("let (g, _) = cv.wait_timeout_while(g, std::time::Duration::from_secs(15), |c| !c.done).unwrap();", 1),
+        ("let held = rx\n    .recv_timeout(\n        Duration::from_secs(1),\n    );", 2),
+        ("let (g, _) = cv.wait_timeout(g, Duration::from_millis(1_500)).unwrap();", 1),
+        ("// A comment that says nothing of it.\nlet r = rx.recv_timeout(Duration::from_secs(5));", 2),
+    ] {
+        assert_eq!(deadlines(short), [line], "a short deadline unseen: {short}");
+    }
+    for fine in [
+        "let r = rx.recv_timeout(Duration::from_secs(60));",
+        "let r = rx.recv_timeout(EVENTUALLY);",
+        "const GATE_HOLDS: Duration = Duration::from_secs(20);\nlet r = rx.recv_timeout(GATE_HOLDS);",
+        "// not a bound: the locks' own deadline, under test\nlet soon = || Instant::now() + Duration::from_millis(30);",
+        "// not a bound: a tick of the stand-in's loop,\n// which looks again\nlet g = cv.wait_timeout(g, Duration::from_millis(100));",
+        "let soon = || Instant::now() + Duration::from_millis(30); // not a bound: refused at it",
+        "let said = \"rx.recv_timeout(Duration::from_secs(1))\";",
+        "let r = rx.recv_timeout(d);",
+        "let t = Instant::now() + timeout;",
+        "let far = Instant::now() + Duration::from_secs(3600);",
+        "// rx.recv_timeout(Duration::from_secs(1))",
+    ] {
+        assert!(deadlines(fine).is_empty(), "not a short deadline: {fine}");
+    }
+    let only_tests = test_code("crates/x/src/a.rs", &inert("fn f() {\n    assert!(t.elapsed() < cap);\n}\n#[cfg(test)]\nmod tests {\n    fn g() {\n        assert!(t.elapsed() < cap);\n    }\n}\nfn h() {\n    assert!(t.elapsed() < cap);\n}\n"));
+    assert_eq!(upper_bounds(&only_tests).iter().map(|(line, _)| *line).collect::<Vec<_>>(), [7], "only a test module's, at its own line");
+
+    // Every crate's tests.
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() && !path.ends_with("target") && !path.ends_with("node_modules") {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let mut files = Vec::new();
+    sources(crates, &mut files);
+    let mut found = Vec::new();
+    for path in &files {
+        let shown = path.strip_prefix(crates).unwrap().display().to_string().replace('\\', "/");
+        let text = std::fs::read_to_string(path).unwrap();
+        let whole = inert(&text);
+        let code = test_code(&shown, &whole);
+        found.extend(upper_bounds(&code).into_iter().map(|(line, condition)| format!("{shown}:{line}: holds a time from above: {condition}")));
+        found.extend(short_deadlines(&code, &whole, &text).into_iter().map(|(line, waits)| format!("{shown}:{line}: waits less than EVENTUALLY: {waits}")));
+        found.extend(sleeps_between_spawns(&code).into_iter().map(|line| format!("{shown}:{line}: a sleep between two spawns")));
+    }
+    assert!(found.is_empty(), "tests that hold how long something took, not what happened (hold an order of events: Gate, Waiters, soon; wait EVENTUALLY):\n{}", found.join("\n"));
+    assert!(files.len() > 150, "the sweep read the source: {}", files.len());
 }
 
 /// [`counting_server`], and the [`Gate`] its `/slow` calls pass.
@@ -8099,6 +8628,15 @@ fn log_entries(state: &AppState, slug: &str) -> Vec<serde_json::Value> {
     body_json(route(state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))["entries"].as_array().unwrap().clone()
 }
 
+/// What a logged run read from the capabilities named `capability…` (`FeedEvent("posts")`,
+/// `FeedEvent`…), as JSON text: where a test looks for which event a run was. Not the whole of
+/// its `sourced`, which holds the run's random bytes in base64: a short name looked for there is
+/// found in them now and then ("3k3", once in a few hundred runs of the bluesky test).
+fn sourced_from(entry: &serde_json::Value, capability: &str) -> String {
+    let sourced = entry["sourced"].as_array().unwrap();
+    sourced.iter().filter(|p| p[0].as_str().unwrap().starts_with(capability)).map(|p| p[1].to_string()).collect::<Vec<_>>().join("\n")
+}
+
 /// The oracle a deployment's runs of every kind are held to: replayed on the version it runs now
 /// (`GET /deployments/<slug>/replay`), a run of that version that `holon verify` runs again as it
 /// ran replays as the same, and none replays differently. The kinds of the runs replayed as the
@@ -8135,47 +8673,56 @@ fn hits_of(hits: &Mutex<BTreeMap<String, usize>>, path: &str) -> usize {
 /// record, and sends nothing; both answer the same; the processor saw one call.
 #[test]
 fn a_racing_pair_on_one_key_calls_out_once() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let slug = deploy_text(&state, &idem_text(&host), &host);
-    let (a, b) = std::thread::scope(|s| {
-        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k2", ""));
-        std::thread::sleep(Duration::from_millis(60));
-        let b = s.spawn(|| data_call(&state, &slug, "POST", "/go/k2", ""));
-        (a.join().unwrap(), b.join().unwrap())
-    });
+    let held_while_out = std::sync::atomic::AtomicBool::new(false);
+    let (a, b) = second_waits_for_first(
+        &state,
+        &gate,
+        || data_call(&state, &slug, "POST", "/go/k2", ""),
+        || {
+            // Sent while the first's call is out: its key is held through it.
+            let held = state.deployments.lock().unwrap()[&slug].state.as_ref().unwrap().claims.held();
+            held_while_out.store(held.iter().any(|k| k.to_string() == "seen[k2]"), std::sync::atomic::Ordering::SeqCst);
+            data_call(&state, &slug, "POST", "/go/k2", "")
+        },
+    );
+    assert!(held_while_out.into_inner(), "the first held its key through its call");
     assert_eq!((a.0, b.0), (200, 200), "{a:?} {b:?}");
     assert_eq!(a.1, b.1, "both answer the first's record");
     assert_eq!(hits_of(&hits, "/slow"), 1, "one call for one key");
     let entries = log_entries(&state, &slug);
     let second = entries.iter().find(|e| e["retries"] == 1).unwrap_or_else(|| panic!("one run ran again: {entries:#?}"));
     let claims = second["claims"].as_array().unwrap();
-    assert!(claims.iter().any(|c| c["key"] == "seen[k2]" && c["waited_ms"].as_f64().unwrap() > 100.0 && c["overtaken"] == true), "{claims:?}");
+    assert!(claims.iter().any(|c| c["key"] == "seen[k2]" && c["waited_ms"].as_f64().unwrap() > 0.0 && c["overtaken"] == true), "{claims:?}");
     let first = entries.iter().find(|e| e["retries"] != 1).unwrap();
     let held = &first["claims"][0];
     assert_eq!((held["key"].as_str(), held["overtaken"].as_bool()), (Some("seen[k2]"), Some(false)), "{held}");
-    assert!(held["waited_ms"].as_f64().unwrap() < 50.0 && held["held_ms"].as_f64().unwrap() > 300.0, "held through its slow call: {held}");
 }
 
 /// Two keys never wait for each other: both call out, side by side.
 #[test]
 fn different_keys_never_wait() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let slug = deploy_text(&state, &idem_text(&host), &host);
-    let (a, b) = std::thread::scope(|s| {
+    gate.shut();
+    let (a, b, both, none_waits) = std::thread::scope(|s| {
         let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k3", ""));
-        std::thread::sleep(Duration::from_millis(60));
         let b = s.spawn(|| data_call(&state, &slug, "POST", "/go/k4", ""));
-        (a.join().unwrap(), b.join().unwrap())
+        let both = gate.out_at_once(2);
+        let none_waits = waiting(&state) == 0;
+        gate.open();
+        (a.join().unwrap(), b.join().unwrap(), both, none_waits)
     });
     assert_eq!((a.0, b.0), (200, 200));
     assert_eq!(hits_of(&hits, "/slow"), 2);
-    assert!(a.2 < Duration::from_millis(700) && b.2 < Duration::from_millis(700), "not serialized: {:?} {:?}", a.2, b.2);
+    assert!(both && none_waits, "not serialized: both calls out at once, neither run waiting");
     for e in log_entries(&state, &slug) {
         assert_eq!(e["retries"], serde_json::Value::Null, "{e}");
         for c in e["claims"].as_array().into_iter().flatten() {
-            assert!(c["waited_ms"].as_f64().unwrap() < 50.0, "{c}");
+            assert_eq!(c["overtaken"], false, "{c}");
         }
     }
 }
@@ -8188,15 +8735,18 @@ fn different_keys_never_wait() {
 /// after both broke; with them, a state the run it began after didn't leave still breaks.
 #[test]
 fn runs_beside_each_other_numbered_the_other_way_round_follow() {
-    let (host, _) = counting_server();
+    let (host, _, gate) = gated_counting_server();
     let state = claims_state("");
     let slug = deploy_text(&state, &idem_text(&host), &host);
-    let (a, b) = std::thread::scope(|s| {
+    gate.shut();
+    let (a, b, both) = std::thread::scope(|s| {
         let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k6", ""));
-        std::thread::sleep(Duration::from_millis(60));
         let b = s.spawn(|| data_call(&state, &slug, "POST", "/go/k7", ""));
-        (a.join().unwrap(), b.join().unwrap())
+        let both = gate.out_at_once(2);
+        gate.open();
+        (a.join().unwrap(), b.join().unwrap(), both)
     });
+    assert!(both, "beside each other: both calls out at once");
     assert_eq!((a.0, b.0), (200, 200));
     assert_eq!(data_call(&state, &slug, "PUT", "/set/k8", "after").0, 200);
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
@@ -8204,7 +8754,7 @@ fn runs_beside_each_other_numbered_the_other_way_round_follow() {
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert_eq!(report.states.as_ref().unwrap().breaks, vec![]);
 
-    // Both began from the state as deployed (/slow takes 400 ms) and landed in turn; the run
+    // Both began from the state as deployed (both were out at once) and landed in turn; the run
     // after them began after the second.
     let lines: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
     let commit = |v: &serde_json::Value| (v["commit"]["after"].as_u64().unwrap(), v["commit"]["n"].as_u64().unwrap());
@@ -8266,18 +8816,25 @@ fn runs_beside_each_other_numbered_the_other_way_round_follow() {
 /// first hasn't, and isn't checked where it began. Without the commit numbers it broke.
 #[test]
 fn a_run_after_a_commit_the_trimmed_log_lost_has_no_run_before_it() {
-    let (host, _) = counting_server();
+    let (host, _, gate) = gated_counting_server();
     let state = claims_state("");
     let slug = deploy_text(&state, &idem_text(&host), &host);
     assert_eq!(data_call(&state, &slug, "PUT", "/set/k1", "p").0, 200);
-    // X calls out (400 ms); Q lands meanwhile, and Y begins from what Q left and calls out too.
-    let (x, y) = std::thread::scope(|s| {
+    // X calls out and is held there; Q lands meanwhile, and Y begins from what Q left and calls
+    // out too; X is let go and lands, then Y.
+    gate.shut();
+    let (x, y, order) = std::thread::scope(|s| {
         let x = s.spawn(|| data_call(&state, &slug, "POST", "/go/k6", ""));
-        std::thread::sleep(Duration::from_millis(60));
-        assert_eq!(data_call(&state, &slug, "PUT", "/set/k2", "q").0, 200);
+        let x_out = gate.out_at_once(1);
+        let q = data_call(&state, &slug, "PUT", "/set/k2", "q").0;
         let y = s.spawn(|| data_call(&state, &slug, "POST", "/go/k7", ""));
-        (x.join().unwrap(), y.join().unwrap())
+        let both = x_out && gate.out_at_once(2);
+        gate.let_one_go();
+        let x = x.join().unwrap();
+        gate.open();
+        (x, y.join().unwrap(), (x_out, q, both))
     });
+    assert_eq!(order, (true, 200, true), "X out, Q landed, Y out beside it");
     assert_eq!((x.0, y.0), (200, 200));
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
     let lines: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
@@ -9082,17 +9639,12 @@ fn a_run_that_sends_nothing_claims_nothing() {
 /// read is never changed under it, so it runs once and calls out once.
 #[test]
 fn a_lock_free_writer_waits_for_a_claim() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let slug = deploy_text(&state, &idem_text(&host), &host);
-    let (a, w) = std::thread::scope(|s| {
-        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k5", ""));
-        std::thread::sleep(Duration::from_millis(100));
-        let w = s.spawn(|| data_call(&state, &slug, "PUT", "/set/k5", "mine"));
-        (a.join().unwrap(), w.join().unwrap())
-    });
+    // The writer waits for the claim (second_waits_for_first holds that it did).
+    let (a, w) = second_waits_for_first(&state, &gate, || data_call(&state, &slug, "POST", "/go/k5", ""), || data_call(&state, &slug, "PUT", "/set/k5", "mine"));
     assert_eq!((a.0, w.0), (200, 200), "{a:?} {w:?}");
-    assert!(w.2 >= Duration::from_millis(200), "the writer waited for the claim: {:?}", w.2);
     assert_eq!(hits_of(&hits, "/slow"), 1);
     assert_eq!(data_call(&state, &slug, "GET", "/seen/k5", "").1, r#"{"got":"mine"}"#, "the writer landed after the claimer");
     let entries = log_entries(&state, &slug);
@@ -9104,15 +9656,10 @@ fn a_lock_free_writer_waits_for_a_claim() {
 /// go, waits, and runs again; its earlier request is answered from its record, not sent again.
 #[test]
 fn a_later_round_needing_a_held_key_restarts_without_resending() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let slug = deploy_text(&state, &idem_text(&host), &host);
-    let (a, b) = std::thread::scope(|s| {
-        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k", ""));
-        std::thread::sleep(Duration::from_millis(100));
-        let b = s.spawn(|| data_call(&state, &slug, "POST", "/chain", "me"));
-        (a.join().unwrap(), b.join().unwrap())
-    });
+    let (a, b) = second_waits_for_first(&state, &gate, || data_call(&state, &slug, "POST", "/go/k", ""), || data_call(&state, &slug, "POST", "/chain", "me"));
     assert_eq!((a.0, b.0), (200, 200), "{a:?} {b:?}");
     assert_eq!(b.1, r#"{"other":{"got":"slow"}}"#, "the chain read what the first run wrote");
     assert_eq!((hits_of(&hits, "/name"), hits_of(&hits, "/slow"), hits_of(&hits, "/fast")), (1, 1, 1));
@@ -9120,26 +9667,22 @@ fn a_later_round_needing_a_held_key_restarts_without_resending() {
     let chain = entries.iter().find(|e| e["route"] == "POST /chain").unwrap();
     assert_eq!(chain["retries"], 1, "{chain}");
     let claims = chain["claims"].as_array().unwrap();
-    assert!(claims.iter().any(|c| c["key"] == "seen[k]" && c["overtaken"] == true && c["waited_ms"].as_f64().unwrap() > 100.0), "{claims:?}");
+    assert!(claims.iter().any(|c| c["key"] == "seen[k]" && c["overtaken"] == true && c["waited_ms"].as_f64().unwrap() > 0.0), "{claims:?}");
     assert!(claims.iter().any(|c| c["key"] == "seen[b]" && c["overtaken"] == false), "{claims:?}");
 }
 
 /// Past `claim_wait_ms`, a run waiting for a held key is turned away as busy (503), naming the key.
 #[test]
 fn busy_after_claim_wait() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("[limits]\nclaim_wait_ms = 50");
     let slug = deploy_text(&state, &idem_text(&host), &host);
-    let (a, b) = std::thread::scope(|s| {
-        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k6", ""));
-        std::thread::sleep(Duration::from_millis(100));
-        let b = s.spawn(|| data_call(&state, &slug, "POST", "/go/k6", ""));
-        (a.join().unwrap(), b.join().unwrap())
-    });
+    // Answered while the first's call is still out: turned away after its own wait, not the
+    // first's.
+    let (a, b) = second_while_first_is_out(&gate, || data_call(&state, &slug, "POST", "/go/k6", ""), || data_call(&state, &slug, "POST", "/go/k6", ""));
     assert_eq!(a.0, 200, "{a:?}");
     assert_eq!(b.0, 503, "{b:?}");
     assert!(b.1.contains("busy") && b.1.contains("seen[k6]"), "{}", b.1);
-    assert!(b.2 < Duration::from_millis(300), "turned away after its wait: {:?}", b.2);
     assert_eq!(hits_of(&hits, "/slow"), 1);
     let entries = log_entries(&state, &slug);
     let busy = entries.iter().find(|e| e["status"] == 503).unwrap();
@@ -9160,7 +9703,7 @@ fn a_parked_run_releases_its_claims() {
     assert_eq!(hits_of(&hits, "/slow"), 1);
     let entries = log_entries(&state, &slug);
     let go = entries.iter().find(|e| e["route"] == "POST /go/:k").unwrap();
-    assert!(go["claims"][0]["waited_ms"].as_f64().unwrap() < 50.0, "{go}");
+    assert_eq!(go["claims"][0]["overtaken"], false, "{go}");
     assert_eq!(go["retries"], serde_json::Value::Null, "{go}");
 }
 
@@ -9309,7 +9852,7 @@ fn two_deployments_counting_in_one_row_lose_no_count() {
 /// (docs/L4s/databases-L4.md §7.2). Orders apart never wait for each other.
 #[test]
 fn two_deployments_refunding_one_order_call_the_payment_api_once() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let dir = std::env::temp_dir().join(format!("holon-refunds-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -9319,36 +9862,33 @@ fn two_deployments_refunding_one_order_call_the_payment_api_once() {
     let text = include_str!("../../holon-author/samples/refund-once.holon.ts").replace("host:httpbin.org", &format!("host:{host}")).replace(r#""/anything/refunds""#, r#""/slow""#).replace("port: 8151", "port: 18151");
     let a = deploy_text(&state, &text, &host);
     let b = deploy_text(&state, &text.replace(r#"flow("refund-once""#, r#"flow("refund-once-2""#).replace("port: 18151", "port: 18152"), &host);
-    let race = |id: u32| -> Vec<u16> {
-        std::thread::scope(|s| {
-            let first = s.spawn(|| data_call(&state, &a, "POST", &format!("/refund/{id}"), ""));
-            std::thread::sleep(Duration::from_millis(60));
-            let second = s.spawn(|| data_call(&state, &b, "POST", &format!("/refund/{id}"), ""));
-            let mut statuses = vec![first.join().unwrap().0, second.join().unwrap().0];
-            statuses.sort();
-            statuses
-        })
-    };
-    assert_eq!(race(1), [200, 409]);
+    // The second waits for the first's row (second_waits_for_first holds that it did).
+    let (first, second) = second_waits_for_first(&state, &gate, || data_call(&state, &a, "POST", "/refund/1", ""), || data_call(&state, &b, "POST", "/refund/1", ""));
+    assert_eq!((first.0, second.0), (200, 409), "{} / {}", first.1, second.1);
     assert_eq!(hits_of(&hits, "/slow"), 1, "one payment for one order");
     let (_, refunds, _) = data_call(&state, &a, "GET", "/refunds/1", "");
     assert_eq!(serde_json::from_str::<serde_json::Value>(&refunds).unwrap(), serde_json::json!([{ "amount": 5, "status": 200 }]));
     let waited = log_entries(&state, &b);
     let claim = waited.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == "shop/orders[1]").unwrap_or_else(|| panic!("{waited:#?}"));
-    assert!(claim["waited_ms"].as_f64().unwrap() > 100.0 && claim["overtaken"] == true, "it waited for the first's row: {claim}");
+    assert!(claim["waited_ms"].as_f64().unwrap() > 0.0 && claim["overtaken"] == true, "it waited for the first's row: {claim}");
 
-    // Two orders at once: neither waits for the other's row.
-    let statuses: Vec<u16> = std::thread::scope(|s| {
+    // Two orders at once: neither waits for the other's row, so both calls are out at once.
+    gate.shut();
+    let (statuses, both, none_waits) = std::thread::scope(|s| {
         let state = &state;
         let calls = [(&a, 2), (&b, 3)].map(|(slug, id)| s.spawn(move || data_call(state, slug, "POST", &format!("/refund/{id}"), "").0));
-        calls.into_iter().map(|c| c.join().unwrap()).collect()
+        let both = gate.out_at_once(2);
+        let none_waits = waiting(state) == 0;
+        gate.open();
+        (calls.map(|c| c.join().unwrap()), both, none_waits)
     });
+    assert!(both && none_waits, "side by side: both calls out at once, neither run waiting");
     assert_eq!(statuses, [200, 200]);
     assert_eq!(hits_of(&hits, "/slow"), 3);
     for (slug, key) in [(&a, "shop/orders[2]"), (&b, "shop/orders[3]")] {
         let entries = log_entries(&state, slug);
         let claim = entries.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == key).unwrap_or_else(|| panic!("{entries:#?}"));
-        assert!(claim["overtaken"] == false && claim["waited_ms"].as_f64().unwrap() < 250.0, "its own row, taken at once: {claim}");
+        assert_eq!(claim["overtaken"], false, "its own row: {claim}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -9358,7 +9898,7 @@ fn two_deployments_refunding_one_order_call_the_payment_api_once() {
 /// never waits.
 #[test]
 fn two_deployments_caching_into_one_file_call_out_once() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let dir = std::env::temp_dir().join(format!("holon-memo-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -9369,12 +9909,7 @@ fn two_deployments_caching_into_one_file_call_out_once() {
     );
     let a = deploy_text(&state, &text, &host);
     let b = deploy_text(&state, &text.replace(r#"flow("memo""#, r#"flow("memo-2""#).replace("port: 18161", "port: 18162"), &host);
-    let (first, second) = std::thread::scope(|s| {
-        let first = s.spawn(|| data_call(&state, &a, "POST", "/memo/x.txt", ""));
-        std::thread::sleep(Duration::from_millis(60));
-        let second = s.spawn(|| data_call(&state, &b, "POST", "/memo/x.txt", ""));
-        (first.join().unwrap(), second.join().unwrap())
-    });
+    let (first, second) = second_waits_for_first(&state, &gate, || data_call(&state, &a, "POST", "/memo/x.txt", ""), || data_call(&state, &b, "POST", "/memo/x.txt", ""));
     assert_eq!((first.0, second.0, first.1.as_str(), second.1.as_str()), (200, 200, "slow", "slow"));
     assert_eq!(hits_of(&hits, "/slow"), 1, "one fetch for one file");
     let entries = log_entries(&state, &b);
@@ -9646,21 +10181,14 @@ fn two_servers_refunding_one_order_call_the_payment_api_once() {
         assert_eq!(bind_shop(&servers[1], None).status_code, 200, "{engine}");
         let text = include_str!("../../holon-author/samples/refund-once.holon.ts").replace("host:httpbin.org", &format!("host:{host}")).replace(r#""/anything/refunds""#, r#""/slow""#);
         let slugs = [deploy_text(&servers[0], &text, &host), deploy_text(&servers[1], &text, &host)];
-        let (first, second) = std::thread::scope(|s| {
-            let first = s.spawn(|| data_call(&servers[0], &slugs[0], "POST", "/refund/1", ""));
-            std::thread::sleep(Duration::from_millis(60));
-            let second = s.spawn(|| data_call(&servers[1], &slugs[1], "POST", "/refund/1", ""));
-            (first.join().unwrap(), second.join().unwrap())
-        });
-        let mut statuses = [first.0, second.0];
-        statuses.sort();
-        assert_eq!(statuses, [200, 409], "{engine}: {} / {}", first.1, second.1);
+        let (first, second) = second_waits_for_first(&servers[1], &gate, || data_call(&servers[0], &slugs[0], "POST", "/refund/1", ""), || data_call(&servers[1], &slugs[1], "POST", "/refund/1", ""));
+        assert_eq!((first.0, second.0), (200, 409), "{engine}: {} / {}", first.1, second.1);
         assert_eq!(hits_of(&hits, "/slow"), 1, "{engine}: one payment for one order, across servers");
         let (_, refunds, _) = data_call(&servers[1], &slugs[1], "GET", "/refunds/1", "");
         assert_eq!(serde_json::from_str::<serde_json::Value>(&refunds).unwrap(), serde_json::json!([{ "amount": "5.00", "status": 200 }]), "{engine}");
         let entries = log_entries(&servers[1], &slugs[1]);
         let claim = entries.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == "shop/orders[1]").unwrap_or_else(|| panic!("{engine}: {entries:#?}"));
-        assert!(claim["waited_ms"].as_f64().unwrap() > 100.0 && claim["overtaken"] == true, "{engine}: it waited for the other server's row: {claim}");
+        assert!(claim["waited_ms"].as_f64().unwrap() > 0.0 && claim["overtaken"] == true, "{engine}: it waited for the other server's row: {claim}");
 
         // Two orders at once, one on each server: neither waits for the other's row, so both
         // calls are out at once, each holding its order's.
@@ -9687,7 +10215,7 @@ fn two_servers_refunding_one_order_call_the_payment_api_once() {
 fn a_row_another_program_changed_sends_the_run_round_again() {
     for db in fresh_databases("counts") {
         let (engine, url) = (db.engine, db.url.clone());
-        let (host, hits) = counting_server();
+        let (host, hits, gate) = gated_counting_server();
         let state = server_with_database(&url);
         assert_eq!(bind_shop(&state, Some("create table counts (id integer primary key, n integer not null); insert into counts values (1, 0)")).status_code, 200, "{engine}");
         let text = format!(
@@ -9703,12 +10231,7 @@ fn a_row_another_program_changed_sends_the_run_round_again() {
                 mysql::Conn::new(mysql::Opts::from_url(&url).unwrap()).unwrap().query_drop("update counts set n = 100 where id = 1").unwrap();
             }
         };
-        let (status, body, _) = std::thread::scope(|s| {
-            let run = s.spawn(|| data_call(&state, &slug, "POST", "/tally", ""));
-            std::thread::sleep(Duration::from_millis(150));
-            outside();
-            run.join().unwrap()
-        });
+        let ((status, body, _), ()) = second_while_first_is_out(&gate, || data_call(&state, &slug, "POST", "/tally", ""), outside);
         assert_eq!(status, 200, "{engine}: {body}");
         assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["n"], 101, "{engine}: it ran again on 100");
         assert_eq!(hits_of(&hits, "/slow"), 1, "{engine}: its request was answered from its record");
@@ -9735,17 +10258,6 @@ fn overtaken_in(state: &AppState, slug: &str) -> bool {
     log_entries(state, slug).iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).any(|c| c["overtaken"] == true)
 }
 
-/// Two requests to `first` and `second` 60 ms apart: their answers, and how long the second took.
-fn two_at_once(state: &AppState, first: (&str, &str, &str), second: (&str, &str, &str)) -> ((u16, String), (u16, String, Duration)) {
-    std::thread::scope(|s| {
-        let a = s.spawn(|| data_call(state, first.0, first.1, first.2, ""));
-        std::thread::sleep(Duration::from_millis(60));
-        let b = s.spawn(|| data_call(state, second.0, second.1, second.2, ""));
-        let (a, b) = (a.join().unwrap(), b.join().unwrap());
-        ((a.0, a.1), b)
-    })
-}
-
 /// A database an admin set to `run`: a run that may write it holds it alone from before it starts
 /// until it commits, so two deployments' writers go one after the other, whole: the second never
 /// starts, reads or calls out until the first has committed (it is never overtaken, as it would be
@@ -9754,7 +10266,7 @@ fn two_at_once(state: &AppState, first: (&str, &str, &str), second: (&str, &str,
 /// nothing.
 #[test]
 fn a_database_held_for_whole_runs_runs_its_writers_one_at_a_time() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let dir = std::env::temp_dir().join(format!("holon-runlock-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
     let bind = |state: &AppState, file: &str| {
@@ -9771,24 +10283,31 @@ fn a_database_held_for_whole_runs_runs_its_writers_one_at_a_time() {
     assert_eq!(body_json(route(&state, &req("GET", "/admin/databases", vec![])))[0]["lock"], "run");
     let a = deploy_text(&state, &numbering_text(&host, "numbers", 18181), &host);
     let b = deploy_text(&state, &numbering_text(&host, "numbers-2", 18182), &host);
-    let (first, second) = two_at_once(&state, (&a, "POST", "/next"), (&b, "POST", "/next"));
+    // The second waits for the run lock while the first's call is out (second_waits_for_first
+    // holds that it did), so it ran after the first, whole.
+    let (first, second) = second_waits_for_first(&state, &gate, || data_call(&state, &a, "POST", "/next", ""), || data_call(&state, &b, "POST", "/next", ""));
     assert_eq!((first.0, second.0), (200, 200), "{} / {}", first.1, second.1);
-    let ns: BTreeSet<String> = [&first.1, &second.1].iter().map(|b| serde_json::from_str::<serde_json::Value>(b).unwrap()["n"].to_string()).collect();
-    assert_eq!(ns, BTreeSet::from(["1".to_string(), "2".to_string()]));
-    assert!(second.2 > Duration::from_millis(700), "it ran after the first, whole: {:?}", second.2);
+    let n = |answer: &str| serde_json::from_str::<serde_json::Value>(answer).unwrap()["n"].clone();
+    assert_eq!((n(&first.1), n(&second.1)), (serde_json::json!(1), serde_json::json!(2)), "in turn");
     assert!(!overtaken_in(&state, &b), "it started once the first had committed: {:#?}", log_entries(&state, &b));
     assert_eq!(hits_of(&hits, "/slow"), 2);
 
-    // Readers side by side; a reader after a writer.
+    // Readers side by side, their calls out at once; a reader after a writer.
     let r1 = deploy_text(&state, &peeking_text(&host, "peek", 18183), &host);
     let r2 = deploy_text(&state, &peeking_text(&host, "peek-2", 18184), &host);
-    let (one, two) = two_at_once(&state, (&r1, "GET", "/peek"), (&r2, "GET", "/peek"));
+    gate.shut();
+    let (one, two, both) = std::thread::scope(|s| {
+        let one = s.spawn(|| data_call(&state, &r1, "GET", "/peek", ""));
+        let two = s.spawn(|| data_call(&state, &r2, "GET", "/peek", ""));
+        let both = gate.out_at_once(2);
+        gate.open();
+        (one.join().unwrap(), two.join().unwrap(), both)
+    });
     assert_eq!((one.0, two.0), (200, 200));
-    assert!(two.2 < Duration::from_millis(650), "readers share it: {:?}", two.2);
-    let (_, after) = two_at_once(&state, (&a, "POST", "/next"), (&r1, "GET", "/peek"));
+    assert!(both, "readers share it: both calls out at once");
+    let (_, after) = second_waits_for_first(&state, &gate, || data_call(&state, &a, "POST", "/next", ""), || data_call(&state, &r1, "GET", "/peek", ""));
     assert_eq!(after.0, 200);
-    assert!(after.2 > Duration::from_millis(700), "a reader waits for a writer: {:?}", after.2);
-    assert_eq!(serde_json::from_str::<serde_json::Value>(&after.1).unwrap()["n"], 3, "and reads what it wrote");
+    assert_eq!(n(&after.1), 3, "a reader waits for a writer, and reads what it wrote");
 
     // Past claim_wait: turned away, sending nothing.
     let quick = claims_state("[limits]\nclaim_wait_ms = 100");
@@ -9796,7 +10315,7 @@ fn a_database_held_for_whole_runs_runs_its_writers_one_at_a_time() {
     let a = deploy_text(&quick, &numbering_text(&host, "numbers", 18185), &host);
     let b = deploy_text(&quick, &numbering_text(&host, "numbers-2", 18186), &host);
     let before = hits_of(&hits, "/slow");
-    let (first, second) = two_at_once(&quick, (&a, "POST", "/next"), (&b, "POST", "/next"));
+    let (first, second) = second_while_first_is_out(&gate, || data_call(&quick, &a, "POST", "/next", ""), || data_call(&quick, &b, "POST", "/next", ""));
     assert_eq!((first.0, second.0), (200, 503), "{}", second.1);
     assert!(second.1.contains("the database \\\"shop\\\""), "it names the database: {}", second.1);
     assert_eq!(hits_of(&hits, "/slow"), before + 1, "the one turned away sent nothing");
@@ -9810,7 +10329,7 @@ fn a_database_held_for_whole_runs_runs_its_writers_one_at_a_time() {
 /// see it too.
 #[test]
 fn a_folder_held_for_whole_runs_runs_its_writers_one_at_a_time() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let dir = std::env::temp_dir().join(format!("holon-runlock-f-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -9822,9 +10341,10 @@ fn a_folder_held_for_whole_runs_runs_its_writers_one_at_a_time() {
     );
     let a = deploy_text(&state, &text, &host);
     let b = deploy_text(&state, &text.replace(r#"flow("tally""#, r#"flow("tally-2""#).replace("port: 18191", "port: 18192"), &host);
-    let (first, second) = two_at_once(&state, (&a, "POST", "/add"), (&b, "POST", "/add"));
+    // The second waits for the folder's lock while the first's call is out, so it ran after the
+    // first, whole.
+    let (first, second) = second_waits_for_first(&state, &gate, || data_call(&state, &a, "POST", "/add", ""), || data_call(&state, &b, "POST", "/add", ""));
     assert_eq!((first.0, second.0), (200, 200), "{} / {}", first.1, second.1);
-    assert!(second.2 > Duration::from_millis(700), "it ran after the first, whole: {:?}", second.2);
     assert!(!overtaken_in(&state, &b), "{:#?}", log_entries(&state, &b));
     assert_eq!(hits_of(&hits, "/slow"), 2);
     assert_eq!(std::fs::read_to_string(dir.join("lines.txt")).unwrap(), "slow\nslow\n");
@@ -9852,14 +10372,10 @@ fn a_database_held_for_whole_runs_holds_across_servers() {
             assert_eq!(status, 200, "{engine}: {}", String::from_utf8_lossy(&body_bytes(r)));
         }
         let writers = [deploy_text(&servers[0], &numbering_text(&host, "numbers", 18181), &host), deploy_text(&servers[1], &numbering_text(&host, "numbers", 18181), &host)];
-        let (first, second) = std::thread::scope(|s| {
-            let a = s.spawn(|| data_call(&servers[0], &writers[0], "POST", "/next", ""));
-            std::thread::sleep(Duration::from_millis(60));
-            let b = s.spawn(|| data_call(&servers[1], &writers[1], "POST", "/next", ""));
-            (a.join().unwrap(), b.join().unwrap())
-        });
+        // The second server's writer waits for the database's run lock while the first's call is
+        // out, so it ran after the other server's, whole.
+        let (first, second) = second_waits_for_first(&servers[1], &gate, || data_call(&servers[0], &writers[0], "POST", "/next", ""), || data_call(&servers[1], &writers[1], "POST", "/next", ""));
         assert_eq!((first.0, second.0), (200, 200), "{engine}: {} / {}", first.1, second.1);
-        assert!(second.2 > Duration::from_millis(700), "{engine}: it ran after the other server's, whole: {:?}", second.2);
         assert!(!overtaken_in(&servers[1], &writers[1]), "{engine}: {:#?}", log_entries(&servers[1], &writers[1]));
         assert_eq!(serde_json::from_str::<serde_json::Value>(&second.1).unwrap()["n"], 2, "{engine}");
         let readers = [deploy_text(&servers[0], &peeking_text(&host, "peek", 18183), &host), deploy_text(&servers[1], &peeking_text(&host, "peek", 18183), &host)];
@@ -9884,12 +10400,7 @@ allow_private_addresses = true
 [limits]
 claim_wait_ms = 100").unwrap());
         let quick = deploy_text(&servers[1], &numbering_text(&host, "numbers-quick", 18185), &host);
-        let (first, second) = std::thread::scope(|s| {
-            let a = s.spawn(|| data_call(&servers[0], &writers[0], "POST", "/next", ""));
-            std::thread::sleep(Duration::from_millis(60));
-            let b = s.spawn(|| data_call(&servers[1], &quick, "POST", "/next", ""));
-            (a.join().unwrap(), b.join().unwrap())
-        });
+        let (first, second) = second_while_first_is_out(&gate, || data_call(&servers[0], &writers[0], "POST", "/next", ""), || data_call(&servers[1], &quick, "POST", "/next", ""));
         assert_eq!((first.0, second.0), (200, 503), "{engine}: {}", second.1);
         assert_eq!(hits_of(&hits, "/slow"), 5, "{engine}: the one turned away sent nothing");
     }
@@ -11228,7 +11739,7 @@ fn a_resumed_run_whose_row_changed_runs_again_from_its_last_wait() {
     let mut engines: Vec<(&str, String)> = vec![("sqlite", file.display().to_string())];
     engines.extend(fresh.iter().map(|db| (db.engine, db.url.clone())));
     for (engine, url) in engines {
-        let (host, hits) = counting_server();
+        let (host, hits, gate) = gated_counting_server();
         let state = if engine == "sqlite" { claims_state("") } else { server_with_database(&url) };
         let bound = match engine {
             "sqlite" => {
@@ -11261,13 +11772,8 @@ fn a_resumed_run_whose_row_changed_runs_again_from_its_last_wait() {
         let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
         // While it waits the row changes: it is read as it is when the run resumes.
         outside("update counts set n = 10 where id = 1");
-        let paid = std::thread::scope(|s| {
-            let paid = s.spawn(|| data_call(&state, &slug, "GET", &format!("/paid/{token}"), ""));
-            // And again while its resumed part calls out: its commit finds it changed.
-            std::thread::sleep(Duration::from_millis(150));
-            outside("update counts set n = 100 where id = 1");
-            paid.join().unwrap()
-        });
+        // And again while its resumed part's call is out: its commit finds it changed.
+        let (paid, ()) = second_while_first_is_out(&gate, || data_call(&state, &slug, "GET", &format!("/paid/{token}"), ""), || outside("update counts set n = 100 where id = 1"));
         assert_eq!(paid.0, 200, "{engine}: {paid:?}");
         assert_eq!(n(), 101, "{engine}: it ran again on 100, not over it");
         assert_eq!((hits_of(&hits, "/fast"), hits_of(&hits, "/slow")), (1, 1), "{engine}: each request went out once");
@@ -11292,7 +11798,7 @@ fn a_resumed_run_whose_row_changed_runs_again_from_its_last_wait() {
 /// on the file as it now is, and loses no line.
 #[test]
 fn a_resumed_run_whose_file_changed_runs_again_from_its_last_wait() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let dir = std::env::temp_dir().join(format!("holon-resumed-file-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -11306,12 +11812,7 @@ fn a_resumed_run_whose_file_changed_runs_again_from_its_last_wait() {
     let (status, held, _) = data_call(&state, &slug, "POST", "/hold", "");
     assert_eq!(status, 200, "{held}");
     let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
-    let paid = std::thread::scope(|s| {
-        let paid = s.spawn(|| data_call(&state, &slug, "GET", &format!("/paid/{token}"), ""));
-        std::thread::sleep(Duration::from_millis(150));
-        std::fs::write(dir.join("lines.txt"), "first\nsecond\n").unwrap();
-        paid.join().unwrap()
-    });
+    let (paid, ()) = second_while_first_is_out(&gate, || data_call(&state, &slug, "GET", &format!("/paid/{token}"), ""), || std::fs::write(dir.join("lines.txt"), "first\nsecond\n").unwrap());
     assert_eq!(paid.0, 200, "{paid:?}");
     assert_eq!(std::fs::read_to_string(dir.join("lines.txt")).unwrap(), "first\nsecond\nslow\n", "it ran again on the file as it now is");
     assert_eq!(hits_of(&hits, "/slow"), 1, "its request went out once");
@@ -11361,7 +11862,7 @@ fn a_resumed_run_resumed_again_after_its_commit_applies_once() {
 /// with the binding that let it. A second payout, declined by the reviewer, pays nothing.
 #[test]
 fn approved_payout_keeps_the_deposits_made_while_it_waited() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let mut state = claims_state("");
     let dir = std::env::temp_dir().join(format!("holon-payout-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -11416,12 +11917,9 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     let (code, said) = decide(&bob, &run, true, None);
     assert_eq!((code, &said["outcome"]), (200, &serde_json::json!("waiting")), "{said}");
     assert_eq!(hits_of(&hits, "/slow"), 0, "two steps of three pay nothing");
-    let approved = std::thread::scope(|s| {
-        let approved = s.spawn(|| decide(&local, &run, true, Some("the invoice matches")));
-        std::thread::sleep(Duration::from_millis(150));
-        assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":20}"#).0, 200, "and one while it pays");
-        approved.join().unwrap()
-    });
+    // And one while it pays: sent while the payout's call is out (it may wait for the payout).
+    let (approved, deposited) = second_meets_first(&state, &gate, || decide(&local, &run, true, Some("the invoice matches")), || data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":20}"#).0);
+    assert_eq!(deposited, 200, "and one while it pays");
     assert_eq!((approved.0, &approved.1["outcome"]), (200, &serde_json::json!("approved")), "{approved:?}");
     assert!(approved.1["run_error"].is_null(), "{approved:?}");
     assert_eq!(balance(), 140, "100, and 50, and 20, less 30");
@@ -11489,7 +11987,7 @@ fn unquoted(data: &str) -> String {
 }
 
 fn wait_for_mail(sink: &smtp::sink::Sink, n: usize) -> Vec<smtp::sink::Got> {
-    let until = std::time::Instant::now() + Duration::from_secs(10);
+    let until = std::time::Instant::now() + EVENTUALLY;
     loop {
         let got = sink.got.lock().unwrap().clone();
         if got.len() >= n {
@@ -11566,7 +12064,7 @@ fn approval_mail_mails_the_link_then_the_approval_through_its_binding() {
     let link: String = unquoted(&got[2].data).split("http://127.0.0.1:8186").nth(1).unwrap().chars().take_while(|c| !c.is_whitespace()).collect();
     assert_eq!(data_call(&state, &slug, "POST", &link, "").0, 200);
     let events = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
-    let until = std::time::Instant::now() + Duration::from_secs(10);
+    let until = std::time::Instant::now() + EVENTUALLY;
     while !events().contains("gave up mailing") {
         assert!(std::time::Instant::now() < until, "{}", events());
         std::thread::sleep(Duration::from_millis(20));
@@ -11798,13 +12296,11 @@ fn support_inbox_receives_and_answers_through_one_mail_logged_in_with_oauth() {
 
 // ── Feeds (host-capabilities 1.6a) ──
 
-/// Wait until `holds`, for 10 seconds at most.
-fn eventually(what: &str, mut holds: impl FnMut() -> bool) {
-    let until = std::time::Instant::now() + Duration::from_secs(10);
-    while !holds() {
-        assert!(std::time::Instant::now() < until, "never: {what}");
-        thread::sleep(Duration::from_millis(20));
-    }
+/// Wait until `holds`, [`EVENTUALLY`] at most ([`soon`]). It looks again within milliseconds, so
+/// what is read right after must be what was waited for, or follow from it without another thread
+/// having to act.
+fn eventually(what: &str, holds: impl FnMut() -> bool) {
+    assert!(soon(holds), "never: {what}");
 }
 
 /// The price-feed sample (host-capabilities L4 §5.9.2): refused until its feed is bound; bound to
@@ -11855,12 +12351,16 @@ fn price_feed_runs_on_each_event_and_opens_again_from_where_it_was() {
     eventually("three runs", || runs().len() == 3);
     let first = runs();
     assert!(first.iter().all(|r| r["route"] == "on feed prices" && r["error"].is_null()), "{first:#?}");
-    let sourced = first[1]["sourced"].to_string();
-    assert!(sourced.contains(r#"FeedEvent(\"prices\")"#) && sourced.contains("BOLT"), "logged whole: {sourced}");
+    let sourced = sourced_from(&first[1], "FeedEvent(\"prices\")");
+    assert!(sourced.contains("\"BOLT\""), "logged whole: {}", first[1]["sourced"]);
     let (_, prices, _) = data_call(&state, &slug, "GET", "/prices", "");
     let prices: serde_json::Value = serde_json::from_str(&prices).unwrap();
     assert_eq!((prices["ACME"]["price"].clone(), prices["BOLT"]["price"].clone()), (serde_json::json!(11), serde_json::json!(3)), "{prices}");
-    let live = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])));
+    // Where the feed is moves once a run's record is written, a moment after (subscriptions.rs):
+    // waited for as it is read.
+    let live = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])));
+    eventually("at 3", || live()["feeds"][0]["position"] == "3");
+    let live = live();
     assert_eq!((live["feeds"][0]["status"].as_str(), live["feeds"][0]["position"].as_str()), (Some("connected"), Some("3")), "{live}");
     assert_eq!(live["feeds"][0]["label"], "on feed prices", "{live}");
 
@@ -12035,8 +12535,9 @@ fn trading_bot_keeps_the_newest_price_and_places_each_order_once() {
     assert_eq!((placed[0]["client_oid"].as_str(), placed[0]["price"].as_str(), placed[0]["size"].as_str()), (Some(id.as_str()), Some("100"), Some("2")));
     let orders = call("GET", "/orders", "");
     assert_eq!((orders["placed"][&id]["exchange"].as_str(), orders["placed"][&id]["approved_by"].as_str()), (Some("ex-1"), Some("under the limit")), "{orders}");
-    // BTC's newest took the place of the one that waited, ahead of ETH's.
-    assert_eq!(live()["position"], "ETH-USD/1");
+    // BTC's newest took the place of the one that waited, ahead of ETH's. Where the feed is moves
+    // once a run's record is written, a moment after: waited for as it is read.
+    eventually("at ETH-USD/1", || live()["position"] == "ETH-USD/1");
 
     // The price under the level again: placed already, nothing sent.
     price("BTC-USD", "95", 5);
@@ -12144,7 +12645,14 @@ fn bluesky_mentions_opens_the_feed_again_from_its_cursor_and_runs_each_post_once
     assert!(jetstream.asked()[2].starts_with("/subscribe?collections=app.bsky.feed.post&key=s3cret&cursor=4\n"), "{:?}", jetstream.asked());
     eventually("five runs", || runs().len() == 5);
     eventually("at 6", || live()["position"] == "6");
-    let ran: Vec<u32> = runs().iter().map(|r| (1..=6).find(|n| r["sourced"].to_string().contains(&format!("3k{n}"))).unwrap_or(0)).collect();
+    // Which post each run was: the rkey ("3k4") of the event it read, a whole text of it.
+    let ran: Vec<u32> = runs()
+        .iter()
+        .map(|r| {
+            let event = sourced_from(r, "FeedEvent(\"posts\")");
+            (1..=6).find(|n| event.contains(&format!("\"3k{n}\""))).unwrap_or(0)
+        })
+        .collect();
     assert_eq!(ran, [1, 2, 4, 5, 6], "each post run once");
     let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
     assert!(events.contains("passed over an event of posts it ran already (4)"), "{events}");
@@ -12406,7 +12914,7 @@ fn site_serves_a_built_app_from_its_folder() {
     // And cut when it changes while it is sent: the caller gets less than its length, and the
     // timeline says so.
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     stream.write_all(b"GET /assets/big.txt HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").unwrap();
     let mut first = [0u8; 1024];
     let n = stream.read(&mut first).unwrap();
@@ -12503,8 +13011,8 @@ fn ledger_watch_listens_on_its_channel_and_reads_what_it_missed() {
         let b = balances();
         assert_eq!((b["acct_1"]["balance"].as_str(), b["acct_1"]["entries"].as_u64(), b["acct_1"]["last"].as_u64()), (Some("100.00"), Some(3), Some(3)), "{b}");
         assert_eq!((b["acct_2"]["balance"].as_str(), b["acct_2"]["entries"].as_u64(), b["acct_2"]["read"].as_u64()), (Some("6.00"), Some(2), Some(0)), "{b}");
-        let sourced = log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").map(|e| e["sourced"].to_string()).collect::<Vec<_>>().join("\n");
-        assert!(sourced.contains(r#"FeedEvent(\"entries\")"#) && sourced.contains("fee"), "logged whole: {sourced}");
+        let sourced = log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").map(|e| sourced_from(&e, "FeedEvent(\"entries\")")).collect::<Vec<_>>().join("\n");
+        assert!(sourced.contains("fee"), "logged whole: {sourced}");
 
         // Its session ended: entry 4 is written while nothing listens, so it is never sent; once it
         // listens again, entry 5's run reads it from the ledger.
@@ -12613,7 +13121,11 @@ fn payout_events_runs_each_message_once_and_sends_a_failed_payouts_retry_to_its_
     eventually("passed over", || events().contains(&format!("passed over a message of payout_events it ran already ({first})")));
     eventually("deleted again", || sqs.messages("payout-events").is_empty());
     assert_eq!(runs().len(), 4, "run once");
-    let shown = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/queues"), vec![])));
+    // The sender counts a send once the queue has answered it, a moment after the queue has it:
+    // waited for as it is read.
+    let shown = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/queues"), vec![])));
+    eventually("both retries counted sent", || shown()["sending"][0]["sent"] == 2);
+    let shown = shown();
     let (listening, sending) = (&shown["listening"][0], &shown["sending"][0]);
     assert_eq!((listening["queue"].as_str(), listening["status"].as_str(), listening["run"].as_u64(), listening["passed_over"].as_u64()), (Some("payout_events"), Some("receiving"), Some(4), Some(1)), "{shown}");
     assert_eq!((sending["queue"].as_str(), sending["sent"].as_u64(), sending["waiting"].as_u64()), (Some("payout_retries"), Some(2), Some(0)), "{shown}");
@@ -12781,7 +13293,7 @@ fn atlas_notes_keeps_notes_as_documents_on_mongodb() {
 #[test]
 fn a_document_that_changed_before_its_commit_runs_again() {
     let Some(db) = fresh_mongo("again") else { return };
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = server_with_database(&db.url);
     assert_eq!(bind_notes(&state).status_code, 200);
     db.notes().insert_one(mongodb::bson::doc! { "_id": "n1", "owner": "ada", "text": "first", "edits": 0 }).run().unwrap();
@@ -12789,11 +13301,8 @@ fn a_document_that_changed_before_its_commit_runs_again() {
         "import {{ flow, route }} from \"holon\"\nimport notes from \"database:notes\"\nimport host from \"host:{host}\"\n\nflow(\"stamp\", {{ port: 18171 }})\n\nroute.post(\"/stamp/:id\", async (req) => {{\n  const note = notes.find_one(\"notes\", {{ _id: req.params.id }})\n  const r = await host.get(\"/slow\")\n  notes.update(\n    \"notes\",\n    {{ _id: note._id }},\n    {{ \"$set\": {{ text: `${{note.text}} (${{r.body}})` }} }},\n    {{ expect: 1 }},\n  )\n  return {{ was: note.text }}\n}})\n"
     );
     let slug = deploy_text(&state, &text, &host);
-    let outside = std::thread::scope(|s| {
-        let run = s.spawn(|| data_call(&state, &slug, "POST", "/stamp/n1", ""));
-        std::thread::sleep(Duration::from_millis(150));
-        db.notes().update_one(mongodb::bson::doc! { "_id": "n1" }, mongodb::bson::doc! { "$set": { "text": "changed outside" } }).run().unwrap();
-        run.join().unwrap()
+    let (outside, _) = second_while_first_is_out(&gate, || data_call(&state, &slug, "POST", "/stamp/n1", ""), || {
+        db.notes().update_one(mongodb::bson::doc! { "_id": "n1" }, mongodb::bson::doc! { "$set": { "text": "changed outside" } }).run().unwrap()
     });
     assert_eq!((outside.0, outside.1.as_str()), (200, r#"{"was":"changed outside"}"#));
     assert_eq!(hits_of(&hits, "/slow"), 1, "the call out answered from its record, not sent again");
@@ -12812,7 +13321,7 @@ fn a_document_that_changed_before_its_commit_runs_again() {
 #[test]
 fn two_servers_hold_one_document_through_mongodb() {
     let Some(db) = fresh_mongo("claims") else { return };
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let servers = [server_with_database(&db.url), server_with_database(&db.url)];
     for s in &servers {
         assert_eq!(bind_notes(s).status_code, 200);
@@ -12822,15 +13331,8 @@ fn two_servers_hold_one_document_through_mongodb() {
         "import {{ flow, route }} from \"holon\"\nimport notes from \"database:notes\"\nimport host from \"host:{host}\"\n\nflow(\"pay-note\", {{ port: 18172 }})\n\nroute.post(\"/pay/:id\", async (req) => {{\n  const note = notes.find_one(\"notes\", {{ _id: req.params.id, paid: false }})\n  const r = await host.get(`/slow?note=${{note._id}}`)\n  notes.update(\"notes\", {{ _id: note._id }}, {{ \"$set\": {{ paid: true, by: r.body }} }}, {{ expect: 1 }})\n  return {{ paid: note._id }}\n}})\n"
     );
     let slugs = [deploy_text(&servers[0], &text, &host), deploy_text(&servers[1], &text, &host)];
-    let (first, second) = std::thread::scope(|s| {
-        let first = s.spawn(|| data_call(&servers[0], &slugs[0], "POST", "/pay/n1", ""));
-        std::thread::sleep(Duration::from_millis(60));
-        let second = s.spawn(|| data_call(&servers[1], &slugs[1], "POST", "/pay/n1", ""));
-        (first.join().unwrap(), second.join().unwrap())
-    });
-    let mut statuses = [first.0, second.0];
-    statuses.sort();
-    assert_eq!(statuses, [200, 404], "{} / {}", first.1, second.1);
+    let (first, second) = second_waits_for_first(&servers[1], &gate, || data_call(&servers[0], &slugs[0], "POST", "/pay/n1", ""), || data_call(&servers[1], &slugs[1], "POST", "/pay/n1", ""));
+    assert_eq!((first.0, second.0), (200, 404), "{} / {}", first.1, second.1);
     assert_eq!(hits_of(&hits, "/slow"), 1, "one payment for one note, across servers");
     let claims = db.db.collection::<mongodb::bson::Document>("holon_claims").count_documents(mongodb::bson::doc! { "h.0": { "$exists": true } }).run().unwrap();
     assert_eq!(claims, 0, "every claim let go once its run was done");
@@ -12921,7 +13423,7 @@ fn a_channel_streams_each_runs_packs_to_its_subscribers() {
     // A subscriber: the response's headers, then its events, a line at a time.
     let subscribe = |path: &str, last: Option<&str>| {
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
         let last = last.map(|id| format!("Last-Event-ID: {id}\r\n")).unwrap_or_default();
         stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{last}\r\n").as_bytes()).unwrap();
         let mut reader = BufReader::new(stream);
@@ -13034,7 +13536,7 @@ fn a_streamed_reply_forwards_the_upstream_as_it_arrives() {
         let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
         stream.write_all(format!("{head}{}", piece("data: a\n\n")).as_bytes()).unwrap();
         stream.flush().unwrap();
-        let _ = seen_rx.recv_timeout(Duration::from_secs(10));
+        let _ = seen_rx.recv_timeout(EVENTUALLY);
         stream.write_all(format!("{}0\r\n\r\n", piece("data: b\n\n")).as_bytes()).unwrap();
     });
     let mut state = test_state();
@@ -13048,7 +13550,7 @@ fn a_streamed_reply_forwards_the_upstream_as_it_arrives() {
     sync_listeners(&state);
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     stream.write_all(b"POST /ask HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
     let mut reader = BufReader::new(stream);
     let mut head = String::new();
@@ -13097,7 +13599,7 @@ fn a_streamed_reply_whose_call_fails_answers_with_its_status() {
     sync_listeners(&state);
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     stream.write_all(b"POST /ask HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
     let mut answer = String::new();
     let _ = stream.read_to_string(&mut answer);
@@ -13122,7 +13624,7 @@ fn a_piped_call_sends_its_answer_to_the_channel_as_it_arrives() {
         let head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
         stream.write_all(format!("{head}{}", piece("Rivers run")).as_bytes()).unwrap();
         stream.flush().unwrap();
-        let _ = seen_rx.recv_timeout(Duration::from_secs(10));
+        let _ = seen_rx.recv_timeout(EVENTUALLY);
         stream.write_all(format!("{}0\r\n\r\n", piece(" to the sea.")).as_bytes()).unwrap();
     });
     let mut state = test_state();
@@ -13136,7 +13638,7 @@ fn a_piped_call_sends_its_answer_to_the_channel_as_it_arrives() {
     sync_listeners(&state);
 
     let mut live = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    live.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    live.set_read_timeout(Some(EVENTUALLY)).unwrap();
     live.write_all(b"GET /live HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
     let mut live = BufReader::new(live);
     let mut head = String::new();

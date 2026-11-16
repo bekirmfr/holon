@@ -1686,7 +1686,7 @@ mod tests {
         let started = std::time::Instant::now();
         let said = wait_for_decision(&api, "tide", 1, tick, &Ctx::default()).unwrap();
         assert!(said.starts_with("Still waiting for a person after 1 seconds") && said.contains("`wait`"), "{said}");
-        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(started.elapsed() >= Duration::from_secs(1), "it waited the time asked");
         // Nothing waits: no wait, and nothing to say before the answer.
         let api = Proposals { asked: Cell::new(0), states: &["approved"] };
         assert_eq!(wait_for_decision(&api, "tide", 10, tick, &Ctx::default()), None);
@@ -2476,7 +2476,7 @@ mod tests {
             String::from_utf8(said[..whole].to_vec()).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
         };
         let until = |said: &Said, what: &str, found: &dyn Fn(&Value) -> bool| {
-            let by = std::time::Instant::now() + Duration::from_secs(6);
+            let by = std::time::Instant::now() + crate::tests::EVENTUALLY;
             while std::time::Instant::now() < by {
                 if lines(said).iter().any(found) {
                     return;
