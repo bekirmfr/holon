@@ -1487,6 +1487,19 @@ pub(crate) fn started_now() -> (u64, std::time::Instant) {
 mod commit_checks {
     use super::*;
 
+    /// Guards: the databases guide counts a contended run's tries as this code does:
+    /// `OPTIMISTIC_ATTEMPTS`, then once more holding the lock.
+    /// Why: the guide said the run runs again "four times", one try more than the code makes
+    /// (audit R49).
+    #[test]
+    fn the_databases_guide_counts_a_runs_tries() {
+        const WORDS: [&str; 11] = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/manual/guides/databases.md");
+        let guide = std::fs::read_to_string(path).unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+        let said = format!("({} tries in all, then once more holding the database", WORDS[OPTIMISTIC_ATTEMPTS as usize]);
+        assert!(guide.contains(&said), "docs/manual/guides/databases.md should say \"{said}\"");
+    }
+
     fn state_of(pairs: &[(&str, f64)]) -> State {
         State::from_values(pairs.iter().map(|(k, v)| (k.to_string(), Value::Number(*v))).collect()).unwrap()
     }

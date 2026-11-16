@@ -210,8 +210,7 @@ tests when run at `f5f3b39`. Most run against the real wasm core, loaded from `e
 missing asset) and `the_built_in_editor_is_served`.
 
 **End to end** (`npm run e2e`, Playwright; CI's `e2e.yml` on main, nightly, and a pull request
-labelled `e2e` or a release's: two shards, `--fully-parallel`, traces kept on failure). Eighteen
-files, 109 tests counted by their `test(` calls; the sweep skips `atlas-notes` and `ledger-watch`
+labelled `e2e` or a release's: two shards, `--fully-parallel`, traces kept on failure). The sweep skips `atlas-notes` and `ledger-watch`
 without `HOLON_TEST_MONGODB` and `HOLON_TEST_POSTGRES`
 ([Resilience §4](../themes/resilience.md), [Testing](../themes/testing.md)).
 
@@ -230,8 +229,7 @@ without `HOLON_TEST_MONGODB` and `HOLON_TEST_POSTGRES`
 - `accounts.e2e.ts`, `home.e2e.ts`, `docs.e2e.ts`: sign-in and roles, the home tab's panes, the
   manual.
 
-**The terminal editor**: `crates/holon/src/workbench/tests.rs`, 41 tests (counted by `#[test]`),
-among them `deploying_shows_what_it_may_do_and_deploys_on_enter` and
+**The terminal editor**: `crates/holon/src/workbench/tests.rs`, among them `deploying_shows_what_it_may_do_and_deploys_on_enter` and
 `a_saved_flow_waits_for_a_person_who_approves_it_from_the_approvals_page`.
 
 Gaps: components drawn only in a browser; the built editor not driven end

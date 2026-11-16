@@ -2094,6 +2094,21 @@ examples:
 mod tests {
     use super::*;
 
+    /// Guards: the command line reference says what `holon verify --help` says a witnessed head
+    /// proves, and what it doesn't.
+    /// Why: the two were written apart; the reference said only that the head is in the export,
+    /// and the usage was corrected without it (audit R49).
+    #[test]
+    fn the_references_head_proves_what_the_usage_says() {
+        let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let usage = words(USAGE);
+        let head = usage.split("--head HEX a head a witness holds: check it is in the export, ").nth(1).expect("the usage's --head");
+        let proves = head[..head.find("--files").expect("--files after --head")].trim_end();
+        let cli = words(&std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/manual/reference/cli.md")).unwrap());
+        let said = format!("`--head` checks that a head a witness holds is in the export, {proves}.");
+        assert!(cli.contains(&said), "docs/manual/reference/cli.md's holon verify should say: {said}");
+    }
+
     /// Guards: what verify says a witnessed head proves names the runs it covers: from the oldest
     /// run in the export to the head's, and, when the log was trimmed to its newest runs, that it
     /// says nothing of the older ones; whether the chain holds there or breaks.
