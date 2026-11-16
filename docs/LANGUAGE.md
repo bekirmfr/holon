@@ -100,7 +100,7 @@ unit.
 | Another flow's action | `import { charge } from "flow:billing"`, then `await charge(x)`: run by the host in-process, answered `{answer, run}` or `{error, message}`, a permission, never a loop | §5.4 |
 | A run that waits | A route answers and is done: what waits (`await event(…)`) is an action, which the route starts by calling it without `await`, `payment(x)`, answered `{run, waiting}` with the token for each point it waits at | §5.4 |
 | Sharing | A binding used twice is one node with two wires; the same expression written twice is two nodes. No common-subexpression elimination | §6.2 |
-| Hash | The lowered DAG's. Binding names, function names, layout and comments are not in it | §7 |
+| Hash | The lowered DAG's. Binding names, function names, layout and comments are not in it; a function's parameter and output names are, as its ports | §7 |
 | Layout | Not in the text. Positions live in the flow document; import lays out automatically | §8 |
 | Diagnostics | `file:line:col: message`; every node keeps its span, so `check`, replay and the agent tools point at the expression | §9 |
 | A canvas the text can't spell | Has no text; the editor says what to change. The wiring form and flows without handlers are gone | §10 |
@@ -159,7 +159,8 @@ pure, and is content-addressed by its bytes), which a flow writes as a `js()` fu
 never a language feature.
 
 **P3. Names are cosmetic, the graph is identity.** A binding name, a function name, a comment, the
-order of independent statements: none of it reaches the hash. Two programs that lower to the same
+order of independent statements: none of it reaches the hash, but for the names a function takes
+and returns, which are its ports. Two programs that lower to the same
 DAG are the same unit, and the printer (§11) writes them identically. `fmt` lays each out as its
 author wrote it (§7).
 
@@ -544,7 +545,9 @@ It draws an approval in steps as its chain, `✓ classifier (scout, invoice, 0.9
 ◻ approver (not open yet)`, each decision on hover, and the run's page, once it is given the
 decision, says each step's decision a line, with the binding that let it.
 
-A waiting run performs nothing, but its progress goes out: the packs it has settled when it parks,
+A waiting run's writes and sends wait for it to finish, though a request or a call it made before
+it parked has gone out (and is answered from its record when it resumes). Its progress goes out
+too: the packs it has settled when it parks,
 the ones that don't wait for the payment, are sent then (and logged with the parked part, its
 `progress`); the rest when it finishes. The resumed part runs again from the start and settles the
 first pack again, the same, and it isn't sent twice. Channels are §5.4 and the live-board sample.
@@ -798,9 +801,10 @@ on.file.created(drop, async (f) => {
 })
 ```
 
-`on.file.created(drop, (f) => { … })` makes the flow run once for each new file in the folder
-`drop`, once the file stops changing: the server looks at the folder every second, by each file's
-size and time, and a file the same at two looks in a row starts a run. In that run `f` is the
+`on.file.created(drop, (f) => { … })` makes the flow run once for each file new or changed in the
+folder `drop`, once the file stops changing: the server looks every second at a folder the OS says
+changed, and at every folder each 30 seconds, by each file's size and time, and a file the same at
+two looks in a row starts a run. In that run `f` is the
 file's handle, `{folder, name, size, hash, modified, event}`: the `file` output of the handler's
 trigger node, `on_file{folder: drop}`, and the deployment asks to run on the folder's files, its
 trigger. Files already there when it is first deployed aren't new; files that arrive while the
@@ -1014,7 +1018,8 @@ route.get("/live", () => updates.subscribe())
 subscribes (`docs/L4s/channels-L4.md`). `updates.send(v)` is an effect,
 `channel_send{channel: updates}(v)`: the pack goes out once the run is over, its writes have
 landed and its record is on disk (a lazy run's within a second), so a subscriber never hears of a
-ticket that wasn't stored, nor of one a power loss took back; a run that fails, or is run again,
+ticket that wasn't stored, nor of one a power loss took back (an `unrecorded` handler's packs go
+out at once, as it keeps no record); a run that fails, or is run again,
 sends nothing. A route answers with `updates.subscribe()`: a 200 whose body is the channel's packs
 as server-sent events (`id: 12.0`, `data: {"at":…,"title":…}`), while the caller stays.
 `subscribe({ from: "kept" })` sends the packs the channel keeps first; a browser's `EventSource`
@@ -1025,7 +1030,8 @@ permission (`ChannelSend("updates")`), and so is letting callers subscribe
 `import ops from "mail:ops"` names a mail an admin bound to an SMTP server, with its sender and
 every address it may send to (`docs/L4s/host-capabilities-L4.md` §5.2.2). `ops.send({ to,
 subject, text })` (and `cc`, `html`, `attachments`) is an effect, `mail_send{mail: ops, to}(m)`,
-sent as a channel's pack is: once the run is over and its record is on disk, from a queue that
+sent as a channel's pack is: once the run is over and its record is on disk (an `unrecorded`
+handler's at once), from a queue that
 tries again for a day. Its `to` parameter is the recipients the call's record writes as text in
 quotes, joined with commas, or `*` when one is computed: the grant names each,
 `MailSend("ops/approvals@acme.com")`, or says `MailSend("ops/*")`, held to the binding's list.
@@ -1124,7 +1130,7 @@ feed sends, one at a time, in the order they came: `e` is the event, its `data` 
 JSON (as here) and its text when it isn't, `event` its name (`"message"` when it gives none) and
 `id` its id, absent when it has none. The host holds the connection and keeps where the feed is: a
 connection lost is opened again from the last event run on (`Last-Event-ID`), an event the feed
-sends again is passed over, and events that come faster than their runs wait, up to the binding's
+sends again, by an id among the last 1,000 run on, is passed over, and events that come faster than their runs wait, up to the binding's
 `--buffer`, before the connection waits too. A new listener starts at what the feed sends from
 now. The grant is `FeedEvent("prices")`, "run on each event from the feed prices"; the page
 listens to the channel the handler sends on, as live-board's does.
@@ -1320,7 +1326,7 @@ its URL and the access key in it the binding's, never the flow's. `on.queue(payo
 { … })` runs for each message the queue holds, one at a time, in the order received: `m.data` is
 its body, a value since it is JSON, `m.id` the queue's id for it, `m.sent` when it was sent. The
 host deletes it once the run's record is on disk, so a crash runs it again rather than losing it,
-and a message it ran already is passed over. `payout_retries.send({ data, group })` is an effect,
+and a message among the last 1,000 it ran is passed over. `payout_retries.send({ data, group })` is an effect,
 `queue_send{queue: payout_retries}(message)`, performed once the run is over and its writes have
 landed: a failed payout goes to a FIFO queue, its group the account, so one account's retries keep
 their order, and its deduplication id is the run's, so a send tried again is taken once.
@@ -1648,8 +1654,8 @@ it reaches it as an input after the item (§5.9): `tax` here.
   Anywhere else a duration is a number of seconds, written as one (`now + 86400`).
 - **Budgets:** a `js()` function's `fuel` and `memory` are a whole number (`1_000_000_000`) or a
   text with its scale (`"50M"`, `"2K"`, `"16MB"`).
-- **Route paths:** a text literal, `/` followed by segments of `[A-Za-z0-9_.-]+` or `:name`, as
-  `parse_path` accepts.
+- **Route paths:** a text literal, `/` followed by segments of `[A-Za-z0-9_.~-]+` or `:name`, the
+  last of which may be a rest, `*name`, as `parse_path` accepts.
 - **Import sources** are text literals of a fixed shape: `"holon"`, `"state"`, `"secret:NAME"`,
   `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"mail:NAME"`,
   `"feed:NAME"`, `"queue:NAME"`, `"host:HOST"`, `"holon:clock"`, `"holon:random"`, `"flow:SLUG"`. An import attribute, `with { optional: "true"
@@ -1733,7 +1739,7 @@ what the flow deploys as; its options are the deploy settings (`Settings`):
 | `keep: { runs: 500, days: 30 }` | How many runs the deployment's log keeps, and for how many days, the limits `keep_runs` and `keep_run_days`; either alone works |
 | `limits: { run_budget_ms: "1m", request_timeout_ms: "50s" }` | Any other limit of the deploy settings, by its name there (`docs/manual/reference/permissions.md`): a `_ms` or `_seconds` limit takes a duration as text or a whole number in its unit, the others a whole number. Below the host's default asks nobody; above it asks for approval, `Limit(run_budget_ms=60000)`, up to the host's ceiling. A `js()` function's fuel and memory are its own options, not a limit |
 | `browsers: ["https://app.example"]` | The web origins allowed to call the flow from a browser (CORS), or `"*"`; one may be written alone, `browsers: "*"` |
-| `taint: ["x-api-key", "number"]` | Keys whose values the host never keeps of the flow's runs, each once, as written. They are a frozen `taint` param of its server unit, written only when there is one, so a version that drops a key is a different unit; a flow without handlers has no server and so none. The editor's deploy settings list them, beside the four every flow taints; a person's review of a version that drops one says so, and an agent's waits for a person, `Untaint("number")` |
+| `taint: ["x-api-key", "number"]` | Keys whose values the host keeps out of what it records of the flow's runs (a value shorter than a secret may be, which can't be told from ordinary text, and a true or false, are kept), each once, as written. They are a frozen `taint` param of its server unit, written only when there is one, so a version that drops a key is a different unit; a flow without handlers has no server and so none. The editor's deploy settings list them, beside the four every flow taints; a person's review of a version that drops one says so, and an agent's waits for a person, `Untaint("number")` |
 | `tags: ["payments"]` | The flow's tags, each lowercase letters, digits and `-`, 1 to 40 of them; kept sorted, once each. They are a frozen `tags` param of its server unit, written only when there is one, so an untagged flow's hash is as it was, and a version that adds a tag is a different unit. Each is an item of its manifest, `Tag("payments")`, which a person approves and the policy never grants: a binding on the tag (`holon bind editor --to bob --tag payments`) covers every flow deployed with it, while it is |
 
 **Handlers start runs.** A flow has one or more, each a call at the top level whose function is
@@ -1774,8 +1780,8 @@ statement in it tied to nothing is an error, as is a handler that does nothing.
 - **A feed handler,** `on.feed(prices, (e) => { … })`, runs for each event the feed `prices`
   imports sends, one at a time, in the order they came; `e` is the event (`.data`, a value when it
   is JSON and its text when it isn't; `.event`, its name, `"message"` when it gives none; `.id`,
-  when it has one), and the host keeps where the feed is, so a connection lost is opened again
-  from the last event run on. One handler a feed; its first argument is an imported feed, and its
+  when it has one), and the host keeps the id of the last event run on and sends it when a lost
+  connection is opened again, so a feed that gives ids goes on from there. One handler a feed; its first argument is an imported feed, and its
   run answers nobody, so a `respond` in it is refused. It lowers to an `on_feed{feed, log}` node,
   its trigger, whose output `event` is the event (a `feed_event{feed}` leaf inside it, sourced:
   `FeedEvent("prices")`).
@@ -1926,8 +1932,9 @@ otherwise a param, frozen into the node (`{ encoding: "hex" }`, `{ limit: 50 }`)
 - A leaf is imported from `"holon"` before it is called: `import { hmac_sha256 } from "holon"`.
 - The one unit with an input and a param of the same name is `default`, and it is never written:
   `??` is its spelling.
-- Too many positional arguments is an error, except on a variadic leaf (`add`, `multiply`, `and`,
-  `or`, `concat`, `list`, `from_codes`), where each extra argument grows the node by one input, named as the
+- Too many positional arguments is an error, except on a variadic leaf (`add`, `multiply`, `max`,
+  `min`, `and`, `or`, `concat`, `list`, `merge`, `from_codes`, `date_utc` and others: core's
+  `VARIADIC` lists them), where each extra argument grows the node by one input, named as the
   canvas names them (`c`, `d`, … then `in<n>`), through `FlowBuilder::arity`; a variadic leaf's
   inputs aren't named.
 - An optional input (`http_request`'s `headers` and `body`, `collection_list`'s `prefix` and
@@ -2130,7 +2137,8 @@ Rules the table implies:
   headers })` around it if it wants, never a status or `?? status(…)` (it answers 200). Elsewhere
   `updates.subscribe()` is an error that says so. A pack is any value with a JSON form, up to the
   deployment's `max_pack_bytes` (64 KiB by default), and a run sends up to `max_packs_per_run`
-  (1,000); a run past either does nothing, and answers 500. Each channel keeps its newest
+  (1,000); a run past either writes and sends nothing, and answers 500 (requests and calls it
+  made before then have gone out). Each channel keeps its newest
   `channel_keep` packs (100) for subscribers that ask; a subscriber that falls `channel_buffer`
   packs behind (256) is ended with `event: missed`, and catches up when it reconnects; one channel
   has up to `max_subscribers` (100). Pausing or stopping the deployment ends its subscriptions with
@@ -2524,7 +2532,7 @@ handler that `await`s, as TypeScript requires.
 |---|---|
 | `return body` | `respond{status: 200, missing: 404}(body)`: text as plain text, anything else as JSON |
 | `return status(201, body)` | `respond{status: 201}` |
-| `return status(code, body)`, `code` computed | `respond{status_input: true}`, its status input wired from `code` (a number out of 100–599 there answers 500) |
+| `return status(code, body)`, `code` computed | `respond{status_input: true}`, its status input wired from `code` (a number out of 200–599 there answers 500) |
 | `return body ?? status(400)` | `respond{missing: 400}`: the status of an absent body (404 when unsaid) |
 | `return status(201, body) ?? status(502)` | `respond{status: 201, missing: 502}` |
 | `return status(204)` | `respond{status: 204}` with no body input |
@@ -2895,13 +2903,14 @@ beyond the nodes' names.
 
 ### 6.8 Types
 
-The nine wire types are core's: `Number`, `Boolean`, `Text`, `Record`, `List<T>`, `Product<…>`,
-`Sum<…>`, `Effect`, `Any`. A flow writes types only on a function's parameters and its return, as
+The ten wire types are core's: `Number`, `Boolean`, `Text`, `Bytes`, `Record`, `List<T>`,
+`Product<…>`, `Sum<…>`, `Effect`, `Any`. A flow writes types only on a function's parameters and its return, as
 TypeScript writes them, and only if it wants them checked:
 
 | TypeScript | Holon |
 |---|---|
 | `number`, `boolean`, `string` | `Number`, `Boolean`, `Text` |
+| `Uint8Array` | `Bytes` |
 | `T[]`, `Array<T>` | `List<T>` |
 | `[A, B]` | `Product<A, B>` |
 | an object type, `{ name: string }`, `Record<string, T>`, an `interface` | `Record` |
@@ -3173,7 +3182,8 @@ the syntax to TypeScript's, keeping the lowering.
    protocol on raw lines, a person's saved flow never replaced, and an end-to-end test where a
    person approves the agent's flow in the real editor and the agent calls and explains it.
    `holon mcp setup` (`docs/L4s/mcp-setup-L4.md`) adds it to a host's own settings file, for
-   21 hosts and any other a person adds, changing only its entry; for a server elsewhere it
+   19 hosts and any other a person adds, changing only its entry (for Goose and JetBrains it
+   says what to add); for a server elsewhere it
    keeps the agent token itself, so no host's file holds one.
 
 8. **Editors** ✅ (2026-10-24, designed in `docs/L4s/language-server-L4.md`). `holon lsp`, a
