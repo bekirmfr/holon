@@ -8642,6 +8642,11 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
     }
     let folder = serde_json::json!({ "name": "notes", "path": dir.display().to_string() });
     assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&folder).unwrap())).status_code, 200);
+    // And a database a row reads by a value computed from the secret: no row has it.
+    let db = std::env::temp_dir().join(format!("holon-whatever-db-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&db).unwrap();
+    let keys = serde_json::json!({ "name": "keys", "path": db.join("keys.db").display().to_string(), "schema": "create table tokens (k text not null)" });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&keys).unwrap())).status_code, 200);
     // (the route, what it does with the secret `k`, what a caller sends given the secret,
     // whether its record marks every value it computed)
     type Sent = fn(&str) -> String;
@@ -8658,6 +8663,17 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         ("answer", "return { header: `Basic ${btoa(k)}` }", nothing, true),
         ("twice", "const got = await host.post(\"/a\", { body: `${btoa(k)}.${btoa(btoa(k))}` })\n  return { status: got.status }", nothing, true),
         ("check", "const ok = secure_equals(req.body, btoa(k))\n  return (ok ? { ok } : undefined) ?? status(401)", |k| holon_core::bytes_text(k.as_bytes(), "base64").unwrap(), true),
+        // Asked across rounds on marks (a call fed one is asked again, R61): a value computed
+        // from the secret after a call's answer; a second call fed a mark and the first's
+        // answer; a database read by a value computed from it (its line's reads answer it).
+        ("after", "const got = await host.get(\"/a\")\n  return { h: btoa(`${k}:${got.status}`) }", nothing, true),
+        (
+            "both",
+            "const got = await host.get(\"/a\")\n  const again = await host.post(\"/a\", { headers: { authorization: `Basic ${btoa(k)}` }, body: String(got.status) })\n  return { status: again.status }",
+            nothing,
+            true,
+        ),
+        ("database", "const row = keys.one(\"select count(*) as n from tokens where k = $1\", btoa(k))\n  return { n: row.n }", nothing, true),
         ("number", "const got = await host.get(\"/a\", { headers: { \"x-n\": String(k.length) } })\n  return { status: got.status }", nothing, false),
         ("bool", "const got = await host.get(\"/a\", { headers: { \"x-live\": String(k.startsWith(\"live_\")) } })\n  return { status: got.status }", nothing, false),
         ("short", "const got = await host.get(\"/a\", { headers: { \"x-start\": k.slice(0, 3) } })\n  return { status: got.status }", nothing, false),
@@ -8691,7 +8707,7 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
     let routes: String = rows.iter().map(|(path, body, _, _)| format!("route.post(\"/{path}\", async (req) => {{\n  {body}\n}})\n\n")).collect::<String>()
         + "route.put(\"/keep\", (req) => {\n  seen[\"last\"] = { n: 1 }\n  return { kept: true }\n})\n";
     let text = format!(
-        "import {{ bytes_to_text, flow, route, secure_equals, sha256, status, text_to_bytes }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\nimport seen from \"collection:seen\"\nimport notes from \"folder:notes\"\n\nflow(\"whatever\", {{ port: 18301 }})\n\n{routes}"
+        "import {{ bytes_to_text, flow, route, secure_equals, sha256, status, text_to_bytes }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\nimport seen from \"collection:seen\"\nimport notes from \"folder:notes\"\nimport keys from \"database:keys\"\n\nflow(\"whatever\", {{ port: 18301 }})\n\n{routes}"
     );
     let slug = deploy_text(&state, &text, &host);
     // Two secrets that differ in every way a row looks at: how long, how they begin.
@@ -8786,6 +8802,7 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&db);
     assert!(wrong.is_empty(), "{}\n{said}", wrong.join("\n"));
     // And nothing of either secret, or of what the rows encode of it, anywhere in the log or
     // an export of it.

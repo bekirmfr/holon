@@ -1690,8 +1690,10 @@ fn rerun(
     kept.extend(folders::written_texts(&host.performed).into_iter().filter_map(|t| carried_text(&Value::Text(t.to_string()))));
     kept.extend(folders::written_bytes(&host.performed).into_iter().filter_map(|b| carried_text(&Value::Bytes(b.to_vec()))));
     let again = std::mem::take(&mut observer.timer.timeline);
+    // Where the line says the run marked every value computed from a secret, the steps it kept
+    // whole for it (`secrets::born`, by the same walk).
     let whole = given_one && !entry.withheld;
-    let steps = steps_of(&entry.timeline, &again, &|path| entry.withheld && fed.derives(path), whole, &kept, !observer.unrecorded.is_empty(), marks, entry.escaped);
+    let steps = steps_of(&entry.timeline, &again, &|path| entry.withheld && fed.derives(path), &|path| whole && fed.holds(path), &kept, !observer.unrecorded.is_empty(), marks, entry.escaped);
     if !steps.whole {
         differs.push("the steps it took (its timeline)");
     }
@@ -2014,7 +2016,16 @@ struct Steps {
 /// the steps a run's view shows, each step's values and why one failed, were the line's say-so
 /// (audit R26).
 #[allow(clippy::too_many_arguments)]
-fn steps_of(logged: &[recorder::NodeTiming], again: &[recorder::NodeTiming], withheld: &dyn Fn(&[u32]) -> bool, whole: bool, kept: &[String], short: bool, marks: &Marks, escaped: bool) -> Steps {
+fn steps_of(
+    logged: &[recorder::NodeTiming],
+    again: &[recorder::NodeTiming],
+    withheld: &dyn Fn(&[u32]) -> bool,
+    kept_whole: &dyn Fn(&[u32]) -> bool,
+    kept: &[String],
+    short: bool,
+    marks: &Marks,
+    escaped: bool,
+) -> Steps {
     let carries_kept = |o: &[Option<SValue>]| serde_json::to_string(o).is_ok_and(|j| kept.iter().any(|t| j.contains(t.as_str())));
     let nothing = |n: &recorder::NodeTiming| n.outputs.as_ref().is_none_or(|o| o.iter().all(Option::is_none));
     let agrees = |l: &recorder::NodeTiming, a: &recorder::NodeTiming| {
@@ -2030,12 +2041,11 @@ fn steps_of(logged: &[recorder::NodeTiming], again: &[recorder::NodeTiming], wit
             (None, None) => true,
             (None, Some(a)) if held || carries_kept(a) => true,
             // A step holding a mark: too large to keep as the run had it (the mark is shorter
-            // than the value). Not where the line says the run marked every value computed from
-            // a secret: such a run kept each step that holds one (`secrets::born`), so one
-            // without is taken out.
-            (None, Some(a)) => a.iter().flatten().map(|v| v.clone().into_core()).any(|v| {
-                marks.carried(&v) && !(whole && (!marks.secrets_in(&v).is_empty() || !marks.rest_of(Marks::DERIVED, &v).is_empty()))
-            }),
+            // than the value). Not a step the line says the run kept whole (`kept_whole`: it
+            // marked every value computed from a secret, and the walk says this step may give
+            // one; `secrets::born` asks the same): one without is taken out. Where the walk says
+            // clean, a mark is a copy a caller sent or a host echoed, and explains it.
+            (None, Some(a)) => !kept_whole(&l.path) && a.iter().flatten().any(|v| marks.carried(&v.clone().into_core())),
             (Some(l), None) => l.iter().flatten().any(|v| marks.carried(&marks.read(v, escaped))),
         };
         let reason = match (&l.reason, &a.reason) {

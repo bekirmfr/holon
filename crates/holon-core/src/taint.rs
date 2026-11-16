@@ -433,6 +433,14 @@ impl SecretFed {
         self.opaque.iter().any(|o| path.starts_with(o) && path.len() > o.len())
     }
 
+    /// Whether the node at `path` may give a secret on any of its outputs, as it is or computed
+    /// from it, or is where the walk follows no steps. A run's record that marks every value
+    /// computed from a secret keeps each such step's outputs (`secrets::born` in holon), and
+    /// `holon verify` refuses a line that says so and keeps none for one.
+    pub fn holds(&self, path: &[u32]) -> bool {
+        self.under_opaque(path) || self.opaque.iter().any(|o| o == path) || self.nodes.get(path).is_some_and(|(_, outs)| outs.iter().any(|t| *t > Taint::Clean))
+    }
+
     /// Whether the node at `path` may produce something computed from a secret: the log keeps
     /// none of its outputs.
     pub fn derives(&self, path: &[u32]) -> bool {
