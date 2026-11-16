@@ -10,6 +10,7 @@ import { describeItem } from "./holon";
 import { lastRun, tookSaid } from "./overview";
 import { getFlow, getManifest, getSummary, type DeploymentEntry, type FlowDocument, type Summary } from "./server";
 import { Spark } from "./ui/Spark";
+import { saidAsText } from "./SecretSaid";
 
 export const STATE_SAID: Record<DeploymentEntry["status"], string> = { running: "live", paused: "paused", stopped: "stopped" };
 export const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -84,7 +85,7 @@ export function SummaryCells({ slug, summary, may }: { slug: string; summary: Su
 export function MayCount({ name, deployed, savedAt, manifestOf }: { name: string; deployed?: DeploymentEntry; savedAt?: number; manifestOf?: (doc: FlowDocument) => { items: string[] } }) {
   const may = useMay(name, deployed, savedAt, manifestOf);
   return (
-    <td className="hl-table__num" title={may && "items" in may ? may.items.map(describeItem).join("\n") : may?.error}>
+    <td className="hl-table__num" title={may && "items" in may ? may.items.map((item) => saidAsText(item, describeItem(item))).join("\n") : may?.error}>
       {may === null ? "…" : "error" in may ? <span className="hl-table__dim">?</span> : may.items.length}
     </td>
   );

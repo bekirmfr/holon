@@ -70,6 +70,8 @@ it may:
   receive requests
   read the secret "slack_webhook_path", and send it to https://hooks.slack.com
   read the secret "stripe_webhook_secret"
+with its secrets:
+  POST /stripe, line 11: sends the secret "slack_webhook_path" to https://hooks.slack.com
 ```
 
 That list is what a deploy asks a person to approve, and all the flow will ever be allowed to do.

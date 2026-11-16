@@ -133,7 +133,8 @@ route.get("/orders/:customer", (req) =>
 - Values go in after the SQL, as `$1`, `$2`, …; never into its text. The count must match.
 - A secret may be one (a licence key, a tenant's key): it goes to the database's server with the
   query, and the approval says so, "read the secret "license_key", and send it to the database
-  "vendor"" (the **license-check** sample). A write can't carry one: the host refuses to keep a
+  "vendor"; what is answered to it goes to its callers" (the **license-check** sample: its route
+  answers with the row). A write can't carry one: the host refuses to keep a
   secret.
 - A name that needs quoting is quoted `"…"`, not `[…]`: brackets are code, as Postgres reads them
   (`array[…]`, `tags[1]`), so what is inside them counts toward the tables too.

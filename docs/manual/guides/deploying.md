@@ -141,14 +141,30 @@ answers are what the database said, as a request's response is what the far side
 answering with them isn't answering with the secret. What a call answers to a request that
 carried a secret (the access token of a token exchange, a service's echo) is followed too, and
 where it goes is said after: "read the secret "client_secret", and send it to
-https://demo.duendesoftware.com; what is answered to it goes to https://httpbin.dev" (the
-**client-credentials** sample). That isn't a permission of its own
+https://demo.duendesoftware.com; what is answered to it goes to its callers and
+https://httpbin.dev" (the **client-credentials** sample). "Its callers" is there because the
+route answers with what came back: a token handed to whoever calls is as good as the secret
+until it expires, and what an API or a database says to a request the secret opened is what the
+secret unlocks. The graph can't tell a token from the rest of an answer, so it says this of any
+of it (a route that returns a chat API's reply, a licence's row) but a response's `status`
+alone. A hash or a signature made
+with a secret (`sha256`, `hmac_sha256`) isn't the secret either, and a flow must be free to sign
+what it sends; but a route that answers `hmac_sha256(key, req.body)` signs whatever its caller
+sends, so where one goes is said the same way: "read the secret "signing_key"; a hash or
+signature made with it goes to its callers" (the **sign-payload** sample), or "… goes to
+https://api.example.com" for a signed request. A route that only says whether a signature matches
+hands out none, and says nothing. Read these lines as you read "send it to": nothing is refused,
+and it is yours to decide whether the callers of that route should hold what it gives them. None
+of this is a permission of its own
 (the hosts are, and the graph fixes which secret goes to which before the flow runs); it is said
 there so you see it when you approve, and when you update a flow whose version moves a key to
 another host. `holon check`, `holon deploy` and the editor's hover on a secret say the same.
 The host holds a run to it: a request that holds a secret's value bound for a host the secret
 isn't shown going to (a key a service echoed back, passed on elsewhere) isn't sent, and answers
-`{status: 0, error: "blocked_secret", message}` naming the secret. `holon verify` checks it from
+`{status: 0, error: "blocked_secret", message}` naming the secret. A secret is never handed to
+another flow: a call to a flow's action whose input holds one, or something computed from one,
+isn't made, and answers `{error: "refused", message}`. So no approval says "send it to the
+flow …". `holon verify` checks it from
 an export (see [Checking runs](checking-runs.md)).
 
 Until a secret is set, the nodes that read it have no value, and what depends on them doesn't
