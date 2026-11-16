@@ -4,7 +4,7 @@
 // deployed with it. The deployment is named after the flow, so there is no separate slug.
 
 import { useEffect, useState, type CSSProperties } from "react";
-import { alwaysTainted, describeItem, manifestTrigger, taintKeyProblem } from "./holon";
+import { alwaysTainted, manifestTrigger, taintKeyProblem } from "./holon";
 import { useDryRun, type DryRunReport } from "./DryRun";
 import { useCan } from "./can";
 import {
@@ -22,6 +22,7 @@ import {
   type SecretInfo,
   type SecretRollbackPreview,
 } from "./server";
+import { Said } from "./SecretSaid";
 
 /** A flow's deploy settings, saved with it. `port` is for a flow with routes (unused without
  *  one). `requirements`: limits away from the host's defaults, and exceptions, which the host
@@ -379,7 +380,7 @@ function OptionalPermissions({
         return (
           <label key={item} style={{ display: "contents" }} title={item}>
             <span style={{ color: unused ? "var(--bad)" : undefined }}>
-              {describeItem(item)}
+              <Said item={item} />
               {unused ? " (no longer used)" : ""}
             </span>
             <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>

@@ -3,7 +3,8 @@
 // The flow posts its client secret to an OAuth server (Duende's public demo IdentityServer) for
 // an access token, then calls an API with that token (httpbin.dev stands in: it says whether a
 // bearer token came). Its approval says both: "read the secret "client_secret", and send it to
-// https://demo.duendesoftware.com; what is answered to it goes to https://httpbin.dev", and the
+// https://demo.duendesoftware.com; what is answered to it goes to its callers and
+// https://httpbin.dev" (the route answers with what the API said to the token), and the
 // canvas marks each request. The token is kept out of the log by its value, as the secret is, and
 // `holon verify` on an export checks every request that carried it went where it was shown.
 //

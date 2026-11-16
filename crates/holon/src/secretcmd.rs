@@ -186,7 +186,7 @@ fn may_go(to: &Value) -> String {
         Some(to) if to.is_empty() => "may go nowhere".into(),
         Some(to) => {
             let to: std::collections::BTreeSet<String> = to.iter().filter_map(Value::as_str).map(String::from).collect();
-            format!("may go only to {}", holon_author::describe::describe_sent_to(&to).0.unwrap_or_default())
+            format!("may go only to {}", holon_author::describe::describe_sent_to(&to).own.unwrap_or_default())
         }
         None => "may go wherever its flows' approvals show".into(),
     }

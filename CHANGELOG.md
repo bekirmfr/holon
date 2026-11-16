@@ -68,6 +68,31 @@
   `json_stringify` of control characters, `uri_encode` and `replace` with a long replacement are
   many times faster.
 
+- **The It may strip is short pills.** Above the canvas, each thing a flow may do is an icon, a
+  small second one for what is done to it (written, read and written, sent on, a run on each
+  one that comes) and its name: `↗ api.example.com`, `orders`, a key and `stripe_key`. Every kind
+  has an icon of its own. The whole sentence, as the approval says it, shows at once in a tip
+  when the pointer is on a pill or the keyboard's focus is, a line for each part of it, and is
+  what a screen reader hears. A thing both read and written is one pill.
+- **A secret's lines stand out wherever what a flow may do is listed.** In the editor, each line
+  of a secret (reading one, where it is sent, where what is answered to it or made with it goes,
+  a route that answers with one) has a 🔑 before it and is in the secret's colour: in the It may
+  strip, the deploy question, a flow's status and settings, the Inspector, the Library and the
+  host's holdings. The canvas's marks on the nodes a secret reaches use the same colour. The It
+  may strip now says where the draft sends each secret, as the approval will, before anything is
+  sent to a server.
+- **The approval says where a hash, a signature or a host's answer made with a secret goes.** A
+  route answering `hmac_sha256(key, req.query.msg)` signs whatever its caller sends, and one
+  answering the token a host gave for a secret hands out a live token; both are clean (a flow
+  must sign what it sends, and use what it is answered), and until now `holon check`, the editor
+  and the approval said only `read the secret "key"`. Each is now followed from where it is made
+  to where it leaves, and said beside the secret's read: "…; a hash or signature made with it
+  goes to its callers", "… goes to https://api.example.com", "…; what is answered to it goes to
+  its callers". `holon check` names the route under "with its secrets:", and the canvas marks
+  the node. Nothing new is refused or withheld. A route that only says whether a signature
+  matches says nothing, and a response's `status` alone isn't counted. Flows that sign a request
+  or answer with what an API answered read one clause longer; the **sign-payload** sample shows
+  it.
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

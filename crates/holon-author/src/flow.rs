@@ -541,10 +541,25 @@ pub fn secret_lines(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, por
                     mark(label, trace, child, crate::describe::describe_answer_sink(&name, sink));
                 }
             }
+            // What is made with it: a hash, a signature.
+            let made = holon_core::taint::SecretFed::made_of_within(handler, &*store, &name, &visits);
+            for (path, sink) in made.sinks() {
+                if let Some(&child) = path.first() {
+                    mark(label, trace, child, crate::describe::describe_made_sink(&name, sink));
+                }
+            }
             if let (true, UnitBody::Composite { edges, .. }) = (*answers, &handler.body) {
+                let answered = holon_core::taint::SecretFed::answers_of_within(handler, &*store, &name, &visits);
                 for e in edges.iter().filter(|e| e.to_child == holon_core::BOUNDARY && e.to_port == response && e.from_child != holon_core::BOUNDARY) {
-                    if fed.output(&[e.from_child], e.from_port as usize) > holon_core::taint::Taint::Clean {
+                    let reaches = |fed: &holon_core::taint::SecretFed| fed.output(&[e.from_child], e.from_port as usize) > holon_core::taint::Taint::Clean;
+                    if reaches(&fed) {
                         mark(label, trace, e.from_child, crate::describe::describe_secret_answer(&name));
+                    }
+                    if reaches(&answered) {
+                        mark(label, trace, e.from_child, crate::describe::describe_answer_answered(&name));
+                    }
+                    if reaches(&made) {
+                        mark(label, trace, e.from_child, crate::describe::describe_made_answered(&name));
                     }
                 }
             }
