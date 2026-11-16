@@ -7,11 +7,11 @@ use crate::*;
 /// router in `route()` unambiguous (no `/` inside a slug could be confused with a path
 /// separator) and avoids any path-traversal-shaped weirdness reaching `strip_prefix`.
 /// Write the whole current deployments table to `path` as a JSON array of `DeploymentRecord`
-/// (write-through — called after every successful deploy/delete, not batched or scheduled).
-/// A no-op for a table kept nowhere. Failures are logged, not fatal — a person's server
-/// keeps working even if the disk write failed; they just won't survive a restart until it
-/// succeeds again, which is the honest degradation for something that was opt-in persistence
-/// to begin with.
+/// (write-through — called after every change to a deployment, not batched or scheduled).
+/// A no-op for a table kept nowhere. A write that fails is said and returned, not fatal: the
+/// server keeps working on what it holds, which won't survive a restart until a write goes
+/// through. A change a person or an agent asked for answers so ([`not_saved`]), never as done
+/// (release audit R59); a caller that answers no one (a tick, an arrival, an expiry) goes on.
 ///
 /// Takes the table's mutex rather than a locked table: the table lock is held only long enough
 /// to copy each deployment's fields and clone its state `Arc`. Each state map is then locked on
@@ -19,9 +19,9 @@ use crate::*;
 /// was held throughout, so one deployment mid-fire (holding its state lock) or one slow disk
 /// write stalled every endpoint and the clock scheduler. `PERSIST` serializes whole
 /// snapshot-and-write passes, so an older snapshot can never land on disk after a newer one.
-pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<String, Deployment>>) {
+pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<(), String> {
     static PERSIST: Mutex<()> = Mutex::new(());
-    let Some(path) = path.at() else { return };
+    let Some(path) = path.at() else { return Ok(()) };
     let _persist = PERSIST.lock().unwrap();
     let records: Vec<DeploymentRecord> = deployments
         .lock()
@@ -89,16 +89,28 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
             }
         })
         .collect();
-    match serde_json::to_vec_pretty(&records) {
-        Ok(bytes) => {
-            // Sealed under the server's keys, owner-only: it holds the flows' documents, grants
-            // and what their waiting runs need.
-            if let Err(e) = crate::at_rest::write_table(path, crate::at_rest::role::DEPLOYMENTS, &bytes) {
-                eprintln!("warning: failed to persist deployments to {path:?}: {e}");
-            }
+    let written = serde_json::to_vec_pretty(&records).map_err(|e| format!("they don't serialize: {e}")).and_then(|bytes| {
+        if crate::faults::failing("the deployments file").is_some() {
+            return Err(crate::faults::error("the deployments file").to_string());
         }
-        Err(e) => eprintln!("warning: failed to serialize deployments: {e}"),
+        // Sealed under the server's keys, owner-only: it holds the flows' documents, grants
+        // and what their waiting runs need.
+        crate::at_rest::write_table(path, crate::at_rest::role::DEPLOYMENTS, &bytes).map_err(|e| e.to_string())
+    });
+    if let Err(e) = &written {
+        eprintln!("warning: failed to persist deployments to {path:?}: {e}");
     }
+    written
+}
+
+/// The answer to `change` (`the pause of "shop"`), which a person or an agent made and which is
+/// in effect, when the deployments file didn't take it (`e`): a 500 saying so, never a 200
+/// (release audit R59). It isn't taken back: undoing a revoke, a pause or a removal would open
+/// again what its maker closed, and undoing the rest would mean undoing what each set going (a
+/// deploy's runs, a resume's listeners); in effect and said not to hold past a restart, the
+/// maker can do it again once the disk takes it.
+pub(crate) fn not_saved(change: &str, e: &str) -> Response {
+    err(500, format!("{change} is in effect now, but not saved: the deployments file couldn't be written ({e}), so it won't hold past a restart until that file can be written"))
 }
 
 /// A waiting run's part that may hold a secret (its inputs, sourced values, requests, tokens,

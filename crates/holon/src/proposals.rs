@@ -336,7 +336,9 @@ pub(crate) fn handle_post_settings(state: &AppState, slug: &str, request: &Reque
         }
         crate::deploy::deployment_entry(slug, dep)
     };
-    persist_deployments(&state.deployments_path, &state.deployments);
+    if let Err(e) = persist_deployments(&state.deployments_path, &state.deployments) {
+        return crate::persist::not_saved(&format!("the change to {slug:?}'s settings"), &e);
+    }
     Response::json(&entry)
 }
 

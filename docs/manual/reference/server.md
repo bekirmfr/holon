@@ -41,6 +41,12 @@ the command that makes it yours alone (`chmod 700 …`); the server leaves it as
 refuses to start when a file with secrets or tokens in it can't be read, rather than starting
 without it.
 
+A change to a deployment (a deploy, a removal, a grant or a revoke, a pause, a stop or a run, its
+settings, its state put back, a decision on a waiting run, the policy reloaded) is written to
+`deployments.json` before it is answered. If the file can't be written (a full disk), the change
+is in effect but isn't saved, and the answer says so with a 500: it won't hold past a restart, so
+make it again once the disk takes it.
+
 To move a server, stop it and copy the data folder, and take its root key: `holon key export --to
 file:PATH` copies it out of the OS key store or `~/.holon/keys`, and the moved server starts with
 `--root-key file:PATH` (see [The root key](#the-root-key)).

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **A change to a deployment that isn't saved says so.** A deploy, a removal, a grant or a revoke,
+  a pause, a stop or a run, a deployment's settings, its state put back, a decision on a waiting
+  run and the policy reloaded each answered 200 even when `deployments.json` couldn't be written,
+  so a revoke or a pause was undone at the next start, and a removal came back, after its maker was
+  told it was done. Each now answers 500 when the file doesn't take it: the change is in effect
+  now, and won't hold past a restart until the file can be written.
 - **Smaller at-rest and record fixes.** A deployment's state head (the hash of its state's
   snapshot) is sealed: in clear, a small state (a counter, a flag) could be confirmed offline by
   guessing it. The server's console no longer says a given-up mail's subject or recipients, or a

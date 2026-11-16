@@ -567,7 +567,7 @@ impl Sweeps {
             }
         }
         if changed {
-            crate::persist_deployments(&state.deployments_path, &state.deployments);
+            let _ = crate::persist_deployments(&state.deployments_path, &state.deployments);
             crate::sync_listeners(state);
         }
     }

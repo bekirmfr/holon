@@ -1299,7 +1299,7 @@ fn sync_to_disk(deployments: &Mutex<BTreeMap<String, Deployment>>, kept_at: &Pla
         counted |= std::mem::take(&mut d.tallies_changed);
     }
     if counted {
-        persist_deployments(kept_at, deployments);
+        let _ = persist_deployments(kept_at, deployments);
     }
     recorder::sync_logs(deployments).and_then(|()| heads::sync())
 }

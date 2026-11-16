@@ -13555,7 +13555,7 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
         levels
     };
     assert_eq!(levels(&state), ["GET /broken unrecorded", "GET /health unrecorded", "POST /notes strict"]);
-    persist_deployments(&state.deployments_path, &state.deployments);
+    persist_deployments(&state.deployments_path, &state.deployments).unwrap();
     let kept: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(state.deployments_path.at().unwrap(), crate::at_rest::role::DEPLOYMENTS)).unwrap();
     let record = kept.as_array().unwrap().iter().find(|r| r["slug"] == slug.as_str()).unwrap();
     assert_eq!(record["tallies"]["GET /health"]["runs"], 3, "{record}");
@@ -13755,7 +13755,7 @@ route.post("/b/:token", () => "ok", { resumes: "b" })
     };
     let waiting = || state.deployments.lock().unwrap()[&slug].parked.clone();
     let part = |run_id: &str| waiting()[run_id].sealed_part.clone().expect("sealed as it parked");
-    let save = || persist_deployments(&state.deployments_path, &state.deployments);
+    let save = || persist_deployments(&state.deployments_path, &state.deployments).unwrap();
     let on_disk = |run_id: &str| -> serde_json::Value {
         let kept: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(state.deployments_path.at().unwrap(), crate::at_rest::role::DEPLOYMENTS)).unwrap();
         let record = kept.as_array().unwrap().iter().find(|r| r["slug"] == slug.as_str()).unwrap().clone();
@@ -14089,7 +14089,7 @@ fn a_run_writes_only_its_state_head_and_only_when_it_changed_the_state() {
     assert_ne!(head(&counter).as_deref(), Some(first.as_str()), "a write keeps its new head");
     assert_eq!(file(), deployed, "and no run rewrote the deployments file");
     assert_eq!(counted(&counter), (5, 0), "the runs are counted in memory");
-    persist_deployments(&state.deployments_path, &state.deployments);
+    persist_deployments(&state.deployments_path, &state.deployments).unwrap();
     assert_eq!(counted(&counter), (5, 5), "and kept with the next change to the definition");
 
     call(&same, "POST", "/k");
@@ -15252,4 +15252,157 @@ fn the_control_plane_admits_so_many_requests_at_once() {
     drop(held);
     assert_eq!(in_flight.load(std::sync::atomic::Ordering::Acquire), 0);
     assert!(crate::Admitted::take(&in_flight, 3).is_some(), "admitted again once they end");
+}
+
+/// Guards: a change to a deployment that a person or an agent asked for (a deploy, a removal, a
+/// grant or a revoke, a pause, a stop, a run, its settings, the policy reloaded, its state put
+/// back, a decision) is never answered as done when the deployments file doesn't take it: a 500
+/// saying it is in effect and won't hold past a restart; with the file written, each answers as
+/// before. And every call that writes the file is one of these, reading its result, or one listed
+/// here that answers no one for a change, whose failure is said and goes on.
+/// Why: the file is what a restart reads. A revoke or a pause it didn't take is undone then, a
+/// removal comes back, and whoever made it was told it was done (release audit R59, the class of
+/// R28's: a write that fails taken as done).
+/// If it fails: a new caller of `persist_deployments` either answers for a change (read its
+/// result; answer `persist::not_saved` when it fails) or answers no one (`let _ =`, listed in
+/// QUIET with why).
+#[test]
+fn a_change_the_deployments_file_didnt_take_is_never_answered_as_done() {
+    // Every caller, as "file function": those that answer for a change, reading the result...
+    const ANSWER: &[&str] = &[
+        "deploy.rs deploy",
+        "deploy.rs handle_delete_deployment",
+        "deploy.rs handle_lifecycle",
+        "deploy.rs handle_post_restore",
+        "durable.rs handle_post_decide",
+        "durable.rs handle_post_decide",
+        "grants.rs change_grant",
+        "grants.rs handle_post_permissions_reload",
+        "proposals.rs handle_post_settings",
+    ];
+    // ...and those that don't, each with why.
+    const QUIET: &[(&str, &str)] = &[
+        ("arrivals.rs fire_one_arrival", "a file's arrival parked a run: no one asked"),
+        ("deploy.rs run_action", "a run that parks, answered for the run, whose effects went out, not for a change"),
+        ("dequeue.rs fire_one_queue", "a queue's message parked a run: no one asked"),
+        ("durable.rs end_unresumable", "a run past its deadline ended: no one asked"),
+        ("durable.rs resume_parked", "a run resumed: an expiry or a request answers no one for it, a decision reads the file's result itself"),
+        ("inbox.rs fire_one_mail", "a mail parked a run: no one asked"),
+        ("listeners.rs serve_flow", "a request's run that parks: the flow's answer, after its effects went out"),
+        ("main.rs sync_to_disk", "the tallies, every second"),
+        ("scheduler.rs fire_one_clock_tick", "a tick parked a run: no one asked"),
+        ("storage.rs act", "the host's room: runs kept as granted again"),
+        ("subscriptions.rs fire_one_feed", "a feed's event parked a run: no one asked"),
+    ];
+    fn calls(dir: &Path, found: &mut Vec<(String, bool)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let file = path.file_name().unwrap().to_string_lossy().to_string();
+            if path.is_dir() {
+                calls(&path, found);
+                continue;
+            }
+            if !file.ends_with(".rs") || file == "tests.rs" {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
+            // Test code (a `#[cfg(test)]` module written inline, to the end of the file) aside; a
+            // module declared there (`mod tests;`) is a file of its own.
+            let inline = |at: &usize| text[*at..].lines().nth(2).is_some_and(|l| l.trim_start_matches("pub(crate) ").starts_with("mod ") && l.trim_end().ends_with('{'));
+            let code = text.match_indices("\n#[cfg(test)]\n").map(|(at, _)| at).find(inline).map_or(&text[..], |at| &text[..at]);
+            let mut function = String::new();
+            for line in code.lines().map(str::trim_start).filter(|l| !l.starts_with("//")) {
+                let head = line.trim_start_matches("pub(crate) ").trim_start_matches("pub ");
+                if let Some(rest) = head.strip_prefix("fn ") {
+                    function = rest.split(['(', '<']).next().unwrap_or_default().to_string();
+                }
+                if line.contains("persist_deployments(") && !line.contains("fn persist_deployments") {
+                    found.push((format!("{file} {function}"), line.starts_with("let _ =")));
+                }
+            }
+        }
+    }
+    let mut found = Vec::new();
+    calls(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut found);
+    fn sorted(mut v: Vec<&str>) -> Vec<&str> {
+        v.sort();
+        v
+    }
+    let answering = sorted(found.iter().filter(|(_, quiet)| !quiet).map(|(at, _)| at.as_str()).collect());
+    assert_eq!(answering, sorted(ANSWER.to_vec()), "the callers that read whether the file took the write");
+    let quiet = sorted(found.iter().filter(|(_, quiet)| *quiet).map(|(at, _)| at.as_str()).collect());
+    assert_eq!(quiet, sorted(QUIET.iter().map(|(at, _)| *at).collect()), "the callers that answer no one for a change");
+
+    // Each change, once with the file failing and once with it written.
+    fn change(what: &str, fails: bool, make: impl FnOnce() -> Response) {
+        if fails {
+            crate::faults::fail("the deployments file", false);
+        }
+        let r = make();
+        crate::faults::heal();
+        let (status, said) = (r.status_code, String::from_utf8_lossy(&body_bytes(r)).into_owned());
+        if fails {
+            assert!(status == 500 && said.contains("is in effect now, but not saved") && said.contains("won't hold past a restart"), "{what}, the file failing: {status} {said}");
+        } else {
+            assert!((200..300).contains(&status), "{what}, the file written: {status} {said}");
+        }
+    }
+    let mut state = test_state_at(unique_temp_path("not-saved").into());
+    let policy = std::path::PathBuf::from(unique_temp_path("not-saved-policy")).with_extension("toml");
+    std::fs::write(&policy, "# the host's policy\n").unwrap();
+    state.policy_path = policy.display().to_string().into();
+    let status = |state: &AppState, slug: &str| state.deployments.lock().unwrap().get(slug).map(|d| d.life.status);
+    let post = |state: &AppState, url: &str, body: serde_json::Value| route(state, &req("POST", url, serde_json::to_vec(&body).unwrap()));
+
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
+    change("a deploy", true, || deploy_json(&state, "w", writer, ack.clone()));
+    assert_eq!(status(&state, "w"), Some(Status::Running), "in effect");
+    change("a deploy", false, || deploy_json(&state, "w", writer, ack.clone()));
+    for text in ["one", "two"] {
+        assert_eq!(put(&state, "w", text).status_code, 200);
+    }
+    change("a revoke", true, || change_grant(&state, "w", serde_json::json!({ "revoke": ["StateWrite(\"k\")"] })));
+    assert_eq!(status(&state, "w"), Some(Status::Paused), "in effect: paused for what it no longer holds");
+    change("a grant", false, || change_grant(&state, "w", serde_json::json!({ "grant": ["StateWrite(\"k\")"] })));
+    change("its settings", true, || post(&state, "/deployments/w/settings", serde_json::json!({ "agents_propose": false })));
+    change("its settings", false, || post(&state, "/deployments/w/settings", serde_json::json!({ "agents_propose": true })));
+    change("the policy reloaded", true, || post(&state, "/permissions/reload", serde_json::json!({})));
+    change("the policy reloaded", false, || post(&state, "/permissions/reload", serde_json::json!({})));
+    change("its state put back", true, || post(&state, "/deployments/w/restore", serde_json::json!({ "run": 1, "state": true })));
+    change("its state put back", false, || post(&state, "/deployments/w/restore", serde_json::json!({ "run": 0, "state": true })));
+    change("a pause", true, || post(&state, "/deployments/w/pause", serde_json::json!({})));
+    assert_eq!(status(&state, "w"), Some(Status::Paused), "in effect");
+    change("a run", false, || post(&state, "/deployments/w/run", serde_json::json!({ "from": "latest" })));
+    change("a stop", true, || post(&state, "/deployments/w/stop", serde_json::json!({})));
+    assert_eq!(status(&state, "w"), Some(Status::Stopped), "in effect");
+
+    let payouts = stage_text(
+        &state,
+        "import { action, approval, flow } from \"holon\"\n\nflow(\"payouts\")\n\nexport const pay = action(async (order) => {\n  const decision = await approval(\"payout\", { expires: \"1h\", people: 2 })\n  return decision.approved\n})\n",
+    );
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"pay\")", "Approval(\"payout/person*2\")"] });
+    assert_eq!(deploy_json(&state, "payouts", payouts, ack).status_code, 200);
+    for amount in [1, 2] {
+        assert!(run_action_named(&state, "payouts", "pay", serde_json::json!({ "amount": amount })).is_success());
+    }
+    let runs = body_json(route(&state, &req("GET", "/deployments/payouts/runs", vec![])))["runs"].as_array().unwrap().clone();
+    let ids: Vec<String> = runs.iter().map(|r| r["run_id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(ids.len(), 2, "{runs:?}");
+    // Two people decide each: the first's decision waits for the second's, which decides it.
+    let People { ada, .. } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let decide = |token: &str, run: &str| route(&state, &req_as(token, "POST", &format!("/deployments/payouts/runs/{run}/decide"), br#"{"name":"payout","approve":true}"#.to_vec()));
+    change("a decision that waits", true, || decide(&ada, &ids[0]));
+    change("a decision that decides", false, || decide(&bob, &ids[0]));
+    change("a decision that waits", false, || decide(&ada, &ids[1]));
+    change("a decision that decides", true, || decide(&bob, &ids[1]));
+
+    let remove = |slug: &str| route(&state, &req_as(&ada, "DELETE", &format!("/deployments/{slug}"), vec![]));
+    change("a removal", true, || remove("w"));
+    assert_eq!(status(&state, "w"), None, "in effect");
+    assert_eq!(route(&state, &req_as(&ada, "POST", "/deployments/payouts/stop", vec![])).status_code, 200);
+    change("a removal", false, || remove("payouts"));
+    let _ = std::fs::remove_file(&policy);
 }

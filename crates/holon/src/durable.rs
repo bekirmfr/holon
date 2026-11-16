@@ -1178,7 +1178,9 @@ pub(crate) fn resume_parked(
             }
         }
     }
-    persist_deployments(deployments_path, deployments);
+    // Said if it fails; a decision reads it again (`handle_post_decide`), an expiry or a request
+    // resuming answers no one for it.
+    let _ = persist_deployments(deployments_path, deployments);
     match run.error.or(not_kept) {
         Some(e) => Err(e),
         None => Ok(()),
@@ -1232,7 +1234,7 @@ fn end_unresumable(deployments: &Mutex<BTreeMap<String, Deployment>>, deployment
     if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&run.tokens), declared) {
         l.said(slug);
     }
-    persist_deployments(deployments_path, deployments);
+    let _ = persist_deployments(deployments_path, deployments);
 }
 
 /// `GET /deployments/<slug>/runs` — the runs waiting in it, without their tokens; each approval
@@ -1516,7 +1518,9 @@ pub(crate) fn handle_post_decide(state: &AppState, slug: &str, run_id: &str, cal
         Err((code, why)) => err(code, why),
         Ok(Outcome::Waits { slot, slots }) => {
             recorded(state, slot);
-            persist_deployments(path, deployments);
+            if let Err(e) = persist_deployments(path, deployments) {
+                return crate::persist::not_saved(&format!("the decision on run {run_id} at {:?}", body.name), &e);
+            }
             Response::json(&reply(slot, &slots, "waiting"))
         }
         Ok(Outcome::Decides { claimed, slot, slots, approved, event }) => {
@@ -1524,6 +1528,11 @@ pub(crate) fn handle_post_decide(state: &AppState, slug: &str, run_id: &str, cal
             let mut answer = reply(slot, &slots, if approved { "approved" } else { "declined" });
             if let Err(e) = resume_parked(&state.store, deployments, path, slug, claimed, &body.name, event) {
                 answer["run_error"] = e.into();
+            }
+            // The resume saved the table as the run went on, and its result went to no one: saved
+            // again here, where the decision is answered by whether it holds.
+            if let Err(e) = persist_deployments(path, deployments) {
+                return crate::persist::not_saved(&format!("the decision on run {run_id} at {:?}", body.name), &e);
             }
             Response::json(&answer)
         }

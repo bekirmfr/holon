@@ -126,8 +126,9 @@ pub(crate) fn change_grant(state: &AppState, slug: &str, change: &ChangeRequest,
         recheck(dep, &caps, &policy, now);
         grant_view(dep)
     };
-    persist_deployments(&state.deployments_path, &state.deployments);
+    let saved = persist_deployments(&state.deployments_path, &state.deployments);
     sync_listeners(state);
+    saved.map_err(|e| crate::persist::not_saved(&format!("the change to {slug:?}'s grant"), &e))?;
     Ok(reply)
 }
 
@@ -167,8 +168,11 @@ pub(crate) fn handle_post_permissions_reload(state: &AppState) -> Response {
             .collect()
     };
     eprintln!("holon: policy reloaded from {:?}", state.policy_path);
-    persist_deployments(&state.deployments_path, &state.deployments);
+    let saved = persist_deployments(&state.deployments_path, &state.deployments);
     sync_listeners(state);
+    if let Err(e) = saved {
+        return crate::persist::not_saved("the policy as reloaded, holding each deployment to it,", &e);
+    }
     let mut reply = permissions_view(&policy);
     reply["attention"] = serde_json::to_value(attention).unwrap_or_default();
     Response::json(&reply)

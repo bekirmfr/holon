@@ -584,7 +584,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
             },
         );
     }
-    persist_deployments(deployments_path, deployments);
+    let saved = persist_deployments(deployments_path, deployments);
     // A binding on a tag covers it from now on as this version is tagged.
     if let Some(accounts) = state.access.accounts() {
         accounts.set_tags(&body.slug, &tags);
@@ -595,6 +595,9 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
         state.proposals.approved(&body.slug, &to_hex(&unit_hash), by);
     }
 
+    if let Err(e) = saved {
+        return crate::persist::not_saved(&format!("the deploy of {:?}", body.slug), &e);
+    }
     Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, version })
 }
 
@@ -1297,7 +1300,9 @@ pub(crate) fn handle_delete_deployment(
             dep.folders.all.logs.forget(slug);
             dep.channels.close();
             dep.sockets.close_all(websockets::REMOVED);
-            persist_deployments(deployments_path, deployments);
+            if let Err(e) = persist_deployments(deployments_path, deployments) {
+                return crate::persist::not_saved(&format!("the removal of {slug:?}"), &e);
+            }
             let mut answer = serde_json::to_value(deployment_entry(slug, &dep)).unwrap_or_default();
             answer["records"] = serde_json::json!(records.map(|p| p.display().to_string()));
             Response::json(&answer)
@@ -1539,7 +1544,7 @@ pub(crate) fn run_action(
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.
     if parked_any {
-        persist_deployments(deployments_path, deployments);
+        let _ = persist_deployments(deployments_path, deployments);
     }
     let ran = |status: u16, reply: serde_json::Value, answer: Option<Value>, waiting: bool, error: Option<String>, why: Option<&'static str>| ActionRan { status, reply, answer, seq, waiting, waiting_at: if waiting { waiting_at.clone() } else { Vec::new() }, error, why };
     // A strict run whose record isn't on disk isn't answered as done: it may not be on record.
@@ -1801,8 +1806,11 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
             Ok(n) => n,
             Err(r) => return r,
         };
-        persist_deployments(&state.deployments_path, &state.deployments);
+        let saved = persist_deployments(&state.deployments_path, &state.deployments);
         state.activity.record("restored state", slug, by);
+        if let Err(e) = saved {
+            return crate::persist::not_saved(&format!("the state {label} left, put back in {slug:?},"), &e);
+        }
         answer["state"] = serde_json::json!({ "from": label, "session": session });
     }
     Response::json(&answer)
@@ -2195,7 +2203,9 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
         dep.grant.paused = false;
         deployment_entry(slug, dep)
     };
-    persist_deployments(&state.deployments_path, &state.deployments);
+    if let Err(e) = persist_deployments(&state.deployments_path, &state.deployments) {
+        return crate::persist::not_saved(&format!("the {action} of {slug:?}"), &e);
+    }
     Response::json(&entry)
 }
 

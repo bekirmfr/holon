@@ -699,7 +699,7 @@ fn fire_one_feed(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deplo
     println!("feed event [{slug}] {label}: {} effect(s) performed", run.performed.len());
     record_trigger(deployments, slug, false);
     if parked_any {
-        persist_deployments(deployments_path, deployments);
+        let _ = persist_deployments(deployments_path, deployments);
     }
     held_for
 }

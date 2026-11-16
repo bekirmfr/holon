@@ -189,7 +189,7 @@ pub(crate) fn fire_one_clock_tick(
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.
     if parked_any {
-        persist_deployments(deployments_path, deployments);
+        let _ = persist_deployments(deployments_path, deployments);
     }
 }
 
