@@ -173,7 +173,7 @@ impl Queue {
                 serde_json::from_str(&text).map_err(|_| Failure::Permanent(format!("{at} answered {action} with something that isn't JSON")))
             }
             Err(ureq::Error::Status(code, answer)) => Err(refused(at, action, code, answer)),
-            Err(ureq::Error::Transport(t)) => Err(Failure::Temporary(format!("{at} can't be reached: {}", t.message().map_or_else(|| t.kind().to_string(), str::to_string)))),
+            Err(ureq::Error::Transport(t)) => Err(Failure::Temporary(format!("{at} can't be reached: {}", crate::outbound::transport_said(&t)))),
         }
     }
 

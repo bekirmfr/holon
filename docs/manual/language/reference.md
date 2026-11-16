@@ -60,7 +60,15 @@ the same flow.
 **How deep.** A text nests at most 128 levels: each bracket, operator and block inside another is
 one, and a flow written to be read nests a few dozen. A deeper one is refused where it passes the
 bound, before anything reads it, and so is a handler whose answer is chosen among more than 128
-returns: name a part of it, with a `const` or a function.
+returns: name a part of it, with a `const` or a function. Each `else` of an `if … else if …`
+chain is a level of the `if` before it. A `/` right after a `}`, an `of` or a `>` that may close
+a type's arguments is refused too, as TypeScript reads it as a division or as a regular
+expression by what the parser made of what came before: put the value it divides, or the
+regular expression, in parentheses. `holon fmt` has a closer bound of its
+own: its layout takes about twice as long for each call inside another call's arguments or a
+template's `${…}`, and more for a function written in place (`xs.map((x) => …)`), so it lays out
+these nested 20 deep at most, a function counting twice and a function's `{ … }` starting again;
+the samples nest 7 at most. Past it fmt says where, and leaves the text as it is: name a part.
 
 ## Imports and settings
 
@@ -1099,3 +1107,5 @@ broken.holon.ts:5:23: unknown name "nope"
 | two routes clash; not a method; not a route path | the route |
 | this isn't wired to the route's request (or the handler's trigger) | the statement |
 | nests more than 128 levels deep; more than 128 returns, or conditions, one after another | where it passes the bound |
+| this `/` reads two ways in TypeScript (after `}`, `of` or a type's `>`) | the `/` |
+| (fmt) calls, templates and functions written in place nest more than 20 in each other | where it passes fmt's bound |

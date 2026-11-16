@@ -155,6 +155,9 @@ pub(crate) struct RunWaits {
     /// Why a read failed the run (a file too big, a folder not bound…), if one did: the run's
     /// error, as it starts (`folders::READ_FAILED`, `databases::READ_FAILED`).
     pub(crate) failed: Option<String>,
+    /// The path of the read that failed it: a secret may have chosen what it asked for, and then
+    /// why it failed is withheld (firing.rs).
+    pub(crate) failed_at: Option<Vec<u32>>,
     /// The keys this attempt holds (claims.rs), and what it needs to claim more; none for a run
     /// without state, a resumed part, or the attempt that runs holding the state's lock.
     pub(crate) claiming: Option<claims::Claiming>,
@@ -196,6 +199,7 @@ impl Waits for RunWaits {
             match self.files.as_mut().map(|f| f.answer(request, true)) {
                 Some(Ok(seen)) => seen,
                 Some(Err(e)) => {
+                    self.failed_at.get_or_insert_with(|| path.to_vec());
                     self.failed.get_or_insert(format!("{}{e}", folders::READ_FAILED));
                     (None, None)
                 }
@@ -205,6 +209,7 @@ impl Waits for RunWaits {
             match self.databases.as_mut().map(|d| d.answer(request)) {
                 Some(Ok(answer)) => (answer, None),
                 Some(Err(e)) => {
+                    self.failed_at.get_or_insert_with(|| path.to_vec());
                     self.failed.get_or_insert(format!("{}{e}", databases::READ_FAILED));
                     (None, None)
                 }
@@ -382,7 +387,7 @@ pub(crate) fn shown_of(
         .map(|w| {
             w.approval.as_ref()?;
             let shown = match &w.shows {
-                Some(_) if run.secret_fed.input(&w.path, 0) == crate::taint::Taint::Derived => Shown::Shows(crate::taint::WITHHELD.into()),
+                Some(_) if run.withholds_input(&w.path, 0) => Shown::Shows(crate::taint::WITHHELD.into()),
                 Some(v) => Shown::Shows(json(v)),
                 None => Shown::Input(json(&input_of(kind, inputs, sourced)?)),
             };
@@ -445,6 +450,46 @@ pub(crate) struct Decided {
 }
 
 impl Decided {
+    /// One as the run is given it (`value`), read back: none for a value that isn't one.
+    fn of(v: &Value) -> Option<Decided> {
+        let Value::Record(r) = v else { return None };
+        let text = |k: &str| match r.get(k) {
+            Some(Value::Text(t)) => Some(t.clone()),
+            _ => None,
+        };
+        let number = |k: &str| match r.get(k) {
+            Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => Some(*n as u64),
+            _ => None,
+        };
+        let kind = match text("kind")?.as_str() {
+            "person" => Kind::Person,
+            "agent" => Kind::Agent,
+            "service" => Kind::Service,
+            _ => return None,
+        };
+        let approved = match r.get("approved") {
+            Some(Value::Boolean(b)) => *b,
+            _ => return None,
+        };
+        let note = match r.get("note") {
+            Some(n) => Some(serde_json::from_str(&holon_core::stringify_json(n)?).ok()?),
+            None => None,
+        };
+        Some(Decided {
+            slot: u8::try_from(number("slot")?).ok()?,
+            who: text("who")?,
+            kind,
+            role: text("role"),
+            at: number("at")?,
+            approved,
+            reason: text("reason"),
+            note,
+            binding: number("binding"),
+            access: number("access"),
+            via: text("via"),
+        })
+    }
+
     /// As the run is given it: `{slot, who, kind, role, at, approved, reason, note, binding,
     /// access, via}`, the role, the reason, the note, what let it and how it came when there are.
     fn value(&self) -> Value {
@@ -599,6 +644,63 @@ impl StoredWaiting {
         Ok(self.decided().then(|| self.decision(false)))
     }
 
+    /// Whether `delivered`, what the approval `name` with `steps` delivered to its run as the
+    /// run's log keeps it, is what its decisions deliver, each taken in the order it came as the
+    /// server takes them (`take`, `Excluded`): on a step there is, open as it came, by a
+    /// principal who decided no step of it before, of the step's kind and role, with the binding
+    /// that let them named (D43); whoever started the run (`starter`, its first part's `by`, when
+    /// that line is here) on a step that takes them alone, and never an agent that started it;
+    /// none after it was decided; and run out (`expired`) only undecided. Why not, if it isn't.
+    /// Left out, as no log holds them: this host's settings (`ApprovalSettings`: whoever deployed
+    /// the version kept out, no agents, no steps for the starter), who answers for each agent and
+    /// service (`Parties`: one party a step, the starter's party kept out with them, the audit's
+    /// R18), and whether each binding was one that let them. Who each principal is is the
+    /// server's account of them.
+    pub(crate) fn decided_as(name: &str, steps: &str, delivered: &Value, starter: Option<&str>) -> Result<(), String> {
+        let Some(parsed) = Steps::parse(steps) else {
+            return Err(format!("{name:?} asks for steps this host can't read ({steps}): nobody decides it"));
+        };
+        let (Value::Record(r), Some(Value::List(decisions))) = (delivered, delivered_field(delivered, "decisions")) else {
+            return Err(format!("what {name:?} delivered isn't a decision"));
+        };
+        let expired = r.get("expired") == Some(&Value::Boolean(true));
+        let excluded = Excluded { starter: starter.map(String::from), ..Default::default() };
+        let mut waiting = StoredWaiting { name: name.to_string(), expires_at: 0, steps: steps.to_string(), decisions: Vec::new(), shown: None };
+        let mut made = None;
+        for (i, d) in decisions.iter().enumerate() {
+            let d = Decided::of(d).ok_or_else(|| format!("decision {i} on {name:?} isn't one the server keeps"))?;
+            if waiting.decided() {
+                return Err(format!("{} decided {name:?} after it was decided", d.who));
+            }
+            {
+                let holds = |_: Option<&str>| d.binding.zip(d.access).map(|(binding, access)| Bound { binding, access });
+                let by = Decider { who: &d.who, kind: d.kind, holds: &holds, via: d.via.as_deref() };
+                if let Some(why) = excluded.excludes(&by, name, &parsed) {
+                    return Err(why);
+                }
+                let slots = waiting.slots();
+                let Some((_, _, slot)) = parsed.slots().nth(usize::from(d.slot)) else {
+                    return Err(format!("{name:?} has {} steps, from slot 0: there is no slot {}", slots.len(), d.slot));
+                };
+                let named = waiting.step_said(&slots, d.slot);
+                excluded.may_fill(&by, slot, &named)?;
+                if d.role != slot.role {
+                    return Err(format!("{} decided {named} as another role's", d.who));
+                }
+            }
+            made = waiting.take(d)?;
+        }
+        if expired {
+            made = (!waiting.decided()).then(|| waiting.decision(true));
+        }
+        match made {
+            Some(v) if v == *delivered => Ok(()),
+            Some(_) => Err(format!("what {name:?} delivered isn't what its decisions deliver")),
+            None if expired => Err(format!("{name:?} says it ran out, and its decisions decided it")),
+            None => Err(format!("{name:?}'s decisions don't decide it")),
+        }
+    }
+
     /// The open steps `by` may fill now, by number: what the decide route would let them take
     /// without naming one. None when the run's `excluded` keeps them out, or they decided a step of
     /// it already, or it is decided; when they started the run, only a step that takes them.
@@ -662,6 +764,14 @@ impl StoredWaiting {
             d.insert("expired".into(), Value::Boolean(true));
         }
         Value::Record(d)
+    }
+}
+
+/// The field `key` of a record.
+fn delivered_field<'v>(v: &'v Value, key: &str) -> Option<&'v Value> {
+    match v {
+        Value::Record(r) => r.get(key),
+        _ => None,
     }
 }
 
@@ -1984,7 +2094,10 @@ mod tests {
     fn decided_by(w: &mut StoredWaiting, excluded: &Excluded, who: &str, decision: Decision) -> Result<(u8, Option<Value>), (u16, String)> {
         let (_, kind, roles) = CAST.iter().find(|(name, ..)| *name == who).unwrap();
         let holds = |role: Option<&str>| role.is_none_or(|r| roles.contains(&r)).then_some(Bound { binding: 1, access: 1 });
-        w.decide(excluded, &Decider { who, kind: *kind, holds: &holds, via: None }, decision)
+        // People decide through this machine's run file: what the run is given says so (`via`),
+        // and `holon verify` reads it back (`decided_as`).
+        let via = (*kind == Kind::Person).then_some("local:bma");
+        w.decide(excluded, &Decider { who, kind: *kind, holds: &holds, via }, decision)
     }
 
     /// **T6** (docs/L4s/approval-steps-plan.md §7): who decides which step of an approval, over a
@@ -1993,7 +2106,8 @@ mod tests {
     /// step takes them). Each row is decisions in turn, each naming its step or not, and taking a
     /// step (and whether that decides it) or refused with its status and sentence; then what the
     /// run is given: its decision, or, undecided, the expiry with the approvals so far
-    /// (`decisions` is T5's).
+    /// (`decisions` is T5's), which `holon verify` takes as a resumed part's line keeps it
+    /// (`decided_as`, audit R26).
     #[test]
     fn each_step_is_decided_in_its_order_by_its_kind_and_role() {
         use serde_json::json;
@@ -2206,6 +2320,11 @@ mod tests {
                 decided |= got.is_ok_and(|(_, decides)| decides);
             }
             let given = w.decision(!decided);
+            // What it delivers, `holon verify` takes, from its steps and who started the run
+            // (`decided_as`): nothing the server decides is said not to be.
+            if Steps::parse(steps).is_some() {
+                assert_eq!(StoredWaiting::decided_as("payout", steps, &given, starter), Ok(()), "{what}: verify takes what it delivers");
+            }
             let mut given: serde_json::Value = serde_json::from_str(&holon_core::stringify_json(&given).unwrap()).unwrap();
             given.as_object_mut().unwrap().remove("decisions");
             assert_eq!(given, want, "{what}");

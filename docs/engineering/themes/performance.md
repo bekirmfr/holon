@@ -23,7 +23,8 @@ In `crates/holon/src` (IP §2 lists all 27 steps with lines):
 1. **hyper** reads the request on a shared tokio runtime (`dataplane.rs`); the CORS origin is
    checked once and passed down (12.3).
 2. **On the pool** (`answer`, `dataplane.rs`): every run goes to the blocking pool
-   (`spawn_blocking`, up to 512 threads), however short; the workers only move bytes. A short
+   (`spawn_blocking`, up to 512 threads), however short, each run in a place of its deployment's
+   share (`max_concurrent_runs`, a 503 past it); the workers only move bytes. A short
    route was answered on its worker once (12.1) and is no more: see
    [Nothing computes on a data-plane worker](#nothing-computes-on-a-data-plane-worker-2026-11-13).
 3. **A snapshot of the deployment** under the table lock (taken about 5 times a request).
@@ -424,6 +425,86 @@ native evaluator as above (`evalbench`, eval under `Budgeted`, before and after 
 work, each round's ratio ranging 0.81 to 1.78: not a measurement to a few percent. The editor's
 wasm wasn't timed.
 
+### The process's memory count (2026-11-15)
+
+The same allocator also counts every thread's bytes into one count for the process, which the
+server holds to `--max-memory` ([resilience](resilience.md), G2b; audit R16): at each allocation
+and free a thread adds to what it hasn't yet added, and once that passes 64 KiB either way it adds
+it to an atomic; a thread's first count arranges, once, for the rest to be added as it ends. A
+round reads the process's count where it reads the clock, and a parser every 4,096 values it
+makes. Callgrind in WSL as [above](#the-step-budget-2026-11-12), `23a4848` against the change;
+instructions a run:
+
+| Route | before | three thread-locals | one |
+|---|---:|---:|---:|
+| `crunch`, 1,000 items | 34.68 M | 35.34 M (×1.019) | 35.10 M (×1.012) |
+| `hello` | 100.9 K | 109.4 K (×1.084) | 105.9 K (×1.049) |
+
+The first version read three thread-locals at each allocation and free: the thread's count, what
+it hadn't added, and whether its ending was arranged. Now the two counts are one thread-local, and
+a thread's first count is found by where what it hasn't added begins (`BEGUN`, far past anything a
+thread moves, so the first count takes the way a count past 64 KiB does), with no flag to read at
+every other. What is left is an add, a compare and a store a count; `hello` allocates for its
+request and its answer and computes little, so it pays most.
+
+### A step is a unit of work (2026-11-15)
+
+A step was a node or an application of a function, whatever its leaf did. A leaf that scans what it
+is handed (`includes`, `index_of`, a text's `replace`) called for each item of a list was the
+square of its work in a count of steps: `ids.filter(x => ids.indexOf(x) === ids.lastIndexOf(x))`
+took 0.49 s at 10,000 ids, 4.6 s at 40,000 and 25.9 s at 100,000 on a release build, inside the
+10 million steps, and the run's time budget, read only after a round that called out, never
+stopped it (audit R14). And no step of a leaf was bounded by anything but the value's own bounds: a
+leaf over large values took up to 4,600 times what a node of two numbers takes, in one step.
+
+**The model** (`primitives::reading`, `making`). A leaf also takes a step for each 32 units of what
+it reads and makes; a unit is a list's item or a record's field, or 4 bytes of a text or bytes,
+about what comparing two numbers takes (3 ns), so a step is of the order of a plain node (100 to
+200 ns). What it reads is by how it reads it: a part (an item, a field, a length, `at` and
+`slice` of a list) is nothing; the outer level of what it moves or counts (`cons`, `keys`,
+`text_length`); each item of a list it scans, against what it looks for; and every level of what
+it walks (compares, hashes, writes). What it makes is charged as copying it whole, at every level,
+with an allocation for each text and a field's place in its record: a value a node answers is its
+own, so one made of a value it was lent is a copy. A value given to it that it builds on (`append`
+or `+` in a `reduce`, `insert` into a record) is neither read nor made: it is charged what it
+adds, so a fold that builds a list stays linear in steps as in time. Weights where a unit is more
+than an item's read: a number written as text (`to_text`, `json_stringify`, `join`, `sort`'s keys)
+is a step, 200 to 600 ns; a number added as a decimal four; a byte of a text a parser reads 2
+units, a key a signature is checked with 16; `sort` and `unique` log₂ n of each item. And a cost a
+leaf sets up whatever it is handed (`gzip`'s tables, 20 µs; public-key arithmetic; a decimal's or
+`number_format`'s digits), and a count it steps through (`business_day_add`'s days, `decimal_div`'s
+digits). What a leaf puts a level down (`list`, `pair`, `append`'s item) it walks to know it nests
+within the bound, given or not, and is charged that walk.
+
+The charge is asked before the leaf reads (refused, the leaf gives nothing and has done nothing)
+and after it makes, in batches (`take_steps`), and only when it is a step or more: a node of small
+values asks nothing more. Measuring a value takes less than the leaf's own walk of it, and is done
+only for the leaves that walk it: a scan of no items doesn't measure what it looks for.
+
+**Held to it** (`no_step_of_a_pure_leaf_takes_more_than_a_few_nodes_work`, audit_leaves.rs): every
+pure leaf, in every form its params give it, over large values alone, in pairs and at every pair of
+its ports, timed against a node of two numbers in the same build; no step may take 32 times it (64
+in a debug build). Before the model, the slowest step was 4,613 times a node; with the outer level
+only, 140; now 18.5, `number_format`'s set-up (a 96 ns node, a 16-core desktop, the sweep 33 s; a debug build 70 s, its slowest under 32). What the sweep found besides the charge, each now doing less: `flat` and
+`copy_within` copied their list before reading a param that refused it; `with_item`, `fill`,
+`to_spliced`, `with_field`, `insert`, `remove` and `merge` copied what they replace or drop (and
+`merge` its first record before seeing the second isn't one); `json_stringify` wrote each control
+character through `format!` (100 ns a byte, now 5) and `uri_encode` each escaped byte through
+`write!` (65 ns); `replace` counted its replacement's length again at each match (2 ms for 64 KiB
+before its bound stopped it); `sort_by` set up its order uncharged.
+
+**The clock.** The round's observer (`Asking`, holon-host) reads the clock every 1,024 steps and at
+each batch a leaf or a function takes; past the run's budget it refuses the step, and the run fails
+for its time, performing nothing. A reading of the clock costs some tens of nanoseconds, so 1,024
+steps apart it is noise. The editor's design mode (wasm) has no clock: there the steps alone bound
+a run, which is what the model is for.
+
+Live, on a release build, the default limits: the scan of 100,000 ids is refused for its steps in
+0.32 s (was 25.9 s), and of 40,000 in 0.33 s (4.6 s); `items.filter((x) => items.includes(x))` over
+80,000 items in 0.05 s (42.7 s); the scan of 10,000 still answers, in 0.2 s, and a `reduce` over
+100,000 in 0.04 s, as before. The scan of 100,000 with `max_steps` at its ceiling (200 million) and
+`run_budget_ms: "1s"` stops at 1.0 s, `the run took longer than 1s`.
+
 ### Nothing computes on a data-plane worker (2026-11-13)
 
 Every run goes to the blocking pool, however short. The shortcut of 12.1, a short route answered
@@ -437,7 +518,9 @@ the others sleep until a task is queued for them, and tokio wakes one only when 
 woke has more than one task to share. A request arrives at the worker watching, so a run answered
 there ran on the one thread watching. The routes kept on the worker (R2) never wait, but they may
 compute: a route that waits on nothing is held only to its round's `max_steps` and `max_fuel`,
-about 0.5–1 s by default in a release build and 10–20 s at the ceilings (before B5, without end).
+about 0.5–1 s by default in a release build and 10–20 s at the ceilings (before B5, without end;
+and a leaf that scanned a list for each of its items went far past it until
+[a step was a unit of work](#a-step-is-a-unit-of-work-2026-11-15)).
 While one computed, no connection was accepted and no byte read on any of the server's ports: one
 request any caller could send stopped every flow on the server from answering. Live, on a release
 build: a route folding 10,000 × 3,000 numbers (about 3 s alone), and a third of the way in, at
@@ -517,7 +600,7 @@ measured against a control build that writes the log in clear (lazy 24,878–25,
 - **Sealed under the log's lock, a whole line:** 14,944–15,820, a third lost. The lock is per
   deployment, and the seal held it. So a line's body (everything after its `seq` and `prev`) is
   sealed before the lock is taken, beside where the line is made (`Made::sealed`, firing.rs), and
-  under it only `r1.<seq>.<prev>.` goes in front (`LineSeal::numbered`). Seq and prev are in clear
+  under it only `r1.<seq>.<prev>.` goes in front (`LineSeal::number`). Seq and prev are in clear
   on disk; the chain hashes the line as made, so one changed breaks it at the next line
   (`a_line_sealed_ahead_opens_to_the_line_that_was_made`). This is §7's fallback, and it took lazy
   back to 21,618–22,440.
@@ -527,9 +610,36 @@ measured against a control build that writes the log in clear (lazy 24,878–25,
   more to read 5 KB. at_rest.rs has a table-driven base64url of its own, held to the core's by
   `base64url_here_is_the_cores`.
 
-What is left is CPU: each line is sealed once and opened once more when a cut-back gzips it into a
-segment. A faster AEAD (the crates pick AVX2 at runtime) or a segment made from the lines still in
-memory would be the next places to look.
+That left lazy 11–14% down, and the seal no longer under the lock. Timed inside it (each piece of
+`push_made` and `LogCell::with`'s wait and hold, instrumented builds of both): lazy is the lock's
+pace, a request waiting 380–520 µs for it and each holding it 32–39 µs before, 38–44 µs after;
+those 6 µs are the whole loss. Before: 31 µs of `push_made`, 22 of them the line's write to the
+file, 4.4 its hash, 1.1 the line made again from its parts. After, 4.4 µs more: about 3 the line
+on disk made under the lock (`r1.` and the sealed body, 5 KB, allocated and copied, then copied
+again with its newline to be written), 1.3 the write a third longer (base64).
+
+- **Nothing made or copied under the lock but the prefix:** a body sealed ahead is framed
+  (`at_rest::Framed`): its sealed text and newline after room for what goes in front of it, the
+  newline after a cut-back too, so under the lock `r1.<seq>.<prev>.` (at most 89 bytes) is written
+  into that room and the buffer written as it is. And the line as made, which the chain hashes, is
+  no longer made again under the lock to be hashed: `chain_hash` hashes its seq and prev, then its
+  body, held to `line_hash` of the line made whole by
+  `a_line_hashed_in_parts_hashes_as_the_line_made_whole` (2026-11-15). Each `push_made`: 30–32 µs
+  against 29–31 before.
+
+Lazy, rounds in turn (2 s warm, 6 s at 16 connections; seven pairs, the machine 50–60% busy):
+
+| | requests a second | new ÷ before |
+|---|---:|---:|
+| before (`7d407fd3`) | 25,376–29,187 | |
+| the line framed | 23,962–26,957 | 0.88–0.96 (six of seven 0.93–0.96) |
+| sealed ahead, as it was | 23,143–25,542 (three rounds) | 0.83–0.88 |
+
+The CPU a request costs the server is up 27–37 µs (the seal, and its open again when a cut-back
+gzips the line into a segment): off the lock now, so it shows only on a machine the server keeps
+busy. The write itself, 20–22 µs of each hold before encryption as after, is the next place to
+look, for every log: a lazy log could keep its newest lines in memory and write them with its
+sync.
 
 ### Limits
 

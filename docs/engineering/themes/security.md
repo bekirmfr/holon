@@ -135,8 +135,8 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   its runs lists only the runs waiting at one they may decide, those points alone (the runs
   route's `Rule::Either`; `durable::waiting_runs`, which `GET /runs/waiting` lists across flows
   through as well, to anyone signed in), each with what it shows, kept at park as the log
-  keeps it: redacted by the log's redactor, withheld when a secret may have made it, past 16 KiB
-  cut down once redacted (a text to its first KiB, a list or record to its first 64 items, each
+  keeps it: redacted by the log's redactor, marked or withheld when a secret may have made it, past
+  16 KiB cut down once redacted (a text to its first KiB, a list or record to its first 64 items, each
   saying how much more; past it still, its size: `durable::bounded`), sealed with the run
   (`durable::shown_of`, the launch review's H6). The console shows it a field a row, each text
   quoted and each row cut at 120 characters (`decisions.ts` `shownSaid`), and the question that
@@ -255,8 +255,9 @@ loopback, RFC 1918, link-local and metadata, CGNAT, NAT64 (and its local-use pre
 an IPv4 address inside IPv4-mapped, IPv4-compatible or 6to4 forms judged as itself, Teredo whole,
 and the rest it lists),
 checked on the addresses DNS returned, in the connection's own resolver, so rebinding can't swap one in.
+A cloud's metadata service is never reached, private addresses granted or not (`is_metadata`).
 The host sets `Host`, length and framing headers itself (`refused_header`). A redirect to another
-host carries only `CARRIED_ELSEWHERE` headers and is refused if it would resend a body
+host carries none of the flow's headers and is refused if it would resend a body
 (`blocked_redirect`). A request carrying a secret's value to a host its approval doesn't show it
 going to isn't sent (`folders::SecretSends`: `blocked_secret`).
 
@@ -278,7 +279,9 @@ going to isn't sent (`folders::SecretSends`: `blocked_secret`).
 - **Redacted**: `Redactor::entry` replaces every literal occurrence in a log entry, current and
   retired values, JSON-escaped forms too, with `‹secret:name v3 #fingerprint›` (a keyed BLAKE3 of
   the value, so which value a run had is told without holding it); what is computed from a secret
-  is withheld (`taint::WITHHELD`); a run's own look-alike of a mark is escaped. Control-plane
+  reads `‹derived #…›` where every such value of the run is a text a mark stands for
+  (`secrets::born`, a keyed hash of each in the entry's `derived`), and is withheld otherwise
+  (`taint::WITHHELD`); a run's own look-alike of a mark is escaped. Control-plane
   replies about a deployment are redacted the same way (`Redactor::json`). A waiting run's
   request is sealed under the same key on disk (`sealed_for_disk`): the vault carries the sealer
   however it is rebuilt (`SecretStore::vault`, `resolve`), and an in-memory store seals under a key
@@ -429,9 +432,29 @@ What is not defended, or only partly:
 - **What a secret chooses is derived from it**: a true or false computed from it (`startsWith`,
   `===`, `has`), and what a leaf gives when a secret is its condition, position or key (`c ? a :
   b`, `list[i]`, `rec[k]`), is withheld in the log, answered or sent only where approved, and
-  never written, as the secret is (taint.rs: `selects`). Only the one-way leaves (`sha256`,
-  `hmac_sha256`, `secure_equals`, `jwt_verify`'s key and clock) and a call's answer give out what
-  they compute from it as clean. What a run's timing says isn't covered: a flow that does more
+  never written, as the secret is (taint.rs: `selects`); which way it chooses what runs shows in
+  the run's steps, as any choice's does: whoever approves the flow reads what it chooses by
+  (`SecretFed::deciders`), and reading a run's steps is a grant of its own; and a route that
+  reads its flow's own data by it asks `SecretAnswer`. Only the one-way leaves (`sha256`,
+  `hmac_sha256`, `secure_equals`, `jwt_verify`'s key and clock), fed the secret whole, and a
+  call's answer give out what they compute from it as clean. Whole is the secret as it is, or
+  spelled another way with nothing chosen out of it (taint.rs: `RECODES`, `Taint::Recoded`: its
+  base64 or hex, its bytes, the JSON it is), so a key kept as base64 signs as the key does and
+  its signature is logged and checked. Fed a part of it (a slice, a
+  character), a one-way leaf's answer is derived: a hash of one character names it, and a
+  comparison of a prefix says how the secret begins. So is where `sort` or `unique` places it.
+  What is clean is still followed where it was made with a secret: a hash or a signature
+  (taint.rs: `MAKES`, `SecretFed::made_of`) and what a host answered a request that carried one
+  (`SecretFed::answers_of`), each to every way out, a route's own callers among them
+  (`sent_secrets`: `made:`, `answer:`, `@callers`), and the approval says where it goes beside
+  the secret's read. Neither is withheld or refused: a route answering `hmac_sha256(k,
+  req.query.msg)` signs what its caller chooses, a route answering a token exchange's answer
+  hands out a live token, and both are a person's to read and approve. A Boolean ends a
+  signature's trail (a flow comparing one a part at a time with what its caller sent would give
+  it away slowly, and nothing says so), and a response's `status` isn't what was answered. One
+  test holds the class (`what_is_made_with_a_secret_and_clean_is_followed_to_every_way_out`):
+  every leaf that gives something clean of a secret is followed or named, and every leaf that
+  does something outside the run is a sink of what is followed. What a run's timing says isn't covered: a flow that does more
   work when a secret's first character is `a` answers later.
 - **A value at the bound leaves a debug build's run thread under twice the room it takes**: a
   route walks a list about 6,000 levels deep end to end on 2 MiB in release, 23 times the bound,
@@ -531,7 +554,7 @@ What is not defended, or only partly:
   (and `0o600`), `a_missing_or_wrong_key_refuses_instead_of_starting_empty`,
   `a_sealed_value_opens_only_where_it_was_sealed` (another slug, name, version or key fails),
   `an_approval_shows_its_deciders_what_the_run_names_or_its_input_as_the_log_keeps_it` (a
-  tainted field redacted, a value made from a secret withheld, past 16 KiB cut down, and past it
+  tainted field redacted, a number made from a secret withheld, past 16 KiB cut down, and past it
   still its size, sealed on disk and listed again after a reload),
   `padding_hides_nothing_beside_it_of_what_an_approval_shows` (a field padded past the bound shows
   its head, the field beside it whole; a secret a cut would run through redacted first),

@@ -194,3 +194,19 @@ export async function answer(page: Page, key: string) {
 export async function enter(page: Page) {
   await answer(page, "Enter");
 }
+
+/** That `holon verify` checked an export (it exited 0: `execFileSync` throws on any other code)
+ * and said so: its report ends on `ok`. A flow whose runs call out is said to, in the summary and
+ * once more after the `ok`, as the last line: what their calls were answered is the log's say-so,
+ * held by the chain (R61). */
+export function expectVerified(said: string, { calledOut }: { calledOut: boolean }): void {
+  const lines = said.trim().split("\n");
+  const runs = String.raw`\d+ runs?: [\d, …]+`;
+  if (calledOut) {
+    expect(said).toMatch(new RegExp(String.raw`^  ${runs} called out: what each call was answered is as recorded, held by the chain alone \(and a witnessed head\)$`, "m"));
+    expect(lines.pop()).toMatch(new RegExp(String.raw`^  \(${runs} called out: what their calls were answered is the log's say-so, held by the chain\)$`));
+  } else {
+    expect(said).not.toContain("called out");
+  }
+  expect(lines.pop()).toBe("ok");
+}

@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use holon_core::Value;
 
-use crate::at_rest::{role, LineSeal};
+use crate::at_rest::{role, Framed, LineSeal};
 use crate::paths::Place;
 use std::borrow::Cow;
 use crate::{PerformedEntry, SValue};
@@ -62,6 +62,23 @@ pub fn keep() -> usize {
 /// A line's hash in the chain, hex.
 pub fn line_hash(line: &str) -> String {
     blake3::hash(line.as_bytes()).to_hex().to_string()
+}
+
+/// The hash of the line numbered `seq` after the line hashed `prev` with `body` ([`Made`]), and
+/// its length, as [`line_hash`] of the line made whole would say, without making it: under the
+/// log's lock, nothing is copied that needn't be (docs/engineering/themes/performance.md).
+pub(crate) fn chain_hash(seq: u64, prev: &str, body: &str) -> (String, usize) {
+    let mut digits = [0u8; 20];
+    let seq = crate::at_rest::decimal(seq, &mut digits);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"{\"seq\":").update(seq);
+    let mut len = 7 + seq.len();
+    if !prev.is_empty() {
+        hasher.update(b",\"prev\":\"").update(prev.as_bytes()).update(b"\"");
+        len += 10 + prev.len();
+    }
+    hasher.update(body.as_bytes());
+    (hasher.finalize().to_hex().to_string(), len + body.len())
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -167,15 +184,41 @@ pub struct LogEntry {
     /// logged none, and `holon verify` stands in the same marks. Absent in entries logged before.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secrets: BTreeMap<String, String>,
+    /// What each secret it was given is held to, by name ([`Committed`]): where its value is
+    /// kept, and a commitment to the value. Beside `secrets`, which stays what a mark reads as.
+    /// Absent in entries logged before, and for a secret whose salt the store couldn't open.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub committed: BTreeMap<String, Committed>,
     /// Whether text the run had looked like a mark the log writes in place of a value it never
     /// holds (`‹secret:name›`, `‹token:name›`), and was escaped: each `‹` of its own before one
     /// written twice, so that a mark is only ever one the log wrote (`secrets::write_marked`).
     /// Absent when nothing was, and in entries logged before look-alikes were escaped.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub escaped: bool,
+    /// Each value the run computed from a secret that its marks stand for (`‹derived #7c1e9a02›`),
+    /// by its whole hash, in hex, in order: `secrets::derived_hash` of the value, keyed by the
+    /// salts of the secrets the run was given and bound to the run's id. A mark is the first
+    /// eight digits of one of these. Whoever later holds the secrets and their salts computes
+    /// the value again and compares; without them it says nothing of the value. Absent when the
+    /// run computed none, and in entries logged before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derived: Vec<String>,
+    /// Whether its record withholds what the run may have computed from a secret: not every such
+    /// value could be marked ([`Born::whole`]: one no mark stands for, a step giving a secret's
+    /// value or one computed from it too large to keep, or computed where the log follows no
+    /// steps), so each step that may compute from one is kept without its outputs
+    /// and a request fed one says `‹withheld›` (`firing::without_secret_derived`). Absent when
+    /// the run computed nothing from a secret, or marked every value it did: then its record
+    /// keeps each such step's outputs, those values as their marks. `holon verify` holds the line
+    /// to what it says, either way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub withheld: bool,
     /// The credentials its calls answered, until the entry is logged (`log_run`): not part of it.
     #[serde(skip)]
     pub answered: AnswerTokens,
+    /// The values it computed from a secret, until the entry is logged: not part of it.
+    #[serde(skip)]
+    pub born: Born,
     /// The mails it sent, through which and each message whole, until the entry is logged and
     /// they are spooled (mails.rs): the log keeps them in `performed`, their attachments by hash.
     #[serde(skip)]
@@ -313,6 +356,43 @@ impl std::fmt::Debug for AnswerTokens {
     }
 }
 
+/// The values a run computed from its secrets (`secrets::born`), each with its hash, on their way
+/// to the redactor that writes a mark for each wherever the run's record holds it: never
+/// serialized, never printed.
+#[derive(Clone, Default)]
+pub struct Born {
+    /// (the value's hash in hex, the value), in the hashes' order.
+    pub values: Vec<(String, String)>,
+    /// Whether these are every value the run computed from a secret: then its record shows what
+    /// is computed from one with each such value as its mark. Otherwise it withholds whole what
+    /// may be computed from one, as a mark can't stand for all of it.
+    pub whole: bool,
+}
+
+impl std::fmt::Debug for Born {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Born({} kept out of sight, whole: {})", self.values.len(), self.whole)
+    }
+}
+
+/// What a run's entry says of one secret it was given, beyond the version and fingerprint
+/// its marks name: enough for whoever is later handed the value and its salt to know it is the
+/// one the run had, and nothing a value can be guessed from.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Committed {
+    /// Where the value is kept: `local` (sealed in the store, one value for a version) or
+    /// `reference` (kept elsewhere, where it can change under one version).
+    pub kind: String,
+    /// `secrets::commitment` of the value: SHA-256 over the secret's owner, name and version,
+    /// the value's salt and the value, in hex. The salt is 32 random bytes sealed in the store,
+    /// so the value can't be guessed from it.
+    pub commitment: String,
+    /// Whether it is the server's own secret, read by a deployment with none of that name: its
+    /// owner in the commitment is then the server (`secrets::SERVER`), not the deployment.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub server: bool,
+}
+
 fn is_zero(n: &u32) -> bool {
     *n == 0
 }
@@ -340,6 +420,12 @@ pub struct LoggedRead {
     /// store when it isn't in `answer`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<LoggedFile>,
+    /// What it asked by (a key, a file's name, a range, a query's parameters) may be computed from
+    /// a secret, and the run's record doesn't mark every value it computed from one: its request
+    /// shows what it read with that withheld (`taint::withhold_read`), and it keeps no answer or
+    /// file, but a database's rows (those are the database's). Nothing can answer it again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub withheld: bool,
 }
 
 /// A file a run read, as its log entry keeps it: what `holon verify` checks a supplied file by.
@@ -431,7 +517,7 @@ pub struct NodeTiming {
     /// Why a module at this node gave nothing (the engine's words: out of fuel, a trap, a js
     /// body's exception), or what a `throw` here said, when it did: what `explain` says beside the
     /// statement. Redacted like the rest of the entry, and withheld at a node that may compute
-    /// with a secret, as its outputs are (`firing::without_secret_derived`).
+    /// with a secret (`firing::without_secret_derived`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -922,7 +1008,7 @@ pub(crate) fn sync_logs(deployments: &crate::sync::Mutex<BTreeMap<String, crate:
 /// field and `prev` (left out when empty) its second; so the line is `{"seq":N`, `,"prev":"H"`
 /// when there is one, and the rest as made: exactly what serializing the numbered entry writes,
 /// so the chain hashes the same bytes. Whatever doesn't start so is made again under the lock.
-pub struct Made(Option<String>, Option<String>);
+pub struct Made(Option<String>, Option<crate::at_rest::Framed>);
 
 impl Made {
     const START: &'static str = "{\"seq\":0,";
@@ -963,7 +1049,7 @@ impl Made {
     }
 
     /// Its body sealed for the file (`seal`), before the log's lock is taken: under it, the line
-    /// on disk is that and its seq and prev ([`LineSeal::numbered`]). Left as it is if it can't be:
+    /// on disk is that and its seq and prev ([`LineSeal::number`]). Left as it is if it can't be:
     /// then the whole line is sealed under the lock, as one not made ahead is.
     pub(crate) fn sealed(self, seal: Option<&LineSeal>) -> Made {
         match (seal, self.body()) {
@@ -1753,43 +1839,53 @@ impl Log {
         entry.prev = self.head.clone();
         // After lines that couldn't be written, made here, saying so.
         entry.lost_since = self.lost_since;
-        let (line, ahead) = if entry.lost_since.is_none() { (made.line(seq, &entry.prev), made.1) } else { (None, None) };
-        let made = line;
-        let line = match made.map_or_else(|| serde_json::to_string(&entry), Ok) {
-            Ok(line) => line,
-            Err(e) => {
-                eprintln!("holon: could not write a flow log entry: {e}");
-                self.unkept(seq);
-                return seq;
+        // The line on disk, framed to be written as it is, sealed for the file (at_rest.rs, §5.1);
+        // and the line as made, which the chain hashes: its hash and its length.
+        let sealing = self.line_seal.is_some();
+        let (mut on_disk, made_len, hash) = match (entry.lost_since, made) {
+            // Its body sealed before the lock was taken (`Made::sealed`): only its seq and prev go
+            // in front, in clear, into the room left for them, and the line as made is hashed in
+            // its parts. Nothing as long as a line is made or copied here: under the lock, a copy
+            // costs every run waiting on it (docs/engineering/themes/performance.md).
+            (None, Made(Some(text), Some(mut framed))) if sealing => {
+                LineSeal::number(&mut framed, seq, &entry.prev);
+                let (hash, len) = chain_hash(seq, &entry.prev, &text[Made::START.len() - 1..]);
+                (framed, len, hash)
+            }
+            (lost_since, made) => {
+                let line = if lost_since.is_none() { made.line(seq, &entry.prev) } else { None };
+                let line = match line.map_or_else(|| serde_json::to_string(&entry), Ok) {
+                    Ok(line) => line,
+                    Err(e) => {
+                        eprintln!("holon: could not write a flow log entry: {e}");
+                        self.unkept(seq);
+                        return seq;
+                    }
+                };
+                let on_disk = match self.line_seal.as_ref().map(|seal| seal.seal(&line)) {
+                    Some(Ok(sealed)) => Framed::of(&sealed),
+                    Some(Err(e)) => {
+                        eprintln!("holon: could not seal a flow log entry: {e}");
+                        self.unkept(seq);
+                        return seq;
+                    }
+                    None => Framed::of(&line),
+                };
+                (on_disk, line.len(), line_hash(&line))
             }
         };
-        // Sealed for the file (at_rest.rs, §5.1); the chain hashes the line as made.
-        let on_disk = match (&self.line_seal, ahead) {
-            // Its body sealed before the lock was taken (`Made::sealed`): only its seq and prev go
-            // in front, in clear.
-            (Some(_), Some(sealed)) => Cow::Owned(LineSeal::numbered(seq, &entry.prev, &sealed)),
-            (Some(seal), None) => match seal.seal(&line) {
-                Ok(sealed) => Cow::Owned(sealed),
-                Err(e) => {
-                    eprintln!("holon: could not seal a flow log entry: {e}");
-                    self.unkept(seq);
-                    return seq;
-                }
-            },
-            (None, _) => Cow::Borrowed(line.as_str()),
-        };
-        let (at, at_ms) = (LineAt { offset: 0, len: on_disk.len(), at_ms: entry.at_ms, seq: entry.seq, prev: entry.prev.clone() }, entry.at_ms);
+        let (at, at_ms) = (LineAt { offset: 0, len: on_disk.line().len(), at_ms: entry.at_ms, seq: entry.seq, prev: entry.prev.clone() }, entry.at_ms);
         self.kept.push_back((entry.seq, entry.at_ms, entry.duration_ms));
         self.note_failed(&entry);
         self.entries.push_back(entry);
-        self.entry_lines.push_back(line.len());
-        self.entry_bytes += line.len() as u64;
+        self.entry_lines.push_back(made_len);
+        self.entry_bytes += made_len as u64;
         self.prune(now_ms());
         // The chain goes on from lines in the file, and the witness is sent only their heads: a
         // line that couldn't be written is said lost by the next that is.
-        match self.keep_line(&on_disk, at) {
+        match self.keep_line(&mut on_disk, at) {
             Ok(()) => {
-                self.head = line_hash(&line);
+                self.head = hash;
                 self.lost_since = None;
                 self.export("run", seq, &self.head, at_ms);
             }
@@ -1815,7 +1911,7 @@ impl Log {
     /// Write the newest entry's `line` (a run at `at_ms`) to the file: appended, or, once the
     /// file would hold twice what the log keeps or its oldest line is past the age it keeps, the
     /// file cut back to what it keeps.
-    fn keep_line(&mut self, line: &str, mut at: LineAt) -> std::io::Result<()> {
+    fn keep_line(&mut self, line: &mut Framed, mut at: LineAt) -> std::io::Result<()> {
         let Some(path) = self.file.clone() else { return Ok(()) };
         #[cfg(test)]
         if self.fail_writes {
@@ -1829,14 +1925,14 @@ impl Log {
         let past = self.written + 1 > 2 * self.keep.min(self.hot) || self.file_aged(now_ms());
         // Cut holding the lock (a log used on its own); one that couldn't keep what it lets go of
         // aside didn't cut, and the line is appended as any is.
-        if past && !self.defer_cuts && self.cut_back(Some((line, at.clone())))? {
+        if past && !self.defer_cuts && self.cut_back(Some((std::str::from_utf8(line.line()).expect("a line is made from a str"), at.clone())))? {
             return Ok(());
         }
         if self.written == 0 {
             self.file_oldest_ms = at.at_ms;
         }
         let after_cut = std::mem::take(&mut self.cut);
-        let text = if after_cut { format!("\n{line}\n") } else { format!("{line}\n") };
+        let text = line.text(after_cut);
         if self.handle.is_none() {
             let new = !path.exists();
             let mut options = std::fs::OpenOptions::new();
@@ -1852,7 +1948,7 @@ impl Log {
             }
             self.handle = Some(file);
         }
-        let bytes = text.as_bytes();
+        let bytes = text;
         #[cfg(test)]
         let bytes = if self.fail_partway { &bytes[..bytes.len() / 2] } else { bytes };
         let (put, wrote) = write_counted(self.handle.as_mut().expect("opened above"), bytes);
@@ -2297,6 +2393,20 @@ mod tests {
     use super::*;
     use crate::at_rest::testing::{open_lines, seal_of, sealed, write_lines};
 
+    /// Guards: the chain's hash of a line made in parts (its seq and prev, then its body) is the
+    /// hash of the line made whole, and its length the line's: with a prev and without, at seq 0
+    /// and the longest.
+    /// Why: under the log's lock the line as made isn't made again, only hashed in its parts
+    /// (`chain_hash`); a hash that differed would break every chain.
+    #[test]
+    fn a_line_hashed_in_parts_hashes_as_the_line_made_whole() {
+        let body = r#","at_ms":1,"answer":"‹a›"}"#;
+        for (seq, prev) in [(0, String::new()), (7, "ab".repeat(32)), (u64::MAX, "cd".repeat(32))] {
+            let whole = crate::at_rest::rejoin(seq, &prev, body);
+            assert_eq!(chain_hash(seq, &prev, body), (line_hash(&whole), whole.len()), "{whole}");
+        }
+    }
+
     fn entry() -> LogEntry {
         LogEntry {
             lines: vec![],
@@ -2334,8 +2444,12 @@ mod tests {
             claims: vec![],
             by: None,
             secrets: BTreeMap::new(),
+            committed: BTreeMap::new(),
             escaped: false,
             answered: AnswerTokens::default(),
+            derived: Vec::new(),
+            withheld: false,
+            born: Born::default(),
             mails: Vec::new(),
             queued: Vec::new(),
         }

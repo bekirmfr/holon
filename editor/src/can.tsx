@@ -208,12 +208,14 @@ export function Gated({ may, children }: { may: Answer; children: ReactNode }) {
 }
 
 // ── what is kept ─────────────────────────────────────────────────────────────────────────────
-/** Each flow's answers ("" for none), with the round they were read in. */
-const kept = new Map<string, { answers: Answers; round: number }>();
+/** Each flow's answers ("" for none), with the round they were read in and when they were asked. */
+const kept = new Map<string, { answers: Answers; round: number; asked: number }>();
 /** The flows being read, by round. */
 const asking = new Set<string>();
 /** Moves on each time what was kept may be out of date. */
 let round = 0;
+/** Counts the reads sent, of answers and of the access version: which was asked before which. */
+let sent = 0;
 const listeners = new Set<() => void>();
 const tell = () => listeners.forEach((l) => l());
 
@@ -234,11 +236,12 @@ function read(flow: string): void {
   if ((now && now.round === round) || asking.has(tag)) return;
   asking.add(tag);
   const at = round;
+  const asked = ++sent;
   mayI([...ACTIONS], flow ? { flow } : {})
     .then(
       (answers) => {
         if (at !== round) return;
-        kept.set(flow, { answers: answers as Answers, round: at });
+        kept.set(flow, { answers: answers as Answers, round: at, asked });
         tell();
       },
       // Not read: kept as it was (nothing disabled before a first answer), asked again next round.
@@ -253,15 +256,23 @@ export const VERSION_EVERY_MS = 15_000;
 /** How often what is kept is read again however the version stands. */
 export const AGAIN_EVERY_MS = 60_000;
 let accessVersion: number | null = null;
+/** When the version kept was asked: an answer to a read asked before it is older, and dropped. */
+let versionAsked = 0;
 let timers: ReturnType<typeof setInterval>[] = [];
 
-/** Read `/auth/me`'s access version: moved since last read, what was kept is forgotten. */
+/** Read `/auth/me`'s access version: moved since last read, what was kept is forgotten. The
+ *  first one answered (the page's first, or one after a sign-in) has nothing to have moved from:
+ *  what was kept is forgotten when it was asked before this read was, access may have moved
+ *  between the two (the page's first version read held up, a binding made, a later one
+ *  answering). Reads asked at once at the start ask the version first, and keep what follows. */
 export async function checkVersion(): Promise<void> {
+  const asked = ++sent;
   try {
     const v = (await whoAmI()).access_version;
-    if (v === undefined) return;
-    const moved = accessVersion !== null && v !== accessVersion;
+    if (v === undefined || asked < versionAsked) return;
+    const moved = accessVersion === null ? [...kept.values()].some((k) => k.asked < asked) : v !== accessVersion;
     accessVersion = v;
+    versionAsked = asked;
     if (moved) forgetCan();
   } catch {
     // signed out, or the server away: read again next time
@@ -311,10 +322,11 @@ export async function canOn(flow: string): Promise<Can> {
   const now = kept.get(flow);
   if (now && now.round === round) return canOf(now.answers);
   const at = round;
+  const asked = ++sent;
   try {
     const answers = (await mayI([...ACTIONS], flow ? { flow } : {})) as Answers;
     if (at === round) {
-      kept.set(flow, { answers, round: at });
+      kept.set(flow, { answers, round: at, asked });
       tell();
     }
     return canOf(answers);
@@ -328,7 +340,9 @@ export function resetCan(): void {
   kept.clear();
   asking.clear();
   round = 0;
+  sent = 0;
   accessVersion = null;
+  versionAsked = 0;
 }
 
 // ── the host's pages ─────────────────────────────────────────────────────────────────────────

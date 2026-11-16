@@ -26,6 +26,7 @@ import { codeHunk, touchHunks, type Hunk } from "./hunks";
 import { Review } from "./Review";
 import { ReplayRuns } from "./ReplayRuns";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
+import { saidAsText } from "./SecretSaid";
 
 type Dialogs = Pick<ReturnType<typeof useDialog>, "confirm" | "prompt">;
 
@@ -159,7 +160,7 @@ export function useDeployFlow({
       ask = preview.needs_approval;
       // Each item says whether the flow can run without it (deploy settings' optional ones).
       const optional = requirements?.optional ?? [];
-      const said = (i: string) => `• ${describeItemSending(i, preview.sent)}${optional.includes(i) ? " (optional: it runs without it)" : ""}`;
+      const said = (i: string) => `• ${saidAsText(i, describeItemSending(i, preview.sent))}${optional.includes(i) ? " (optional: it runs without it)" : ""}`;
       // Someone who may not approve what it asks proposes it: it waits in Approvals.
       const notApproving = can.may("approve");
       proposes = ask.length > 0 && notApproving !== true;

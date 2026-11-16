@@ -354,28 +354,59 @@ impl Answer {
 /// ([`target`]), signed in as [`admin_call`] is: the answer, whatever its status; or, said on
 /// stderr, the exit code to end with when there was none.
 pub(crate) fn send(who: &str, server: Option<&str>, method: &str, path: &str, body: Option<(&str, Vec<u8>)>) -> Result<Answer, i32> {
-    let target = target(server).map_err(|e| {
+    let said = |e: String| {
         eprintln!("{who}: {e}");
         1
-    })?;
-    let Target { server, token, from } = target;
-    let mut request = ureq::request(method, &format!("{server}{path}")).timeout(Duration::from_secs(60));
-    if let Some(token) = &token {
-        request = request.set("Authorization", &format!("Bearer {token}"));
+    };
+    let target = target(server).map_err(said)?;
+    let (status, response) = request(&target, method, path, body.as_ref().map(|(t, b)| (*t, b.as_slice())), Duration::from_secs(60)).map_err(said)?;
+    let Target { server, from, .. } = target;
+    // An answer that can't be read whole is no answer: said, never taken as an empty one (which
+    // a command printed as `null`, and ended 0).
+    match read_answer(response.into_reader(), MAX_ANSWER) {
+        Ok(body) => Ok(Answer { server, status, body, from }),
+        Err(why) => {
+            eprintln!("{who}: {server} answered {status}, and its answer couldn't be read: {why}");
+            Err(1)
+        }
+    }
+}
+
+/// `method` `path` sent to `target`'s server, signed in with its token, given `timeout`: its
+/// status and the answer, whatever the status; or why there is none, told as
+/// [`crate::outbound::said`] tells a failed call, without the token a line break in it would
+/// echo (`HOLON_TOKEN`, a session kept). The one road a command takes to a server, but
+/// `holon deploy`'s and `holon mcp`'s own.
+pub(crate) fn request(target: &Target, method: &str, path: &str, body: Option<(&str, &[u8])>, timeout: Duration) -> Result<(u16, ureq::Response), String> {
+    let mut call = ureq::request(method, &format!("{}{path}", target.server)).timeout(timeout);
+    if let Some(token) = &target.token {
+        call = call.set("Authorization", &format!("Bearer {token}"));
     }
     let answered = match body {
-        Some((content_type, bytes)) => request.set("Content-Type", content_type).send_bytes(&bytes),
-        None => request.call(),
+        Some((content_type, bytes)) => call.set("Content-Type", content_type).send_bytes(bytes),
+        None => call.call(),
     };
-    let (status, response) = match answered {
-        Ok(r) => (r.status(), r),
-        Err(ureq::Error::Status(code, r)) => (code, r),
-        Err(e) => {
-            eprintln!("{who}: can't reach {server}: {e}");
-            return Err(1);
-        }
-    };
-    Ok(Answer { server, status, body: response.into_string().unwrap_or_default(), from })
+    match answered {
+        Ok(r) => Ok((r.status(), r)),
+        Err(ureq::Error::Status(code, r)) => Ok((code, r)),
+        Err(e) => Err(format!("can't reach {}: {}", target.server, crate::outbound::said(&e))),
+    }
+}
+
+/// The most of a server's answer a command reads: a deployment's runs, state or history as JSON,
+/// with the requests' bodies in it. Past it the command says so and fails.
+pub(crate) const MAX_ANSWER: u64 = 1 << 30;
+
+/// A server's answer read whole, as text: or why it couldn't be (it broke off, it isn't text, it
+/// is longer than `most` bytes).
+pub(crate) fn read_answer(from: impl std::io::Read, most: u64) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    from.take(most.saturating_add(1)).read_to_end(&mut bytes).map_err(|e| format!("it broke off ({e})"))?;
+    if bytes.len() as u64 > most {
+        return Err(format!("it is longer than the {} MiB a command reads", most >> 20));
+    }
+    String::from_utf8(bytes).map_err(|_| "it isn't text".to_string())
 }
 
 /// [`target`], given what it reads: testable without a server.
@@ -469,6 +500,41 @@ fn server_from(given: Option<&str>, files: Vec<(PathBuf, RunFile)>, answers: imp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guards: a server's answer is read whole, however long up to the most a command reads, or
+    /// the command is told why it couldn't be: it broke off, it isn't text, it is longer than
+    /// the most. Never an empty answer in its place.
+    /// Why: `send` read with ureq's `into_string`, which stops at 10 MB, and took its error as an
+    /// empty body. `holon runs <slug> --last 10 --json` then printed `null` and ended 0 once
+    /// runs carried large request bodies, as would every command that asks through `send` (runs,
+    /// logs, history, state): a script reading it saw success and nothing.
+    /// If it fails: `send` takes an answer it couldn't read as one, or stops short of `most`.
+    #[test]
+    fn an_answer_is_read_whole_or_said_not_to_be() {
+        /// A reader that gives `n` bytes of `a`, then fails.
+        struct BreaksOff(usize);
+        impl std::io::Read for BreaksOff {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0 == 0 {
+                    return Err(std::io::Error::other("reset"));
+                }
+                let n = self.0.min(buf.len());
+                buf[..n].fill(b'a');
+                self.0 -= n;
+                Ok(n)
+            }
+        }
+        // Past the 10 MB `into_string` stopped at: whole.
+        let long = vec![b'a'; 11 << 20];
+        assert_eq!(read_answer(&long[..], MAX_ANSWER).map(|s| s.len()), Ok(11 << 20));
+        // At the most, whole; a byte past it, said.
+        assert_eq!(read_answer(&b"abcd"[..], 4), Ok("abcd".to_string()));
+        assert!(read_answer(&b"abcde"[..], 4).is_err_and(|e| e.contains("longer than")));
+        assert_eq!(read_answer(&b""[..], 4), Ok(String::new()), "an empty answer is one");
+        // Cut short, or not text: said, and nothing of it taken.
+        assert!(read_answer(BreaksOff(1000), MAX_ANSWER).is_err_and(|e| e.contains("broke off")));
+        assert!(read_answer(&[0xff, 0xfe][..], MAX_ANSWER).is_err_and(|e| e.contains("isn't text")));
+    }
 
     fn file(port: u16) -> (PathBuf, RunFile) {
         let f = RunFile { server: format!("http://127.0.0.1:{port}"), token: format!("hl_{port}"), pid: 1 };

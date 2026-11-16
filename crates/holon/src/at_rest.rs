@@ -182,6 +182,13 @@ const UNB64: [u8; 256] = {
 
 fn b64(bytes: &[u8]) -> String {
     let mut out = Vec::with_capacity(bytes.len().div_ceil(3) * 4);
+    b64_into(bytes, &mut out);
+    String::from_utf8(out).expect("base64url is ASCII")
+}
+
+/// `bytes` in base64url, unpadded, written at the end of `out`.
+fn b64_into(bytes: &[u8], out: &mut Vec<u8>) {
+    out.reserve(bytes.len().div_ceil(3) * 4);
     let mut chunks = bytes.chunks_exact(3);
     for c in &mut chunks {
         let n = u32::from(c[0]) << 16 | u32::from(c[1]) << 8 | u32::from(c[2]);
@@ -192,7 +199,6 @@ fn b64(bytes: &[u8]) -> String {
         [a, b] => out.extend_from_slice(&[B64[usize::from(a >> 2)], B64[usize::from(a & 3) << 4 | usize::from(b >> 4)], B64[usize::from(b & 15) << 2]]),
         _ => {}
     }
-    String::from_utf8(out).expect("base64url is ASCII")
 }
 
 /// The bytes `text` encodes, unpadded base64url; none for any other character, a length no
@@ -622,10 +628,18 @@ impl Keyring {
     }
 
     /// A run log line's body (all but its seq and the hash before it) sealed under `scope` for
-    /// `role`, before they are known: `<version>.<base64url>`.
-    pub(crate) fn seal_body(&self, scope: &str, role: &str, body: &[u8]) -> Result<String, String> {
+    /// `role`, before they are known: `<version>.<base64url>` and its newline, framed with room in
+    /// front for them ([`LineSeal::number`]).
+    pub(crate) fn seal_body(&self, scope: &str, role: &str, body: &[u8]) -> Result<Framed, String> {
         let (version, key) = self.current(scope)?;
-        Ok(format!("{version}.{}", b64(&seal_with(&key, body_aad(scope, version, role).as_bytes(), body))))
+        let sealed = seal_with(&key, body_aad(scope, version, role).as_bytes(), body);
+        let mut buf = Vec::with_capacity(ROOM + 11 + sealed.len().div_ceil(3) * 4 + 1);
+        buf.resize(ROOM, b' ');
+        buf.extend_from_slice(version.to_string().as_bytes());
+        buf.push(b'.');
+        b64_into(&sealed, &mut buf);
+        buf.push(b'\n');
+        Ok(Framed { buf, start: ROOM })
     }
 
     /// A body sealed by [`Keyring::seal_body`] (`<version>.<base64url>`), opened.
@@ -686,6 +700,58 @@ fn line_aad(scope: &str, version: u32, role: &str) -> String {
 
 fn body_aad(scope: &str, version: u32, role: &str) -> String {
     format!("r1\0{scope}\0{version}\0{role}")
+}
+
+/// The most a numbered line's front takes: the newline a line after a cut-back starts with, `r1.`,
+/// a seq (at most 20 digits), `.`, the hash of the line before (64 hex digits) and `.`.
+const ROOM: usize = 1 + NUMBERED.len() + 20 + 1 + 64 + 1;
+
+/// A line for a log's file, framed to be written as it is: `buf[start..]` is the line and its
+/// newline, with room before it for what goes in front under the log's lock (a body sealed ahead's
+/// seq and prev, and the newline after a cut-back), so nothing is made or copied there but that.
+pub(crate) struct Framed {
+    buf: Vec<u8>,
+    start: usize,
+}
+
+impl Framed {
+    /// `line` as it is, with room for a newline before it.
+    pub(crate) fn of(line: &str) -> Framed {
+        let mut buf = Vec::with_capacity(line.len() + 2);
+        buf.push(b'\n');
+        buf.extend_from_slice(line.as_bytes());
+        buf.push(b'\n');
+        Framed { buf, start: 1 }
+    }
+
+    /// The line, without its newline.
+    pub(crate) fn line(&self) -> &[u8] {
+        &self.buf[self.start..self.buf.len() - 1]
+    }
+
+    /// What is written: the line and its newline, after a newline if `after_cut` (the line a
+    /// cut-back left short ended).
+    pub(crate) fn text(&mut self, after_cut: bool) -> &[u8] {
+        if after_cut {
+            self.buf[self.start - 1] = b'\n';
+            &self.buf[self.start - 1..]
+        } else {
+            &self.buf[self.start..]
+        }
+    }
+}
+
+/// `n` in decimal, at the end of `buf`.
+pub(crate) fn decimal(n: u64, buf: &mut [u8; 20]) -> &[u8] {
+    let (mut n, mut at) = (n, buf.len());
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            return &buf[at..];
+        }
+    }
 }
 
 /// A run log's line from its seq, the hash of the line before (hex, empty for none) and its body
@@ -911,14 +977,31 @@ impl LineSeal {
     }
 
     /// A run log line's body (from the `,` after its seq and prev) sealed before they are known,
-    /// so outside the log's lock: for [`LineSeal::numbered`] under it.
-    pub(crate) fn seal_body(&self, body: &str) -> std::io::Result<String> {
+    /// so outside the log's lock: for [`LineSeal::number`] under it.
+    pub(crate) fn seal_body(&self, body: &str) -> std::io::Result<Framed> {
         self.keys.seal_body(&self.scope, &self.role, body.as_bytes()).map_err(std::io::Error::other)
     }
 
-    /// The line on disk for a body sealed ahead: its seq and prev in clear before it.
-    pub(crate) fn numbered(seq: u64, prev: &str, sealed_body: &str) -> String {
-        format!("{NUMBERED}{seq}.{prev}.{sealed_body}")
+    /// A body sealed ahead made the line on disk: its seq and prev in clear before it
+    /// (`r1.<seq>.<prev>.`), written into the room left in front of it, so under the log's lock
+    /// nothing is made or copied but those (docs/engineering/themes/performance.md).
+    pub(crate) fn number(framed: &mut Framed, seq: u64, prev: &str) {
+        let mut digits = [0u8; 20];
+        let parts = [NUMBERED.as_bytes(), decimal(seq, &mut digits), b".", prev.as_bytes(), b"."];
+        let len: usize = parts.iter().map(|p| p.len()).sum();
+        if len >= framed.start {
+            // A prev longer than a hash (none is): made again, with room.
+            let rest = framed.buf[framed.start..].to_vec();
+            framed.buf = vec![b' '; len + 1];
+            framed.buf.extend_from_slice(&rest);
+            framed.start = len + 1;
+        }
+        let mut at = framed.start - len;
+        for p in parts {
+            framed.buf[at..at + p.len()].copy_from_slice(p);
+            at += p.len();
+        }
+        framed.start -= len;
     }
 
     /// A line as it is on disk, opened: none if it doesn't (cut short as it was written, changed,
@@ -1328,15 +1411,22 @@ mod tests {
         let keys = std::sync::Arc::new(Keyring::memory());
         let seal = LineSeal::with(std::sync::Arc::clone(&keys), &deployment("shop"), role::LOG);
         let body = r#","at_ms":1,"answer":"a secret answer"}"#;
-        let sealed = seal.seal_body(body).unwrap();
+        let numbered = |seq: u64, prev: &str| {
+            let mut framed = seal.seal_body(body).unwrap();
+            LineSeal::number(&mut framed, seq, prev);
+            assert_eq!(framed.text(false).last(), Some(&b'\n'));
+            assert_eq!(framed.text(true)[0], b'\n', "room for the newline after a cut-back");
+            String::from_utf8(framed.line().to_vec()).unwrap()
+        };
         let prev = "ab".repeat(32);
-        let line = LineSeal::numbered(7, &prev, &sealed);
+        let line = numbered(7, &prev);
         assert!(line.starts_with(&format!("r1.7.{prev}.1.")) && !line.contains("secret"), "{line}");
         assert_eq!(seal.open(&line).unwrap(), rejoin(7, &prev, body));
         assert_eq!(rejoin(7, &prev, body), format!(r#"{{"seq":7,"prev":"{prev}","at_ms":1,"answer":"a secret answer"}}"#));
-        assert_eq!(seal.open(&LineSeal::numbered(0, "", &sealed)).unwrap(), format!(r#"{{"seq":0{body}"#), "the first line has no prev");
+        assert_eq!(seal.open(&numbered(0, "")).unwrap(), format!(r#"{{"seq":0{body}"#), "the first line has no prev");
+        assert_eq!(seal.open(&numbered(u64::MAX, &prev)).unwrap(), rejoin(u64::MAX, &prev, body), "the longest seq fits the room");
         // Changed in clear: another line, so another hash.
-        let moved = seal.open(&LineSeal::numbered(8, &prev, &sealed)).unwrap();
+        let moved = seal.open(&line.replacen("r1.7.", "r1.8.", 1)).unwrap();
         assert_ne!(moved, rejoin(7, &prev, body));
         assert_eq!(seal.open(&line.replacen(&prev, &"cd".repeat(32), 1)).unwrap(), rejoin(7, &"cd".repeat(32), body));
         assert!(seal.open(&line.replacen(&prev, "not-hex", 1)).is_none(), "a prev that isn't a hash");

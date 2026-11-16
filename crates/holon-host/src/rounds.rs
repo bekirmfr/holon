@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use holon_core::{
-    eval_observed, hash_value, Answer, Budgeted as Budget, Capability, Hash, Observer, Resolver, Slot, Unit, Value, DEFAULT_MAX_FUEL, DEFAULT_MAX_MEMORY, DEFAULT_MAX_STEPS,
+    eval_observed, hash_value, memory, Answer, Budgeted as Budget, Capability, Hash, Observer, Resolver, Slot, Unit, Value, DEFAULT_MAX_FUEL, DEFAULT_MAX_MEMORY, DEFAULT_MAX_STEPS,
     MAX_FUEL_CEILING, MAX_MEMORY_CEILING, MAX_STEPS_CEILING,
 };
 
@@ -42,7 +42,8 @@ use crate::{perform_effects, Host, SourcedResolver};
 pub struct Limits {
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
-    /// The whole run, every round and request included.
+    /// The whole run, every round and request included: read as a round steps, so a round that
+    /// only computes stops at it as one that sends requests does.
     pub run_budget: Duration,
     /// Outbound requests per run, over all rounds.
     pub max_requests: usize,
@@ -57,8 +58,10 @@ pub struct Limits {
     /// How long a run's commit may wait for the commit locks on the shared resources it read or
     /// writes, which other runs' commits hold for milliseconds.
     pub commit_wait: Duration,
-    /// Steps each round may take (`Observer::step`): counted, so the same round takes the same
-    /// number wherever it runs, and a round past it fails the run however fast the machine.
+    /// Steps each round may take (`Observer::step`): each node, each item a function is applied
+    /// to, and a step for each 32 items or 128 bytes a leaf reads or makes. Counted, so the same
+    /// round takes the same number wherever it runs, and a round past it fails the run however
+    /// fast the machine.
     pub max_steps: u64,
     /// Fuel (instructions) each round's js and module calls may burn in all
     /// (`Observer::take_fuel`): each call runs on its own budget or what is left of this, the
@@ -170,6 +173,10 @@ pub enum RunError {
     FuelBudget { max: u64 },
     /// A round came to hold more memory than its limit (`max_memory`).
     MemoryBudget { max: u64 },
+    /// The server came to hold more than it may in all (`--max-memory`,
+    /// [`memory::set_process_cap`](holon_core::memory::set_process_cap)) as a round ran: every
+    /// run's together, so the run fails, as for its own budget, and the server goes on.
+    ServerMemory { cap: u64 },
 }
 
 impl RunError {
@@ -182,12 +189,15 @@ impl RunError {
             RunError::StepBudget { max } => format!("{STEP_BUDGET}{max} steps in one round (max_steps)"),
             RunError::FuelBudget { max } => format!("{STEP_BUDGET}{max} instructions of js and module code in one round (max_fuel)"),
             RunError::MemoryBudget { max } => format!("{STEP_BUDGET}{max} bytes of memory in one round (max_memory)"),
+            RunError::ServerMemory { cap } => {
+                format!("{STEP_BUDGET}its share of the server's memory: the server held more than the {cap} bytes it may (--max-memory)")
+            }
         }
     }
 }
 
 /// What the error of a run whose round took more steps, more of its modules' fuel or more memory
-/// than its limit starts with.
+/// than its limit starts with, or that ran as the server held more memory than it may.
 pub const STEP_BUDGET: &str = "the run took more than ";
 
 /// What a run produced: its outputs (all absent if it failed), the requests each round made,
@@ -233,6 +243,12 @@ pub enum Claim {
 pub trait Waits {
     /// The event delivered to waiting point `name`, if one has been.
     fn event(&self, name: &str) -> Option<Value>;
+    /// The event delivered to the waiting point `at` as the run reaches it: by default, the one
+    /// delivered to its name (`event`). A host that holds what was delivered to what waits there
+    /// (`holon verify`: an approval's decisions to the steps it asks for) sees the point whole.
+    fn event_at(&mut self, at: &Waiting) -> Option<Value> {
+        self.event(&at.name)
+    }
     /// The token that resumes waiting point `name`: the same every time this run asks.
     fn token(&mut self, name: &str) -> String;
     /// The answer to a collection read (`{collection, get}` or `{collection, list}`), from the
@@ -284,6 +300,9 @@ pub fn run_rounds(
     prior: &[Round],
 ) -> RunOutcome {
     let started = Instant::now();
+    // The run's time runs out at its budget's end, inside a round as between them: a round that
+    // computes and sends nothing reads the clock as it steps ([`Asking::late`]).
+    let deadline = started.checked_add(limits.run_budget);
     let resolver = SourcedResolver::lent(sourced.iter().map(|(cap, value)| (cap, *value)), real);
     let mut answers: BTreeMap<(Vec<u32>, Hash), Value> = prior
         .iter()
@@ -307,15 +326,31 @@ pub fn run_rounds(
             waits: &mut *waits,
             waiting: Vec::new(),
             budget: Budget::new(limits.max_steps).with_fuel(limits.max_fuel).with_memory(limits.max_memory),
+            deadline,
+            late: false,
+            clock_in: CLOCK_EVERY,
         };
+        // The round's thread is held to its budget, and the process to its cap, by a leaf that
+        // makes many values in a step as by the steps ([`memory::room`]).
+        let hold = memory::Hold::new(asking.budget.at_most);
         let outputs = eval_observed(root, inputs, &resolver, &mut asking).into_vec();
+        let stopped = memory::stopped();
+        drop(hold);
+        if asking.late {
+            return fail(rounds, RunError::TimeBudget { budget: limits.run_budget });
+        }
         if asking.budget.exhausted {
             return fail(rounds, RunError::StepBudget { max: limits.max_steps });
         }
         if asking.budget.out_of_fuel {
             return fail(rounds, RunError::FuelBudget { max: limits.max_fuel });
         }
-        if asking.budget.out_of_memory {
+        if stopped == Some(memory::Over::Process) {
+            return fail(rounds, RunError::ServerMemory { cap: memory::process_cap() });
+        }
+        // A leaf stopped for the round's own memory as the round's last node: no step came after
+        // it to say so.
+        if asking.budget.out_of_memory || stopped == Some(memory::Over::Round) {
             return fail(rounds, RunError::MemoryBudget { max: limits.max_memory });
         }
         let (pending, waiting) = (asking.pending, asking.waiting);
@@ -395,6 +430,33 @@ struct Asking<'a, O: Observer, W: Waits> {
     waiting: Vec<Waiting>,
     /// The round's steps, its modules' fuel and the memory it holds, counted afresh each round.
     budget: Budget,
+    /// When the run's time is up ([`Limits::run_budget`] from its start): none when it never is.
+    deadline: Option<Instant>,
+    /// Whether a step found the run's time up: that step, and every one after it, was refused,
+    /// and the run fails for its time.
+    late: bool,
+    /// Steps until the clock is read again ([`CLOCK_EVERY`]).
+    clock_in: u32,
+}
+
+/// The steps a round takes one at a time between readings of the clock. Each is a node of the
+/// round (a leaf's work is steps of its own, taken a batch at a time, and the clock is read at
+/// each batch, [`Asking::take_steps`]), so the time past a run's budget is a few of these at
+/// most: a hundred microseconds or so, against a reading of the clock costing some tens of
+/// nanoseconds.
+const CLOCK_EVERY: u32 = 1024;
+
+impl<O: Observer, W: Waits> Asking<'_, O, W> {
+    /// Whether the run's time is up: read from the clock, and once it is, for good. A round
+    /// that only computes reads it as it steps, so `run_budget` bounds it as it bounds a round
+    /// that sends requests, whatever its steps ([`Limits::max_steps`] is a count, the same
+    /// wherever the round runs; this is the time it takes here).
+    fn late(&mut self) -> bool {
+        if !self.late && self.deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            self.late = true;
+        }
+        self.late
+    }
 }
 
 /// A text field of a request record.
@@ -410,9 +472,23 @@ fn text_field<'v>(request: &'v Value, key: &str) -> Option<&'v str> {
 
 impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
     fn step(&mut self) -> bool {
+        self.clock_in = match self.clock_in.checked_sub(1) {
+            Some(left) if !self.late => left,
+            _ if self.late() => return false,
+            _ => {
+                // With the clock, the process's memory: past its cap, the budget refuses this
+                // step and every one after it (`Budgeted` reads `memory::stopped`).
+                memory::room();
+                CLOCK_EVERY
+            }
+        };
         self.budget.step()
     }
     fn take_steps(&mut self, want: u32) -> u32 {
+        if want > 0 && self.late() {
+            return 0;
+        }
+        memory::room();
         self.budget.take_steps(want)
     }
     fn give_back(&mut self, steps: u32) {
@@ -444,21 +520,22 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
     }
     fn answer(&mut self, path: &[u32], request: &Value) -> Answer {
         if let Some(name) = text_field(request, "await") {
-            let event = self.waits.event(name);
+            let number = |key: &str| match request {
+                Value::Record(r) => match r.get(key) {
+                    Some(Value::Number(n)) => Some(*n as u64),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let expires = number("expires").unwrap_or(holon_core::MAX_AWAIT_SECONDS);
+            let shows = match request {
+                Value::Record(r) => r.get("shows").cloned(),
+                _ => None,
+            };
+            let at = Waiting { name: name.to_string(), expires, approval: text_field(request, "steps").map(str::to_string), shows, path: path.to_vec() };
+            let event = self.waits.event_at(&at);
             if event.is_none() && !self.waiting.iter().any(|w| w.name == name) {
-                let number = |key: &str| match request {
-                    Value::Record(r) => match r.get(key) {
-                        Some(Value::Number(n)) => Some(*n as u64),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                let expires = number("expires").unwrap_or(holon_core::MAX_AWAIT_SECONDS);
-                let shows = match request {
-                    Value::Record(r) => r.get("shows").cloned(),
-                    _ => None,
-                };
-                self.waiting.push(Waiting { name: name.to_string(), expires, approval: text_field(request, "steps").map(str::to_string), shows, path: path.to_vec() });
+                self.waiting.push(at);
             }
             // An event not yet delivered is not yet: what waits on it waits too.
             return event.map_or(Answer::NotYet, Answer::Value);
@@ -899,6 +976,51 @@ mod tests {
         let out = run_rounds(&flow, &[], &[], &r, &mut host, &Slow, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
         assert_eq!(out.error, Some(RunError::TimeBudget { budget: Duration::from_millis(20) }));
         assert!(host.0.is_empty());
+    }
+
+    /// **Guards:** a round that sends nothing and computes past the run's time stops at it, with
+    /// the time budget's error and nothing performed, though it is within its steps.
+    ///
+    /// **Why:** the clock was read only after a round that sent requests, so a round that only
+    /// computes ran to its steps however long they took: a request computing the square of a
+    /// list held a server's thread past its caller's patience and the run's budget alike, and
+    /// `holon verify` ran it again for as long.
+    ///
+    /// **If it fails:** `Asking` doesn't read the clock as the round steps (`late`), or
+    /// `run_rounds` doesn't look at it after the round before its steps.
+    #[test]
+    fn a_round_that_only_computes_stops_at_the_runs_time() {
+        let mut r = MapResolver::new();
+        // For each item of a list, whether it is in the list: a scan of the list each, n² in all.
+        let includes = r.insert(leaf("includes", vec![], 2, Type::Boolean)).unwrap();
+        let port = |name: &str| Port { name: name.into(), ty: Type::Any };
+        let is_in = Unit {
+            body: UnitBody::Composite { children: vec![includes], edges: vec![e(BOUNDARY, 1, 0, 0), e(BOUNDARY, 0, 0, 1), e(0, 0, BOUNDARY, 0)] },
+            params: vec![],
+            inputs: vec![port("x"), port("xs")],
+            outputs: vec![port("in")],
+        };
+        let is_in = r.insert(is_in).unwrap();
+        let each = Unit {
+            body: UnitBody::Primitive { name: "map".into() },
+            params: vec![Param::frozen("fn", holon_core::hex(is_in))],
+            inputs: vec![Port { name: "list".into(), ty: Type::list_any() }, port("extra0")],
+            outputs: vec![port("out")],
+        };
+        let xs = Value::List((0..20_000).map(|i| Value::Number(f64::from(i))).collect());
+        let budget = Duration::from_millis(50);
+        let limits = Limits { run_budget: budget, max_steps: holon_core::MAX_STEPS_CEILING, ..Limits::request_run() };
+        let mut host = Performed::default();
+        let started = Instant::now();
+        let out = run_rounds(&each, &[Some(xs.clone()), Some(xs)], &[], &r, &mut host, &Echo::default(), &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
+        let took = started.elapsed();
+        // The error is a step's own word that it found the time up: a round that only computes
+        // and runs its work out ends with none, the clock being read only as it steps. How soon
+        // after the budget it stopped isn't held: on a loaded machine anything takes longer.
+        assert_eq!(out.error, Some(RunError::TimeBudget { budget }), "stopped for its time, within its steps");
+        assert_eq!(out.outputs, vec![None]);
+        assert!(out.rounds.is_empty() && host.0.is_empty(), "nothing sent or performed");
+        assert!(took >= budget, "stopped at its budget, not before it: {took:?}");
     }
 
     /// A request inside a mapped function is sent for each item, in one round, each at its own

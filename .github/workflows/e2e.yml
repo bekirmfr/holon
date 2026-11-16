@@ -11,9 +11,14 @@ name: e2e
 # so main's required checks (`e2e (1)`, `e2e (2)`) let a pull request through without them: label
 # one whose change the suite covers, or run `npm run e2e` before merging it.
 #
-# A pull request runs it only from a branch of this repository. The runners are machines of ours,
-# and a fork can name its branch `release-…`, or be labelled: a fork's pull request never reaches
-# them, whatever its branch or labels. To run the suite on one, push its branch here.
+# A pull request runs it only from a branch of this repository: a fork can name its branch
+# `release-…`, or be labelled, and the condition below turns both away. That condition is in this
+# file, though, and a pull request runs the file as its own branch has it: a fork can take the
+# condition out, or add a workflow of its own that asks for these runners. What keeps a fork's
+# code off them is the repository's setting, not this file: Settings, Actions, General, "Require
+# approval for all external contributors", and a look at what a fork's run would run before it
+# is approved. The runners are machines of ours, kept between runs. To run the suite on a fork's
+# change, push its branch here.
 on:
   push:
     branches: [main]
@@ -28,6 +33,12 @@ on:
 concurrency:
   group: e2e-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# The token a run holds reads the repository and nothing else: no job here writes to it. An
+# action that isn't GitHub's own is named by its commit, since a tag or a branch can be moved to
+# other code, and these run on every push to main.
+permissions:
+  contents: read
 
 jobs:
   # In two shards, each on its own runner with its own servers; `--fully-parallel` lets a shard take
@@ -77,11 +88,11 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash .github/start-mongodb.sh
       - run: bash .github/start-postgres.sh
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11-15
         with:
           targets: wasm32-unknown-unknown
       # wasm-pack at the version releases and ci.yml pin, built `--no-opt` as they build it.
-      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
         with:
           version: v0.15.0
       - run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm --no-opt

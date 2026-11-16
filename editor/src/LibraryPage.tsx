@@ -11,6 +11,7 @@ import { useDialog } from "./Dialog";
 import { follow, format, type LibraryTab, type Route } from "./routes";
 import type { Sample } from "./samples";
 import { tutorials } from "./tutorials";
+import { Said } from "./SecretSaid";
 
 const TABS: [LibraryTab, string][] = [
   ["tutorials", "Tutorials"],
@@ -172,7 +173,16 @@ function Samples({
           </div>
           <div>
             <dt>it may</dt>
-            <dd>{may ? may.map(describeItem).join(" · ") : "?"}</dd>
+            <dd>
+              {may
+                ? may.map((item, i) => (
+                    <span key={item}>
+                      {i > 0 && " · "}
+                      <Said item={item} />
+                    </span>
+                  ))
+                : "?"}
+            </dd>
           </div>
           {s.secrets && s.secrets.length > 0 && (
             <div>

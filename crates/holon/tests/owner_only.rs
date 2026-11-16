@@ -11,16 +11,42 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// Longer than this, what a test waits for is taken never to come: a guard so a hang fails the
+/// test, never a measure of how long anything took (on a loaded machine anything takes longer).
+const EVENTUALLY: Duration = Duration::from_secs(60);
+
+/// A kind of file the test means to look at: what it is, and how its path (with `/`) is known.
+type Kind = (&'static str, fn(&str) -> bool);
+
 const HOLON: &str = env!("CARGO_BIN_EXE_holon");
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
+/// Waits [`EVENTUALLY`] for `holon serve` (`child`) to answer on `port`: an answer, not a
+/// connection taken. It takes connections once it has its port, before it has written the run
+/// file its user's commands sign in with (local.rs), and answers them after (main.rs: the run
+/// file published, then the server run), so a command sent once a connection is taken can find
+/// no run file, and is told the server isn't set up. If it ends first, fails at once with how it
+/// ended and what it said (its stderr, kept in `said`), rather than waiting out the guard with
+/// nothing to say.
+fn answering(child: &mut Child, port: u16, said: &std::path::Path) {
+    let by = Instant::now() + EVENTUALLY;
+    let words = || std::fs::read_to_string(said).unwrap_or_default();
+    while status(&raw_http(port, b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")) == 0 {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("holon serve ended before it answered on {port} ({status}): {}", words());
+        }
+        assert!(Instant::now() < by, "holon serve answers on {port}: {}", words());
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// `request` sent to `port` and the whole answer read, or nothing if no connection is taken.
 fn raw_http(port: u16, request: &[u8]) -> String {
     let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
-    stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     let _ = stream.write_all(request);
     let mut out = Vec::new();
     let _ = stream.read_to_end(&mut out);
@@ -66,6 +92,7 @@ impl Drop for Server {
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.home);
         let _ = std::fs::remove_dir_all(&self.outside);
+        let _ = std::fs::remove_file(self.home.with_extension("err"));
     }
 }
 
@@ -94,21 +121,18 @@ fn every_file_the_server_writes_is_its_owners_alone() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&outside).unwrap();
     let port = free_port();
+    let said = home.with_extension("err");
     let child = Command::new(HOLON)
         .args(["serve", "--at", &format!("127.0.0.1:{port}"), "--root-key", &format!("file:{}", home.join("root.key").display())])
         .env("HOLON_HOME", &home)
         .env_remove("HOLON_DATA")
         .env_remove("HOLON_RUN_DIR")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&said).unwrap())
         .spawn()
         .expect("holon serve starts");
-    let server = Server { child, home: home.clone(), outside: outside.clone(), port };
-    let until = Instant::now() + Duration::from_secs(60);
-    while TcpStream::connect(("127.0.0.1", server.port)).is_err() {
-        assert!(Instant::now() < until, "holon serve answers on {}", server.port);
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let mut server = Server { child, home: home.clone(), outside: outside.clone(), port };
+    answering(&mut server.child, port, &said);
 
     // State, a collection, console lines, a waiting run and its event; runs enough that the log
     // seals its older ones into a segment.
@@ -147,7 +171,7 @@ route.get("/done/:token", () => "done", {{ resumes: "done" }})
     let at = server.port.to_string();
     server.holon(&["deploy", &file, "--server", &at, "--approve"]);
     server.holon(&["flows", "save", &file, "--name", "kept-copy", "--server", &at]);
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + EVENTUALLY;
     while status(&post(flow_port, "/bump", "{}")) != 200 {
         assert!(Instant::now() < until, "kept answers on {flow_port}");
         std::thread::sleep(Duration::from_millis(100));
@@ -163,25 +187,41 @@ route.get("/done/:token", () => "done", {{ resumes: "done" }})
     for _ in 0..300 {
         assert_eq!(status(&post(flow_port, "/bump", "{}")), 200);
     }
-    // Console lines are written about once a second, on a thread of their own (logs.rs).
-    std::thread::sleep(Duration::from_millis(2500));
-
+    // The control: the kinds of file this means to look at, each looked for until it is there, not
+    // slept for. Some are written on their own time: console lines about once a second on a thread
+    // of their own (logs.rs), a sealed segment once a cut seals the older runs (recorder.rs). And
+    // every file listed is read below, so it waits too for what a sleep let finish: no file
+    // written aside (`.tmp-`, `.cut-`, sealing.rs), renamed in or gone a moment later (a cut
+    // renames its segment in, then the file it leaves); no line log only just made, which is
+    // made, then restricted to its owner, then written (sealing.rs `append_private`).
+    let data = home.join("data");
+    let logs = data.join("deployments.logs");
+    let line_log = |f: &Path| f.extension().is_some_and(|e| e == "jsonl") && (f.parent() == Some(logs.as_path()) || f.parent() == Some(data.as_path()));
+    let aside = |f: &Path| f.file_name().is_some_and(|n| n.to_string_lossy().contains(".tmp-") || n.to_string_lossy().contains(".cut-"));
+    let kinds: [Kind; 9] = [
+        ("the run log", |f| f.ends_with("deployments.logs/kept.jsonl")),
+        ("a sealed segment", |f| f.contains("deployments.logs/kept.sealed/") && f.ends_with(".jsonl.gz")),
+        ("console lines", |f| f.ends_with("deployments.logs/kept.console.jsonl")),
+        ("events", |f| f.ends_with("deployments.logs/kept.events.jsonl")),
+        ("the deployments", |f| f.ends_with("/deployments.json")),
+        ("saved flows", |f| f.ends_with("/flows.json")),
+        ("the store's values", |f| f.contains("/store/values/")),
+        ("the state head", |f| f.ends_with("deployments.state/kept")),
+        ("the activity", |f| f.ends_with("/deployments.activity.jsonl")),
+    ];
+    let until = Instant::now() + EVENTUALLY;
     let mut files = Vec::new();
-    files_under(&home, &mut files);
-    let names = |pred: &dyn Fn(&str) -> bool| files.iter().any(|f| pred(&f.to_string_lossy().replace('\\', "/")));
-    // The control: the kinds of file this means to look at are there.
-    for (what, found) in [
-        ("the run log", names(&|f| f.ends_with("deployments.logs/kept.jsonl"))),
-        ("a sealed segment", names(&|f| f.contains("deployments.logs/kept.sealed/") && f.ends_with(".jsonl.gz"))),
-        ("console lines", names(&|f| f.ends_with("deployments.logs/kept.console.jsonl"))),
-        ("events", names(&|f| f.ends_with("deployments.logs/kept.events.jsonl"))),
-        ("the deployments", names(&|f| f.ends_with("/deployments.json"))),
-        ("saved flows", names(&|f| f.ends_with("/flows.json"))),
-        ("the store's values", names(&|f| f.contains("/store/values/"))),
-        ("the state head", names(&|f| f.ends_with("deployments.state/kept"))),
-        ("the activity", names(&|f| f.ends_with("/deployments.activity.jsonl"))),
-    ] {
-        assert!(found, "{what} is among the files looked at: {files:#?}");
+    loop {
+        files.clear();
+        files_under(&home, &mut files);
+        let seen: Vec<String> = files.iter().map(|f| f.to_string_lossy().replace('\\', "/")).collect();
+        let missing: Vec<&str> = kinds.iter().filter(|(_, is)| !seen.iter().any(|f| is(f))).map(|(what, _)| *what).collect();
+        let under_way: Vec<&PathBuf> = files.iter().filter(|f| aside(f) || (line_log(f) && std::fs::metadata(f).map_or(true, |m| m.len() == 0))).collect();
+        if missing.is_empty() && under_way.is_empty() {
+            break;
+        }
+        assert!(Instant::now() < until, "{missing:?} not among the files looked at, {under_way:#?} still being written: {files:#?}");
+        std::thread::sleep(Duration::from_millis(100));
     }
     let open: Vec<&PathBuf> = files.iter().filter(|f| !holon_host::is_owners_alone(f).unwrap_or_else(|e| panic!("{}: {e}", f.display()))).collect();
     // Said by folder, with an example each: a writer leaves many files alike (the store's values).
@@ -195,7 +235,6 @@ route.get("/done/:token", () => "done", {{ resumes: "done" }})
 
     // And every table in the data folder is sealed (at_rest.rs, step 2): only the keyring itself,
     // its keys wrapped, is kept as it is.
-    let data = home.join("data");
     let tables: Vec<&PathBuf> = files.iter().filter(|f| f.parent() == Some(data.as_path()) && f.extension().is_some_and(|e| e == "json")).collect();
     assert!(tables.iter().any(|f| f.ends_with("deployments.json")) && tables.iter().any(|f| f.ends_with("keys.json")), "{tables:#?}");
     let plain: Vec<&&PathBuf> = tables.iter().filter(|f| !f.ends_with("keys.json") && !std::fs::read(f).unwrap().starts_with(b"HLA1")).collect();
@@ -204,11 +243,7 @@ route.get("/done/:token", () => "done", {{ resumes: "done" }})
     // And every line log a line at a time (step 3): the run log, events, console lines, the
     // activity, the access history; a run log's segments whole. The witness's queue and receipts
     // (deployments.heads/) hold only hashes, and stay as they are (§2.5).
-    let logs = data.join("deployments.logs");
-    let line_logs: Vec<&PathBuf> = files
-        .iter()
-        .filter(|f| f.extension().is_some_and(|e| e == "jsonl") && (f.parent() == Some(logs.as_path()) || f.parent() == Some(data.as_path())))
-        .collect();
+    let line_logs: Vec<&PathBuf> = files.iter().filter(|f| line_log(f)).collect();
     for want in ["kept.jsonl", "kept.events.jsonl", "kept.console.jsonl", "deployments.activity.jsonl"] {
         assert!(line_logs.iter().any(|f| f.ends_with(want)), "{want} is among the line logs looked at: {line_logs:#?}");
     }

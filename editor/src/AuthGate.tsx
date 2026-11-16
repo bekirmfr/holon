@@ -181,7 +181,11 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
 
   switch (stage.kind) {
     case "loading":
-      return <div style={{ padding: 24, color: "var(--muted)" }}>connecting…</div>;
+      return (
+        <div style={{ padding: 24, color: "var(--muted)" }} aria-busy="true">
+          connecting…
+        </div>
+      );
     case "unreachable":
       return (
         <div style={{ padding: 24, color: "var(--bad)", display: "grid", gap: 10, maxWidth: 520 }}>

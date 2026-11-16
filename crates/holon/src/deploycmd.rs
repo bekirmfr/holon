@@ -383,7 +383,8 @@ fn send(server: &str, token: Option<&str>, method: &str, path: &str, body: Optio
         Err(ureq::Error::Status(_, r)) => r,
         Err(e) => {
             return Err(format!(
-                "can't reach {server}: {e}\nIs holon serve running there? --server takes the port or address it printed"
+                "can't reach {server}: {}\nIs holon serve running there? --server takes the port or address it printed",
+                crate::outbound::said(&e)
             ))
         }
     };

@@ -84,13 +84,22 @@ fn rows(text: &str, sep: char) -> Option<Vec<Vec<String>>> {
     Some(out)
 }
 
-/// `made` values and `more`, or nothing past [`MAX_ITEMS`](crate::MAX_ITEMS).
+/// `made` values and `more`, or nothing past [`MAX_ITEMS`](crate::MAX_ITEMS), or once the round
+/// may make no more ([`memory::room`](crate::memory::room), asked every
+/// [`ASK_EVERY`](crate::memory::ASK_EVERY) values).
 fn counted(made: usize, more: usize) -> Option<usize> {
-    Some(made + more).filter(|&n| n <= crate::MAX_ITEMS)
+    let n = made + more;
+    let every = crate::memory::ASK_EVERY;
+    if n > crate::MAX_ITEMS || (n / every != made / every && !crate::memory::room()) {
+        return None;
+    }
+    Some(n)
 }
 
 /// `csv_parse`: with `header: "first_row"`, a list of records keyed by the first row's names (none
 /// twice, and every row as many fields); with `"none"`, a list of lists. Every field is a text.
+/// Nothing where the names, copied into each row's record, come to more than
+/// [`MAX_BYTES`](crate::MAX_BYTES) in all.
 pub(crate) fn parse(text: &str, header: &str, sep: &str) -> Option<Value> {
     let rows = rows(text, separator(sep)?)?;
     let text_list = |row: Vec<String>| Value::List(row.into_iter().map(Value::Text).collect());
@@ -103,9 +112,20 @@ pub(crate) fn parse(text: &str, header: &str, sep: &str) -> Option<Value> {
             if !names.iter().all(|n| seen.insert(n)) {
                 return None;
             }
+            // Each row's record holds its own copy of every name: nothing past MAX_BYTES of them
+            // in all, found before a record is made. A long name over many short rows is
+            // otherwise gigabytes from a few megabytes, in one step.
+            let named: usize = names.iter().map(String::len).sum();
+            if named.saturating_mul(rows.len()) > crate::MAX_BYTES {
+                return None;
+            }
             let mut out = Vec::new();
-            for row in rows {
+            for (i, row) in rows.enumerate() {
                 if row.len() != names.len() {
+                    return None;
+                }
+                // Each record copies the names: room asked as they are made, as the rows were.
+                if (i + 1).is_multiple_of(crate::memory::ASK_EVERY) && !crate::memory::room() {
                     return None;
                 }
                 let record: BTreeMap<String, Value> = names.iter().cloned().zip(row.into_iter().map(Value::Text)).collect();

@@ -23,11 +23,13 @@ agents or by people. Before a flow runs, and every time it runs:
   approved it as `unrecorded` (counted, failed or not, and not kept: what it writes, calls or
   sends is in no run). A log keeps its newest 500 runs unless told to keep more. Evaluation is
   pure, so a run replays exactly, node by node, and anyone can check a deployment's runs
-  offline. The record is a hash chain: with a witness holding its heads elsewhere, a run changed
-  or taken out afterwards shows; without one, an export checks against itself, and whoever holds
-  the server's data could rewrite it whole. Everything it keeps is encrypted at rest under keys
-  you hold apart from the data (a root key in the OS key store, a file or an environment
-  variable), and a removed deployment's keys can be forgotten, so nothing it left opens again.
+  offline, but for the steps that compute with a secret: the log never holds its value, so those
+  are taken as the record says. The record is a hash chain: with a witness holding its heads
+  elsewhere, a run changed or taken out afterwards shows; without one, an export checks against
+  itself, and whoever holds the server's data could rewrite it whole. Everything it keeps is
+  encrypted at rest under keys you hold apart from the data (a root key in the OS key store, a
+  file or an environment variable), and a removed deployment's keys can be forgotten, so nothing
+  it left opens again.
 
 > **Status:** pre-release (0.1.0 release candidates). It runs on one machine for one team; see
 > [Status](#status).
@@ -70,6 +72,8 @@ it may:
   receive requests
   read the secret "slack_webhook_path", and send it to https://hooks.slack.com
   read the secret "stripe_webhook_secret"
+with its secrets:
+  POST /stripe, line 11: sends the secret "slack_webhook_path" to https://hooks.slack.com
 ```
 
 That list is what a deploy asks a person to approve, and all the flow will ever be allowed to do.
@@ -315,7 +319,7 @@ runs") or the command line:
 
 ```sh
 holon export notes-api           # from the server you run here, into notes-api-runs.json
-holon verify notes-api-runs.json # anywhere, offline: the chain, each unit, every run again
+holon verify notes-api-runs.json # anywhere, offline: the chain, each unit, each run again
 ```
 
 `verify` checks the chain is unbroken, each unit is what its hash says, and every run, run again

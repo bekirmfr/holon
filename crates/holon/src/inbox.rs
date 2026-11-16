@@ -1,9 +1,15 @@
 //! Mail starts runs (`on.mail(remit, (m) => …)`, a `mail_arrival` leaf; host-capabilities L4
 //! §5.2.4). Every second a thread looks for the mailboxes running deployments listen to whose
-//! binding's `--every` has come round: it logs in (imap.rs), selects the folder, lists its UIDs,
-//! and for each it hasn't seen, oldest first, at most [`MAX_RUNS_PER_LOOK`] a look, fetches the
-//! message and starts one run of the handler, `m` the message as core reads it
-//! (`holon_core::mail::received`, the binding's `--verdict-from` saying whose verdict counts).
+//! binding's `--every` has come round, and starts a look at each on a thread of its own: it logs
+//! in (imap.rs), selects the folder, lists its UIDs, and for each it hasn't seen, oldest first, at
+//! most [`MAX_RUNS_PER_LOOK`] a look, fetches the message and starts one run of the handler, `m`
+//! the message as core reads it (`holon_core::mail::received`, the binding's `--verdict-from`
+//! saying whose verdict counts).
+//!
+//! - **One mailbox holds no other.** The watcher waits for no look: a server that doesn't answer
+//!   (30 seconds a step, imap.rs), a message long to read or a long run hold their own mailbox,
+//!   whose next look starts once its last has ended, and no one else's. How a look went is noted
+//!   at the tick after it ends.
 //!
 //! - **New since the deploy.** What the folder holds when the deployment first looks is seen, not
 //!   run on and not moved, as a folder's files are. What it has seen is kept beside its log
@@ -14,6 +20,12 @@
 //!   failed, or a crash cut off, is moved at the next look, not run again.
 //! - **A second copy** (a `message_id` among the last [`RECENT`] run on) is moved without a run,
 //!   as is a message past [`MAX_MESSAGE_BYTES`]; the timeline says so.
+//! - **Taken up before it is read.** A message is noted taken up once it is fetched, before it is
+//!   read, and the note is dropped once its run is over: a look cut off in between (a restart, a
+//!   crash, a failure reading it) leaves it, and the next look tries it again. Cut off [`TRIES`]
+//!   times, it is moved without a run, and the timeline says so: a message that brings its look
+//!   down is read twice, not at every look and after every restart. Moved back to the folder, it
+//!   runs. A server that fails to hand it over takes no try.
 //! - **Unreachable:** a look that fails is tried at the next; the timeline says so once, and again
 //!   when the mailbox is read again.
 
@@ -36,6 +48,9 @@ const RECENT: usize = 1000;
 /// The largest message a run reads: a request's largest body (dataplane.rs).
 const MAX_MESSAGE_BYTES: u64 = 10 * 1024 * 1024;
 
+/// How many looks may take up a message and be cut off before it is moved without a run.
+pub(crate) const TRIES: u32 = 2;
+
 /// What a deployment has seen of one mailbox.
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
 struct Seen {
@@ -47,6 +62,9 @@ struct Seen {
     uids: BTreeSet<u32>,
     /// The UIDs whose run is over, not moved yet.
     to_move: BTreeSet<u32>,
+    /// The UIDs taken up by a look and not done with, each with how many looks took it up.
+    #[serde(default)]
+    taken: BTreeMap<u32, u32>,
     /// The `message_id`s last run on, oldest first.
     recent: VecDeque<String>,
 }
@@ -87,8 +105,46 @@ pub(crate) fn forget(deployments_path: &Place, slug: &str) {
 #[derive(Default)]
 pub(crate) struct Looks {
     due: BTreeMap<(String, String), (Instant, bool)>,
+    /// What the looks' threads share with the watcher.
+    shared: Arc<Shared>,
+}
+
+/// What a look's thread shares with the watcher.
+#[derive(Default)]
+struct Shared {
     /// What is seen, for a server whose deployments are kept nowhere (`:memory:`).
     memory: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
+    going: Mutex<Going>,
+}
+
+/// The looks going on.
+#[derive(Default)]
+struct Going {
+    /// The mailboxes (by deployment and mail) a look is at.
+    at: BTreeSet<(String, String)>,
+    /// How the looks that ended went, for the next tick to note.
+    ended: Vec<Looked>,
+    /// A UID the next look to take it up is cut off at, there, as a crash would cut it (a test's).
+    #[cfg(test)]
+    cut_at: Option<u32>,
+}
+
+/// A look at one mailbox, on its thread: however it ends, a panic too, the mailbox is free for
+/// its next look, and how it went waits for the watcher.
+struct Looking {
+    shared: Arc<Shared>,
+    key: (String, String),
+    every: u64,
+    outcome: Option<Result<(), String>>,
+}
+
+impl Drop for Looking {
+    fn drop(&mut self) {
+        let outcome = self.outcome.take().unwrap_or_else(|| Err("a look at it was cut off".to_string()));
+        let mut going = self.shared.going.lock().unwrap();
+        going.at.remove(&self.key);
+        going.ended.push((self.key.clone(), self.every, outcome));
+    }
 }
 
 /// A deployment listening to a mailbox: its slug, the handler, unit, state, permit, secrets and
@@ -98,14 +154,39 @@ type Listening = (String, holon_core::MailHandler, Hash, Option<DeploymentState>
 /// How a look went: the deployment and mail, its binding's `--every` in seconds, and why it failed.
 type Looked = ((String, String), u64, Result<(), String>);
 
-/// One look at every mailbox running deployments listen to, due or not, before it returns.
+/// One look at every mailbox running deployments listen to, due or not (but those a look is at
+/// already), each ended before it returns, and noted.
 #[cfg(test)]
-pub(crate) fn run_mail(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, looks: &mut Looks) {
-    look_at(store, deployments, deployments_path, looks, true);
+pub(crate) fn run_mail(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: &Place, looks: &mut Looks) {
+    for (_, look) in look_at(store, deployments, deployments_path, looks, true) {
+        let _ = look.join();
+    }
+    ended(deployments, looks);
 }
 
-/// One look at the mailboxes due (all of them with `all`), each on its own thread.
-fn look_at(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, looks: &mut Looks, all: bool) {
+/// One tick of the watcher: the looks that ended noted, and one started at each mailbox due (all
+/// of them with `all`) no look is at. It returns at once: each look's mailbox, and its thread.
+#[cfg(test)]
+pub(crate) fn tick(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: &Place, looks: &mut Looks, all: bool) -> Vec<((String, String), thread::JoinHandle<()>)> {
+    look_at(store, deployments, deployments_path, looks, all)
+}
+
+/// The mailboxes a look is at.
+#[cfg(test)]
+pub(crate) fn going(looks: &Looks) -> BTreeSet<(String, String)> {
+    looks.shared.going.lock().unwrap().at.clone()
+}
+
+/// Cut off the next look to take up `uid`, right after it does, as a crash would.
+#[cfg(test)]
+pub(crate) fn cut_off_at(looks: &Looks, uid: u32) {
+    looks.shared.going.lock().unwrap().cut_at = Some(uid);
+}
+
+/// Start a look at each mailbox due (all of them with `all`) that no look is at, each on a
+/// thread of its own, the looks that ended noted first: each look's mailbox, and its thread.
+fn look_at(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: &Place, looks: &mut Looks, all: bool) -> Vec<((String, String), thread::JoinHandle<()>)> {
+    ended(deployments, looks);
     let listening: Vec<Listening> = deployments
         .lock()
         .unwrap()
@@ -118,25 +199,36 @@ fn look_at(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>
         .collect();
     looks.due.retain(|(slug, mail), _| listening.iter().any(|l| l.0 == *slug && l.1.mail == *mail));
     let now = Instant::now();
-    let due: Vec<Listening> = listening.into_iter().filter(|l| all || looks.due.get(&(l.0.clone(), l.1.mail.clone())).is_none_or(|(at, _)| *at <= now)).collect();
-    if due.is_empty() {
-        return;
-    }
-    let memory = &looks.memory;
-    let outcomes: Vec<Looked> = thread::scope(|scope| {
-        let looking: Vec<_> = due
-            .into_iter()
-            .map(|l| {
-                scope.spawn(move || {
-                    let key = (l.0.clone(), l.1.mail.clone());
-                    let every = l.6.all.mails.resolve(&l.0, &l.1.mail).and_then(|b| b.mailbox).map_or(60, |m| m.every);
-                    (key, every, look_once(store, deployments, deployments_path, memory, &l))
-                })
-            })
-            .collect();
-        looking.into_iter().filter_map(|h| h.join().ok()).collect()
-    });
-    for ((slug, mail), every, outcome) in outcomes {
+    let mut going = looks.shared.going.lock().unwrap();
+    let due: Vec<Listening> = listening
+        .into_iter()
+        .filter(|l| {
+            let key = (l.0.clone(), l.1.mail.clone());
+            !going.at.contains(&key) && (all || looks.due.get(&key).is_none_or(|(at, _)| *at <= now))
+        })
+        .collect();
+    going.at.extend(due.iter().map(|l| (l.0.clone(), l.1.mail.clone())));
+    drop(going);
+    due.into_iter()
+        .map(|l| {
+            let key = (l.0.clone(), l.1.mail.clone());
+            let every = l.6.all.mails.resolve(&l.0, &l.1.mail).and_then(|b| b.mailbox).map_or(60, |m| m.every);
+            let mut looking = Looking { shared: Arc::clone(&looks.shared), key: key.clone(), every, outcome: None };
+            let (store, deployments, deployments_path) = (store.clone(), Arc::clone(deployments), deployments_path.clone());
+            let thread = thread::spawn(move || {
+                looking.outcome = Some(look_once(&store, &deployments, &deployments_path, &looking.shared, &l));
+                drop(looking);
+            });
+            (key, thread)
+        })
+        .collect()
+}
+
+/// Note how the looks that ended went (a mailbox that can't be read once, and once it is read
+/// again), and when each mailbox is next due: its binding's `--every` after its look ended.
+fn ended(deployments: &Mutex<BTreeMap<String, Deployment>>, looks: &mut Looks) {
+    let ended = std::mem::take(&mut looks.shared.going.lock().unwrap().ended);
+    for ((slug, mail), every, outcome) in ended {
         let failing = looks.due.get(&(slug.clone(), mail.clone())).is_some_and(|(_, f)| *f);
         match &outcome {
             Err(why) if !failing => note(deployments, &slug, &mail, format!("couldn't read the mailbox of {mail}: {why}; trying again every {}", folders::span_text(every))),
@@ -154,7 +246,8 @@ fn note(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mail: &st
 
 /// One look at the mailbox `l` listens to: the runs its new messages start, each message moved once
 /// its run is over. An error says why the mailbox couldn't be read (no login in it).
-fn look_once(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, memory: &Mutex<BTreeMap<PathBuf, Vec<u8>>>, l: &Listening) -> Result<(), String> {
+fn look_once(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, shared: &Shared, l: &Listening) -> Result<(), String> {
+    let memory = &shared.memory;
     let (slug, handler, _, _, _, _, files) = l;
     let mail = &handler.mail;
     let mails = &files.all.mails;
@@ -171,7 +264,7 @@ fn look_once(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deploymen
     if seen.at != at || seen.validity != validity {
         // First looked at, or numbered anew: what is there now isn't new.
         let anew = if seen.at == at { "numbered anew by its server: " } else { "" };
-        seen = Seen { at, validity, uids: uids.iter().copied().collect(), to_move: BTreeSet::new(), recent: std::mem::take(&mut seen.recent) };
+        seen = Seen { at, validity, uids: uids.iter().copied().collect(), recent: std::mem::take(&mut seen.recent), ..Seen::default() };
         keep(&seen);
         let held = match uids.len() {
             1 => "1 message".to_string(),
@@ -184,6 +277,7 @@ fn look_once(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deploymen
     let present: BTreeSet<u32> = uids.iter().copied().collect();
     // What a move missed: its run is over.
     seen.to_move.retain(|u| present.contains(u));
+    seen.taken.retain(|u, _| present.contains(u));
     for uid in seen.to_move.clone() {
         session.move_to(uid, &mailbox.done).map_err(why)?;
         seen.to_move.remove(&uid);
@@ -191,12 +285,32 @@ fn look_once(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deploymen
     }
     let new: Vec<u32> = uids.iter().copied().filter(|u| !seen.uids.contains(u)).take(MAX_RUNS_PER_LOOK).collect();
     for uid in new {
+        let tries = seen.taken.get(&uid).copied().unwrap_or(0);
+        if tries >= TRIES {
+            note(deployments, slug, mail, format!("moved a message to {} without a run: the {TRIES} looks that took it up were cut off before its run was over (a restart, or a failure reading it); moved back to {}, it runs", mailbox.done, mailbox.folder));
+            seen.uids.insert(uid);
+            seen.to_move.insert(uid);
+            seen.taken.remove(&uid);
+            keep(&seen);
+            session.move_to(uid, &mailbox.done).map_err(why)?;
+            seen.to_move.remove(&uid);
+            keep(&seen);
+            continue;
+        }
         // Gone since it was listed: nothing to run on.
         let Some(size) = session.size(uid).map_err(why)? else { continue };
         if size > MAX_MESSAGE_BYTES {
             note(deployments, slug, mail, format!("moved a message of {size} bytes to {} without a run: a run reads 10 MiB at most", mailbox.done));
         } else {
             let Some(raw) = session.fetch(uid).map_err(why)? else { continue };
+            // Taken up before it is read: a message that brings its look down (its reading or
+            // its run) is tried again, not at every look and after every restart.
+            seen.taken.insert(uid, tries + 1);
+            keep(&seen);
+            #[cfg(test)]
+            if shared.going.lock().unwrap().cut_at.take_if(|at| *at == uid).is_some() {
+                panic!("a look cut off as it took up {uid} (a test's)");
+            }
             let message = holon_core::mail::received(&raw, &mailbox.verdict_from);
             let id = match &message {
                 Value::Record(m) => match m.get("message_id") {
@@ -218,6 +332,7 @@ fn look_once(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deploymen
         // Noted before it is moved: a move a crash cuts off is made at the next look.
         seen.uids.insert(uid);
         seen.to_move.insert(uid);
+        seen.taken.remove(&uid);
         keep(&seen);
         // Without MOVE or UIDPLUS it is copied and marked \Deleted: moved as far as it goes.
         session.move_to(uid, &mailbox.done).map_err(why)?;
@@ -284,7 +399,8 @@ fn fire_one_mail(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deplo
     }
 }
 
-/// The watcher: a thread that looks at the mailboxes due every [`TICK`].
+/// The watcher: a thread that starts a look at each mailbox due every [`TICK`], and waits for
+/// none of them.
 pub(crate) fn spawn_watcher(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: Place) {
     thread::spawn(move || {
         let mut looks = Looks::default();

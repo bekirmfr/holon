@@ -20,6 +20,7 @@
 import { Kbd } from "./ui/Kbd";
 import { keyOf, keysFor } from "./ui/Keys";
 import { useFocusTrap } from "./ui/focusTrap";
+import { SecretLines } from "./SecretSaid";
 import { lettersOf } from "./keymap";
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
@@ -290,7 +291,9 @@ export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNo
               gap: 12,
             }}
           >
-            <div id={question} style={{ whiteSpace: "pre-line", maxHeight: (ask.kind === "confirm" || ask.kind === "notice") && ask.body ? "30vh" : "60vh", overflowY: "auto", flexShrink: 0 }}>{ask.message}</div>
+            <div id={question} style={{ whiteSpace: "pre-line", maxHeight: (ask.kind === "confirm" || ask.kind === "notice") && ask.body ? "30vh" : "60vh", overflowY: "auto", flexShrink: 0 }}>
+              <SecretLines text={ask.message} />
+            </div>
             {/* For a screen reader: why its answers are dimmed, and that one came too soon. */}
             <span id={waitNote} hidden>
               {WAIT_SAID}

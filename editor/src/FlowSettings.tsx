@@ -12,7 +12,7 @@ import { approvalSaid, isApproval, shownSaid } from "./decisions";
 import { summarizeState } from "./diagnostics";
 import { limitChange, limitRows, type LimitRow } from "./flowFacts";
 import { limitMeaning } from "./policyMeans";
-import { describeItem, permissionKind } from "./holon";
+import { permissionKind } from "./holon";
 import { KindBadge } from "./Manifest";
 import { holdsLines } from "./storage";
 import {
@@ -40,6 +40,7 @@ import {
 } from "./server";
 import { Unread } from "./ui/Unread";
 import { Gated, gateOf, useCan, type Answer, type Can } from "./can";
+import { Said } from "./SecretSaid";
 
 const when = (secs: number) => new Date(secs * 1000).toLocaleString();
 const say = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -238,7 +239,9 @@ function Permissions({ slug, view, error, manifest, focus, onChanged, may }: { s
               .filter((item) => !item.startsWith("Limit("))
               .map((item) => (
                 <li key={item} title={item}>
-                  <span className="hl-flow__what">✓ {describeItem(item)}</span>
+                  <span className="hl-flow__what">
+                    ✓ <Said item={item} />
+                  </span>
                   <KindBadge item={item} optional={optional} trigger={trigger} />
                   <span className="hl-flow__spacer" />
                   <button className="hl-flow__button" onClick={() => change({ revoke: [item] })} {...gateOf(may, { title: revokeTitle(item) })}>
@@ -248,7 +251,9 @@ function Permissions({ slug, view, error, manifest, focus, onChanged, may }: { s
               ))}
             {(grant.revoked ?? []).map((item) => (
               <li key={item} title={item} className="hl-flow__revoked">
-                <span>{describeItem(item)}</span>
+                <span>
+                  <Said item={item} />
+                </span>
                 <span className="hl-table__dim"> · revoked</span>
                 <span className="hl-flow__spacer" />
                 <button className="hl-flow__button" onClick={() => change({ grant: [item] })} {...gateOf(may, { title: "grant it back" })}>

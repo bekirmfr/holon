@@ -450,12 +450,11 @@ mod tests {
         }
         assert!(notices.changed(&paths).is_empty(), "nothing changed");
         std::fs::write(a.join("inner").join("x.csv"), "x").unwrap();
-        let t0 = std::time::Instant::now();
         let mut due = BTreeSet::new();
-        while due.is_empty() && t0.elapsed() < Duration::from_secs(5) {
-            thread::sleep(Duration::from_millis(50));
+        crate::tests::soon(|| {
             due = notices.changed(&paths);
-        }
+            !due.is_empty()
+        });
         assert_eq!(due, BTreeSet::from([a.clone()]), "only the folder the file was dropped in");
         notices.walked -= WALK;
         assert_eq!(notices.changed(&paths), paths, "every one, every WALK");

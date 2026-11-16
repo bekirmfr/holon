@@ -93,8 +93,9 @@ import { ReviewPage } from "./ReviewPage";
 import { useApprovals } from "./useApprovals";
 import { useCan, useHostPages, type Answer } from "./can";
 import { LibraryPage } from "./LibraryPage";
-import { format, nothingAt, parentOf, same, type Route } from "./routes";
+import { format, nothingAt, nothingToReopen, parentOf, same, type Route } from "./routes";
 import { PageBoundary } from "./ui/Boundary";
+import { reopening } from "./reopen";
 import { KeysDialog, pick, useKeys } from "./ui/Keys";
 import { usePaletteRuns } from "./usePaletteRuns";
 import { CommandPalette } from "./ui/CommandPalette";
@@ -567,6 +568,19 @@ function Canvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint]);
   const flowCapabilities = useMemo(() => flowCaps ?? [], [flowCaps]);
+  // Where the canvas's flow sends each secret it reads, and what is made with it (core's
+  // `sent_secrets`): the It may strip says it beside the secret, as the approval will.
+  const flowSent = useMemo(() => {
+    try {
+      const { nodes: ns, edges: es } = live.current;
+      if (ns.length === 0) return undefined;
+      return ev.sent_secrets(flowUnitHash(ns, es, ev, settings.port, settings)) as Record<string, string[]>;
+    } catch {
+      return undefined;
+    }
+    // live.current is read on purpose, as `flowCaps` above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint]);
   // The queues it sends to, by name: Try a request says what their messages came to.
   const sendsTo = useMemo(() => flowCapabilities.flatMap((c) => /^QueueSend\("(.*)"\)$/.exec(c)?.[1] ?? []), [flowCapabilities]);
   // What each node does with a secret (a request it is sent in, a write the host refuses, the
@@ -771,10 +785,11 @@ function Canvas({
       if (at.slug === slug && at.view) return onMode("edit");
       const open = tabOf(slug);
       if (open !== null) return switchTab(open);
-      const rec = await getFlow(slug).catch(() => null);
-      if (rec) return void (await onOpenFlow(rec));
-      if (deployments.some((d) => d.slug === slug)) return onView(slug);
-      toast(`There is no flow named "${slug}" to open.`, "bad");
+      // What it is now, asked of the server (reopen.ts): the page's own lists may not have come yet.
+      const found = await reopening(slug);
+      if (found.kind === "saved") return void (await onOpenFlow(found.flow));
+      if (found.kind === "deployed") return onView(slug);
+      toast(nothingToReopen(slug, samples().find((s) => s.name === slug)?.title), "bad");
     })()
       .catch((e: unknown) => toast(e instanceof Error ? e.message : String(e), "bad"))
       .finally(() => {
@@ -1337,7 +1352,7 @@ function Canvas({
       />
     )}
     <div className="hl-edit">
-    {!viewing && shown === "canvas" && <MayStrip items={mayItems} deployed={deployedUnit !== undefined} />}
+    {!viewing && shown === "canvas" && <MayStrip items={mayItems} deployed={deployedUnit !== undefined} sent={flowSent} />}
     {viewing && shown === "canvas" && <RunStrip slug={viewing} run={flow.selectedRun} unit={deployments.find((d) => d.slug === viewing)?.unit} />}
     <div
       className={[
@@ -1901,7 +1916,11 @@ function Editor({ me }: { me: Me }) {
       {error ? (
         <pre className="hl-error">{error}</pre>
       ) : (
-        <div className="hl-body">
+        // Busy while the core (the wasm) loads: every page here waits for it, and on a slow
+        // machine that is long. The e2e harness waits for this to end after a page loads
+        // (fixtures.ts's `settled`).
+        <div className="hl-body" aria-busy={catalog === null}>
+          {catalog === null && <div style={{ padding: 24, color: "var(--faint)" }}>loading the editor…</div>}
           <ReactFlowProvider>
             {catalog && (
               <Canvas

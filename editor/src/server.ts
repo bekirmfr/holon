@@ -96,6 +96,13 @@ function endSession(): void {
   window.dispatchEvent(new Event("holon:session-ended"));
 }
 
+/** Every request to the server, the one `fetch` here: past the browser's HTTP cache. Each answer
+ *  is live and the signed-in person's own, never one to keep; and through the cache, Chrome lets
+ *  one request for an address go at a time, the next waiting on it: on a busy machine one held
+ *  there held every later read of `/auth/me` past the 15 s a test waits, and with them the access
+ *  version a page follows (can.tsx). */
+const ask = (url: string, init: RequestInit = {}): Promise<Response> => fetch(url, { ...init, cache: "no-store" });
+
 /** `fetch` against the server, carrying who is signed in: the session's token, else the ID
  *  token of a sign-in through the server's identity provider (signin.ts). A 401 to what this tab
  *  is signed in with (not a token since replaced), or to none since its ID token expired, means
@@ -103,7 +110,7 @@ function endSession(): void {
  *  A request that gets no answer is told (the host card reads the host again). */
 async function api(url: string, init: RequestInit = {}): Promise<Response> {
   const token = getSession()?.token ?? signedIn()?.idToken;
-  const res = await fetch(url, token ? { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } } : init).catch(
+  const res = await ask(url, token ? { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } } : init).catch(
     (e: unknown) => {
       window.dispatchEvent(new Event("holon:unanswered"));
       throw e;
@@ -142,7 +149,7 @@ export const hostAddress = (): string => (BASE ? new URL(BASE).host : window.loc
 /** `GET /auth/state`: whether the server waits for its first admin, and where to sign in
  *  through a provider, when it has one. */
 export async function getAuthState(): Promise<{ setup: boolean; oidc: AuthConfig | null }> {
-  return asJson(await fetch(`${BASE}/auth/state`));
+  return asJson(await ask(`${BASE}/auth/state`));
 }
 
 type SignedInAs = { token: string; name: string; kind: Kind; role: Role };
@@ -155,7 +162,7 @@ const keep = async (res: Response) => {
 export const setUp = (code: string, name: string, password: string) => post(`${BASE}/auth/setup`, { code, name, password }).then(keep);
 export const signInWith = (name: string, password: string) => post(`${BASE}/auth/sign-in`, { name, password }).then(keep);
 /** Whose invite link `token` is. */
-export const inviteFor = async (token: string) => asJson<{ name: string }>(await fetch(`${BASE}/auth/invite?token=${encodeURIComponent(token)}`));
+export const inviteFor = async (token: string) => asJson<{ name: string }>(await ask(`${BASE}/auth/invite?token=${encodeURIComponent(token)}`));
 export const acceptInvite = (token: string, password: string) => post(`${BASE}/auth/invite`, { token, password }).then(keep);
 /** Whether whoever is signed in may do each of `actions` (`run.decide`…), as the server's `can`
  *  answers it: true, or the words it would refuse in. On a flow, or one of its approval points. */
@@ -860,7 +867,7 @@ export type SecretHistory = {
 
 /** `GET /auth/config`: where to sign in, when the server has an identity provider; else null. */
 export async function getAuthConfig(): Promise<AuthConfig | null> {
-  const res = await fetch(`${BASE}/auth/config`).catch(() => null);
+  const res = await ask(`${BASE}/auth/config`).catch(() => null);
   return res && res.ok ? ((await res.json()) as AuthConfig) : null;
 }
 
@@ -1391,7 +1398,7 @@ export type RunReplayed = {
 };
 
 /** `GET /deployments/<slug>/replay`: a version replayed offline on the deployment's recent runs. */
-export type Replayed = { unit: string; replayed: number; same: number; differ: number; cant_tell: number; runs: RunReplayed[] };
+export type Replayed = { unit: string; replayed: number; same: number; differ: number; cant_tell: number; not_reached: number; runs: RunReplayed[] };
 
 /** `GET /deployments/<slug>/replay?unit=<hash>` — the version `unit` (staged, or a proposal's)
  *  replayed on the deployment's last `runs` runs, offline: nothing is sent or changed. */

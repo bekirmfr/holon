@@ -18,8 +18,8 @@ the editor show).
 | `Action("name")` | can be run by hand: name | `export const name = action(…)` |
 | `Random` | use randomness | `random` |
 | `HttpRequest("host")` | call https://host | `await api.get(…)`, `api.post(…)`, … with `import api from "host:host"`; the host is its import |
-| `SecretRead("name")` | read the secret "name"; when the flow sends it in a request, "…, and send it to https://host"; in a database read's values, "…, and send it to the database "shop""; where what a call answers to it goes (a token), "…; what is answered to it goes to https://api" | a secret's import, `import name from "secret:name"`, read; it is sent to a host when it, or something computed from it, reaches a request's path, headers or body (an `hmac_sha256`, `sha256` or `secure_equals` of it isn't), and to a database when it is one of a read's `$1`, `$2`, … |
-| `SecretAnswer("name")` | answer its callers with the secret "name", or with what is computed from it | a route whose answer the secret reaches: `return name`, `return { k: base64(name) }`; an `hmac_sha256`, `sha256` or `secure_equals` of it, or a call's answer, isn't one |
+| `SecretRead("name")` | read the secret "name"; when the flow sends it in a request, "…, and send it to https://host"; in a database read's values, "…, and send it to the database "shop""; where what a call answers to it goes (a token), "…; what is answered to it goes to https://api"; where a hash or a signature of it goes, "…; a hash or signature made with it goes to its callers". For those two, "its callers" is a destination: a route that answers with one | a secret's import, `import name from "secret:name"`, read; it is sent to a host when it, or something computed from it, reaches a request's path, headers or body (an `hmac_sha256`, `sha256` or `secure_equals` of it whole isn't, as it is or spelled another way, such as its base64 or its bytes; of a part of it, such as `sha256(name.slice(0, 1))`, it is), and to a database when it is one of a read's `$1`, `$2`, …. A `sha256` or an `hmac_sha256` of it whole, and what a call answers to a request that carried it, aren't the secret, and nothing withholds or refuses them; each is followed from where it is made to where it leaves (a request, a route's answer), and said here. A Boolean ends a signature's trail (whether it matches is what it is for), and a response's `status` isn't what was answered |
+| `SecretAnswer("name")` | answer its callers with the secret "name", or with what is computed from it | a route whose answer the secret reaches: `return name`, `return { k: base64(name) }`, or that reads its flow's own data by it, a collection's item under a key computed from it or a file it names (found, waited on or failed, the answer tells); an `hmac_sha256`, `sha256` or `secure_equals` of it whole, a call's answer, or a database's rows read with it, isn't one; of a part of it (`secure_equals(name.slice(0, 4), req.query.p)`), it is, since a hash or a comparison of a part says the part |
 | `StateRead("key")` | read its state "key" | `state.key` read |
 | `StateWrite("key")` | write its state "key" | `state.key = …` |
 | `CollectionRead("c")` | read items of its collection "c" | `c[k]`, `c.list(…)` |
@@ -69,11 +69,13 @@ deploys with the item withheld, the handler's runs recorded, until a person gran
 
 Without `PrivateAddresses`, a call is refused when the host resolves to a private address
 (loopback, the private ranges, link-local and cloud metadata addresses, and their IPv6 forms),
-checked after DNS, on every redirect.
+checked after DNS, on every redirect. With it, a cloud's metadata service is still never reached
+(169.254.0.0/16, `100.100.100.200`, `fd00:ec2::254`, however written): it hands whoever asks
+the machine's credentials.
 
 A redirect is followed only to a host the deployment may call. To another host than the first,
-only `content-type`, `accept`, `accept-language` and `user-agent` go along: the flow's other
-headers (`authorization`, an API key) stay with the host they were meant for.
+none of the flow's headers go along, and no body: they stay with the host they were meant for
+(`authorization`, an API key, a secret put in any header).
 
 ## Limits
 
@@ -99,11 +101,12 @@ can change both columns
 | `max_response_bytes` | an outbound response's size | 10485760 (10 MiB) | 104857600 |
 | `max_header_bytes` | an outbound response's headers | 65536 | 262144 |
 | `max_redirects` | redirects followed | 10 | 20 |
-| `max_steps` | steps a run may take between two of its outbound calls (each node it evaluates, each item a function is applied to) | 10000000 | 200000000 |
+| `max_steps` | steps a run may take between two of its outbound calls (each node it evaluates, each item a function is applied to, and a step for each 32 items or 128 bytes a leaf reads or makes, at every level) | 10000000 | 200000000 |
 | `max_fuel` | instructions a run's `js()` functions may run in all between two of its outbound calls (each call runs on its own `module_fuel` or what is left of this, the less) | 4000000000 | 20000000000 |
 | `max_memory` | bytes a run may come to hold between two of its outbound calls: what it made since the last and keeps (a `js()` call's own memory is its `module_memory`, freed as it answers) | 268435456 (256 MiB) | 4294967296 (4 GiB) |
 | `max_await_seconds` | the longest a run may wait at `await` | 2592000 (30 days) | 7776000 (90 days) |
 | `max_waiting_runs` | runs waiting at once | 10000 | 100000 |
+| `max_concurrent_runs` | runs answered at once (a request's, a WebSocket's block): past it a request is answered 503 with `Retry-After`, a WebSocket's message waits its turn | 64 | 448 |
 | `max_call_depth` | flows a chain of calls may go through, one calling another's action | 3 | 8 |
 | `inline_file_bytes` | a file a run reads whole, or a range of one; a file a route answers with up to this is read before it is sent | 1048576 (1 MiB) | 16777216 |
 | `max_file_read_bytes` | bytes a run reads from files | 67108864 (64 MiB) | 1073741824 |
@@ -130,9 +133,14 @@ can change both columns
 A run fails and performs nothing when it takes more than `max_steps` steps between two of its
 outbound calls (or before the first, or after the last), when its `js()` functions want more than
 `max_fuel` instructions in all within one of those stretches, when it comes to hold more than
-`max_memory` bytes within one, or when it is past its time budget at the end of one of those
-stretches: the time is read between them, the steps, instructions and bytes are counted within
-them. The bytes are counted as they are made and looked at every step, and no step joins a text
+`max_memory` bytes within one, or when it is past its time budget (`run_budget_ms`, the whole
+run's): the steps, instructions and bytes are counted within each stretch, and the time is read
+as it steps, so a run that only computes stops at its budget as one that calls out does. A step
+is of the order of a node's work whatever the node does: a leaf that scans, writes or copies a
+list, a record, a text or bytes takes a step for each 32 items or 128 bytes of what it reads and
+makes, at every level (an item, a field or a length is only what it answers; an `append` or a `+`
+onto a value it alone holds, what it adds), so 10 million steps is seconds of computing, not
+minutes. The bytes are counted as they are made and looked at every step, and no step joins a text
 past 16,777,216 UTF-16 units, a list past 1,048,576 items or bytes past 64 MiB (it gives nothing
 instead), so a run goes past its memory by no more than one step makes. A run takes the same steps
 and instructions on any machine, and `holon verify` runs it again with up to the ceilings' steps,

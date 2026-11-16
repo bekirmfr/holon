@@ -244,6 +244,7 @@ pub(crate) mod stand_in {
         let Ok(mut ws) = tungstenite::accept_hdr(stream, record) else { return };
         inner.open.lock().unwrap().push(socket.try_clone().unwrap());
         // On the socket the reads use: on Windows, a clone's timeout is its own.
+        // not a bound: a tick of the stand-in's loop, which looks again
         let _ = ws.get_ref().set_read_timeout(Some(Duration::from_millis(20)));
         loop {
             let pending: Vec<Message> = inner.sent.lock().unwrap()[next..].to_vec();
@@ -275,11 +276,7 @@ mod tests {
     use super::*;
 
     fn eventually(what: &str, done: impl Fn() -> bool) {
-        let until = Instant::now() + Duration::from_secs(5);
-        while !done() {
-            assert!(Instant::now() < until, "never: {what}");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        assert!(crate::tests::soon(done), "never: {what}");
     }
 
     #[test]

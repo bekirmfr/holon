@@ -151,7 +151,15 @@ test("the It may strip says what an edit adds to what the flow may do; Problems,
   );
   await expect(may.locator(".hl-may__chip--new")).not.toHaveCount(0);
   await expect(may.locator(".hl-may__chip--new").first()).toContainText("new");
-  await expect(may.locator(".hl-may__chip--new").first()).toHaveAttribute("title", /seen/);
+  // The pill stands for the item, and says it whole in a tip as soon as the pointer is on it.
+  const added = may.locator(".hl-may__chip--new").first();
+  await expect(added).toHaveAttribute("data-item", /seen/);
+  await added.hover();
+  const tip = page.locator(".hl-may__tip");
+  await expect(tip).toContainText('collection "seen"');
+  await expect(tip).toContainText("new: a person approves it when this is deployed");
+  await page.mouse.move(0, 0);
+  await expect(tip).toHaveCount(0);
 
   // A mistake is listed in the bottom pane's Problems as it is typed; check counts it, and a click
   // on it goes there.

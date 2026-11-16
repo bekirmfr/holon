@@ -3,7 +3,8 @@
 // The flow sends its key to httpbin.dev in a header, and httpbin.dev answers with the headers it
 // got, the key among them. The flow then posts that answer to postman-echo.com. Its approval says
 // "read the secret demo_key, and send it to https://httpbin.dev; what is answered to it goes to
-// https://postman-echo.com": the answer may go there, the key may not. The graph can't tell the
+// its callers and https://postman-echo.com": the answer may go there, the key may not (the route
+// answers with what postman-echo said, so its callers are named too). The graph can't tell the
 // key inside the answer, but the host finds it by its value in the second request and doesn't
 // send it. That call answers {status: 0, error: "blocked_secret"}, naming the secret, never its
 // value; `holon verify` on an export checks every request that carried it went where it was shown.

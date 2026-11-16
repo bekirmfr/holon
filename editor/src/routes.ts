@@ -318,6 +318,14 @@ export const follow = (to: Route, navigate: (r: Route) => void) => (e: MouseEven
   navigate(to);
 };
 
+/** Why `#editor.<slug>` opens nothing: no flow of that name is saved here (nor, as far as the
+ *  editor knows, deployed). Mostly a tab never saved, its address kept over a reload: a sample's
+ *  copy, say, which `sampleTitle` names when `slug` is a sample's name. */
+export function nothingToReopen(slug: string, sampleTitle?: string): string {
+  const why = `There is no flow named "${slug}" saved here: a tab never saved closes with the page.`;
+  return sampleTitle === undefined ? why : `${why} The sample ${sampleTitle} opens again from the Library.`;
+}
+
 /** Whether `name` can be a flow's own page address (it is not a page's name). */
 export function flowAddressable(name: string): boolean {
   return SLUG.test(name) && !isPage(name);

@@ -10,7 +10,6 @@ import { findRoutes } from "./derive";
 import { useDialog } from "./Dialog";
 import { StateChips } from "./FlowCells";
 import { HistoryTab } from "./HistoryPane";
-import { describeItem } from "./holon";
 import { LogsPane } from "./LogsPane";
 import { StateTab } from "./FlowState";
 import { StatusTab } from "./FlowStatus";
@@ -25,6 +24,7 @@ import { gateOf, useCan, type Answer, type Can } from "./can";
 import { tallyRows } from "./tallies";
 import { useFlowLog } from "./useFlowLog";
 import { useKeys, useListKeys } from "./ui/Keys";
+import { Said } from "./SecretSaid";
 
 /** The tabs a flow's page has, in order, and what each is called. */
 const TABS: [FlowTab, string][] = [
@@ -251,7 +251,7 @@ function Draft({ slug, manifestOf, deployTo, onEdit, navigate, mayDeploy }: { sl
         <ul className="hl-flow__may">
           {may.items.map((item) => (
             <li key={item} title={item} className="hl-flow__what">
-              {describeItem(item)}
+              <Said item={item} />
             </li>
           ))}
         </ul>

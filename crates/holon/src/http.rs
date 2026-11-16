@@ -104,8 +104,19 @@ pub(crate) fn guarded(response: Response) -> Response {
 /// How long a request's body may take to arrive, all of it. Past it the client is told 408 and
 /// the request lets go of its admission (`Slots`, main.rs), so bodies that trickle in or stop
 /// can't hold every slot and lock everyone out, signing in included. The data plane's is its
-/// `body_timeout`, the same 30 seconds.
-pub(crate) const BODY_DEADLINE: Duration = if cfg!(test) { Duration::from_millis(600) } else { Duration::from_secs(30) };
+/// `body_timeout`, the same 30 seconds. The tests hold it too: under a short one, any test that
+/// sends a body failed with 408 on a loaded machine (102 of them in one run, audit R50); the tests
+/// of the deadline itself set one of their own ([`in_test::with_body_deadline`]).
+pub(crate) const BODY_DEADLINE: Duration = Duration::from_secs(30);
+
+/// The deadline a body is read by on this thread: [`BODY_DEADLINE`], or a test's own.
+fn body_deadline() -> Duration {
+    #[cfg(test)]
+    if let Some(deadline) = in_test::DEADLINE.with(std::cell::Cell::get) {
+        return deadline;
+    }
+    BODY_DEADLINE
+}
 
 /// Every body the control plane reads, read by the deadline and the cap.
 pub(crate) fn read_body(request: &Request) -> Result<Vec<u8>, Response> {
@@ -128,14 +139,15 @@ pub(crate) fn read_body(request: &Request) -> Result<Vec<u8>, Response> {
     if reader.is_err() {
         return Err(err(503, "the server can't read another request's body now: try again in a moment"));
     }
-    match got.recv_timeout(BODY_DEADLINE) {
+    let deadline = body_deadline();
+    match got.recv_timeout(deadline) {
         Ok(None) => Err(err(400, "body already consumed")),
         Ok(Some(Ok(bytes))) if bytes.len() as u64 > MAX_BODY_BYTES => Err(err(413, format!("request body exceeds {MAX_BODY_BYTES} bytes"))),
         Ok(Some(Ok(bytes))) => Ok(bytes),
         Ok(Some(Err(_))) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(err(400, "failed to read request body")),
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             given_up.store(true, std::sync::atomic::Ordering::Release);
-            Err(err(408, format!("the request's body took more than {} seconds to arrive", BODY_DEADLINE.as_secs_f64())).with_additional_header("Connection", "close"))
+            Err(err(408, format!("the request's body took more than {} seconds to arrive", deadline.as_secs_f64())).with_additional_header("Connection", "close"))
         }
     }
 }
@@ -362,7 +374,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             }
         } else if let Some(slug) = rest.strip_suffix("/replay") {
             if method == "GET" {
-                return verify::handle_get_replay(&state.store, &state.folders, &state.deployments, slug, request);
+                return verify::handle_get_replay(&state.store, &state.folders, &state.deployments, &state.replays, slug, request);
             }
         } else if let Some(slug) = rest.strip_suffix("/document") {
             if method == "GET" {
@@ -453,4 +465,22 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     Response::empty_404()
+}
+
+#[cfg(test)]
+pub(crate) mod in_test {
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    thread_local!(pub(super) static DEADLINE: Cell<Option<Duration>> = const { Cell::new(None) });
+
+    /// `f`, its bodies read by `deadline` (on this thread, the one a request is answered on), not
+    /// [`super::BODY_DEADLINE`]: a test of the deadline's own, without every other test living
+    /// under a short one.
+    pub(crate) fn with_body_deadline<T>(deadline: Duration, f: impl FnOnce() -> T) -> T {
+        let before = DEADLINE.with(|d| d.replace(Some(deadline)));
+        let done = f();
+        DEADLINE.with(|d| d.set(before));
+        done
+    }
 }
