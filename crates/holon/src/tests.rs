@@ -6543,6 +6543,86 @@ fn a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline() {
     let _ = stop.send(());
 }
 
+/// A sign-out answers 204 only when it ended the sign-in it came with, which is refused from
+/// then on; whatever else it came with goes on, and the answer says why. For each way a caller
+/// is let in (a session, a provider's sign-in, an agent's or a service's API token, the run
+/// file's token), and a session whose ending can't be kept: what sign-out answers, and whether
+/// the same credential is let in after. 204 exactly when it isn't, and a second sign-out of
+/// what ended finds it ended.
+#[test]
+fn a_sign_out_answers_204_only_when_it_ended_a_sign_in() {
+    use crate::oidc::tests::{provider, token};
+    let dir = std::env::temp_dir().join(format!("holon-sign-out-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut state = test_state();
+    let accounts = std::sync::Arc::new(crate::accounts::Accounts::open(dir.join("accounts.json").to_str().unwrap()).unwrap());
+    state.access = access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+    let pw = "correct horse battery";
+    let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", pw).unwrap();
+    accounts.set_email("ada", Some("ada@example.com".into()), "ada").unwrap();
+    accounts.use_oidc(provider());
+    accounts.add("scout", crate::accounts::Kind::Agent, "agent", "ada", "ada").unwrap();
+    accounts.add("ci", crate::accounts::Kind::Service, "editor", "ada", "ada").unwrap();
+    let call = |method: &str, url: &str, token: &str| {
+        let mut headers = vec![("Host".to_string(), "localhost:7420".to_string()), ("Authorization".to_string(), format!("Bearer {token}"))];
+        let body = if method == "POST" { b"{}".to_vec() } else { vec![] };
+        if method == "POST" {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        }
+        let r = route(&state, &Request::fake_http(method, url, headers, body));
+        let status = r.status_code;
+        (status, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    let let_in = |token: &str| call("GET", "/auth/me", token).0 == 200;
+    // What it signs in with, how it is made, the status sign-out answers, and what it says.
+    type Way<'a> = (&'a str, Box<dyn Fn() -> String + 'a>, u16, &'a str);
+    let ways: Vec<Way> = vec![
+        ("a session", Box::new(|| accounts.sign_in("ada", pw).unwrap().0), 204, ""),
+        ("a provider's sign-in", Box::new(|| token(serde_json::json!({ "email": "ada@example.com", "email_verified": true, "nonce": rand::random::<u32>() }))), 204, ""),
+        ("an agent's API token", Box::new(|| accounts.create_token("scout", "live", "ada").unwrap().0), 409, "revoke it"),
+        ("a service's API token", Box::new(|| accounts.create_token("ci", "live", "ada").unwrap().0), 409, "revoke it"),
+        ("the run file's token", Box::new(|| accounts.new_local("bma")), 409, "ends when the server stops"),
+    ];
+    for (way, make, want, says) in &ways {
+        let credential = make();
+        assert!(let_in(&credential), "{way}: let in before");
+        let (status, said) = call("POST", "/auth/sign-out", &credential);
+        assert_eq!(status, *want, "{way}: {said}");
+        assert!(said.contains(says), "{way}: {said}");
+        assert_eq!(let_in(&credential), status != 204, "{way}: let in after a {status} exactly when it wasn't ended");
+        if status == 204 {
+            assert_eq!(call("POST", "/auth/sign-out", &credential).0, 401, "{way}: a second sign-out finds it ended");
+        }
+    }
+    // Past the gate, as a sign-out raced by another finds it (the gate let it in a moment
+    // before): one that had ended, or a provider's token no longer accepted, ends nothing, and
+    // answers so.
+    let past_gate = |credential: &str| {
+        let headers = vec![("Authorization".to_string(), format!("Bearer {credential}")), ("Content-Type".to_string(), "application/json".to_string())];
+        let r = crate::auth::route(&state, &Request::fake_http("POST", "/auth/sign-out", headers, b"{}".to_vec()), &access::Caller::default()).unwrap();
+        let status = r.status_code;
+        (status, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    let ended = accounts.sign_in("ada", pw).unwrap().0;
+    assert_eq!(call("POST", "/auth/sign-out", &ended).0, 204);
+    let (status, said) = past_gate(&ended);
+    assert_eq!((status, said.contains("had ended already")), (401, true), "a session that had ended: {said}");
+    let signed = token(serde_json::json!({ "email": "ada@example.com", "email_verified": true, "nonce": 7 }));
+    let not_accepted = format!("{}.{}", signed.rsplit_once('.').unwrap().0, "AAAA");
+    assert_eq!(past_gate(&not_accepted).0, 401, "a provider's token not accepted");
+    assert!(let_in(&signed), "and the one it was made from goes on");
+    // A session whose ending can't be kept goes on, and the answer says so.
+    let session = accounts.sign_in("ada", pw).unwrap().0;
+    std::fs::remove_dir_all(&dir).unwrap();
+    let (status, said) = call("POST", "/auth/sign-out", &session);
+    assert_eq!(status, 500, "{said}");
+    assert!(said.contains("still signed in") && let_in(&session), "{said}");
+    std::fs::create_dir_all(&dir).unwrap();
+    assert_eq!(call("POST", "/auth/sign-out", &session).0, 204, "kept again, it ends");
+    assert!(!let_in(&session) && let_in(&ada), "only the one signed out");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn accounts_through_the_routes() {
     let mut state = test_state();

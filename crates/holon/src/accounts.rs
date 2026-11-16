@@ -1130,12 +1130,16 @@ impl Accounts {
         hold(&self.book).sessions.iter().find(|s| same(&s.hash, &hash) && s.expires_at > now).map(|s| s.expires_at)
     }
 
-    pub(crate) fn sign_out(&self, token: &str) {
+    pub(crate) fn sign_out(&self, token: &str) -> Result<bool, String> {
         let hash = hash_of(token);
-        let _ = self.change(|book| {
+        if !hold(&self.book).sessions.iter().any(|s| same(&s.hash, &hash)) {
+            return Ok(false);
+        }
+        self.change(|book| {
+            let before = book.sessions.len();
             book.sessions.retain(|s| s.hash != hash);
-            Ok(())
-        });
+            Ok(book.sessions.len() < before)
+        })
     }
 
     /// Sign out of a provider's sign-in: its ID token `token`, good until `until` (its expiry,
@@ -2015,7 +2019,8 @@ mod tests {
         let (a, first) = set_up();
         let (token, _) = a.sign_in("ada", PW).unwrap();
         assert_ne!(token, first);
-        a.sign_out(&token);
+        assert_eq!(a.sign_out(&token), Ok(true));
+        assert_eq!(a.sign_out(&token), Ok(false), "ended already");
         assert_eq!(a.who(&token), None);
         assert_eq!(a.who(&first).map(|w| w.name), Some("ada".into()), "other sessions stay");
         for _ in 0..MAX_FAILURES {

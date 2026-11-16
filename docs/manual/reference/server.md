@@ -471,7 +471,11 @@ provider says who each person here is, setting it (`POST /admin/oidc`) takes hol
 person holds: an admin; and while an access change that gives more waits for people, it is set
 only through this machine's run file. An ID token is good until it expires, wherever it is shown, so signing out
 with one (`POST /auth/sign-out`, the editor's **Sign out**) keeps it refused until then; another
-sign-in of theirs at the provider still is one.
+sign-in of theirs at the provider still is one. A sign-out answers 204 only when it ended the
+sign-in it came with: a session, or a provider's sign-in. An agent's or a service's API token is
+refused (409, revoke it instead), and so is the machine's run file (409, it ends when the server
+stops). One that had ended answers 401, and one whose ending couldn't be kept answers 500,
+saying they are still signed in.
 
 ## Secrets
 

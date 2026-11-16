@@ -292,20 +292,30 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 Ok(Response::empty_204())
             }));
         }
+        // 204 only when the sign-in it came with ended: anything else says why it goes on, or
+        // that it had ended (the gate let it in a moment before).
         ("POST", "/auth/sign-out") => {
             let token = request.header("Authorization").and_then(|h| h.strip_prefix("Bearer ")).map(str::trim).unwrap_or_default();
+            if accounts.local(token).is_some() {
+                return Some(err(409, "this is the machine's run file, which signs in while the server runs: it ends when the server stops"));
+            }
+            if token.starts_with("ht_") {
+                return Some(err(409, "an API token signs no one in to sign out of: revoke it to end it (on the People page, or holon people revoke <name> <id>)"));
+            }
             // A provider's ID token is good until it expires: it is kept refused until then.
-            if crate::oidc::looks_like_jwt(token) {
-                let until = accounts.oidc().as_ref().and_then(|oidc| oidc.verify(token).ok()).map(|identity| identity.expires_at);
-                if let Some(until) = until
-                    && let Err(e) = accounts.end_provider_sign_in(token, until)
-                {
-                    return Some(err(500, format!("couldn't sign you out: {e}")));
+            let ended = if crate::oidc::looks_like_jwt(token) {
+                match accounts.oidc().as_ref().and_then(|oidc| oidc.verify(token).ok()).map(|identity| identity.expires_at) {
+                    Some(until) => accounts.end_provider_sign_in(token, until).map(|()| true),
+                    None => Ok(false),
                 }
             } else {
-                accounts.sign_out(token);
+                accounts.sign_out(token)
+            };
+            match ended {
+                Ok(true) => Response::empty_204(),
+                Ok(false) => err(401, "your sign-in had ended already"),
+                Err(e) => err(500, format!("couldn't sign you out: {e}: you are still signed in")),
             }
-            Response::empty_204()
         }
 
         // ── people (the gate lets only admins this far, and owners to their principals' tokens) ──
