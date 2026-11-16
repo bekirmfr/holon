@@ -265,7 +265,7 @@ impl Conn {
             _ => failed.then_some(500),
         };
         let body = match on {
-            _ if run.secret_fed.derives_output(0) => Some(crate::taint::WITHHELD.to_string()),
+            _ if run.withholds_output(0) => Some(crate::taint::WITHHELD.to_string()),
             "close" => None,
             _ => Some(recorder::body_text(&answer.body)),
         };

@@ -138,8 +138,14 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
 3. **Every run again** (`rerun`): the same unit, request, state, clock and random, its outbound
    answers and collection reads from the entry, through the same core and rounds, compared with
    its run id, outputs, effects and status. A node that computed with a secret or a resume token
-   can't be computed again; what the log kept for it stands in (`Asserting`), and the report counts
-   those runs and nodes (`given`). A run that failed is run again too, its status aside: what it
+   can't be computed again; what the log kept for it stands in (`Asserting`), and the report names
+   each such node by its leaf and the secrets and tokens it was fed (`given`, `Stood`), by run.
+   Not every leaf fed one: those core lists as exact on a mark (`taint::on_a_mark`: the ones that
+   move a value, and `secure_equals` where each mark has a fingerprint) are computed on the
+   placeholder, and the log's record of them is held to what they give (`Asserting::computes`).
+   What is taken from the log is held to its leaf's shape (`shaped`: the outputs' number and
+   types, 32 bytes for a hash) and, across the export, to itself (`Taken`): one leaf, the same
+   inputs, the same record. A run that failed is run again too, its status aside: what it
    computed, and what its writes made of its state (none, where its error says the commit refused
    them: `firing::STATE_NOT_WRITTEN`). Runs that can't be run again at all (panicked, no outputs
    kept for such a node, failed and gets further run again, a file read whose text neither the
@@ -225,8 +231,12 @@ and in the deploy dialog (`ReplayRuns.tsx`); the sample `price-rules` is the flo
   written took 492–931 ms before sealing and 528–792 ms after, on the soaks' `notes-api` (storage
   L4 step 9). A log in memory only (`--deployments :memory:`) keeps every run.
 - **Some runs can't be re-run**: those computed from a secret are checked only around the node
-  the log stands in for; budget failures and file reads without their text are counted, not
-  checked.
+  the log stands in for; one that computed from a secret something no mark stands for (a true or
+  false, a number, a short text; or inside a function applied to each item) isn't run again, and
+  its reason names the leaf and the secret (`withheld_why`); budget failures and file reads
+  without their text are counted, not checked. A run that comes out other than its entry is
+  skipped, not said to differ, whenever its timeline has a node that may compute from a secret
+  with no outputs kept (`left_out`).
 - **An unrecorded run leaves no entry** ([G8](../themes/resilience.md#g8-an-unrecorded-run-leaves-no-entry-failed-or-not-and-is-counted)),
   so verify can say nothing of it; a run that panics leaves none either (G3).
 - **Exports are whole**: one JSON value made in memory; nothing streams or exports incrementally.

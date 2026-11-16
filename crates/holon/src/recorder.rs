@@ -184,15 +184,31 @@ pub struct LogEntry {
     /// logged none, and `holon verify` stands in the same marks. Absent in entries logged before.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub secrets: BTreeMap<String, String>,
+    /// What each secret it was given is held to, by name ([`Committed`]): where its value is
+    /// kept, and a commitment to the value. Beside `secrets`, which stays what a mark reads as.
+    /// Absent in entries logged before, and for a secret whose salt the store couldn't open.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub committed: BTreeMap<String, Committed>,
     /// Whether text the run had looked like a mark the log writes in place of a value it never
     /// holds (`‹secret:name›`, `‹token:name›`), and was escaped: each `‹` of its own before one
     /// written twice, so that a mark is only ever one the log wrote (`secrets::write_marked`).
     /// Absent when nothing was, and in entries logged before look-alikes were escaped.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub escaped: bool,
+    /// Each value the run computed from a secret that its marks stand for (`‹derived #7c1e9a02›`),
+    /// by its whole hash, in hex, in order: `secrets::derived_hash` of the value, keyed by the
+    /// salts of the secrets the run was given and bound to the run's id. A mark is the first
+    /// eight digits of one of these. Whoever later holds the secrets and their salts computes
+    /// the value again and compares; without them it says nothing of the value. Absent when the
+    /// run computed none, and in entries logged before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derived: Vec<String>,
     /// The credentials its calls answered, until the entry is logged (`log_run`): not part of it.
     #[serde(skip)]
     pub answered: AnswerTokens,
+    /// The values it computed from a secret, until the entry is logged: not part of it.
+    #[serde(skip)]
+    pub born: Born,
     /// The mails it sent, through which and each message whole, until the entry is logged and
     /// they are spooled (mails.rs): the log keeps them in `performed`, their attachments by hash.
     #[serde(skip)]
@@ -279,6 +295,43 @@ impl std::fmt::Debug for AnswerTokens {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "AnswerTokens({} kept out of sight)", self.0.len())
     }
+}
+
+/// The values a run computed from its secrets (`secrets::born`), each with its hash, on their way
+/// to the redactor that writes a mark for each wherever the run's record holds it: never
+/// serialized, never printed.
+#[derive(Clone, Default)]
+pub struct Born {
+    /// (the value's hash in hex, the value), in the hashes' order.
+    pub values: Vec<(String, String)>,
+    /// Whether these are every value the run computed from a secret: then its record shows what
+    /// is computed from one with each such value as its mark. Otherwise it withholds whole what
+    /// may be computed from one, as a mark can't stand for all of it.
+    pub whole: bool,
+}
+
+impl std::fmt::Debug for Born {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Born({} kept out of sight, whole: {})", self.values.len(), self.whole)
+    }
+}
+
+/// What a run's entry says of one secret it was given, beyond the version and fingerprint
+/// its marks name: enough for whoever is later handed the value and its salt to know it is the
+/// one the run had, and nothing a value can be guessed from.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Committed {
+    /// Where the value is kept: `local` (sealed in the store, one value for a version) or
+    /// `reference` (kept elsewhere, where it can change under one version).
+    pub kind: String,
+    /// `secrets::commitment` of the value: SHA-256 over the secret's owner, name and version,
+    /// the value's salt and the value, in hex. The salt is 32 random bytes sealed in the store,
+    /// so the value can't be guessed from it.
+    pub commitment: String,
+    /// Whether it is the server's own secret, read by a deployment with none of that name: its
+    /// owner in the commitment is then the server (`secrets::SERVER`), not the deployment.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub server: bool,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -399,7 +452,7 @@ pub struct NodeTiming {
     /// Why a module at this node gave nothing (the engine's words: out of fuel, a trap, a js
     /// body's exception), or what a `throw` here said, when it did: what `explain` says beside the
     /// statement. Redacted like the rest of the entry, and withheld at a node that may compute
-    /// with a secret, as its outputs are (`firing::without_secret_derived`).
+    /// with a secret (`firing::without_secret_derived`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -2326,8 +2379,11 @@ mod tests {
             claims: vec![],
             by: None,
             secrets: BTreeMap::new(),
+            committed: BTreeMap::new(),
             escaped: false,
             answered: AnswerTokens::default(),
+            derived: Vec::new(),
+            born: Born::default(),
             mails: Vec::new(),
             queued: Vec::new(),
         }

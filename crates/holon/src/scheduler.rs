@@ -165,9 +165,14 @@ pub(crate) fn fire_one_clock_tick(
         performed: logged_performed(&run, |_, p| p.clone()),
     };
     // Redacted as its log entry is: the history is read by whoever may read the deployment.
-    redact_tick(&mut tick, &Redactor::of(secrets));
-    redact_tick(&mut tick, &Redactor::tokens(&waits.tokens).and(Redactor::handed(&calls::handed(&run.rounds))));
-    redact_tick(&mut tick, &Redactor::answers(&run.answered.0, secrets));
+    // Of everything at once, the longest value first: what the run computed from a secret may
+    // hold the secret, and marked for the secret first it would no longer be found.
+    let redactor = Redactor::of(secrets)
+        .and(Redactor::tokens(&waits.tokens))
+        .and(Redactor::handed(&calls::handed(&run.rounds)))
+        .and(Redactor::answers(&run.answered.0, secrets))
+        .and(Redactor::born(&run.born));
+    redact_tick(&mut tick, &redactor);
 
     {
         let mut deployments = deployments.lock().unwrap();

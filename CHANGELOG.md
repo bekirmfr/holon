@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **A run that computed with a secret is checked offline, and its record marks what it computed.**
+  Everything a run computed from a secret was left out of its record whole, by the graph alone
+  (the step's outputs, the header it was sent in, the answer), and `holon verify` never ran such a
+  run again: it said the step was "too large, or too deep". Now a text of 6 characters or more
+  that a step computed from a secret is written as `‹derived #7c1e9a02›` wherever the run's record
+  holds it, found by its value as a secret is, and the entry lists each such value by a keyed hash
+  only the server can make (`derived`); one value has one mark through a run and another in the
+  next. `holon verify` runs the run again on the marks. A value no mark stands for (a true or
+  false, a number, bytes, a short text) is withheld as before with what follows from it, and the
+  check says that is why the run wasn't run again. A hash or a signature of a part of a secret is
+  such a value and is marked; one of the secret whole is kept as it is.
+- **`holon verify` says what it took from the log, and holds it to itself.** A step fed a secret
+  can't be computed without it, so its record is taken. The check now computes on the marks the
+  steps that only move a secret (into a text, a list, a record) or compare it whole
+  (`secure_equals`), and names each one it did take, by its leaf and what it was fed:
+  "hmac_sha256 fed the secret api_token v1 #4fb07bc6: 1 node in 1 run: 0, as recorded". What it
+  takes must be the leaf's: as many outputs as the leaf has, each of its type, a `sha256` or an
+  `hmac_sha256` of 32 bytes in the node's encoding (or the one mark of a value computed from a
+  secret), and one record for one leaf fed the same inputs across the export. A line that says
+  other differs.
+- **A run's entry commits to each secret it was given.** A run's entry named a secret's value by
+  a version and a 32-bit fingerprint only the server can make: nothing held the server to that
+  value. Each value now has a salt of its own (drawn once, sealed in the secrets store, the same
+  after a restart), and the entry carries a commitment to the value beside its list of secrets
+  (`committed`: SHA-256 over the secret's owner, name and version, the salt and the value).
+  `holon verify` holds an export to it: every mark of a secret in a line reads the fingerprint
+  its list has, and one value has one commitment across the export. The export's format stays
+  `holon-runs/1`, and a line logged before reads as it did.
 - **A `#` in a flow's code no longer hangs what reads it.** The count that bounds how deep a
   text nests read nothing at a `#` outside a string or a comment (`a #b`, a private name) and
   read the same place again, forever: `holon check`, the language server as `#` was typed, an

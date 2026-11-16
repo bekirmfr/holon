@@ -330,7 +330,7 @@ pub(crate) fn shown_of(
         .map(|w| {
             w.approval.as_ref()?;
             let shown = match &w.shows {
-                Some(_) if run.secret_fed.input(&w.path, 0).is_derived() => Shown::Shows(crate::taint::WITHHELD.into()),
+                Some(_) if run.withholds_input(&w.path, 0) => Shown::Shows(crate::taint::WITHHELD.into()),
                 Some(v) => Shown::Shows(json(v)),
                 None => Shown::Input(json(&input_of(kind, inputs, sourced)?)),
             };

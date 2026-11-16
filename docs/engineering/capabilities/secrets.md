@@ -65,6 +65,21 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   old one current as a new version. Every change, and a source that stops or starts reading, is a
   line of `<secrets>.audit.jsonl`: what, when, version and source, never a value. A value under
   `MIN_SECRET_LEN` (6) is refused: it would match ordinary text.
+- **A salt for each value.** The first time a value is read (set here, or fetched from where it
+  is kept), the store draws it 32 random bytes and seals them as it seals a value, bound to the
+  secret's name and version and the value's fingerprint (`SecretStore::salt_of`,
+  `SecretsFile::salts`). A reference's value changes under one version, so a salt is a value's:
+  one that comes back has its first salt again. It is the same after a restart, kept when its
+  version is dropped or its secret removed, and gone with a deleted deployment. A deployment's
+  current salts are in memory beside its values (`Resolved::salts`).
+- **A commitment in each run's entry.** Beside the version and fingerprint of each secret a run
+  was given (`secrets`), its entry holds what the secret is held to (`committed`,
+  `recorder::Committed`): `local` or `reference`, and `secrets::commitment`, a SHA-256 over the
+  secret's owner (the deployment, or the server), name and version, the value's salt and the
+  value, each with its length. Whoever later holds the value and its salt computes it again;
+  without the salt it says nothing of the value. `holon verify` holds an export to it as far as
+  it can without the value: one value, one commitment in every run, and each mark of a secret
+  set here reading the fingerprint its entry lists (`verify::listed_secrets`).
 - **The server's own** are kept under `SERVER` (`*`) and read by a deployment with none of its
   own of that name; `--to` caps where one may go (`SecretStore::refuses` at deploy).
 - **Redacted.** `Redactor::of(vault)` pairs each current and retired value, and its JSON-escaped
@@ -78,10 +93,26 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   read `‹token:name #…›` (`Redactor::answers`), resume tokens `‹token:name›`.
 - **Followed.** Core's taint walk follows a secret's value through the graph as literal or
   derived, cut by a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`), a Boolean or a call's
-  answer. What is derived from one is withheld from the log (`WITHHELD`); a state, collection,
-  file, database or channel write of a secret or of what is derived from one is refused
-  (`firing.rs`); a call to another flow's action carrying one is `refused` (`calls.rs`); a route
-  answers with one only where `SecretAnswer("name")` is granted.
+  answer. A state, collection, file, database or channel write of a secret or of what is derived
+  from one is refused (`firing.rs`); a call to another flow's action carrying one is `refused`
+  (`calls.rs`); a route answers with one only where `SecretAnswer("name")` is granted.
+- **What is derived is marked, or withheld.** The walk names the leaves that make something of a
+  secret (`SecretFed::makes`): each whose output may be computed from one and isn't only what it
+  was handed, moved (`PASSES_LITERALLY`, less `sort` and `unique`, and less a leaf a secret
+  reaches at an input that only chooses). Every derived value in a run is what such a leaf gave,
+  or holds it. After a run, `secrets::born` reads what each maker gave off the timeline: a text
+  of `MIN_SECRET_LEN` or more gets a hash, `derived_hash`: HMAC-SHA-256 under a key made of the
+  salts of the secrets the run was given (`derived_key`), of the run's id and the value. The
+  entry lists the hashes (`derived`), and `Redactor::born` writes `‹derived #` and the first
+  eight digits wherever the run's record holds the value, a secret's own mark first where a
+  value is both. That holds for the whole record only if the makers are all there (`Born::whole`):
+  every deriving node followed and no deeper than `Timer::DEPTH` (`SecretFed::followed_to`: none
+  inside a function `map` or `fold` applies, a module), the run kept a timeline, and each maker
+  gave a text a mark stands for, one that reads the same written as JSON. Otherwise the record
+  withholds what may be derived, by the graph alone, as before (`WITHHELD`:
+  `FiredRun::withholds_output`, `withholds_effect`, `withholds_input`; a node's outputs left out
+  by `without_secret_derived`), and the marks it does have still cover those values wherever
+  else they turn up.
 - **Where it goes.** `taint::sent_secrets` names each secret's destinations (hosts, `db:` for a
   database read's parameters, `answer:` for what a call answers to it, `made:` for a hash or a
   signature made with it, and for those two `@callers` when a route answers with one); the
@@ -114,9 +145,16 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
 ## 4. Reach and limits
 
 - **Redaction catches literal values** (and their JSON escaping), nothing transformed: a value
-  hashed, encoded or sliced isn't recognised by value. The taint walk withholds what the graph
-  derives; a value it can't follow (echoed back by an API and passed on) is caught only while it
-  is literal.
+  hashed, encoded or sliced isn't recognised by value. The taint walk marks or withholds what the
+  graph derives; a value it can't follow (echoed back by an API and passed on) is caught only
+  while it is literal.
+- **A mark stands for a text of 6 characters or more.** A true or false, a number, bytes, a
+  list, a record, a short text, and a text JSON escapes leave the run's record withheld whole,
+  and so does a secret read inside a function applied to each item, inside a module, or deeper
+  than the timeline records. Bytes could be marked and aren't yet.
+- **A derived mark is a run's own.** The same value has another mark in the next run, so
+  `verify` can't hold one run's record of a step that made a value to another's, as it does for
+  a step that gave a hash.
 - **Token fields by name.** An answered credential under another field name is followed by the
   graph but not marked as a token.
 - **No run-time check on a database's parameters**: they go where the graph says, to the
@@ -131,7 +169,11 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
 
 ## 5. What the tests hold
 
-- secrets.rs: `a_store_keeps_values_sealed_and_survives_a_restart`,
+- holon-core taint.rs: `a_leaf_makes_something_of_a_secret_unless_it_only_moves_what_it_was_handed`.
+- secrets.rs: `a_value_computed_from_a_secret_has_one_mark_in_a_run_keyed_by_the_runs_salts`,
+  `a_value_has_one_salt_drawn_once_sealed_and_kept_across_restarts`,
+  `what_a_run_records_of_a_secret_is_where_it_is_kept_and_a_commitment_under_its_salt`,
+  `a_store_keeps_values_sealed_and_survives_a_restart`,
   `a_missing_or_wrong_key_refuses_instead_of_starting_empty`, `versions_are_kept_and_old_values_still_redacted`,
   `a_mark_names_the_version_and_a_fingerprint_of_the_value`, `a_vault_value_follows_its_source_and_outlives_an_outage_only_briefly`,
   `a_rollback_restores_an_older_version_as_a_new_one_and_everything_is_audited`,
@@ -140,14 +182,17 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   `the_servers_secret_is_read_where_a_deployment_has_none_and_keeps_its_cap`.
 - sealing.rs: `a_sealed_value_opens_only_where_it_was_sealed`; secret_sources.rs:
   `references_parse_and_only_holon_variables_can_be_named`, `a_dotenv_file_reads_like_the_usual_tools`.
-- tests.rs: `a_secret_reaches_its_runs_and_nothing_else`, `a_secret_computed_into_something_else_stays_out_of_the_log`,
+- tests.rs: `a_runs_record_reads_the_same_whatever_its_secret` (one flow run with two secrets:
+  the two records read the same but for marks, hashes and commitments, in each way a flow
+  computes from a secret), `a_secret_reaches_its_runs_and_nothing_else`, `a_secret_computed_into_something_else_stays_out_of_the_log`,
   `what_is_computed_from_a_secret_is_neither_kept_nor_logged`, `a_secret_goes_only_where_its_approval_shows_it_going`,
   `the_servers_secret_goes_only_where_an_admin_said_it_may`, `a_token_a_call_answers_with_a_secret_is_kept_out_of_the_log_and_out_of_state`,
   `a_route_answers_with_a_secret_only_where_a_person_approved_it`, `a_run_shows_which_secret_value_it_had_and_still_checks_after_it_rotates`,
   `a_secret_stays_out_of_files_and_of_what_the_log_keeps_of_them`, `a_secret_is_never_sent_to_another_flow`.
 - **Samples**: `guarded-api` (sources, versions, rollback), `sign-payload` (verify with a secret),
   `stripe-to-slack`, `echoed-key`, `client-credentials`, `license-check` (where each goes),
-  `browser-key` (`SecretAnswer`), `shared-key` (the server's, capped). All deploy and answer in
+  `browser-key` (`SecretAnswer`), `shared-key` (the server's, capped), `basic-auth` (a value
+  computed from a secret, marked and run again; one no mark stands for, withheld). All deploy and answer in
   `sweep.e2e.ts`; `shared-key` (its refusal) and `guarded-api` (versions in Settings) have tests in
   `samples.e2e.ts`, as does an env secret picked from `HOLON_SECRET_…` names with its dotenv file.
   What the approval says beside each secret is `touches.rs`'s `a_secret_s_row_says_where_it_goes`,

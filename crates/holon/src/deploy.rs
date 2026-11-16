@@ -1523,7 +1523,7 @@ pub(crate) fn run_action(
     entry.request = Some(SValue::from_core(&input));
     entry.by = by.map(String::from);
     let answer_json = answer.as_ref().map_or(Some("null".to_string()), holon_core::stringify_json);
-    entry.response_body = Some(if run.secret_fed.derives_output(0) { crate::taint::WITHHELD.to_string() } else { answer_json.clone().unwrap_or_default() });
+    entry.response_body = Some(if run.withholds_output(0) { crate::taint::WITHHELD.to_string() } else { answer_json.clone().unwrap_or_default() });
     match durable::park_if_waiting(deployments, store, slug, &action.handler, "trigger", Some(action.label.clone()), action.log, &inputs, &sourced, &run, &waits) {
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
