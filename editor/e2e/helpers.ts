@@ -180,11 +180,17 @@ export function notices(page: Page): Locator {
   return page.getByRole("region", { name: "notices" });
 }
 
-/** Answer the question open in the page with Enter, once it takes an answer. A question waits a
- *  moment after it shows, and after each key pressed while it waits, its answers disabled till
- *  then (Dialog.tsx's ARM_MS): the Enter someone was typing for the page can't answer it. A click
- *  waits for that by itself; a key pressed does not. */
-export async function enter(page: Page) {
+/** Answer the question open in the page with `key` (Enter, or an answer's letter), once it takes
+ *  an answer. A question waits a moment after it shows, and after each key pressed while it waits,
+ *  its answers disabled till then (Dialog.tsx's ARM_MS): the Enter or the letter someone was
+ *  typing for the page can't answer it. A click waits for that by itself; a key pressed does not,
+ *  so a key that answers goes through here (Escape, a no, is taken at once). */
+export async function answer(page: Page, key: string) {
   await expect(page.locator('[aria-modal="true"] button[aria-disabled="true"]')).toHaveCount(0);
-  await page.keyboard.press("Enter");
+  await page.keyboard.press(key);
+}
+
+/** Answer the question open in the page with Enter, once it takes an answer (`answer`). */
+export async function enter(page: Page) {
+  await answer(page, "Enter");
 }

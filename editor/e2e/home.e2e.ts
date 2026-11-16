@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { APIRequestContext } from "@playwright/test";
 import { expect, HOLON, SAMPLE_SHIFT, SAMPLES, SERVER, test } from "./fixtures";
-import { gotoPage, navLink, nodesLevel, openSample, statementsLevel } from "./helpers";
+import { answer, gotoPage, navLink, nodesLevel, openSample, statementsLevel } from "./helpers";
 
 /** Wait until the server holds what was just changed (the editor saves as it changes), so a
  *  reload reads it back rather than racing the last save. */
@@ -206,7 +206,7 @@ test("closing a changed tab asks: Save and close saves it, then closes it", asyn
   await expect(dialog).toContainText('"hello-api" has unsaved changes.');
   await expect(dialog.getByRole("button")).toHaveText(["kKeep it open", "dDiscard", "sSave and close"]);
   // Keep it open (k): nothing changes.
-  await page.keyboard.press("k");
+  await answer(page, "k");
   await expect(dialog).toHaveCount(0);
   await expect(tabs.getByRole("tab")).toHaveText([/^Home/, /^hello-api/]);
   // Save and close: saved on the server with the change, closed, and reopened as saved.
