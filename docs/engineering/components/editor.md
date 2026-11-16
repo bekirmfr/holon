@@ -220,16 +220,22 @@ tests when run at `f5f3b39`. Most run against the real wasm core, loaded from `e
 missing asset) and `the_built_in_editor_is_served`.
 
 **End to end** (`npm run e2e`, Playwright; CI's `e2e.yml` on main, nightly, and a pull request
-labelled `e2e` or a release's: two shards, `--fully-parallel`, traces kept on failure). Sixteen
-files, 90 tests counted by their `test(` calls; the sweep skips `atlas-notes` and `ledger-watch`
-without `HOLON_TEST_MONGODB` and `HOLON_TEST_POSTGRES`
+labelled `e2e` or a release's: two shards, `--fully-parallel`, traces kept on failure). Eighteen
+files, 131 tests as `npx playwright test --list` counts them on 2026-11-16, 23 of them the
+sweep's; the sweep skips `atlas-notes` and `ledger-watch` without `HOLON_TEST_MONGODB` and
+`HOLON_TEST_POSTGRES`
 ([Resilience §4](../themes/resilience.md), [Testing](../themes/testing.md)).
 
 - `sweep.e2e.ts`: every sample `samples.rs` lists, with no browser: its text deployed with
   `holon deploy` (which builds the unit the editor's Deploy builds), its port moved, a request
-  sent to it and found in its log, then removed. One test, a step a sample, about a minute; its
-  failures are listed together, each by its sample's name (as one test, it weighs as one in the
-  shards' split by count).
+  sent to it and found in its log, then removed. A test for every four samples, each sample a
+  step with a limit of its own (120 s), the test's limit theirs together, so the sweep's bound
+  grows with the samples and a slow runner fails the sample that is slow; a test's failures are
+  listed together, each by its sample's name. Four to a test because the shards cut the tests,
+  in file order, into halves by count, and four samples take about one editor test's time on
+  CI (3.6 s a sample, 16 s an editor test, main on 2026-11-16): the shards' halves then come
+  out about even. The first test compares the samples the tests hold with the ones
+  `holon new --help` lists from `samples.rs`'s compiled list, so a sample without a test fails.
 - `samples.e2e.ts`: "the library lists every sample" (the titles read from `samples.rs`, so none
   is left out); then a test per feature only the editor shows, opened from the flows page and
   deployed through the consent screen, most replaying a run exactly in view mode.
