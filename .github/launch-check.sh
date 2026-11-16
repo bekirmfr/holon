@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The launch repository's check: no file meant only for the development phase goes out.
 #
-# Design notes and plans may be committed with the marker `holon:dev-phase-only` in their text
+# Design notes and plans may be committed with the dev-phase-only marker (below) in their text
 # (the owner's decision, 2026-11-15); the launch repository is a fresh one cut without them. This
 # lists every file in a tree that holds the marker, and fails when there is any, so a tree meant
 # for the launch repository is checked before it is pushed.
