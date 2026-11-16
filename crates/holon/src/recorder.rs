@@ -361,6 +361,12 @@ pub struct LoggedRead {
     /// store when it isn't in `answer`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<LoggedFile>,
+    /// What it asked by (a key, a file's name, a range, a query's parameters) may be computed from
+    /// a secret, and the run's record doesn't mark every value it computed from one: its request
+    /// shows what it read with that withheld (`taint::withhold_read`), and it keeps no answer or
+    /// file, but a database's rows (those are the database's). Nothing can answer it again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub withheld: bool,
 }
 
 /// A file a run read, as its log entry keeps it: what `holon verify` checks a supplied file by.

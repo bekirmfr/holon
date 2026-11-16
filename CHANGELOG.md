@@ -142,6 +142,18 @@
   called it, its grant) is the server's account, held by the chain alone: without `--head`, the
   report says so, and the guide lists each. A run whose snapshot the store couldn't take names
   the state it left by its hash all the same. ([Checking runs](docs/manual/guides/checking-runs.md#what-only-the-chain-holds))
+- **A run's record keeps out what a secret chose to ask by.** In a run whose log can't mark
+  what it computed from a secret, a read by one (a collection's key, a file's name computed from
+  it) keeps which collection, folder or database it read and withholds the rest of what it asked
+  and found, but a database's rows; a header named by one withholds the request's headers whole;
+  and `sort` and `unique` of a list holding a secret give something computed from it. Which way
+  a choice by a secret went (`key.startsWith("live_") ? a : b`) shows in the run's steps, as any
+  choice's does: whoever approves a flow reads what it chooses by. In any run, a key a secret chose is withheld where the log lists what the run claimed and
+  in the 503 a run kept waiting on it answers, and a read that failed by one says only that it
+  failed. A route that reads
+  its flow's own data by a secret asks `SecretAnswer`, as whether it found, waited or failed tells
+  its caller something of it; a deployed flow that does waits for it to be granted. A database's
+  answer to a secret stays the database's, its failing included, as its approval says.
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

@@ -129,7 +129,10 @@ refused too. A state write that contains a secret is refused. A route whose answ
 secret, as it is or computed from it (`return token`, `return base64(token)`),
 asks for a permission of its own, `SecretAnswer("token")`: "answer its callers with the secret
 "token"", which a person approves at deploy, apart from reading it. A hash or HMAC of a secret
-isn't one. A deployment without that grant answers such a request 500, and its log says why; so
+isn't one. So does a route that reads its flow's own data by a secret: a collection's item under
+a key computed from it, a file it names (`notes[key.slice(0, 3)]`). Whether it found one, waited
+on another run for it (503) or failed (500) tells the caller something of the secret, whatever
+the route returns. A deployment without that grant answers such a request 500, and its log says why; so
 does one whose answer holds a secret's value it didn't compute (a service echoing a header back).
 
 The approval also says where each secret goes. A secret that reaches a request's path, headers or
@@ -138,7 +141,10 @@ body, as it is or computed from it, is listed with the hosts it is sent to: "rea
 read's value (`vendor.one("… where license_key = $1", license_key)`) goes to the
 database's server with the query: "…, and send it to the database "vendor"". The rows a read
 answers are what the database said, as a request's response is what the far side said, so
-answering with them isn't answering with the secret. What a call answers to a request that
+answering with them isn't answering with the secret. That leaves the caller whatever the query
+makes of it: a route that reads a database with a secret answers with the rows it found by it,
+or none, or fails as the database fails with it, and asks nothing more for that; approving the
+secret's way to the database approves what comes back. What a call answers to a request that
 carried a secret (the access token of a token exchange, a service's echo) is followed too, and
 where it goes is said after: "read the secret "client_secret", and send it to
 https://demo.duendesoftware.com; what is answered to it goes to its callers and

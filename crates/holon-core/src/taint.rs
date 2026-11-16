@@ -21,7 +21,12 @@
 //! does: a Boolean computed from a secret (`k.startsWith(p)`) says something of it, so it is
 //! derived, as is whatever it chooses (`c ? a : b`, a write under `if (c)`). A leaf that isn't
 //! known to pass its inputs through as they are makes anything tainted derived, and so does one
-//! that is, for an input that only chooses what comes out ([`selects`]).
+//! that is, for an input that only chooses what comes out ([`selects`]), and one that orders what
+//! it is handed ([`ORDERS`]). Which steps a run takes is chosen too: a choice decided by a
+//! secret (`guard`, `coalesce`, `and`, `or`) runs only the branch it takes, so the steps only it
+//! needs are [chosen](SecretFed::chosen), and the choice is one of the
+//! [deciders](SecretFed::deciders). A run's steps show which way it went, as any choice's do:
+//! the person approving a flow is told what it chooses by a secret.
 //!
 //! The same walk, one secret at a time, finds what a route may answer its caller with
 //! ([`answered_secrets`]): each such secret is a permission of its own, `SecretAnswer("name")`,
@@ -137,7 +142,9 @@ fn selects(leaf: &str, port: &crate::Port) -> bool {
 
 /// The leaves of [`PASSES_LITERALLY`] that put their items in an order read off what the items
 /// hold: the order of two values computed from a secret says something of them that neither
-/// value does.
+/// value does, and so does the order of a secret and a value it isn't (`[k, p].toSorted()[0]`
+/// is `k` just when `k` comes first), or whether `unique` kept both. What they give from a
+/// tainted input is derived, never only literal.
 const ORDERS: &[&str] = &["sort", "unique"];
 
 /// How much of a secret the inputs of `leaf` (one of [`PASSES_LITERALLY`]) that only choose
@@ -273,6 +280,13 @@ pub struct SecretFed {
     /// [`SecretFed::made_of`] starts. Not [`SecretFed::makers`], whose outputs are derived and
     /// marked in the record.
     made: BTreeSet<Vec<u32>>,
+    /// The nodes a run takes only when a choice decided by a secret takes them ([`SecretFed::chosen`]).
+    chosen: BTreeSet<Vec<u32>>,
+    /// The choices decided by a secret ([`SecretFed::deciders`]).
+    deciders: BTreeSet<Vec<u32>>,
+    /// The nodes that read the flow's own data (a collection's items, a folder's files) by what
+    /// a secret reaches, and a node not followed that could ([`SecretFed::reads_by_a_secret`]).
+    own_reads: BTreeSet<Vec<u32>>,
 }
 
 /// What a walk follows in place of the secret itself, from the nodes where it begins.
@@ -436,6 +450,44 @@ impl SecretFed {
         self.nodes.get(path).and_then(|(_, outs)| outs.get(port).copied()).unwrap_or_default()
     }
 
+    /// The most of a secret any input of the node at `path` may carry: what a node that asks the
+    /// host with what it is handed (a read's key, a file's name, a query's parameters) asks with.
+    pub fn fed(&self, path: &[u32]) -> Taint {
+        if self.under_opaque(path) {
+            return Taint::Derived;
+        }
+        self.nodes.get(path).and_then(|(ins, _)| ins.iter().copied().max()).unwrap_or_default()
+    }
+
+    /// Whether the node at `path` runs only when a choice decided by a secret takes it: inside a
+    /// composite evaluated lazily, every road from what the composite gives (its outputs, and the
+    /// children nothing consumes) to it goes through an input a choice reads only as its decision
+    /// goes (`guard`'s value, `coalesce`'s second input, `and`'s and `or`'s after the first),
+    /// and what decides there may carry a secret. Whether such a node ran says which way the
+    /// choice went; so does anything inside it.
+    pub fn chosen(&self, path: &[u32]) -> bool {
+        self.chosen.iter().any(|c| path.starts_with(c))
+    }
+
+    /// The choices (`guard`, `coalesce`, `and`, `or`: a ternary, `??`, `&&`, `||`, an `if` that
+    /// returns) whose decision may carry a secret, each by its path: what runs after them is
+    /// chosen by it ([`SecretFed::chosen`]). Given one secret ([`SecretFed::of_secret`]), the
+    /// choices it decides, for a person approving the flow to be told. A value a secret picks
+    /// (`rec[k]`, `list[i]`) isn't a choice of what runs: it is derived ([`selects`]).
+    pub fn deciders(&self) -> impl Iterator<Item = &[u32]> {
+        self.deciders.iter().map(Vec::as_slice)
+    }
+
+    /// Whether the run reads its flow's own data (a collection's items, a folder's files) by
+    /// what a secret reaches: a key, a file's name, a range. How such a read is answered says
+    /// something of the secret to whoever asked: whether it found anything, whether it failed
+    /// (a file too big, or not text: the run answers 500), whether it waited on another run's
+    /// claim (503). A database's rows, and whether it answers, are the database's: approved as
+    /// where the secret is sent, they aren't counted here.
+    pub fn reads_by_a_secret(&self) -> bool {
+        !self.own_reads.is_empty()
+    }
+
     /// How much of a secret input `port` of the node at `path` may carry.
     pub fn input(&self, path: &[u32], port: usize) -> Taint {
         if self.under_opaque(path) {
@@ -524,7 +576,7 @@ impl<R: Resolver> Walk<'_, R> {
                 let chose = chose(name, &unit.inputs, inputs);
                 let passed = || {
                     let held = inputs.iter().zip(&unit.inputs).filter(|(_, port)| !selects(name, port)).map(|(t, _)| *t).max().unwrap_or_default();
-                    if chose > Taint::Clean { Taint::Derived } else { held }
+                    if chose > Taint::Clean || (ORDERS.contains(&name.as_str()) && held > Taint::Clean) { Taint::Derived } else { held }
                 };
                 let outputs: Vec<Taint> = unit
                     .outputs
@@ -574,6 +626,9 @@ impl<R: Resolver> Walk<'_, R> {
                         fed.sinks.extend(sinks.map(|c| (path.clone(), c)));
                         if ANSWERED.contains(&name.as_str()) {
                             fed.asked.insert(path.clone());
+                        }
+                        if caps.iter().any(|c| reads_own(&c)) {
+                            fed.own_reads.insert(path.clone());
                         }
                     }
                     // A hash or a signature of a secret whole: clean, and followed from here.
@@ -632,6 +687,9 @@ impl<R: Resolver> Walk<'_, R> {
         fed.sent.extend(caps.iter().filter_map(|c| destination_of(&c)));
         fed.effects.extend(caps.iter().filter(|c| !c.is_sourced()));
         fed.sinks.extend(caps.iter().filter(is_sink).map(|c| (path.to_vec(), c)));
+        if caps.iter().any(|c| reads_own(&c)) {
+            fed.own_reads.insert(path.to_vec());
+        }
     }
 
     fn composite(&mut self, unit: &Unit, children: &[Hash], edges: &[crate::Edge], inputs: &[Taint], path: &mut Vec<u32>, fed: &mut SecretFed) -> Vec<Taint> {
@@ -653,6 +711,8 @@ impl<R: Resolver> Walk<'_, R> {
         };
         let mut outs: Vec<Option<Vec<Taint>>> = vec![None; children.len()];
         let follows_answers = self.from.is_some_and(|(_, follow)| follow == Follow::Answers);
+        // Each choice among the children, and the taint of each of its inputs.
+        let mut choices: Vec<Option<(&'static str, Vec<Taint>)>> = vec![None; children.len()];
         for ci in order {
             let Some(child) = self.resolver.resolve(&children[ci]) else {
                 self.opaque(unit, path, fed);
@@ -681,10 +741,16 @@ impl<R: Resolver> Walk<'_, R> {
                 outs[ci] = Some(vec![Taint::Clean; child.outputs.len()]);
                 continue;
             }
+            if let UnitBody::Primitive { name } = &child.body
+                && let Some(choice) = CHOICES.iter().find(|c| **c == name.as_str())
+            {
+                choices[ci] = Some((*choice, child_inputs.clone()));
+            }
             path.push(ci as u32);
             outs[ci] = Some(self.unit(child, &child_inputs, path, fed));
             path.pop();
         }
+        chosen_among(children.len(), edges, &choices, path, fed);
         let mut outputs = vec![Taint::Clean; unit.outputs.len()];
         for e in edges.iter().filter(|e| e.to_child == BOUNDARY) {
             let from = if e.from_child == BOUNDARY {
@@ -701,9 +767,11 @@ impl<R: Resolver> Walk<'_, R> {
 }
 
 /// The secrets a server's routes may answer their callers with: each secret a route reads whose
-/// value, or something computed from it, may reach its response (output 0). An action's answer
-/// isn't one: it goes back through Holon, withheld and redacted. Given a route's endpoint alone,
-/// its own. Each is a permission, `SecretAnswer("name")`, which a person approves at deploy.
+/// value, or something computed from it, may reach its response (output 0), or by which it reads
+/// its flow's own data ([`SecretFed::reads_by_a_secret`]: how that read is answered, found,
+/// failed or kept waiting, is how the route answers). An action's answer isn't one: it goes back
+/// through Holon, withheld and redacted. Given a route's endpoint alone, its own. Each is a
+/// permission, `SecretAnswer("name")`, which a person approves at deploy.
 pub fn answered_secrets(root: &Unit, resolver: &impl Resolver) -> BTreeSet<String> {
     let mut answered = BTreeSet::new();
     let visits = Visits::default();
@@ -711,9 +779,11 @@ pub fn answered_secrets(root: &Unit, resolver: &impl Resolver) -> BTreeSet<Strin
         for cap in capabilities(endpoint, resolver).iter() {
             if let Capability::SecretRead(name) = cap
                 && !answered.contains(&name)
-                && SecretFed::of_secret_within(endpoint, resolver, &name, &visits).reaches_output(0)
             {
-                answered.insert(name);
+                let fed = SecretFed::of_secret_within(endpoint, resolver, &name, &visits);
+                if fed.reaches_output(0) || fed.reads_by_a_secret() {
+                    answered.insert(name);
+                }
             }
         }
     }
@@ -844,6 +914,63 @@ pub fn destination_of(capability: &Capability) -> Option<String> {
 /// effect, or a database read, whose parameters go to the database.
 fn is_sink(capability: &Capability) -> bool {
     !capability.is_sourced() || matches!(capability, Capability::DbRead(_))
+}
+
+/// Whether `capability` reads the flow's own data by what it is handed: a collection's items, a
+/// folder's files ([`SecretFed::reads_by_a_secret`]). Not a database's: it is where the approval
+/// says a secret fed to it goes.
+fn reads_own(capability: &Capability) -> bool {
+    matches!(capability, Capability::CollectionRead(_) | Capability::FileRead(_))
+}
+
+/// The leaves the evaluator decides lazily (eval.rs, `choice_next`): each reads some of its inputs
+/// only as what it has read so far decides.
+const CHOICES: [&str; 4] = ["guard", "coalesce", "and", "or"];
+
+/// Whether `choice` reads input `port` only as its inputs before it decide, and those may carry a
+/// secret (`inputs`): `guard` its value by its condition, `coalesce` its second input by whether
+/// the first is there, `and` and `or` each input by those before it.
+fn decided_by_a_secret(choice: &str, port: usize, inputs: &[Taint]) -> bool {
+    let deciding = match (choice, port) {
+        ("guard" | "coalesce", 1) => &inputs[..1.min(inputs.len())],
+        ("and" | "or", p) if p > 0 => &inputs[..p.min(inputs.len())],
+        _ => return false,
+    };
+    deciding.iter().any(|t| *t > Taint::Clean)
+}
+
+/// The children of a composite at `path` (`n` of them, wired by `edges`) that are choices decided
+/// by a secret ([`SecretFed::deciders`]), and those that run only when such a choice takes them
+/// ([`SecretFed::chosen`]): those no road reaches from what the composite gives (the children
+/// wired to its outputs, and those nothing consumes) but through an input such a choice reads
+/// only as its decision goes. `choices`: each child that is a choice, and its inputs' taint.
+fn chosen_among(n: usize, edges: &[crate::Edge], choices: &[Option<(&str, Vec<Taint>)>], path: &[u32], fed: &mut SecretFed) {
+    let lazy = |to: usize, port: usize| choices[to].as_ref().is_some_and(|(choice, inputs)| decided_by_a_secret(choice, port, inputs));
+    let at = |ci: usize| path.iter().copied().chain([ci as u32]).collect::<Vec<u32>>();
+    let deciders: Vec<usize> = (0..n).filter(|&ci| choices[ci].as_ref().is_some_and(|(_, inputs)| (1..inputs.len()).any(|p| lazy(ci, p)))).collect();
+    if deciders.is_empty() {
+        return;
+    }
+    fed.deciders.extend(deciders.into_iter().map(at));
+    let child = |c: u32| (c != BOUNDARY && (c as usize) < n).then_some(c as usize);
+    let mut reached = vec![false; n];
+    let mut stack: Vec<usize> = (0..n)
+        .filter(|ci| edges.iter().any(|e| e.from_child as usize == *ci && e.to_child == BOUNDARY) || !edges.iter().any(|e| e.from_child as usize == *ci && e.from_child != BOUNDARY))
+        .collect();
+    while let Some(ci) = stack.pop() {
+        if std::mem::replace(&mut reached[ci], true) {
+            continue;
+        }
+        for e in edges.iter().filter(|e| child(e.to_child) == Some(ci)) {
+            if let Some(from) = child(e.from_child)
+                && !reached[from]
+                && !lazy(ci, e.to_port as usize)
+            {
+                stack.push(from);
+            }
+        }
+    }
+    fed.chosen.extend((0..n).filter(|&ci| !reached[ci]).map(at));
 }
 
 /// Kahn's algorithm over the child→child edges: an order in which every child comes after those
@@ -989,6 +1116,138 @@ mod tests {
         edges.push(e(4, 0, 9, 0));
         let fed = SecretFed::of(&root(children, edges), &r);
         assert!(fed.derives(&[9]) && !fed.followed_to(8), "a filter over made values isn't followed");
+    }
+
+    /// Guards: a leaf that orders what it is handed (`sort`, `unique`) gives something derived
+    /// from a secret among its items, not the items moved: `[k, "m"].toSorted()[0]` is the
+    /// secret just when it sorts first, and `[...new Set([k, p])]` keeps one item just when
+    /// they are equal.
+    /// Why: taken as literal, what it picked was logged as the secret's mark or as the other
+    /// value in the clear, and answered as either: an oracle for the secret's order.
+    /// If it fails: the leaf named passes a secret on as literal, and a log or an answer says
+    /// where it came in the order.
+    #[test]
+    fn ordering_a_secret_among_other_values_derives() {
+        for name in ["sort", "unique"] {
+            let mut r = MapResolver::new();
+            let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
+            let m = leaf(&mut r, "const", vec![Param::frozen("value", "m"), Param::frozen("type", "Text")]);
+            let list = leaf(&mut r, "list", vec![]);
+            let order = leaf(&mut r, name, vec![]);
+            let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+            let root = Unit {
+                body: UnitBody::Composite { children: vec![secret, m, list, order], edges: vec![e(0, 0, 2, 0), e(1, 0, 2, 1), e(2, 0, 3, 0), e(3, 0, BOUNDARY, 0)] },
+                params: vec![],
+                inputs: vec![],
+                outputs: vec![Port { name: "first".into(), ty: Type::Any }],
+            };
+            let fed = SecretFed::of(&root, &r);
+            assert_eq!(fed.output(&[2], 0), Taint::Literal, "{name}: a list holding the secret holds it as it is");
+            assert_eq!(fed.output(&[3], 0), Taint::Derived, "{name}: what it gives says where the secret came");
+            assert!(fed.makes(&[3]) && fed.derives(&[]), "{name}");
+        }
+    }
+
+    /// Guards: which steps run only when a choice decided by a secret takes them
+    /// ([`SecretFed::chosen`]), and which choices it decides ([`SecretFed::deciders`], all of
+    /// them and given the secret alone). `c ? a : b` lowers to `coalesce(guard(c, a), b)`, and the
+    /// evaluator runs `a` only when `c` is true, `b` only when the guard gave nothing; `c && d`
+    /// runs `d` only when `c` is true. With `c` computed from the secret, `a`, `b` and `d` are
+    /// chosen, and nothing else is; with `c` the caller's, nothing is.
+    /// Why: a run's log lists the steps it took. One run listing `a` and another `b` says which
+    /// way the secret went, though every value either shows is withheld.
+    /// If it fails: the node named runs whatever the secret but is taken as chosen (the log
+    /// drops a step it took), or runs as a secret decides and isn't (the log says which way).
+    #[test]
+    fn a_step_a_choice_decided_by_a_secret_takes_is_chosen() {
+        let mut r = MapResolver::new();
+        let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
+        let truthy = leaf(&mut r, "is_truthy", vec![]);
+        let guard = leaf(&mut r, "guard", vec![]);
+        let live = leaf(&mut r, "const", vec![Param::frozen("value", "live mode"), Param::frozen("type", "Text")]);
+        let coalesce = leaf(&mut r, "coalesce", vec![]);
+        let test = leaf(&mut r, "const", vec![Param::frozen("value", "test mode"), Param::frozen("type", "Text")]);
+        let and = leaf(&mut r, "and", vec![]);
+        let asked = leaf(&mut r, "is_truthy", vec![]);
+        let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+        // The condition is the secret's (from child 0) or the caller's (from the root's input).
+        let root = |from: u32| Unit {
+            body: UnitBody::Composite {
+                children: vec![secret, truthy, guard, live, coalesce, test, and, asked],
+                edges: vec![
+                    e(from, 0, 1, 0),
+                    e(1, 0, 2, 0),
+                    e(3, 0, 2, 1),
+                    e(2, 0, 4, 0),
+                    e(5, 0, 4, 1),
+                    e(4, 0, BOUNDARY, 0),
+                    e(1, 0, 6, 0),
+                    e(BOUNDARY, 0, 7, 0),
+                    e(7, 0, 6, 1),
+                    e(6, 0, BOUNDARY, 1),
+                ],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "q".into(), ty: Type::Any }],
+            outputs: vec![Port { name: "mode".into(), ty: Type::Any }, Port { name: "both".into(), ty: Type::Any }],
+        };
+        let fed = SecretFed::of(&root(0), &r);
+        // (the node, whether it is chosen, why)
+        let rows = [
+            (0, false, "the secret: what decides is read first"),
+            (1, false, "the condition: every choice reads it"),
+            (2, false, "the guard: the coalesce reads it first"),
+            (3, true, "the guard's value: read only when the secret's condition is true"),
+            (4, false, "the coalesce: what the route answers"),
+            (5, true, "the coalesce's second input: read only when the guard gave nothing"),
+            (6, false, "the and: what the route answers"),
+            (7, true, "the and's second input: read only when the secret's condition is true"),
+        ];
+        for (node, chosen, why) in rows {
+            assert_eq!(fed.chosen(&[node]), chosen, "node {node}: {why}");
+        }
+        assert!(fed.chosen(&[3, 0]), "inside a chosen step is chosen");
+        // The guard (by its condition), the coalesce (by the guard's value, chosen) and the and.
+        let deciders = |fed: &SecretFed| fed.deciders().map(<[u32]>::to_vec).collect::<Vec<_>>();
+        assert_eq!(deciders(&fed), vec![vec![2], vec![4], vec![6]], "the choices the secret decides");
+        assert_eq!(deciders(&SecretFed::of_secret(&root(0), &r, "k")), deciders(&fed), "given the secret alone");
+        assert!(deciders(&SecretFed::of_secret(&root(0), &r, "other")).is_empty(), "another secret decides none");
+        let caller = SecretFed::of(&root(BOUNDARY), &r);
+        assert!((0..8).all(|node| !caller.chosen(&[node])), "the caller's condition chooses nothing a secret decides");
+        assert!(deciders(&caller).is_empty(), "nor decides any");
+    }
+
+    /// Guards: a route that reads its flow's own data by what a secret reaches (a collection's
+    /// item under a key computed from it, a file named by it) may answer its caller with the
+    /// secret ([`answered_secrets`]), whatever it returns; one that sends it to a database to
+    /// read by doesn't, the database being where its approval says the secret goes.
+    /// Why: such a read is answered by the secret: an item found or not, a file read or failed
+    /// (the route answers 500), a key another run holds (503). The caller learns which.
+    /// If it fails: the row's read is answered by the secret and the deploy asks no one, or a
+    /// database's read asks what its approval already covers.
+    #[test]
+    fn a_read_of_the_flows_own_data_by_a_secret_answers_with_it() {
+        for (name, params, answers) in [
+            ("collection_get", vec![Param::frozen("collection", "seen")], true),
+            ("file_read", vec![Param::frozen("folder", "notes")], true),
+            ("db_query", vec![Param::frozen("database", "shop"), Param::frozen("sql", "select 1 where ? = ?")], false),
+        ] {
+            let mut r = MapResolver::new();
+            let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
+            let slice = leaf(&mut r, "base64", vec![]);
+            let Some(read) = interface_of(name).map(|u| r.insert(Unit { params: params.clone(), ..u }).unwrap()) else { panic!("{name}") };
+            let ok = leaf(&mut r, "const", vec![Param::frozen("value", "ok"), Param::frozen("type", "Text")]);
+            let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+            let endpoint = Unit {
+                body: UnitBody::Composite { children: vec![secret, slice, read, ok], edges: vec![e(0, 0, 1, 0), e(1, 0, 2, 0), e(3, 0, BOUNDARY, 0)] },
+                params: vec![Param::frozen("declare", "endpoint")],
+                inputs: vec![],
+                outputs: vec![Port { name: "answer".into(), ty: Type::Any }],
+            };
+            let fed = SecretFed::of(&endpoint, &r);
+            assert_eq!(fed.reads_by_a_secret(), answers, "{name}");
+            assert_eq!(answered_secrets(&endpoint, &r).contains("k"), answers, "{name}: the route answers ok, whatever it read");
+        }
     }
 
     /// `jwt_verify` keyed with a secret gives the token's payload, nothing of the key: the
