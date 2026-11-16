@@ -2720,7 +2720,7 @@ const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR
   unbroken, that every unit is what its hash says, and that every run, run again from its log
   entry, produces what the log says it did. Exits 0 when it all checks, 1 when anything doesn't,
   3 when nothing fails but not everything was checked: some runs couldn't be run again, or some
-  runs' states checked (it says which, and why), 2 when it can't read the export.
+  runs' states couldn't be checked (it says which, and why), 2 when it can't read the export.
 
   --head HEX               a head a witness holds: check it is in the export, so no run in the
                            export, from its oldest up to that head, was changed or removed
