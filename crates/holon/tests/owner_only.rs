@@ -21,6 +21,21 @@ fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
+/// Waits [`EVENTUALLY`] for `holon serve` (`child`) to take connections on `port`; if it ends
+/// first, fails at once with how it ended and what it said (its stderr, kept in `said`), rather
+/// than waiting out the guard with nothing to say.
+fn answering(child: &mut Child, port: u16, said: &std::path::Path) {
+    let by = Instant::now() + EVENTUALLY;
+    let words = || std::fs::read_to_string(said).unwrap_or_default();
+    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("holon serve ended before it answered on {port} ({status}): {}", words());
+        }
+        assert!(Instant::now() < by, "holon serve answers on {port}: {}", words());
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// `request` sent to `port` and the whole answer read, or nothing if no connection is taken.
 fn raw_http(port: u16, request: &[u8]) -> String {
     let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
@@ -70,6 +85,7 @@ impl Drop for Server {
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.home);
         let _ = std::fs::remove_dir_all(&self.outside);
+        let _ = std::fs::remove_file(self.home.with_extension("err"));
     }
 }
 
@@ -98,21 +114,18 @@ fn every_file_the_server_writes_is_its_owners_alone() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&outside).unwrap();
     let port = free_port();
+    let said = home.with_extension("err");
     let child = Command::new(HOLON)
         .args(["serve", "--at", &format!("127.0.0.1:{port}"), "--root-key", &format!("file:{}", home.join("root.key").display())])
         .env("HOLON_HOME", &home)
         .env_remove("HOLON_DATA")
         .env_remove("HOLON_RUN_DIR")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&said).unwrap())
         .spawn()
         .expect("holon serve starts");
-    let server = Server { child, home: home.clone(), outside: outside.clone(), port };
-    let until = Instant::now() + Duration::from_secs(60);
-    while TcpStream::connect(("127.0.0.1", server.port)).is_err() {
-        assert!(Instant::now() < until, "holon serve answers on {}", server.port);
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let mut server = Server { child, home: home.clone(), outside: outside.clone(), port };
+    answering(&mut server.child, port, &said);
 
     // State, a collection, console lines, a waiting run and its event; runs enough that the log
     // seals its older ones into a segment.

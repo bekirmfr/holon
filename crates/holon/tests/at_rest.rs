@@ -21,6 +21,21 @@ fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
+/// Waits [`EVENTUALLY`] for `holon serve` (`child`) to take connections on `port`; if it ends
+/// first, fails at once with how it ended and what it said (its stderr, kept in `said`), rather
+/// than waiting out the guard with nothing to say.
+fn answering(child: &mut Child, port: u16, said: &std::path::Path) {
+    let by = Instant::now() + EVENTUALLY;
+    let words = || std::fs::read_to_string(said).unwrap_or_default();
+    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("holon serve ended before it answered on {port} ({status}): {}", words());
+        }
+        assert!(Instant::now() < by, "holon serve answers on {port}: {}", words());
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// `request` sent to `port` and the whole answer read, or nothing if no connection is taken.
 fn raw_http(port: u16, request: &[u8]) -> String {
     let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
@@ -284,6 +299,7 @@ fn no_file_the_server_writes_holds_run_data_in_clear() {
     // Mail and a queue bound to servers that take the binding's check and put off every send:
     // what a run sends waits in its spool, tried again later.
     let (smtp, sqs) = (putting_off_smtp(), putting_off_sqs());
+    let said = base.join("serve.err");
     let child = Command::new(HOLON)
         .args(["serve", "--at", &format!("127.0.0.1:{port}"), "--root-key", &format!("file:{}", base.join("root.key").display())])
         .env("HOLON_HOME", &home)
@@ -292,11 +308,11 @@ fn no_file_the_server_writes_holds_run_data_in_clear() {
         .env_remove("HOLON_DATA")
         .env_remove("HOLON_RUN_DIR")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&said).unwrap())
         .spawn()
         .expect("holon serve starts");
     let mut server = Server { child, dirs: vec![base.clone()], port, home: home.clone() };
-    until("holon serve answers", 60, || TcpStream::connect(("127.0.0.1", port)).is_ok());
+    answering(&mut server.child, port, &said);
 
     server.holon(&["policy", "--backup", &backup.display().to_string(), "--sweep-every", "1m"]);
     server.holon(&["folder", "add", "box", &folder.display().to_string(), "--read-only"]);
@@ -500,8 +516,9 @@ fn keys_are_rotated_and_forgotten_on_the_real_server() {
     let root_file = base.join("root.key");
     let root = format!("file:{}", root_file.display());
     let port = free_port();
-    let mut server = Server { child: serve(&home, &root, port, Stdio::null()), dirs: vec![base.clone()], port, home: home.clone() };
-    until("holon serve answers", 60, || TcpStream::connect(("127.0.0.1", port)).is_ok());
+    let said = base.join("serve.err");
+    let mut server = Server { child: serve(&home, &root, port, std::fs::File::create(&said).unwrap().into()), dirs: vec![base.clone()], port, home: home.clone() };
+    answering(&mut server.child, port, &said);
     let shop_port = free_port();
     let file = texts.join("shop.holon.ts");
     std::fs::write(
@@ -588,8 +605,9 @@ route.post("/bump", () => {{
     assert!(went && said.contains("the old root key is gone"), "{said}");
     assert!(!root_file.exists(), "the old root removed from its file");
     let port = free_port();
-    let mut again = Server { child: serve(&home, &new_root, port, Stdio::null()), dirs: Vec::new(), port, home: home.clone() };
-    until("holon serve answers under the new root", 60, || TcpStream::connect(("127.0.0.1", port)).is_ok());
+    let said = base.join("serve-again.err");
+    let mut again = Server { child: serve(&home, &new_root, port, std::fs::File::create(&said).unwrap().into()), dirs: Vec::new(), port, home: home.clone() };
+    answering(&mut again.child, port, &said);
     let shown = again.holon(&["key", "status"]);
     assert!(shown.contains("new.key") && shown.contains("d:shop: forgotten"), "{shown}");
     again.stop();
