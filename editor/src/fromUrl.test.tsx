@@ -17,7 +17,7 @@ import { DialogProvider } from "./Dialog";
 import { FROM_URL_MAX } from "./fromUrl";
 import { ManualPage } from "./ManualPage";
 import { PeoplePage } from "./PeoplePages";
-import { labelOf, nothingAt, parse, type Route } from "./routes";
+import { labelOf, nothingAt, nothingToReopen, parse, type Route } from "./routes";
 import { mayI } from "./server";
 
 vi.mock("./server", async (original) => {
@@ -153,6 +153,20 @@ describe("an address that names nothing", () => {
       expect(saysOnlyQuoted(nothingAt(route.hash), "the notice")).toHaveLength(1);
       expect(saysOnlyQuoted(labelOf(route), "its crumb")).toHaveLength(1);
     }
+  });
+});
+
+describe("a tab's slug, from #editor.…, that opens nothing after a reload", () => {
+  // The address takes a slug there only of letters, digits, `-` and `_`; the notice quotes and
+  // cuts whatever it is given all the same.
+  it.each(each)("payload %i: the notice quotes it", (_, payload) => {
+    expect(saysOnlyQuoted(nothingToReopen(payload), "the notice")).toHaveLength(1);
+    expect(saysOnlyQuoted(nothingToReopen(payload, "Hello API"), "the notice, for a sample")).toHaveLength(1);
+  });
+  it("a slug the address takes, as long as it likes: cut short", () => {
+    const slug = `${"PWNED_".repeat(30)}x`;
+    expect(parse(`#editor.${slug}`)).toMatchObject({ kind: "editor", slug });
+    expect(saysOnlyQuoted(nothingToReopen(slug), "the notice")).toHaveLength(1);
   });
 });
 

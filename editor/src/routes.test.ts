@@ -139,9 +139,9 @@ describe("routes", () => {
   });
 
   it("says why a tab never saved doesn't open again after a reload, and where a sample's does", () => {
-    expect(nothingToReopen("tally")).toBe('There is no flow named "tally" saved here: a tab never saved closes with the page.');
+    expect(nothingToReopen("tally")).toBe("There is no flow named “tally” saved here: a tab never saved closes with the page.");
     expect(nothingToReopen("hello-api", "Hello API")).toBe(
-      'There is no flow named "hello-api" saved here: a tab never saved closes with the page. The sample Hello API opens again from the Library.',
+      "There is no flow named “hello-api” saved here: a tab never saved closes with the page. The sample Hello API opens again from the Library.",
     );
   });
 });
