@@ -273,7 +273,7 @@ function Marketplace({
         <button
           className="hl-flow__button"
           onClick={async () => {
-            const next = await dialog.prompt("The marketplace's address (a Marketplace deployment, e.g. http://127.0.0.1:8120); empty for none:", url);
+            const next = await dialog.prompt("The marketplace's address (a Marketplace deployment, e.g. http://127.0.0.1:8120); empty for none:", url, undefined, "optional");
             if (next === null) return;
             setMarketplaceUrl(next);
             onChange();

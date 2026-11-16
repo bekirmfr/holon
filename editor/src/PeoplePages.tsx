@@ -506,7 +506,7 @@ function PeopleList({ me, a }: { me: string; a: Access }) {
               style={small}
               {...can.gate("changePrincipal", { title: "the email they sign in with through the identity provider" })}
               onClick={async () => {
-                const email = await dialog.prompt(`${p.name}'s email, for signing in through the identity provider (empty for none):`, p.email ?? "");
+                const email = await dialog.prompt(`${p.name}'s email, for signing in through the identity provider (empty for none):`, p.email ?? "", undefined, "optional");
                 if (email !== null) void act(() => changePrincipal(p.name, { email }));
               }}
             >

@@ -998,7 +998,7 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
               secretValue.current?.focus();
             }}
             onWhere={async (s) => {
-              const typed = await dialog.prompt(`Where may the server's secret "${s.name}" go? Hosts and db:NAME databases, separated by commas; empty: wherever its flows' approvals show.`, (s.to ?? []).join(", "));
+              const typed = await dialog.prompt(`Where may the server's secret "${s.name}" go? Hosts and db:NAME databases, separated by commas; empty: wherever its flows' approvals show.`, (s.to ?? []).join(", "), undefined, "optional");
               if (typed === null) return;
               const to = typed.split(",").map((d) => d.trim()).filter(Boolean);
               act(() => capServerSecret(s.name, to.length ? to : null));

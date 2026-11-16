@@ -5,8 +5,11 @@
 // staying in it is every modal's: modals.test.tsx.) It takes no answer but no until it has been
 // shown a moment with no key pressed: the last describe.
 
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import ts from "typescript";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ARM_MS, DialogProvider, useDialog } from "./Dialog";
 import { lap, press } from "./ui/pressKey";
@@ -283,6 +286,51 @@ describe("the focused control answers", () => {
       await press("Escape");
       expect(second).toBe(false);
     }
+  });
+});
+
+describe("a prompt that offers an empty answer", () => {
+  // Guards: a prompt whose question offers empty ("empty for none", "empty: wherever…") takes an
+  // empty line as its answer and Cancel as none: every such prompt in the console is asked
+  // `optional`. Needed because a prompt left empty answered null, as Cancel does, so "empty for
+  // none" did nothing: an email, a marketplace's address or where a server's secret may go
+  // couldn't be cleared. If it fails, the prompt it names drops the empty answer it offers.
+  it("takes empty as its answer, and Cancel as none", async () => {
+    const d = mount();
+    for (const [press, answer] of [["OK", ""], ["Cancel", null]] as const) {
+      const { answer: got } = await ask(() => d.prompt("An email (empty for none):", "ada@example.com", undefined, "optional"));
+      const field = dialog()!.querySelector("input")!;
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "");
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      act(() => buttons().find((b) => nameOf(b) === press)!.click());
+      expect(await got, press).toBe(answer);
+    }
+  });
+
+  it("is asked so, wherever the console's text offers it", () => {
+    const dir = join(process.cwd(), "src");
+    const files = readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f));
+    const offering: string[] = [];
+    const dropped: string[] = [];
+    for (const file of files) {
+      const source = ts.createSourceFile(file, readFileSync(join(dir, file), "utf8"), ts.ScriptTarget.Latest, true, file.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+      const visit = (node: ts.Node) => {
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "prompt" && node.arguments.length > 0) {
+          const question = node.arguments[0].getText();
+          if (/\bempty\b/i.test(question)) {
+            const where = `${file.replace(/\\/g, "/")}:${source.getLineAndCharacterOfPosition(node.getStart()).line + 1}`;
+            offering.push(where);
+            if (node.arguments[3]?.getText() !== '"optional"') dropped.push(where);
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+    }
+    expect(offering.length, "the console's prompts that offer empty are found").toBeGreaterThanOrEqual(3);
+    expect(dropped).toEqual([]);
   });
 });
 
