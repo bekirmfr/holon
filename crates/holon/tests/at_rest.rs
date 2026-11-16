@@ -15,19 +15,26 @@ use std::time::{Duration, Instant, SystemTime};
 /// test, never a measure of how long anything took (on a loaded machine anything takes longer).
 const EVENTUALLY: Duration = Duration::from_secs(60);
 
+/// A kind of file the test means to look at: what it is, and how its path (with `/`) is known.
+type Kind = (&'static str, fn(&str) -> bool);
+
 const HOLON: &str = env!("CARGO_BIN_EXE_holon");
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
-/// Waits [`EVENTUALLY`] for `holon serve` (`child`) to take connections on `port`; if it ends
-/// first, fails at once with how it ended and what it said (its stderr, kept in `said`), rather
-/// than waiting out the guard with nothing to say.
+/// Waits [`EVENTUALLY`] for `holon serve` (`child`) to answer on `port`: an answer, not a
+/// connection taken. It takes connections once it has its port, before it has written the run
+/// file its user's commands sign in with (local.rs), and answers them after (main.rs: the run
+/// file published, then the server run), so a command sent once a connection is taken can find
+/// no run file, and is told the server isn't set up. If it ends first, fails at once with how it
+/// ended and what it said (its stderr, kept in `said`), rather than waiting out the guard with
+/// nothing to say.
 fn answering(child: &mut Child, port: u16, said: &std::path::Path) {
     let by = Instant::now() + EVENTUALLY;
     let words = || std::fs::read_to_string(said).unwrap_or_default();
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+    while status(&raw_http(port, b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")) == 0 {
         if let Some(status) = child.try_wait().unwrap() {
             panic!("holon serve ended before it answered on {port} ({status}): {}", words());
         }
@@ -434,9 +441,43 @@ route.post("/keep", (req) => {{
     };
     until("a pack written", 150, || has(&values, &|f| f.ends_with(".pack")));
     until("a backup archive made", 60, || has(&backup, &|f| f.ends_with(".json.gz")));
-    // Console lines are written about once a second, on a thread of their own (logs.rs): looked
-    // for until they are there, not slept for.
-    until("console lines written", 60, || has(&home, &|f| f.ends_with("deployments.logs/kept.console.jsonl")));
+    // The control: every kind of file this means to look at, each looked for until it is there,
+    // not slept for, and again once the server has stopped. Some are written on their own time:
+    // console lines about once a second on a thread of their own (logs.rs), a sealed segment once
+    // a cut seals the older runs (recorder.rs).
+    let kinds: [Kind; 16] = [
+        ("the run log", |f| f.ends_with("deployments.logs/kept.jsonl")),
+        ("a sealed segment", |f| f.contains("deployments.logs/kept.sealed/") && f.ends_with(".jsonl.gz")),
+        ("console lines", |f| f.ends_with("deployments.logs/kept.console.jsonl")),
+        ("events", |f| f.ends_with("deployments.logs/kept.events.jsonl")),
+        ("the deployments", |f| f.ends_with("data/deployments.json")),
+        ("the activity", |f| f.ends_with("data/deployments.activity.jsonl")),
+        ("the state head", |f| f.ends_with("deployments.state/kept")),
+        ("the store's units", |f| f.contains("data/store/") && !f.contains("/values/") && !f.contains("/blobs/")),
+        ("the store's values", |f| f.contains("data/store/values/") && !f.ends_with(".pack")),
+        ("a pack", |f| f.contains("data/store/values/packs/") && f.ends_with(".pack")),
+        ("a file's text kept", |f| f.contains("data/store/blobs/chunks/")),
+        ("mail on its way", |f| f.contains("/mail-spool/")),
+        ("a queue message on its way", |f| f.contains("/queue-spool/")),
+        ("a removed deployment's records", |f| f.contains("deployments.logs/removed/gone-runs-")),
+        ("a backup's archive", |f| f.contains("/backup/") && f.contains("/holon-archive-") && f.ends_with(".json.gz")),
+        ("the policy", |f| f.ends_with("holon.toml")),
+    ];
+    let listed = || {
+        let mut files = Vec::new();
+        files_under(&home, &mut files);
+        files_under(&backup, &mut files);
+        files
+    };
+    let missing = |files: &[PathBuf]| -> Vec<&str> {
+        let seen: Vec<String> = files.iter().map(|f| f.to_string_lossy().replace('\\', "/")).collect();
+        kinds.iter().filter(|(_, is)| !seen.iter().any(|f| is(f))).map(|(what, _)| *what).collect()
+    };
+    let by = Instant::now() + EVENTUALLY;
+    while !missing(&listed()).is_empty() {
+        assert!(Instant::now() < by, "{:?} not among the files looked at", missing(&listed()));
+        std::thread::sleep(Duration::from_millis(200));
+    }
 
     // The control: the canary reached the record, so its absence below means something.
     let export = base.join("export");
@@ -448,31 +489,10 @@ route.post("/keep", (req) => {{
     assert!(exported.iter().any(|f| found_in(&std::fs::read(f).unwrap(), &forms).is_some()), "the export holds the canary: {exported:#?}");
     server.stop();
 
-    let mut files = Vec::new();
-    files_under(&home, &mut files);
-    files_under(&backup, &mut files);
-    let named = |pred: &dyn Fn(&str) -> bool| files.iter().any(|f| pred(&f.to_string_lossy().replace('\\', "/")));
-    // The control again: every kind of file this means to look at is there.
-    for (what, found) in [
-        ("the run log", named(&|f| f.ends_with("deployments.logs/kept.jsonl"))),
-        ("a sealed segment", named(&|f| f.contains("deployments.logs/kept.sealed/") && f.ends_with(".jsonl.gz"))),
-        ("console lines", named(&|f| f.ends_with("deployments.logs/kept.console.jsonl"))),
-        ("events", named(&|f| f.ends_with("deployments.logs/kept.events.jsonl"))),
-        ("the deployments", named(&|f| f.ends_with("data/deployments.json"))),
-        ("the activity", named(&|f| f.ends_with("data/deployments.activity.jsonl"))),
-        ("the state head", named(&|f| f.ends_with("deployments.state/kept"))),
-        ("the store's units", named(&|f| f.contains("data/store/") && !f.contains("/values/") && !f.contains("/blobs/"))),
-        ("the store's values", named(&|f| f.contains("data/store/values/") && !f.ends_with(".pack"))),
-        ("a pack", named(&|f| f.contains("data/store/values/packs/") && f.ends_with(".pack"))),
-        ("a file's text kept", named(&|f| f.contains("data/store/blobs/chunks/"))),
-        ("mail on its way", named(&|f| f.contains("/mail-spool/"))),
-        ("a queue message on its way", named(&|f| f.contains("/queue-spool/"))),
-        ("a removed deployment's records", named(&|f| f.contains("deployments.logs/removed/gone-runs-"))),
-        ("a backup's archive", named(&|f| f.contains("/backup/") && f.contains("/holon-archive-") && f.ends_with(".json.gz"))),
-        ("the policy", named(&|f| f.ends_with("holon.toml"))),
-    ] {
-        assert!(found, "{what} is among the files looked at: {files:#?}");
-    }
+    // The control again, on what the stopped server left.
+    let files = listed();
+    let gone = missing(&files);
+    assert!(gone.is_empty(), "{gone:?} not among the files looked at: {files:#?}");
     let clear: Vec<String> = files.iter().filter_map(|f| found_in(&std::fs::read(f).unwrap(), &forms).map(|how| format!("{}: {how}", f.display()))).collect();
     assert!(clear.is_empty(), "the canary {canary} in clear, of {} files: {clear:#?}", files.len());
 }

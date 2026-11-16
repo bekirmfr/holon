@@ -81,13 +81,17 @@ fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
-/// Waits [`EVENTUALLY`] for `holon serve` (`child`) to take connections on `port`; if it ends
-/// first, fails at once with how it ended and what it said (its stderr, kept in `said`), rather
-/// than waiting out the guard with nothing to say.
+/// Waits [`EVENTUALLY`] for `holon serve` (`child`) to answer on `port`: an answer, not a
+/// connection taken. It takes connections once it has its port, before it has written the run
+/// file its user's commands sign in with (local.rs), and answers them after (main.rs: the run
+/// file published, then the server run), so a command sent once a connection is taken can find
+/// no run file, and is told the server isn't set up. If it ends first, fails at once with how it
+/// ended and what it said (its stderr, kept in `said`), rather than waiting out the guard with
+/// nothing to say.
 fn answering(child: &mut Child, port: u16, said: &std::path::Path) {
     let by = Instant::now() + EVENTUALLY;
     let words = || std::fs::read_to_string(said).unwrap_or_default();
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+    while status(&raw_http(port, b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")) == 0 {
         if let Some(status) = child.try_wait().unwrap() {
             panic!("holon serve ended before it answered on {port} ({status}): {}", words());
         }
