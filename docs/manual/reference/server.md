@@ -133,7 +133,7 @@ and in the log as it ends.
 `holon.toml` in the data folder (or `--policy PATH`) says what this server may ever grant, and
 what it grants without asking. A missing or empty file means the defaults. It is read at start;
 `POST /permissions/reload` reads it again (a file that doesn't parse then changes nothing). The
-editor shows it but doesn't edit it.
+editor shows it, and changes only its `[storage]` settings (the admin page).
 
 ```toml
 [limits]
@@ -218,8 +218,8 @@ to the current ceilings whenever the server loads.
 Everyone signs in; there is no trust for requests from this machine. A new server prints a
 setup code (`XXXX-XXXX`, or `HOLON_SETUP_CODE`); whoever enters it in the editor is the first
 admin. Until then the server answers everything but setting up with 403, but for an agent or a
-service made already (below); five wrong codes in a row refuse setting up for a minute, so the code
-can't be guessed.
+service made already (below); five wrong codes in a row from one address refuse setting up from
+there for a minute, so the code can't be guessed at speed.
 
 | Role | May |
 |---|---|

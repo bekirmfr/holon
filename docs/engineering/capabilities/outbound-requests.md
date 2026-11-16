@@ -81,8 +81,8 @@ arrives, `stream: true`, or piped to a channel, `updates.pipe(api.post(…))`) (
 - **HTTP(S) only**, request and answer within one run. Connections that outlive a run (a feed, a
   session, a socket) aren't covered ([host capabilities](../../L4s/host-capabilities-L4.md) §5.9).
 - **The body is text.** A response body is read as UTF-8 with invalid bytes replaced
-  (`String::from_utf8_lossy`): a binary answer is mangled. There is no bytes value (§1 there). A
-  binary file can be *sent*, by handle.
+  (`String::from_utf8_lossy`): a binary answer is mangled. A response body is never a bytes value,
+  though the language has one. A binary file can be *sent*, by handle.
 - **No connection reuse.** `send` builds a `ureq` agent per request, so each call connects (and
   shakes hands) afresh; a round runs a thread per request. Nothing measures what that costs.
 - **No retry.** A failed call is answered once; the flow, or the caller, tries again.

@@ -202,7 +202,7 @@ route.put("/notes/:owner/:id", (req) => {
 A run's reads and its writes are one step. When the run finishes, the server opens a transaction
 on each database it wrote, reads again what the run read, and lands the writes only if it is all
 as the run found it. If another run changed it in between, the run runs again, on what is there
-now (four times, then once more holding the database so that no other run can change it). Two
+now (four tries in all, then once more holding the database so that no other run can change it). Two
 deployments counting in one row lose no count.
 
 `expect:` is for the change that must happen once: refund an order only if it isn't refunded yet.

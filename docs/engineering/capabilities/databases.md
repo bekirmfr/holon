@@ -55,8 +55,8 @@ templates at compile (`holon-core/src/documents.rs`) ([LANGUAGE.md](../../LANGUA
   fails the run (`READ_FAILED`), never cut short. Each is kept with the run's reads, rows and all,
   so replay and `holon verify` need no database. On Postgres and MySQL each read is a read-only
   transaction with the statement limit.
-- **Values.** Exact decimals come out as text, times as RFC 3339 in UTC, JSON as a value, bytes as
-  hex; any other type fails, saying to cast it. Sessions are set alike on every engine so a flow's
+- **Values.** Exact decimals come out as text, times as RFC 3339 in UTC, JSON as a value, bytes as a
+  bytes value (MongoDB's other binary subtypes as hex); any other type fails, saying to cast it. Sessions are set alike on every engine so a flow's
   SQL means one thing (`$n` becomes `?` for MySQL, `sql::positional`).
 - **The commit.** In `fire_with_state`, after `still_as_read` passes and under the state lock,
   `databases::commit` opens one transaction per database, in the order of their names: runs each

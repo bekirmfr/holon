@@ -62,7 +62,7 @@ accounts) stops the start (`refuse_to_start`: "refusing to start rather than ove
 
 Every module does `use crate::*`, and main.rs brings most modules' items into the crate root
 (`use deploy::*` and the rest), so handlers call each other by bare name, as when this was one
-file. tests.rs (9,000 lines) holds the in-process server
+file. tests.rs holds the in-process server
 tests; fixtures.rs the small units they deploy.
 
 ### 2.3 `AppState`, `Deployment` and `SharedStore`
