@@ -9,6 +9,8 @@
 // page change would lose, goes to the provider in a pop-up: back, it keeps the token and tells
 // the tab that opened it, which takes it (`adoptSignIn`), and closes.
 
+import { quoted } from "./fromUrl";
+
 export type AuthConfig = { issuer: string; client_id: string; authorization_endpoint: string; token_endpoint: string };
 type Pending = { verifier: string; state: string; nonce: string; config: AuthConfig; redirect: string; popup?: boolean; at: number };
 /** `popup`, as finishSignIn answers it only: this page is the pop-up a tab opened to sign in again. */
@@ -85,9 +87,11 @@ export async function finishSignIn(): Promise<SignedIn | string | null> {
   const raw = localStorage.getItem(PENDING_KEY + state);
   localStorage.removeItem(PENDING_KEY + state);
   history.replaceState(null, "", location.pathname);
-  if (error) return `sign-in: ${params.get("error_description") ?? error}`;
   const pending = raw ? (JSON.parse(raw) as Pending) : null;
+  // Anyone can make a link that looks like a return: only one to a sign-in started here says
+  // anything of what it carries, and what the provider said is quoted as theirs.
   if (!pending || pending.state !== state) return "sign-in: this return doesn't match a sign-in started here";
+  if (error) return `sign-in: your identity provider refused it: ${quoted(params.get("error_description") ?? error)}`;
   const res = await fetch(pending.config.token_endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },

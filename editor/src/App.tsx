@@ -93,7 +93,7 @@ import { ReviewPage } from "./ReviewPage";
 import { useApprovals } from "./useApprovals";
 import { useCan, useHostPages, type Answer } from "./can";
 import { LibraryPage } from "./LibraryPage";
-import { format, parentOf, same, type Route } from "./routes";
+import { format, nothingAt, parentOf, same, type Route } from "./routes";
 import { PageBoundary } from "./ui/Boundary";
 import { KeysDialog, pick, useKeys } from "./ui/Keys";
 import { usePaletteRuns } from "./usePaletteRuns";
@@ -1778,7 +1778,7 @@ function Editor({ me }: { me: Me }) {
   useEffect(() => {
     const as = shownAt(route);
     if (as === null) return;
-    if (route.kind === "notfound") toast(`Nothing is at #${route.hash}.`, "bad");
+    if (route.kind === "notfound") toast(nothingAt(route.hash), "bad");
     navigate(as, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeKey]);

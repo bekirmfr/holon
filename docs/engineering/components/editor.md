@@ -167,6 +167,15 @@ edits, checks and formats files.
   gets an editor of their own. The provider is signed in through again in a pop-up, which hands
   the tab its token. Signing out asks first while flows aren't saved (`useTabs.ts`'s
   `unsavedFlows`). `session.test.tsx` holds each (R44).
+- **What the address says is quoted, never the console's words** (`fromUrl.tsx`): anyone can
+  make a link to the console, so text read from it is shown in quotes, on one line, at most 80
+  characters, and never as markup. That covers a manual page's name, a person's or a group's, a
+  hash that names nothing, and a sign-in return's error. A return from the identity provider
+  says what it carries only when it answers a sign-in this browser started. Before, `#docs.<page>`
+  put the name into markdown, where a backtick broke out to a heading and a link, and any
+  `?state=…&error_description=…` showed its text on the sign-in page as the console's own
+  sentence. `fromUrl.test.tsx` holds every place that shows such text, with markup, a sentence
+  in the console's voice, a quote mark of its own, unseen characters and a long one (EN:E4).
 - **Served by the server.** One process and one port: on a machine without a screen, start the
   server and open it from any browser (`editor.rs`).
 - **End-to-end clicks are dispatched** (`dispatchEvent("click")`): a forced click lands on

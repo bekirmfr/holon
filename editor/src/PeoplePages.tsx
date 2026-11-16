@@ -42,6 +42,7 @@ import { gateOf, Gated, useCan, type Answer, type Can } from "./can";
 import { HostPage, messageOf } from "./HostPages";
 import { about, input, primary, quiet, row, small } from "./hostStyles";
 import { seenSaid } from "./lastSeen";
+import { FromUrl } from "./fromUrl";
 import { format, PEOPLE_LABELS, PEOPLE_TABS, type PeopleTab, type Route } from "./routes";
 import {
   addPrincipal,
@@ -1012,7 +1013,19 @@ function PrincipalView({ name, me, a }: { name: string; me: string; a: Access })
   const [made, setMade] = useState<MadeToken | null>(null);
   const can = useCan();
   const p = a.principals.find((x) => x.name === name);
-  if (!p) return <div style={quiet}>{a.loaded ? `No one here is named ${name}.` : "reading…"}</div>;
+  // The name is the address's, which anyone can write: quoted.
+  if (!p)
+    return (
+      <div style={quiet}>
+        {a.loaded ? (
+          <>
+            No one here is named <FromUrl text={name} />.
+          </>
+        ) : (
+          "reading…"
+        )}
+      </div>
+    );
   const groups = a.groups.filter((g) => g.members.includes(p.name)).map((g) => g.name);
   const owns = a.principals.filter((o) => o.owner === p.name).map((o) => o.name);
   const facts = [
@@ -1167,7 +1180,18 @@ function GroupView({ name, a }: { name: string; a: Access }) {
   const [adding, setAdding] = useState("");
   const can = useCan();
   const g = a.groups.find((x) => x.name === name);
-  if (!g) return <div style={quiet}>{a.loaded ? `No group here is named ${name}.` : "reading…"}</div>;
+  if (!g)
+    return (
+      <div style={quiet}>
+        {a.loaded ? (
+          <>
+            No group here is named <FromUrl text={name} />.
+          </>
+        ) : (
+          "reading…"
+        )}
+      </div>
+    );
   const set = (members: string[]) => a.act(() => putGroup(name, { about: g.about, members, base: a.read.groups }));
   const kindOf = (m: string) => a.principals.find((p) => p.name === m)?.kind ?? "";
   return (

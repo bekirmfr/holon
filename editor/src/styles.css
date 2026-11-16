@@ -1101,6 +1101,9 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .hl-overlay__crumbs { display: flex; align-items: center; font-size: 12px; }
 .hl-overlay__flow { position: relative; flex: 1 1 auto; min-height: 0; }
 
+/* Text from the address, quoted (fromUrl.tsx): 80 characters with no space still wrap. */
+.hl-from-url { overflow-wrap: anywhere; }
+
 /* ── Docs: the manual (ManualPage.tsx) ─────────────────────────────────── */
 .hl-manual { display: grid; grid-template-columns: 220px minmax(0, 820px); gap: 36px; }
 .hl-manual__nav {
