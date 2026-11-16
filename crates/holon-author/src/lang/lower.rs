@@ -798,13 +798,42 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Whether node `id`'s `output` is known to be a number: its type says so, or it is `+` of
-    /// numbers (an `add` gives any value, as a text on either side joins).
+    /// numbers (an `add` gives any value, as a text on either side joins). Each sum below asked
+    /// once, without recursing: `a1 = a0 + a0`, `a2 = a1 + a1`… asked again at each use was
+    /// 2^k asks (twenty-two such lines took half a second to compile, audit R17), and a chain of
+    /// sums as long as a text may be is as deep.
     fn numeric(&self, id: &str, output: &str) -> bool {
-        let Some(d) = self.b.data(id) else { return false };
-        if d.outputs.iter().any(|p| p.name == output && p.ty == WType::Number) {
-            return true;
+        let mut known: HashMap<(&str, &str), bool> = HashMap::new();
+        let mut entered: HashSet<(&str, &str)> = HashSet::new();
+        // Each port, and whether its sources are asked already: it is known once they are.
+        let mut asking = vec![((id, output), false)];
+        while let Some((port, sources_asked)) = asking.pop() {
+            if known.contains_key(&port) {
+                continue;
+            }
+            let (id, output) = port;
+            let Some(d) = self.b.data(id) else {
+                known.insert(port, false);
+                continue;
+            };
+            if d.outputs.iter().any(|p| p.name == output && p.ty == WType::Number) {
+                known.insert(port, true);
+                continue;
+            }
+            let sources: Option<Vec<(&str, &str)>> = (d.name == "add").then(|| d.inputs.iter().map(|p| self.b.source(id, &p.name)).collect()).flatten();
+            let Some(sources) = sources else {
+                known.insert(port, false);
+                continue;
+            };
+            if sources_asked {
+                // A source still unknown is on a cycle back to this sum: not known to be a number.
+                known.insert(port, sources.iter().all(|s| known.get(s) == Some(&true)));
+            } else if entered.insert(port) {
+                asking.push((port, true));
+                asking.extend(sources.into_iter().filter(|s| !known.contains_key(s)).map(|s| (s, false)));
+            }
         }
-        d.name == "add" && d.inputs.iter().all(|p| self.b.source(id, &p.name).is_some_and(|(from, out)| self.numeric(from, out)))
+        known.get(&(id, output)) == Some(&true)
     }
 
     /// The type `v` is known to have: its node's output's, or an input's as the frame knows it.

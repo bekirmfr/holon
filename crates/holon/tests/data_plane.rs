@@ -20,11 +20,17 @@ struct Server {
 
 impl Server {
     fn start() -> Server {
+        Server::start_with(&[])
+    }
+
+    /// One started with `options` besides its own.
+    fn start_with(options: &[&str]) -> Server {
         let home = std::env::temp_dir().join(format!("holon-data-plane-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&home).unwrap();
         let port = free_port();
         let child = Command::new(HOLON)
             .args(["serve", "--at", &format!("127.0.0.1:{port}"), "--root-key", &format!("file:{}", home.join("root.key").display())])
+            .args(options)
             .env("HOLON_HOME", &home)
             .env_remove("HOLON_DATA")
             .env_remove("HOLON_RUN_DIR")
@@ -192,5 +198,86 @@ route.get("/hi", () => "hi", {{ log: "unrecorded" }})
             assert_eq!(status(answered), *wanted, "{what}, beside {count}: {answered}");
             assert!(*at < first, "{what}, beside {count} at once, took {:?}: answered {:?} after the first of them was done (a spin alone: {alone:?})", *at - asked, *at - first);
         }
+    }
+}
+
+/// Guards: the server's runs together are held to the memory it may hold (`--max-memory`), each
+/// run within its own grant: a route whose run parses a body into 65 MiB of values (130 MiB held,
+/// within its round's 256 MiB) is answered alone; eight of them at once, past the server's 320 MiB, are
+/// each answered (200, or a 500 or a 503 to try again), some fail for the server's memory, as
+/// their run log says, and the server goes on: another route answers, and the route alone is
+/// answered again once they are done.
+/// Why: a round was held to its own `max_memory`, and nothing held the rounds together: 448 at
+/// once may each hold 256 MiB, and a parse makes 80 times its text in one step, so a few callers
+/// sending a megabyte or two of JSON took the server's memory until the OS ended it (audit R16).
+/// If it fails: the process's count isn't kept (holon_core::memory's `PROCESS`), a round isn't
+/// held to the cap (`Hold` in rounds.rs, `room` in the parsers), or `--max-memory` isn't read.
+#[test]
+fn the_runs_together_are_held_to_the_memory_the_server_may_hold() {
+    let server = Server::start_with(&["--max-memory", "320M"]);
+    let port = free_port();
+    let text = format!(
+        r#"import {{ flow, length, route }} from "holon"
+
+flow("hold", {{ port: {port} }})
+
+route.post("/parse", (req) => `${{length(JSON.parse(req.body))}}`)
+route.get("/hi", () => "hi", {{ log: "unrecorded" }})
+"#
+    );
+    server.deploy("hold", &text, port, "/hi");
+    // 100,000 records of one field: 0.8 MB of text, 65 MiB of values, which the round holds
+    // twice over as it answers their count.
+    const RECORDS: usize = 100_000;
+    let body = format!("[{}]", vec![r#"{"a":0}"#; RECORDS].join(","));
+    let parse = move |body: &str| raw_http(port, format!("POST /parse HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+    // What its runs' log says, the last of them.
+    let log = || {
+        let runs = Command::new(HOLON)
+            .args(["runs", "hold", "--last", "3", "--json", "--server", &server.port.to_string()])
+            .env("HOLON_HOME", &server.home)
+            .env_remove("HOLON_DATA")
+            .env_remove("HOLON_RUN_DIR")
+            .output()
+            .expect("holon runs runs");
+        format!("{}{}", String::from_utf8_lossy(&runs.stdout), String::from_utf8_lossy(&runs.stderr))
+    };
+    let answered = parse(&body);
+    assert!(status(&answered) == 200 && answered.ends_with(&RECORDS.to_string()), "alone, within the server's memory: {answered:.300} {:.2000}", log());
+
+    let body = std::sync::Arc::new(body);
+    let at_once: Vec<String> = (0..8)
+        .map(|_| {
+            let body = std::sync::Arc::clone(&body);
+            std::thread::spawn(move || parse(&body))
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|run| run.join().unwrap())
+        .collect();
+    let statuses: Vec<u16> = at_once.iter().map(|a| status(a)).collect();
+    assert!(statuses.iter().all(|s| [200, 500, 503].contains(s)), "each answered: {statuses:?}");
+    assert!(statuses.iter().any(|&s| s != 200), "eight at once, past the server's memory, all answered whole: {statuses:?}");
+    // The log is written as the runs end, behind their answers.
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        let runs = log();
+        if runs.contains("--max-memory") {
+            break;
+        }
+        assert!(Instant::now() < until, "a run failed for the server's memory, and its log says so: {statuses:?} {runs:.3000}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // The server goes on, its memory let go.
+    assert_eq!(status(&raw_http(port, b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")), 200);
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        let answered = parse(&body);
+        if status(&answered) == 200 {
+            break;
+        }
+        assert!(Instant::now() < until, "alone again, once they are done: {answered:.300} {:.2000}", log());
+        std::thread::sleep(Duration::from_millis(200));
     }
 }
