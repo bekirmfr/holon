@@ -49,13 +49,18 @@ export type NodeTrace = {
   issue?: Issue;
 };
 
-/** Whether `v` carries a placeholder anywhere (the log's redaction): a secret's, a token's, or
- *  that of a value the run computed from a secret (`‹derived #7c1e9a02›`). */
+/** The marks the log writes in place of a value it never holds, by how each begins: a secret's, a
+ *  token's, that of a value the run computed from a secret (`‹derived #7c1e9a02›`), a file's kept
+ *  by hash, and a value under a key its flow never keeps (`‹never_keep:cvc›`, by place, as the
+ *  server's `secrets::MARKED`). */
+export const PLACEHOLDER_KINDS = ["‹secret:", "‹token:", "‹derived #", "‹file:", "‹never_keep:"] as const;
+
+/** Whether `v` carries a placeholder anywhere (the log's redaction): one of `PLACEHOLDER_KINDS`. */
 export function hasPlaceholder(v: WValue | null): boolean {
   if (v === null) return false;
   switch (v.type) {
     case "Text":
-      return v.value.includes("‹secret:") || v.value.includes("‹token:") || v.value.includes("‹derived #") || v.value.includes("‹file:");
+      return PLACEHOLDER_KINDS.some((kind) => v.value.includes(kind));
     case "List":
       return v.value.some(hasPlaceholder);
     case "Record":

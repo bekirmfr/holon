@@ -623,6 +623,9 @@ pub(crate) struct Stood {
     /// The tainted keys in its inputs (`authorization`): values of the request's the host never
     /// keeps.
     pub(crate) tainted: Vec<String>,
+    /// The keys its flow never keeps in its inputs (`cvc`): values of the request's the host
+    /// never keeps, at any length (`never_keep.rs`).
+    pub(crate) never_kept: Vec<String>,
     /// Whether its inputs held a value the run computed from a secret (`‹derived #7c1e9a02›`).
     /// Not which: such a mark is a run's own, and the same step in two runs reads as one here.
     pub(crate) derived: bool,
@@ -640,6 +643,7 @@ impl Stood {
             some("the secret", "the secrets", &self.secrets),
             some("the token", "the tokens", &self.tokens),
             some("the request's", "the request's", &self.tainted).map(|t| t + ", which the log never keeps"),
+            some("the request's", "the request's", &self.never_kept).map(|t| t + ", which its flow never keeps"),
             self.derived.then(|| "a value computed from a secret".to_string()),
         ]
         .into_iter()
@@ -2324,12 +2328,13 @@ impl Observer for Asserting {
                     holon_core::UnitBody::Primitive { name } => name.clone(),
                     _ => "a module".into(),
                 };
-                let mut fed = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+                let mut fed = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
                 let mut derived = false;
                 for v in inputs.iter().flatten() {
                     fed.0.extend(self.marks.secrets_in(v));
                     fed.1.extend(self.marks.tokens_in(v));
                     fed.2.extend(self.marks.tainted_in(v));
+                    fed.3.extend(self.marks.never_kept_in(v));
                     derived |= !self.marks.rest_of(Marks::DERIVED, v).is_empty();
                 }
                 let list = |set: BTreeSet<String>| set.into_iter().collect();
@@ -2349,7 +2354,7 @@ impl Observer for Asserting {
                         self.taken.insert(path.to_vec(), Taken { of, leaf: leaf.clone(), outputs });
                     }
                 }
-                self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2), derived });
+                self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2), never_kept: list(fed.3), derived });
                 Some(outputs)
             }
             None => {
@@ -2376,6 +2381,11 @@ impl Marks {
     /// What follows a placeholder's start for a value a run computed from a secret, up to its
     /// print (`secrets::DERIVED_MARK`, less the `‹`).
     const DERIVED: &'static str = "derived #";
+
+    /// What follows a placeholder's start for a value under a key its flow never keeps
+    /// (`never_keep::MARK`, less the `‹`): as a tainted value's, it has no fingerprint, so a step
+    /// that only moves it is computed on it and one that compares it isn't (`Asserting::computes`).
+    const NEVER_KEPT: &'static str = "never_keep:";
 
     /// How the mark of a value a run computed from a secret begins, as this check reads it.
     fn of_computed(&self) -> String {
@@ -2412,6 +2422,11 @@ impl Marks {
     /// request's the host never keeps), by key.
     fn tainted_in(&self, v: &Value) -> BTreeSet<String> {
         self.rest_of("taint:", v)
+    }
+
+    /// The keys never kept whose placeholder is in `v` (`‹never_keep:cvc›`), by key.
+    fn never_kept_in(&self, v: &Value) -> BTreeSet<String> {
+        self.rest_of(Marks::NEVER_KEPT, v)
     }
 
     /// The tokens whose placeholder is in `v` (as [`Marks::read`] gives it): each as its mark
@@ -2503,7 +2518,8 @@ impl Marks {
     }
 
     /// Whether every placeholder in the text `v` tells its value from another's: a secret's or a
-    /// token's with its fingerprint. A tainted value's has none, so two of them read alike.
+    /// token's with its fingerprint. A tainted value's has none, so two of them read alike, nor
+    /// has a value's its flow never keeps.
     fn told_apart(&self, v: &Value) -> bool {
         match v {
             Value::Text(t) => self.each_in(t).all(|(_, _, body)| Marks::print_of(body).is_some()),
@@ -3225,6 +3241,7 @@ mod tests {
             ("a look-alike the run wrote itself, escaped", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec![same, "‹‹secret:k v2 #bbbbbbbb›"], None),
             ("another secret's mark", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec![same, "‹secret:other v2 #bbbbbbbb›"], None),
             ("a token's mark and a tainted value's", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec![same, "‹token:answer access_token #bbbbbbbb›", "‹taint:authorization›"], None),
+            ("a value never kept's mark, its look-alike escaped", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec![same, "‹never_keep:cvc›", "‹‹never_keep:cvc›"], None),
             ("a kind that isn't one", entry(1, "v2 #aaaaaaaa", kept("here", &hex('1'))), vec![same], Some("isn't a kind and a commitment")),
             ("a commitment cut short", entry(1, "v2 #aaaaaaaa", kept("local", "abcd")), vec![same], Some("isn't a kind and a commitment")),
             ("a commitment that isn't hex", entry(1, "v2 #aaaaaaaa", kept("local", &hex('z'))), vec![same], Some("isn't a kind and a commitment")),
@@ -3339,10 +3356,18 @@ mod tests {
         let refs = |v: &[Option<Value>; 2]| -> Vec<Option<Value>> { v.to_vec() };
         let gave = |v: &[Option<Value>; 2]| asserting.compared("secure_equals", &unit, &refs(v).iter().map(Option::as_ref).collect::<Vec<_>>());
         assert_eq!((gave(&same), gave(&apart)), (vec![Some(Value::Boolean(true))], vec![Some(Value::Boolean(false))]));
-        // A tainted value's mark tells nothing apart: a comparison of one isn't computed.
-        let tainted = Some(Value::Text(format!("{}taint:authorization›", marks.start)));
-        assert_eq!(asserting.computes("secure_equals", &[tainted.as_ref(), same[0].as_ref()]), None);
-        assert_eq!(asserting.computes("concat", &[tainted.as_ref(), same[0].as_ref()]), Some(OnAMark::Moves), "moving one is");
+        // A mark of a value found under a key, tainted or never kept, tells nothing apart: a
+        // comparison of one isn't computed, moving one is. Each kind as `Marks::read` gives it
+        // from what the log wrote.
+        for logged in ["‹taint:authorization›", "‹never_keep:cvc›"] {
+            let read = marks.read(&SValue::Text(logged.into()), false);
+            assert!(marks.carried(&read), "{logged}");
+            let mark = Some(read);
+            assert_eq!(asserting.computes("secure_equals", &[mark.as_ref(), same[0].as_ref()]), None, "{logged}");
+            assert_eq!(asserting.computes("concat", &[mark.as_ref(), same[0].as_ref()]), Some(OnAMark::Moves), "moving {logged} is");
+        }
+        let fed: BTreeSet<String> = marks.never_kept_in(&marks.read(&SValue::Text("cvc=‹never_keep:cvc›".into()), false));
+        assert_eq!(fed, BTreeSet::from(["cvc".to_string()]), "a step fed one names its key");
     }
 
     /// Guards: what verify says a witnessed head proves names the runs it covers: from the oldest

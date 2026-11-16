@@ -1974,6 +1974,18 @@ mod tests {
             assert_eq!(escaped, logged != run.replace("sk_123456", "‹secret:key›").replace("tok-abcdef", "‹token:paid›"), "{run:?}");
             assert_eq!(read(&out, escaped), marks, "{run:?}");
         }
+        // Every kind of mark the log writes (`MARKED`), the marks written beside the secret's
+        // (a value computed from a secret, a value under a key its flow never keeps) among them:
+        // a look-alike of each is escaped and reads back as the run's text.
+        for kind in MARKED {
+            let run = format!("sent ‹{kind}x›");
+            let (out, escaped) = r.logged(&run).unwrap_or_else(|| (run.clone(), false));
+            assert!(escaped && out == format!("sent ‹‹{kind}x›"), "{kind}: {out}");
+            assert_eq!(read(&out, true), run, "{kind}");
+        }
+        for mark in [DERIVED_MARK, TAINT_MARK, crate::never_keep::MARK] {
+            assert!(MARKED.iter().any(|kind| mark == format!("‹{kind}")), "{mark} is a kind the log reads as a mark");
+        }
         // An entry logged before look-alikes were escaped: each reads as a mark, as it did then.
         assert_eq!(read("sent ‹token:paid› and ‹‹secret:key›", false), "sent [‹token:paid›] and ‹[‹secret:key›]");
 
