@@ -145,6 +145,20 @@ impl ClaimKey {
     }
 }
 
+impl ClaimKey {
+    /// How the key is said (a run's log, a busy answer): as it is, or, where a read a secret
+    /// reached gave it (`chosen`), with what names the item, row or file withheld.
+    pub(crate) fn shown(&self, chosen: bool) -> String {
+        let withheld = crate::taint::WITHHELD;
+        match self {
+            ClaimKey::Item { collection, .. } if chosen => format!("{collection}[{withheld}]"),
+            ClaimKey::Row { name, table, .. } if chosen => format!("{name}/{table}[{withheld}]"),
+            ClaimKey::File { name, .. } if chosen => format!("{name}/{withheld}"),
+            _ => self.to_string(),
+        }
+    }
+}
+
 impl fmt::Display for ClaimKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -313,6 +327,8 @@ impl Claims {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ClaimRecord {
     pub(crate) key: ClaimKey,
+    /// A read a secret reached gave it: said withheld ([`ClaimKey::shown`]).
+    pub(crate) chosen: bool,
     pub(crate) waited: Duration,
     /// The run found what it read changed once it held the key (or let go to wait for it), and ran
     /// again from the new state, having sent nothing on this attempt.
@@ -323,8 +339,13 @@ pub(crate) struct ClaimRecord {
 }
 
 impl ClaimRecord {
-    fn new(key: ClaimKey, waited: Duration, overtaken: bool) -> ClaimRecord {
-        ClaimRecord { key, waited, overtaken, taken: Instant::now(), held: None }
+    fn new(key: ClaimKey, chosen: bool, waited: Duration, overtaken: bool) -> ClaimRecord {
+        ClaimRecord { key, chosen, waited, overtaken, taken: Instant::now(), held: None }
+    }
+
+    /// Its key as the run's log says it ([`ClaimKey::shown`]).
+    pub(crate) fn shown(&self) -> String {
+        self.key.shown(self.chosen)
     }
 }
 
@@ -378,6 +399,9 @@ pub(crate) struct Claiming {
     deadline: Instant,
     held: Vec<ClaimKey>,
     pub(crate) records: Vec<ClaimRecord>,
+    /// What the run's secrets reach (taint.rs), if it was given any: a key a read they reach
+    /// gave is said withheld.
+    fed: Option<crate::taint::SecretFed>,
 }
 
 impl fmt::Debug for Claiming {
@@ -397,8 +421,15 @@ impl Claiming {
         run: String,
         wait: Duration,
         records: Vec<ClaimRecord>,
+        fed: Option<crate::taint::SecretFed>,
     ) -> Claiming {
-        Claiming { cell, store, writable, readable, shared, run, deadline: Instant::now() + wait, held: Vec::new(), records }
+        Claiming { cell, store, writable, readable, shared, run, deadline: Instant::now() + wait, held: Vec::new(), records, fed }
+    }
+
+    /// Whether a read a secret reaches gave `key` (its item's key, a file's name, a row's).
+    fn chosen(&self, key: &ClaimKey, reads: &[collections::Read]) -> bool {
+        let Some(fed) = &self.fed else { return false };
+        reads.iter().any(|r| fed.fed(&r.path) > crate::taint::Taint::Clean && self.keys_of(std::slice::from_ref(r)).contains(key))
     }
 
     /// The keys `reads` touch that this run may write.
@@ -460,8 +491,9 @@ impl Claiming {
             match taken {
                 Ok(()) => self.held.extend(group),
                 Err(key) if self.held.is_empty() => {
-                    self.records.push(ClaimRecord::new(key.clone(), started.elapsed(), false));
-                    return Claim::Busy { key: key.to_string() };
+                    let chosen = self.chosen(&key, reads);
+                    self.records.push(ClaimRecord::new(key.clone(), chosen, started.elapsed(), false));
+                    return Claim::Busy { key: key.shown(chosen) };
                 }
                 Err(key) => {
                     // Holding some and needing one another run holds: let go, wait for it, run again.
@@ -471,17 +503,19 @@ impl Claiming {
                         Some(all) => wait_shared(all, one, &self.run, self.deadline),
                         None => cell.claims.wait_free(one, &self.run, self.deadline),
                     };
-                    self.records.push(ClaimRecord::new(key.clone(), started.elapsed(), free));
-                    return if free { Claim::Overtaken } else { Claim::Busy { key: key.to_string() } };
+                    let chosen = self.chosen(&key, reads);
+                    self.records.push(ClaimRecord::new(key.clone(), chosen, started.elapsed(), free));
+                    return if free { Claim::Overtaken } else { Claim::Busy { key: key.shown(chosen) } };
                 }
             }
         }
         let waited = started.elapsed();
+        let chosen: Vec<bool> = new.iter().map(|key| self.chosen(key, reads)).collect();
         if self.still_as_read(&new, reads) {
-            self.records.extend(new.into_iter().map(|key| ClaimRecord::new(key, waited, false)));
+            self.records.extend(new.into_iter().zip(chosen).map(|(key, chosen)| ClaimRecord::new(key, chosen, waited, false)));
             Claim::Held
         } else {
-            self.records.extend(new.into_iter().map(|key| ClaimRecord::new(key, waited, true)));
+            self.records.extend(new.into_iter().zip(chosen).map(|(key, chosen)| ClaimRecord::new(key, chosen, waited, true)));
             self.release_all();
             Claim::Overtaken
         }

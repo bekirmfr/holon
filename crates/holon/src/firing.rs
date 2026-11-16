@@ -591,7 +591,9 @@ fn count_commit(cell: &claims::StateCell, run: &mut FiredRun) {
 /// in commit order and a run that changed nothing writes nothing (a read costs no fsync). A run
 /// whose change wasn't kept fails, as one whose file didn't land does: its state is in place, but
 /// the server starts again from the one before. One that changed nothing loses only a snapshot
-/// to restore to, and says so.
+/// to restore to, and says so. Either way its line names the state it left, by the hash its
+/// snapshot would have: every commit counted names one (`holon verify` holds it to that, audit
+/// R26), and a restore to it says its snapshot isn't in the store.
 fn keep_state(cell: &claims::StateCell, run: &mut FiredRun, live: &State, store: &SharedStore) {
     let changed = run.start_state.as_ref().is_some_and(|start| changed_from(start, live));
     match cell.save(live, store) {
@@ -601,8 +603,13 @@ fn keep_state(cell: &claims::StateCell, run: &mut FiredRun, live: &State, store:
             }
             run.state_after = Some(hex);
         }
-        Err(e) if changed => not_all_written(run, vec![format!("the state it left wasn't kept: {e}")]),
-        Err(e) => eprintln!("holon: run {}: the state it left wasn't kept: {e}", run.run_id),
+        Err(e) => {
+            match changed {
+                true => not_all_written(run, vec![format!("the state it left wasn't kept: {e}")]),
+                false => eprintln!("holon: run {}: the state it left wasn't kept: {e}", run.run_id),
+            }
+            run.state_after = crate::restore::snapshot_hash(live).ok();
+        }
     }
 }
 
@@ -676,6 +683,7 @@ fn run_attempt(
     });
     // Its folders, for the reads it was granted: read as it finds them.
     waits.failed = None;
+    waits.failed_at = None;
     waits.files = waits.folders.as_ref().map(|f| folders::Readable::new(Arc::clone(f), permit));
     waits.databases = waits.folders.as_ref().map(|f| databases::Readable::new(Arc::clone(f), permit));
 
@@ -739,6 +747,7 @@ fn run_attempt(
             run_hex.clone(),
             limits.claim_wait,
             records,
+            (!secret_fed.is_empty()).then(|| secret_fed.clone()),
         )
     });
     // A file as a request's body is sent from a folder the deployment reads.
@@ -758,8 +767,18 @@ fn run_attempt(
     let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &sender, limits, &mut timer, waits, &prior);
     let overtaken = outcome.error == Some(holon_host::RunError::Overtaken);
     // A read that failed (a file too big, or not text; a folder not bound) fails the run: it
-    // performs nothing.
-    let failed_read = waits.failed.take();
+    // performs nothing. Why names what it asked for (a file's name, a key, a parameter): where a
+    // secret reached that, why is withheld, as what it asked by is in its log entry
+    // (`taint::withhold_read`). A secret's choice that fails a read is never one a mark stands
+    // for, so this is whatever the run's record marks.
+    let failed_at = waits.failed_at.take();
+    let failed_read = waits.failed.take().map(|why| match failed_at {
+        Some(at) if secret_fed.fed(&at) > taint::Taint::Clean => {
+            let read_failed = [folders::READ_FAILED, databases::READ_FAILED].into_iter().find(|p| why.starts_with(p)).unwrap_or_default();
+            format!("{read_failed}{}", taint::WITHHELD)
+        }
+        _ => why,
+    });
     if failed_read.is_some() {
         host.performed.clear();
     }
@@ -1301,7 +1320,10 @@ fn without_kept_files(mut timeline: Vec<recorder::NodeTiming>, reads: &[collecti
 /// nothing (a thrown message, a module's error) withheld; and, unless the run's record marks
 /// every value it computed from one (`marked`, `recorder::Born::whole`), with those nodes'
 /// outputs left out: redaction finds a secret's value, and what is computed from it only where
-/// the run kept each such value (taint.rs, `secrets::born`).
+/// the run kept each such value (taint.rs, `secrets::born`). Its steps are all kept, those a
+/// choice decided by a secret took too (`SecretFed::chosen`): a run's steps show which way a
+/// choice went, a secret's included, as the owner decided; whoever approves the flow reads what
+/// it chooses by, and reading a run's steps is a grant of its own.
 fn without_secret_derived(mut timeline: Vec<recorder::NodeTiming>, fed: &taint::SecretFed, marked: bool) -> Vec<recorder::NodeTiming> {
     if !fed.is_empty() {
         for node in timeline.iter_mut().filter(|n| fed.derives(&n.path)) {
@@ -1424,7 +1446,7 @@ fn entry_with(
             .claims
             .iter()
             .map(|c| recorder::LoggedClaim {
-                key: c.key.to_string(),
+                key: c.shown(),
                 waited_ms: c.waited.as_secs_f64() * 1000.0,
                 overtaken: c.overtaken,
                 held_ms: c.held.map(|d| d.as_secs_f64() * 1000.0),
@@ -1434,6 +1456,9 @@ fn entry_with(
         secrets: run.secrets.clone(),
         committed: run.committed.clone(),
         derived: run.born.values.iter().map(|(hash, _)| hash.clone()).collect(),
+        // As `without_secret_derived` withholds: what may be computed from a secret, where the
+        // run computed with one and couldn't mark every value it made.
+        withheld: !run.secret_fed.is_empty() && !run.born.whole,
         answered: run.answered.clone(),
         born: run.born.clone(),
         mails: mails::of(&run.performed),
@@ -1448,25 +1473,42 @@ fn entry_with(
         reads: run
             .reads
             .iter()
-            .map(|r| recorder::LoggedRead {
-                path: r.path.clone(),
-                request: SValue::from_core(&r.request),
-                // A file's text past the inline size is kept by its hash, not in the entry; a range's
-                // answer is its text (or the lines of it), kept with the range.
-                answer: r.answer.as_ref().filter(|_| r.file.as_ref().is_none_or(|f| f.inline && f.range.is_none())).map(SValue::from_core),
-                file: r.file.as_ref().map(|f| recorder::LoggedFile {
-                    hash: f.hash.clone(),
-                    size: f.size,
-                    blob: f.blob.clone(),
-                    range: f.range.as_ref().map(|g| recorder::LoggedRange {
-                        start: g.start,
-                        end: g.end,
-                        text: g.text.clone(),
-                        before: ranges::hex(&g.before),
-                        after: ranges::hex(&g.after),
-                        proof: g.proof.iter().map(|cv| ranges::hex(cv)).collect(),
+            .map(|r| match run.withholds_read(&r.path) {
+                // What it asked by may be computed from a secret: that, and what it found (but a
+                // database's rows, which are the database's), withheld.
+                true => {
+                    let mut request = r.request.clone();
+                    taint::withhold_read(&mut request);
+                    let database = matches!(&r.request, Value::Record(q) if q.contains_key("database"));
+                    recorder::LoggedRead {
+                        path: r.path.clone(),
+                        request: SValue::from_core(&request),
+                        answer: r.answer.as_ref().filter(|_| database).map(SValue::from_core),
+                        file: None,
+                        withheld: true,
+                    }
+                }
+                false => recorder::LoggedRead {
+                    path: r.path.clone(),
+                    request: SValue::from_core(&r.request),
+                    // A file's text past the inline size is kept by its hash, not in the entry; a range's
+                    // answer is its text (or the lines of it), kept with the range.
+                    answer: r.answer.as_ref().filter(|_| r.file.as_ref().is_none_or(|f| f.inline && f.range.is_none())).map(SValue::from_core),
+                    file: r.file.as_ref().map(|f| recorder::LoggedFile {
+                        hash: f.hash.clone(),
+                        size: f.size,
+                        blob: f.blob.clone(),
+                        range: f.range.as_ref().map(|g| recorder::LoggedRange {
+                            start: g.start,
+                            end: g.end,
+                            text: g.text.clone(),
+                            before: ranges::hex(&g.before),
+                            after: ranges::hex(&g.after),
+                            proof: g.proof.iter().map(|cv| ranges::hex(cv)).collect(),
+                        }),
                     }),
-                }),
+                    withheld: false,
+                },
             })
             .collect(),
     }
@@ -1484,6 +1526,14 @@ impl FiredRun {
     /// [`FiredRun::withholds_output`], for what an effect with `capability` carries.
     pub(crate) fn withholds_effect(&self, capability: &Capability) -> bool {
         !self.born.whole && self.secret_fed.derives_effect(capability)
+    }
+
+    /// Whether its record withholds what the read at `path` asked by and found: a secret may
+    /// reach what it asks by (a key, a file's name, a range, a query's parameters), and the
+    /// record doesn't mark every value the run computed from one. Where it does, the read is
+    /// kept, redacted of those values.
+    pub(crate) fn withholds_read(&self, path: &[u32]) -> bool {
+        !self.born.whole && self.secret_fed.fed(path) > taint::Taint::Clean
     }
 
     /// [`FiredRun::withholds_output`], for what input `port` of the node at `path` was handed.

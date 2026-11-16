@@ -234,8 +234,9 @@ loopback, RFC 1918, link-local and metadata, CGNAT, NAT64 (and its local-use pre
 an IPv4 address inside IPv4-mapped, IPv4-compatible or 6to4 forms judged as itself, Teredo whole,
 and the rest it lists),
 checked on the addresses DNS returned, in the connection's own resolver, so rebinding can't swap one in.
+A cloud's metadata service is never reached, private addresses granted or not (`is_metadata`).
 The host sets `Host`, length and framing headers itself (`refused_header`). A redirect to another
-host carries only `CARRIED_ELSEWHERE` headers and is refused if it would resend a body
+host carries none of the flow's headers and is refused if it would resend a body
 (`blocked_redirect`). A request carrying a secret's value to a host its approval doesn't show it
 going to isn't sent (`folders::SecretSends`: `blocked_secret`).
 
@@ -410,7 +411,10 @@ What is not defended, or only partly:
 - **What a secret chooses is derived from it**: a true or false computed from it (`startsWith`,
   `===`, `has`), and what a leaf gives when a secret is its condition, position or key (`c ? a :
   b`, `list[i]`, `rec[k]`), is withheld in the log, answered or sent only where approved, and
-  never written, as the secret is (taint.rs: `selects`). Only the one-way leaves (`sha256`,
+  never written, as the secret is (taint.rs: `selects`); which way it chooses what runs shows in
+  the run's steps, as any choice's does: whoever approves the flow reads what it chooses by
+  (`SecretFed::deciders`), and reading a run's steps is a grant of its own; and a route that
+  reads its flow's own data by it asks `SecretAnswer`. Only the one-way leaves (`sha256`,
   `hmac_sha256`, `secure_equals`, `jwt_verify`'s key and clock), fed the secret whole, and a
   call's answer give out what they compute from it as clean. Whole is the secret as it is, or
   spelled another way with nothing chosen out of it (taint.rs: `RECODES`, `Taint::Recoded`: its

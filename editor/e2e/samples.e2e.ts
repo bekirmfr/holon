@@ -11,7 +11,7 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import { expect, FOLDERS, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, navLink, newFlow, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
+import { flowRow, gotoPage, navLink, newFlow, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun, expectVerified } from "./helpers";
 
 const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
 
@@ -1291,7 +1291,7 @@ test("inbox-report reads a file from a bound folder and writes its report to ano
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
   expect(verified).toContain("re-ran 5 runs: each produced what its log entry says");
   expect(verified).not.toContain("not re-run");
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
 });
 
 test("log-archive reads the last lines of a log too big to read whole and archives it by handle, and its runs verify", async ({ page, request, adminToken }) => {
@@ -1333,7 +1333,7 @@ test("log-archive reads the last lines of a log too big to read whole and archiv
   expect(exported).not.toContain("line 30000 ");
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
   expect(verified).toContain("re-ran 4 runs: each produced what its log entry says");
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
 });
 
 test("journal appends to a page in a capped folder, a write past its cap answers 500, and its runs verify", async ({ page, request, adminToken }) => {
@@ -1368,7 +1368,7 @@ test("journal appends to a page in a capped folder, a write past its cap answers
   execFileSync(holon, ["export", "journal", "--server", SERVER, "-o", out], { encoding: "utf8", env });
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
   expect(verified).toContain("each produced what its log entry says");
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
 });
 
 test("orders-api places, lists and refunds orders in the database an admin bound; a second refund changes no row and answers 409", async ({ page, request }) => {
@@ -1455,7 +1455,7 @@ test("drop-box runs once for a file dropped in its folder, sends it by handle, w
   execFileSync(holon, ["export", "drop-box", "--server", SERVER, "-o", out], { encoding: "utf8", env });
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
   expect(verified).toContain("each produced what its log entry says");
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: true });
 });
 
 test("approval-mail mails a payout's approval link, its page's button approves it, and whoever asked is mailed", async ({ page, request, adminToken }) => {
@@ -1586,7 +1586,7 @@ test("remittance-mail settles an invoice from an authenticated mail, refuses one
   execFileSync(holon, ["export", "remittance-mail", "--server", SERVER, "-o", out], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
   expect(verified).toContain("each produced what its log entry says");
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
 
   // The admin's resources show the mailbox, its server without a login, and whose verdict counts.
   await page.goto("/");
@@ -1746,7 +1746,7 @@ test("ledger-watch keeps each account's balance from its ledger's channel, and r
   const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "ledger-watch.json");
   execFileSync(holon, ["export", "ledger-watch", "--server", SERVER, "-o", out], { encoding: "utf8", env });
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
 
   // The admin's resources show the feed on its channel, without the connection.
   await page.goto("/");
@@ -1827,7 +1827,7 @@ test("file-audit runs on a csv dropped in the inbox and on a file removed from i
   const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "file-audit.json");
   execFileSync(holon, ["export", "file-audit", "--server", SERVER, "-o", out], { encoding: "utf8", env });
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
 });
 
 test("the admin page's browse… lists the server's folders, and the one chosen fills the path", async ({ page }) => {
@@ -1898,11 +1898,11 @@ test("a deployment's runs export from view mode and from holon export, and holon
   const verified = execFileSync(holon, ["verify", file, "--head", head], { encoding: "utf8" });
   expect(verified).toContain("re-ran 4 runs: each produced what its log entry says");
   // And each began from the balances the one before left (the first, from what no run here left).
-  expect(verified).toContain("state: 3 runs began from the state the run before them left");
+  expect(verified).toContain("state: run 0 began from nothing, as a log's first does; 3 runs began from the state the run before them left");
   expect(verified).not.toContain("DOESN'T FOLLOW");
   expect(verified).toMatch(/so no run from \d+ to \d+ was changed or removed$/m);
   expect(verified).not.toContain("older runs were trimmed");
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
 
   // The same file from the command line, signed in with a token.
   const out = join(dir, "from-cli.json");
@@ -1935,9 +1935,14 @@ test("a deployment's runs export from view mode and from holon export, and holon
   expect(((await posted.json()) as { balance: number }).balance).toBe(6);
   const again = join(dir, "restored.json");
   execFileSync(holon, ["export", "ledger", "--server", SERVER, "-o", again], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
-  const restored = execFileSync(holon, ["verify", again], { encoding: "utf8" });
-  expect(restored).toContain("(1 of them after a restore, from the state it put back)");
-  expect(restored.trim().endsWith("ok")).toBe(true);
+  // That run is the newest, and it wrote a collection: no run here began from the state it left,
+  // so what it left isn't checked. Verify says so, and ends 3 (R26): nothing fails, and a script
+  // reading the exit code doesn't take it as checked.
+  const restored = spawnSync(holon, ["verify", again], { encoding: "utf8" });
+  expect(restored.status).toBe(3);
+  expect(restored.stdout).toContain("(1 of them after a restore, from the state it put back)");
+  expect(restored.stdout).toMatch(/^  state not checked \(1 run: \d+\), what it left: it wrote a collection, and no run here began from the state it left$/m);
+  expect(restored.stdout.trim().split("\n").pop()).toBe("INCOMPLETE: nothing here fails, but not every run's state was checked (said above)");
 });
 
 test("site serves a built app from its folder: a deep link opens its page, its files as they are, a cached copy a 304, a missing asset a 404", async ({ page, request }) => {

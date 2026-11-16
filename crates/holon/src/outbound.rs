@@ -3,11 +3,12 @@
 //! says:
 //!
 //! - only hosts the deployment was granted (its `HttpRequest(host)` capabilities), checked again
-//!   on every redirect; a redirect to another host carries none of the flow's credentials (its
-//!   headers but those that say what the body is), and isn't followed when it would resend the
-//!   body (a 307 or 308 of a request that has one), which may hold a secret too;
+//!   on every redirect; a redirect to another host carries none of the flow's headers (any may
+//!   hold a credential or a secret), and isn't followed when it would resend the body (a 307 or
+//!   308 of a request that has one), which may hold a secret too;
 //! - no private, loopback, link-local or metadata addresses, checked on the addresses DNS
 //!   actually returned and the connection actually uses (so DNS rebinding can't get around it);
+//!   a cloud's metadata service never, private addresses granted or not ([`is_metadata`]);
 //! - HTTPS only, with certificate checks;
 //! - the request's limits: timeouts, request, response and header sizes, redirects.
 //!
@@ -174,9 +175,21 @@ impl Outbound {
     }
 
     fn url(&self, target: &Target) -> String {
-        let scheme = if self.plain_http.contains(&target.authority) { "http" } else { "https" };
-        format!("{scheme}://{}{}", target.authority, target.rest)
+        wire_url(target, &self.plain_http)
     }
+}
+
+/// `target`'s address as it goes on the wire: plain HTTP to a host granted it (`PlainHttp`),
+/// HTTPS to any other, whatever scheme the request names (core writes `https://`).
+fn wire_url(target: &Target, plain_http: &BTreeSet<String>) -> String {
+    let scheme = if plain_http.contains(&target.authority) { "http" } else { "https" };
+    format!("{scheme}://{}{}", target.authority, target.rest)
+}
+
+/// `url` as a deployment granted plain HTTP to `plain_http` sends it: what is said of a request
+/// says what went, or would go, on the wire. One the host wouldn't call stays as it is.
+pub(crate) fn on_the_wire(url: &str, plain_http: &BTreeSet<String>) -> String {
+    parse_url(url).map_or_else(|| url.to_string(), |target| wire_url(&target, plain_http))
 }
 
 impl Performer for Outbound {
@@ -219,9 +232,11 @@ impl Outbound {
             .redirects(0) // followed below, each one checked
             .resolver(move |netloc: &str| -> std::io::Result<Vec<SocketAddr>> {
                 let addrs: Vec<SocketAddr> = netloc.to_socket_addrs()?.collect();
-                let public: Vec<SocketAddr> = addrs.iter().copied().filter(|a| allow_private || !is_private(a.ip())).collect();
+                // A cloud's metadata service is never reached, private addresses granted or not.
+                let public: Vec<SocketAddr> = addrs.iter().copied().filter(|a| !is_metadata(a.ip()) && (allow_private || !is_private(a.ip()))).collect();
                 if public.is_empty() && !addrs.is_empty() {
-                    return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "a private address"));
+                    let what = if addrs.iter().any(|a| is_metadata(a.ip())) { "a private address: a cloud's metadata service, never reached" } else { "a private address" };
+                    return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, what));
                 }
                 Ok(public)
             })
@@ -236,12 +251,14 @@ impl Outbound {
                 return refused;
             }
             let mut call = agent.request(&method, &self.url(&target));
-            // Redirected to another host, only the headers that say what the body is go along:
-            // the rest may be the first host's credentials (`authorization`, an API key).
+            // Redirected to another host, none of the flow's headers go along: any of them may
+            // hold the first host's credentials or another secret (`authorization`, an API key,
+            // what a flow puts in `user-agent`), and a secret's hosts were checked on the URL the
+            // flow named. No body goes there either (below), so none says what one is.
             let elsewhere = target.authority != first;
             for (name, value) in headers {
                 if let Value::Text(v) = value
-                    && (!elsewhere || CARRIED_ELSEWHERE.contains(&name.to_ascii_lowercase().as_str()))
+                    && !elsewhere
                 {
                     call = call.set(name, v);
                 }
@@ -306,9 +323,6 @@ impl Outbound {
         }
     }
 }
-
-/// The flow's headers a redirect to another host still carries.
-const CARRIED_ELSEWHERE: &[&str] = &["content-type", "accept", "accept-language", "user-agent"];
 
 /// Where a redirect's `Location` points: absolute, or a path on the same host.
 fn next_target(from: &Target, location: &str) -> Option<Target> {
@@ -400,12 +414,18 @@ fn transport_failure(t: &ureq::Transport) -> Value {
             _ => "transport",
         }
     };
-    failure(error, without_url(t))
+    failure(error, transport_said(t))
 }
 
-/// What went wrong, without the URL ureq puts first: its path and query may hold what is computed
-/// from a secret (a key in the query), and the message is logged as the call's answer.
-fn without_url(t: &ureq::Transport) -> String {
+/// What a transport failure says, the one way a failed call to anywhere is told: without the URL
+/// ureq puts first (its path and query may hold what is computed from a secret, a key in the
+/// query), and without the header ureq refused, whose line its message holds whole (`invalid
+/// header 'X-Vault-Token: …'`): a header's value is a secret as often as not, and the message
+/// goes to a run's record, the timeline, the live status and the console.
+pub(crate) fn transport_said(t: &ureq::Transport) -> String {
+    if t.kind() == ureq::ErrorKind::BadHeader {
+        return "a header's value isn't one a request can carry: a line break, a control character or a byte past ASCII in it".to_string();
+    }
     let mut said = t.kind().to_string();
     if let Some(m) = t.message() {
         said = format!("{said}: {m}");
@@ -416,6 +436,39 @@ fn without_url(t: &ureq::Transport) -> String {
         source = s.source();
     }
     said
+}
+
+/// What a failed call says: the status it was answered, or its transport failure as
+/// [`transport_said`] tells it.
+pub(crate) fn said(e: &ureq::Error) -> String {
+    match e {
+        ureq::Error::Status(code, _) => format!("it answered {code}"),
+        ureq::Error::Transport(t) => transport_said(t),
+    }
+}
+
+/// Whether `ip` is a cloud's metadata service, which hands whoever asks the machine's
+/// credentials: never reached by a flow, even one granted private addresses. 169.254.0.0/16
+/// (AWS, GCP and Azure answer at 169.254.169.254, ECS at 169.254.170.2), Alibaba's
+/// 100.100.100.200 and AWS's IPv6 `fd00:ec2::254`, however the address is spelled: inside an IPv6
+/// one (mapped, IPv4-compatible, 6to4, NAT64), and behind the forms that hide an IPv4 address
+/// this host can't tell (NAT64 for local use, Teredo), which are refused whole.
+pub(crate) fn is_metadata(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_link_local() || v4.octets() == [100, 100, 100, 200],
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_metadata(IpAddr::V4(v4));
+            }
+            let seg = v6.segments();
+            let v4_at = |hi: u16, lo: u16| IpAddr::V4(std::net::Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8));
+            let carried = (seg[..6] == [0, 0, 0, 0, 0, 0] && !v6.is_loopback() && !v6.is_unspecified() && is_metadata(v4_at(seg[6], seg[7])))
+                || (seg[0] == 0x2002 && is_metadata(v4_at(seg[1], seg[2])))
+                || (seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] && is_metadata(v4_at(seg[6], seg[7])));
+            let hidden = seg[..3] == [0x64, 0xff9b, 1] || seg[..2] == [0x2001, 0];
+            carried || hidden || seg == [0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254]
+        }
+    }
 }
 
 /// Whether `ip` is somewhere a flow must not reach by default: this machine, its network, or a
@@ -624,8 +677,9 @@ mod tests {
         assert_eq!(field(&out, "error"), &Value::Text("too_many_redirects".into()));
     }
 
-    /// A redirect to another granted host carries only the headers that say what the body is: the
-    /// first host's credentials stay with it. One to the same host carries them all.
+    /// A redirect to another granted host carries none of the flow's headers: the first host's
+    /// credentials stay with it, a custom header's and a well-known one's alike (a secret's hosts
+    /// were checked on the URL the flow named). One to the same host carries them all.
     #[test]
     fn a_redirect_to_another_host_leaves_the_credentials_behind() {
         let target = serve_head(|head| ok(&head.to_ascii_lowercase()));
@@ -644,6 +698,7 @@ mod tests {
                 Value::Record(BTreeMap::from([
                     ("Authorization".to_string(), text("Bearer sk_first_host")),
                     ("x-api-key".to_string(), text("k_first_host")),
+                    ("user-agent".to_string(), text("ua_first_host")),
                     ("content-type".to_string(), text("application/json")),
                 ])),
             );
@@ -651,8 +706,7 @@ mod tests {
         let out = o.perform(&asked, &Limits::request_run());
         let Value::Text(seen) = field(&out, "body") else { panic!("{out:?}") };
         assert!(seen.starts_with("get /landed"), "a 307 keeps its method: {seen}");
-        assert!(!seen.contains("sk_first_host") && !seen.contains("k_first_host"), "{seen}");
-        assert!(seen.contains("content-type: application/json"), "{seen}");
+        assert!(!seen.contains("first_host") && !seen.contains("application/json"), "none of the flow's headers: {seen}");
 
         // A body isn't resent to another host: it may hold a secret as a header may.
         let landed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -737,6 +791,36 @@ mod tests {
         let small = Limits { max_request_bytes: 3, ..Limits::request_run() };
         let out = o.send("PUT", &format!("https://{addr}/up"), &BTreeMap::new(), Body::File(&file), &small, None);
         assert_eq!(field(&out, "error"), &Value::Text("too_large".into()), "a file counts as a body");
+    }
+
+    /// **Guards:** a cloud's metadata service is never reached by a flow, whatever it was granted:
+    /// each way its addresses can be spelled is one, those that aren't stay reachable with private
+    /// addresses granted, and a request to one is refused before anything is sent.
+    /// **Why:** private addresses granted (a deployment that calls a service on its network) let
+    /// through 169.254.169.254 too, where a cloud hands out the machine's credentials.
+    /// **If it fails:** a spelling of a metadata address isn't recognised, or the resolver lets one
+    /// through when private addresses are granted.
+    #[test]
+    fn metadata_addresses_are_never_reached_however_spelled() {
+        for ip in [
+            "169.254.169.254", "169.254.170.2", "169.254.0.1", "100.100.100.200", "fd00:ec2::254",
+            // Inside an IPv6 address: mapped, IPv4-compatible, 6to4, NAT64.
+            "::ffff:169.254.169.254", "::ffff:100.100.100.200", "::a9fe:a9fe", "2002:a9fe:a9fe::1", "64:ff9b::a9fe:a9fe", "64:ff9b::6464:64c8",
+            // Where an IPv4 address hides that can't be told: NAT64 for local use, Teredo.
+            "64:ff9b:1::a9fe:a9fe", "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+        ] {
+            assert!(is_metadata(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["127.0.0.1", "10.0.0.1", "192.168.1.1", "100.100.100.201", "8.8.8.8", "::1", "fd00:ec2::253", "fc00::1", "::ffff:10.0.0.1", "2002:0a00:0001::"] {
+            assert!(!is_metadata(ip.parse().unwrap()), "{ip}");
+        }
+        // Granted the host, plain HTTP and private addresses: still refused, nothing sent.
+        let metadata: BTreeSet<String> = ["169.254.169.254".to_string(), "[::ffff:a9fe:a9fe]".to_string()].into();
+        let o = Outbound { allowed: metadata.clone(), revoked: BTreeSet::new(), plain_http: metadata.clone(), allow_private: true };
+        for host in &metadata {
+            let out = o.perform(&request("GET", &format!("http://{host}/latest/meta-data/"), ""), &Limits::request_run());
+            assert_eq!(field(&out, "error"), &Value::Text("blocked_address".into()), "{host}: {out:?}");
+        }
     }
 
     #[test]

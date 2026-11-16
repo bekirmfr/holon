@@ -19,7 +19,7 @@ the editor show).
 | `Random` | use randomness | `random` |
 | `HttpRequest("host")` | call https://host | `await api.get(…)`, `api.post(…)`, … with `import api from "host:host"`; the host is its import |
 | `SecretRead("name")` | read the secret "name"; when the flow sends it in a request, "…, and send it to https://host"; in a database read's values, "…, and send it to the database "shop""; where what a call answers to it goes (a token), "…; what is answered to it goes to https://api"; where a hash or a signature of it goes, "…; a hash or signature made with it goes to its callers". For those two, "its callers" is a destination: a route that answers with one | a secret's import, `import name from "secret:name"`, read; it is sent to a host when it, or something computed from it, reaches a request's path, headers or body (an `hmac_sha256`, `sha256` or `secure_equals` of it whole isn't, as it is or spelled another way, such as its base64 or its bytes; of a part of it, such as `sha256(name.slice(0, 1))`, it is), and to a database when it is one of a read's `$1`, `$2`, …. A `sha256` or an `hmac_sha256` of it whole, and what a call answers to a request that carried it, aren't the secret, and nothing withholds or refuses them; each is followed from where it is made to where it leaves (a request, a route's answer), and said here. A Boolean ends a signature's trail (whether it matches is what it is for), and a response's `status` isn't what was answered |
-| `SecretAnswer("name")` | answer its callers with the secret "name", or with what is computed from it | a route whose answer the secret reaches: `return name`, `return { k: base64(name) }`; an `hmac_sha256`, `sha256` or `secure_equals` of it whole, or a call's answer, isn't one; of a part of it (`secure_equals(name.slice(0, 4), req.query.p)`), it is, since a hash or a comparison of a part says the part |
+| `SecretAnswer("name")` | answer its callers with the secret "name", or with what is computed from it | a route whose answer the secret reaches: `return name`, `return { k: base64(name) }`, or that reads its flow's own data by it, a collection's item under a key computed from it or a file it names (found, waited on or failed, the answer tells); an `hmac_sha256`, `sha256` or `secure_equals` of it whole, a call's answer, or a database's rows read with it, isn't one; of a part of it (`secure_equals(name.slice(0, 4), req.query.p)`), it is, since a hash or a comparison of a part says the part |
 | `StateRead("key")` | read its state "key" | `state.key` read |
 | `StateWrite("key")` | write its state "key" | `state.key = …` |
 | `CollectionRead("c")` | read items of its collection "c" | `c[k]`, `c.list(…)` |
@@ -69,11 +69,13 @@ deploys with the item withheld, the handler's runs recorded, until a person gran
 
 Without `PrivateAddresses`, a call is refused when the host resolves to a private address
 (loopback, the private ranges, link-local and cloud metadata addresses, and their IPv6 forms),
-checked after DNS, on every redirect.
+checked after DNS, on every redirect. With it, a cloud's metadata service is still never reached
+(169.254.0.0/16, `100.100.100.200`, `fd00:ec2::254`, however written): it hands whoever asks
+the machine's credentials.
 
 A redirect is followed only to a host the deployment may call. To another host than the first,
-only `content-type`, `accept`, `accept-language` and `user-agent` go along: the flow's other
-headers (`authorization`, an API key) stay with the host they were meant for.
+none of the flow's headers go along, and no body: they stay with the host they were meant for
+(`authorization`, an API key, a secret put in any header).
 
 ## Limits
 

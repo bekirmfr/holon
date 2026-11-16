@@ -165,6 +165,33 @@ fn mysql_tls(url: &str) -> Result<(String, bool), String> {
     Ok((url, tls))
 }
 
+/// A Postgres connection's settings: TLS required when it names no `sslmode` and goes to
+/// another machine. libpq's default, `prefer`, takes a server's "no TLS", which anyone on the path
+/// can answer, and sends the connection in the clear, its password too with cleartext auth; SMTP,
+/// IMAP and MySQL here refuse that. To this machine (loopback, a socket) it is left as libpq has
+/// it, and an `sslmode` the URL names is the owner's.
+pub(crate) fn pg_config(url: &str) -> Result<postgres::Config, String> {
+    let mut config: postgres::Config = url.parse().map_err(|e| format!("the connection isn't a Postgres URL: {e}"))?;
+    let local = config.get_hosts().iter().all(|h| match h {
+        postgres::config::Host::Tcp(h) => h == "localhost" || h.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback()),
+        #[cfg(unix)]
+        postgres::config::Host::Unix(_) => true,
+    });
+    if !names_sslmode(url) && !local {
+        config.ssl_mode(postgres::config::SslMode::Require);
+    }
+    Ok(config)
+}
+
+/// Whether a Postgres URL (`?sslmode=`) or key-value string (`sslmode=`) names its `sslmode`.
+fn names_sslmode(url: &str) -> bool {
+    let is_it = |pair: &str| pair.split('=').next().is_some_and(|k| k.trim().eq_ignore_ascii_case("sslmode"));
+    match url.split_once("://") {
+        Some((_, rest)) => rest.split_once('?').is_some_and(|(_, query)| query.split('&').any(is_it)),
+        None => url.split_whitespace().any(is_it),
+    }
+}
+
 pub(crate) fn pg_tls() -> tokio_postgres_rustls::MakeRustlsConnect {
     static CONFIG: OnceLock<rustls::ClientConfig> = OnceLock::new();
     let config = CONFIG.get_or_init(|| {
@@ -191,9 +218,9 @@ impl Remote {
         let unreachable = |e: &dyn std::fmt::Display| format!("{} can't be reached: {e}", self.address);
         match self.engine {
             Engine::Postgres => {
-                let mut config: postgres::Config = self.url.parse().map_err(|e| format!("the connection isn't a Postgres URL: {e}"))?;
+                let mut config = pg_config(&self.url)?;
                 config.connect_timeout(Duration::from_secs(5)).application_name("holon");
-                let mut client = config.connect(pg_tls()).map_err(|e| unreachable(&e))?;
+                let mut client = config.connect(pg_tls()).map_err(|e| unreachable(&pg_connect_said(&self.url, &e)))?;
                 client.batch_execute("set standard_conforming_strings = on; set timezone = 'UTC'").map_err(|e| unreachable(&e))?;
                 Ok(Conn::Pg(Box::new(client)))
             }
@@ -763,6 +790,21 @@ pub(crate) fn pg_said(e: &postgres::Error) -> String {
     }
 }
 
+/// Why a connection to the Postgres at `url` failed, as [`pg_said`] tells it; and, when the server
+/// has no TLS where [`pg_config`] required it (the URL names no `sslmode` and goes to another
+/// machine), that Holon required it and what is the owner's to write: the refusal alone reads as
+/// the server's fault, and the way past it is theirs to choose, never Holon's to take.
+pub(crate) fn pg_connect_said(url: &str, e: &postgres::Error) -> String {
+    let said = pg_said(e);
+    // tokio-postgres's words for a server answering "no TLS" where it was required.
+    let no_tls = e.as_db_error().is_none() && std::error::Error::source(e).is_some_and(|c| c.to_string() == "server does not support TLS");
+    if no_tls && !names_sslmode(url) {
+        format!("{said}: Holon requires TLS to a database on another machine unless its URL names an sslmode; on a network you trust, ?sslmode=disable in it is yours to write")
+    } else {
+        said
+    }
+}
+
 fn pg_failed(e: &postgres::Error, sql: &str) -> Failure {
     use postgres::error::SqlState;
     match e.code() {
@@ -1002,6 +1044,64 @@ fn my_failed(e: &mysql::Error, sql: &str) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Guards:** a Postgres connection to another machine requires TLS unless its URL names an
+    /// `sslmode`, as MySQL's, SMTP's and IMAP's do; to this machine it is left as libpq has it. A
+    /// server with no TLS where Holon required it is refused saying so, and that `sslmode=disable`
+    /// is the owner's to write; where the URL named its mode, as the server's refusal alone.
+    /// **Why:** libpq's default, `prefer`, took a server's "no TLS", which anyone on the path can
+    /// answer, and sent the connection in the clear, its password too with cleartext auth. And a
+    /// database that worked before, on a network its owner trusts, would stop with only
+    /// "error performing TLS handshake" to go on.
+    /// **If it fails:** the row named gets another mode: a remote host is missed (a second one in
+    /// the list, a key-value string), a local one isn't recognised, or a mode the URL names is
+    /// overridden; or the refusal doesn't say why (tokio-postgres words a server's "no TLS"
+    /// otherwise: `pg_connect_said`), or says it where the URL named its own mode.
+    #[test]
+    fn postgres_requires_tls_to_another_machine_unless_told() {
+        use postgres::config::SslMode::{Disable, Prefer, Require};
+        for (url, mode) in [
+            ("postgres://shop:s3cret@db.example.com/shop", Require),
+            ("postgres://shop:s3cret@db.example.com:6543/shop?application_name=x", Require),
+            ("postgres://shop:s3cret@127.0.0.1,db.example.com/shop", Require),
+            ("host=db.example.com user=shop dbname=shop", Require),
+            ("postgres://shop:s3cret@127.0.0.1/shop", Prefer),
+            ("postgres://shop:s3cret@localhost:5432/shop", Prefer),
+            ("postgres://shop:s3cret@[::1]/shop", Prefer),
+            ("host=localhost user=shop", Prefer),
+            ("postgres://shop:s3cret@db.example.com/shop?sslmode=disable", Disable),
+            ("postgres://shop:s3cret@db.example.com/shop?sslmode=prefer", Prefer),
+            ("host=db.example.com user=shop sslmode=disable", Disable),
+            ("postgres://shop:s3cret@127.0.0.1/shop?sslmode=require", Require),
+        ] {
+            assert_eq!(pg_config(url).unwrap().get_ssl_mode(), mode, "{url}");
+        }
+
+        // A server with no TLS, reached at another machine's name (`hostaddr` is where it is):
+        // refused, saying that Holon required TLS and that `sslmode=disable` is the owner's to
+        // write, when the URL named no sslmode; refused as the server's, when it did.
+        let refusing = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = refusing.local_addr().unwrap().port();
+        let rows = [
+            (format!("postgres://shop:s3cret@db.example.com:{port}/shop?hostaddr=127.0.0.1"), true),
+            (format!("postgresql://shop:s3cret@db.example.com:{port}/shop?application_name=x&hostaddr=127.0.0.1"), true),
+            (format!("postgres://shop:s3cret@db.example.com:{port}/shop?hostaddr=127.0.0.1&sslmode=require"), false),
+        ];
+        let answering = std::thread::spawn(move || {
+            for mut conn in refusing.incoming().take(3).flatten() {
+                let mut ssl_request = [0u8; 8];
+                let _ = std::io::Read::read_exact(&mut conn, &mut ssl_request);
+                let _ = std::io::Write::write_all(&mut conn, b"N");
+            }
+        });
+        for (url, told) in rows {
+            let said = Remote::open(Zeroizing::new(url.clone())).err().unwrap_or_default();
+            assert!(said.contains("server does not support TLS"), "{url}: {said}");
+            assert_eq!(said.contains("?sslmode=disable in it is yours to write"), told, "{url}: {said}");
+            assert!(!said.contains("s3cret"), "{url}: {said}");
+        }
+        answering.join().unwrap();
+    }
 
     #[test]
     fn a_connection_names_its_database_without_its_credentials() {

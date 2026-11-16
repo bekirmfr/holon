@@ -133,11 +133,20 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
    not there (`trimmed`), and whether the last line's hash is the export's head. `--head <hex>`
    checks a head a witness holds is in the export (`witnessed`), so no run from the export's
    oldest to it was changed or removed; of runs a trimmed log no longer holds it says nothing,
-   and `describe` says so.
+   and `describe` says so. Each line is one the server writes (`ill_formed`, `Report::malformed`):
+   a kind of run there is with that kind's fields, values a run holds, each commit numbered once
+   and a numbered one naming the state it left, what was delivered only on a resumed part's.
 2. **The units**, each against its hash.
 3. **Every run again** (`rerun`): the same unit, request, state, clock and random, its outbound
    answers and collection reads from the entry, through the same core and rounds, compared with
-   its run id, outputs, effects and status. A node that computed with a secret or a resume token
+   its run id, outputs, effects and status; its answer as the line keeps it (`answered_as_said`,
+   the server's own `deploy::action_answer`, `websockets::reply_of`); its steps, round by round
+   (`steps_of`: its own requests answered as it sends them, `Answering`, so it takes its steps in
+   the rounds it took them, and what is stood in is a step's outputs in that round,
+   `Asserting::at`); the points it waits at; and what it was delivered, each at a point it
+   reached waiting (`Waits::event_at`), an approval's decisions replayed by the server's own rules
+   (`durable::StoredWaiting::decided_as`: `take`, `Excluded`, the run's starter from its first
+   part's `by`). A node that computed with a secret or a resume token
    can't be computed again; what the log kept for it stands in (`Asserting`), and the report names
    each such node by its leaf and the secrets and tokens it was fed (`given`, `Stood`), by run.
    Not every leaf fed one: those core lists as exact on a mark (`taint::on_a_mark`: the ones that
@@ -161,13 +170,19 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
    runs committing close together can be numbered the other way round. Their numbers also say
    whether another commit landed while it ran, and which runs of a trimmed log began after a
    commit older than every one here (`before_the_first`: no run before them here, as the first);
-   a line without them is taken by its place and times.
+   a line without them is taken by its place and times. A resumed part, and a run beside others,
+   committed onto the state the commit numbered before its own left (`state_at`, `written_on`):
+   what it left is that, its writes applied.
 5. **Where the secrets went** (`check_sends`): each request carrying a secret's mark went to a host
    its unit sends that secret to; **the events** (`check_events`), their chain and head.
 
-It exits 0 when it all checks (`Report::ok`) and every run was run again (`Report::complete`), 1
-when it doesn't check, 3 when it checks but some runs weren't run again, 2 when it can't read the
-export.
+It exits 0 when it all checks (`Report::ok`) and everything was checked (`Report::complete`: every
+run run again, every run's state checked), 1 when it doesn't check, 3 when it checks but some runs
+weren't run again or some states weren't checked (`States::unchecked`), 2 when it can't read the
+export. A run with no run before it here is checked where it began only in an export from the
+log's first line, and only if its line says it began from nothing (`began_from_nothing`: an
+empty state, after no commit); else it is `NONE_BEFORE` (the export begins later) or
+`NOT_FROM_NOTHING`.
 
 ### A replay of another version
 
@@ -181,12 +196,23 @@ fed a placeholder is computed twice, with two placeholders (`Fed`): if what it g
 which, it computed with the secret's value, and the run is `cant_tell`; if not, it passed it along
 or picked past it, and stands. What `Fed` computes stands in for the node, so the round's budget
 never counts it: it computes on a budget of its own, made afresh each round, of twice the round's
-steps, fuel and memory, and a version that wants more is `cant_tell` too. Each round is held to
-`rerun_limits()` (no clock or count of requests, as in `rerun`) but `within` the steps, fuel and
-memory the deployment's permit grants: a replay needs no approval, and runs a version anyone who may
-read the deployment stages on up to 200 runs, so it computes no more than a person approved for the
-deployment's own runs. A version asking for more has it once deployed; replayed, a run that needs it
-differs ("it doesn't finish within what the deployment is granted"). The run id isn't compared:
+steps, fuel and memory, and a version that wants more is `cant_tell` too. Each run is held to
+`rerun_limits()` but `within` what the deployment's permit grants a run of its kind (`Granted::of`:
+a request's limits, or a clock's for a tick, file, mail, feed or queue run): each round's steps,
+fuel and memory, the run's `run_budget`, and its `max_requests` times its parts (a later part sends
+its earlier parts' requests again). A replay needs no approval, and runs a version anyone who may
+read the deployment stages (an agent, with its `replay` tool) on up to 200 runs, so it computes no
+more than a person approved for the deployment's own runs. A version asking for more has it once
+deployed; replayed, a run that needs it differs ("it doesn't finish within what the deployment is
+granted"). A run that has missed a request or a read is `cant_tell` whatever it does next, so it
+goes no further: `ByRead::claim`, which the host asks before each round it sends, ends it as an
+overtaken run ends. And the replay as a whole is held (`Replays`, on `AppState`): it runs for
+`DEADLINE` (30 s) at most, a run's budget cut to what is left, the runs not reached by then counted
+(`not_reached`, the oldest; one its time ran out in is `cant_tell`), and the server runs `AT_ONCE`
+(two) at a time, the next answered 503 with `Retry-After`: a replay holds a thread of the control
+plane while it runs. Before (the release audit's H10, the register's R27), a replayed run had an
+hour and any number of requests, a missed one was answered offline and the run went on, and nothing
+held a whole replay or how many ran. The run id isn't compared:
 another version's differs by design. The file texts come from the export machinery (`export_of`), so
 a file holding a secret isn't read back, as in an export. The editor shows it on a version's review
 and in the deploy dialog (`ReplayRuns.tsx`); the sample `price-rules` is the flow to try it on.
@@ -240,6 +266,14 @@ and in the deploy dialog (`ReplayRuns.tsx`); the sample `price-rules` is the flo
 - **An unrecorded run leaves no entry** ([G8](../themes/resilience.md#g8-an-unrecorded-run-leaves-no-entry-failed-or-not-and-is-counted)),
   so verify can say nothing of it; a run that panics leaves none either (G3).
 - **Exports are whole**: one JSON value made in memory; nothing streams or exports incrementally.
+- **What only the chain holds** (`NOT_HELD`, audit R26): when a run began and took, when each
+  step did, its session, its commit's cell and number, its tries, who called it and the grant it
+  ran under (by hash) are the server's account; none is made by running the run again, so each is
+  held by the chain alone, and so by a witness. A commit's cell and number changed may make
+  verify check less of a state, and it says which. `by` is the server's account of its caller;
+  an approval's decisions are held to it as their run's starter. Left out of holding decisions,
+  as no log holds them: the host's approval settings and whether each named binding let its
+  principal. The export doesn't carry grants, so a run's grant is a hash nothing checks.
 
 ## 5. What the tests hold
 
@@ -258,7 +292,11 @@ In `heads.rs`: `heads_wait_on_disk_until_the_witness_takes_them_and_its_receipt_
 `a_batch_goes_only_after_its_hook_has_run` (the logs synced first), and three on the queue and the
 URL.
 
-In `tests.rs`, through the routes: `a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break`;
+In `tests.rs`, through the routes: `no_line_changed_and_chained_again_passes_as_checked`, the
+class test of forged records (every value of every line of an action's, a request's and an
+approval's exports changed one at a time and the lines chained again, and an approval's decisions
+forged whole: each fails unless it is `NOT_HELD`, and with the witnessed head every one fails;
+none passes saying it checked less); `a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break`;
 `exported_runs_verify_and_a_rewritten_log_doesnt` (every run re-runs to its entry; a copy
 re-chained after a change links but that run no longer re-runs; a witnessed head is found only in
 its own copy); `verify_checks_that_each_runs_state_follows_from_the_one_before`;
@@ -276,7 +314,9 @@ every sample that needs nothing outside the server.
 
 A replay: `a_version_replays_on_its_deployments_recent_runs` (same, differs, can't tell, no
 such action, nothing changed), `a_replay_answers_a_request_the_run_sent_and_cant_tell_one_it_didnt`,
-`a_replay_cant_tell_a_run_that_computes_with_a_secret` (and is told one that passes it along).
+`a_replay_cant_tell_a_run_that_computes_with_a_secret` (and is told one that passes it along);
+`a_replay_is_bounded_whatever_the_version_does` (the grant's requests, the deadline and what it
+didn't reach, two at once) and `a_replayed_run_goes_no_further_than_what_it_missed`.
 
 End to end: `a deployment's runs export from view mode and from holon export, and holon verify
 runs each again`, and the `inbox-report`, `log-archive`, `journal`, `drop-box` and `file-audit`
@@ -305,3 +345,4 @@ The chain, the witness and `holon verify` predate the CHANGELOG's first entry (r
 | `4e3d47f` | What a log lets go of backed up as gzipped exports; `read_export` reads `.json.gz` |
 | `09f0bdc` | Logs seal their older runs, gzipped |
 | `ca69399`, `d896a4c` | Review: raising the keep forgets nothing; a failed swap leaves no segment |
+| `13b4494c`, `912d631d`, `9e760226`, `7e69c424` | Forged records (R26): each line one the server writes; its steps round by round, its answer, where it waits, the state it left and what it was delivered held to its run again; `NOT_HELD` said |

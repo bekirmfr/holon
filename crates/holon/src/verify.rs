@@ -26,7 +26,8 @@
 //! keeps; too large; or too deep), one that failed, and run again gets further (a limit of the server's stopped it, or dropped what it did), one
 //! that read a file whose text neither the export nor `--files` holds (its folder keeps only
 //! hashes). They are counted, not failed, and an export with any checks only so far: `holon
-//! verify` exits 3, not 0. One that failed may say less than it does run again, never other: the
+//! verify` exits 3, not 0. So does one with a run whose state isn't checked (`States::unchecked`):
+//! nothing in it fails, and not everything in it was checked. One that failed may say less than it does run again, never other: the
 //! same run id, the outputs it keeps as computed, what it did and sent the start of what it does,
 //! and its status that or a failure's; one that says other differs. A request no route took, and a
 //! run turned away before it began, ran nothing: there is nothing to run again, and their entries
@@ -36,13 +37,13 @@ use std::collections::BTreeSet;
 
 use crate::*;
 use holon_core::Observer;
-use holon_host::{Exchange, Limits, Performer, Waits};
+use holon_host::{Exchange, Limits, Performer, Waiting, Waits};
 use recorder::{line_hash, LogEntry};
 
 mod replay;
-pub(crate) use replay::handle_get_replay;
+pub(crate) use replay::{handle_get_replay, Replays};
 #[cfg(test)]
-pub(crate) use replay::replay;
+pub(crate) use replay::{replay, Granted};
 
 /// What an export says it is.
 pub(crate) const FORMAT: &str = "holon-runs/1";
@@ -50,6 +51,37 @@ pub(crate) const FORMAT: &str = "holon-runs/1";
 /// Why a run isn't run again when a node it needs computed something from a secret: the log keeps
 /// none of that (`firing::without_secret_derived`), and only the secret's value could make it again.
 pub(crate) const WITHHELD_NODE: &str = "it computed a value from a secret, which the log never keeps: only the secret could compute it again";
+
+/// What of a run's line `holon verify` doesn't hold it to by running the run again, by field (a
+/// field's path, as `tests::changes_of` names it, `*` any index), and what it is as `describe`
+/// says it: the server's account of when, where and for whom it ran, which no run again can make.
+/// Each is held by the chain alone, and so by a witness's head (`--head`): changed and the lines
+/// chained again, it passes without one, and fails with one. Anything else changed in a line is
+/// found (`tests::no_line_changed_and_chained_again_passes_as_checked`, audit R26).
+///
+/// A commit's number and cell say which run's state it began after and whether others landed
+/// beside it: changed, verify may check less of its state, and says which runs it didn't. `by`
+/// is the server's account of its caller, no more; an approval's decisions are held to it
+/// (whoever started the run decides only a step that takes them, `decided_as`). `grant` names the
+/// grant it ran under by its hash: the export holds the units the runs ran, not the grants.
+pub(crate) const NOT_HELD: &[(&str, &str)] = &[
+    ("at_ms", "when it began"),
+    ("duration_ms", "how long it took"),
+    ("timeline/*/start_us", "when each step began"),
+    ("timeline/*/end_us", "when each step ended"),
+    ("session", "its run session"),
+    ("commit/cell", "which load of the state it committed to"),
+    ("commit/n", "its commit's number"),
+    ("retries", "how many times it ran again before its commit landed (its tries)"),
+    ("by", "who called it (the server's account of its caller)"),
+    ("grant", "the grant it ran under (by its hash)"),
+    ("rounds/*/exchanges/*/start_us", "when each call began"),
+    ("rounds/*/exchanges/*/end_us", "when each call ended"),
+    // What only whoever holds the secret can hold: verify holds their form, each mark to the
+    // start of a hash, and one commitment for one value across the export (`listed_secrets`).
+    ("derived/*", "the rest of each hash of a value computed from a secret, past what its mark shows (only the secret makes the value again)"),
+    ("committed", "the commitments to its secrets (only a secret and its salt make one again)"),
+];
 
 /// What a mark stands for, as a reason for a run not run again ends: said once, here.
 pub(crate) const MARK_STANDS_FOR: &str = "only a text of 6 characters or more is carried through a replay";
@@ -60,8 +92,14 @@ pub(crate) const MARK_STANDS_FOR: &str = "only a text of 6 characters or more is
 /// was too large or too deep to keep. None: the log kept all it keeps, and the run differs.
 fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry, unrecorded: &BTreeSet<Vec<u32>>) -> Option<String> {
     let fed = taint::SecretFed::of(root, resolver);
-    if entry.timeline.iter().any(|t| t.outputs.is_none() && fed.derives(&t.path)) || unrecorded.iter().any(|p| fed.derives(p)) {
+    let derived_missing = entry.timeline.iter().any(|t| t.outputs.is_none() && fed.derives(&t.path)) || unrecorded.iter().any(|p| fed.derives(p));
+    if entry.withheld && derived_missing {
         return Some(withheld_why(root, resolver, &fed, entry));
+    }
+    // A line that says it marked every value the run computed from a secret kept each step that
+    // made one (`secrets::born`): one without is taken out, and the run differs.
+    if derived_missing {
+        return None;
     }
     (!unrecorded.is_empty()).then(|| "it computed with a secret or a resume token at a node the log keeps no outputs for (too large, or too deep)".into())
 }
@@ -353,8 +391,17 @@ pub(crate) struct Report {
     /// one run's), and the hash of the line it names before it.
     pub(crate) trimmed: bool,
     pub(crate) after: String,
-    /// Lines that aren't a run (1-based): cut short by a crash, or changed into something else.
+    /// Lines that aren't runs (1-based): changed into something else. An export never holds one a
+    /// crash cut short (the log leaves out a line that doesn't open, recorder.rs `lines`), so
+    /// one here fails it: left out, it would let the lines that are runs pass as the whole log
+    /// (audit R26: an export of lines that are none read `0 runs … ok`).
     pub(crate) bad_lines: Vec<usize>,
+    /// Runs whose line isn't one the server writes, by seq, and how (`ill_formed`): numbered
+    /// out of order, of a kind it doesn't run, a request's method, URL or status not its own, a
+    /// value no run holds, a run said lost that is here, its commit numbered other than commits
+    /// are. Each is a line changed and chained again, which running it again may not show: a
+    /// field it doesn't compute, or one that only chooses what it is compared with (audit R26).
+    pub(crate) malformed: Vec<(u64, String)>,
     /// Runs that don't follow the line before them.
     pub(crate) breaks: Vec<u64>,
     /// Runs whose lines the server couldn't write, as the line after them says
@@ -381,6 +428,9 @@ pub(crate) struct Report {
     /// a resume token the run received (in its request, its state or what it read), which the log
     /// never holds.
     pub(crate) ids_given: Vec<u64>,
+    /// The runs that called out: what each call was answered is as the line says, held by the
+    /// chain alone (and a witnessed head), for every call, with a secret or without.
+    pub(crate) called_out: Vec<u64>,
     /// The events in it (events.rs), the event lines that aren't one (1-based), the events that
     /// don't follow the line before them (their chain starts at the first: they are kept for
     /// good), and whether the newest's hash is the events head the export names.
@@ -414,6 +464,9 @@ pub(crate) struct States {
     pub(crate) began: Vec<u64>,
     pub(crate) beside: Vec<u64>,
     pub(crate) restored: Vec<u64>,
+    /// The runs that began from nothing, as a log's first does: an empty state, after no commit,
+    /// in an export from the log's first line ([`began_from_nothing`]).
+    pub(crate) fresh: Vec<u64>,
     /// The runs that left what their writes make of the state they began with.
     pub(crate) left: Vec<u64>,
     /// What wasn't checked, by why.
@@ -594,7 +647,9 @@ impl Report {
     /// Whether the export checks: the chain unbroken up to its head (and the given one), every
     /// unit what it says, and every run that could be run again producing what the log says.
     pub(crate) fn ok(&self) -> bool {
-        self.breaks.is_empty()
+        self.bad_lines.is_empty()
+            && self.malformed.is_empty()
+            && self.breaks.is_empty()
             && self.gaps.is_empty()
             && self.head_matches
             && self.event_breaks.is_empty()
@@ -608,9 +663,16 @@ impl Report {
             && self.tokens_outside.is_empty()
     }
 
-    /// Whether every run was run again: none [`Rerun::Skipped`]. An export that checks but isn't
-    /// complete has nothing found wrong in it, and not everything in it checked.
+    /// Whether everything in it was checked: every run run again (none [`Rerun::Skipped`]), and
+    /// every run's state (none [`States::unchecked`]). An export that checks but isn't complete
+    /// has nothing found wrong in it, and not everything in it checked: `holon verify` exits 3,
+    /// so a script reading its exit code doesn't take it as checked.
     pub(crate) fn complete(&self) -> bool {
+        self.all_run_again() && self.states.as_ref().is_none_or(|s| s.unchecked.is_empty())
+    }
+
+    /// Whether every run was run again: none [`Rerun::Skipped`].
+    fn all_run_again(&self) -> bool {
         !self.reruns.iter().any(|(_, r)| matches!(r, Rerun::Skipped(_)))
     }
 }
@@ -620,12 +682,14 @@ impl Report {
 /// export keeps only the hash of.
 pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<String, PathBuf>) -> Report {
     let mut report = Report { deployment: export.deployment.clone(), ..Report::default() };
+    let marks = Marks::new();
 
     // The chain, as the server checks it when it opens a log (recorder.rs).
     let mut entries: Vec<(LogEntry, &str)> = Vec::new();
     let mut head = String::new();
     let mut chained = false;
     let mut last: Option<u64> = None;
+    let mut numbered: BTreeMap<(String, u64), u64> = BTreeMap::new();
     for (i, line) in export.lines.iter().enumerate() {
         let Ok(entry) = crate::wire::read_json::<LogEntry>(line.as_bytes()) else {
             report.bad_lines.push(i + 1);
@@ -636,6 +700,29 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
             report.after = entry.prev.clone();
         } else if (chained || !entry.prev.is_empty()) && entry.prev != head {
             report.breaks.push(entry.seq);
+        }
+        // Numbered after the line before it, and what it says was lost before it not here.
+        if let Some(before) = last
+            && entry.seq <= before
+        {
+            report.malformed.push((entry.seq, format!("it is numbered {}, after run {before}", entry.seq)));
+        }
+        match entry.lost_since {
+            Some(from) if from >= entry.seq => report.malformed.push((entry.seq, format!("it says the runs from {from} were lost before it, and it is run {}", entry.seq))),
+            Some(from) if last.is_some_and(|before| from <= before) => {
+                report.malformed.push((entry.seq, format!("it says the runs from {from} were lost before it, and run {} is here", last.unwrap_or(0))))
+            }
+            _ => {}
+        }
+        if let Some(why) = ill_formed(&entry, &marks) {
+            report.malformed.push((entry.seq, why));
+        }
+        // A commit is counted once in its state's count.
+        if let Some(c) = &entry.commit
+            && let Some(n) = c.n
+            && let Some(other) = numbered.insert((c.cell.clone(), n), entry.seq)
+        {
+            report.malformed.push((entry.seq, format!("its commit is numbered {n}, as run {other}'s is")));
         }
         // The runs missing before it, but those it says were lost.
         let said = lost_before(&entry);
@@ -682,7 +769,6 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
     }
 
     let texts = Texts { blobs: &export.blobs, blob_bytes: &export.blob_bytes, files };
-    let marks = Marks::new();
     let mut lefts = Vec::new();
     // What each leaf taken from the log gave, by the leaf and its inputs: the first run that
     // recorded it, and what it recorded.
@@ -720,7 +806,8 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
         };
         // What it says of its secrets agrees with itself, and with the runs before it.
         let came_to = match (came_to, listed_secrets(entry, line, &mut committed)) {
-            (Rerun::Differs(why), _) => Rerun::Differs(why),
+            (Rerun::Differs(why), Some(also)) => Rerun::Differs(format!("{why}; {also}")),
+            (Rerun::Differs(why), None) => Rerun::Differs(why),
             (_, Some(why)) => Rerun::Differs(why),
             (came_to, None) => came_to,
         };
@@ -730,10 +817,13 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
         if given.id {
             report.ids_given.push(entry.seq);
         }
+        if entry.rounds.iter().any(|r| !r.exchanges.is_empty()) {
+            report.called_out.push(entry.seq);
+        }
         report.reruns.push((entry.seq, came_to));
     }
     let events: Vec<crate::events::Event> = export.events.iter().filter_map(|l| serde_json::from_str(l).ok()).collect();
-    report.states = check_states(&entries, &lefts, &events, &marks, &resolver);
+    report.states = check_states(&entries, &lefts, &events, &marks, &resolver, !report.trimmed);
     check_sends(&entries, &resolver, &marks, &mut report);
     report
 }
@@ -866,6 +956,20 @@ fn beside(a: &LogEntry, b: &LogEntry) -> bool {
     a0 <= b1 + 1 && b0 <= a1 + 1
 }
 
+/// Why a run with no run before it here isn't checked where it began, in an export that begins
+/// after the log's first line: the runs before it would check it.
+pub(crate) const NONE_BEFORE: &str = "where it began: no run before it here, as the export begins after the log's first run (the runs before it would check it)";
+
+/// Why a run with no run before it here, in an export from the log's first line, isn't checked
+/// where it began: its line says it began from a state, or after a commit, as no log's first run does.
+pub(crate) const NOT_FROM_NOTHING: &str = "where it began: no run before it here, and not from nothing (an empty state, after no commit), as a log's first run begins";
+
+/// Whether `b`'s line says it began from nothing, as a log's first run does: an empty state, after
+/// no commit (`after` 0, or none in a line written before commits were numbered).
+fn began_from_nothing(b: &LogEntry) -> bool {
+    b.state_before.is_empty() && b.commit.as_ref().and_then(|c| c.after).unwrap_or(0) == 0
+}
+
 /// Why a run that began from the state the server loaded after a crash isn't checked where it began.
 pub(crate) const CUT_OFF: &str =
     "where it began: from the state the server loaded after a crash, which a run the crash cut off between its commit and its line may have left (its events say so)";
@@ -886,6 +990,11 @@ pub(crate) const CUT_OFF: &str =
 /// has no run before it here, as the first hasn't. A line without them is taken by its place and
 /// its times.
 ///
+/// A run with no run before it here began, in an export from the log's first line
+/// (`from_the_first`), from nothing: an empty state, after no commit ([`began_from_nothing`]); one
+/// whose line says otherwise, or in an export that begins later (a trimmed log, one run's), isn't
+/// checked where it began ([`NOT_FROM_NOTHING`], [`NONE_BEFORE`]).
+///
 /// A run the server cut off between its commit and its line, crashing, isn't in the log either:
 /// the server, started again from the state it left, says so as an event naming that state
 /// (`Event::loaded`, persist.rs), and the run after it here, if it began from that very state, is
@@ -898,7 +1007,14 @@ pub(crate) const CUT_OFF: &str =
 /// here, or a run before it that couldn't be run again leaves it a break. Nor is a run whose line
 /// the server couldn't write, which the line after it says: a run after the one before it here,
 /// and after it, may have begun from what it left, and is said unchecked.
-fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[crate::events::Event], marks: &Marks, resolver: &impl holon_core::Resolver) -> Option<States> {
+fn check_states(
+    entries: &[(LogEntry, &str)],
+    lefts: &[Option<Left>],
+    events: &[crate::events::Event],
+    marks: &Marks,
+    resolver: &impl holon_core::Resolver,
+    from_the_first: bool,
+) -> Option<States> {
     if !entries.iter().any(|(e, _)| e.state_after.is_some()) {
         return None;
     }
@@ -946,7 +1062,8 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
             Some(h) => {
                 // The run before it that committed: one that failed did only if it left a state.
                 match entries[..i].iter().rposition(|(e, _)| ran(e) && (e.error.is_none() || e.state_after.is_some())) {
-                    None => states.unchecked("where it began: no run before it here", b.seq),
+                    None if from_the_first && began_from_nothing(b) => states.fresh.push(b.seq),
+                    None => states.unchecked(if from_the_first { NOT_FROM_NOTHING } else { NONE_BEFORE }, b.seq),
                     Some(pi) => match &entries[pi].0.state_after {
                         None => states.unchecked(
                             "where it began: the run before it kept no state it left (its version held none, or the state, unchanged, couldn't be kept)",
@@ -981,7 +1098,7 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
                                 states.began.push(b.seq);
                                 states.beside.push(b.seq);
                             } else if before_the_first(entries, b) {
-                                states.unchecked("where it began: no run before it here", b.seq);
+                                states.unchecked(if from_the_first { NOT_FROM_NOTHING } else { NONE_BEFORE }, b.seq);
                             } else if let Some(why) = began[i]
                                 .as_ref()
                                 .and_then(|(_, now)| moved(p, lefts[pi].as_ref(), now))
@@ -1007,8 +1124,22 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
         let unrecorded = &light(b).unrecorded;
         // Numbered, an unrecorded handler's commits are counted too.
         let (ran_beside, side_by_side) = (side_by_side, side_by_side || (landed_beside.is_none() && !unrecorded.is_empty()));
+        // Its writes landed on the state the commit before its own left (each commit's state is
+        // kept, then counted, the state's lock held: firing.rs). A resumed part's land on the
+        // state as it is by then, as one's beside another run's do.
+        let on_the_one_before = b.commit.as_ref().and_then(|c| state_at(entries, lefts, &began, &c.cell, c.n?.checked_sub(1)?));
+        if left.collections.is_empty()
+            && let Some(then) = on_the_one_before
+            && (resumed || side_by_side)
+        {
+            match written_on(then, left) {
+                Some(h) if &h == after => states.left.push(b.seq),
+                _ => states.breaks.push((b.seq, "the state it left isn't the one the commit before its own left, its writes applied".into())),
+            }
+            continue;
+        }
         if resumed {
-            states.unchecked("what it left: it is a resumed part, whose writes land on the state as it is by then", b.seq);
+            states.unchecked("what it left: it is a resumed part, whose writes land on the state as it is by then, and the commit before its own isn't here", b.seq);
             continue;
         }
         if !side_by_side && left.collections.is_empty() {
@@ -1043,6 +1174,41 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
         }
     }
     Some(states)
+}
+
+/// The state the commit numbered `k` of `cell` left (0: the one the server loaded), where this
+/// log shows it whole: as a run that began after it found it, or as the run that made it left it
+/// (its writes run again, or a run that began from it), by the hash its line names.
+fn state_at<'a>(entries: &[(LogEntry, &str)], lefts: &'a [Option<Left>], began: &'a [Option<(String, State)>], cell: &str, k: u64) -> Option<&'a State> {
+    let commit = |e: &LogEntry| e.commit.clone().filter(|c| c.cell == cell);
+    let after_it = entries.iter().zip(began).find(|((e, _), _)| ran(e) && commit(e).is_some_and(|c| c.after == Some(k)));
+    if let Some((_, Some((_, state)))) = after_it {
+        return Some(state);
+    }
+    let (i, (made, _)) = entries.iter().enumerate().find(|(_, (e, _))| ran(e) && commit(e).is_some_and(|c| c.n == Some(k)))?;
+    let kept = made.state_after.as_ref()?;
+    began.iter().flatten().find(|(h, _)| h == kept).map(|(_, s)| s).or_else(|| {
+        lefts[i].as_ref().filter(|l| l.collections.is_empty() && restore::snapshot_hash(&l.state).ok().as_ref() == Some(kept)).map(|l| &l.state)
+    })
+}
+
+/// The hash of the state `left`'s writes make of `then`, as the commit writes them: every one, or
+/// none if one can't be (firing.rs).
+fn written_on(then: &State, left: &Left) -> Option<String> {
+    let mut on = then.clone();
+    for k in &left.wrote {
+        let landed = match left.state.get(k) {
+            Some(v) => on.insert(k.clone(), v.clone()).is_ok(),
+            None => {
+                on.remove(k);
+                true
+            }
+        };
+        if !landed {
+            return restore::snapshot_hash(then).ok();
+        }
+    }
+    restore::snapshot_hash(&on).ok()
 }
 
 /// The run whose commit `b` began after (`recorder::Commit`), wherever its line is; none for a
@@ -1308,7 +1474,8 @@ pub(crate) fn handler_of(server: &Server, kind: &str, label: &str) -> Result<(Ha
         "queue" => server.queues.iter().find(|q| q.label == label).map(|q| q.handler),
         "websocket" => server.websockets.iter().flat_map(|w| w.blocks()).find(|b| b.label == label).map(|b| b.handler),
         "trigger" => server.actions.iter().find(|a| a.label == label).map(|a| a.handler),
-        _ => server.routes.iter().find(|r| format!("{} {}", r.method, r.path) == label).map(|r| r.endpoint),
+        "request" => server.routes.iter().find(|r| format!("{} {}", r.method, r.path) == label).map(|r| r.endpoint),
+        _ => return Err("handler of its kind"),
     };
     let (what, sent) = match kind {
         "tick" => ("clock", false),
@@ -1421,30 +1588,45 @@ fn rerun(
         differs.push("its run id");
     }
 
-    // Its outbound requests are answered from the record (the earlier parts', then its own), never
-    // sent again.
-    let parts = || earlier.iter().copied().chain([entry]);
-    let prior: Vec<Round> = parts().flat_map(|e| e.rounds.iter().map(|r| round_of(r, marks, e.escaped))).collect();
+    // Its outbound requests are answered from the record, never sent again: the earlier parts' as
+    // answered before it began, as the server answers them (and, for a run that ran again, its
+    // earlier tries': `firing.rs`, a retry sends nothing twice); its own as it sends them, so it
+    // takes its steps in the rounds it took them (each round's steps are in its timeline).
+    let own: Vec<Round> = entry.rounds.iter().map(|r| round_of(r, marks, entry.escaped)).collect();
+    // Its last try's rounds, the newest: as many as the rounds after the first its steps say.
+    let last_try = match entry.retries {
+        0 => own.len(),
+        _ => entry.timeline.iter().map(|t| t.round as usize).max().unwrap_or(0).min(own.len()),
+    };
+    let (tried, sent) = own.split_at(own.len() - last_try);
+    let prior: Vec<Round> = earlier.iter().flat_map(|e| e.rounds.iter().map(|r| round_of(r, marks, e.escaped))).chain(tried.iter().cloned()).collect();
+    let network = Answering::new(sent.iter().flat_map(|r| &r.exchanges).map(|x| (x.path.clone(), x.request.clone(), x.response.clone())).collect());
     // Its reads, its own first: a resumed part reads again what it shares (files, databases), and
     // its last part's answers are the ones it finished with.
     let mut reads: Vec<(Vec<u32>, Value, Option<Value>)> = Vec::new();
+    // The texts of the files it read that the log keeps by their hash, as a node carries them.
+    let mut kept: Vec<String> = Vec::new();
     let own = entry.reads.iter().map(|r| (r, entry.escaped));
     for (read, escaped) in own.chain(earlier.iter().rev().flat_map(|e| e.reads.iter().map(|r| (r, e.escaped)))) {
         let answer = match texts.answer(read, marks, escaped) {
             Ok(answer) => answer,
             Err(not) => return not,
         };
+        if read.file.is_some() && read.answer.is_none() {
+            kept.extend(answer.as_ref().and_then(carried_text));
+        }
         reads.push((read.path.clone(), marks.read(&read.request, escaped), answer));
     }
     let mut waits = Logged {
         reads,
         events: entry.events.iter().map(|(k, v)| (k.clone(), marks.read(v, entry.escaped))).collect(),
+        reached: BTreeMap::new(),
         marks: marks.clone(),
     };
     let limits = rerun_limits();
     let mut host = RecordingHost::new();
     let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped);
-    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &Offline, &limits, &mut observer, &mut waits, &prior);
+    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &network, &limits, &mut observer, &mut waits, &prior);
     // A node computed on its placeholders gives what the run gave, written with them; the log
     // recording other for it is a record that isn't the run's.
     if observer.belied {
@@ -1453,6 +1635,10 @@ fn rerun(
     // What is taken from the log can't be computed, but it can be what its leaf never gives.
     if observer.misshapen {
         differs.push("the shape of what the log recorded for a step taken from it");
+    }
+    // Each call its line records was made: by the node at its path, with that very request.
+    if network.unasked() {
+        differs.push("a call its line records that no node makes run again");
     }
     given.taken = observer.taken.values().cloned().collect();
     // Each node stood in for, its secrets as the run's entry shows them (their version and
@@ -1490,6 +1676,27 @@ fn rerun(
     if json(&performed) != json(&entry.performed) {
         differs.push("the effects it performed");
     }
+    // What may be computed from a secret it was given is withheld as the server withholds it
+    // (`firing::without_secret_derived`, `FiredRun::withholds_output`), from the same walk of
+    // the same unit.
+    let given_one = entry.secrets.keys().any(|name| caps.iter().any(|c| matches!(c, Capability::SecretRead(s) if s == *name)));
+    let fed = if given_one { taint::SecretFed::of(root, resolver) } else { taint::SecretFed::default() };
+    // A line that says its record withholds keeps nothing that may be computed from a secret,
+    // and is one that computed with one: else it says other than the server writes.
+    if entry.withheld && (fed.is_empty() || entry.timeline.iter().any(|t| t.outputs.is_some() && fed.derives(&t.path))) {
+        return Rerun::Differs("its line says it withholds what the run computed from a secret, and keeps a step that may hold it, or computed with none".into());
+    }
+    // The steps it took, as the log keeps them.
+    kept.extend(folders::written_texts(&host.performed).into_iter().filter_map(|t| carried_text(&Value::Text(t.to_string()))));
+    kept.extend(folders::written_bytes(&host.performed).into_iter().filter_map(|b| carried_text(&Value::Bytes(b.to_vec()))));
+    let again = std::mem::take(&mut observer.timer.timeline);
+    // Where the line says the run marked every value computed from a secret, the steps it kept
+    // whole for it (`secrets::born`, by the same walk).
+    let whole = given_one && !entry.withheld;
+    let steps = steps_of(&entry.timeline, &again, &|path| entry.withheld && fed.derives(path), &|path| whole && fed.holds(path), &kept, !observer.unrecorded.is_empty(), marks, entry.escaped);
+    if !steps.whole {
+        differs.push("the steps it took (its timeline)");
+    }
     // A part that settled waiting: the packs it sent as it parked are what it settled.
     let progress: Vec<PerformedEntry> = if outcome.waiting.is_empty() { Vec::new() } else { channels::settled_sends(&outcome.outputs) }
         .iter()
@@ -1522,6 +1729,40 @@ fn rerun(
         && answered() != status
     {
         differs.push("the status it answered");
+    }
+    // What it answered, as its line keeps it, made again where its status is: a run that
+    // finished. A kind that answers nothing keeps none.
+    if entry.error.is_none() && !answered_as_said(entry, outcome.outputs.first().and_then(Option::as_ref), fed.derives_output(0), marks) {
+        differs.push("what it answered");
+    }
+    // Where it waits: the points it settled waiting at, as it parked (`durable::park_if_waiting`),
+    // or none, where parking it failed (its error says so).
+    let waits_at: Vec<&str> = outcome.waiting.iter().map(|w| w.name.as_str()).collect();
+    let parked: Vec<&str> = entry.parked.iter().map(String::as_str).collect();
+    if parked != waits_at && (entry.error.is_none() || !parked.is_empty()) {
+        differs.push("where it waits");
+    }
+    // What was delivered to it: each at a point it reached waiting, and an approval's what its
+    // decisions deliver, taken as the server takes them, by the steps it asks for there and
+    // whoever started it (its first part's line says who).
+    let starter = earlier.iter().find(|e| e.kind != "resume").and_then(|e| e.by.as_deref());
+    let delivered = waits.events.iter().find_map(|(name, event)| match waits.reached.get(name) {
+        None => Some(format!("{name:?} was delivered, and it doesn't wait there")),
+        Some(Some(steps)) => durable::StoredWaiting::decided_as(name, steps, event, starter).err(),
+        Some(None) => None,
+    });
+    if delivered.is_some() {
+        differs.push("what was delivered to it");
+    }
+    // A run that finished and changed its state kept the state it left (`firing::keep_state`), or
+    // failed saying why: a line that keeps none is no such run's.
+    let changed = host.performed.iter().any(|(c, p)| match c {
+        Capability::StateWrite(key) => state.get(key) != Some(p),
+        Capability::CollectionWrite(_) => true,
+        _ => false,
+    });
+    if entry.error.is_none() && outcome.error.is_none() && changed && entry.state_after.is_none() {
+        differs.push("the state it left (its line keeps none)");
     }
     // One that failed may have failed here too, or after it finished: at its commit, or past a
     // limit of the server's.
@@ -1577,13 +1818,17 @@ fn rerun(
                 && entry.outputs.iter().zip(&outputs).all(|(kept, again)| kept.is_none() || json(kept) == json(again))
                 && starts(&entry.performed, &performed)
                 && starts(&entry.progress, &progress)
+                && steps.start
                 && (entry.kind != "request" || entry.status.is_none_or(|status| failure(status) || answered() == status));
             match less {
                 true => Rerun::Skipped(format!("it failed, and run again it gets further than its entry says (a limit of the server's stopped it, or dropped what it did): {e}")),
                 false => Rerun::Differs(format!("{} (it failed, and its entry says other than what it does run again, not only less)", differs.join(", "))),
             }
         }
-        false => Rerun::Differs(differs.join(", ")),
+        false => Rerun::Differs(match delivered {
+            Some(why) => format!("{} ({why})", differs.join(", ")),
+            None => differs.join(", "),
+        }),
     }
 }
 
@@ -1603,6 +1848,131 @@ pub(crate) fn rerun_limits() -> Limits {
     }
 }
 
+/// The kinds of run the server logs, by what started it (`firing::run_entry`'s callers).
+pub(crate) const KINDS: &[&str] = &["request", "trigger", "resume", "tick", "file", "mail", "feed", "queue", "websocket"];
+
+/// How `entry` isn't a line the server writes, in what holds it together without running it
+/// (`check` holds it to the lines beside it, `rerun` to what it does). Its kind is one the server
+/// runs. A request says its method, URL and status, and the record its handler was given is the
+/// one its method and URL make (`data::request_record`); no other kind says them but a
+/// WebSocket's (its opening request's, its answer's) and an action's status (a failure's,
+/// deploy.rs). What it read from the world it names as the server does, each once. Each value is
+/// one a run can hold, as the log writes it (a record's keys once each, in order): one the log
+/// reads back as another runs again as that other. Its commit is after
+/// one before its own, a resumed part's after none (it began from its run's first), and it is
+/// numbered once it kept the state it left. `None`: none of these.
+fn ill_formed(entry: &LogEntry, marks: &Marks) -> Option<String> {
+    let kind = entry.kind.as_str();
+    if !KINDS.contains(&kind) {
+        return Some(format!("its kind {kind:?} isn't one the server runs"));
+    }
+    let request = kind == "request";
+    match (&entry.method, &entry.url) {
+        (Some(_), Some(_)) if request || kind == "websocket" => {}
+        (None, None) if !request => {}
+        _ => return Some(format!("its method and URL aren't what a {kind}'s line says")),
+    }
+    match entry.status {
+        None if request => return Some("it is a request's, and says no status".into()),
+        Some(s) if kind == "trigger" && s < 500 => return Some(format!("an action's line says a status only when it failed, and it says {s}")),
+        Some(_) if !matches!(kind, "request" | "trigger" | "websocket") => return Some(format!("a {kind}'s line says no status, and it says one")),
+        _ => {}
+    }
+    if let (true, Some(method), Some(url), Some(record)) = (request, &entry.method, &entry.url, &entry.request) {
+        let Value::Record(fields) = marks.read(record, entry.escaped) else {
+            return Some("its request isn't a request's record".into());
+        };
+        let Value::Text(url) = marks.read(&SValue::Text(url.clone()), entry.escaped) else { unreachable!("a text reads as a text") };
+        let (path, query) = url.split_once('?').unwrap_or((&url, ""));
+        let Value::Record(made) = data::request_record(method, path, BTreeMap::new(), query, &[], "") else { unreachable!("a request's record") };
+        // A value the log keeps out of it (a tainted query parameter) is marked where the log
+        // found it, which a URL's percent-encoding may hide: only its method is then compared.
+        let marked = marks.carried(&Value::Text(url.clone())) || fields.values().any(|v| marks.carried(v));
+        let differs = |k: &str| fields.get(k) != made.get(k);
+        if differs("method") || (!marked && (differs("path") || differs("query"))) {
+            return Some("its request isn't the one its method and URL make".into());
+        }
+    }
+    // What it read from the world, each once, by a name the server writes (`durable::capability_named`).
+    let mut read = BTreeSet::new();
+    for (name, _) in &entry.sourced {
+        if durable::capability_named(name).is_none() {
+            return Some(format!("it says it read {name}, which no run reads"));
+        }
+        if !read.insert(name) {
+            return Some(format!("it says it read {name} twice"));
+        }
+    }
+    let mut held = true;
+    entry.clone().values_mut(&mut |v| held &= SValue::from_core(&v.clone().into_core()) == *v);
+    if !held {
+        return Some("a value in it isn't one a run holds (a record with a key twice, or out of order)".into());
+    }
+    // What was delivered to the points it waited at is given to a resumed part (durable.rs).
+    if !entry.events.is_empty() && kind != "resume" {
+        return Some("it says what was delivered to points it waited at, and it isn't a resumed part".into());
+    }
+    if let Some(c) = &entry.commit {
+        match (c.after, c.n) {
+            (Some(after), Some(n)) if after >= n => return Some(format!("its commit, {n}, isn't after the one it began after, {after}")),
+            (Some(_), _) if kind == "resume" => return Some("it is a resumed part, and its commit says it began after one".into()),
+            (None, _) if kind != "resume" => return Some("its commit doesn't say which it began after".into()),
+            (_, None) if entry.state_after.is_some() => return Some("it kept the state it left, and its commit isn't numbered".into()),
+            // Each commit counted names the state it left (`firing::keep_state`), kept or not.
+            (_, Some(_)) if entry.state_after.is_none() => return Some("its commit is numbered, and it names no state it left".into()),
+            _ => {}
+        }
+    } else if entry.state_after.is_some() {
+        return Some("it kept the state it left, and says no commit".into());
+    }
+    None
+}
+
+/// Whether `entry`'s answer (`response_body`) is the one its run gives with `first`, its first
+/// output run again, as its line keeps it (listeners.rs, deploy.rs, websockets.rs): a request's
+/// body, or the file it answered with; an action's answer as JSON; a WebSocket block's reply, its
+/// open block's answer, a close block's none. Withheld where it may be computed from a secret
+/// (`derived`), the run marking none of it (`FiredRun::withholds_output`). A kind that answers
+/// nothing keeps none. A body past what the line keeps (64 KiB), cut at a length a mark's value
+/// isn't known at, is compared up to its first mark.
+fn answered_as_said(entry: &LogEntry, first: Option<&Value>, derived: bool, marks: &Marks) -> bool {
+    let kept = |body: &[u8]| recorder::body_text(body);
+    let made = match entry.kind.as_str() {
+        "request" => {
+            let answer = data::respond(first);
+            Some(answer.file.as_ref().map_or_else(|| kept(&answer.body), data::Served::line))
+        }
+        "trigger" => Some(deploy::action_json(deploy::action_answer(first.cloned()).1.as_ref()).unwrap_or_default()),
+        "websocket" => match entry.route.as_deref().and_then(|r| r.rsplit(' ').next()) {
+            Some("open") => Some(kept(&data::respond(first).body)),
+            Some("message") => Some(kept(websockets::reply_of(first).unwrap_or_default().as_bytes())),
+            _ => None,
+        },
+        _ => None,
+    };
+    let (Some(made), Some(said)) = (made, &entry.response_body) else {
+        return entry.response_body.is_none() && made_none(entry);
+    };
+    if derived && said == taint::WITHHELD {
+        return true;
+    }
+    let SValue::Text(made) = marks.write(SValue::Text(made)) else { unreachable!("a text writes as a text") };
+    match made.ends_with('…') && made.contains('‹') {
+        true => made.split('‹').next() == said.split('‹').next(),
+        false => made == *said,
+    }
+}
+
+/// Whether `entry`'s kind keeps no answer: a WebSocket's close block, and every kind but a
+/// request, an action and a WebSocket's.
+fn made_none(entry: &LogEntry) -> bool {
+    match entry.kind.as_str() {
+        "request" | "trigger" => false,
+        "websocket" => entry.route.as_deref().and_then(|r| r.rsplit(' ').next()) == Some("close"),
+        _ => true,
+    }
+}
+
 /// Whether an entry says its run did anything: computed, did, sent, called out, read or wrote.
 fn did_something(entry: &LogEntry) -> bool {
     entry.outputs.iter().any(Option::is_some)
@@ -1618,6 +1988,96 @@ fn nothing_ran(entry: &LogEntry, why: &str) -> Rerun {
     match did_something(entry) {
         true => Rerun::Differs(format!("{why}, and yet its entry says it did something")),
         false => Rerun::NothingRan(why.into()),
+    }
+}
+
+/// Whether the steps a run took again agree with the ones its entry says it took.
+struct Steps {
+    /// Each agrees, and there are as many.
+    whole: bool,
+    /// The entry's are the start of them, as far as a limit let the run go (`steps_of`): run
+    /// again, a run a limit stopped goes further.
+    start: bool,
+}
+
+/// Whether the steps a run took again (`again`, as the timer took them) are those its entry says it
+/// took (`logged`), as the log keeps them (`firing::entry_with`): the same nodes in the same order
+/// and rounds, each with what it gave, as the log writes it, and why it gave nothing (a thrown
+/// message, a module's error). Where the log keeps no outputs, a node agrees with any: one that may
+/// compute from a secret the run was given (`withheld`; unless the run marks each value computed
+/// from one, and then the log's stand in for them, `Asserting`); one that carries the text of a
+/// file the log keeps by its hash (`kept`, `firing::without_kept_files`); and one larger than the
+/// log keeps (`Timer::MAX_RECORDED_BYTES`), which a value held by its mark may be, its own size not
+/// known here. Why a node that may compute from a secret gave nothing is withheld too. Where the
+/// run again asked for what the log keeps no outputs for (`short`: a node fed a secret deeper than
+/// the log follows a run's steps), a node that gave nothing again is taken as the log says.
+///
+/// Before, verify read a node's logged outputs only where it stood them in for a node fed a secret:
+/// the steps a run's view shows, each step's values and why one failed, were the line's say-so
+/// (audit R26).
+#[allow(clippy::too_many_arguments)]
+fn steps_of(
+    logged: &[recorder::NodeTiming],
+    again: &[recorder::NodeTiming],
+    withheld: &dyn Fn(&[u32]) -> bool,
+    kept_whole: &dyn Fn(&[u32]) -> bool,
+    kept: &[String],
+    short: bool,
+    marks: &Marks,
+    escaped: bool,
+) -> Steps {
+    let carries_kept = |o: &[Option<SValue>]| serde_json::to_string(o).is_ok_and(|j| kept.iter().any(|t| j.contains(t.as_str())));
+    let nothing = |n: &recorder::NodeTiming| n.outputs.as_ref().is_none_or(|o| o.iter().all(Option::is_none));
+    let agrees = |l: &recorder::NodeTiming, a: &recorder::NodeTiming| {
+        if l.path != a.path || l.round != a.round {
+            return false;
+        }
+        if short && nothing(a) {
+            return true;
+        }
+        let held = withheld(&l.path);
+        let outputs = match (&l.outputs, &a.outputs) {
+            (Some(l), Some(a)) => json(l) == json(&a.iter().map(|o| o.clone().map(|v| marks.write(v))).collect::<Vec<_>>()),
+            (None, None) => true,
+            (None, Some(a)) if held || carries_kept(a) => true,
+            // A step holding a mark: too large to keep as the run had it (the mark is shorter
+            // than the value). Not a step the line says the run kept whole (`kept_whole`: it
+            // marked every value computed from a secret, and the walk says this step may give
+            // one; `secrets::born` asks the same): one without is taken out. Where the walk says
+            // clean, a mark is a copy a caller sent or a host echoed, and explains it.
+            (None, Some(a)) => !kept_whole(&l.path) && a.iter().flatten().any(|v| marks.carried(&v.clone().into_core())),
+            (Some(l), None) => l.iter().flatten().any(|v| marks.carried(&marks.read(v, escaped))),
+        };
+        let reason = match (&l.reason, &a.reason) {
+            (Some(r), _) if held => r == taint::WITHHELD,
+            (None, _) if held => true,
+            (Some(l), Some(a)) => marks.write(SValue::Text(a.clone())) == SValue::Text(l.clone()),
+            (None, None) => true,
+            _ => false,
+        };
+        outputs && reason
+    };
+    // Where a limit stopped it, the steps it took agree up to the first that gave nothing, where it
+    // stopped. After it, each gave nothing (what the round was in the middle of, a step budget
+    // ending it), or they are the same steps (a module that ran out gave nothing, and the round
+    // went on without it: what they computed from it is less, not checked).
+    let agreed = logged.iter().zip(again).take_while(|(l, a)| agrees(l, a)).count();
+    let same = |(l, a): (&recorder::NodeTiming, &recorder::NodeTiming)| l.path == a.path && l.round == a.round;
+    let after = || logged[agreed..].iter().zip(&again[agreed..]);
+    let start = logged.len() <= again.len()
+        && (agreed == logged.len() || (nothing(&logged[agreed]) && (logged[agreed..].iter().all(nothing) || after().all(same))));
+    Steps { whole: agreed == logged.len() && logged.len() == again.len(), start }
+}
+
+/// A file's text, lines or bytes as a node that carries them is written (`firing::without_kept_files`):
+/// a text as JSON writes it inside its quotes, lines as their list's JSON, bytes as their base64.
+/// None for nothing.
+fn carried_text(v: &Value) -> Option<String> {
+    match v {
+        Value::Text(t) if !t.is_empty() => serde_json::to_string(t).ok().map(|q| q[1..q.len() - 1].to_string()),
+        Value::List(l) if !l.is_empty() => serde_json::to_string(&SValue::from_core(v)).ok(),
+        Value::Bytes(b) if !b.is_empty() => holon_core::bytes_text(b, "base64"),
+        _ => None,
     }
 }
 
@@ -1647,6 +2107,9 @@ fn round_of(round: &recorder::LoggedRound, marks: &Marks, escaped: bool) -> Roun
 struct Logged {
     reads: Vec<(Vec<u32>, Value, Option<Value>)>,
     events: BTreeMap<String, Value>,
+    /// Each point it reached waiting that it was delivered an event at, by name: an approval's
+    /// steps, none for an event's.
+    reached: BTreeMap<String, Option<String>>,
     marks: Marks,
 }
 
@@ -1656,6 +2119,13 @@ impl Waits for Logged {
     }
     fn event(&self, name: &str) -> Option<Value> {
         self.events.get(name).cloned()
+    }
+    fn event_at(&mut self, at: &Waiting) -> Option<Value> {
+        let event = self.event(&at.name);
+        if event.is_some() {
+            self.reached.insert(at.name.clone(), at.approval.clone());
+        }
+        event
     }
     fn token(&mut self, name: &str) -> String {
         self.marks.of("token", name)
@@ -1678,8 +2148,10 @@ impl Waits for Logged {
 /// after that one isn't the run's, so the record is taken, as for any other leaf.
 struct Asserting {
     timer: recorder::Timer,
-    /// Each node's outputs in the last round the log recorded them in, by path.
-    recorded: BTreeMap<Vec<u32>, Vec<Option<Value>>>,
+    /// Each node's outputs, by path and by the round the log recorded them in.
+    recorded: BTreeMap<Vec<u32>, BTreeMap<u32, Vec<Option<Value>>>>,
+    /// The round being run.
+    round: u32,
     /// Whether a node computed on its placeholders gave other than the log recorded for it.
     belied: bool,
     /// What was taken from the log for a leaf that is a function of its inputs alone, where
@@ -1700,17 +2172,25 @@ struct Asserting {
 
 impl Asserting {
     fn from_timeline(timeline: &[recorder::NodeTiming], marks: &Marks, escaped: bool) -> Asserting {
-        let mut rounds: BTreeMap<Vec<u32>, u32> = BTreeMap::new();
-        let mut recorded = BTreeMap::new();
+        let mut recorded: BTreeMap<Vec<u32>, BTreeMap<u32, Vec<Option<Value>>>> = BTreeMap::new();
         for t in timeline {
             let Some(outputs) = &t.outputs else { continue };
-            if rounds.get(&t.path).is_some_and(|&r| r > t.round) {
-                continue;
-            }
-            rounds.insert(t.path.clone(), t.round);
-            recorded.insert(t.path.clone(), outputs.iter().map(|o| o.as_ref().map(|v| marks.read(v, escaped))).collect());
+            recorded.entry(t.path.clone()).or_default().insert(t.round, outputs.iter().map(|o| o.as_ref().map(|v| marks.read(v, escaped))).collect());
         }
-        Asserting { timer: recorder::Timer::new(), recorded, belied: false, taken: BTreeMap::new(), misshapen: false, stood_in: BTreeMap::new(), unrecorded: BTreeSet::new(), marks: marks.clone() }
+        Asserting { timer: recorder::Timer::new(), recorded, round: 0, belied: false, taken: BTreeMap::new(), misshapen: false, stood_in: BTreeMap::new(), unrecorded: BTreeSet::new(), marks: marks.clone() }
+    }
+
+    /// What the log recorded for the node at `path` in this round, as it ran: in a round it
+    /// recorded none for, the round's before it, else its last. `Err`: it waited on an answer here
+    /// (nothing yet, and something in a later round), so it is run, and asks for it.
+    fn at(&self, path: &[u32]) -> Result<Option<&Vec<Option<Value>>>, ()> {
+        let Some(rounds) = self.recorded.get(path) else { return Ok(None) };
+        let given = |o: &Vec<Option<Value>>| o.iter().any(Option::is_some);
+        match rounds.get(&self.round) {
+            Some(o) if !given(o) && rounds.range(self.round + 1..).any(|(_, o)| given(o)) => Err(()),
+            Some(o) => Ok(Some(o)),
+            None => Ok(rounds.range(..self.round).next_back().or(rounds.iter().next_back()).map(|(_, o)| o)),
+        }
     }
 
     /// Whether `leaf`, fed `inputs`, is computed on the placeholders they carry, and how
@@ -1786,6 +2266,7 @@ impl Observer for Asserting {
         self.timer.produced(path, outputs)
     }
     fn round(&mut self, n: usize) {
+        self.round = n as u32;
         self.timer.round(n)
     }
     fn failed(&mut self, path: &[u32], reason: &str) {
@@ -1793,6 +2274,16 @@ impl Observer for Asserting {
     }
     fn asserted(&mut self, path: &[u32], unit: &holon_core::Unit, inputs: &[Option<&Value>]) -> Option<Vec<Option<Value>>> {
         if matches!(unit.body, holon_core::UnitBody::Composite { .. }) || !inputs.iter().flatten().any(|v| self.marks.carried(v)) {
+            return None;
+        }
+        // A call moves what it is fed into its request and gives what was answered: computed on
+        // its marks, it asks, and is answered only by the call its line records at its path with
+        // that very request, each mark where it put it (R61). Not after a node that couldn't be
+        // computed, where what it is fed isn't the run's.
+        if let holon_core::UnitBody::Primitive { name } = &unit.body
+            && holon_core::taint::is_answered(name)
+            && self.unrecorded.is_empty()
+        {
             return None;
         }
         if let holon_core::UnitBody::Primitive { name } = &unit.body
@@ -1806,7 +2297,7 @@ impl Observer for Asserting {
                 }
                 holon_core::taint::OnAMark::Compares => self.compared(name, unit, inputs),
             };
-            match self.recorded.get(path) {
+            match self.at(path).ok().flatten() {
                 Some(recorded) if *recorded != gave && self.unrecorded.is_empty() => {
                     self.belied = true;
                     return Some(gave);
@@ -1816,7 +2307,8 @@ impl Observer for Asserting {
                 _ => return Some(gave),
             }
         }
-        match self.recorded.get(path) {
+        let Ok(at) = self.at(path) else { return None };
+        match at.cloned() {
             Some(outputs) => {
                 let leaf = match &unit.body {
                     holon_core::UnitBody::Primitive { name } => name.clone(),
@@ -1836,7 +2328,7 @@ impl Observer for Asserting {
                 if let holon_core::UnitBody::Primitive { name } = &unit.body
                     && holon_core::capabilities_of(name, &unit.params).is_some_and(|c| c.is_pure())
                 {
-                    self.misshapen |= !shaped(name, unit, outputs, &self.marks.of_computed());
+                    self.misshapen |= !shaped(name, unit, &outputs, &self.marks.of_computed());
                     // After a node that couldn't be computed, the inputs seen here aren't the
                     // run's (two runs that signed two messages both show none): nothing to hold
                     // one record to another by.
@@ -1848,7 +2340,7 @@ impl Observer for Asserting {
                     }
                 }
                 self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2), derived });
-                Some(outputs.clone())
+                Some(outputs)
             }
             None => {
                 self.unrecorded.insert(path.to_vec());
@@ -2109,6 +2601,44 @@ impl Performer for Offline {
     }
 }
 
+/// The network, for a run being checked: each request the log says it sent, by the node that sent
+/// it, answered as the log says; any other as [`Offline`] answers.
+struct Answering {
+    exchanges: Vec<(Vec<u32>, Value, Value)>,
+    /// Which of them a node asked for.
+    asked: Mutex<Vec<bool>>,
+}
+
+impl Answering {
+    fn new(exchanges: Vec<(Vec<u32>, Value, Value)>) -> Answering {
+        let asked = Mutex::new(vec![false; exchanges.len()]);
+        Answering { exchanges, asked }
+    }
+
+    /// Whether a call it records went unasked: one the run, run again, doesn't make.
+    fn unasked(&self) -> bool {
+        self.asked.lock().unwrap().contains(&false)
+    }
+}
+
+impl Performer for Answering {
+    fn perform(&self, request: &Value, limits: &Limits) -> Value {
+        Offline.perform(request, limits)
+    }
+    fn perform_at(&self, path: &[u32], request: &Value, limits: &Limits) -> Value {
+        // The first not yet asked: a call recorded twice is answered once, and the other is one
+        // the run doesn't make.
+        let mut asked = self.asked.lock().unwrap();
+        match self.exchanges.iter().enumerate().find(|(i, (p, r, _))| !asked[*i] && p == path && r == request) {
+            Some((i, (_, _, answer))) => {
+                asked[i] = true;
+                answer.clone()
+            }
+            None => Offline.perform(request, limits),
+        }
+    }
+}
+
 /// The keys a sealed export opens under (§2.7): `keys.json` in the data folder (`--data`, else
 /// the server's own), its root where `--root-key` says (else the OS key, as the server's). Read
 /// only: a folder with no keys.json is said, never given one.
@@ -2125,8 +2655,9 @@ pub(crate) fn keys_for(data: Option<&str>, root_key: Option<&str>) -> Result<std
 }
 
 /// `holon verify <export.json> [--head <hex>] [--files DIR] [--data DIR] [--root-key SOURCE]`:
-/// check an export, say what was found, and exit 0 only if it checks, every run in it run again;
-/// 3 if nothing in it fails, but some runs couldn't be run again; 1 if anything doesn't check.
+/// check an export, say what was found, and exit 0 only if it checks, every run in it run again
+/// and every run's state checked; 3 if nothing in it fails, but some runs couldn't be run again or
+/// some states checked; 1 if anything doesn't check.
 pub(crate) fn run(args: &[String]) -> i32 {
     let mut file = None;
     let mut head = None;
@@ -2188,8 +2719,8 @@ const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR
   Checks a deployment's exported runs (holon export), offline: that its run log's hash chain is
   unbroken, that every unit is what its hash says, and that every run, run again from its log
   entry, produces what the log says it did. Exits 0 when it all checks, 1 when anything doesn't,
-  3 when nothing fails but some runs couldn't be run again (it says which, and why), 2 when it
-  can't read the export.
+  3 when nothing fails but not everything was checked: some runs couldn't be run again, or some
+  runs' states checked (it says which, and why), 2 when it can't read the export.
 
   --head HEX               a head a witness holds: check it is in the export, so no run up to
                            it was changed or removed
@@ -2230,7 +2761,10 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
     }
     out += &format!("  {chain}\n");
     if !r.bad_lines.is_empty() {
-        out += &format!("  lines {} aren't runs (cut short by a crash, or changed)\n", list(&r.bad_lines));
+        out += &format!("  lines {} AREN'T RUNS: changed into something else\n", list(&r.bad_lines));
+    }
+    for (seq, why) in &r.malformed {
+        out += &format!("  run {seq} ISN'T A LINE THE SERVER WRITES: {why}\n");
     }
     // Runs, first to last: theirs, and whether they are one.
     let spans = |s: &[(u64, u64)]| {
@@ -2299,6 +2833,11 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
         }
         _ => {}
     }
+    // What no run again can make, which only the chain holds: a witnessed head holds it too.
+    if head.is_none() && r.runs > 0 {
+        let said: Vec<&str> = NOT_HELD.iter().map(|(_, said)| *said).collect();
+        out += &format!("  held by the chain alone, not by running each run again (a witnessed head holds it too): {}\n", said.join(", "));
+    }
     if !r.bad_units.is_empty() {
         out += &format!("  units: {} DON'T MATCH their hash\n", r.bad_units.iter().map(|u| short(u)).collect::<Vec<_>>().join(", "));
     }
@@ -2343,6 +2882,12 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
         for ((leaf, fed), (nodes, seqs)) in &steps {
             out += &format!("    {leaf} fed {fed}: {nodes} node{} in {}, as recorded\n", if *nodes == 1 { "" } else { "s" }, count_of(seqs));
         }
+    }
+    if !r.called_out.is_empty() {
+        out += &format!(
+            "  {} called out: what each call was answered is as recorded, held by the chain alone (and a witnessed head)\n",
+            count_of(&r.called_out)
+        );
     }
     if !r.ids_given.is_empty() {
         out += &format!(
@@ -2390,8 +2935,13 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
             how.push(format!("{} of them after a restore, from the state it put back", s.restored.len()));
         }
         let beside = if how.is_empty() { String::new() } else { format!(" ({})", how.join("; ")) };
+        let fresh = match s.fresh.len() {
+            0 => String::new(),
+            1 => format!("run {} began from nothing, as a log's first does; ", s.fresh[0]),
+            _ => format!("{} began from nothing, as a log's first does; ", count_of(&s.fresh)),
+        };
         out += &format!(
-            "  state: {} runs began from the state the run before them left{beside}, {} left what their writes make of the one they began with\n",
+            "  state: {fresh}{} runs began from the state the run before them left{beside}, {} left what their writes make of the one they began with\n",
             s.began.len(),
             s.left.len()
         );
@@ -2402,11 +2952,19 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
             out += &format!("  run {seq}'s state DOESN'T FOLLOW: {how}\n");
         }
     }
-    out += match (r.ok(), r.complete()) {
-        (false, _) => "FAILED\n",
-        (true, false) => "INCOMPLETE: nothing here fails, but not every run was run again (said above)\n",
-        (true, true) => "ok\n",
+    out += match (r.ok(), r.all_run_again(), r.complete()) {
+        (false, _, _) => "FAILED\n",
+        (true, false, false) if r.states.as_ref().is_some_and(|s| !s.unchecked.is_empty()) => {
+            "INCOMPLETE: nothing here fails, but not every run was run again, nor every run's state checked (said above)\n"
+        }
+        (true, false, _) => "INCOMPLETE: nothing here fails, but not every run was run again (said above)\n",
+        (true, true, false) => "INCOMPLETE: nothing here fails, but not every run's state was checked (said above)\n",
+        (true, true, true) => "ok\n",
     };
+    // What ok may mean of a run that called out, said where it can't be missed.
+    if r.ok() && !r.called_out.is_empty() {
+        out += &format!("  ({} called out: what their calls were answered is the log's say-so, held by the chain)\n", count_of(&r.called_out));
+    }
     out
 }
 
@@ -2486,35 +3044,32 @@ pub(crate) fn export(args: &[String]) -> i32 {
     };
     let server = target.server.as_str();
     let query: Vec<String> = files.into_iter().chain(run.map(|n| format!("run={n}"))).collect();
-    let url = format!("{server}/deployments/{slug}/export{}", if query.is_empty() { String::new() } else { format!("?{}", query.join("&")) });
-    let mut request = ureq::get(&url).timeout(Duration::from_secs(120));
-    if let Some(token) = &target.token {
-        request = request.set("Authorization", &format!("Bearer {token}"));
-    }
-    let body = match request.call() {
-        Ok(response) => {
-            let mut text = String::new();
-            if let Err(e) = response.into_reader().read_to_string(&mut text) {
-                eprintln!("holon export: reading the answer from {server} failed: {e}");
-                return 1;
-            }
-            text
-        }
-        Err(ureq::Error::Status(code, response)) => {
-            let body = response.into_string().unwrap_or_default();
-            let why = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v["error"].as_str().map(str::to_string))
-                .unwrap_or_else(|| body.trim().to_string());
-            eprintln!("holon export: {server} answered {code}: {why}");
-            if code == 401 {
-                eprintln!("holon export: {}", local::sign_in_hint(server, target.from));
-            }
+    let path = format!("/deployments/{slug}/export{}", if query.is_empty() { String::new() } else { format!("?{}", query.join("&")) });
+    let (code, response) = match local::request(&target, "GET", &path, None, Duration::from_secs(120)) {
+        Ok(answered) => answered,
+        Err(e) => {
+            eprintln!("holon export: {e}");
+            eprintln!("holon export: is holon serve running there? --server takes the port or address it printed");
             return 1;
         }
-        Err(e) => {
-            eprintln!("holon export: can't reach {server}: {e}");
-            eprintln!("holon export: is holon serve running there? --server takes the port or address it printed");
+    };
+    if code >= 400 {
+        let body = response.into_string().unwrap_or_default();
+        let why = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_string))
+            .unwrap_or_else(|| body.trim().to_string());
+        eprintln!("holon export: {server} answered {code}: {why}");
+        if code == 401 {
+            eprintln!("holon export: {}", local::sign_in_hint(server, target.from));
+        }
+        return 1;
+    }
+    // Read as every command reads a server's answer: whole, or said not to be.
+    let body = match local::read_answer(response.into_reader(), local::MAX_ANSWER) {
+        Ok(body) => body,
+        Err(why) => {
+            eprintln!("holon export: {server} answered {code}, and its answer couldn't be read: {why}");
             return 1;
         }
     };
