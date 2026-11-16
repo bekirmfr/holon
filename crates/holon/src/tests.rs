@@ -8858,6 +8858,7 @@ fn changes_of(line: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
     let number = serde_json::json!({ "type": "Number", "value": 1 });
     let sometimes = [
         ("error", serde_json::json!("x")),
+        ("withheld", serde_json::json!(true)),
         ("status", serde_json::json!(500)),
         ("events", serde_json::json!({ "x": number })),
         ("sourced", serde_json::json!([["x", number]])),
@@ -8901,7 +8902,8 @@ fn changes_of(line: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
 /// say anything there.
 #[test]
 fn no_line_changed_and_chained_again_passes_as_checked() {
-    let mut state = test_state();
+    // Granted plain HTTP to a host on this machine, for the flow that calls one with a secret.
+    let mut state = claims_state("");
     // An action's runs, each writing the state.
     let unit = stage_text(&state, COUNTER);
     let ack = serde_json::json!(["Action(\"bump\")", "StateRead(\"count\")", "StateWrite(\"count\")"]);
@@ -8917,6 +8919,51 @@ fn no_line_changed_and_chained_again_passes_as_checked() {
     assert_eq!(deploy_json(&state, "seen", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
     for n in ["a", "b"] {
         assert_eq!(data_call(&state, "seen", "GET", &format!("/n?n={n}"), "").0, 200);
+    }
+    // A request's that sends what it computes from a secret: its record has a mark where each
+    // such value was (S8), which verify holds by computing it again.
+    let (host, _) = counting_server();
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\n\nflow(\"signed\", {{ port: {} }})\n\nroute.post(\"/send\", async (req) => {{\n  const got = await host.get(\"/a\", {{ headers: {{ authorization: `Basic ${{btoa(`user:${{k}}`)}}` }} }})\n  return {{ status: got.status, n: req.body }}\n}})\n",
+        free_port()
+    );
+    let signed = deploy_text(&state, &text, &host);
+    // And one that calls the same host with what its caller sent, no secret in it: a call the
+    // check makes again, answered as the line says.
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport host from \"host:{host}\"\n\nflow(\"calls\", {{ port: {} }})\n\nroute.post(\"/get\", async (req) => {{\n  const got = await host.get(\"/a\", {{ headers: {{ \"x-n\": req.body }} }})\n  return {{ status: got.status, said: got.body }}\n}})\n",
+        free_port()
+    );
+    let calls = deploy_text(&state, &text, &host);
+    // And one that sends a number it computes from a secret: no mark stands for a number, so its
+    // record withholds what may be computed from the secret, and verify doesn't run it again.
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\n\nflow(\"counted\", {{ port: {} }})\n\nroute.post(\"/count\", async (req) => {{\n  const got = await host.get(\"/a\", {{ headers: {{ \"x-n\": String(k.length) }} }})\n  return {{ status: got.status, n: req.body }}\n}})\n",
+        free_port()
+    );
+    let counted = deploy_text(&state, &text, &host);
+    // And one that sends its secret as it is, a secret too large for the log to keep the step that
+    // gives it (its mark is not): its record withholds, and the line that says it doesn't is
+    // refused (R61).
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\n\nflow(\"large\", {{ port: {} }})\n\nroute.post(\"/big\", async (req) => {{\n  const got = await host.post(\"/a\", {{ body: k }})\n  return {{ status: got.status, n: req.body }}\n}})\n",
+        free_port()
+    );
+    let large = deploy_text(&state, &text, &host);
+    let big = format!("live_{}", "q".repeat(recorder::Timer::MAX_RECORDED_BYTES));
+    for (slug, value) in [(&signed, "live_alpha-secret-value-1"), (&counted, "live_alpha-secret-value-1"), (&large, big.as_str())] {
+        let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+    }
+    for n in ["a", "b"] {
+        let (status, body, _) = data_call(&state, &signed, "POST", "/send", n);
+        assert_eq!(status, 200, "{body}");
+        let (status, body, _) = data_call(&state, &calls, "POST", "/get", n);
+        assert_eq!(status, 200, "{body}");
+        let (status, body, _) = data_call(&state, &counted, "POST", "/count", n);
+        assert_eq!(status, 200, "{body}");
+        let (status, body, _) = data_call(&state, &large, "POST", "/big", n);
+        assert_eq!(status, 200, "{body}");
     }
     // An approval's, two people deciding it.
     let text = r#"import { action, approval, flow } from "holon"
@@ -8956,11 +9003,32 @@ export const pay = action(async (order) => {
     let (mut tried, mut passed, mut leaks, mut said_less, mut witnessed) = (0, 0, Vec::new(), Vec::new(), Vec::new());
     let (mut less_state, mut ends_0) = (Vec::new(), Vec::new());
     let mut by_field: BTreeMap<String, usize> = BTreeMap::new();
-    for slug in ["c", "seen", "payouts"] {
+    let mut marks = 0;
+    // Per flow: tried, passing without the head, passing with it, as checked, saying less, on a
+    // run not re-run, a call's answer changed.
+    let mut per_flow: BTreeMap<String, [usize; 7]> = BTreeMap::new();
+    let (mut unrun, mut answered, mut flips) = (0, 0, Vec::new());
+    for slug in ["c", "seen", calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), "payouts"] {
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req_as(&ada, "GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
         let honest = verify::check(&export, None, &BTreeMap::new());
-        assert!(honest.ok() && honest.complete(), "{slug} as the server wrote it:\n{}", verify::describe(&honest, None));
+        // The flow whose record withholds isn't run again: each of its runs says so.
+        let skipped = |seq: u64| honest.reruns.iter().any(|(s, r)| *s == seq && matches!(r, verify::Rerun::Skipped(_)));
+        match slug == counted {
+            true => assert!(honest.ok() && !honest.reruns.is_empty() && honest.reruns.iter().all(|(s, _)| skipped(*s)), "{slug} as the server wrote it:\n{}", verify::describe(&honest, None)),
+            false => assert!(honest.ok() && honest.complete(), "{slug} as the server wrote it:\n{}", verify::describe(&honest, None)),
+        }
+        // Each run that called out is said so, an `ok` with it: what a call was answered is the
+        // line's say-so (R61). And the flow whose secret is too large to keep says it withholds.
+        let said = verify::describe(&honest, None);
+        let called = [calls.as_str(), signed.as_str(), counted.as_str(), large.as_str()].contains(&slug);
+        assert_eq!(said.contains("called out: what their calls were answered is the log's say-so"), called, "{slug}:\n{said}");
+        if slug == large {
+            assert!(export.lines.iter().all(|l| l.contains("\"withheld\":true")), "{slug}: a line says it keeps each step that gives its secret");
+        }
+        let counts = per_flow.entry(slug.to_string()).or_default();
         let values: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+        // Each mark of a value computed from the secret: changed as any value is below.
+        marks += export.lines.iter().map(|l| l.matches("\u{2039}derived #").count()).sum::<usize>();
         for (i, line) in values.iter().enumerate() {
             let seq = line["seq"].as_u64().unwrap();
             // What the line says, as verify reads it: a change it reads back the same is none.
@@ -8971,6 +9039,7 @@ export const pay = action(async (order) => {
                     continue;
                 }
                 tried += 1;
+                counts[0] += 1;
                 let mut lines: Vec<String> = Vec::new();
                 for (j, v) in values.iter().enumerate() {
                     let mut v = if j == i { changed.clone() } else { v.clone() };
@@ -8984,6 +9053,7 @@ export const pay = action(async (order) => {
                 // With the head a witness holds, every change fails, a field verify doesn't hold
                 // included: the chain holds the line whole.
                 if verify::check(&copy, Some(&export.head), &BTreeMap::new()).ok() {
+                    counts[2] += 1;
                     witnessed.push(format!("{slug} run {seq}: {at}"));
                 }
                 // Without one, a change passes only as a field verify says it doesn't hold.
@@ -8992,7 +9062,12 @@ export const pay = action(async (order) => {
                     continue;
                 }
                 passed += 1;
+                counts[1] += 1;
                 *by_field.entry(at.split('/').next().unwrap_or_default().to_string()).or_insert(0) += 1;
+                // A line that says it withholds, or that it doesn't, is held to what it keeps.
+                if at == "withheld" || at == "withheld/in" {
+                    flips.push(format!("{slug} run {seq}: {at}"));
+                }
                 // A change that makes it check less of a state (the honest export checks every
                 // one) ends 3, not 0, whatever field it is in: what it didn't check is said, and
                 // a script reading the exit code doesn't take it as checked.
@@ -9005,10 +9080,31 @@ export const pay = action(async (order) => {
                 if not_held(&at) {
                     continue;
                 }
+                // A run the honest line isn't run again for says so (`not re-run`, exit 3): a
+                // change in it passes as that, not as checked.
+                if skipped(seq) {
+                    unrun += 1;
+                    counts[5] += 1;
+                    continue;
+                }
+                // What a call was answered is the line's say-so, for every call: the report says
+                // so of each run that called out, and only the chain holds it.
+                let parts: Vec<&str> = at.split('/').collect();
+                if parts.len() > 4 && parts[0] == "rounds" && parts[2] == "exchanges" && parts[4] == "response" {
+                    answered += 1;
+                    counts[6] += 1;
+                    continue;
+                }
                 match account(&report) == account(&honest) {
-                    true => leaks.push(format!("{slug} run {seq}: {at}")),
+                    true => {
+                        counts[3] += 1;
+                        leaks.push(format!("{slug} run {seq}: {at}"))
+                    }
                     // Visible: it says it checked less of a run than it does of the honest line.
-                    false => said_less.push(format!("{slug} run {seq}: {at}")),
+                    false => {
+                        counts[4] += 1;
+                        said_less.push(format!("{slug} run {seq}: {at}"))
+                    }
                 }
             }
         }
@@ -9034,6 +9130,7 @@ export const pay = action(async (order) => {
             for (what, i, changed) in rows {
                 assert_ne!(changed, values[i], "{what}: the line changes");
                 tried += 1;
+                counts[0] += 1;
                 let mut lines: Vec<String> = Vec::new();
                 for (j, v) in values.iter().enumerate() {
                     let mut v = if j == i { changed.clone() } else { v.clone() };
@@ -9055,16 +9152,23 @@ export const pay = action(async (order) => {
         }
     }
     eprintln!(
-        "{tried} changes tried, {passed} pass verify without the head ({by_field:?}); {} as checked, {} saying less, {} checking less of a state ({} ending 0)",
+        "{tried} changes tried ({marks} marks in the records), {passed} pass verify without the head ({by_field:?}), {} with it; {} as checked, {} saying less, {} checking less of a state ({} ending 0)",
+        witnessed.len(),
         leaks.len(),
         said_less.len(),
         less_state.len(),
         ends_0.len()
     );
+    for (slug, [tried, passed, witnessed, checked, less, unrun, answered]) in &per_flow {
+        eprintln!("  {slug}: {tried} tried, {passed} pass without the head, {witnessed} with it; {checked} as checked, {less} saying less, {unrun} on a run not re-run, {answered} a call's answer");
+    }
+    eprintln!("{unrun} pass on a run not re-run, {answered} change what a call was answered");
+    assert!(flips.is_empty(), "a line that says whether it withholds, changed, passes: {flips:?}");
     assert!(witnessed.is_empty(), "{} of {tried} changes pass with the witnessed head:\n{}", witnessed.len(), witnessed.join("\n"));
     assert!(leaks.is_empty(), "{} of {tried} changes pass as checked:\n{}", leaks.len(), leaks.join("\n"));
     assert!(said_less.is_empty(), "{} of {tried} changes pass, saying less was checked:\n{}", said_less.len(), said_less.join("\n"));
     assert!(ends_0.is_empty(), "{} of {tried} changes check less of a state and end 0:\n{}", ends_0.len(), ends_0.join("\n"));
+    assert!(marks >= 2, "the signed flow's records hold a mark where each value computed from its secret was: {marks}");
     assert!(less_state.iter().any(|at| at.contains(": commit/")), "a commit's cell or number changed checks less of a state: {less_state:?}");
 }
 

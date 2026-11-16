@@ -203,6 +203,16 @@ pub struct LogEntry {
     /// run computed none, and in entries logged before.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub derived: Vec<String>,
+    /// Whether its record withholds what the run may have computed from a secret: not every such
+    /// value could be marked ([`Born::whole`]: one no mark stands for, a step giving a secret's
+    /// value or one computed from it too large to keep, or computed where the log follows no
+    /// steps), so each step that may compute from one is kept without its outputs
+    /// and a request fed one says `‹withheld›` (`firing::without_secret_derived`). Absent when
+    /// the run computed nothing from a secret, or marked every value it did: then its record
+    /// keeps each such step's outputs, those values as their marks. `holon verify` holds the line
+    /// to what it says, either way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub withheld: bool,
     /// The credentials its calls answered, until the entry is logged (`log_run`): not part of it.
     #[serde(skip)]
     pub answered: AnswerTokens,
@@ -2389,6 +2399,7 @@ mod tests {
             escaped: false,
             answered: AnswerTokens::default(),
             derived: Vec::new(),
+            withheld: false,
             born: Born::default(),
             mails: Vec::new(),
             queued: Vec::new(),

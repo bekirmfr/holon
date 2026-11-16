@@ -74,15 +74,17 @@ notes-api: 42 runs, runs 1 to 42
   chain: unbroken
   head: 3f9c2a7be01d is the newest run's
   events: 3, chain unbroken from the first
-  held by the chain alone, not by running each run again (a witnessed head holds it too): when it began, how long it took, when each step began, when each step ended, its run session, which load of the state it committed to, its commit's number, how many times it ran again before its commit landed (its tries), who called it (the server's account of its caller), the grant it ran under (by its hash)
+  held by the chain alone, not by running each run again (a witnessed head holds it too): when it began, how long it took, when each step began, when each step ended, its run session, which load of the state it committed to, its commit's number, how many times it ran again before its commit landed (its tries), who called it (the server's account of its caller), the grant it ran under (by its hash), when each call began, when each call ended, the rest of each hash of a value computed from a secret, past what its mark shows (only the secret makes the value again), the commitments to the secrets it was given (only a secret and its salt make one again)
   re-ran 42 runs: each produced what its log entry says, 3 of them given what the log kept for a step (named below)
   3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret, a token or a tainted value (not computed again):
     hmac_sha256 fed the secret stripe_key v3 #a1b2c3d4: 3 nodes in 3 runs: 4, 17, 30, as recorded
+  40 runs: 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, … called out: what each call was answered is as recorded, held by the chain alone (and a witnessed head)
   2 runs: 9, 31 checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)
   secrets: 38 outbound requests carried one, each to a host its approval shows it going to
   tokens: 12 outbound requests carried what a call answered to a secret, each to a host its approval shows that going to
   state: run 1 began from nothing, as a log's first does; 41 runs began from the state the run before them left, 42 left what their writes make of the one they began with
 ok
+  (40 runs: 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, … called out: what their calls were answered is the log's say-so, held by the chain)
 ```
 
 `verify` checks that:
@@ -100,7 +102,9 @@ ok
 4. every run, run again from its log entry through the same core, produced what the log says:
    the same outputs, effects and status, the same answer (its body, as the line keeps it), the
    same steps in the same rounds (its timeline: what each step gave, or why it gave nothing), and
-   the same points it waits at. Outbound calls are answered from the log, so nothing is sent. A
+   the same points it waits at. Outbound calls are answered from the log, so nothing is sent:
+   what each was answered is the log's say-so, which no run again makes, held by the chain alone
+   (and a witnessed head), and the report says so of the runs that called out, `ok` or not. A
    run that failed is run again too: what it computed is checked, what its writes made of its
    state, and its status, unless that is its failure's. What a resumed run was delivered is held
    to what it waited for: an approval's decisions, taken in the order they came, are ones its
@@ -153,6 +157,10 @@ chain the lines after them again: without a witnessed head that passes, and with
 |---|---|---|---|
 | `at_ms`, `duration_ms` | when the run began, and how long it took | the clock is the server's, read as it ran | the chain, and so a witness |
 | the timeline's `start_us`, `end_us` | when each step began and ended | the same: a step's time is the server's | the chain, and so a witness |
+| each call's `start_us`, `end_us` | when each outbound call began and ended | the same | the chain, and so a witness |
+| what each call was answered | the status, headers and body a host gave a call, as the log keeps them | run again, a call is answered from the log and nothing is sent: what the host said is the log's account of it | the chain, and so a witness; the report names the runs that called out |
+| `derived`, past each mark | the rest of each hash of a value computed from a secret | only the secret makes the value again; `verify` holds each mark to the start of a hash the entry lists | the chain, and so a witness |
+| `committed` | the commitments to the secrets the run was given | only a secret and its salt make one again; `verify` holds one value to one commitment across the export | the chain, and so a witness |
 | `session` | the run session it ran in | the deployment's own count of each time it was started or restored, which no run sees | the chain, and so a witness |
 | `commit`'s `cell` and `n` | which load of the state it committed to, and its commit's number | they number commits as they landed beside other runs; they say which run's state it began after, so changed, `verify` may check less of its state, and says which runs it didn't | the chain, and so a witness |
 | `retries` | how many times it ran again before its commit landed | a try that was overtaken leaves nothing but the answers it got, which the last try is given | the chain, and so a witness |
@@ -278,6 +286,13 @@ says which step and which secret: "`text_contains` computed a true or false from
 api_password: only a text of 6 characters or more is carried through a replay". To keep a run
 checked, keep facts like that out of the secret (a setting of its own beside it), and compare a
 secret whole with `secure_equals`.
+
+A step that gives a secret, or a value computed from one, larger than the log keeps of a step
+(16 KiB) makes a run like that too: on its mark the step is shorter, and the record can't show
+it as the run had it. Each entry says whether its record withholds (`withheld`), and `verify`
+holds the line to that both ways: one that says it marked every such value fails where a step
+that gives a secret's value, or one computed from it, has no outputs; one that says it withholds
+fails where it keeps a step that may compute from a secret, or where the run had none.
 
 A run's steps show which way a choice went, a choice by a secret included:
 `key.startsWith("live_") ? a : b` lists the steps of the branch it took. That is by design:

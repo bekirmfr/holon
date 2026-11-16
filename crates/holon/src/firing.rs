@@ -1454,6 +1454,9 @@ fn entry_with(
         secrets: run.secrets.clone(),
         committed: run.committed.clone(),
         derived: run.born.values.iter().map(|(hash, _)| hash.clone()).collect(),
+        // As `without_secret_derived` withholds: what may be computed from a secret, where the
+        // run computed with one and couldn't mark every value it made.
+        withheld: !run.secret_fed.is_empty() && !run.born.whole,
         answered: run.answered.clone(),
         born: run.born.clone(),
         mails: mails::of(&run.performed),

@@ -210,6 +210,13 @@ const ANSWERED: &[&str] = &["http_request", "http_upload", "http_stream", "flow_
 /// The [`ANSWERED`] leaves whose answer is an HTTP response: `{status, headers, body}`.
 const HTTP_ANSWERED: &[&str] = &["http_request", "http_upload", "http_stream"];
 
+/// Whether `leaf` is a call ([`ANSWERED`]): it moves what it is fed into its request, and what it
+/// gives is what was answered. `holon verify` computes one fed a mark on its marks, so that it
+/// asks, rather than taking what the log recorded for it.
+pub fn is_answered(leaf: &str) -> bool {
+    ANSWERED.contains(&leaf)
+}
+
 /// Deeper than this, a composite is taken as computing with whatever reaches it.
 const MAX_DEPTH: usize = 128;
 

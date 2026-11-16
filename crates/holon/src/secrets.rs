@@ -247,6 +247,12 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
     values.sort();
     // Two values under one mark would read as one.
     whole &= values.windows(2).all(|pair| pair[0].0[..8] != pair[1].0[..8]);
+    // And each step that gives a secret's value, or one computed from it, kept its outputs: one
+    // too large to keep as the run had it (a mark is shorter) would read, in a record marked
+    // whole, as one taken out, which `holon verify` refuses (R61). A call that sends one gives
+    // what the host answered, kept whole in the record's rounds.
+    let holds = |path: &[u32]| fed.output(path, 0) > crate::taint::Taint::Clean || fed.derives(path);
+    whole &= timeline.iter().filter(|n| holds(&n.path)).all(|n| n.outputs.is_some());
     crate::recorder::Born { values, whole }
 }
 
@@ -2093,6 +2099,8 @@ mod tests {
             answered: AnswerTokens(vec![(t(), t())]),
             born: crate::recorder::Born { values: vec![(t(), t())], whole: true },
             derived: vec![t()],
+            // A flag: no run data.
+            withheld: true,
             mails: vec![(t(), holon_core::Value::Text(t()))],
             queued: vec![(t(), holon_core::Value::Text(t()))],
             lines: vec![(t(), holon_core::Value::Text(t()))],

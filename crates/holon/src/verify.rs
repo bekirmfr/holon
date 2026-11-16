@@ -75,6 +75,12 @@ pub(crate) const NOT_HELD: &[(&str, &str)] = &[
     ("retries", "how many times it ran again before its commit landed (its tries)"),
     ("by", "who called it (the server's account of its caller)"),
     ("grant", "the grant it ran under (by its hash)"),
+    ("rounds/*/exchanges/*/start_us", "when each call began"),
+    ("rounds/*/exchanges/*/end_us", "when each call ended"),
+    // What only whoever holds the secret can hold: verify holds their form, each mark to the
+    // start of a hash, and one commitment for one value across the export (`listed_secrets`).
+    ("derived/*", "the rest of each hash of a value computed from a secret, past what its mark shows (only the secret makes the value again)"),
+    ("committed", "the commitments to the secrets it was given (only a secret and its salt make one again)"),
 ];
 
 /// What a mark stands for, as a reason for a run not run again ends: said once, here.
@@ -86,8 +92,14 @@ pub(crate) const MARK_STANDS_FOR: &str = "only a text of 6 characters or more is
 /// was too large or too deep to keep. None: the log kept all it keeps, and the run differs.
 fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry, unrecorded: &BTreeSet<Vec<u32>>) -> Option<String> {
     let fed = taint::SecretFed::of(root, resolver);
-    if entry.timeline.iter().any(|t| t.outputs.is_none() && fed.derives(&t.path)) || unrecorded.iter().any(|p| fed.derives(p)) {
+    let derived_missing = entry.timeline.iter().any(|t| t.outputs.is_none() && fed.derives(&t.path)) || unrecorded.iter().any(|p| fed.derives(p));
+    if entry.withheld && derived_missing {
         return Some(withheld_why(root, resolver, &fed, entry));
+    }
+    // A line that says it marked every value the run computed from a secret kept each step that
+    // made one (`secrets::born`): one without is taken out, and the run differs.
+    if derived_missing {
+        return None;
     }
     (!unrecorded.is_empty()).then(|| "it computed with a secret or a resume token at a node the log keeps no outputs for (too large, or too deep)".into())
 }
@@ -416,6 +428,9 @@ pub(crate) struct Report {
     /// a resume token the run received (in its request, its state or what it read), which the log
     /// never holds.
     pub(crate) ids_given: Vec<u64>,
+    /// The runs that called out: what each call was answered is as the line says, held by the
+    /// chain alone (and a witnessed head), for every call, with a secret or without.
+    pub(crate) called_out: Vec<u64>,
     /// The events in it (events.rs), the event lines that aren't one (1-based), the events that
     /// don't follow the line before them (their chain starts at the first: they are kept for
     /// good), and whether the newest's hash is the events head the export names.
@@ -801,6 +816,9 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
         }
         if given.id {
             report.ids_given.push(entry.seq);
+        }
+        if entry.rounds.iter().any(|r| !r.exchanges.is_empty()) {
+            report.called_out.push(entry.seq);
         }
         report.reruns.push((entry.seq, came_to));
     }
@@ -1582,7 +1600,7 @@ fn rerun(
     };
     let (tried, sent) = own.split_at(own.len() - last_try);
     let prior: Vec<Round> = earlier.iter().flat_map(|e| e.rounds.iter().map(|r| round_of(r, marks, e.escaped))).chain(tried.iter().cloned()).collect();
-    let network = Answering { exchanges: sent.iter().flat_map(|r| &r.exchanges).map(|x| (x.path.clone(), x.request.clone(), x.response.clone())).collect() };
+    let network = Answering::new(sent.iter().flat_map(|r| &r.exchanges).map(|x| (x.path.clone(), x.request.clone(), x.response.clone())).collect());
     // Its reads, its own first: a resumed part reads again what it shares (files, databases), and
     // its last part's answers are the ones it finished with.
     let mut reads: Vec<(Vec<u32>, Value, Option<Value>)> = Vec::new();
@@ -1617,6 +1635,10 @@ fn rerun(
     // What is taken from the log can't be computed, but it can be what its leaf never gives.
     if observer.misshapen {
         differs.push("the shape of what the log recorded for a step taken from it");
+    }
+    // Each call its line records was made: by the node at its path, with that very request.
+    if network.unasked() {
+        differs.push("a call its line records that no node makes run again");
     }
     given.taken = observer.taken.values().cloned().collect();
     // Each node stood in for, its secrets as the run's entry shows them (their version and
@@ -1657,13 +1679,19 @@ fn rerun(
     // What may be computed from a secret it was given is withheld as the server withholds it
     // (`firing::without_secret_derived`, `FiredRun::withholds_output`), from the same walk of
     // the same unit.
-    let given = entry.secrets.keys().any(|name| caps.iter().any(|c| matches!(c, Capability::SecretRead(s) if s == *name)));
-    let fed = if given { taint::SecretFed::of(root, resolver) } else { taint::SecretFed::default() };
+    let given_one = entry.secrets.keys().any(|name| caps.iter().any(|c| matches!(c, Capability::SecretRead(s) if s == *name)));
+    let fed = if given_one { taint::SecretFed::of(root, resolver) } else { taint::SecretFed::default() };
+    // A line that says its record withholds keeps nothing that may be computed from a secret,
+    // and is one that computed with one: else it says other than the server writes.
+    if entry.withheld && (fed.is_empty() || entry.timeline.iter().any(|t| t.outputs.is_some() && fed.derives(&t.path))) {
+        return Rerun::Differs("its line says it withholds what the run computed from a secret, and keeps a step that may hold it, or computed with none".into());
+    }
     // The steps it took, as the log keeps them.
     kept.extend(folders::written_texts(&host.performed).into_iter().filter_map(|t| carried_text(&Value::Text(t.to_string()))));
     kept.extend(folders::written_bytes(&host.performed).into_iter().filter_map(|b| carried_text(&Value::Bytes(b.to_vec()))));
     let again = std::mem::take(&mut observer.timer.timeline);
-    let steps = steps_of(&entry.timeline, &again, &|path| fed.derives(path), &kept, !observer.unrecorded.is_empty(), marks, entry.escaped);
+    let whole = given_one && !entry.withheld;
+    let steps = steps_of(&entry.timeline, &again, &|path| entry.withheld && fed.derives(path), whole, &kept, !observer.unrecorded.is_empty(), marks, entry.escaped);
     if !steps.whole {
         differs.push("the steps it took (its timeline)");
     }
@@ -1986,7 +2014,7 @@ struct Steps {
 /// the steps a run's view shows, each step's values and why one failed, were the line's say-so
 /// (audit R26).
 #[allow(clippy::too_many_arguments)]
-fn steps_of(logged: &[recorder::NodeTiming], again: &[recorder::NodeTiming], withheld: &dyn Fn(&[u32]) -> bool, kept: &[String], short: bool, marks: &Marks, escaped: bool) -> Steps {
+fn steps_of(logged: &[recorder::NodeTiming], again: &[recorder::NodeTiming], withheld: &dyn Fn(&[u32]) -> bool, whole: bool, kept: &[String], short: bool, marks: &Marks, escaped: bool) -> Steps {
     let carries_kept = |o: &[Option<SValue>]| serde_json::to_string(o).is_ok_and(|j| kept.iter().any(|t| j.contains(t.as_str())));
     let nothing = |n: &recorder::NodeTiming| n.outputs.as_ref().is_none_or(|o| o.iter().all(Option::is_none));
     let agrees = |l: &recorder::NodeTiming, a: &recorder::NodeTiming| {
@@ -2000,7 +2028,14 @@ fn steps_of(logged: &[recorder::NodeTiming], again: &[recorder::NodeTiming], wit
         let outputs = match (&l.outputs, &a.outputs) {
             (Some(l), Some(a)) => json(l) == json(&a.iter().map(|o| o.clone().map(|v| marks.write(v))).collect::<Vec<_>>()),
             (None, None) => true,
-            (None, Some(a)) => held || carries_kept(a) || a.iter().flatten().any(|v| marks.carried(&v.clone().into_core())),
+            (None, Some(a)) if held || carries_kept(a) => true,
+            // A step holding a mark: too large to keep as the run had it (the mark is shorter
+            // than the value). Not where the line says the run marked every value computed from
+            // a secret: such a run kept each step that holds one (`secrets::born`), so one
+            // without is taken out.
+            (None, Some(a)) => a.iter().flatten().map(|v| v.clone().into_core()).any(|v| {
+                marks.carried(&v) && !(whole && (!marks.secrets_in(&v).is_empty() || !marks.rest_of(Marks::DERIVED, &v).is_empty()))
+            }),
             (Some(l), None) => l.iter().flatten().any(|v| marks.carried(&marks.read(v, escaped))),
         };
         let reason = match (&l.reason, &a.reason) {
@@ -2229,6 +2264,16 @@ impl Observer for Asserting {
     }
     fn asserted(&mut self, path: &[u32], unit: &holon_core::Unit, inputs: &[Option<&Value>]) -> Option<Vec<Option<Value>>> {
         if matches!(unit.body, holon_core::UnitBody::Composite { .. }) || !inputs.iter().flatten().any(|v| self.marks.carried(v)) {
+            return None;
+        }
+        // A call moves what it is fed into its request and gives what was answered: computed on
+        // its marks, it asks, and is answered only by the call its line records at its path with
+        // that very request, each mark where it put it (R61). Not after a node that couldn't be
+        // computed, where what it is fed isn't the run's.
+        if let holon_core::UnitBody::Primitive { name } = &unit.body
+            && holon_core::taint::is_answered(name)
+            && self.unrecorded.is_empty()
+        {
             return None;
         }
         if let holon_core::UnitBody::Primitive { name } = &unit.body
@@ -2550,6 +2595,20 @@ impl Performer for Offline {
 /// it, answered as the log says; any other as [`Offline`] answers.
 struct Answering {
     exchanges: Vec<(Vec<u32>, Value, Value)>,
+    /// Which of them a node asked for.
+    asked: Mutex<Vec<bool>>,
+}
+
+impl Answering {
+    fn new(exchanges: Vec<(Vec<u32>, Value, Value)>) -> Answering {
+        let asked = Mutex::new(vec![false; exchanges.len()]);
+        Answering { exchanges, asked }
+    }
+
+    /// Whether a call it records went unasked: one the run, run again, doesn't make.
+    fn unasked(&self) -> bool {
+        self.asked.lock().unwrap().contains(&false)
+    }
 }
 
 impl Performer for Answering {
@@ -2557,8 +2616,14 @@ impl Performer for Answering {
         Offline.perform(request, limits)
     }
     fn perform_at(&self, path: &[u32], request: &Value, limits: &Limits) -> Value {
-        match self.exchanges.iter().find(|(p, r, _)| p == path && r == request) {
-            Some((_, _, answer)) => answer.clone(),
+        // The first not yet asked: a call recorded twice is answered once, and the other is one
+        // the run doesn't make.
+        let mut asked = self.asked.lock().unwrap();
+        match self.exchanges.iter().enumerate().find(|(i, (p, r, _))| !asked[*i] && p == path && r == request) {
+            Some((i, (_, _, answer))) => {
+                asked[i] = true;
+                answer.clone()
+            }
             None => Offline.perform(request, limits),
         }
     }
@@ -2808,6 +2873,12 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
             out += &format!("    {leaf} fed {fed}: {nodes} node{} in {}, as recorded\n", if *nodes == 1 { "" } else { "s" }, count_of(seqs));
         }
     }
+    if !r.called_out.is_empty() {
+        out += &format!(
+            "  {} called out: what each call was answered is as recorded, held by the chain alone (and a witnessed head)\n",
+            count_of(&r.called_out)
+        );
+    }
     if !r.ids_given.is_empty() {
         out += &format!(
             "  {} checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)\n",
@@ -2880,6 +2951,10 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
         (true, true, false) => "INCOMPLETE: nothing here fails, but not every run's state was checked (said above)\n",
         (true, true, true) => "ok\n",
     };
+    // What ok may mean of a run that called out, said where it can't be missed.
+    if r.ok() && !r.called_out.is_empty() {
+        out += &format!("  ({} called out: what their calls were answered is the log's say-so, held by the chain)\n", count_of(&r.called_out));
+    }
     out
 }
 
