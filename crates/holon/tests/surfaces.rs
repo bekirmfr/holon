@@ -419,6 +419,7 @@ fn every_command_and_tool_is_in_the_table() {
     assert_eq!(tabled, commands, "surfaces.rs's commands against main.rs's dispatch");
     let (world, callers, _) = world();
     let mut usage = BTreeSet::new();
+    let mut usages = std::collections::BTreeMap::new();
     for command in &commands {
         if command == "pick-folder" {
             // It opens a folder dialog; the admin page's browse runs it, and it has no usage.
@@ -429,10 +430,34 @@ fn every_command_and_tool_is_in_the_table() {
         assert_eq!(out.code, 0, "holon {command} --help: {}", out.said);
         let rows = usage_rows(command, &out.said);
         assert!(!rows.is_empty(), "holon {command} --help names no usage line: {}", out.said);
-        usage.extend(rows);
+        usage.extend(rows.iter().cloned());
+        usages.insert(command.clone(), rows);
     }
     let rows: BTreeSet<String> = surfaces::COMMANDS.iter().map(|s| s.name.to_string()).collect();
     assert_eq!(rows, usage, "surfaces.rs's rows against each command's usage");
+    // `holon --help`'s lists of a command's subcommands (`secret list|history|…`, `flows
+    // [list|show|…]`) name what its usage does, every one: one added to a usage is added there.
+    let top = world.bare(&callers[0], &["--help"], "");
+    let word = |w: &str| !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase() || c == '-');
+    let (mut lists, mut unlike) = (0, vec![]);
+    for line in top.said.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let (Some(command), Some(list)) = (words.first(), words.get(1)) else { continue };
+        let list = list.strip_prefix('[').and_then(|l| l.strip_suffix(']')).unwrap_or(list);
+        let Some(of) = usages.get(*command).filter(|_| list.contains('|') && list.split('|').all(word)) else { continue };
+        let named: BTreeSet<String> = list.split('|').map(|s| format!("{command} {s}")).collect();
+        let subcommands: BTreeSet<String> = of.iter().filter(|r| r.contains(' ')).cloned().collect();
+        if subcommands.is_empty() {
+            // What it takes (`editor [file|slug]`), not subcommands.
+            continue;
+        }
+        if named != subcommands {
+            unlike.push(format!("{command}: the line names {named:?}, the usage {subcommands:?}"));
+        }
+        lists += 1;
+    }
+    assert!(unlike.is_empty(), "holon --help's lists of subcommands against each usage:\n{}", unlike.join("\n"));
+    assert!(lists >= 5, "holon --help lists the subcommands of {lists} commands: {}", top.said);
     let mut mcp = world.mcp(&callers[2]);
     let listed: BTreeSet<String> = mcp.ask("tools/list", json!({}))["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
     let tools: BTreeSet<String> = surfaces::TOOLS.iter().map(|t| t.name.to_string()).collect();

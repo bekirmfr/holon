@@ -492,8 +492,9 @@ const USAGE: &str = "usage: holon <command>
                                      (for an agent to run in the background after it proposes)
   grant <slug>                       what it is granted; --revoke, --grant, --lower LIMIT=N
   grants | policy [--reload]         who holds what (admin); the host's policy
-  secret list|history|set|rollback|remove|env
-                                     a deployment's secrets (a value is piped in, never shown)
+  secret list|history|set|rollback|remove|bind|cap|bound|unbind|env
+                                     a deployment's secrets, and the server's own (a value is
+                                     piped in, never shown)
   flows [list|show|save|remove]      the flows saved on the server
   activity [--last N]                what was done on the server, by whom
   login | logout [--server URL]      sign in to a server elsewhere as you, a person, for the other
@@ -503,14 +504,16 @@ const USAGE: &str = "usage: holon <command>
   roles | groups                     the roles principals are bound, and groups of them (admin)
   bind | unbind                      a role to a principal or a group, on the host, a flow, a tag
                                      or an approval point, until a time if you say
-  access [versions|show]             who may do what, every version of it (for an audit)
+  access [versions|show|approvals|local|proposals|approve|decline]
+                                     who may do what, every version of it (for an audit); who
+                                     decides approvals, the run file's account, changes proposed
   export <slug> [--to DIR] [--as N]  write a deployment's runs to a file, for holon verify
   verify <export> [--head HEX]       check a deployment's exported runs, offline: run each again
                                      (--files DIR: files they read that the log keeps by hash)
   history <slug> [--last N]          a deployment's timeline: its runs, and what was done to it
                                      (--cell NAME: the runs that changed one value)
   restore <slug> [--to N --code]     a deployment's versions; an earlier one's code or state back
-  folder add|list|remove             bind a name flows use to a folder on this machine (admin)
+  folder add|list|remove|sweep       bind a name flows use to a folder on this machine (admin)
   database add|list|remove|tables    bind a name flows use to a database on this machine (admin)
   mail add|list|remove               bind a name flows send mail through to an SMTP server (admin)
   feed add|list|remove               bind a name flows listen to to a feed of server-sent events (admin)
