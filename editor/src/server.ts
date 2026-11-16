@@ -619,6 +619,10 @@ export class ServerError extends Error {
   }
 }
 
+/** Why a read failed, as a list that couldn't be read says it (ui/Unread.tsx): the server's words,
+ *  or that it isn't answering. */
+export const whyUnread = (e: unknown): string => (e instanceof ServerError ? e.message : `the server isn't answering (${String(e)})`);
+
 async function asJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let message = res.statusText;

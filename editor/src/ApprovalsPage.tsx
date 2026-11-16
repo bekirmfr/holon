@@ -38,7 +38,8 @@ import {
 } from "./server";
 import { useKeys, useListKeys } from "./ui/Keys";
 import { useToast } from "./ui/Toast";
-import type { WaitingRunOf } from "./useApprovals";
+import type { Unread as Unreads, WaitingRunOf } from "./useApprovals";
+import { Unread } from "./ui/Unread";
 
 const when = (seconds: number) => new Date(seconds * 1000).toLocaleString();
 
@@ -74,6 +75,7 @@ export function ApprovalsPage({
   deployments,
   runs,
   access,
+  unread,
   me,
   navigate,
   textOf,
@@ -89,6 +91,8 @@ export function ApprovalsPage({
   runs: WaitingRunOf[] | null;
   /** Every access change, newest first (useApprovals), null until first read. */
   access: AccessProposal[] | null;
+  /** Each list whose last read failed, why (useApprovals): said in place of its being empty. */
+  unread: Unreads;
   me: Me;
   navigate: (r: Route) => void;
   /** A document as its text, for the lines a card's rows point at. Throws when it can't be written. */
@@ -118,21 +122,31 @@ export function ApprovalsPage({
           return (
             <a key={t} href={format(to)} aria-current={t === tab ? "page" : undefined} onClick={follow(to, navigate)}>
               {label}
-              <span className="hl-flow__count">{n}</span>
+              <span className="hl-flow__count" title={unread[t] ? `couldn't read it: ${unread[t]}` : undefined}>
+                {unread[t] ? "?" : n}
+              </span>
             </a>
           );
         })}
       </nav>
+      {unread[tab] && <Unread what={UNREAD_SAID[tab]} why={unread[tab]} polled />}
       {tab === "deploys" ? (
-        <Deploys approvals={approvals} navigate={navigate} textOf={textOf} onDeclined={onDeclined} />
+        <Deploys approvals={approvals} unread={unread.deploys !== ""} navigate={navigate} textOf={textOf} onDeclined={onDeclined} />
       ) : tab === "runs" ? (
-        <RunsWaiting runs={runs} listed={new Set(deployments.map((d) => d.slug))} me={me} navigate={navigate} onDecided={onDecided} />
+        <RunsWaiting runs={runs} unread={unread.runs !== ""} listed={new Set(deployments.map((d) => d.slug))} me={me} navigate={navigate} onDecided={onDecided} />
       ) : (
-        <AccessChanges changes={access} me={me} onDecided={onDecided} />
+        <AccessChanges changes={access} unread={unread.access !== ""} me={me} onDecided={onDecided} />
       )}
     </div>
   );
 }
+
+/** What each tab lists, as its failed read says it. */
+const UNREAD_SAID: Record<ApprovalsTab, string> = {
+  deploys: "what waits to be deployed",
+  runs: "the runs waiting",
+  access: "the access changes",
+};
 
 /** Decline a proposal of `slug`'s, for whoever may approve its deploys (`flow.approve-deploy`
  *  on the flow, as declining asks it); disabled, saying why not, for anyone else. */
@@ -300,11 +314,14 @@ export function ProposalCard({
 
 function Deploys({
   approvals,
+  unread,
   navigate,
   textOf,
   onDeclined,
 }: {
   approvals: Approval[];
+  /** Its list couldn't be read: none shown is not none waiting. */
+  unread: boolean;
   navigate: (r: Route) => void;
   textOf: (slug: string, doc: FlowDocument) => string;
   onDeclined: () => void;
@@ -345,7 +362,7 @@ function Deploys({
       });
     },
   });
-  if (approvals.length === 0) return <p className="hl-flow__none">Nothing waits for you: every saved version is deployed, and no agent asked for anything.</p>;
+  if (approvals.length === 0) return unread ? null : <p className="hl-flow__none">Nothing waits for you: every saved version is deployed, and no agent asked for anything.</p>;
   return (
     <section aria-label="deploys">
       {cards.length > 0 && (
@@ -496,12 +513,15 @@ export const waitingKey = (slug: string, runId: string) => `${slug}:${runId}`;
  *  approval is decided here a step at a time, each step by whoever the server says may take it. */
 function RunsWaiting({
   runs,
+  unread,
   listed,
   me,
   navigate,
   onDecided,
 }: {
   runs: WaitingRunOf[] | null;
+  /** Its list couldn't be read: none shown is not none waiting. */
+  unread: boolean;
   /** The flows they may open: whoever only decides an approval of another sees its slug alone. */
   listed: Set<string>;
   me: Me;
@@ -535,7 +555,8 @@ function RunsWaiting({
     toast("No step of it is yours to take now.", "bad");
   };
   useKeys("approvals", { a: () => decideSelected(true), d: () => decideSelected(false) });
-  if (ordered !== null && ordered.length === 0) return <p className="hl-flow__none">No run is waiting.</p>;
+  if (ordered !== null && ordered.length === 0) return unread ? null : <p className="hl-flow__none">No run is waiting.</p>;
+  if (ordered === null && unread) return null;
   return (
     <section aria-label="runs waiting">
       <p className="hl-flow__note">
@@ -680,7 +701,7 @@ function useDecideChange(me: string, onDecided: () => void) {
  *  gives, who could act as whom it gives more, who proposed it and why, and who approved it so far;
  *  Approve and Decline to whoever the server would let (can.tsx), Withdraw to its author. Then the
  *  last ten decided, and how. */
-function AccessChanges({ changes, me, onDecided }: { changes: AccessProposal[] | null; me: Me; onDecided: () => void }) {
+function AccessChanges({ changes, unread, me, onDecided }: { changes: AccessProposal[] | null; unread: boolean; me: Me; onDecided: () => void }) {
   const can = useCan();
   const decide = useDecideChange(me.name, onDecided);
   const waiting = (changes ?? []).filter((p) => p.state === "waiting");
@@ -692,7 +713,7 @@ function AccessChanges({ changes, me, onDecided }: { changes: AccessProposal[] |
         of an admin&apos;s waits here until N people other than whoever proposed it approve it: each holding what it gives, and none who could act as whom it
         gives more. Taking access away applies at once.
       </p>
-      {changes === null ? (
+      {unread ? null : changes === null ? (
         <p className="hl-table__dim">reading…</p>
       ) : (
         waiting.length === 0 && <p className="hl-flow__none">No access change waits.</p>

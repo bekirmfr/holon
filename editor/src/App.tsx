@@ -647,7 +647,7 @@ function Canvas({
   // in-browser wasm workspace. Deploying talks to holon-server, over plain HTTP, localhost-only.
   const { deployments, listError, refresh: refreshDeployments } = useDeployments(page);
   // What waits for a person (approvals.ts): Approvals lists it, the nav counts it.
-  const approvals = useApprovals(deployments, { shown: page === "approvals" || page === "home" || page === "flow", asks: page === "approvals" });
+  const approvals = useApprovals(deployments, { shown: page === "approvals" || page === "home" || page === "flow", asks: page === "approvals", listError });
   const { onWaiting } = start;
   // With the approvals among the runs waiting that are this person's to decide (decisions.ts).
   // And the access changes waiting for people that are theirs to decide (access.ts), when they
@@ -1484,7 +1484,7 @@ function Canvas({
         )}
         {compositeOverlay.render(flowName ?? "untitled")}
       </div>
-      {textPane.open && <TextPane key={activeId} {...textPane.pane} onInspect={setWord} onCaret={canvasLevel.setCaret} />}
+      {textPane.open &&<TextPane key={activeId} {...textPane.pane} onInspect={setWord} onCaret={canvasLevel.setCaret} />}
       <Inspector
         node={inspected && secretMarks[inspected.id] ? { ...inspected, data: { ...inspected.data, secretSinks: secretMarks[inspected.id] } } : inspected}
         unit={inspectedUnit}
@@ -1632,6 +1632,7 @@ function Canvas({
               deployments={deployments}
               runs={approvals.runs}
               access={approvals.access}
+              unread={approvals.unread}
               me={me}
               navigate={navigate}
               textOf={(slug, doc) => documentText(slug, doc)}
@@ -1709,7 +1710,7 @@ function Canvas({
               onNotes={(notes) => start.onPrefs({ ...start.prefs, notes })}
             />
           )}
-          {shown === "home" && <OverviewPage name={me.name} admin={pages.host} deployments={deployments} approvals={approvals.approvals} runs={approvals.runs} navigate={navigate} onNew={start.onNew} />}
+          {shown === "home" && <OverviewPage name={me.name} admin={pages.host} deployments={deployments} approvals={approvals.approvals} runs={approvals.runs} unread={approvals.unread} navigate={navigate} onNew={start.onNew} />}
           {shown === "flow" && (route.kind === "flow" || route.kind === "run") && (
             <FlowPage
               slug={route.slug}

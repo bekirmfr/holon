@@ -148,6 +148,11 @@ edits, checks and formats files.
   unbinding, a token revoked, a person disabled, a role or an owner picked from a list.
   `askedFirst.test.ts` reads every such call of the console and finds a question awaited before
   it, or a line saying where it is asked (R43).
+- **A list not read is never shown as empty** (`ui/Unread.tsx`): a failed read of the runs
+  waiting, the access changes or a flow's secrets showed "No run is waiting." or "not set" to
+  whoever was to decide them. It says it couldn't read the list, and why; Approvals' tab counts
+  say "?". `unread.test.tsx` reads every handler of a failed read and finds none that sets a list
+  to none, save where none is the truth (R44).
 - **Served by the server.** One process and one port: on a machine without a screen, start the
   server and open it from any browser (`editor.rs`).
 - **End-to-end clicks are dispatched** (`dispatchEvent("click")`): a forced click lands on

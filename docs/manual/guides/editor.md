@@ -49,7 +49,8 @@ closes with its ×.
   hours, the share that failed, the flows live, the run log), every deployed flow with its runs
   hour by hour (red where one failed), the newest runs across every flow, and the run log, which
   **Check now** reads again line by line. It is read from the server's `GET /summary`.
-- **Approvals** is what waits for a person: **Deploys**, the versions to review and deploy (an
+- **Approvals** is what waits for a person (a list the server didn't answer says *Couldn't read*
+  and why, its count **?**, never that nothing waits): **Deploys**, the versions to review and deploy (an
   agent's proposal with its why and note, and **Decline with a reason…**), **Runs waiting**, and
   **Access changes**: while the host has people approve an access change, each change to who may
   do what that gives someone more, with what it gives, who proposed it and why, who could act as

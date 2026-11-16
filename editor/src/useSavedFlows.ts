@@ -69,7 +69,8 @@ export function useSavedFlows({
     if (refreshOn === null) return;
     listFlows()
       .then((fs) => setSavedFlowTimes(new Map(fs.map((f) => [f.name, f.saved_at_epoch_seconds]))))
-      .catch(() => setSavedFlowTimes(new Map()));
+      // Not read: what was read last stands (the deployments' read says the server isn't answering).
+      .catch(() => undefined);
   }, [refreshOn]);
   const savedFlows = useMemo(() => [...savedFlowTimes.keys()], [savedFlowTimes]);
 

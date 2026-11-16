@@ -36,7 +36,9 @@ import {
   type SecretInfo,
   type SessionEntry,
   type WaitingRun,
+  whyUnread,
 } from "./server";
+import { Unread } from "./ui/Unread";
 import { Gated, gateOf, useCan, type Answer, type Can } from "./can";
 
 const when = (secs: number) => new Date(secs * 1000).toLocaleString();
@@ -419,8 +421,16 @@ function Network({ view, policy, may, onChange, onEdit }: { view: GrantView | nu
  *  env variables' names are offered to whoever may view the host's resources (`envNames`). */
 function Secrets({ slug, names, may, envNames: offered }: { slug: string; names: string[]; may: Answer; envNames: boolean }) {
   const [infos, setInfos] = useState<SecretInfo[]>([]);
+  const [unread, setUnread] = useState("");
   const [envNames, setEnvNames] = useState<string[]>([]);
-  const reload = () => listSecrets(slug).then(setInfos, () => setInfos([]));
+  const reload = () =>
+    listSecrets(slug).then(
+      (s) => {
+        setInfos(s);
+        setUnread("");
+      },
+      (e: unknown) => setUnread(whyUnread(e)),
+    );
   useEffect(() => {
     void reload();
     if (offered) getEnvSecretNames().then((r) => setEnvNames(r.names), () => setEnvNames([]));
@@ -432,7 +442,7 @@ function Secrets({ slug, names, may, envNames: offered }: { slug: string; names:
       <div className="hl-flow__secrets">
         <Gated may={may}>
           {names.map((name) => (
-            <SecretRow key={name} slug={slug} name={name} info={infos.find((x) => x.name === name)} envNames={envNames} onChanged={() => void reload()} />
+            <SecretRow key={name} slug={slug} name={name} info={infos.find((x) => x.name === name)} unread={unread} envNames={envNames} onChanged={() => void reload()} />
           ))}
         </Gated>
       </div>
@@ -442,14 +452,22 @@ function Secrets({ slug, names, may, envNames: offered }: { slug: string; names:
 
 /** Its runs waiting for an approval or an event: what each waits for and until when, and what was delivered
  *  to it so far. Never their tokens (the server doesn't list them). */
-function Waiting({ slug, count }: { slug: string; count: number }) {
+export function Waiting({ slug, count }: { slug: string; count: number }) {
   const [runs, setRuns] = useState<WaitingRun[] | null>(null);
+  const [unread, setUnread] = useState("");
   useEffect(() => {
-    listWaitingRuns(slug).then(setRuns, () => setRuns([]));
+    listWaitingRuns(slug).then(
+      (rs) => {
+        setRuns(rs);
+        setUnread("");
+      },
+      (e: unknown) => setUnread(whyUnread(e)),
+    );
   }, [slug, count]);
   return (
     <section className="hl-flow__section" aria-label="waiting runs">
       <h2>Waiting runs</h2>
+      {unread && <Unread what="its waiting runs" why={unread} />}
       <ul className="hl-flow__changes">
         {(runs ?? []).map((r) => (
           <li key={r.run_id} title={`run ${r.run_id}`}>
