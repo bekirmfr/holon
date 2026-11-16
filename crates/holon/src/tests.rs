@@ -8207,6 +8207,15 @@ fn log_entries(state: &AppState, slug: &str) -> Vec<serde_json::Value> {
     body_json(route(state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))["entries"].as_array().unwrap().clone()
 }
 
+/// What a logged run read from the capabilities named `capability…` (`FeedEvent("posts")`,
+/// `FeedEvent`…), as JSON text: where a test looks for which event a run was. Not the whole of
+/// its `sourced`, which holds the run's random bytes in base64: a short name looked for there is
+/// found in them now and then ("3k3", once in a few hundred runs of the bluesky test).
+fn sourced_from(entry: &serde_json::Value, capability: &str) -> String {
+    let sourced = entry["sourced"].as_array().unwrap();
+    sourced.iter().filter(|p| p[0].as_str().unwrap().starts_with(capability)).map(|p| p[1].to_string()).collect::<Vec<_>>().join("\n")
+}
+
 /// The oracle a deployment's runs of every kind are held to: replayed on the version it runs now
 /// (`GET /deployments/<slug>/replay`), a run of that version that `holon verify` runs again as it
 /// ran replays as the same, and none replays differently. The kinds of the runs replayed as the
@@ -11912,8 +11921,8 @@ fn price_feed_runs_on_each_event_and_opens_again_from_where_it_was() {
     eventually("three runs", || runs().len() == 3);
     let first = runs();
     assert!(first.iter().all(|r| r["route"] == "on feed prices" && r["error"].is_null()), "{first:#?}");
-    let sourced = first[1]["sourced"].to_string();
-    assert!(sourced.contains(r#"FeedEvent(\"prices\")"#) && sourced.contains("BOLT"), "logged whole: {sourced}");
+    let sourced = sourced_from(&first[1], "FeedEvent(\"prices\")");
+    assert!(sourced.contains("\"BOLT\""), "logged whole: {}", first[1]["sourced"]);
     let (_, prices, _) = data_call(&state, &slug, "GET", "/prices", "");
     let prices: serde_json::Value = serde_json::from_str(&prices).unwrap();
     assert_eq!((prices["ACME"]["price"].clone(), prices["BOLT"]["price"].clone()), (serde_json::json!(11), serde_json::json!(3)), "{prices}");
@@ -12201,7 +12210,14 @@ fn bluesky_mentions_opens_the_feed_again_from_its_cursor_and_runs_each_post_once
     assert!(jetstream.asked()[2].starts_with("/subscribe?collections=app.bsky.feed.post&key=s3cret&cursor=4\n"), "{:?}", jetstream.asked());
     eventually("five runs", || runs().len() == 5);
     eventually("at 6", || live()["position"] == "6");
-    let ran: Vec<u32> = runs().iter().map(|r| (1..=6).find(|n| r["sourced"].to_string().contains(&format!("3k{n}"))).unwrap_or(0)).collect();
+    // Which post each run was: the rkey ("3k4") of the event it read, a whole text of it.
+    let ran: Vec<u32> = runs()
+        .iter()
+        .map(|r| {
+            let event = sourced_from(r, "FeedEvent(\"posts\")");
+            (1..=6).find(|n| event.contains(&format!("\"3k{n}\""))).unwrap_or(0)
+        })
+        .collect();
     assert_eq!(ran, [1, 2, 4, 5, 6], "each post run once");
     let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
     assert!(events.contains("passed over an event of posts it ran already (4)"), "{events}");
@@ -12560,8 +12576,8 @@ fn ledger_watch_listens_on_its_channel_and_reads_what_it_missed() {
         let b = balances();
         assert_eq!((b["acct_1"]["balance"].as_str(), b["acct_1"]["entries"].as_u64(), b["acct_1"]["last"].as_u64()), (Some("100.00"), Some(3), Some(3)), "{b}");
         assert_eq!((b["acct_2"]["balance"].as_str(), b["acct_2"]["entries"].as_u64(), b["acct_2"]["read"].as_u64()), (Some("6.00"), Some(2), Some(0)), "{b}");
-        let sourced = log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").map(|e| e["sourced"].to_string()).collect::<Vec<_>>().join("\n");
-        assert!(sourced.contains(r#"FeedEvent(\"entries\")"#) && sourced.contains("fee"), "logged whole: {sourced}");
+        let sourced = log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").map(|e| sourced_from(&e, "FeedEvent(\"entries\")")).collect::<Vec<_>>().join("\n");
+        assert!(sourced.contains("fee"), "logged whole: {sourced}");
 
         // Its session ended: entry 4 is written while nothing listens, so it is never sent; once it
         // listens again, entry 5's run reads it from the ledger.
