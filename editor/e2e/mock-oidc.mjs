@@ -2,8 +2,8 @@
 // editor to sign in through it and holon-server to check what it signs. On 127.0.0.1:7530 (the
 // slot's, ports.mjs), it publishes its discovery document and its key (an RSA key made at startup,
 // never kept), shows a page to pick who to sign in as (no passwords: it is a test fixture), and
-// trades the code for an ID token once the PKCE verifier matches. Nothing here is fit for anything
-// but tests.
+// trades the code for an ID token once the PKCE verifier matches: good for ten minutes, or for
+// the seconds picked ("for 40 s", to see one expire). Nothing here is fit for anything but tests.
 
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { createServer } from "node:http";
@@ -42,19 +42,21 @@ createServer((req, res) => {
     // Picked: issue a code for them and go back.
     if (who) {
       const code = b64url(randomBytes(16));
-      codes.set(code, { email: who, nonce: p.get("nonce"), client: p.get("client_id"), redirect: p.get("redirect_uri"), challenge: p.get("code_challenge") });
+      const lifetime = Number(p.get("lifetime") ?? 600);
+      codes.set(code, { email: who, lifetime, nonce: p.get("nonce"), client: p.get("client_id"), redirect: p.get("redirect_uri"), challenge: p.get("code_challenge") });
       const back = new URL(p.get("redirect_uri"));
       back.searchParams.set("code", code);
       back.searchParams.set("state", p.get("state"));
       res.writeHead(302, { Location: back.toString() });
       return res.end();
     }
-    const pick = (email) => {
+    const pick = (email, lifetime) => {
       const next = new URL(url);
       next.searchParams.set("login_hint", email);
-      return `<p><a href="${escape(next.toString())}">sign in as ${escape(email)}</a></p>`;
+      if (lifetime) next.searchParams.set("lifetime", String(lifetime));
+      return `<p><a href="${escape(next.toString())}">sign in as ${escape(email)}${lifetime ? ` for ${lifetime} s` : ""}</a></p>`;
     };
-    return send(res, 200, "text/html", `<!doctype html><title>test sign-in</title><h1>test sign-in</h1>${["ada@example.com", "cy@example.com", "eve@example.com"].map(pick).join("")}`);
+    return send(res, 200, "text/html", `<!doctype html><title>test sign-in</title><h1>test sign-in</h1>${["ada@example.com", "cy@example.com", "eve@example.com"].map((e) => pick(e)).join("")}${pick("cy@example.com", 40)}`);
   }
   if (url.pathname === "/token" && req.method === "POST") {
     let raw = "";
@@ -70,7 +72,7 @@ createServer((req, res) => {
       const now = Math.floor(Date.now() / 1000);
       json(res, 200, {
         token_type: "Bearer",
-        id_token: idToken({ iss: ISSUER, aud: issued.client, sub: `sub-${issued.email}`, email: issued.email, email_verified: true, nonce: issued.nonce, iat: now, exp: now + 600 }),
+        id_token: idToken({ iss: ISSUER, aud: issued.client, sub: `sub-${issued.email}`, email: issued.email, email_verified: true, nonce: issued.nonce, iat: now, exp: now + issued.lifetime }),
       });
     });
     return;

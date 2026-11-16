@@ -19,6 +19,11 @@ const RECENTLY_CLOSED = 8;
 /** What closing a tab with unsaved changes offers, Save and close highlighted. */
 export const CLOSE_ANSWERS = ["Keep it open", "Discard", "Save and close"];
 
+/** How many open flows have changes not saved, as the editor last counted them: what signing out
+ *  here asks about first (AuthGate.tsx's useSignOut). */
+let unsavedNow = 0;
+export const unsavedFlows = (): number => unsavedNow;
+
 export function useTabs({
   flow,
   setFlow,
@@ -220,8 +225,15 @@ export function useTabs({
     [closed, tabOf, showTab],
   );
 
-  // Leaving the page asks first while any tab has unsaved changes.
-  const anyDirty = dirty || [...stash.current.values()].some((t) => t.dirty);
+  // Leaving the page asks first while any tab has unsaved changes; signing out does too.
+  const unsaved = (dirty ? 1 : 0) + [...stash.current.values()].filter((t) => t.dirty).length;
+  const anyDirty = unsaved > 0;
+  useEffect(() => {
+    unsavedNow = unsaved;
+    return () => {
+      unsavedNow = 0;
+    };
+  }, [unsaved]);
   useEffect(() => {
     if (!anyDirty) return;
     const warn = (e: BeforeUnloadEvent) => e.preventDefault();

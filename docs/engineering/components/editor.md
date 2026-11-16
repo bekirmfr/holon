@@ -157,6 +157,15 @@ edits, checks and formats files.
   held by a boundary, the rest of the console by the root's. A page that threw blanked the whole
   editor and the open flows' unsaved changes with it; now it says its error, with **Try again**,
   and is tried again once another page opens (R44).
+- **A tab acts as whom it signed in as, and an ended sign-in keeps the editor**
+  (`server.ts`'s `tabSession`, `signin.ts`'s `tabSignedIn`, `AuthGate.tsx`'s `SignInAgain`):
+  the session is read from the browser's storage once, as the page loads, so another tab signing
+  in as someone else no longer changes whom this one acts as. A 401 to what the tab is signed in
+  with, or to none once its provider's ID token expired, ends the sign-in without unmounting the
+  editor: a sign-in covers it, and the same person goes on with their unsaved flows; someone else
+  gets an editor of their own. The provider is signed in through again in a pop-up, which hands
+  the tab its token. Signing out asks first while flows aren't saved (`useTabs.ts`'s
+  `unsavedFlows`). `session.test.tsx` holds each (R44).
 - **Served by the server.** One process and one port: on a machine without a screen, start the
   server and open it from any browser (`editor.rs`).
 - **End-to-end clicks are dispatched** (`dispatchEvent("click")`): a forced click lands on

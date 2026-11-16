@@ -39,7 +39,7 @@ import {
 } from "./holon";
 import { changesToDecide } from "./access";
 import { toDecide, yourSteps } from "./decisions";
-import { changeDeployment, deleteDeployment, forgetKeys, type Forgotten, getDeployedDocument, getFlow, getManifest, getPrefs, replayVersion, setPrefs, signOutHere, type FlowDocument, type FlowRecord } from "./server";
+import { changeDeployment, deleteDeployment, forgetKeys, type Forgotten, getDeployedDocument, getFlow, getManifest, getPrefs, replayVersion, setPrefs, type FlowDocument, type FlowRecord } from "./server";
 import { mayDiff } from "./mayItems";
 import type { MayHere } from "./mayHere";
 import { MayStrip } from "./MayStrip";
@@ -106,7 +106,7 @@ import { useDeployments } from "./useDeployments";
 import { buildSample, samples, type Sample } from "./samples";
 import { blankTab, freshTab, metaSetter, savedKeyOf, sourceToSave, syncKeyOf, tabFromDocument as tabFromDoc, tabKind, type FlowMeta, type Mode, type TabState } from "./tabs";
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
-import { AuthGate, type Me } from "./AuthGate";
+import { AuthGate, useSignOut, type Me } from "./AuthGate";
 import { Shell, type Waiting } from "./ui/Shell";
 import { PolicyPage, ResourcesPage } from "./HostPages";
 import { OwnedPage, PeoplePage } from "./PeoplePages";
@@ -177,6 +177,7 @@ function Canvas({
   docs: Map<string, string>;
 }) {
   const dialog = useDialog();
+  const leave = useSignOut();
   const toast = useToast();
   const dark = useDark();
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
@@ -951,7 +952,7 @@ function Canvas({
     out.push({ label: "Interface: Terminal", kind: "look", run: () => start.onPrefs({ ...start.prefs, ui: "terminal" }) });
     out.push({ label: "Keys", kind: "help", run: start.showKeys });
     out.push({ label: "Check the run log", kind: "action", run: () => void checkRunLog(toast) });
-    out.push({ label: "Sign out", kind: "action", run: () => void signOutHere() });
+    out.push({ label: "Sign out", kind: "action", run: () => void leave() });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finding, editing, flowName, deployments, savedFlows, me.role, me.kind, start.prefs, approvals.queue, paletteRuns, pages]);

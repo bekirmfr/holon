@@ -10,7 +10,7 @@
 // carries the session this browser was given, a bearer token, never a cookie (AuthGate.tsx).
 
 import { browsersOf } from "./DeploySettings";
-import { signedIn, signOut, type AuthConfig } from "./signin";
+import { signedIn, signInExpired, signOut, type AuthConfig } from "./signin";
 import { usesIn, type Placed } from "./holonUsage";
 import type { WValue, ModuleEntry } from "./holon";
 import type { EndpointDraft } from "./endpoint";
@@ -31,32 +31,65 @@ export type Kind = "person" | "agent" | "service";
  *  when this browser signed in (absent in a session kept from before it was noted). */
 export type Session = { token: string; name: string; kind?: Kind; role: Role; at?: number };
 const SESSION_KEY = "holon.session";
-let memorySession: Session | null = null;
 
-export function getSession(): Session | null {
+function storedSession(): Session | null {
   try {
-    return (JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as Session | null) ?? memorySession;
+    return JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as Session | null;
   } catch {
-    return memorySession;
+    return null;
   }
 }
 
-/** Keep (or, with null, forget) this browser's session; who listens is told. */
+/** Whom this tab acts as: the session the browser kept, read once as the page loads, then this
+ *  tab's own. A sign-in in another tab, as someone else, leaves whom this one acts as alone: it
+ *  read the browser's kept session on every request, so a second tab changed whom the first
+ *  acted as (R44). A new tab, or a reload, takes the session kept last. */
+let tabSession: Session | null = storedSession();
+
+export function getSession(): Session | null {
+  return tabSession;
+}
+
+/** Forget it from the browser too, when what it keeps is this tab's: another tab's sign-in since
+ *  is kept for the tabs to come. */
+function forgetStored(was: Session | null): void {
+  try {
+    if (was && storedSession()?.token === was.token) localStorage.removeItem(SESSION_KEY);
+  } catch {
+    // nothing kept
+  }
+}
+
+/** Keep (or, with null, forget) this tab's session, and the browser's for the tabs to come; who
+ *  listens is told. */
 export function setSession(session: Session | null): void {
-  memorySession = session;
+  const was = tabSession;
+  tabSession = session;
   try {
     if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    else localStorage.removeItem(SESSION_KEY);
+    else forgetStored(was);
   } catch {
     // storage unavailable: signed in for this page only
   }
   window.dispatchEvent(new Event("holon:session"));
 }
 
+/** This tab's sign-in ended without its asking: the server answered 401 to it (signed out
+ *  elsewhere, expired, the person disabled), or the provider's ID token expired. Forgotten, and
+ *  the console asks to sign in again over what is open, which it keeps (AuthGate.tsx). */
+function endSession(): void {
+  const was = tabSession;
+  tabSession = null;
+  forgetStored(was);
+  signOut();
+  window.dispatchEvent(new Event("holon:session-ended"));
+}
+
 /** `fetch` against the server, carrying who is signed in: the session's token, else the ID
- *  token of a sign-in through the server's identity provider (signin.ts). A 401 means the
- *  sign-in has ended: it is forgotten, and the editor asks to sign in again. A request that gets
- *  no answer is told (the host card reads the host again). */
+ *  token of a sign-in through the server's identity provider (signin.ts). A 401 to what this tab
+ *  is signed in with (not a token since replaced), or to none since its ID token expired, means
+ *  the sign-in has ended: it is forgotten, and the editor asks to sign in again over what is open.
+ *  A request that gets no answer is told (the host card reads the host again). */
 async function api(url: string, init: RequestInit = {}): Promise<Response> {
   const token = getSession()?.token ?? signedIn()?.idToken;
   const res = await fetch(url, token ? { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } } : init).catch(
@@ -65,10 +98,7 @@ async function api(url: string, init: RequestInit = {}): Promise<Response> {
       throw e;
     },
   );
-  if (res.status === 401 && token) {
-    setSession(null);
-    signOut();
-  }
+  if (res.status === 401 && (token ? token === (getSession()?.token ?? signedIn()?.idToken) : signInExpired())) endSession();
   if (mayHaveChanged(url, init.method ?? "GET", res.status)) window.dispatchEvent(new Event("holon:can"));
   return res;
 }

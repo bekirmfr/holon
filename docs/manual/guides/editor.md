@@ -13,7 +13,14 @@ up. An admin adds people from **People and access**, and each gets a one-time li
 password.
 
 Your initials are at the right of the top bar. Their menu has **Welcome and docs**, **Change
-password** and **Sign out**; the theme (**Auto**, **Light** or **Dark**) is beside them.
+password** and **Sign out** (asked first while an open flow has changes not saved); the theme
+(**Auto**, **Light** or **Dark**) is beside them.
+
+Each browser tab acts as whoever signed in there: signing in as someone else in another tab
+leaves it alone. When your sign-in ends while the editor is open (signed out elsewhere, or it
+expired), a sign-in covers the editor and keeps it as it was: sign in again as yourself and go
+on with your open flows, unsaved changes and all. Through an identity provider, it opens in a
+pop-up so the page stays. Signing in as someone else closes them.
 
 ## Pages and tabs
 
