@@ -2,21 +2,38 @@
 // a link, a typed address), and written by `navigate`. A navigation the person makes adds to the
 // history; one that only says where they already are (the editor's tab or run changing under
 // them) replaces it, so Back doesn't step through every click on a run.
+//
+// A replace is decided from a render (an effect, or an answer that arrives later), and the person
+// may have moved since: a click pushed the Library, not yet rendered, when an answer to where the
+// editor was opened came back and its effect, run from the render before, put the editor's own
+// address over it (the e2e's slow runner). So a replace applies only while the address is the
+// editor's own: the one its last render showed, or one a replace wrote since. Moved past both, the
+// address is the person's, and newer: the replace yields to it, and the render for it decides again.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { format, parse, type Route } from "./routes";
 
 export type Navigate = (to: Route, how?: { replace?: boolean }) => void;
+
+/** The address as the editor reads it: `#…` as routes.ts formats what it names. */
+const addressNow = () => format(parse(window.location.hash));
 
 export function useHashRoute(): { route: Route; navigate: Navigate; arrivedAt: string } {
   const [route, setRoute] = useState<Route>(() => parse(window.location.hash));
   // The address the editor was opened at ("" when none): a place asked for, not a default.
   const [arrivedAt] = useState(() => window.location.hash.replace(/^#/, ""));
+  // What the last render showed, and what a replace wrote since the person last moved.
+  const shown = useRef(format(route));
+  shown.current = format(route);
+  const replaced = useRef<string | null>(null);
 
   useEffect(() => {
     // Back over entries pushed below fires popstate, and may fire hashchange too: the same place
     // read twice is kept as it was.
-    const onHash = () => setRoute((r) => (format(r) === format(parse(window.location.hash)) ? r : parse(window.location.hash)));
+    const onHash = () => {
+      replaced.current = null;
+      setRoute((r) => (format(r) === addressNow() ? r : parse(window.location.hash)));
+    };
     window.addEventListener("hashchange", onHash);
     window.addEventListener("popstate", onHash);
     return () => {
@@ -26,12 +43,14 @@ export function useHashRoute(): { route: Route; navigate: Navigate; arrivedAt: s
   }, []);
 
   const navigate = useCallback<Navigate>((to, how) => {
+    if (how?.replace && addressNow() !== shown.current && addressNow() !== replaced.current) return;
     const hash = format(to);
     if (hash !== window.location.hash) {
       // Neither way fires hashchange: the state is set here, the same for both.
       if (how?.replace) window.history.replaceState(window.history.state, "", hash);
       else window.history.pushState(window.history.state, "", hash);
     }
+    replaced.current = how?.replace ? addressNow() : null;
     setRoute((r) => (format(r) === hash ? r : to));
   }, []);
 

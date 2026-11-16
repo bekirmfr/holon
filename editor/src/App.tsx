@@ -93,7 +93,7 @@ import { ReviewPage } from "./ReviewPage";
 import { useApprovals } from "./useApprovals";
 import { useCan, useHostPages, type Answer } from "./can";
 import { LibraryPage } from "./LibraryPage";
-import { format, parentOf, same, type Route } from "./routes";
+import { format, nothingToReopen, parentOf, same, type Route } from "./routes";
 import { KeysDialog, pick, useKeys } from "./ui/Keys";
 import { usePaletteRuns } from "./usePaletteRuns";
 import { CommandPalette } from "./ui/CommandPalette";
@@ -778,7 +778,7 @@ function Canvas({
       const rec = await getFlow(slug).catch(() => null);
       if (rec) return void (await onOpenFlow(rec));
       if (deployments.some((d) => d.slug === slug)) return onView(slug);
-      toast(`There is no flow named "${slug}" to open.`, "bad");
+      toast(nothingToReopen(slug, samples().find((s) => s.name === slug)?.title), "bad");
     })()
       .catch((e: unknown) => toast(e instanceof Error ? e.message : String(e), "bad"))
       .finally(() => {
@@ -1900,7 +1900,11 @@ function Editor({ me }: { me: Me }) {
       {error ? (
         <pre className="hl-error">{error}</pre>
       ) : (
-        <div className="hl-body">
+        // Busy while the core (the wasm) loads: every page here waits for it, and on a slow
+        // machine that is long. The e2e harness waits for this to end after a page loads
+        // (fixtures.ts's `settled`).
+        <div className="hl-body" aria-busy={catalog === null}>
+          {catalog === null && <div style={{ padding: 24, color: "var(--faint)" }}>loading the editor…</div>}
           <ReactFlowProvider>
             {catalog && (
               <Canvas

@@ -170,6 +170,16 @@ edits, checks and formats files.
 - **One worker.** The end-to-end suite runs one test at a time (`workers: 1`) against one
   server, its deployments shared between tests; `CLOCK_SLUGS` names the clock samples to stop by
   hand, so a new clock sample keeps ticking unless added.
+- **A page's first load waits on its own.** On CI's slow runner a new browser context took 15 to
+  25 s to load the editor (its core's wasm 4 to 13.5 s to fetch, then compiled), past the 15 s an
+  `expect` waits. The page says it is loading (`aria-busy` on AuthGate's "connecting" and on the
+  editor's body until the catalog is in), and `fixtures.ts` waits for that to end, up to two
+  minutes, after every page's `goto` and `reload` (`settled`; the accounts tests, on a context
+  of their own, call `editorLoaded` after each sign-in). A new test that loads the editor some
+  other way waits the same.
+- **Every read of the server is past the HTTP cache** (`ask` in `server.ts`, `cache: "no-store"`):
+  through it, Chrome let one request for an address go at a time, and a held read of `/auth/me`
+  held the access version a page follows past what a test waits.
 - **A drag in an overlay waits for its view to stop moving.** An overlay fits its view again
   240 ms after it opens, animated over 200 ms (`CompositeOverlay.tsx`), and at its zoom a handle
   is a few pixels wide: a test's `dragTo` begun meanwhile aims where the handle was, and misses.
