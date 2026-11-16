@@ -856,8 +856,9 @@ export type Summary = {
   chain: {
     on_record: number;
     breaks: number;
-    /** Where the heads go, when it last took a batch (since the server started), and how many wait. */
-    witness: { address: string; taken_ms: number | null; waiting: number } | null;
+    /** Where the heads go (to whoever views the host), when it last took a batch (since the server
+     *  started), and how many wait. */
+    witness: { address?: string; taken_ms: number | null; waiting: number } | null;
     checked: ChainCheck | null;
   };
 };

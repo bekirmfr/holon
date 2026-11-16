@@ -238,7 +238,9 @@ views the flow reads, names the binding where a connection's error named its add
 feed prices: the feed prices answered 404`), and so do its feeds' and queues' listings to whoever
 may not bind. Where the server keeps its data goes to whoever views the host (`host.view`):
 deleting a deployment answers anyone else where its records are within the data folder
-(`deployments.logs/removed/shop-runs-1762963200000.json.gz`). `GET /summary`, and the answer to a
+(`deployments.logs/removed/shop-runs-1762963200000.json.gz`). So does where the run logs'
+witness is (`GET /summary`'s `witness.address`): anyone else is told that one is set, when it
+last took the heads and how many wait. `GET /summary`, and the answer to a
 check of the run logs (`POST /summary/check`), name only the deployments whose runs their caller
 may view.
 

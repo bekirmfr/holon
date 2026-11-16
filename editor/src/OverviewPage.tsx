@@ -271,7 +271,7 @@ export function OverviewPage({
                 <Fact name="on record">{summary.chain.on_record.toLocaleString()} runs</Fact>
                 <Fact name="witnessed">
                   {summary.chain.witness
-                    ? `${summary.chain.witness.taken_ms ? time(summary.chain.witness.taken_ms) : "not yet"}, by ${summary.chain.witness.address}${summary.chain.witness.waiting ? ` (${summary.chain.witness.waiting} heads wait)` : ""}`
+                    ? `${summary.chain.witness.taken_ms ? time(summary.chain.witness.taken_ms) : "not yet"}${summary.chain.witness.address ? `, by ${summary.chain.witness.address}` : ""}${summary.chain.witness.waiting ? ` (${summary.chain.witness.waiting} heads wait)` : ""}`
                     : "no witness set (--export-heads)"}
                 </Fact>
                 <Fact name="last check">

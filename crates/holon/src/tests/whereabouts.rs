@@ -201,6 +201,10 @@ fn swept(state: &AppState, token: &str, who: &str, canaries: &[&str]) -> Vec<Str
 fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_host() {
     let s = server();
     let state = &s.state;
+    // The run logs' witness, set for this thread's summaries: where it is goes to whoever views
+    // the host.
+    let witness = format!("https://witness-{WHERE}.example:8443");
+    crate::heads::in_test::set(Some(crate::heads::Witness { address: witness.clone(), taken_ms: Some(1_763_283_600_000), waiting: 2 }));
     let get = |token: &str, path: &str| {
         let (code, said) = ask(state, Some(token), "GET", path, vec![]);
         assert_eq!(code, 200, "{path}: {said}");
@@ -213,6 +217,7 @@ fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_hos
     }
     let (code, said) = ask(state, Some(&s.ada), "POST", "/summary/check", vec![]);
     assert!(code == 200 && said.contains(HIDDEN), "{said}");
+    assert_eq!(get(&s.ada, "/summary")["chain"]["witness"]["address"], json!(witness));
 
     // A connection's error names where it is (sse.rs's "<address> answered 404", a refused
     // connection its host and port): w's timeline noted with each place the admin is shown, whole
@@ -251,6 +256,7 @@ fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_hos
             assert!(shown.is_empty(), "rv's {path} shows {shown:?}: {entry}");
         }
     }
+    assert_eq!(get(&s.rv, "/summary")["chain"]["witness"], json!({ "taken_ms": 1_763_283_600_000u64, "waiting": 2 }), "that one is set, and when it took the heads");
     let mails = get(&s.rv, "/admin/mails");
     assert_eq!((mails[0]["to"].clone(), mails[0]["mailbox"]["folder"].clone()), (json!(["*@acme.example"]), json!("INBOX")), "what it does is shown: {mails}");
 

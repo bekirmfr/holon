@@ -65,16 +65,18 @@ export function secretUses(e: LogEntry): SecretUse[] {
 
 const hostOf = (url: string) => /^[a-z]+:\/\/([^/?#]+)/i.exec(url)?.[1] ?? "";
 
-/** The witness the host's heads go to (`/summary`'s `witness`), as far as the editor knows it. */
-export type Witness = { address: string; taken_ms: number | null; waiting: number } | null;
+/** The witness the host's heads go to (`/summary`'s `witness`), as far as the editor knows it:
+ *  where it is only to whoever views the host. */
+export type Witness = { address?: string; taken_ms: number | null; waiting: number } | null;
 
 /** Whether a witness holds the record of a run that ended at `endedMs`: it took a batch of heads
  *  at or after it. The server keeps only when it last took one (web-console-L4.md §12, Q7), so a
  *  run after that waits for the next. */
 export function witnessed(endedMs: number, witness: Witness): { yes: boolean; said: string } {
   if (witness === undefined || witness === null) return { yes: false, said: "no witness set: start the host with --export-heads" };
-  if (witness.taken_ms !== null && witness.taken_ms >= endedMs) return { yes: true, said: `yes, by ${witness.address}, at ${new Date(witness.taken_ms).toLocaleString()}` };
-  return { yes: false, said: `not yet: ${witness.address} takes the next batch${witness.waiting > 0 ? ` (${witness.waiting} head${witness.waiting === 1 ? "" : "s"} wait)` : ""}` };
+  const who = witness.address ?? "the witness";
+  if (witness.taken_ms !== null && witness.taken_ms >= endedMs) return { yes: true, said: `yes, by ${who}, at ${new Date(witness.taken_ms).toLocaleString()}` };
+  return { yes: false, said: `not yet: ${who} takes the next batch${witness.waiting > 0 ? ` (${witness.waiting} head${witness.waiting === 1 ? "" : "s"} wait)` : ""}` };
 }
 
 /** A file its runs wrote: how many runs wrote it, and the last one, with what it did. */

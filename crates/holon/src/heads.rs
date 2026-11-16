@@ -85,9 +85,31 @@ pub struct Witness {
 
 /// The witness, if heads are being exported.
 pub fn witness() -> Option<Witness> {
+    #[cfg(test)]
+    if let Some(set) = in_test::get() {
+        return Some(set);
+    }
     let exporter = EXPORTER.get()?;
     let taken = exporter.taken_ms.load(std::sync::atomic::Ordering::Relaxed);
     Some(Witness { address: address_of(&exporter.url), taken_ms: (taken > 0).then_some(taken), waiting: exporter.pending.lock().unwrap().heads.len() })
+}
+
+/// A witness this thread's summaries say is set, for a test: the exporter is the process's, and
+/// one a test started would be sent every other test's heads.
+#[cfg(test)]
+pub(crate) mod in_test {
+    use super::Witness;
+    use std::cell::RefCell;
+
+    thread_local!(static SET: RefCell<Option<Witness>> = const { RefCell::new(None) });
+
+    pub(crate) fn set(witness: Option<Witness>) {
+        SET.with(|s| *s.borrow_mut() = witness);
+    }
+
+    pub(super) fn get() -> Option<Witness> {
+        SET.with(|s| s.borrow().clone())
+    }
 }
 
 /// A URL's scheme, host and port: what's before its path, without a login.

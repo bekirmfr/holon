@@ -9,7 +9,8 @@
   only to whoever may bind (`resource.bind`), as a folder's path and a database's address already
   did: anyone else is told what each does, and a connection's error names the binding where it
   named the address. Deleting a deployment says where its records are kept in full to whoever
-  views the host, and within the data folder to anyone else. `GET /summary`'s last check and `POST
+  views the host, and within the data folder to anyone else, and so does where the run logs'
+  witness is (`GET /summary`'s `witness.address`). `GET /summary`'s last check and `POST
   /summary/check` name only the deployments whose runs their caller may view; they named every
   deployment and its head. Every answer of a flow's port carries `X-Content-Type-Options: nosniff`
   (a flow's own kept). The timeline says `listens to the feed prices`, without its address.
