@@ -80,7 +80,7 @@ pub(crate) const NOT_HELD: &[(&str, &str)] = &[
     // What only whoever holds the secret can hold: verify holds their form, each mark to the
     // start of a hash, and one commitment for one value across the export (`listed_secrets`).
     ("derived/*", "the rest of each hash of a value computed from a secret, past what its mark shows (only the secret makes the value again)"),
-    ("committed", "the commitments to the secrets it was given (only a secret and its salt make one again)"),
+    ("committed", "the commitments to its secrets (only a secret and its salt make one again)"),
 ];
 
 /// What a mark stands for, as a reason for a run not run again ends: said once, here.
