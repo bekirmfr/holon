@@ -45,7 +45,7 @@ pub(crate) const WEEKENDS: &[&str] = &["sat_sun", "fri_sat", "none"];
 const MAX_DAY: i64 = 100_000_000;
 
 /// The most business days `business_day_add` steps, either way.
-const MAX_BUSINESS_DAYS: f64 = 100_000.0;
+pub(crate) const MAX_BUSINESS_DAYS: f64 = 100_000.0;
 
 /// ToIntegerOrInfinity on a finite number: truncated, `-0` made `0`.
 fn to_integer(x: f64) -> f64 {

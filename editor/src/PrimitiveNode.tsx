@@ -478,7 +478,7 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
         <div
           className="hl-node__secret"
           title={data.secretSinks.join("\n")}
-          style={{ display: "flex", flexDirection: "column", gap: 1, fontSize: 10, color: "var(--warn)", padding: "2px 8px", maxWidth: 260 }}
+          style={{ display: "flex", flexDirection: "column", gap: 1, fontSize: 10, color: "var(--secret)", padding: "2px 8px", maxWidth: 260 }}
         >
           {data.secretSinks.map((line) => (
             <span key={line}>🔑 {line}</span>

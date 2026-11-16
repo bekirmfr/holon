@@ -4054,6 +4054,251 @@ fn a_server_deployment_answers_on_its_own_port_within_limits() {
     assert!(released, "the port is free again");
 }
 
+/// No deployment's callers hold more of the data plane than its share (audit R15): every run on
+/// the data plane (a request's; a WebSocket's open, message and close) takes a place in its
+/// deployment's `max_concurrent_runs` and in the server's `max_runs`, and every answer is written
+/// under the write deadline. The two ways callers held the pool, through real sockets:
+/// - runs held on a slow upstream (a gate): past the deployment's share a request is a 503 with
+///   `Retry-After` at once, never queued, while another deployment answers beside it; past the
+///   server's total, another deployment's request is too; a WebSocket's message waits for a place,
+///   holding no thread, and runs once one is free; every place is given back as its run ends;
+/// - callers that stop reading an answer of each kind (whole, a file streamed, an upstream
+///   forwarded as it is read): each connection is cut at the write deadline, so a listener whose
+///   every connection was held answers again, and the forwarded run, whose thread waited on its
+///   caller, ends and gives its place back.
+///
+/// If it fails: on a 503, `Share::try_admit` in `answer` (dataplane.rs) or `open` (websockets.rs);
+/// on a message run at once, `admit` in websockets.rs `work`; on a caller never cut, `Deadlined`
+/// around `serve_connection`; on a place never given back, `Admitted` dropped before its run ends,
+/// or a forwarded run's send to a caller gone that still waits.
+#[test]
+fn no_deployments_callers_hold_more_of_the_data_plane_than_its_share() {
+    use std::io::{Read, Write};
+    use tungstenite::client::IntoClientRequest;
+    use tungstenite::Message;
+    let get = |port: u16, path: &str| raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes());
+    // As the command line deploys a text: the limits it asks for beside its unit, its calls to
+    // `hosts` approved.
+    let deploy = |state: &AppState, text: &str, hosts: &[&str]| {
+        let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let mut requirements = plan.requirements.clone().unwrap_or_else(|| serde_json::json!({}));
+        requirements["plain_http"] = serde_json::json!(hosts);
+        requirements["private_addresses"] = serde_json::json!(true);
+        let asking = serde_json::json!({ "slug": plan.name, "unit": plan.unit, "requirements": requirements });
+        let preview = body_json(route(state, &req("POST", "/deploy/preview", serde_json::to_vec(&asking).unwrap())));
+        let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap_or_default();
+        let r = deploy_json(state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": asked, "requirements": requirements }));
+        let status = r.status_code;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
+    };
+
+    // Held on a slow upstream: "held" answers two at once, the server three.
+    let (host, _, gate) = gated_counting_server();
+    let mut state = claims_state("");
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    state.data_limits.max_runs = 3;
+    let (held_port, beside_port) = (free_port(), free_port());
+    let held = format!(
+        "import {{ flow, route }} from \"holon\"\nimport api from \"host:{host}\"\n\nflow(\"held\", {{ port: {held_port}, limits: {{ max_concurrent_runs: 2 }} }})\n\nroute.get(\"/slow\", async () => (await api.get(\"/slow\")).body)\n\nroute.get(\"/hi\", () => \"hi\")\n\nroute.websocket(\"/ws\", {{ message: (m) => `echo ${{m.text}}` }})\n"
+    );
+    deploy(&state, &held, &[&host]);
+    let beside = held.replace("flow(\"held\"", "flow(\"beside\"").replace(&format!("port: {held_port}, limits: {{ max_concurrent_runs: 2 }}"), &format!("port: {beside_port}"));
+    deploy(&state, &beside, &[&host]);
+    sync_listeners(&state);
+    gate.shut();
+    std::thread::scope(|s| {
+        let slow: Vec<_> = (0..2).map(|_| s.spawn(move || get(held_port, "/slow"))).collect();
+        assert!(gate.out_at_once(2), "held's two calls went out");
+        // At its share: refused at once, to try again; the deployment beside it answers.
+        let refused = get(held_port, "/hi");
+        let answered = get(beside_port, "/hi");
+        // A WebSocket's message waits for a place, not refused and not run past the share.
+        let stream = std::net::TcpStream::connect(("127.0.0.1", held_port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{held_port}/ws").into_client_request().unwrap(), stream).unwrap();
+        ws.get_mut().set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        ws.send(Message::text("m1")).unwrap();
+        let early = ws.read();
+        // The server's third place taken: then any deployment's request is refused.
+        let third = s.spawn(move || get(beside_port, "/slow"));
+        assert!(gate.out_at_once(3), "beside's call went out");
+        let full = get(beside_port, "/hi");
+        let still = gate.out() == 3;
+        gate.open();
+        assert!(refused.starts_with("HTTP/1.1 503") && refused.contains("retry-after: 1") && refused.contains("max_concurrent_runs"), "{refused}");
+        assert!(answered.starts_with("HTTP/1.1 200") && answered.ends_with("hi"), "{answered}");
+        assert!(early.is_err(), "the message ran past the share: {early:?}");
+        assert!(full.starts_with("HTTP/1.1 503") && full.contains("retry-after: 1") && full.contains("the server is answering 3"), "{full}");
+        assert!(still, "the refusals came while the three calls were out, not queued behind them");
+        for done in slow.into_iter().chain([third]) {
+            let done = done.join().unwrap();
+            assert!(done.starts_with("HTTP/1.1 200") && done.ends_with("slow"), "{done}");
+        }
+        // The message ran once a place was free, and every place is given back.
+        ws.get_mut().set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let echoed = match ws.read().unwrap() {
+            Message::Text(t) => serde_json::from_str::<serde_json::Value>(&t).unwrap_or_else(|_| serde_json::Value::String(t.to_string())),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(echoed, serde_json::json!("echo m1"));
+        assert!(get(held_port, "/hi").starts_with("HTTP/1.1 200"));
+        assert!(get(beside_port, "/hi").starts_with("HTTP/1.1 200"));
+    });
+
+    // Callers that stop reading: the listener takes three connections, "big" one run at once.
+    let size = 10_000_000usize;
+    let upstream = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let big_host = upstream.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        let body = Arc::new(vec![b'x'; size]);
+        for stream in upstream.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let body = Arc::clone(&body);
+            std::thread::spawn(move || {
+                if read_request(&mut stream).is_some() {
+                    let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n");
+                    let _ = stream.write_all(head.as_bytes()).and_then(|()| stream.write_all(&body));
+                }
+            });
+        }
+    });
+    let dir = std::env::temp_dir().join(format!("holon-share-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("big.txt"), vec![b'y'; size]).unwrap();
+    let mut state = claims_state("");
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    state.data_limits.max_connections = 3;
+    state.data_limits.write_timeout = Duration::from_secs(1);
+    let files = serde_json::json!({ "name": "files", "path": dir.display().to_string(), "access": "read" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&files).unwrap())).status_code, 200);
+    let port = free_port();
+    let text = format!(
+        "import {{ flow, respond, route }} from \"holon\"\nimport files from \"folder:files\"\nimport big from \"host:{big_host}\"\n\nflow(\"big\", {{ port: {port}, limits: {{ max_concurrent_runs: 1 }} }})\n\nroute.get(\"/whole\", async () => (await big.get(\"/big\")).body, {{ log: \"unrecorded\" }})\n\nroute.get(\"/file\", () => files.serve(\"big.txt\"))\n\nroute.get(\"/stream\", async () => {{\n  const sent = await big.get(\"/big\", {{ stream: true }})\n  return respond(sent.body, {{ stream: true }})\n}}, {{ log: \"unrecorded\" }})\n\nroute.get(\"/hi\", () => \"hi\")\n"
+    );
+    deploy(&state, &text, &[&big_host]);
+    sync_listeners(&state);
+    // Each asked for and its answer begun, then never read again. The whole answer's run and the
+    // file's are over before their bytes go; the forwarded one's holds the deployment's one place
+    // while it waits on its caller.
+    let stopped: Vec<(&str, std::net::TcpStream, usize)> = ["/whole", "/file", "/stream"]
+        .into_iter()
+        .map(|path| {
+            let mut caller = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            caller.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            caller.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+            let mut head = Vec::new();
+            let mut piece = [0u8; 1024];
+            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = caller.read(&mut piece).unwrap();
+                assert!(n > 0, "{path}: closed before its head");
+                head.extend_from_slice(&piece[..n]);
+            }
+            assert!(head.starts_with(b"HTTP/1.1 200"), "{path}: {}", String::from_utf8_lossy(&head));
+            (path, caller, head.len())
+        })
+        .collect();
+    // A fourth caller waits for a connection the deadline cuts, and its run for the forwarded run
+    // to end (a 503 to try again until then): answered, where none was ever again.
+    let fourth = (0..50).find_map(|_| {
+        let hi = get(port, "/hi");
+        let busy = hi.starts_with("HTTP/1.1 503") && hi.contains("max_concurrent_runs");
+        if busy {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        (!busy).then_some(hi)
+    });
+    assert!(fourth.as_deref().is_some_and(|hi| hi.starts_with("HTTP/1.1 200") && hi.ends_with("hi")), "{fourth:?}");
+    // Each was cut: less than its whole answer reached it (its body alone is `size`). Windows
+    // takes one write of any size into its own buffers while they have room, so there a whole
+    // answer, written at once, is the system's to send and never holds its connection; elsewhere
+    // the write stalls as the others do.
+    for (path, mut caller, read) in stopped {
+        let mut rest = Vec::new();
+        // Ended by the server, not by this side's read timeout.
+        let ended = caller.read_to_end(&mut rest);
+        assert!(!matches!(&ended, Err(e) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)), "{path}: still open, {ended:?}");
+        if path != "/whole" || !cfg!(windows) {
+            assert!(read + rest.len() < size, "{path}: sent whole ({} bytes), not cut", read + rest.len());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// No server holds more connections open than its total, every listener's together, a WebSocket's
+/// for as long as it is open (audit R16): with a total of two, a kept-alive connection to one
+/// deployment and a WebSocket open on another, a third caller is not answered (it waits in the
+/// accept queue) until the WebSocket closes, and then is.
+/// Why: each listener held 1,024 connections and nothing held them together, and hyper is done
+/// with a connection switched to a WebSocket as it switches, so a WebSocket held no place at all:
+/// a server's open sockets, each a file, ran past its open-file limit, where every accept failed
+/// and its loop spun printing.
+/// If it fails: on the third answered at once, the accept loop doesn't take a place in
+/// `DataLimits::connections` (dataplane.rs), or the WebSocket doesn't keep its places
+/// (`Places::keep` in websockets.rs `open`); on it never answered, `serve` doesn't let them go as
+/// the connection ends.
+#[test]
+fn no_server_holds_more_connections_open_than_its_total() {
+    use std::io::{Read, Write};
+    use tungstenite::client::IntoClientRequest;
+    let mut state = claims_state("");
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    state.data_limits.max_connections_total = 2;
+    state.data_limits.connections = Arc::new(tokio::sync::Semaphore::new(2));
+    let (one, other) = (free_port(), free_port());
+    for (name, port) in [("one", one), ("other", other)] {
+        let text = format!("import {{ flow, route }} from \"holon\"\n\nflow(\"{name}\", {{ port: {port} }})\n\nroute.get(\"/hi\", () => \"hi\")\n\nroute.websocket(\"/ws\", {{ message: (m) => `echo ${{m.text}}` }})\n");
+        let plan = holon_author::agent::plan(&text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": name, "unit": plan.unit })).unwrap())));
+        let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap_or_default();
+        let r = deploy_json(&state, name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": asked }));
+        assert_eq!(r.status_code, 200);
+    }
+    sync_listeners(&state);
+    let answered = |stream: &mut std::net::TcpStream| {
+        let mut got = Vec::new();
+        let mut piece = [0u8; 1024];
+        while !got.ends_with(b"hi") {
+            match stream.read(&mut piece) {
+                Ok(n) if n > 0 => got.extend_from_slice(&piece[..n]),
+                _ => break,
+            }
+        }
+        String::from_utf8_lossy(&got).into_owned()
+    };
+    // One place: a connection to "one", answered and kept alive.
+    let mut kept = std::net::TcpStream::connect(("127.0.0.1", one)).unwrap();
+    kept.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    kept.write_all(b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
+    let first = answered(&mut kept);
+    assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+    // The other: a WebSocket open on "other", switched, and talking.
+    let stream = std::net::TcpStream::connect(("127.0.0.1", other)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{other}/ws").into_client_request().unwrap(), stream).unwrap();
+    ws.send(tungstenite::Message::text("m1")).unwrap();
+    assert!(matches!(ws.read(), Ok(tungstenite::Message::Text(t)) if t.contains("echo m1")));
+    // A third caller waits: nothing answers it while both are open.
+    let mut third = std::net::TcpStream::connect(("127.0.0.1", one)).unwrap();
+    third.set_read_timeout(Some(Duration::from_millis(700))).unwrap();
+    third.write_all(b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").unwrap();
+    let early = answered(&mut third);
+    assert_eq!(early, "", "answered past the server's two connections, a WebSocket's among them");
+    // The WebSocket closed: its places go back, and the third is answered.
+    ws.close(None).unwrap();
+    while ws.read().is_ok() {}
+    drop(ws);
+    third.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let late = answered(&mut third);
+    assert!(late.starts_with("HTTP/1.1 200") && late.ends_with("hi"), "the third, once the WebSocket closed: {late:?}");
+    drop(kept);
+}
+
 /// A flow's WebSockets through a real socket (host-capabilities L4 §5.12.14): a GET there without
 /// the upgrade is a 426, a page from another site a 403, an open block's refusal its own status;
 /// one accepted runs `open` (the first message its answer, or a subscription), each message
@@ -8327,10 +8572,10 @@ fn a_round_past_its_memory_fails_performs_nothing_and_a_flow_may_ask_for_more() 
 #[test]
 fn a_replay_computes_no_more_in_a_round_than_the_deployment_is_granted() {
     let state = test_state();
-    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nmax_steps = 5000\nmax_fuel = 50000000\nmax_memory = 4194304").unwrap());
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nmax_steps = 200000\nmax_fuel = 50000000\nmax_memory = 4194304").unwrap());
     let text = |times: u32, limits: &str| {
         format!(
-            "import {{ flow, js, range, route }} from \"holon\"\n\nflow(\"budget\", {{ port: 8309{limits} }})\n\nconst double = js(function twice(n) {{\n  return n * 2\n}}, {{ fuel: \"20M\" }})\n\nroute.post(\"/loop\", (req) => {{\n  const n = req.json.n * {times}\n  const total = range(n).reduce((acc, i) => acc + range(n).reduce((a, j) => a + i * j, 0), 0)\n  return `total ${{total}}`\n}})\n\nroute.post(\"/twice\", (req) => {{\n  const doubled = range(req.json.n * {times}).map(double)\n  return `total ${{doubled.reduce((acc, x) => acc + x, 0)}}`\n}})\n\nroute.post(\"/copies\", (req) => {{\n  const body = {{ text: req.json.text }}\n  const copies = range(req.json.n * {times}).map((i) => body.text + i)\n  return `count ${{copies.length}}`\n}})\n"
+            "import {{ flow, js, range, route }} from \"holon\"\n\nflow(\"budget\", {{ port: 8309{limits} }})\n\nconst double = js(function twice(n) {{\n  return n * 2\n}}, {{ fuel: \"20M\" }})\n\nroute.post(\"/loop\", (req) => {{\n  const n = req.json.n * {times} * 4\n  const total = range(n).reduce((acc, i) => acc + range(n).reduce((a, j) => a + i * j, 0), 0)\n  return `total ${{total}}`\n}})\n\nroute.post(\"/twice\", (req) => {{\n  const doubled = range(req.json.n * {times}).map(double)\n  return `total ${{doubled.reduce((acc, x) => acc + x, 0)}}`\n}})\n\nroute.post(\"/copies\", (req) => {{\n  const body = {{ text: req.json.text }}\n  const copies = range(req.json.n * {times}).map((i) => body.text + i)\n  return `count ${{copies.length}}`\n}})\n"
         )
     };
     let deploy = |text: &str, acknowledge: &serde_json::Value| {
@@ -8364,10 +8609,11 @@ fn a_replay_computes_no_more_in_a_round_than_the_deployment_is_granted() {
             .collect();
         by_route
     };
-    // Ten times the items: past the steps (100 × 100), the fuel (20 calls) and the memory (a
-    // hundred copies of 64 KiB) the grant gives.
+    // Ten times the items: past the steps (400 × 400), the fuel (20 calls) and the memory (a
+    // hundred copies of 64 KiB) the grant gives. A copy of 64 KiB is steps too (a step for each
+    // 128 bytes read and made), so the grant's steps hold the copies the memory stops.
     let heavier = text(10, "");
-    let rows = [("max_steps", "POST /loop", "5000"), ("max_fuel", "POST /twice", "50000000"), ("max_memory", "POST /copies", "4194304")];
+    let rows = [("max_steps", "POST /loop", "200000"), ("max_fuel", "POST /twice", "50000000"), ("max_memory", "POST /copies", "4194304")];
     let held = replay(&heavier);
     let own = replay(&text(1, ""));
     for (limit, label, granted) in rows {
@@ -8378,9 +8624,9 @@ fn a_replay_computes_no_more_in_a_round_than_the_deployment_is_granted() {
     }
 
     // Granted more by a person, the same version finishes.
-    let more = text(1, ", limits: { max_steps: 100000, max_fuel: 300000000, max_memory: 67108864 }");
+    let more = text(1, ", limits: { max_steps: 2000000, max_fuel: 300000000, max_memory: 67108864 }");
     let mut approved = ack.clone();
-    approved.as_array_mut().unwrap().extend(["Limit(max_fuel=300000000)".into(), "Limit(max_memory=67108864)".into(), "Limit(max_steps=100000)".into()]);
+    approved.as_array_mut().unwrap().extend(["Limit(max_fuel=300000000)".into(), "Limit(max_memory=67108864)".into(), "Limit(max_steps=2000000)".into()]);
     let r = deploy(&more, &approved);
     let code = r.status_code;
     assert_eq!(code, 200, "{}", body_json(r));

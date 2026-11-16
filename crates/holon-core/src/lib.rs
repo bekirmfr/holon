@@ -129,7 +129,7 @@ pub use module::{
 };
 pub use resolve::{MapResolver, Resolver};
 pub use simulate::{design_eval, mock_of, Simulated};
-pub use taint::{answered_secrets, deployed_capabilities, destination_of, sent_secrets, ANSWER};
+pub use taint::{answered_secrets, deployed_capabilities, destination_of, is_own_destination, sent_itself, sent_secrets, ANSWER, CALLERS, MADE};
 pub use triggers::{file_triggers, glob_matches, is_glob, FileTrigger};
 pub use validate::{compatible, validate, ValidationError};
 pub use value::Value;

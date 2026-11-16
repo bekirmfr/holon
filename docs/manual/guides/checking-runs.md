@@ -189,7 +189,11 @@ the run id and every node are checked. A channel's subscribers get it as it was 
 logged before this was escaped read every look-alike as a placeholder, as they did then.
 
 The log keeps such a node's outputs only when they can't give the secret away. A one-way leaf
-(`sha256`, `hmac_sha256`, `secure_equals`) gives nothing of it away. A value that holds the
+(`sha256`, `hmac_sha256`, `secure_equals`) fed the secret whole gives nothing of it away, as it
+is or spelled another way (a key kept as base64 and signed with as bytes); fed a part of it, what
+it gives says the part, and is kept out as the part is. A hash or a signature kept in the log is
+still something made with the secret: where the flow sends one, or which route answers with one,
+is in its approval ("…; a hash or signature made with it goes to its callers"). A value that holds the
 secret as it is gets the placeholder. But a value computed from the secret (base64 of it for a
 Basic auth header, a field of a JSON secret, a slice) no longer holds it literally, and a true or
 false computed from it (`key.startsWith(p)`, `key === v`), or what it chose (`rec[key]`,

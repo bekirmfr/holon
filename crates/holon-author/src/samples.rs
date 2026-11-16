@@ -361,13 +361,13 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "sign-payload",
         title: "Sign a payload",
-        description: "Sign whatever is posted with a secret key (HMAC-SHA256) and answer the signature with the body in base64.",
-        shows: &["hmac_sha256", "base64", "secrets", "record building", "holon verify with a secret"],
+        description: "Sign whatever is posted with a secret key (HMAC-SHA256) and answer the signature with the body in base64. Its approval says where the signature goes: \"read the secret \"signing_key\"; a hash or signature made with it goes to its callers\".",
+        shows: &["hmac_sha256", "base64", "secrets", "record building", "holon verify with a secret", "where a signature made with a secret goes, in the approval"],
         port: Some("8107"),
         secrets: &[SampleSecret { name: "signing_key", what: "any secret of 6 characters or more to sign with", from: None }],
         optional: &[],
         browsers: None,
-        try_it: r#"curl -X POST -H "Content-Type: application/json" -d 'hello' http://127.0.0.1:8107/sign; then export its runs and holon verify checks each run given the signature its log entry kept (the key is never in the log)"#,
+        try_it: r#"curl -X POST -H "Content-Type: application/json" -d 'hello' http://127.0.0.1:8107/sign; then export its runs and holon verify checks each run given the signature its log entry kept (the key is never in the log); holon check sign-payload.holon.ts prints, under "it may", read the secret "signing_key"; a hash or signature made with it goes to its callers"#,
         text: include_str!("../samples/sign-payload.holon.ts"),
     },
     Sample {
@@ -397,7 +397,7 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "client-credentials",
         title: "A token exchange, and where the token goes",
-        description: "Post a client secret to an OAuth server (Duende's public demo) for an access token, then call an API with the token (httpbin.dev stands in): the approval says the secret goes to the OAuth server and what is answered to it to the API, the canvas marks both requests, and the token is kept out of the log by its value.",
+        description: "Post a client secret to an OAuth server (Duende's public demo) for an access token, then call an API with the token (httpbin.dev stands in): the approval says the secret goes to the OAuth server and what is answered to it to the API and to the route's callers, the canvas marks both requests and the answer, and the token is kept out of the log by its value.",
         shows: &["secrets", "where secrets go", "tokens", "OAuth", "http_request", "verify"],
         port: Some("8166"),
         secrets: &[SampleSecret { name: "client_secret", what: "secret, the demo server's published secret for its client m2m; it is sent to demo.duendesoftware.com", from: None }],

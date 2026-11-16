@@ -43,6 +43,7 @@ pub fn format(src: &str) -> Result<String, LowerError> {
 
 fn formatted(src: &str) -> Result<String, LowerError> {
     let before = ts::compile(src)?;
+    laid_out_in_time(src)?;
     let rewritten = rewrite(src)?;
     let out = laid_out_keeping_groups(&rewritten)?;
     // Laid out, a text can nest a level or two deeper than it was written: fmt puts parentheses
@@ -74,6 +75,91 @@ pub fn format_keeping_bodies(src: &str) -> Result<String, LowerError> {
     let src = src.replace("\r\n", "\n");
     nesting::check(&src)?;
     nesting::on_deep_stack(|| formatted(&src).map(|out| with_bodies(&out, &src)))
+}
+
+/// How far fmt's layout may nest what it lays out more than once, each in the one before: a
+/// call's arguments and a template's `${…}` a level each, and a function written in place with a
+/// value for its body (`xs.map((x) => …)`) two. A function's block (`{ … }`) starts again: what
+/// is in it is laid out once. Oxfmt lays a call's arguments out again for each way it tries to
+/// break them, and each of these is laid out again inside it, so its time is about doubled at each
+/// level, and more for a function: `f(f(…))` 22 deep took a second, `xs.map((x) => String(…))`
+/// six deep 2.5 s and seven past half a minute, while `holon check` reads either in a tenth of a
+/// second (audit R17). At the bound the slowest form takes a few tenths of a second, release; the
+/// samples' most is 7 (tidewheel's).
+pub(crate) const MAX_LAYOUT_NESTING: usize = 20;
+
+/// `src` refused, at the place it passes [`MAX_LAYOUT_NESTING`], if its calls, templates and
+/// functions written in place nest further than fmt can lay out in time. The editor's Format, the
+/// language server's and the canvas printed as text each ask fmt, as the command line does.
+fn laid_out_in_time(src: &str) -> Result<(), LowerError> {
+    match layout_nesting(src).1 {
+        None => Ok(()),
+        Some(at) => {
+            let at = nesting::pos(src.as_bytes(), at as usize);
+            let message = format!("fmt can't lay this out in time: calls, templates and functions written in place nest more than {MAX_LAYOUT_NESTING} in each other here (a function counts twice): name a part of it, with a const or a function");
+            Err(LowerError { span: Span { start: at, end: at }, message })
+        }
+    }
+}
+
+/// How far `src` nests, as fmt's layout counts it ([`MAX_LAYOUT_NESTING`]), and the byte where it
+/// first nests past the bound, if it does.
+pub(crate) fn layout_nesting(src: &str) -> (usize, Option<u32>) {
+    #[derive(Default)]
+    struct Weigh {
+        /// How far the node being read is nested, as the layout counts it.
+        weight: usize,
+        /// The furthest so far.
+        most: usize,
+        /// Where the text first nests past the bound.
+        past: Option<u32>,
+    }
+    impl Weigh {
+        fn within(&mut self, more: usize, at: u32, read: impl FnOnce(&mut Weigh)) {
+            self.weight += more;
+            self.most = self.most.max(self.weight);
+            if self.weight > MAX_LAYOUT_NESTING && self.past.is_none() {
+                self.past = Some(at);
+            }
+            read(self);
+            self.weight -= more;
+        }
+    }
+    impl<'a> Visit<'a> for Weigh {
+        fn visit_call_expression(&mut self, c: &js::CallExpression<'a>) {
+            self.visit_expression(&c.callee);
+            if !c.arguments.is_empty() {
+                self.within(1, c.span.start, |w| c.arguments.iter().for_each(|a| w.visit_argument(a)));
+            }
+        }
+        fn visit_new_expression(&mut self, n: &js::NewExpression<'a>) {
+            self.visit_expression(&n.callee);
+            if !n.arguments.is_empty() {
+                self.within(1, n.span.start, |w| n.arguments.iter().for_each(|a| w.visit_argument(a)));
+            }
+        }
+        fn visit_template_literal(&mut self, t: &js::TemplateLiteral<'a>) {
+            if !t.expressions.is_empty() {
+                self.within(1, t.span.start, |w| walk::walk_template_literal(w, t));
+            }
+        }
+        fn visit_arrow_function_body(&mut self, b: &js::ArrowFunctionBody<'a>) {
+            match b {
+                js::ArrowFunctionBody::FunctionBody(_) => walk::walk_arrow_function_body(self, b),
+                _ => self.within(2, b.span().start, |w| walk::walk_arrow_function_body(w, b)),
+            }
+        }
+        fn visit_function_body(&mut self, b: &js::FunctionBody<'a>) {
+            let outer = std::mem::take(&mut self.weight);
+            walk::walk_function_body(self, b);
+            self.weight = outer;
+        }
+    }
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, src, SourceType::ts()).parse();
+    let mut weigh = Weigh::default();
+    weigh.visit_program(&parsed.program);
+    (weigh.most, weigh.past)
 }
 
 /// The layout, with no check that it is the same flow.

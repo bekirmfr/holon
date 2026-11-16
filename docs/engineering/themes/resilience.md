@@ -53,11 +53,61 @@ deployment's log has its own lock, and the line is made before taking it.
   it weighed: [performance](performance.md#nothing-computes-on-a-data-plane-worker-2026-11-13).
 - **Cost.** Every run pays the pool's hop: 20–30 µs at one connection on a trivial route, about a
   quarter of its throughput there; under load, even or ahead.
+- **A share each.** The pool is one for every deployment, so a deployment flooded, or whose runs
+  wait on a slow upstream (25 s a run fills 512 threads at about 20 requests a second), held every
+  other's requests in its queue, unanswered (audit R15). Each run now takes a place in its
+  deployment's `max_concurrent_runs` (64 by default, at most 448) and in the data plane's 448
+  (`Share`, `dataplane.rs`): past either a request is answered 503 with `Retry-After: 1` at once,
+  never queued, and a WebSocket's message or close waits for a place on a task, holding no
+  thread. The 64 threads past the 448 are for a file's reads, which take no place.
+- **Callers that stop reading.** Every connection's writes must make progress within 30 s
+  (`write_timeout`, `Deadlined`): past it the connection is closed. A file is sent from a task, each
+  64 KiB piece read on the pool; it was sent from a pool thread that waited on its caller, so
+  callers that stopped reading big files held the pool for good. A streamed reply's run still waits
+  on its caller for each piece, at most the deadline: then its caller is gone, and the run reads
+  the rest of its upstream (bounded by the call's own limits) and ends.
 - **Limits.** CPU is shared: 64 connections of `crunch` slow every route ("overload", RA §2.1).
-  The pool runs as many runs as are computing, up to its 512 threads, the cores shared among
-  them; what one run may compute is its round's budgets (B5).
+  The pool runs as many runs as are computing, up to its 448 places, the cores shared among
+  them; what one run may compute is its round's budgets (B5). A run whose caller went away is not
+  stopped: it holds its place until it ends, within its run budget.
 - **Tests.** `nothing_a_run_computes_holds_up_the_data_plane` (`crates/holon/tests/data_plane.rs`),
-  `one_deployments_log_doesnt_hold_up_another`, `a_fire_in_progress_does_not_stall_the_table`.
+  `one_deployments_log_doesnt_hold_up_another`, `a_fire_in_progress_does_not_stall_the_table`,
+  `no_deployments_callers_hold_more_of_the_data_plane_than_its_share`.
+
+### G2b. The server keeps to its memory and its open files
+
+A round is held to its own `max_memory`; the server holds every round together, and all else it
+holds, to `--max-memory` (half the machine's memory by default, or three quarters of its
+container's limit, `bounds.rs`). The allocator counts each thread's bytes into one process count
+too (`holon_core::memory`: an atomic add per 64 KiB a thread moves, and its last moves added as
+the round ends and as the thread does). A round that finds the process past its cap fails
+(`RunError::ServerMemory`, its error naming `--max-memory`, which `holon verify` reads as not run
+to its end, as one stopped for time); a request arriving meanwhile is answered 503 with
+`Retry-After: 1` before its body is read. A round reads the count where it reads the clock, and a
+leaf that makes many values in one step (`json_parse`, `csv_parse`, `xml_parse`) asks every 4,096
+values whether the round may make more (`memory::room`), so a parse stops inside its step, past
+the round's budget or the server's, not once it has made 80 times its text. Connections are held
+to `max_connections_total`, every listener's together, a WebSocket's while it is open (`Places`):
+4,096, or what the open-file limit leaves past 256 for the server's own files (on unix the soft
+limit is raised to the hard one first, as Go's runtime does). An accept that fails is tried again
+after 5 ms, doubling to 1 s, and said once a run of failures (audit R16).
+
+- **Why.** 448 runs at once might each hold 256 MiB, and a parse made 80 times its text in one
+  step before a check; a WebSocket held no connection place, so a server's open sockets ran past
+  its open-file limit, where every accept failed and its loop spun on a core printing each time.
+- **Cost.** An add, a compare and a store more an allocation, in the thread-local the count was
+  already in, and one atomic add a 64 KiB moved; a round's clock reading also reads the count.
+  `crunch` ×1.012 and `hello` ×1.049 in instructions ([performance](performance.md#the-processs-memory-count-2026-11-15)).
+- **Limits.** The count is the allocator's: what a module's engine maps for itself, the threads'
+  stacks and the allocator's own overhead are outside it, which is why the default leaves half the
+  machine. A run going on as the server passes its cap fails, whether or not it grew most. A
+  request's body is still copied into its record (`data::request_record`): counted now, not
+  avoided. Each listener takes its places before it accepts, so each holds one as it waits.
+- **Tests.** `the_runs_together_are_held_to_the_memory_the_server_may_hold`
+  (`crates/holon/tests/data_plane.rs`), `no_server_holds_more_connections_open_than_its_total`,
+  `each_parser_stops_inside_the_leaf_past_the_round_or_the_process`,
+  `a_thread_that_ends_leaves_the_process_count_as_its_moves_do`
+  (`crates/holon-core/tests/process_memory.rs`), `the_default_bounds_are_ones_a_server_runs_within`.
 
 ### G3. A panic ends its run and nothing else
 
@@ -271,6 +321,73 @@ changed outside holon.
 - **Tests.** `a_run_a_crash_cut_off_before_its_line_is_said_and_a_state_changed_while_stopped_breaks`
   (a crash with and without a run cut off, a clean stop with one, a state changed once loaded, a
   second crash before any run), `a_clean_stops_mark_is_taken_by_the_next_start_alone`.
+
+### G12. Reading a text doesn't double with how deep it nests
+
+What reads a flow (`holon check`, `POST /deploy` and the preview, each run that reads a secret,
+fmt, the editor and the language server) does work in proportion to the text, however its parts
+are reused or nested (audit R17):
+
+- **Where a secret goes** (`holon_core::taint`). The walk follows every path, since the host asks
+  of a node by its path, so a function using one that uses one… twice each was 2^k paths: 18
+  levels took 2.8 s to check, and each two more four times as long. The walks one question about a flow takes (each secret's,
+  and what is answered to it) visit at most `MAX_VISITS`, 65,536 nodes, between them (`Visits`);
+  past it a function not yet followed is taken as not followed, as a `map`'s function is: what it
+  makes derived, every effect it could make carrying the secret, every host it could call sent it.
+  That says more than the flow does, never less: the approval asks for more, and the log withholds
+  more. The samples' most is 2,065 a question.
+- **A sum known to be a number** (`numeric`, a collection's key): asked each sum once, without
+  recursing; `a1 = a0 + a0`, `a2 = a1 + a1`… was asked again at each use.
+- **fmt's layout** (Oxfmt's) lays a call's arguments out again for each way it tries to break
+  them: `f(f(…))` 22 deep took a second, `xs.map((x) => String(…))` six deep 2.5 s and seven past
+  half a minute. fmt refuses a text whose calls, templates and functions written in place nest
+  more than 20 in each other (a function twice; a function's block starts again), saying where
+  to name a part (`format::MAX_LAYOUT_NESTING`); at the bound the slowest form takes a few
+  tenths of a second. The samples' most is 7. The editor's Format, the language server's and a
+  canvas printed as text each ask fmt.
+
+- **Limits.** A flow past the walks' budget is asked for more than it does (every secret it reads
+  may answer its callers, here); a run of it walks about 0.1 s more before it starts, two
+  questions' worth. A canvas whose nodes print as calls nested past fmt's bound can't be shown as
+  text until a part is named. Looking a node up while lowering a text (`builder::data`, `source`)
+  is a scan of the nodes and wires so far: quadratic in a very long handler, not doubling.
+- **Tests.** `no_entry_doubles_its_work_with_each_level_a_text_nests` (every entry that reads a
+  text, over each form that doubled, 20 to 60 levels deep, one with 100 secrets, in 20 s together;
+  each fix taken out fails it), `the_samples_walk_far_below_what_a_question_may_visit`,
+  `the_samples_lay_out_far_below_fmts_bound`.
+
+### G13. A text is counted as the parser reads it
+
+The count that bounds how deep a text nests (`lang::nesting`, 128 levels) is the only thing
+between a text and the parser's recursion, so it reads a text's words, comments and line ends as
+oxc's lexer does (audit R36). Where it read one otherwise it skipped what the parser read, or
+began a statement where the parser went on one, and a text got past it as deep as it liked:
+`x as⏎any as⏎any…` and long `else if` chains crashed `holon check` at 400,000 links, and an
+agent's proposal 3,000 deep could trap a reviewer's tab, whose wasm has a 1 MiB stack.
+
+- **Read alike.** A line ends at `\n`, `\r`, U+2028 and U+2029, ending a `//` comment, a string
+  (at `\n` and `\r`) and a regular expression; a `\` before it goes on with a string. oxc's spaces
+  (U+00A0, U+FEFF, U+3000, U+200B and the rest) are spaces, never words. `#!` at a text's start is
+  a comment to its line's end. A word that wants what follows it (`as`, `keyof`, `in`) keeps its
+  statement going over a line's end; each `else` is a level of its `if`, kept over the `;`s of
+  the chain. TypeScript's `a!` is a value, and a `++` begun on a line is the next statement's.
+- **Refused where it can't tell.** Whether a `/` divides or starts a regular expression hangs, after
+  a `}`, an `of` or a `>` that may close a type's arguments, on what the parser made of what came
+  before; read the wrong way, each skips what the other counts. The count refuses that `/`,
+  saying to put one side in parentheses (`Refused::TwoWays`).
+- **Read to its end.** `#` begins a word, as a private name's does (`#x`), and the word has it,
+  so every step of the count reads something: at a `#` in code it read an empty word and the same
+  place again, forever, and `a #b` hung `holon check`, the language server as `#` was typed and
+  the editor's tab (`the_count_reads_every_text_to_its_end`, each ASCII character and a few past
+  it in each place a token stands). The count's loop has a floor too: a turn that leaves the
+  place as it was is refused there (`Refused::Stuck`, a fault of Holon's to report), so no kind
+  of token can bring the hang back (audit R58).
+- **Limits.** An `else if` chain counts three levels a link (its condition, its statement or
+  block, its `else`): 41 links fit in a route's handler, where the parser's tree is one a link.
+  `graph::graph` lowers on the deep stack, as `lang::compile` does.
+- **Tests.** `no_way_of_writing_a_text_gets_it_past_the_count` (each way that was read otherwise,
+  four times the bound deep by oxc's own tree, refused by every entry on 1 MiB of stack; each fix
+  taken out fails its row), `no_text_nested_past_the_bound_crashes_any_compile_entry`.
 
 ## 3. Policy, not accident
 
