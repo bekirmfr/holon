@@ -643,8 +643,11 @@ impl StoredWaiting {
 
     /// What an approval delivers, from its decisions: `{approved, by, decisions}`, who approved
     /// and every decision taken, with `declined_by` and `reason` when one declined, or
-    /// `expired: true` when it ran out first.
+    /// `expired: true` when it ran out first. One decided already is given its decision, past its
+    /// deadline too: a run lock turned its delivery away, and the deadline came before anyone
+    /// decided again. It didn't run out undecided.
     fn decision(&self, expired: bool) -> Value {
+        let expired = expired && !self.decided();
         let text = |s: &str| Value::Text(s.to_string());
         let mut d = BTreeMap::from([
             ("approved".to_string(), Value::Boolean(!expired && self.approved())),
@@ -1390,7 +1393,8 @@ impl Drop for Going {
 }
 
 /// Deliver `{expired: true}` to every waiting point past its deadline: to an approval, with who
-/// approved it before it ran out, `approved` false. Not in a deployment that takes no run now
+/// approved it before it ran out, `approved` false; to one decided already (its delivery turned
+/// away), its decision (`StoredWaiting::decision`). Not in a deployment that takes no run now
 /// (paused or stopped): its runs wait on, and time out once it runs again. Each run goes on in a
 /// thread of its own, claimed there, so this pass, and the next, wait for none of them (R34).
 pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: &Place, now: u64) -> Expiring {
@@ -1911,6 +1915,50 @@ mod tests {
         assert_eq!(w.take(took("ada", true, None, 5)), Ok(None));
         assert_eq!(w.take(took("ada", true, None, 6)), Err("ada already approved \"payout\": it needs 2 different people".into()));
         assert_eq!(w.decisions.len(), 1, "the refused approval isn't kept");
+    }
+
+    /// What an approval gives its run is its decision once it has one, whichever way it goes on: a
+    /// decision delivered, delivered again, or its deadline. Over every state each shape of steps
+    /// can reach (anyone approving or declining any step, as `take` lets them), running out gives
+    /// the decision when it is decided (approved or declined, nothing said expired), and otherwise
+    /// `expired: true`, not approved, with who approved so far.
+    #[test]
+    fn running_out_gives_an_approval_its_decision_once_it_has_one() {
+        use serde_json::json;
+        let shapes = ["person", "person*2", "agent:classifier>person:reviewer>person:approver", "person:reviewer+person:approver", "person:reviewer*2>person:approver^"];
+        let (mut decided, mut undecided) = (0, 0);
+        for steps in shapes {
+            let start = StoredWaiting { name: "payout".into(), expires_at: 100, steps: steps.into(), decisions: Vec::new(), shown: None };
+            let slots = start.slots().len() as u8;
+            let mut seen = vec![start.clone()];
+            let mut next = vec![start];
+            while let Some(w) = next.pop() {
+                let ran_out: serde_json::Value = serde_json::from_str(&holon_core::stringify_json(&w.decision(true)).unwrap()).unwrap();
+                if w.decided() {
+                    decided += 1;
+                    assert_eq!(w.decision(true), w.decision(false), "{steps}: {:?}", w.decisions);
+                    assert_eq!(ran_out["approved"], w.declined().is_none(), "{steps}: {ran_out}");
+                    continue;
+                }
+                undecided += 1;
+                let by: Vec<&str> = w.approvals().map(|d| d.who.as_str()).collect();
+                assert_eq!((&ran_out["approved"], &ran_out["expired"], &ran_out["by"]), (&json!(false), &json!(true), &json!(by)), "{steps}");
+                for who in ["ana", "ben", "cy", "scout"] {
+                    for slot in 0..slots {
+                        for approved in [true, false] {
+                            let mut then = w.clone();
+                            let kind = if who == "scout" { Kind::Agent } else { Kind::Person };
+                            let d = Decided { slot, who: who.into(), kind, role: None, at: 1, approved, reason: (!approved).then(|| "no".into()), note: None, binding: None, access: None, via: None };
+                            if then.take(d).is_ok() && !seen.contains(&then) {
+                                seen.push(then.clone());
+                                next.push(then);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(decided > 100 && undecided > 20, "decided {decided}, undecided {undecided}");
     }
 
     /// T6's cast: who's who, their kind, and the roles they are bound to where the approval is. The
