@@ -54,7 +54,11 @@ the two relate. The language and compiler it calls are [holon-author](holon-auth
   versions and events as `holon history` does.
 - **The API client.** `server.ts`, typed against the server's JSON. Its `BASE` is
   `VITE_HOLON_SERVER` when set; else, built, the origin it was served from; in development
-  `http://127.0.0.1:7420`. The session is kept in `localStorage` under `holon.session`.
+  `http://127.0.0.1:7420`. The session is kept in `localStorage` under `holon.session`, and
+  sent as a bearer, never a cookie: a cookie would go with the requests of every page of the
+  same site, and SameSite doesn't count ports, so a page a deployed flow serves on this host
+  could act as the person. The page's policy (`PAGE_POLICY`, editor.rs) keeps script other than
+  the editor's from running to read the bearer (`server.ts` says why at `SESSION_KEY`).
   `AuthGate.tsx` and `signin.ts` sign in (a password, or the server's identity provider).
 - **`storage.ts`** is not browser storage: it is how the admin page words the server's own sweeps
   and holdings (the server's `storage.rs`).

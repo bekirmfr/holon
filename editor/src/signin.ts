@@ -19,7 +19,8 @@ export type SignedIn = { idToken: string; exp: number; who: string; popup?: bool
 /** A sign-in started, by its state: kept in the browser (not this tab's sessionStorage), so the
  *  pop-up it comes back to finds it. */
 const PENDING_KEY = "holon.signin.pending.";
-/** Where the browser keeps the ID token signed in with last (a pop-up's, for the tab that opened it). */
+/** Where the browser keeps the ID token signed in with last (a pop-up's, for the tab that opened it):
+ *  localStorage, a bearer this page's script sends, never a cookie, for the reasons server.ts gives at SESSION_KEY. */
 export const SIGNED_IN_KEY = "holon.signin";
 /** What the pop-up tells the tab that opened it, once it has kept the token. */
 export const SIGNED_IN_MESSAGE = "holon:signed-in";

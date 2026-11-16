@@ -30,6 +30,17 @@ export type Kind = "person" | "agent" | "service";
 /** Who this browser is signed in as: the session token the server gave, and who it is; `at`,
  *  when this browser signed in (absent in a session kept from before it was noted). */
 export type Session = { token: string; name: string; kind?: Kind; role: Role; at?: number };
+/** Where the browser keeps it: localStorage, by design (the audit's EN:E3). Script on this page
+ *  can read it there, and it lasts until the session ends (a week, a sign-out, an admin's reset).
+ *  A cookie marked HttpOnly would hide it from script, but a browser sends a cookie with the
+ *  requests every page of the same site makes, and SameSite doesn't count ports: each deployed
+ *  flow's port on this host is the console's site, so a page a flow serves could act on the
+ *  server as the person, and every route would have to tell its requests apart. A bearer that
+ *  only this page's script sends goes with nothing else. What keeps other script from reading it
+ *  is the page's policy (editor.rs's PAGE_POLICY: scripts only from the editor's own files, none
+ *  inline, no frames of the page), so markup that finds its way in can't run. sessionStorage
+ *  would hide it from no script, and cost a sign-in per tab. The provider's ID token (signin.ts's
+ *  SIGNED_IN_KEY) is kept the same way, for the same reasons. */
 const SESSION_KEY = "holon.session";
 
 function storedSession(): Session | null {
