@@ -69,10 +69,13 @@ over the control plane.
 
 ### Clocks
 
-`spawn_clock_scheduler` starts one thread that, every second, calls `run_due_clock_ticks` and then
-`expire_waiting`. A clock of a running deployment is due when its `clock_due` (one per `every`
-handler, `server.clocks`) has passed; every due tick of the pass fires on its own scoped thread,
-and the pass ends when all have. `fire_one_clock_tick` fires the handler with no inputs, `Clock` (the tick's epoch seconds) and `Random`
+`spawn_clock_scheduler` starts two threads, each acting every second: one starts the clocks due
+(`start_due_clock_ticks`), the other expires the waiting runs past their deadlines
+(`expire_waiting`), so neither waits on a call the other's run makes. A clock of a running
+deployment is due when its `clock_due` (one per `every` handler, `server.clocks`) has passed; each
+due tick fires on a thread of its own, unless the clock's last tick still goes on (`Ticking`, by
+deployment and label: a clock is never fired over its own tick), and the pass doesn't wait for
+them. Tests drive a pass that does (`run_due_clock_ticks`, with a controlled `now`). `fire_one_clock_tick` fires the handler with no inputs, `Clock` (the tick's epoch seconds) and `Random`
 sourced and the clock budget, logs a `tick` under the handler's label, keeps the last 20 ticks
 (`history`), and sets the next due a period after the pass's `now`. `arm_clocks` makes every clock
 due at once: at deploy, at load, and when a deployment runs again. **Tick now** is
@@ -244,13 +247,13 @@ syncs the same way but has no one to answer.
 
 ## 4. Reach and limits
 
-- **A clock pass waits for its slowest tick.** `run_due_clock_ticks` joins every tick of a pass
-  before the next pass begins, so one slow tick delays every other deployment's next tick, and
-  expiry, until it ends. Since B5 that has an end: what a tick computes is held to its round's
-  `max_steps`, `max_fuel` and `max_memory` (about a second by default, 10–20 s at the ceilings),
-  and its calls to their timeouts; before, a tick that looped without end stopped every clock and
-  every deadline on the server. Each due tick is a thread of its own, unbounded (the code names
-  it: a bounded pool is the fix if fan-out grows).
+- **A slow tick holds its own clock alone.** A tick waiting on a call delays that clock's next
+  tick (it isn't fired over itself), not another clock's, not the next pass, not a deadline. Until
+  R34 a pass joined every tick it started and expiry ran after it on the same thread, so one tick
+  waiting 30 s on a call held every clock and every deadline on the server as long. Threads are
+  one per clock at most. Expiry resumes each timed-out run on its own thread in turn
+  (`durable::expire_waiting`): a resumed run that waits on a call holds the other deadlines, not
+  the clocks.
 - **Clocks drift and skip.** The next tick is due a period after the pass's `now`, checked once a
   second; periods are whole seconds; a tick late by more than a period is one tick, not several.
 - **Files are polled**, every second where the OS gives notices and every 30 s regardless: a dropped
