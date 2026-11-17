@@ -64,6 +64,7 @@ fn test_state_in(store: SharedStore, at: Place) -> AppState {
         data_limits: dataplane::DataLimits::default(),
         policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: Place::Nowhere,
+        policy_file: Mutex::new(()),
         secrets: Arc::new(SecretStore::memory()),
         folders: Arc::new(folders::Folders::memory()),
         access: access::Access::default(),
@@ -1565,6 +1566,61 @@ fn an_admin_sets_how_often_the_server_sweeps_in_its_policy_file() {
     }
     assert!(std::fs::read_to_string(&path).unwrap().contains("sweep_every = \"off\""));
     let _ = std::fs::remove_file(&path);
+}
+
+/// Storage settings set at once are each kept (R75): every key `POST /admin/storage` takes, each
+/// set by an admin of its own at the same moment, with a reload beside them; after each round the
+/// file has every one of them, still parses, and what is in force is what it says. Without one
+/// lock from reading the file to reloading it, two read it before either wrote and the second's
+/// write left the first's key out (answered 200, never kept), and a reload that read the file
+/// before a write put the policy from before it back in force after it.
+#[test]
+fn storage_settings_set_at_once_are_each_kept() {
+    let mut state = test_state();
+    let path = std::path::PathBuf::from(unique_temp_path("policy-at-once")).with_extension("toml");
+    std::fs::write(&path, "# the host's policy\n").unwrap();
+    state.policy_path = path.display().to_string().into();
+    let backups = std::path::PathBuf::from(unique_temp_path("backups-at-once"));
+    let state = &state;
+    for round in 0..20_u32 {
+        // Each key a value of its own each round, which makes sense with any of the round
+        // before's: each write is checked whole, and may land first or last.
+        let set = [
+            ("sweep_every", format!("{}m", 10 + round)),
+            ("warn_at", format!("{}%", 60 + round)),
+            ("full_at", format!("{}%", 90 + round % 9)),
+            ("when_full", ["warn", "pause", "roll"][round as usize % 3].to_string()),
+            ("backup", backups.join(format!("round-{round}")).display().to_string()),
+        ];
+        let at_once = std::sync::Barrier::new(set.len() + 1);
+        std::thread::scope(|s| {
+            for (key, value) in &set {
+                let at_once = &at_once;
+                s.spawn(move || {
+                    let mut one = serde_json::Map::new();
+                    one.insert(key.to_string(), value.as_str().into());
+                    let body = serde_json::to_vec(&one).unwrap();
+                    at_once.wait();
+                    let answer = route(state, &req("POST", "/admin/storage", body));
+                    let status = answer.status_code;
+                    assert_eq!(status, 200, "round {round}, {key} = {value}: {}", String::from_utf8_lossy(&body_bytes(answer)));
+                });
+            }
+            s.spawn(|| {
+                at_once.wait();
+                assert_eq!(route(state, &req("POST", "/permissions/reload", vec![])).status_code, 200, "round {round}: the reload");
+            });
+        });
+        let written = std::fs::read_to_string(&path).unwrap();
+        let in_file = Policy::parse(&written).unwrap_or_else(|e| panic!("round {round}: the file doesn't parse: {e}\n{written}"));
+        let doc: toml_edit::DocumentMut = written.parse().unwrap();
+        for (key, value) in &set {
+            assert_eq!(doc["storage"][*key].as_str(), Some(value.as_str()), "round {round}: {key} kept\n{written}");
+        }
+        assert_eq!(permissions_view(&state.policy())["storage"], permissions_view(&in_file)["storage"], "round {round}: what is in force is what the file says");
+    }
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&backups);
 }
 
 /// `GET /permissions` answers the policy file's text as it was read, comments and all, for a
@@ -3481,6 +3537,7 @@ fn deployments_persist_across_a_simulated_restart() {
             data_limits: dataplane::DataLimits::default(),
             policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
             policy_path: Place::Nowhere,
+            policy_file: Mutex::new(()),
             secrets: Arc::new(SecretStore::memory()),
             folders: Arc::new(folders::Folders::memory()),
             access: access::Access::default(),
@@ -3515,6 +3572,7 @@ fn deployments_persist_across_a_simulated_restart() {
         data_limits: dataplane::DataLimits::default(),
         policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: Place::Nowhere,
+        policy_file: Mutex::new(()),
         secrets: Arc::new(SecretStore::memory()),
         folders: Arc::new(folders::Folders::memory()),
         access: access::Access::default(),
@@ -6046,6 +6104,7 @@ fn state_persists_across_a_simulated_restart() {
             data_limits: dataplane::DataLimits::default(),
             policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
             policy_path: Place::Nowhere,
+            policy_file: Mutex::new(()),
             secrets: Arc::new(SecretStore::memory()),
             folders: Arc::new(folders::Folders::memory()),
             access: access::Access::default(),
@@ -6080,6 +6139,7 @@ fn state_persists_across_a_simulated_restart() {
         data_limits: dataplane::DataLimits::default(),
         policy: crate::sync::RwLock::new(Arc::new(Policy::default())),
         policy_path: Place::Nowhere,
+        policy_file: Mutex::new(()),
         secrets: Arc::new(SecretStore::memory()),
         folders: Arc::new(folders::Folders::memory()),
         access: access::Access::default(),
