@@ -224,18 +224,39 @@ pub(crate) fn inside(path: &Path, dir: &Path) -> bool {
     }
 }
 
-/// `path` as the file system resolves it: its folder resolved (links, `..`, case) and its name
-/// joined, so a key file not made yet still compares; None when the folder isn't there either.
+/// `path` as the file system will resolve it once it is made, as the key's write makes it
+/// (`create_dir_all` of its folder, then the file): a part at a time from its root, each part
+/// that is there resolved (a link followed, its case the disk's), each that isn't yet kept as
+/// written, and a `..` the folder before it. So `DATA/x/../root.key`, with no `x`, is
+/// `DATA/root.key`, as the write would put it. Resolving the folder whole, as before, failed on
+/// Linux and macOS while `x` wasn't there (their kernel walks `x` for real; Windows drops `x/..`
+/// by text), and a key so spelled was let into the data folder.
 fn resolved(path: &Path) -> Option<PathBuf> {
-    if let Ok(p) = std::fs::canonicalize(path) {
-        return Some(p);
+    use std::path::Component;
+    let path = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir().ok()?.join(path) };
+    let mut parts = path.components().peekable();
+    let mut root = PathBuf::new();
+    while let Some(part) = parts.next_if(|p| matches!(p, Component::Prefix(_) | Component::RootDir)) {
+        root.push(part);
     }
-    let name = path.file_name()?;
-    let parent = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    Some(std::fs::canonicalize(parent).ok()?.join(name))
+    let mut at = std::fs::canonicalize(&root).ok()?;
+    for part in parts {
+        match part {
+            Component::CurDir => {}
+            // `at` is resolved wherever it is there, so the folder before it is its parent.
+            Component::ParentDir => {
+                at.pop();
+            }
+            Component::Normal(name) => {
+                at.push(name);
+                if let Ok(there) = std::fs::canonicalize(&at) {
+                    at = there;
+                }
+            }
+            Component::Prefix(_) | Component::RootDir => return None,
+        }
+    }
+    Some(at)
 }
 
 impl std::fmt::Display for KeySource {
@@ -406,6 +427,45 @@ mod tests {
         assert_eq!(v(r"\\nas\runs\a.jsonl"), r"\\?\UNC\nas\runs\a.jsonl");
         assert_eq!(v(r"\\?\C:\data\a.jsonl"), r"\\?\C:\data\a.jsonl");
         assert!(v("relative.jsonl").starts_with(r"\\?\") && v("relative.jsonl").ends_with(r"\relative.jsonl"));
+    }
+
+    /// Guards: a key file's path is in a folder however it is spelled, as the write that makes it
+    /// would place it: through a `..` past a part that isn't there yet (one level or two), through
+    /// `.`, and (where a link can be made) through a link to the folder, before or after the
+    /// part that isn't there. A path beside the folder, or above it, isn't.
+    /// Why: `--root-key file:DATA/x/../root.key` was let into the data folder on Linux and macOS
+    /// (PR #111's native check): the folder, resolved whole, wasn't there, so nothing compared,
+    /// and the write's `create_dir_all` then made `x` and put the key in `DATA`.
+    /// If it fails: a root key spelled one of these ways is kept with the data it opens.
+    #[test]
+    fn a_key_path_is_in_a_folder_however_it_is_spelled() {
+        let base = std::env::temp_dir().join(format!("holon-inside-{}-{}", std::process::id(), to_hex(&rand::random::<[u8; 4]>())));
+        let data = base.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(base.join("other")).unwrap();
+        let rows: Vec<(PathBuf, bool)> = vec![
+            (data.join("root.key"), true),
+            (data.join("x").join("..").join("root.key"), true),
+            (data.join("x").join("y").join("..").join("..").join("root.key"), true),
+            (data.join(".").join("keys").join("root.key"), true),
+            (data.join("x").join("..").join("..").join("root.key"), false),
+            (data.join("..").join("other").join("root.key"), false),
+            (base.join("other").join("x").join("..").join("root.key"), false),
+            (base.join("root.key"), false),
+        ];
+        for (path, expected) in &rows {
+            assert_eq!(inside(path, &data), *expected, "{}", path.display());
+        }
+        #[cfg(unix)]
+        {
+            // A link to the folder, before a part that isn't there, and after a `..` past one.
+            std::os::unix::fs::symlink(&data, base.join("link")).unwrap();
+            assert!(inside(&base.join("link").join("x").join("..").join("root.key"), &data));
+            assert!(inside(&base.join("other").join("x").join("..").join("..").join("link").join("root.key"), &data));
+            assert!(!inside(&base.join("link").join("..").join("other").join("root.key"), &data), "a link's `..` is its target's folder's");
+        }
+        assert!(!data.join("x").exists() && !base.join("other").join("x").exists(), "nothing made");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
