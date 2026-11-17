@@ -385,13 +385,13 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "echoed-key",
         title: "A key echoed back isn't passed on",
-        description: "Send a key to one host, which echoes it back, and try to pass the echo to another: the host finds the key by its value and doesn't send it, since its approval shows it going only to the first.",
-        shows: &["secrets", "where secrets go", "blocked_secret", "http_request", "verify"],
+        description: "Send a key to one host, which echoes it back, and try to pass the echo to another: the host finds the key by its value and doesn't send it, since its approval shows it going only to the first. And what the flow reads out of that echo is treated as the key: a number or a short text from it is answered, a longer text is refused.",
+        shows: &["secrets", "where secrets go", "blocked_secret", "a reply that sends a secret back", "http_request", "verify"],
         port: Some("8164"),
         secrets: &[SampleSecret { name: "demo_key", what: "any made-up value (6 characters or more); it is sent to httpbin.dev", from: None }],
         optional: &[],
         browsers: None,
-        try_it: "deploy it, set the key in the flow's Settings, then curl http://127.0.0.1:8164/echo: the second call answers blocked_secret",
+        try_it: "deploy it, set the key in the flow's Settings, then curl http://127.0.0.1:8164/echo: the second call answers blocked_secret; /seen answers the echo's status, length and method, and /url (a longer text read from the echo) answers 500",
         text: include_str!("../samples/echoed-key.holon.ts"),
     },
     Sample {

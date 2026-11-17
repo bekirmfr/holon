@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **What a flow reads from a reply that sent its secret back is treated as the secret.** A
+  service that answers with the secret it was sent (its headers echoed, an account record with
+  the key in it) handed the flow the secret again in a reply the server took as ordinary. A
+  route that returned the reply whole was refused, but one that returned a slice of it, or a
+  field of it, answered its caller with a piece of the secret, wrote it to a collection, and
+  left it in the run's log. Now, once a run's calls are answered, the server follows what the
+  flow read out of any reply that held a secret: a route that answers with a text of six
+  characters or more from it is refused (500) unless the flow may answer with that secret, a
+  write of one doesn't land, and the log marks each piece of six or more of the secret's
+  characters as `‹derived #…›`. A number, a true or false, or a shorter text read from such a
+  reply passes as before (a balance, a count, a currency code); a longer harmless text (a
+  customer's name) is refused too, because the server decides by where a value came from and
+  what kind it is and never by looking for the secret's characters, which would let a caller
+  test guesses. The log of a refused run says what to do. Only flows that call a service which
+  sends their secret back are affected. Still open, by design: a piece shorter than six
+  characters, a number worked out from a piece, a flow that compares the reply with its
+  caller's text itself, and a reply holding only a hint of the secret. `holon verify` refuses
+  the same writes when it runs such a run again.
 - **A long answer is cut after its secrets are marked.** A run's line keeps 64 KiB of what a
   route answered. It was cut there as the run had it, and marked afterwards: a secret lying
   across the cut left its first part in the line, since the whole value was no longer there to

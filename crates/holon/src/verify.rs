@@ -1725,10 +1725,58 @@ fn rerun(
         use holon_core::Capability::*;
         matches!(c, StateWrite(_) | CollectionWrite(_) | DbWrite(_) | ChannelSend(_) | MailSend(_) | QueueSend(_) | FileWrite(_))
     };
+    // A write of what the run read out of a reply that sent a secret back is refused where it runs
+    // too (`firing::Echoed`, R70), by where it came from and what kind of value each step gave,
+    // which run again says as well as the run did: the calls whose recorded reply holds a
+    // secret's mark, the trail from them, and the steps that gave only a number, a true or false
+    // or a short text (a mark stands for a text no shorter than a part, so a step is as long
+    // here as it was there). So what the server refused is refused here, and the rest compared
+    // as any run's: a line changed to drop a write that landed, or to add one that was refused,
+    // differs. But where a step on the way can't be told long from short (its outputs withheld,
+    // or written as a mark that may stand for a short text; a node that couldn't be computed):
+    // then a write the line doesn't have may have been refused, and the run isn't checked.
+    let holds_a_secret = |v: &Value| !marks.secrets_in(v).is_empty() || marks.rest_of(&secrets::RESPELLED['‹'.len_utf8()..], v).iter().any(|of| of.starts_with("secret:"));
+    let echoed: BTreeSet<Vec<u32>> =
+        if fed.is_empty() { BTreeSet::new() } else { prior.iter().chain(sent).flat_map(|r| &r.exchanges).filter(|x| holds_a_secret(&x.response)).map(|x| x.path.clone()).collect() };
+    // Whether a write or a send with this capability was refused there.
+    let mut refused: Box<dyn Fn(&Capability) -> bool> = Box::new(|_| false);
+    if !echoed.is_empty() {
+        // Each step run again: short for sure, or perhaps (the server may have seen it either way).
+        let unsure = |v: &SValue| {
+            let found = std::cell::Cell::new(false);
+            secrets::value_holds(&v.clone().into_core(), &|t: &str| {
+                found.set(t.contains(taint::WITHHELD) || t.contains(&format!("{}token:", marks.start)) || t.contains(&format!("{}taint:", marks.start)));
+                found.get()
+            });
+            found.get()
+        };
+        let (mut short, mut perhaps, mut long): (BTreeSet<&[u32]>, BTreeSet<&[u32]>, BTreeSet<&[u32]>) = Default::default();
+        // A run that kept no timeline was followed without one (`secrets::short_steps`).
+        for node in observer.timer.timeline.iter().filter(|_| !entry.timeline.is_empty()) {
+            match &node.outputs {
+                Some(outputs) if outputs.iter().flatten().any(&unsure) || !observer.unrecorded.is_empty() => perhaps.insert(&node.path),
+                Some(outputs) if !outputs.iter().flatten().any(secrets::may_hold_a_part) => short.insert(&node.path),
+                _ => long.insert(&node.path),
+            };
+        }
+        let ends = |sets: &[&BTreeSet<&[u32]>]| -> BTreeSet<Vec<u32>> { sets.iter().flat_map(|set| set.iter()).filter(|path| !long.contains(*path)).map(|path| path.to_vec()).collect() };
+        let sure = ends(&[&short]).into_iter().filter(|path| !perhaps.contains(path.as_slice())).collect();
+        // The trail as far as it may have gone there, and as far as it went for sure.
+        let most = taint::SecretFed::echoed_at(root, resolver, &echoed, &sure);
+        let least = taint::SecretFed::echoed_at(root, resolver, &echoed, &ends(&[&short, &perhaps]));
+        let waiting = if outcome.waiting.is_empty() { Vec::new() } else { channels::settled_sends(&outcome.outputs) };
+        let logged = |c: &Capability| entry.performed.iter().chain(&entry.progress).any(|l| l.capability == format!("{c:?}"));
+        if host.performed.iter().chain(&waiting).any(|(c, _)| keeps(c) && most.feeds_effect(c) && !least.feeds_effect(c) && !logged(c)) {
+            return Rerun::Skipped("it wrote what it read out of a reply that sent a secret back, past a step whose outputs its line doesn't keep: whether the server refused that write can't be told, so it isn't run again".into());
+        }
+        host.performed.retain(|(c, _)| !(keeps(c) && least.feeds_effect(c)));
+        refused = Box::new(move |c| keeps(c) && least.feeds_effect(c));
+    }
+
+    // What is left of its writes: one of those is refused there by its value.
     if host.performed.iter().any(|(c, p)| keeps(c) && marks.carries_secret(p)) {
         return Rerun::Skipped("it wrote a secret's value, or one computed from it, which the server refuses: not run again".into());
     }
-
     // What it produced, as the log would write it, to compare with what the log wrote.
     let outputs: Vec<Option<SValue>> =
         outcome.outputs.iter().map(|o| o.as_ref().map(|v| marks.write(SValue::from_core(&folders::loggable_output(v))))).collect();
@@ -1788,6 +1836,7 @@ fn rerun(
     // A part that settled waiting: the packs it sent as it parked are what it settled.
     let progress: Vec<PerformedEntry> = if outcome.waiting.is_empty() { Vec::new() } else { channels::settled_sends(&outcome.outputs) }
         .iter()
+        .filter(|(c, _)| !refused(c))
         .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: marks.write(SValue::from_core(p)) })
         .collect();
     if json(&progress) != json(&entry.progress) {

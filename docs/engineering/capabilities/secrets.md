@@ -191,6 +191,49 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   far side sends back percent-encoded or as HTML. The taint walk marks or withholds what the
   graph derives; a value it can't follow (echoed back by an API and passed on) is caught only
   while it is literal.
+- **What a flow reads from a reply that sent its secret back is the secret's again** (R70). A
+  reply is clean to the walk of the secret, so a flow that returned twelve characters of a reply
+  that echoed its key handed them to its caller, and its record kept them. Once a run is over,
+  the server knows which calls were answered with a secret whole (`secrets::echoing`, by the
+  secret's text in every spelling JSON gives it) and follows what the flow read out of those
+  replies (`SecretFed::echoed_at`, `firing::Echoed`), up to each step it saw give only a
+  number, a true or false, or a text shorter than six characters (`secrets::short_steps`): a
+  balance read from such a reply is a balance. What is still on that trail is treated as the
+  secret: a route that answers with it needs `SecretAnswer`, and a write of it is refused. This
+  is decided by where a value came from and what kind of value it is, **never by comparing it
+  with the secret**. A rule that refused "six of the secret's characters in a row" would answer
+  a right guess and a wrong one differently wherever a caller's text comes back through such a
+  reply (the flow sends the key and the caller's email, the service answers both with the email
+  in lower case, the flow returns the email): a way to find the secret a character at a time.
+  So a longer ordinary text from such a reply (a customer's name) is refused too, and a piece
+  changed on the way (upper-cased, encoded) is caught, since nothing is compared. A send to
+  another host is not refused: every host the trail can reach is already on the secret's
+  approval line ("what is answered to it goes to …"), which is drawn from the wider walk.
+  `holon verify` refuses the same writes, by the same trail read off the run again, and says a
+  line differs that drops a write that landed or adds one that was refused.
+  **In the record** such a run's pieces are found by their text: each stretch of six or more of
+  the secret's characters in what the trail's steps gave is marked `‹derived #…›` wherever the
+  record holds it (`secrets::echoed_parts`), and ordinary data stays readable. Limits, each
+  stated on purpose:
+  - a piece shorter than six characters, and a number made from a piece (character codes),
+    pass: no kind of value is smaller than those;
+  - a flow that itself compares the reply with what its caller sent and answers yes or no is
+    not caught: that is in the flow's text, for whoever approves it;
+  - a reply that holds only a hint of the secret, never the whole (a masked key), is not
+    noticed at all;
+  - a step the run's timeline doesn't have (deeper than it records, too large to keep, a run
+    that keeps none) is taken as holding a part: refused, never passed;
+  - in the record, a piece changed on the way is not marked (it is refused to callers and to
+    storage all the same);
+  - **the record tells a right guess from a wrong one, to someone who may read that flow's runs
+    and can also call its route.** In the email flow above, a guess that comes back as six of
+    the secret's characters is marked in the run's record and a wrong one is not. Before this
+    fix that record gave no such sign (the secret marked, the email in the clear). It takes a
+    service that sends the secret back, a flow that passes a caller's text through that
+    service, and a reader with the grant to read the flow's steps who can call it too (an
+    agent given that grant is one). Marking by kind instead (every text of six or more from
+    such a reply) would leave no sign and hide a customer's name in every such record; not
+    taken, since who may read a run's steps is what is controlled.
 - **The log keeps sizes as they came.** It keeps the headers of a reply as the other service
   sent them, the size line among them (`content-length`; also `content-range`, `etag` and a
   checksum, where one is sent), the headers of the request a caller made, and the size and hash

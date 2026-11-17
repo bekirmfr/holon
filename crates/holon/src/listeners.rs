@@ -201,10 +201,16 @@ fn serve_flow(
                 carried.extend(holon_core::answered_secrets(endpoint, &resolver));
             }
             unapproved = carried.into_iter().find(|name| !permit.allows(&Capability::SecretAnswer(name.clone())));
-            let error = match &unapproved {
-                Some(name) => Some(format!("refused to answer with the secret {name:?}: this deployment wasn't approved to answer its callers with it")),
-                None => run.error.clone(),
+            // Or one read out of a reply that sent a secret back, the secret's again: by where
+            // it came from and what kind of value it is, never by its characters
+            // (`firing::Echoed`, R70).
+            let read_out = run.echoed.answered(0).iter().find(|name| !permit.allows(&Capability::SecretAnswer((*name).clone()))).cloned();
+            let error = match (&unapproved, &read_out) {
+                (Some(name), _) => Some(format!("refused to answer with the secret {name:?}: this deployment wasn't approved to answer its callers with it")),
+                (None, Some(name)) => Some(firing::Echoed::refusal(name)),
+                (None, None) => run.error.clone(),
             };
+            unapproved = unapproved.take().or(read_out);
             let [request] = inputs;
             // The answer, and the run kept to make its entry from if it is logged: a recorded one's
             // entry is made now, and it gives its outputs up to the answer; an unrecorded one keeps

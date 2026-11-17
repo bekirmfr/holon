@@ -336,6 +336,18 @@ mark can be put into (another writer's: `\u0022` for a quote) is kept out whole,
 named in the report, as a step fed any value the log doesn't hold. A write or a send that the server refuses for a secret, it
 refuses in any of these spellings.
 
+Where a service sent a secret back and the flow took a piece of the reply (a slice, a field),
+the log marks each piece of six or more of the secret's characters the same way, as
+`‹derived #…›`, wherever the run had it; the rest of the reply stays readable. A piece the flow
+changed (upper case, an encoding) is not marked, though it is still refused to callers and to
+storage. One thing to know if you let people, or an agent, read a flow's runs: in such a flow,
+when a caller's own text travels through the service and back (their email, a note), the log
+marks it where it happens to be six characters of the secret in a row. Someone who can both
+read that flow's runs and call it could use that to test guesses. It needs all three: a service
+that sends the secret back, a flow that passes callers' text through it, and a reader who can
+also call. If that is your case, stop the service sending the secret back, or limit who may read
+that flow's runs.
+
 The log keeps sizes as they came. It keeps the size line of a reply (`content-length`) as the
 other service sent it, and a file's size beside its text. So where another service sends a
 secret back, or a file holds one, the log shows how long the secret is, to people allowed to

@@ -1127,6 +1127,165 @@ pub(crate) fn holds_spelled(s: &str, value: &str) -> bool {
     !value.is_empty() && spelled_any(s, &|text: &str| text.contains(value))
 }
 
+/// The calls of a run whose reply held a secret whole, by the paths of their nodes, and those
+/// secrets' names: found by the secret's text in the reply, in every spelling JSON gives it
+/// ([`secrets_in`]). Only a run can say which did: a reply is clean to the walk that follows a
+/// secret through the flow, so what the flow reads out of such a reply is followed from these
+/// calls once the run is over (`SecretFed::echoed_at`, R70).
+pub(crate) fn echoing<'a>(rounds: impl Iterator<Item = &'a holon_host::Round>, vault: &Vault) -> (BTreeSet<Vec<u32>>, Vec<String>) {
+    let mut at = BTreeSet::new();
+    let mut names: Vec<String> = Vec::new();
+    for exchange in rounds.flat_map(|round| &round.exchanges) {
+        let held = secrets_in(&exchange.response, vault);
+        if held.is_empty() {
+            continue;
+        }
+        at.insert(exchange.path.clone());
+        for name in held {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    (at, names)
+}
+
+/// How many of a secret's characters in a row make a part of it: what a mark stands for at the
+/// least ([`MIN_SECRET_LEN`]). Fewer could be anything.
+pub(crate) const PART_LONG: usize = MIN_SECRET_LEN;
+
+/// Whether a part of a secret could sit in `v`: it holds a text of [`PART_LONG`] characters or
+/// more, a record's key included, or as many bytes. A number, a true or false and a shorter
+/// text can't. Said of the kind of value alone, never by comparing one with a secret: what a
+/// server refuses by this (an answer, a write) is refused the same whatever characters a
+/// caller chose, so a refusal says nothing of the secret's.
+pub(crate) fn may_hold_a_part(v: &SValue) -> bool {
+    let long = |s: &str| s.chars().nth(PART_LONG - 1).is_some();
+    match v {
+        SValue::Number(_) | SValue::Boolean(_) => false,
+        SValue::Text(s) => long(s),
+        SValue::Bytes(b) => b.len() >= PART_LONG,
+        SValue::List(items) => items.iter().any(may_hold_a_part),
+        SValue::Record(fields) => fields.iter().any(|(k, v)| long(k) || may_hold_a_part(v)),
+        SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => may_hold_a_part(payload),
+    }
+}
+
+/// The steps of `timeline` (by path) that gave nothing a part of a secret could sit in
+/// ([`may_hold_a_part`]), each time they ran: where what a run read out of a reply that sent a
+/// secret back stops being followed (`SecretFed::echoed_at`). A step whose outputs weren't kept
+/// (too large, or carrying a file) isn't one, nor one the timeline doesn't have (deeper than it
+/// records, or a run that keeps none): what isn't seen is taken as holding a part.
+pub(crate) fn short_steps(timeline: &[crate::recorder::NodeTiming]) -> BTreeSet<Vec<u32>> {
+    let mut short: BTreeSet<&[u32]> = BTreeSet::new();
+    let mut long: BTreeSet<&[u32]> = BTreeSet::new();
+    for node in timeline {
+        match &node.outputs {
+            Some(outputs) if !outputs.iter().flatten().any(may_hold_a_part) => short.insert(&node.path),
+            _ => long.insert(&node.path),
+        };
+    }
+    short.difference(&long).map(|path| path.to_vec()).collect()
+}
+
+/// Each stretch of `text` that is [`PART_LONG`] characters or more of `secret` in a row, the
+/// longest at each place, left to right and none over another, as byte ranges of `text`. The
+/// secret whole is not one: that is the secret, found as itself.
+pub(crate) fn parts_at(text: &str, secret: &str) -> Vec<std::ops::Range<usize>> {
+    let of: Vec<char> = secret.chars().collect();
+    let at: Vec<(usize, char)> = text.char_indices().collect();
+    if of.len() < PART_LONG || at.len() < PART_LONG {
+        return Vec::new();
+    }
+    // Where each run of PART_LONG characters begins in the secret.
+    let mut begins: std::collections::HashMap<&[char], Vec<usize>> = std::collections::HashMap::new();
+    for i in 0..=of.len() - PART_LONG {
+        begins.entry(&of[i..i + PART_LONG]).or_default().push(i);
+    }
+    let chars: Vec<char> = at.iter().map(|(_, c)| *c).collect();
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i + PART_LONG <= chars.len() {
+        let longest = begins.get(&chars[i..i + PART_LONG]).map_or(0, |starts| {
+            starts
+                .iter()
+                .map(|&j| {
+                    let mut n = PART_LONG;
+                    while i + n < chars.len() && j + n < of.len() && chars[i + n] == of[j + n] {
+                        n += 1;
+                    }
+                    n
+                })
+                .max()
+                .unwrap_or(0)
+        });
+        if longest == 0 {
+            i += 1;
+            continue;
+        }
+        if longest < of.len() {
+            let end = at.get(i + longest).map_or(text.len(), |(byte, _)| *byte);
+            found.push(at[i].0..end);
+        }
+        i += longest;
+    }
+    found
+}
+
+/// The parts ([`parts_at`]) of the secrets `names` in the texts of `given`, a record's keys
+/// included: each as it sits there, the secret read in every spelling JSON gives it. `given`:
+/// what a run read out of the replies that sent those secrets back, for its record to mark each
+/// part by its value wherever it holds it (`firing::fire`). Only the record is written by a
+/// secret's characters; what a caller is answered and what is stored are decided without them.
+pub(crate) fn echoed_parts<'a>(given: impl Iterator<Item = &'a SValue>, vault: &Vault, names: &[String]) -> BTreeSet<String> {
+    let spelled: Vec<String> = {
+        let vault = vault.lock().unwrap();
+        vault
+            .current
+            .iter()
+            .map(|(name, value)| (name, value))
+            .chain(vault.retired.iter().map(|(name, _, value)| (name, value)))
+            .filter(|(name, _)| names.contains(*name))
+            .flat_map(|(_, value)| spellings(value.as_str()))
+            .collect()
+    };
+    fn texts<'a>(v: &'a SValue, out: &mut Vec<&'a str>) {
+        match v {
+            SValue::Text(s) => out.push(s),
+            SValue::List(items) => items.iter().for_each(|v| texts(v, out)),
+            SValue::Record(fields) => fields.iter().for_each(|(k, v)| {
+                out.push(k);
+                texts(v, out)
+            }),
+            SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => texts(payload, out),
+            SValue::Number(_) | SValue::Boolean(_) | SValue::Bytes(_) => {}
+        }
+    }
+    let mut parts = BTreeSet::new();
+    if spelled.is_empty() {
+        return parts;
+    }
+    let mut held = Vec::new();
+    given.for_each(|v| texts(v, &mut held));
+    // The secret whole, in any spelling, is the secret, marked as itself: what is left around it
+    // is where a part is looked for. Else a secret JSON spells another way, held as it is, would
+    // read as a part of its other spelling (all of it after the quote), in every run that held it.
+    let mut whole = spelled.clone();
+    whole.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    for text in held {
+        let mut pieces = vec![text];
+        for spelling in &whole {
+            pieces = pieces.into_iter().flat_map(|piece| piece.split(spelling.as_str())).collect();
+        }
+        for piece in pieces {
+            for spelling in &spelled {
+                parts.extend(parts_at(piece, spelling).into_iter().map(|at| piece[at].to_string()));
+            }
+        }
+    }
+    parts
+}
+
 /// Whether any text in `v`, a record's keys included, satisfies `found`.
 pub(crate) fn value_holds(v: &holon_core::Value, found: &dyn Fn(&str) -> bool) -> bool {
     use holon_core::Value;
