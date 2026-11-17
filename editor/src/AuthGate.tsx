@@ -113,7 +113,7 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
   const [code, setCode] = useState("");
   const [oidc, setOidc] = useState<AuthConfig | null>(null);
 
-  const decide = useCallback(async () => {
+  const decideOnce = useCallback(async () => {
     setError("");
     try {
       const state = await getAuthState();
@@ -144,6 +144,18 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
       setStage({ kind: "unreachable", message: messageOf(e) });
     }
   }, []);
+  // One decision at a time: one asked while another is being made is that one. StrictMode asks
+  // twice as the gate opens, and two at once raced: the first took the invite, or the provider's
+  // code, out of the address, and the second, read without it, showed the sign-in over what the
+  // first found when it answered last (the e2e's slow runner).
+  const deciding = useRef<Promise<void> | null>(null);
+  const decide = useCallback(
+    () =>
+      (deciding.current ??= decideOnce().finally(() => {
+        deciding.current = null;
+      })),
+    [decideOnce],
+  );
   useEffect(() => {
     decide();
     // Signed out here: back to signing in.
