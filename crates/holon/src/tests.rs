@@ -5786,11 +5786,15 @@ route.get("/paid/:token", () => "ok", {{ resumes: "paid" }})
         ("a stop", &|| ask(&ada, "POST", "/deployments/counter/stop", J::Null), 500, "\"counter\" is stopped, but"),
         ("a delete", &|| ask(&ada, "DELETE", "/deployments/counter", J::Null), 500, "\"counter\" is deleted, but"),
     ];
+    // And none says where the file is, or the error's text (audit R71): a flow's caller is told
+    // by the first row. The folder's name is this test's own, so no answer has it but by leaking.
+    let folder = dir.file_name().unwrap().to_string_lossy().to_string();
     for (what, answer, status, said) in rows {
         let (code, text) = answer();
         assert_eq!(code, status, "{what}: {text}");
         let text = text.replace("\\\"", "\"");
-        assert!(text.contains(said) && text.contains("deployments file couldn't be written"), "{what}: {text}");
+        assert!(text.contains(said) && text.contains(crate::persist::UNWRITTEN), "{what}: {text}");
+        assert!(!text.contains(&folder) && !text.contains("os error"), "{what}: where, or why, to whoever asked: {text}");
     }
     // Saved again, each answers as before.
     std::fs::remove_dir(&path).unwrap();
