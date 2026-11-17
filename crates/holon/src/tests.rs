@@ -7365,7 +7365,7 @@ fn a_secret_is_found_in_every_spelling_json_gives_it() {
         // caller sent, joined into one: a step computed on a text the record may withhold whole.
         let seven = (0..7).fold("k".to_string(), |inner, _| format!("JSON.stringify({{ p: {inner} }})"));
         let routes = format!(
-            "{routes}route.post(\"/deep\", async (req) => {{\n  const got = await shown.post(\"/a\", {{ body: `deep ${{{seven}}}` }})\n  return {{ status: got.status }}\n}})\n\nroute.post(\"/join\", async (req) => {{\n  const got = await shown.post(\"/a\", {{ body: `said ${{req.body}}` }})\n  return {{ status: got.status }}\n}})\n\n"
+            "{routes}route.post(\"/deep\", async (req) => {{\n  const got = await shown.post(\"/a\", {{ body: `deep ${{{seven}}}` }})\n  return {{ status: got.status }}\n}})\n\nroute.post(\"/join\", async (req) => {{\n  const got = await shown.post(\"/a\", {{ body: `said ${{req.body}}` }})\n  return {{ status: got.status }}\n}})\n\nroute.post(\"/echo\", (req) => ({{ got: req.body }}))\n\n"
         );
         let text = format!(
             "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport shown from \"host:{shown}\"\nimport other from \"host:{other}\"\nimport seen from \"collection:seen\"\n\nflow(\"spelled-{name}\", {{ port: {port} }})\n\n{routes}route.post(\"/pass\", async (req) => {{\n  const authed = await shown.post(\"/a\", {{ body: k }})\n  const got = await other.post(\"/b\", {{ body: req.body }})\n  return {{ authed: authed.status, passed: got.error ?? got.status }}\n}})\n\nroute.get(\"/read\", () => seen.list())\n"
@@ -7412,6 +7412,12 @@ fn a_secret_is_found_in_every_spelling_json_gives_it() {
                 wrong.push(format!("{name}, joined with its first character escaped: answered {status} {body}"));
             }
             runs.push("joined with its first character escaped".into());
+            // And answered: the host writes the answer out itself, a text no step made.
+            let (status, _, _) = data_call(&state, &slug, "POST", "/echo", &escaped);
+            if status != 200 {
+                wrong.push(format!("{name}, answered with its first character escaped: answered {status}"));
+            }
+            runs.push("answered with its first character escaped".into());
         }
         for (what, body) in &sent {
             let (status, answer, _) = data_call(&state, &slug, "POST", "/pass", body);

@@ -2006,6 +2006,14 @@ fn answered_as_said(entry: &LogEntry, first: Option<&Value>, derived: bool, mark
     if derived && said == taint::WITHHELD {
         return true;
     }
+    // An answer the line withheld whole, for holding a value in a spelling no mark stands for
+    // (`secrets::RESPELLED`), where the run again answers a text made of one so withheld: the
+    // host wrote the answer out itself, no step did, so there is none to take as recorded. What
+    // the line says stands, as a step's record does.
+    let respelled = &secrets::RESPELLED['‹'.len_utf8()..];
+    if said.starts_with(secrets::RESPELLED) && said.matches('›').count() == 1 && said.ends_with('›') && made.contains(&format!("{}{respelled}", marks.start)) {
+        return true;
+    }
     let SValue::Text(made) = marks.write(SValue::Text(made)) else { unreachable!("a text writes as a text") };
     match made.ends_with('…') && made.contains('‹') {
         true => made.split('‹').next() == said.split('‹').next(),

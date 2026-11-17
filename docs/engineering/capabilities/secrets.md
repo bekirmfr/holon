@@ -106,7 +106,9 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   those): a mark of its own kind, which a caller can't forge (`MARKED`) and which `holon verify`
   treats as any value the log doesn't hold. A step computed on its marks whose record is such a
   text is taken as recorded and named, not compared: computed on the marks it gives the text
-  with a mark in place, never the record's. A value with none of those characters has one spelling, and costs nothing more.
+  with a mark in place, never the record's. So is what a route answered, where the line withheld
+  it whole and the run again answers a text made of one so withheld: the host writes an answer
+  out itself, so no step's record stands for it (`answered_as_said`). A value with none of those characters has one spelling, and costs nothing more.
 - **Followed.** Core's taint walk follows a secret's value through the graph as literal or
   derived, cut by a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`), a Boolean or a call's
   answer. A state, collection, file, database or channel write of a secret or of what is derived
