@@ -8051,7 +8051,9 @@ fn a_secret_is_found_in_every_spelling_json_gives_it() {
 /// route answers what a caller sent, as a text and inside JSON; a caller sends more than a line
 /// keeps (64 KiB) with the deployment's secret in it, placed well before where the line cuts,
 /// at each place across it, just after it, and at the end. For a plain token and for a secret
-/// JSON spells another way: the line holds no part of the secret, its answer is no longer than a
+/// JSON spells another way; and for a CVC its flow never keeps, sent under its key in a JSON
+/// body, at each of those places (`never_keep:` is a mark the cut knows, `secrets::MARKED`, so
+/// it never cuts one short): the line holds no part of the secret, its answer is no longer than a
 /// line keeps and ends where no mark is cut short, and `holon verify`, which cuts what the run
 /// answers again the same way, runs each run again and finds it the same.
 ///
@@ -8068,13 +8070,24 @@ fn an_answer_is_cut_after_its_values_are_marked() {
     let state = claims_state("");
     let kept = secrets::ANSWER_KEPT;
     let mut wrong: Vec<String> = Vec::new();
-    for (name, secret, port) in [("plain", "plain-token-value-123456", 18395u16), ("quoted", "pa\"ss\\word-123456", 18396)] {
+    // (the row, the value sent, its flow's port, whether it is a CVC its flow never keeps, sent
+    // under its key in a JSON body, rather than the deployment's secret)
+    for (name, secret, port, never) in [("plain", "plain-token-value-123456", 18395u16, false), ("quoted", "pa\"ss\\word-123456", 18396, false), ("never-kept", "739", 18397, true)] {
+        let keeps = if never { ", never_keep: [\"cvc\"]" } else { "" };
         let text = format!(
-            "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\n\nflow(\"cut-{name}\", {{ port: {port} }})\n\nroute.post(\"/text\", (req) => req.body)\n\nroute.post(\"/json\", (req) => ({{ got: req.body }}))\n\nroute.get(\"/has\", () => ({{ set: k.length > 0 }}))\n"
+            "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\n\nflow(\"cut-{name}\", {{ port: {port}{keeps} }})\n\nroute.post(\"/text\", (req) => req.body)\n\nroute.post(\"/json\", (req) => ({{ got: req.body }}))\n\nroute.get(\"/has\", () => ({{ set: k.length > 0 }}))\n"
         );
         let slug = deploy_text_to(&state, &text, &[]);
-        let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
+        let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": if never { "plain-token-value-123456" } else { secret } })).unwrap());
         assert_eq!(route(&state, &set).status_code, 200);
+        // A CVC is sent under its key in a JSON text, the padding around it in fields of their
+        // own: `{"pad":"xx…","cvc":"739","rest":"yy…"}`, the CVC beginning where the row says.
+        let (open, key) = ("{\"pad\":\"", "\",\"cvc\":\"");
+        // Where the CVC stands in an entry: its digits as a token of their own (`"739"`, `=739&`),
+        // not inside a longer one, a hash's hex or base64, an id, a time, which three digits
+        // can stand in by chance.
+        let in_token = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '_' | '-' | '.');
+        let holds_cvc = |s: &str| s.match_indices(secret).any(|(i, _)| !s[..i].ends_with(in_token) && !s[i + secret.len()..].starts_with(in_token));
         // Where the secret begins in what is sent: well before the cut; each place that puts
         // it across the cut as the run has it (the first character before, the last after, and
         // between); just after; and at the end of a body twice as long.
@@ -8093,9 +8106,18 @@ fn an_answer_is_cut_after_its_values_are_marked() {
         let mut runs: Vec<String> = Vec::new();
         for path in ["/text", "/json"] {
             for (what, at, total) in &begins {
-                let mut body = "x".repeat(*at);
+                let mut body = match never {
+                    true => format!("{open}{}{key}", "x".repeat(at - open.len() - key.len())),
+                    false => "x".repeat(*at),
+                };
                 body.push_str(secret);
-                body.push_str(&"y".repeat(total.saturating_sub(body.len())));
+                if never {
+                    body.push_str("\",\"rest\":\"");
+                }
+                body.push_str(&"y".repeat(total.saturating_sub(body.len() + if never { 2 } else { 0 })));
+                if never {
+                    body.push_str("\"}");
+                }
                 let (status, _, _) = data_call(&state, &slug, "POST", path, &body);
                 if status != 200 {
                     wrong.push(format!("{name}, {path}, {what}: answered {status}"));
@@ -8120,8 +8142,12 @@ fn an_answer_is_cut_after_its_values_are_marked() {
             if said.rfind('‹').is_some_and(|open| !said[open..].contains('›')) {
                 wrong.push(format!("{name}, {what}: its answer ends inside a mark"));
             }
-            if !entry.to_string().contains("‹secret:k") {
+            if !entry.to_string().contains(if never { "‹never_keep:cvc›" } else { "‹secret:k" }) {
                 wrong.push(format!("{name}, {what}: its record marks no secret"));
+            }
+            // A CVC is in no line: not in its answer, cut or not, nor anywhere else of it.
+            if never && holds_cvc(&entry.to_string()) {
+                wrong.push(format!("{name}, {what}: its record holds the CVC"));
             }
         }
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
