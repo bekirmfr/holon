@@ -39,7 +39,9 @@ token was last used. `setup` makes it at once when the server is running, and sa
 holon mcp signs in to http://127.0.0.1:7420 as bma-agent, an agent owned by bma.
 ```
 
-`--agent NAME` signs in as another agent instead (made if it isn't there): one per host, say.
+`--agent NAME` signs in as another agent instead (made if it isn't there): one per host, say. One
+there already is taken only when it is yours: an agent someone else owns is refused, saying whose
+it is (its owner makes your machine a token on the People page).
 
 ### A server on another machine
 
@@ -68,20 +70,46 @@ The tools `holon mcp` offers:
 | `check` | compile a flow: its routes, its version, and what it may do; or each mistake, with line and column |
 | `save` | save a flow on the server, for a person to open; never replaces a flow someone else saved |
 | `deploy` | deploy a flow; when it needs approval, propose it for a person instead, with a `why` and a `note` |
-| `replay` | a new version of a deployed flow run offline on its recent runs: how many it answers the same, and how the others differ or why they can't be told; nothing is deployed, sent or written |
+| `replay` | a new version of a deployed flow run offline on its recent runs: how many it answers the same, and how the others differ or why they can't be told; nothing is deployed, sent or written. It reads the runs' steps, which takes a person's grant ([below](#reading-a-runs-steps)) |
 | `call` | send a request to a deployed flow's route, logged as a run like any other |
 | `run` | run one of a deployed flow's actions by its name, with what to send it: only an action a person lets agents run |
 | `whoami` | who it is signed in as, its owner, and what it may do: each role bound to it or to a group it is in, where (this host, a flow, an approval point), until when, and the actions it allows |
 | `deployments` | what is deployed; with a slug, one in full: routes, what it may do, what isn't granted, which secrets are set, its proposals (a declined one with its reason), its text |
 | `flows` | the saved flows; with a name, its text |
-| `runs` | a deployment's latest runs, one line each; then the runs waiting now, at an approval with who has approved each step so far and the steps the agent may take, or at an event |
+| `runs` | a deployment's latest runs, one line each (what started it, its status, how long it took, who sent it); then the runs waiting now, at an approval with who has approved each step so far and the steps the agent may take, or at an event |
 | `decide` | approve, or decline with a reason, a step of an approval written for an agent, as the agent, bound to its role there, with a `note` the run is given; never a person's step: for one it says who decides it, and where |
 | `state` | what a deployment keeps now: each state value, and its collections; with a collection, its items (with a key, one) |
-| `explain` | one run as the program: each statement's value, where a missing value came from, the effects and calls |
+| `explain` | one run as the program: each statement's value, where a missing value came from, the effects and calls. It takes a person's grant ([below](#reading-a-runs-steps)) |
 | `history` | a deployment's timeline: its runs, each with the version it ran on, and what was done to it between them, by whom (deploys, restores, grant changes, secrets, pausing); with a `cell`, the runs that changed that value, before and after |
 | `restore` | a dry run of going back to a version or a run: the code's text beside today's, the permissions, what it touches (each folder, database, secret, host, key… new, gone or as now, and whether the server is ready for it), the state's keys and items now → then, the runs since and the files they wrote; it changes nothing. With `ask`, it saves the restore for you to approve |
 
 `check` and `reference` need no server; the rest reach the one `holon mcp` connects to.
+
+### Reading a run's steps
+
+What an agent reads of a flow's runs is given twice over, each part by a different grant.
+
+- **A run's steps and values** (what `explain` shows, what `replay` runs again, a run's export)
+  take `run.steps` on the flow. The agent role doesn't hold it: a person gives it by binding the
+  agent a role that does, on one flow or a tag, the viewer role say:
+
+  ```sh
+  holon bind viewer --to claude --flow payout --why "fixes the payout flow"
+  ```
+
+  or in the editor, on **People**. Until then `explain` and `replay` answer with that command,
+  for the agent to tell you, and `call` and `runs` still say each run's route, status, how long it
+  took and who sent it, but not what it read, sent or answered.
+- **The lines a flow writes with `console.log`** are the deployment's to give: the deploy setting
+  **agents may read its logs**, approved with the flow's next version
+  ([Who may read a flow's log lines](../reference/permissions.md#who-may-read-a-flows-log-lines)).
+
+They differ because of who gives each and what it opens. A binding is given to one agent, where a
+person who may give access says (and where access changes wait, once another person approves
+it), and opens every value a run read, computed and sent, a secret's choices included; a flow
+that uses a secret is read by whoever approves it, and its runs only by whoever is given them. The
+log setting opens what the flow's own text chose to print, to every agent, and is approved with the
+flow, by whoever approves the flow.
 
 The agent role **never** approves a grant, starts, pauses, stops or deletes a deployment, sets a
 secret, restores one, takes a person's step of an [approval](../language/leaves.md#approval) a
@@ -163,11 +191,19 @@ Opening the flow from the **flows** page and deploying it there approves the pro
 
 A flow's settings have **agents may propose versions**. Turned off, an agent's deploy of it is
 refused, neither proposed nor saved. The **Proposal** sample is a flow to try this with. For the
-whole host, the policy's `[agents] propose = false` refuses every agent version that needs a
-person, on every flow ([The policy](../reference/server.md#the-policy)); the **Policy** page and
-`holon policy` say which it is.
+whole host, the policy's `[agents] propose = false` refuses every agent version, on every flow
+([The policy](../reference/server.md#the-policy)); the **Policy** page and `holon policy` say
+which it is.
 
-From then on, a new version that asks for nothing more deploys from the agent at once. A version
+Every version an agent deploys waits for you like this, the first and each after it, whatever it
+changes: its review shows all of it, the code beside what runs now, what it may do (new, gone, or
+*asked again*) and its settings. Nothing an agent writes runs before a person has read it.
+
+You can let one flow take an agent's versions without you: its settings have **agents' versions
+deploy at once**, off until someone who may approve its deploys turns it on, and its timeline says
+who did. Turned on, a version that asks for nothing more deploys from the agent at once; turn it
+off again from the same place. The policy's `[agents] deploy_at_once = false` keeps it off on
+every flow. Even with it on, some versions still wait for you. A version
 that asks for something new (another host, another secret, a site in its `browsers` line whose
 pages it doesn't answer yet) is proposed to you again. So is a
 version whose code changed and that reads a secret: what a secret is used for is the code, so a
@@ -191,7 +227,8 @@ Agents work well with Holon when they use the tools in this order:
    deploy's `why` which runs it answers differently; then `deploy`; if it needs approval, ask the
    person;
 4. `call` it with a few requests (or `run` an action it is let run), then `runs` and `explain` to
-   see what each statement did;
+   see what each statement did (`explain`, once a person has given it the flow's runs' steps: its
+   first refusal says the command they run, for you to pass on);
 5. fix, `check`, `deploy` again.
 
 `explain` is the agent's view of what the editor's view mode shows you: the flow's text with the

@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { marked, type Token, type Tokens } from "marked";
+import { FromUrl } from "./fromUrl";
 import { HOME, PAGES, contents, flowText, plainText, resolve, slugger } from "./manual";
 
 /** A place in the manual: a page, and a heading on it. */
@@ -30,7 +31,9 @@ export function ManualPage({ at: where, onGo, onTry }: {
 }) {
   const at = where ?? MANUAL_HOME;
   const sections = useMemo(contents, []);
-  const tokens = useMemo(() => marked.lexer(PAGES.get(at.page) ?? `# Not found\n\nThe manual has no page \`${at.page}\`.`), [at.page]);
+  // A page it hasn't is named from the address, which anyone can write: quoted, never markdown.
+  const found = PAGES.has(at.page);
+  const tokens = useMemo(() => marked.lexer(PAGES.get(at.page) ?? "# Not found"), [at.page]);
   const [tryError, setTryError] = useState("");
   const top = useRef<HTMLDivElement>(null);
 
@@ -67,6 +70,11 @@ export function ManualPage({ at: where, onGo, onTry }: {
       <article className="hl-manual__doc">
         {tryError && <div className="hl-manual__error">{tryError}</div>}
         {blocks(tokens, ctx)}
+        {!found && (
+          <p>
+            The manual has no page <FromUrl text={at.page} />.
+          </p>
+        )}
       </article>
     </div>
   );

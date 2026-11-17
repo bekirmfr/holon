@@ -4,7 +4,9 @@
 // whoever is signed in may see or decide (`GET /runs/waiting`: Runs waiting lists them, each
 // approval with the steps they may take; the nav counts them), the access changes that wait for
 // people (`GET /access/proposals`, to whoever may view people: Access changes lists them), and the
-// versions of a deployment that has a newer save, so its review has a number.
+// versions of a deployment that has a newer save, so its review has a number. A list whose read
+// failed is `unread`, why in the server's words, until a read of it succeeds: it is never shown as
+// empty (R44).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { approvalsOf, keptKey, reviewQueue } from "./approvals";
@@ -15,6 +17,8 @@ import {
   listAllWaitingRuns,
   listFlows,
   listProposals,
+  ServerError,
+  whyUnread,
   type AccessProposal,
   type DeploymentEntry,
   type DeploymentEvent,
@@ -25,6 +29,10 @@ import {
 
 /** A run waiting in a deployment. */
 export type WaitingRunOf = { slug: string; run: WaitingRun };
+
+/** Each list of Approvals whose last read failed: why ("" once read). `deploys`: the deployments,
+ *  the saved flows or the proposals, which the versions waiting are worked out from. */
+export type Unread = { deploys: string; runs: string; access: string };
 
 const KEPT = "holon.approvals.kept";
 
@@ -37,7 +45,7 @@ function readKept(): Set<string> {
   }
 }
 
-export function useApprovals(deployments: DeploymentEntry[], { shown, asks: readAsks }: { shown: boolean; asks: boolean }) {
+export function useApprovals(deployments: DeploymentEntry[], { shown, asks: readAsks, listError = "" }: { shown: boolean; asks: boolean; listError?: string }) {
   const [flows, setFlows] = useState<FlowListEntry[]>([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [versions, setVersions] = useState<Map<string, number>>(new Map());
@@ -48,25 +56,50 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
   const [access, setAccess] = useState<AccessProposal[] | null>(null);
   const now = useRef(deployments);
   now.current = deployments;
+  const [failed, setFailed] = useState({ flows: "", proposals: "", runs: "", access: "" });
+  const said = useCallback((list: keyof typeof failed, why: string) => setFailed((f) => (f[list] === why ? f : { ...f, [list]: why })), []);
 
   // One listing across flows: someone bound only at an approval lists no deployment, and still
   // finds the runs waiting for them.
   const readRuns = useCallback(() => {
     listAllWaitingRuns().then(
-      (rs) => setRuns(rs.map(({ slug, ...run }) => ({ slug, run }))),
-      () => setRuns((was) => was ?? []),
+      (rs) => {
+        setRuns(rs.map(({ slug, ...run }) => ({ slug, run })));
+        said("runs", "");
+      },
+      (e: unknown) => said("runs", whyUnread(e)),
     );
-  }, []);
+  }, [said]);
   const refresh = useCallback(() => {
-    listFlows()
-      .then(setFlows)
-      .catch(() => undefined);
-    listProposals()
-      .then(setProposals)
-      .catch(() => undefined);
-    listAccessChanges().then(setAccess, () => setAccess((was) => was ?? []));
+    listFlows().then(
+      (fs) => {
+        setFlows(fs);
+        said("flows", "");
+      },
+      (e: unknown) => said("flows", whyUnread(e)),
+    );
+    listProposals().then(
+      (ps) => {
+        setProposals(ps);
+        said("proposals", "");
+      },
+      (e: unknown) => said("proposals", whyUnread(e)),
+    );
+    listAccessChanges().then(
+      (a) => {
+        setAccess(a);
+        said("access", "");
+      },
+      (e: unknown) => {
+        // Refused: whoever may not view people has none to see.
+        if (e instanceof ServerError && e.status === 403) {
+          setAccess([]);
+          said("access", "");
+        } else said("access", whyUnread(e));
+      },
+    );
     readRuns();
-  }, [readRuns]);
+  }, [readRuns, said]);
   // Read again as soon as a deployment's count of waiting runs changes.
   const waitingKey = deployments.map((d) => `${d.slug}:${d.waiting ?? 0}`).join(",");
   useEffect(readRuns, [readRuns, waitingKey]);
@@ -121,5 +154,10 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
     });
   }, []);
 
-  return { approvals, queue, flows, proposals, runs, access, keep, refresh };
+  const unread: Unread = useMemo(
+    () => ({ deploys: listError || failed.flows || failed.proposals, runs: failed.runs, access: failed.access }),
+    [listError, failed],
+  );
+
+  return { approvals, queue, flows, proposals, runs, access, unread, keep, refresh };
 }

@@ -29,3 +29,18 @@ the samples; opening one starts an unsaved copy.
 ## Commits and pushes
 
 One commit per step, ending with the `Co-Authored-By` line; commit or push only when asked.
+
+## Talking to the owner
+
+Write to the owner as one person to another, in plain words. This holds for every session's
+answers, questions, summaries and reports to the owner.
+
+- Say it in this order: where things stand, the problem, why it happens, then the ways to deal
+  with it and which one you suggest.
+- Use everyday words. Leave out internal names (a finding's number, a function, a branch, a kind
+  of mark) unless the owner needs one to act; the first time you use one, say what it is.
+- Give one concrete example of the problem: what someone does, and what they then see.
+- Say who is affected and who is not.
+- Keep sentences short. Ask one thing at a time, and say what each answer would lead to.
+
+Notes between sessions, commit messages and code comments may stay technical.

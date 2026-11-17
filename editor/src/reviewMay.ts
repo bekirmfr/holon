@@ -64,7 +64,8 @@ export function mayGroups(touches: Touch[] = [], settings: SettingChange[] = [],
     { key: "same", title: "Unchanged, or the host allows it", rows: [] },
     { key: "gone", title: "No longer", rows: [] },
   ];
-  for (const t of touches) {
+  // Its code, handler by handler, is the review's code: what it may do is the rest.
+  for (const t of touches.filter((t) => t.group !== "code")) {
     const [, line] = touchLines([t]);
     groups.find((g) => g.key === groupOf(t))!.rows.push({ line, anchor: anchorOf(t, lines) });
   }

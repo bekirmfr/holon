@@ -999,7 +999,7 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
               secretValue.current?.focus();
             }}
             onWhere={async (s) => {
-              const typed = await dialog.prompt(`Where may the server's secret "${s.name}" go? Hosts and db:NAME databases, separated by commas; empty: wherever its flows' approvals show.`, (s.to ?? []).join(", "));
+              const typed = await dialog.prompt(`Where may the server's secret "${s.name}" go? Hosts and db:NAME databases, separated by commas; empty: wherever its flows' approvals show.`, (s.to ?? []).join(", "), undefined, "optional");
               if (typed === null) return;
               const to = typed.split(",").map((d) => d.trim()).filter(Boolean);
               act(() => capServerSecret(s.name, to.length ? to : null));
@@ -1404,10 +1404,18 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
             agents{" "}
             {policy.agents_propose === false ? (
               <>
-                may not propose: a version of theirs that needs a person is refused <span style={quiet}>(agents.propose = false)</span>
+                may not propose: a version of theirs is refused <span style={quiet}>(agents.propose = false)</span>
               </>
             ) : (
-              "may propose: a version of theirs that needs a person waits in Approvals"
+              "may propose: each version of theirs waits in Approvals"
+            )}
+            {" · "}
+            {policy.agents_deploy_at_once === false ? (
+              <>
+                no flow takes their versions at once <span style={quiet}>(agents.deploy_at_once = false)</span>
+              </>
+            ) : (
+              "a flow's settings may take their versions that ask for nothing more at once"
             )}
           </div>
           <div className="hl-matrix-wrap">

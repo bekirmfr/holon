@@ -464,9 +464,14 @@ pub(crate) struct Policy {
     /// by default, since its author chose it and a person approves each (docs/L4s/request-path-L4.md,
     /// §8 Q9).
     pub(crate) allow_unrecorded: bool,
-    /// Whether an agent's version that needs a person's approval is kept as a proposal for one
-    /// (`[agents] propose`, on by default); off, it is refused, and nothing is saved.
+    /// Whether an agent's version is kept as a proposal for a person (`[agents] propose`, on by
+    /// default); off, it is refused, and nothing is saved.
     pub(crate) agents_propose: bool,
+    /// Whether a person may let an agent's versions of a flow deploy without them, as long as
+    /// they ask for nothing more (`[agents] deploy_at_once`, on by default: each flow's own
+    /// setting decides, off unless a person turns it on); off, every agent's version waits for a
+    /// person, whatever a flow's setting says (deploy.rs).
+    pub(crate) agents_deploy_at_once: bool,
     /// How the host keeps what it stores (`[storage]`, docs/L4s/storage-L4.md).
     pub(crate) storage: Storage,
     /// The file's text as it was read, for a person to read it whole (`GET /permissions`); none
@@ -659,6 +664,7 @@ impl Default for Policy {
             allow_private_addresses: false,
             allow_unrecorded: true,
             agents_propose: true,
+            agents_deploy_at_once: true,
             storage: Storage::default(),
             text: None,
         }
@@ -687,6 +693,9 @@ struct AgentsFile {
     /// Absent: on.
     #[serde(default)]
     propose: Option<bool>,
+    /// Absent: on (a flow's own setting decides).
+    #[serde(default)]
+    deploy_at_once: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -776,6 +785,7 @@ impl Policy {
         policy.allow_private_addresses = file.grants.allow_private_addresses;
         policy.allow_unrecorded = file.grants.allow_unrecorded.unwrap_or(true);
         policy.agents_propose = file.agents.propose.unwrap_or(true);
+        policy.agents_deploy_at_once = file.agents.deploy_at_once.unwrap_or(true);
         if let Some(every) = &file.storage.sweep_every {
             policy.storage.sweep_every = parse_every(every).map_err(|e| format!("storage.sweep_every: {e}"))?;
         }

@@ -34,7 +34,7 @@ fn a_writer_that_fails_is_a_warning_and_health_says_not_ok_until_it_writes_again
     // The deployments file: a folder where it goes, so its write fails as a full disk's would.
     std::fs::remove_file(&file).unwrap();
     std::fs::create_dir(&file).unwrap();
-    crate::persist_deployments(&state.deployments_path, &state.deployments);
+    assert!(crate::persist_deployments(&state.deployments_path, &state.deployments).is_err(), "whoever asked is told too");
     let (status, says) = health(&state);
     assert_eq!((status, says.as_str()), (503, "not ok: the deployments file can't be written"));
     let warnings = warned(&state);
@@ -57,7 +57,7 @@ fn a_writer_that_fails_is_a_warning_and_health_says_not_ok_until_it_writes_again
 
     // Each clears as its next write goes through.
     std::fs::remove_dir(&file).unwrap();
-    crate::persist_deployments(&state.deployments_path, &state.deployments);
+    assert_eq!(crate::persist_deployments(&state.deployments_path, &state.deployments), Ok(()));
     assert_eq!(health(&state), (503, "not ok: the run logs can't be synced to disk".into()));
     state.deployments.lock().unwrap()[&slug].log.with(|l| l.fail_syncs = false);
     assert_eq!(crate::sync_to_disk(&state.deployments, &state.deployments_path), Ok(()));

@@ -472,7 +472,10 @@ taken, a decline included, as `{slot, who, kind, role, at, approved, reason, not
 access}` (`slot` 0 and no `role` for `people`; `note` any JSON the decider sent with it; `binding`
 and `access` what let them, below), with `declined_by` and
 `reason` when declined, or `expired: true` when nobody decided in time. Its permission, `Approval("payout/person*2")`, names who decides it: its steps,
-one step of two people.
+one step of two people. A name is one wait across the flow: a run keeps one decision a name, so
+a second `approval` named alike asking for other steps, or an `event` named as an approval, is
+refused where it is written (the second would be answered with the first's decision, and what it
+asks for never asked); the same approval in two handlers is one.
 
 An approval in steps names who takes each step, by the role they hold where the approval is (the
 target design, [`docs/L4s/access-and-approvals-L4.md`](L4s/access-and-approvals-L4.md) §8):
@@ -493,8 +496,9 @@ Each step is taken after the one before. `order: "any"` takes them in any order;
 { role: "b" }], { role: "c" }]`. A step with no role is anyone holding `run.decide` there, a
 person; an agent's step (`kind: "agent"`) names its role, and a service never takes one. Up to 5
 steps, each taken by 1 to 5 different principals (`people`). `starter: true` lets whoever started
-the run take that step, a person (`{ role: "editor", starter: true }`: an output review, the one
-who asked checking what was made); left out, they may not, and an agent's step can't say it.
+the run, or one acting for them, take that step (`{ role: "editor", starter: true }`: an output
+review, the one who asked checking what was made, or their own agent drafting it); left out, they
+may not. An agent's step may say it too.
 `people: N` is the short form of one step with no role, which the starter doesn't take, and
 `people` beside `steps` is refused, as are an empty stage, a stage of one
 step and `order` with stages, each saying what to write.
@@ -512,11 +516,14 @@ The host decides each step in its order (§8.3, §8.4): a step opens once every 
 filled, and takes a principal of its kind (a person's a person, an agent's an agent), bound to its
 role, directly or through a group, on the host, the flow or the approval itself, and holding
 `run.decide` there. Holding everything (admin) isn't holding `reviewer`. Each principal decides one
-step of an approval, once, and not of a run they started but a step that says `starter: true`; an
-agent never decides a run it started. One decline ends it. A decision names its step (`slot`), or
+step of an approval, once, and each party one step: an agent or a service is one party with
+whoever owns it or made a token of it, and with another agent or service one of them answers for.
+Whoever started the run, and their party, take no step but one that says `starter: true`, which
+the starter's party fills, one principal each; an agent never decides a run it started. One
+decline ends it. A decision names its step (`slot`), or
 takes the one open step its decider may fill. The host's approval settings say three things more,
 for every flow (§8.4, `holon access approvals`): with `exclude_deployer`, whoever deployed the
-version a run is on decides none of its steps; with `agents` off, no agent decides one, and a flow
+version a run is on, and their party, decide none of its steps; with `agents` off, no agent decides one, and a flow
 whose approval has an agent's step doesn't deploy; with `starter` off, whoever started a run takes
 no step of it, and a flow whose approval has a `starter` step doesn't deploy.
 
@@ -537,7 +544,8 @@ see what the run was started with: the action's argument, a request's record wit
 or what a source delivered; a run a clock started shows nothing. Either is kept when the run parks,
 as its log keeps it: a field tainted by a secret's mark redacted as the log redacts it
 (`‹taint:card›`), a value a secret may have made as its mark (`‹derived #7c1e9a02›`) or, where no
-mark stands for it, withheld whole, one past 16 KiB its size instead.
+mark stands for it, withheld whole, one past 16 KiB cut down (a text to its first KiB, a list or
+record to its first 64 items, each saying how much more), and past that still, its size.
 Runs waiting lists it under the point (the editor's Approvals and the flow's Waiting, `holon
 decide`, `holon mcp`'s `runs`), and whoever holds `run.decide` on a flow's approvals without
 `run.view` lists only the runs waiting at an approval they may decide, those points alone: the
@@ -3176,8 +3184,9 @@ the syntax to TypeScript's, keeping the lowering.
    language, with the agent's own binding names, and under each statement of the run's route the
    value it had, or the node a missing value first went missing at (`field "author" gave
    nothing`), read from the run's recorded timeline through the document's `trace`. The tools
-   never approve: a deploy that needs approval is saved as a flow for a person to deploy from the
-   editor, and once they have, a version that needs nothing more deploys from the agent at once.
+   never approve: each version an agent deploys is kept as a proposal for a person to approve
+   from the editor, with all it changes (a version that needs nothing more deploys from the agent
+   at once only on a flow whose settings a person set so, where the host lets them).
    The server holds it to that too: `holon mcp` signs in as an agent, a principal of its own
    whose `agent` role proposes and calls and never approves, grants, starts, stops or deletes,
    shown by its own name (`bma-agent`, made for the OS user on a server they run); its own token

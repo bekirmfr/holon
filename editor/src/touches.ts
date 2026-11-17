@@ -35,6 +35,8 @@ export type Touch = {
 export type SettingChange = { name: string; now: string; then: string };
 
 const GROUPS: [string, string][] = [
+  // A deploy's handlers added, changed or removed (deploy.rs `code_rows`).
+  ["code", "Its handlers"],
   ["triggers", "What starts it"],
   ["resources", "Folders, databases and secrets"],
   ["outside", "What it reaches outside"],

@@ -10,7 +10,7 @@
 // carries the session this browser was given, a bearer token, never a cookie (AuthGate.tsx).
 
 import { browsersOf } from "./DeploySettings";
-import { signedIn, signOut, type AuthConfig } from "./signin";
+import { signedIn, signInExpired, signOut, type AuthConfig } from "./signin";
 import { usesIn, type Placed } from "./holonUsage";
 import type { WValue, ModuleEntry } from "./holon";
 import type { EndpointDraft } from "./endpoint";
@@ -30,27 +30,70 @@ export type Kind = "person" | "agent" | "service";
 /** Who this browser is signed in as: the session token the server gave, and who it is; `at`,
  *  when this browser signed in (absent in a session kept from before it was noted). */
 export type Session = { token: string; name: string; kind?: Kind; role: Role; at?: number };
+/** Where the browser keeps it: localStorage, by design (the audit's EN:E3). Script on this page
+ *  can read it there, and it lasts until the session ends (a week, a sign-out, an admin's reset).
+ *  A cookie marked HttpOnly would hide it from script, but a browser sends a cookie with the
+ *  requests every page of the same site makes, and SameSite doesn't count ports: each deployed
+ *  flow's port on this host is the console's site, so a page a flow serves could act on the
+ *  server as the person, and every route would have to tell its requests apart. A bearer that
+ *  only this page's script sends goes with nothing else. What keeps other script from reading it
+ *  is the page's policy (editor.rs's PAGE_POLICY: scripts only from the editor's own files, none
+ *  inline, no frames of the page), so markup that finds its way in can't run. sessionStorage
+ *  would hide it from no script, and cost a sign-in per tab. The provider's ID token (signin.ts's
+ *  SIGNED_IN_KEY) is kept the same way, for the same reasons. */
 const SESSION_KEY = "holon.session";
-let memorySession: Session | null = null;
 
-export function getSession(): Session | null {
+function storedSession(): Session | null {
   try {
-    return (JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as Session | null) ?? memorySession;
+    return JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as Session | null;
   } catch {
-    return memorySession;
+    return null;
   }
 }
 
-/** Keep (or, with null, forget) this browser's session; who listens is told. */
+/** Whom this tab acts as: the session the browser kept, read once as the page loads, then this
+ *  tab's own. A sign-in in another tab, as someone else, leaves whom this one acts as alone: it
+ *  read the browser's kept session on every request, so a second tab changed whom the first
+ *  acted as (R44). A new tab, or a reload, takes the session kept last. */
+let tabSession: Session | null = storedSession();
+
+export function getSession(): Session | null {
+  return tabSession;
+}
+
+/** Forget it from the browser too, when what it keeps is this tab's: another tab's sign-in since
+ *  is kept for the tabs to come. */
+function forgetStored(was: Session | null): void {
+  try {
+    if (was && storedSession()?.token === was.token) localStorage.removeItem(SESSION_KEY);
+  } catch {
+    // nothing kept
+  }
+}
+
+/** Keep (or, with null, forget) this tab's session, and the browser's for the tabs to come; who
+ *  listens is told. */
 export function setSession(session: Session | null): void {
-  memorySession = session;
+  const was = tabSession;
+  tabSession = session;
   try {
     if (session) localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-    else localStorage.removeItem(SESSION_KEY);
+    else forgetStored(was);
   } catch {
     // storage unavailable: signed in for this page only
   }
   window.dispatchEvent(new Event("holon:session"));
+}
+
+/** This tab's sign-in ended without its asking: the server answered 401 to it (signed out
+ *  elsewhere, expired, the person disabled), or the provider's ID token expired. Forgotten, and
+ *  the console asks to sign in again over what is open, which it keeps (AuthGate.tsx). */
+function endSession(): void {
+  const was = tabSession;
+  tabSession = null;
+  forgetStored(was);
+  signOut();
+  window.dispatchEvent(new Event("holon:session-ended"));
 }
 
 /** Every request to the server, the one `fetch` here: past the browser's HTTP cache. Each answer
@@ -61,9 +104,10 @@ export function setSession(session: Session | null): void {
 const ask = (url: string, init: RequestInit = {}): Promise<Response> => fetch(url, { ...init, cache: "no-store" });
 
 /** `fetch` against the server, carrying who is signed in: the session's token, else the ID
- *  token of a sign-in through the server's identity provider (signin.ts). A 401 means the
- *  sign-in has ended: it is forgotten, and the editor asks to sign in again. A request that gets
- *  no answer is told (the host card reads the host again). */
+ *  token of a sign-in through the server's identity provider (signin.ts). A 401 to what this tab
+ *  is signed in with (not a token since replaced), or to none since its ID token expired, means
+ *  the sign-in has ended: it is forgotten, and the editor asks to sign in again over what is open.
+ *  A request that gets no answer is told (the host card reads the host again). */
 async function api(url: string, init: RequestInit = {}): Promise<Response> {
   const token = getSession()?.token ?? signedIn()?.idToken;
   const res = await ask(url, token ? { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } } : init).catch(
@@ -72,10 +116,7 @@ async function api(url: string, init: RequestInit = {}): Promise<Response> {
       throw e;
     },
   );
-  if (res.status === 401 && token) {
-    setSession(null);
-    signOut();
-  }
+  if (res.status === 401 && (token ? token === (getSession()?.token ?? signedIn()?.idToken) : signInExpired())) endSession();
   if (mayHaveChanged(url, init.method ?? "GET", res.status)) window.dispatchEvent(new Event("holon:can"));
   return res;
 }
@@ -183,7 +224,8 @@ export type Scope = "host" | { flows: { slug: string } | { tag: string } } | { a
 export type HeldBinding = { id: number; role: string; allows: string[]; scope: Scope; group: string | null; by: string; at: number; expires_at: number | null; expired: boolean };
 /** A role (`GET /roles`): built in, or defined by an admin; who may hold it, how many bindings do. */
 export type RoleEntry = { name: string; about: string | null; allows: string[]; kinds: Kind[]; builtin: boolean; bound: number };
-export const listRoles = async () => (await asJson<{ roles: RoleEntry[] }>(await api(`${BASE}/roles`))).roles;
+/** Every role, and the access version they were read at: what a change to one is made from. */
+export const listRoles = async () => asJson<{ roles: RoleEntry[]; version: number }>(await api(`${BASE}/roles`));
 /** An agent's or a service's token: what it is for, never its value. */
 /** An agent's or a service's token, never its value: `last_used` (epoch seconds), absent until a request came with it. */
 export type TokenEntry = { id: string; principal: string; label: string; created_at: number; created_by: string; last_used?: number };
@@ -234,16 +276,19 @@ export async function unbind(id: number, why: string): Promise<void> {
 }
 /** A group (`GET /groups`): its members, and how many bindings are to it. */
 export type GroupEntry = { name: string; about: string | null; members: string[]; bound: number };
-export const listGroups = async () => (await asJson<{ groups: GroupEntry[] }>(await api(`${BASE}/groups`))).groups;
+/** Every group, and the access version they were read at: what a change to one is made from. */
+export const listGroups = async () => asJson<{ groups: GroupEntry[]; version: number }>(await api(`${BASE}/groups`));
 /** `PUT /groups/<name>`, with all its members: 403 for a member added or taken out who'd gain or
- *  lose what its author doesn't hold. */
-export const putGroup = async (name: string, g: { about?: string | null; members: string[]; why?: string }) =>
+ *  lose what its author doesn't hold; 409 when it changed since `base`, the access version it was
+ *  read at (`GET /groups`' `version`). */
+export const putGroup = async (name: string, g: { about?: string | null; members: string[]; why?: string; base?: number }) =>
   asJson<{ group: GroupEntry; version: number } | AccessProposalAnswer>(await put(`${BASE}/groups/${encodeURIComponent(name)}`, g));
 export async function removeGroup(name: string, why: string): Promise<void> {
   await asJson<void>(await api(`${BASE}/groups/${encodeURIComponent(name)}${because(why)}`, { method: "DELETE" }));
 }
-/** `PUT /roles/<name>`: an admin's role, defined or changed, allowing only what its author holds. */
-export const defineRole = async (name: string, r: { about?: string | null; allows: string[]; kinds: Kind[]; why?: string }) =>
+/** `PUT /roles/<name>`: an admin's role, defined or changed, allowing only what its author holds;
+ *  409 when it changed since `base`, the access version it was read at (`GET /roles`' `version`). */
+export const defineRole = async (name: string, r: { about?: string | null; allows: string[]; kinds: Kind[]; why?: string; base?: number }) =>
   asJson<{ role: RoleEntry; version: number } | AccessProposalAnswer>(await put(`${BASE}/roles/${encodeURIComponent(name)}`, r));
 /** `DELETE /roles/<name>`: 409 while it is bound. */
 export async function removeRole(name: string, why: string): Promise<void> {
@@ -626,6 +671,10 @@ export class ServerError extends Error {
   }
 }
 
+/** Why a read failed, as a list that couldn't be read says it (ui/Unread.tsx): the server's words,
+ *  or that it isn't answering. */
+export const whyUnread = (e: unknown): string => (e instanceof ServerError ? e.message : `the server isn't answering (${String(e)})`);
+
 async function asJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let message = res.statusText;
@@ -678,7 +727,7 @@ export type DeployResult = {
   triggers: string[];
   /** Answered 202 instead: whoever deployed it may not approve what it asks, so it waits as this
    *  proposal (proposals.rs). */
-  proposal?: { id: number; version?: number };
+  proposal?: { id: number; version?: number; saved_at?: number };
 };
 
 /** `POST /deploy` — register `slug -> unit`. `acknowledge` must name every capability the
@@ -755,6 +804,8 @@ export type DeployPreview = {
   touches?: Touch[];
   /** The deploy settings that change. */
   settings?: SettingChange[];
+  /** Whether, deployed by whoever asked, it waits for a person as a proposal. */
+  proposed?: boolean;
 };
 
 /** A secret as the server lists it: never its value. `source`: `local` (sealed by the server),
@@ -905,10 +956,14 @@ export const getProposal = async (id: number) => asJson<Proposal>(await api(`${B
 export const declineProposal = async (id: number, reason: string) => asJson<Proposal>(await post(`${BASE}/proposals/${id}/decline`, { reason }));
 /** Whether agents may propose a deployment's versions. */
 export const setAgentsPropose = async (slug: string, on: boolean) => changeSettings(slug, { agents_propose: on });
-/** `POST /deployments/<slug>/settings`: what a deployer changes in place, none of it widening what
- *  it may do: whether agents may propose its versions, and limits lowered (fewer runs kept among
- *  them). A limit raised is refused: that is a new version, which a person approves. */
-export const changeSettings = async (slug: string, change: { agents_propose?: boolean; lower?: Record<string, number> }) =>
+/** Whether an agent's version of a deployment that asks for nothing more deploys without a person
+ *  (on: someone who may approve its deploys, where the host lets them). */
+export const setAgentsDeployAtOnce = async (slug: string, on: boolean) => changeSettings(slug, { agents_deploy_at_once: on });
+/** `POST /deployments/<slug>/settings`: what a deployer changes in place: whether agents may
+ *  propose its versions, whether an agent's version that asks for nothing more deploys at once
+ *  (turned on only by someone who may approve its deploys), and limits lowered (fewer runs kept
+ *  among them). A limit raised is refused: that is a new version, which a person approves. */
+export const changeSettings = async (slug: string, change: { agents_propose?: boolean; agents_deploy_at_once?: boolean; lower?: Record<string, number> }) =>
   asJson<DeploymentEntry>(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/settings`, change));
 
 /** A secret's history: a deployment's, or (`slug` null) the server's own. */
@@ -954,11 +1009,14 @@ export async function deleteSecret(slug: string, name: string): Promise<void> {
   if (!res.ok) await asJson(res);
 }
 
-export async function previewDeploy(slug: string, unitHash: string, requirements?: Requirements): Promise<DeployPreview> {
+/** What deploying `unitHash` as `slug` would do. `browsers`: the sites whose pages it answers, as
+ *  the deploy sends them (its document's line): a new one is a change a person reads, and approves
+ *  for an agent. */
+export async function previewDeploy(slug: string, unitHash: string, requirements?: Requirements, browsers?: string[]): Promise<DeployPreview> {
   const res = await api(`${BASE}/deploy/preview`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ slug, unit: unitHash, ...(requirements !== undefined ? { requirements } : {}) }),
+    body: JSON.stringify({ slug, unit: unitHash, ...(requirements !== undefined ? { requirements } : {}), ...(browsers !== undefined ? { browsers } : {}) }),
   });
   return asJson<DeployPreview>(res);
 }
@@ -972,9 +1030,12 @@ export type HostPolicy = {
   allow_private_addresses: boolean;
   /** Whether a handler's runs may ever be kept out of its log (`Unrecorded(…)`). */
   allow_unrecorded?: boolean;
-  /** `[agents] propose`: whether an agent's version that needs a person waits for one as a
-   *  proposal (off: it is refused, and nothing is saved). */
+  /** `[agents] propose`: whether an agent's version waits for a person as a proposal (off: it is
+   *  refused, and nothing is saved). */
   agents_propose?: boolean;
+  /** `[agents] deploy_at_once`: whether a flow's settings may let its agent versions that ask for
+   *  nothing more deploy without a person (off: each waits for one, whatever a flow says). */
+  agents_deploy_at_once?: boolean;
   /** `[storage]`: how often the server sweeps (`"10m"`, `"off"`). */
   storage?: { sweep_every: string; warn_at?: string };
   /** The policy file's text as it was read (null: there is none, and the defaults hold). */
@@ -1023,6 +1084,9 @@ export type DeploymentEntry = {
   waiting?: number;
   /** Whether agents may propose its versions (off: an agent's deploy of it is refused). */
   agents_propose?: boolean;
+  /** Whether a person let an agent's version of it that asks for nothing more deploy without them
+   *  (off: each waits for a person). */
+  agents_deploy_at_once?: boolean;
   /** The tags its version is deployed with (`flow("payout", { tags: ["payments"] })`): a binding
    *  on one of them holds on it. */
   tags?: string[];
@@ -1279,6 +1343,37 @@ export type Tally = { runs: number; failed: number; total_ms: number; last_at_ms
 export async function getLog(slug: string, after?: number): Promise<{ entries: LogEntry[]; next: number; head: string; breaks: number[]; tallies?: Record<string, Tally> }> {
   const q = after === undefined ? "" : `?after=${after}`;
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/log${q}`);
+  return asJson(res);
+}
+
+/** A run as the list of runs says it (recorder.rs's `RunHead`): when it ran, what started it (its
+ *  route, not its URL), its status, how long, who sent it, whether it failed, where it waits; never
+ *  its values, which are run.steps' (the whole log, `getLog`). */
+export type RunHead = {
+  seq: number;
+  session: number;
+  at_ms: number;
+  duration_ms: number;
+  kind: string;
+  route: string | null;
+  method: string | null;
+  status: number | null;
+  failed: boolean;
+  /** Whether it left a state a restore can put back: never the state's hash (state.view's). */
+  left_state: boolean;
+  by: string | null;
+  run_id: string;
+  unit: string;
+  parked: string[];
+  retries: number;
+  lost_since: number | null;
+};
+
+/** `GET /deployments/<slug>/log/heads` — the list of runs past `after`, run.view's: for whoever may
+ *  see a flow's runs and not read their steps (R55). */
+export async function getLogHeads(slug: string, after?: number): Promise<{ entries: RunHead[]; next: number; head: string; breaks: number[]; tallies?: Record<string, Tally> }> {
+  const q = after === undefined ? "" : `?after=${after}`;
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/log/heads${q}`);
   return asJson(res);
 }
 
@@ -1579,9 +1674,20 @@ export async function sendRequest(slug: string, request: HttpRequest): Promise<H
   return asJson<HttpResponse>(res);
 }
 
+/** A tick, as `POST …/tick` answers it: what it did (`performed`), or, to whoever doesn't hold
+ *  run.steps on the flow, `left_out` instead, saying it was left out and what would give it (R57). */
+export type Ticked = { at_epoch_seconds: number; label?: string; performed?: unknown[]; left_out?: string };
+
+/** What the editor says of a tick of `clock`. */
+export function tickSaid(clock: string, t: Ticked): string {
+  if (!t.performed) return `${clock}: ticked; ${t.left_out ?? "what it did is left out"}`;
+  const n = t.performed.length;
+  return `${clock}: ticked, ${n} effect${n === 1 ? "" : "s"} performed`;
+}
+
 /** `POST /deployments/<slug>/tick` — that clock of a deployed flow (its label, `every 2s`) ticks
  *  now, its next tick a period later; answers the tick's history entry. */
-export async function tickNow(slug: string, clock: string): Promise<{ at_epoch_seconds: number; label?: string; performed: unknown[] }> {
+export async function tickNow(slug: string, clock: string): Promise<Ticked> {
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/tick`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1657,16 +1763,34 @@ export type FlowListEntry = { name: string; saved_at_epoch_seconds: number; save
 /** A full saved flow as `GET /flows/<name>` returns it. */
 export type FlowRecord = FlowListEntry & { document: FlowDocument };
 
-/** `POST /flows` — save (upsert) the current canvas under `name`. The same name saves over
- *  the previous version: a flow is a mutable workspace file, and "save" means exactly what it
- *  means in any editor. Throws {@link ServerError} (400) for an invalid name. */
-export async function saveFlow(name: string, document: FlowDocument): Promise<FlowListEntry> {
+/** A save refused because the flow was saved again, or removed, since the save it was made from:
+ *  the save there now (`savedAt`, null when none is), to replace it from if its author says so. */
+export class StaleSave extends ServerError {
+  savedAt: number | null;
+  savedBy: string | null;
+  constructor(message: string, savedAt: number | null, savedBy: string | null) {
+    super(409, message);
+    this.name = "StaleSave";
+    this.savedAt = savedAt;
+    this.savedBy = savedBy;
+  }
+}
+
+/** `POST /flows` — save the current canvas under `name`, over `base`: the save it was made from
+ *  (its stamp; null for a new flow, none saved under the name). One saved since, or removed, is
+ *  left as it is and throws {@link StaleSave}; {@link ServerError} (400) for an invalid name. */
+export async function saveFlow(name: string, document: FlowDocument, base: number | null): Promise<FlowListEntry> {
   const res = await api(`${BASE}/flows`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     // What it places, beside the document (holonUsage.ts): who uses a holon, from listings.
-    body: JSON.stringify({ name, document, uses: usesIn(document) }),
+    body: JSON.stringify({ name, document, uses: usesIn(document), base }),
   });
+  if (res.status === 409) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string; saved_at_epoch_seconds?: number | null; saved_by?: string | null };
+    if ("saved_at_epoch_seconds" in body) throw new StaleSave(body.error ?? res.statusText, body.saved_at_epoch_seconds ?? null, body.saved_by ?? null);
+    throw new ServerError(409, body.error ?? res.statusText);
+  }
   return asJson<FlowListEntry>(res);
 }
 

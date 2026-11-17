@@ -193,7 +193,7 @@ impl App {
                     text(Tone::Head, s(&u["name"])),
                     field("Kind", if u["kind"] == "agent" { "an agent" } else { "a service" }),
                     field("Holds", crate::accesscmd::bindings_said(&u["bindings"])),
-                    Row::Field("Owner".into(), format!("{}{}", s(&u["owner"]), if u["owner_disabled"] == true { " (disabled)" } else { "" }), if u["owner_disabled"] == true { Tone::Warn } else { Tone::Plain }),
+                    Row::Field("Owner".into(), format!("{}{}", s(&u["owner"]), if u["owner_disabled"] == true { " (disabled: its tokens are refused)" } else { "" }), if u["owner_disabled"] == true { Tone::Bad } else { Tone::Plain }),
                     field("API keys", u["tokens"].as_array().map_or(0, Vec::len).to_string()),
                     Row::Field("State".into(), if u["disabled"] == true { "disabled: its keys are refused".into() } else { "active".into() }, if u["disabled"] == true { Tone::Warn } else { Tone::Plain }),
                     field("Since", crate::mcp::when(&u["created_at"])),

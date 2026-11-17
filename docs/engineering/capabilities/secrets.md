@@ -106,7 +106,16 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   those): a mark of its own kind, which a caller can't forge (`MARKED`) and which `holon verify`
   treats as any value the log doesn't hold. A step computed on its marks whose record is such a
   text is taken as recorded and named, not compared: computed on the marks it gives the text
-  with a mark in place, never the record's. A value with none of those characters has one spelling, and costs nothing more.
+  with a mark in place, never the record's. So is what a route answered, where the line withheld
+  it whole and the run again answers a text made of one so withheld: the host writes an answer
+  out itself, so no step's record stands for it (`answered_as_said`). A value with none of those characters has one spelling, and costs nothing more.
+- **Cut after it is marked.** A line keeps 64 KiB of what a route answered
+  (`secrets::ANSWER_KEPT`). The answer comes to the entry whole (`recorder::body_text`) and is
+  cut where the line is made, after the redactor has gone over it (`firing::cut_answer` in
+  `redacted_line`, `secrets::cut_written`): as the line writes it, and never inside a mark. Cut
+  before, a value lying across the cut left its first part in the line, the whole no longer
+  there to find, and a text read by its shape was no longer one. `holon verify` cuts what a run
+  answers again with the same function, and compares the two whole.
 - **Followed.** Core's taint walk follows a secret's value through the graph as literal or
   derived, cut by a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`), a Boolean or a call's
   answer. A state, collection, file, database or channel write of a secret or of what is derived
@@ -182,6 +191,18 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   far side sends back percent-encoded or as HTML. The taint walk marks or withholds what the
   graph derives; a value it can't follow (echoed back by an API and passed on) is caught only
   while it is literal.
+- **The log keeps sizes as they came.** It keeps the headers of a reply as the other service
+  sent them, the size line among them (`content-length`; also `content-range`, `etag` and a
+  checksum, where one is sent), the headers of the request a caller made, and the size and hash
+  of a file a run read, beside its text. A secret in that reply, that request or that file is
+  marked, and the size is still the whole text's. So where another service sends a secret back,
+  a caller sends one, or a file holds one, the log shows how long the secret is, to people
+  allowed to read that run's details: the length of the text less what is left of it once the
+  mark stands in. This is a choice, not an oversight (the owner's, 2026-11-17): the log stays
+  whole and who may read a run's details is what is controlled, since writing those sizes as
+  marks would do so in every run of every deployment that has a secret, and a check would then
+  have to take on trust each step that reads one. A flow that works out a length itself
+  (`text_length` of a reply) writes it down as its own.
 - **A mark stands for a text of 6 characters or more.** A true or false, a number, bytes, a
   list, a record, a short text, and a text JSON escapes leave the run's record withheld whole,
   and so does a secret read inside a function applied to each item, inside a module, or deeper
@@ -208,12 +229,17 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
 - **`--secrets :memory:`** keeps nothing across a restart: a waiting run's requests are sealed in
   a persisted deployments file under a key that is never kept, so after a restart (the secrets
   gone with it) the run can't be opened, and says so.
+- **A run's status, how long it took and whether it parked show in the list of runs.** A run's
+  steps and values are read under `run.steps`, a grant of its own (R55); the list of runs, under
+  `run.view`, keeps each run's status, duration and whether it waits. Any of them, like its timing
+  to the caller, can tell which way a choice went, a choice by a secret included.
 
 ## 5. What the tests hold
 
 - holon-core taint.rs: `a_leaf_computes_from_a_secret_unless_it_only_moves_what_it_was_handed`.
 - tests.rs: `a_secret_is_found_in_every_spelling_json_gives_it` (each kind of character, each
-  depth, each of the record, a write and a send).
+  depth, each of the record, a write and a send); `an_answer_is_cut_after_its_values_are_marked`
+  (a secret before the cut, across it at each place, after it).
 - secrets.rs: `a_value_computed_from_a_secret_has_one_mark_in_a_run_keyed_by_the_runs_salts`,
   `a_value_has_one_salt_drawn_once_sealed_and_kept_across_restarts`,
   `what_a_run_records_of_a_secret_is_where_it_is_kept_and_a_commitment_under_its_salt`,

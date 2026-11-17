@@ -31,7 +31,8 @@ pub(crate) struct Event {
     pub(crate) run_seq: u64,
     /// `"deploy"`, `"restore"`, `"ask"` (an agent's restore, saved for a person to approve),
     /// `"grant"`, `"secret"`, `"binding"` or `"lifecycle"` (pausing, stopping and running it, and
-    /// the server starting again after a crash with a state its last run didn't leave: `loaded`).
+    /// the server starting again after a crash with a state its last run didn't leave: `loaded`,
+    /// or with a waiting run cut off as it went on, which is ended).
     pub(crate) kind: String,
     /// What happened, in a few words: `revoked StateWrite("a")`, `paused`.
     pub(crate) what: String,

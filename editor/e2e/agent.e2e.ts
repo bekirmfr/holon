@@ -2,8 +2,10 @@
 // an agent writes a flow and deploys it with `holon mcp`, which signs in as the OS user's agent
 // (made for them through the run file the first time, mcphosts.rs), so the server holds it to
 // proposing (the agent role, access.rs); it waits for a person, and they deploy it from the flows
-// page, approving what it may do; after that the agent's next version deploys at once, and the
-// agent calls it and reads the run back as its own text. And the proposal sample (proposals.rs):
+// page, approving what it may do; the agent's next version waits for them too, and they approve it
+// from its review; once they let the flow take its versions that ask for nothing more at once (its
+// settings), the next deploys from the agent, and the agent calls it and reads the run back as its
+// own text. And the proposal sample (proposals.rs):
 // proposed with a why and a note, declined in Approvals with a reason the agent reads back,
 // proposed again and approved from its review; then agents' proposals turned off.
 
@@ -83,15 +85,52 @@ test("an agent proposes a flow through holon mcp, a person approves it in the ed
     await consent.getByRole("button", { name: /^(Approve and deploy|Deploy)$/ }).click();
     await expect(page.locator(".hl-tab--active")).toContainText("deployed");
 
-    // Now a version that needs nothing more deploys from the agent at once.
+    // The agent's next version waits for the person too, whatever it changes: this one asks for
+    // nothing new. They approve it from its review.
     const updated = await agent.tool("deploy", { text: text("Hello") });
-    expect(updated.text).toContain(`Deployed "${name}"`);
+    expect(updated.text).toContain("Not deployed yet");
+    expect(updated.text).toContain("It asks for nothing new.");
+    await page.goto("/#approvals");
+    await page.getByRole("link", { name: `review ${name}` }).click();
+    const decision = page.getByRole("complementary", { name: "decision" });
+    await expect(decision.getByRole("group", { name: "if approved" })).toContainText("v2 goes live");
+    await expect(decision.getByRole("group", { name: "if approved" })).toContainText("It asks for nothing new");
+    // Its changes say which handler's code it changes, beside its text.
+    await expect(page.getByRole("group", { name: "changes" }).getByRole("region", { name: "Its handlers" })).toContainText("handler GET /hi/:name");
+    await decision.getByRole("checkbox").check();
+    await decision.getByRole("button", { name: "Approve and deploy" }).click();
+    await expect(page.getByText(`Deployed ${name} v2.`)).toBeVisible();
+
+    // They let the flow take the agent's versions that ask for nothing more at once: the next one
+    // deploys from the agent.
+    await page.goto(`/#${name}.settings`);
+    const agents = page.getByRole("region", { name: "agents" });
+    await expect(agents).toContainText("Off: nothing an agent writes runs before a person has read it.");
+    await agents.getByLabel("agents' versions deploy at once").check();
+    await expect(agents).toContainText("An agent's version that asks for nothing more deploys without a person");
+    const atOnce = await agent.tool("deploy", { text: text("Hey") });
+    expect(atOnce.text).toContain(`Deployed "${name}"`);
     const called = await agent.tool("call", { slug: name, method: "GET", path: "/hi/Ada" });
     expect(called.text).toContain("GET /hi/Ada → 200");
-    expect(called.text).toContain("Hello, Ada");
+    expect(called.text).toContain("Hey, Ada");
+    // A run's steps aren't the agent's to read until a person gives it run.steps on the flow
+    // (R55): the refusal names what they run, and they bind it viewer there on its page.
+    const who = await mcpAgent(request, adminToken);
+    expect(called.text).toContain("Its steps aren't yours to read");
+    const refused = await agent.tool("explain", { slug: name });
+    expect(refused.failed).toBe(true);
+    expect(refused.text).toContain(`holon bind viewer --to ${who} --flow ${name}`);
+    await page.goto(`/#people.who.${who}`);
+    const bind = page.getByRole("region", { name: `${who}'s page` }).getByRole("form", { name: `bind a role to ${who}` });
+    await bind.getByLabel("bind: role").selectOption("viewer");
+    await bind.getByLabel("bind: where").selectOption("flow");
+    await bind.getByLabel("bind: flow").fill(name);
+    await bind.getByLabel("bind: why").fill("e2e: explains its runs");
+    await bind.getByRole("button", { name: "bind", exact: true }).click();
+    await expect(bind.getByRole("status")).toContainText(`Bound viewer to ${who} on "${name}"`);
     const explained = await agent.tool("explain", { slug: name });
-    expect(explained.text).toContain("`Hello, ${req.params.name}`");
-    expect(explained.text).toContain('⇒ { body: "Hello, Ada", status: 200 }');
+    expect(explained.text).toContain("`Hey, ${req.params.name}`");
+    expect(explained.text).toContain('⇒ { body: "Hey, Ada", status: 200 }');
   } finally {
     agent.close();
   }

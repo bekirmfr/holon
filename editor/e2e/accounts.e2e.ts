@@ -7,7 +7,7 @@
 
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { editorLoaded, FRESH as SERVER, FRESH_EDITOR as EDITOR, ISSUER } from "./fixtures";
-import { gotoPage, menuEntry, navLink, peopleTab } from "./helpers";
+import { dropFromPalette, gotoPage, menuEntry, navLink, newFlow, peopleTab } from "./helpers";
 
 const PASSWORD = "a long enough password";
 
@@ -27,7 +27,7 @@ async function fill(page: Page, label: string, value: string) {
 async function signIn(page: Page, name: string) {
   await fill(page, "name", name);
   await fill(page, "password", PASSWORD);
-  await page.getByRole("form", { name: "sign in" }).getByRole("button", { name: "sign in" }).click();
+  await page.getByRole("form", { name: "sign in" }).getByRole("button", { name: "sign in", exact: true }).click();
   await editorLoaded(page);
 }
 
@@ -142,7 +142,11 @@ test("a service's token acts with its role, until revoked; a disabled person is 
   await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
   await peopleTab(ada, "People");
   const cyRow = ada.locator("div", { has: ada.getByLabel("cy's role") }).last();
+  // Asked first, saying what it does: one click no longer ends someone's sign-ins (R43).
   await cyRow.getByRole("button", { name: "disable" }).click();
+  const asked = ada.locator('[aria-modal="true"]');
+  await expect(asked).toContainText("Disable cy? Their sign-ins end, and they can't sign in until enabled again.");
+  await asked.getByRole("button", { name: "Disable", exact: true }).click();
   await expect(cyRow).toContainText("· disabled");
   await menuEntry(cy, "library").click({ timeout: 5_000 }).catch(() => {});
   await expect(cy.getByRole("form", { name: "sign in" })).toBeVisible();
@@ -151,6 +155,8 @@ test("a service's token acts with its role, until revoked; a disabled person is 
   await cy.getByRole("form", { name: "sign in" }).getByRole("button", { name: "sign in" }).click();
   await expect(cy.getByRole("form", { name: "sign in" }).getByRole("alert")).toContainText("don't match");
   await cyRow.getByRole("button", { name: "enable" }).click();
+  await expect(asked).toContainText("Enable cy? They can sign in again.");
+  await asked.getByRole("button", { name: "Enable", exact: true }).click();
   await expect(cyRow).not.toContainText("· disabled");
 });
 
@@ -215,7 +221,7 @@ test("signing in through the identity provider an admin set, matched by email", 
   const cy = await someoneElse(browser);
   await cy.goto(EDITOR);
   await cy.getByRole("button", { name: `sign in through ${new URL(ISSUER).host}` }).click();
-  await cy.getByRole("link", { name: "sign in as cy@example.com" }).click();
+  await cy.getByRole("link", { name: "sign in as cy@example.com", exact: true }).click();
   await editorLoaded(cy);
   await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
 
@@ -225,4 +231,71 @@ test("signing in through the identity provider an admin set, matched by email", 
   await eve.getByRole("button", { name: `sign in through ${new URL(ISSUER).host}` }).click();
   await eve.getByRole("link", { name: "sign in as eve@example.com" }).click();
   await expect(eve.getByRole("form", { name: "sign in" }).getByRole("alert")).toContainText("has no account here");
+});
+
+/** A flow changed and not saved, in a tab of its own: a node dropped on a new draft. */
+async function unsavedDraft(page: Page) {
+  await newFlow(page);
+  await dropFromPalette(page, "uppercase");
+  await expect(page.locator(".hl-tab--active .hl-tab__dirty")).toBeVisible();
+}
+
+test("a sign-in that ends keeps the open flows: signing in again goes on with them; another tab's sign-in leaves whom this one acts as", async ({ browser, request }) => {
+  const context = await browser.newContext();
+  const ada = await context.newPage();
+  await ada.goto(EDITOR);
+  await signIn(ada, "ada");
+  await expect(ada.getByRole("button", { name: "account: ada" })).toBeVisible();
+  // Her session's token, as the browser keeps it now, to sign it out elsewhere below.
+  const token = await ada.evaluate(() => (JSON.parse(localStorage.getItem("holon.session") ?? "null") as { token?: string } | null)?.token ?? "");
+  await unsavedDraft(ada);
+
+  // Another tab of the same browser signs in as cy, a viewer: the browser keeps cy's session, and
+  // ada's tab still acts as ada (it read the browser's on every request, so it acted as cy).
+  const other = await context.newPage();
+  await other.addInitScript(() => localStorage.removeItem("holon.session"));
+  await other.goto(EDITOR);
+  await signIn(other, "cy");
+  await expect(other.getByRole("button", { name: "account: cy" })).toBeVisible();
+  await other.close();
+  await gotoPage(ada, "people");
+  await peopleTab(ada, "People");
+  await expect(ada.getByLabel("cy's role"), "the people list, which ada may read and cy may not").toBeVisible();
+
+  // Ada's sign-in ends elsewhere (her session signed out): the editor's next read is refused, and
+  // a sign-in covers it, the editor kept beneath.
+  expect((await request.post(`${SERVER}/auth/sign-out`, { data: {}, headers: { Authorization: `Bearer ${token}` } })).status()).toBe(204);
+  const again = ada.getByRole("dialog", { name: "sign in again" });
+  await expect(again).toContainText("Your sign-in ended", { timeout: 15_000 });
+  await expect(again.getByLabel("name", { exact: true })).toHaveValue("ada");
+  await again.getByLabel("password", { exact: true }).fill(PASSWORD);
+  await again.getByRole("button", { name: "sign in", exact: true }).click();
+  await expect(again).toHaveCount(0);
+  // Back where she was, the draft still open and still not saved.
+  await expect(ada.getByLabel("cy's role")).toBeVisible();
+  await navLink(ada, "Editor").click();
+  await expect(ada.getByRole("tablist", { name: "open tabs" }).locator(".hl-tab__dirty")).toHaveCount(1);
+  await context.close();
+});
+
+test("a provider's sign-in that expires is signed in again in a pop-up, the open flows kept", async ({ browser }) => {
+  const cy = await someoneElse(browser);
+  await cy.goto(EDITOR);
+  await cy.getByRole("button", { name: `sign in through ${new URL(ISSUER).host}` }).click();
+  // An ID token good for 90 s: the editor holds it expired half a minute early, a minute in, time
+  // enough on a slow runner to load the editor and open a draft before it does.
+  await cy.getByRole("link", { name: "sign in as cy@example.com for 90 s", exact: true }).click();
+  await editorLoaded(cy);
+  await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
+  await unsavedDraft(cy);
+  const again = cy.getByRole("dialog", { name: "sign in again" });
+  await expect(again).toContainText("Your sign-in ended", { timeout: 90_000 });
+  const popup = cy.waitForEvent("popup");
+  await again.getByRole("button", { name: `sign in through ${new URL(ISSUER).host}` }).click();
+  const provider = await popup;
+  await provider.getByRole("link", { name: "sign in as cy@example.com", exact: true }).click();
+  await provider.waitForEvent("close");
+  await expect(again).toHaveCount(0);
+  await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
+  await expect(cy.getByRole("tablist", { name: "open tabs" }).locator(".hl-tab__dirty")).toHaveCount(1);
 });

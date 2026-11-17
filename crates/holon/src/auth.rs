@@ -81,25 +81,37 @@ fn shown(p: &Principal, accounts: &Accounts) -> serde_json::Value {
 }
 
 /// Why `caller` may not give the role named `role` on the host, as inviting, adding or setting
-/// someone with it binds it there (D19), if they may not: 400 for no such role.
+/// someone with it binds it there, if they may not: 400 for no such role. A binding, so as
+/// `POST /bindings` asks: people.assign on the host (people.manage, which lets them this far,
+/// makes and changes principals, not what they hold), and what it gives, for good (D19).
 fn may_give(caller: &Caller, accounts: &Accounts, role: &str) -> Result<(), Response> {
     let Some(def) = accounts.access_document().role(role) else { return Err(err(400, format!("no role {role:?}: GET /roles lists them"))) };
-    crate::bindings::may_bind(caller, &def, &crate::bindings::Scope::Host)
+    if crate::can::can(caller, crate::can::Action::PeopleAssign, &crate::can::Resource::Host).is_err() {
+        return Err(err(403, format!("giving {role} binds it on the host, which takes people.assign there, which you don't hold")));
+    }
+    crate::bindings::may_bind_until(caller, &def, &crate::bindings::Scope::Host, None)
 }
 
-/// What `name` holds that `caller` doesn't, in words, if anything (D19).
+/// What `name` holds that `caller` doesn't, in words, if anything (D19): or what an agent or a
+/// service `name` owns holds, whose tokens whoever acts as `name` makes.
 fn holds_more(caller: &Caller, accounts: &Accounts, name: &str) -> Option<String> {
-    let p = accounts.principal(name)?;
     let document = accounts.access_document();
-    let (b, a) = crate::bindings::beyond(caller, &document, p.kind, document.reaching(name).map(|(b, _)| b), crate::deploy::epoch_now())?;
-    Some(format!("{name} holds {} {}, which holds {} there, which you don't", b.role, b.scope.said(), a.name()))
+    let more = |who: &str| -> Option<String> {
+        let p = accounts.principal(who)?;
+        let (b, a) = crate::bindings::beyond(caller, &document, p.kind, document.reaching(who).map(|(b, _)| b), crate::deploy::epoch_now(), true)?;
+        Some(format!("{} {}, which holds {} there, which you don't", b.role, b.scope.said(), a.name()))
+    };
+    match more(name) {
+        Some(more) => Some(format!("{name} holds {more}")),
+        None => accounts.owned(name).iter().find_map(|o| Some(format!("{name} owns {o}, which holds {}", more(o)?))),
+    }
 }
 
 /// Why `caller` may not change `name`, if they may not: its sign-in (a reset, its email), its
 /// tokens, its owner, its role, whether it is enabled, or that it is there. Whoever does could act
 /// as `name` or take from them, so they hold everything `name` holds, as they would to have given
 /// it (D19, both ways).
-fn may_change(caller: &Caller, accounts: &Accounts, name: &str) -> Result<(), Response> {
+pub(crate) fn may_change(caller: &Caller, accounts: &Accounts, name: &str) -> Result<(), Response> {
     match holds_more(caller, accounts, name) {
         Some(more) => Err(err(403, format!("{more}: you change, or act as, only someone who holds no more than you"))),
         None => Ok(()),
@@ -117,21 +129,9 @@ fn may_take_over(caller: &Caller, accounts: &Accounts, name: &str, what: &str) -
         return Ok(());
     }
     let Some(n) = accounts.access_document().approvals.changes else { return Ok(()) };
-    let Some(held) = crate::access_proposals::governing(accounts, name) else { return Ok(()) };
-    let instead = format!("or take that from {name} first, which applies at once, and give it back after, which waits");
+    let Some(held) = crate::access_proposals::governing_as(accounts, name) else { return Ok(()) };
+    let instead = format!("or take that from {} first, which applies at once, and give it back after, which waits", held.0);
     Err(err(403, crate::access_proposals::taken_over(name, &held, what, n, &instead)))
-}
-
-/// Where `request` came from, as the tries of a way in are counted (accounts.rs, `counted`): its
-/// address, or for IPv6 its /64, which one client is commonly given whole.
-fn address(request: &Request) -> String {
-    match request.remote_addr().ip() {
-        std::net::IpAddr::V6(v6) if v6.to_ipv4_mapped().is_none() => {
-            let s = v6.segments();
-            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
-        }
-        ip => ip.to_canonical().to_string(),
-    }
 }
 
 /// A session begun: its token, whose it is, and when it ends (`holon login` says so).
@@ -224,7 +224,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 password: String,
             }
             return respond(body::<Setup>(request).and_then(|s| {
-                let (token, a) = accounts.setup_from(&s.code, &s.name, &s.password, &address(request)).map_err(|e| err(if e.contains("busy") { 503 } else { 400 }, e))?;
+                let (token, a) = accounts.setup_from(&s.code, &s.name, &s.password, &state.access.client(request)).map_err(|e| err(if e.contains("busy") { 503 } else { 400 }, e))?;
                 state.activity.record("set up the server", &a.name, Some(&a.name));
                 Ok(signed_in(&token, &a, accounts))
             }));
@@ -236,7 +236,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 password: String,
             }
             return respond(body::<SignIn>(request).and_then(|s| {
-                let (token, a) = accounts.sign_in_from(&s.name, &s.password, &address(request)).map_err(|e| err(if e.contains("busy") { 503 } else { 401 }, e))?;
+                let (token, a) = accounts.sign_in_from(&s.name, &s.password, &state.access.client(request)).map_err(|e| err(if e.contains("busy") { 503 } else { 401 }, e))?;
                 Ok(signed_in(&token, &a, accounts))
             }));
         }
@@ -293,20 +293,30 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 Ok(Response::empty_204())
             }));
         }
+        // 204 only when the sign-in it came with ended: anything else says why it goes on, or
+        // that it had ended (the gate let it in a moment before).
         ("POST", "/auth/sign-out") => {
             let token = request.header("Authorization").and_then(|h| h.strip_prefix("Bearer ")).map(str::trim).unwrap_or_default();
+            if accounts.local(token).is_some() {
+                return Some(err(409, "this is the machine's run file, which signs in while the server runs: it ends when the server stops"));
+            }
+            if token.starts_with("ht_") {
+                return Some(err(409, "an API token signs no one in to sign out of: revoke it to end it (on the People page, or holon people revoke <name> <id>)"));
+            }
             // A provider's ID token is good until it expires: it is kept refused until then.
-            if crate::oidc::looks_like_jwt(token) {
-                let until = accounts.oidc().as_ref().and_then(|oidc| oidc.verify(token).ok()).map(|identity| identity.expires_at);
-                if let Some(until) = until
-                    && let Err(e) = accounts.end_provider_sign_in(token, until)
-                {
-                    return Some(err(500, format!("couldn't sign you out: {e}")));
+            let ended = if crate::oidc::looks_like_jwt(token) {
+                match accounts.oidc().as_ref().and_then(|oidc| oidc.verify(token).ok()).map(|identity| identity.expires_at) {
+                    Some(until) => accounts.end_provider_sign_in(token, until).map(|()| true),
+                    None => Ok(false),
                 }
             } else {
-                accounts.sign_out(token);
+                accounts.sign_out(token)
+            };
+            match ended {
+                Ok(true) => Response::empty_204(),
+                Ok(false) => err(401, "your sign-in had ended already"),
+                Err(e) => err(500, format!("couldn't sign you out: {e}: you are still signed in")),
             }
-            Response::empty_204()
         }
 
         // ── people (the gate lets only admins this far, and owners to their principals' tokens) ──
@@ -366,7 +376,7 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 if s.settings.is_some()
                     && caller.local.is_none()
                     && let Some(n) = accounts.access_document().approvals.changes
-                    && let Some((name, held)) = others().find_map(|p| Some((p.name.clone(), crate::access_proposals::governing(accounts, &p.name)?)))
+                    && let Some((name, held)) = others().find_map(|p| Some((p.name.clone(), crate::access_proposals::governing_as(accounts, &p.name)?)))
                 {
                     let instead = "or turn off access changes waiting for people first (holon access approvals --changes off), which waits too";
                     return Err(err(403, crate::access_proposals::taken_over(&name, &held, "sets the identity provider, which says who each person here is,", n, instead)));

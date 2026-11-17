@@ -290,16 +290,24 @@ nodes that may compute from a secret; an outbound request built from one is logg
 parts reading `‹withheld: computed from a secret›`, and so are the run's own outputs, its
 response body and any other effect built from one. `verify` doesn't run such a run again, and
 says which step and which secret: "`text_contains` computed a true or false from the secret
-api_password: only a text of 6 characters or more is carried through a replay". To keep a run
-checked, keep facts like that out of the secret (a setting of its own beside it), and compare a
-secret whole with `secure_equals`.
+api_password: only a text of 6 characters or more, in a step the log keeps, is carried through a
+replay". To keep a run checked, keep facts like that out of the secret (a setting of its own
+beside it), and compare a secret whole with `secure_equals`.
 
-A step that gives a secret, or a value computed from one, larger than the log keeps of a step
-(16 KiB) makes a run like that too: on its mark the step is shorter, and the record can't show
-it as the run had it. Each entry says whether its record withholds (`withheld`), and `verify`
-holds the line to that both ways: one that says it marked every such value fails where a step
-that gives a secret's value, or one computed from it, has no outputs; one that says it withholds
-fails where it keeps a step that may compute from a secret, or where the run had none.
+A step that gives a secret, or a value computed from one, is kept when it fits what the log keeps
+of a step (16 KiB) as the record writes it, each such value as its mark: whether it is kept says
+nothing of how long the secret is. One larger than that even so makes a run like that too, the
+same for any secret, and so does one that carries a file the log keeps by its hash (past 4 KiB):
+the log doesn't keep the file twice. A step that only moves such a value (into a record, a list,
+a longer text, or JSON) is the exception: `verify` builds it again on the marks, so leaving it out
+costs nothing. Each entry says whether its record withholds (`withheld`), and `verify` holds the
+line to that both ways: one that says it marked every such value fails where a step `verify`
+can't build again on the marks (one that computes with a secret, or with a value computed from
+one) has no outputs, where a step that only moves one has none though it fits, or where it
+commits to no secret (without a commitment's salt there is no key to mark one with); one that
+says it withholds fails where it keeps a step that may compute from a secret, where the run had
+none, or where nothing in it made its record withhold (no step computed from a secret, and each
+that `verify` can't build again kept).
 
 A run's steps show which way a choice went, a choice by a secret included:
 `key.startsWith("live_") ? a : b` lists the steps of the branch it took. That is by design:
@@ -327,6 +335,13 @@ mark can be put into (another writer's: `\u0022` for a quote) is kept out whole,
 `‹respelled:secret:name›`; a step fed one, or whose own record is one, is taken as recorded and
 named in the report, as a step fed any value the log doesn't hold. A write or a send that the server refuses for a secret, it
 refuses in any of these spellings.
+
+The log keeps sizes as they came. It keeps the size line of a reply (`content-length`) as the
+other service sent it, and a file's size beside its text. So where another service sends a
+secret back, or a file holds one, the log shows how long the secret is, to people allowed to
+read that run's details: the secret itself is marked, and the size is still the whole text's.
+Nothing of the secret but its length shows. If that matters for one of yours, keep it out of
+what the other service echoes, or limit who may read that flow's runs.
 
 A credential a call answers with is kept out the same way when the request held a secret (an
 OAuth token exchange): a value under `access_token`, `refresh_token`, `id_token`, `session_token`,

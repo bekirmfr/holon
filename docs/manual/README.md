@@ -65,6 +65,8 @@ propose, and find out what happened. For how Holon is built, see the design docu
   the policy file, accounts and tokens.
 - **[Permissions](reference/permissions.md):** every permission a flow can ask for, and how the
   policy treats it.
+- **[What reaches a server](reference/surfaces.md):** every command and agent tool, what each
+  reaches and what guards it: the run file first, and an export, a file no grant follows.
 
 ## Conventions
 
