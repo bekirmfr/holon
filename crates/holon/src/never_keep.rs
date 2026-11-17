@@ -38,6 +38,19 @@ fn names_any(s: &str, keys: &[String]) -> bool {
     keys.iter().any(|k| s.as_bytes().windows(k.len()).any(|w| w.eq_ignore_ascii_case(k.as_bytes())))
 }
 
+/// `v` with each value under one of `keys` as its mark, where it stands ([`replace`]): what a
+/// run's id hashes (`firing::run_id_of`). `v` as it is where it holds none.
+pub(crate) fn marked<'v>(v: &'v holon_core::Value, keys: &[String]) -> std::borrow::Cow<'v, holon_core::Value> {
+    if keys.is_empty() {
+        return std::borrow::Cow::Borrowed(v);
+    }
+    let mut s = SValue::from_core(v);
+    match replace(&mut s, keys, &mark).is_empty() {
+        true => std::borrow::Cow::Borrowed(v),
+        false => std::borrow::Cow::Owned(s.into_core()),
+    }
+}
+
 /// Each value in `v` that stands under one of `keys`, replaced whole by what `put` makes of its key
 /// (as the flow wrote it); the keys replaced, in the order met.
 pub(crate) fn replace(v: &mut SValue, keys: &[String], put: &dyn Fn(&str) -> String) -> Vec<String> {
@@ -324,9 +337,9 @@ impl Places {
         self.keys.iter().enumerate().map(|(i, k)| (self.placeholder(i), mark(k))).collect()
     }
 
-    /// `v` with each value under a key stood in for.
-    pub(crate) fn svalue(&self, v: &mut SValue) {
-        replace(v, &self.keys, &|k| self.put(k));
+    /// `v` with each value under a key stood in for; whether it held one.
+    pub(crate) fn svalue(&self, v: &mut SValue) -> bool {
+        !replace(v, &self.keys, &|k| self.put(k)).is_empty()
     }
 
     /// `s` with each value under a key stood in for.
@@ -337,7 +350,9 @@ impl Places {
     /// Everything of `e` a run could have put a value into ([`LogEntry::values_mut`], its texts),
     /// each value under a key stood in for.
     pub(crate) fn entry(&self, e: &mut crate::recorder::LogEntry) {
-        e.values_mut(&mut |v| self.svalue(v));
+        e.values_mut(&mut |v| {
+            self.svalue(v);
+        });
         for s in e.texts_mut() {
             self.text(s);
         }

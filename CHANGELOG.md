@@ -16,7 +16,10 @@
   "never keeps", and an agent's version that drops a key waits for a person (`KeepAgain`). A text
   computed from a secret that holds such a value under its key gets no hash in the run's record
   (a CVC's would be a thousand tries from it): the record withholds what the run computed from a
-  secret, and `holon verify` says why it doesn't run it again. The **card-check** sample shows it.
+  secret, and `holon verify` says why it doesn't run it again. A run's id hashes such a value as
+  its mark, so that the id beside its nonce isn't a CVC a thousand tries away either, and verify
+  makes it again from the record; a step is kept or left out, for its size, as the record writes
+  it, the value as its mark. The **card-check** sample shows it.
 - **A long answer is cut after its secrets are marked.** A run's line keeps 64 KiB of what a
   route answered. It was cut there as the run had it, and marked afterwards: a secret lying
   across the cut left its first part in the line, since the whole value was no longer there to

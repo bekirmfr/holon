@@ -261,6 +261,24 @@ pub(crate) fn never_kept(never_keep: &[String], entry: &mut crate::recorder::Log
     found_at(&keys, entry, lines, marked)
 }
 
+/// The values of the keys a flow never keeps in what started a run (`inputs`: a request, a
+/// message), as [`never_kept`] finds them in its entry: known before the run takes a step, for
+/// its timer to measure each step as its record will write it (`secrets::Measured`).
+pub(crate) fn never_kept_in(never_keep: &[String], inputs: &[Option<Value>]) -> Vec<(String, String)> {
+    if never_keep.is_empty() {
+        return Vec::new();
+    }
+    let keys: Vec<&str> = never_keep.iter().map(String::as_str).collect();
+    let mut found = Vec::new();
+    for v in inputs.iter().flatten() {
+        svalue_tainted(&crate::wire::SValue::from_core(v), &keys, &mut found);
+    }
+    found.retain(|(_, value)| value.chars().count() >= crate::secrets::MIN_SECRET_LEN && !value.contains('‹'));
+    found.sort();
+    found.dedup();
+    found
+}
+
 /// [`tainted`]'s finding, for `keys`.
 fn found_at(keys: &[&str], entry: &mut crate::recorder::LogEntry, lines: &[(String, Value)], marked: &crate::secrets::Redactor) -> Vec<(String, String)> {
     let keys = keys.to_vec();

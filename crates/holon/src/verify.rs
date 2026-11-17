@@ -97,6 +97,13 @@ pub(crate) const MARK_STANDS_FOR: &str = "only a text of 6 characters or more, i
 /// differs.
 fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry, unrecorded: &BTreeSet<Vec<u32>>, keyed: bool, never_keep: &[String]) -> Option<String> {
     let fed = taint::SecretFed::of(root, resolver);
+    // A step of a request's run as deep as the log follows is in its timeline, its outputs kept
+    // or not (`recorder::Timer`): a request's run never waits, so its steps are all its own. One
+    // this check needed and the timeline doesn't hold at all was taken out: the run differs.
+    let deep = |p: &Vec<u32>| p.len() > recorder::Timer::DEPTH;
+    if entry.kind == "request" && unrecorded.iter().any(|p| !deep(p) && !entry.timeline.iter().any(|t| t.path == *p)) {
+        return None;
+    }
     let derived_missing = entry.timeline.iter().any(|t| t.outputs.is_none() && fed.derives(&t.path)) || unrecorded.iter().any(|p| fed.derives(p));
     if entry.withheld && derived_missing {
         return Some(withheld_why(root, resolver, &fed, entry, never_keep));
@@ -104,7 +111,6 @@ fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry,
     // A line that says it marked every value the run computed from a secret kept each step this
     // check takes from it (`secrets::born`, `SecretFed::taken`), as deep as the log follows a
     // run's steps: one without is taken out, and the run differs.
-    let deep = |p: &Vec<u32>| p.len() > recorder::Timer::DEPTH;
     let taken_missing = entry.timeline.iter().any(|t| t.outputs.is_none() && fed.taken(&t.path)) || unrecorded.iter().any(|p| fed.taken(p) && !deep(p));
     if !entry.withheld && taken_missing {
         return None;
@@ -1644,10 +1650,14 @@ fn rerun(
     // A run that received a secret or a token (a resume route's in its path, a bearer token equal
     // to a secret) was given its id from the value, which the log never holds: it can't be made
     // again, and the log's stands, as what the log kept stands in for a node fed one. Only a mark
-    // the log wrote counts: a look-alike a caller sent is computed with.
-    given.id = inputs.iter().flatten().chain(state.iter().map(|(_, v)| v)).chain(extra.iter().map(|(_, v)| v)).any(|v| marks.carried(v));
+    // the log wrote counts: a look-alike a caller sent is computed with. A value its flow never
+    // keeps, under its key, is hashed as its mark (`firing::run_id_of`): the id is made again
+    // with the mark there, and only another mark makes it the log's.
+    let never_keep = read_server(deployed, resolver).map(|s| s.never_keep).unwrap_or_default();
+    let unmarked = |v: &Value| !marks.carried(&crate::never_keep::marked(v, &never_keep));
+    given.id = !inputs.iter().flatten().chain(state.iter().map(|(_, v)| v)).chain(extra.iter().map(|(_, v)| v)).all(unmarked);
     let id_matches = given.id || nonce.is_some_and(|nonce| {
-        let id = |state: Option<&State>| to_hex(&run_id_of(deployment, &inputs, state, &extra, &nonce));
+        let id = |state: Option<&State>| to_hex(&run_id_of(deployment, &inputs, state, &extra, &nonce, &never_keep));
         id(Some(&state)) == entry.run_id || (state.is_empty() && id(None) == entry.run_id)
     });
     if !id_matches {
@@ -1730,7 +1740,6 @@ fn rerun(
         .collect();
     // What holds a value its flow never keeps, under its key, is refused where it runs
     // (never_keep.rs), and so here: its mark stands where the value stood.
-    let never_keep = read_server(deployed, resolver).map(|s| s.never_keep).unwrap_or_default();
     host.performed.retain(|(c, p)| crate::never_keep::refused(c, p, &never_keep).is_none());
     // A write of a secret's value is refused where it runs (firing.rs), and run again here with
     // its placeholder it can't be told from one that was performed (a file's text, logged by
@@ -1989,7 +1998,8 @@ fn ill_formed(entry: &LogEntry, marks: &Marks) -> Option<String> {
         let Value::Record(made) = data::request_record(method, path, BTreeMap::new(), query, &[], "") else { unreachable!("a request's record") };
         // A value the log keeps out of it (a tainted query parameter) is marked where the log
         // found it, which a URL's percent-encoding may hide: only its method is then compared.
-        let marked = marks.carried(&Value::Text(url.clone())) || fields.values().any(|v| marks.carried(v));
+        // A mark in what the URL doesn't make (its body, its headers) leaves them compared.
+        let marked = marks.carried(&Value::Text(url.clone())) || ["path", "query"].iter().any(|k| fields.get(*k).is_some_and(|v| marks.carried(v)));
         let differs = |k: &str| fields.get(k) != made.get(k);
         if differs("method") || (!marked && (differs("path") || differs("query"))) {
             return Some("its request isn't the one its method and URL make".into());
@@ -2173,8 +2183,17 @@ fn steps_of(
             }
             // A step holding a mark: too large to keep as the run had it (the mark is shorter
             // than the value). Where the walk says clean, a mark is a copy a caller sent or a
-            // host echoed, and explains it.
-            (None, Some(a)) => a.iter().flatten().any(|v| marks.carried(&v.clone().into_core())),
+            // host echoed, and explains it. But one whose only marks are of values its flow
+            // never keeps was measured as the record writes it (`secrets::Measured`): left out
+            // only too large so, as one that only moves a secret's value is.
+            (None, Some(a)) => {
+                let held: Vec<Value> = a.iter().flatten().map(|v| v.clone().into_core()).collect();
+                let marked: Vec<&Value> = held.iter().filter(|v| marks.carried(v)).collect();
+                match !marked.is_empty() && marked.iter().all(|v| marks.only_never_kept(v)) {
+                    true => !recorder::fits(&a.iter().map(|o| o.clone().map(|v| marks.write(v))).collect::<Vec<_>>()),
+                    false => !marked.is_empty(),
+                }
+            }
             (Some(l), None) => l.iter().flatten().any(|v| marks.carried(&marks.read(v, escaped))),
         };
         let reason = match (&l.reason, &a.reason) {
@@ -2607,6 +2626,22 @@ impl Marks {
     /// The keys never kept whose placeholder is in `v` (`‹never_keep:cvc›`), by key.
     fn never_kept_in(&self, v: &Value) -> BTreeSet<String> {
         self.rest_of(Marks::NEVER_KEPT, v)
+    }
+
+    /// Whether every placeholder in `v` is a value never kept's, and it holds one.
+    fn only_never_kept(&self, v: &Value) -> bool {
+        let start = format!("{}{}", self.start, Marks::NEVER_KEPT);
+        let (any, other) = (std::cell::Cell::new(false), std::cell::Cell::new(false));
+        secrets::value_holds(v, &|s: &str| {
+            for (i, _) in s.match_indices(self.start.as_str()) {
+                match s[i..].starts_with(start.as_str()) {
+                    true => any.set(true),
+                    false => other.set(true),
+                }
+            }
+            false
+        });
+        any.get() && !other.get()
     }
 
     /// The tokens whose placeholder is in `v` (as [`Marks::read`] gives it): each as its mark

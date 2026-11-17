@@ -2216,7 +2216,7 @@ fn a_run_id_is_recomputable_from_its_log_entry() {
     let nonce: [u8; 16] = (0..16).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect::<Vec<_>>().try_into().unwrap();
     assert_eq!(hex.len(), 32, "128 bits");
     // An action's run has one input: what it was sent.
-    let recomputed = run_id_of(writer, &[Some(sv(&e["request"]))], Some(&state_before), &sourced, &nonce);
+    let recomputed = run_id_of(writer, &[Some(sv(&e["request"]))], Some(&state_before), &sourced, &nonce, &[]);
     assert_eq!(e["run_id"], to_hex(&recomputed));
 }
 
@@ -9580,6 +9580,15 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
     let alike = "‹secret:";
     let alikes = alike.repeat((most - step(&mark, "")) / alike.len());
     assert!(step(&mark, &alikes) <= most && step(&mark, &alikes.replace('‹', "‹‹")) > most, "the look-alikes fit only unescaped");
+    // And a CVC the flow never keeps beside the value computed from the secret, of 3 digits with
+    // one secret and 4 with the other, sized so that as the run had it the step fits with the
+    // shorter CVC and not the longer: as its record writes it, the CVC as its mark, it is the
+    // same with either (left out, built again on the marks, R66).
+    let never = crate::never_keep::mark("cvc");
+    let card_pad = "x".repeat(most - step(&mark, "cvc=737&p="));
+    let card = move |cvc: &str| format!("cvc={cvc}&p={card_pad}");
+    assert!(step(&mark, &card("737")) <= most && step(&mark, &card("7370")) > most && step(&mark, &card(&never)) > most, "the CVC row straddles the limit as the run has it");
+    let cvcsized = move |s: &str| card(if s == secrets[0] { "737" } else { "7370" });
     // (the route, what it does with the secret `k`, what a caller sends given the secret,
     // whether its record marks every value it computed)
     type Sent<'a> = &'a dyn Fn(&str) -> String;
@@ -9645,6 +9654,7 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         ("large", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &large, true),
         ("tight", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &tight, true),
         ("lookalike", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &alikes, true),
+        ("cvcsized", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &cvcsized, true),
         // A value computed from it beside a file's text the log keeps by its hash: the step that
         // gives the two isn't kept, as the file is the log's already, and the check computes it
         // on the marks.
@@ -9725,6 +9735,9 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         }
         for (entry, rerun) in [(one, &report.reruns[i].1), (other, &report.reruns[rows.len() + i].1)] {
             let line = entry.to_string();
+            if *path == "cvcsized" && line.contains("cvc=737") {
+                wrong.push(format!("{path}: its record keeps the CVC: {line}"));
+            }
             if (line.contains(secrets::DERIVED_MARK) && !line.contains("‹withheld")) != *marked {
                 wrong.push(format!("{path}: marked isn't {marked}: {line}"));
             }
@@ -10492,7 +10505,10 @@ fn changes_of(line: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
 /// a number computed from it, which no mark stands for, withheld ("counted"); the secret as it
 /// is in a body larger than the log keeps of a step ("large", R63); a credential computed from
 /// it in a JSON body beside what the caller sent past that size, and beside a file's text the
-/// log keeps by its hash ("sized", R66); and calls, reads and a claim with no secret ("calls",
+/// log keeps by its hash ("sized", R66); a flow that never keeps a key, a text computed from
+/// its secret holding the caller's CVC under it (withheld, as the record lists no hash of it)
+/// beside its secret sent as it is (whole: said to withhold, refused) ("cards"); and calls,
+/// reads and a claim with no secret ("calls",
 /// "reads"). Not, and so where to look next: a step that computes from a secret past that size
 /// or carrying such a file (withheld, its record held by the "computed" row of
 /// `a_runs_record_reads_the_same_whatever_its_secret`); a mark as a record's key (its "keyed"
@@ -10591,7 +10607,17 @@ route.post("/upload", async (req) => {
     .replace("HOST", &host)
     .replace("PORT", &free_port().to_string());
     let sized = deploy_text(&state, &text, &host);
-    // And one that reads: an item of a collection it writes (so it claims it before it calls
+    // And one that never keeps a key (never_keep): /sign splices its secret's base64 into the
+    // form its caller sent, the CVC under its key in it, a text of which no hash is listed, so its
+    // record withholds what it computed (`secrets::born`), as it honestly does; /plain sends its
+    // secret as it is, the CVC answered beside, and withholds nothing, so a line of it changed to
+    // say it withholds is refused (`flips`).
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\n\nflow(\"cards\", {{ port: {}, never_keep: [\"cvc\"] }})\n\nroute.post(\"/sign\", async (req) => {{\n  const got = await host.post(\"/a\", {{ body: req.body.replace(\"SIG\", btoa(k)) }})\n  return {{ status: got.status }}\n}})\n\nroute.post(\"/plain\", async (req) => {{\n  const got = await host.post(\"/a\", {{ body: k }})\n  return {{ status: got.status, n: req.body }}\n}})\n",
+        free_port()
+    );
+    let cards = deploy_text(&state, &text, &host);
+    // And one that reads:an item of a collection it writes (so it claims it before it calls
     // out), a folder's file, a database's row. Each read is answered from the line (R62).
     let files = std::env::temp_dir().join(format!("holon-sweep-reads-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&files).unwrap();
@@ -10606,7 +10632,7 @@ route.post("/upload", async (req) => {
     );
     let reads = deploy_text(&state, &text, &host);
     let big = format!("live_{}", "q".repeat(recorder::Timer::MAX_RECORDED_BYTES));
-    for (slug, value) in [(&signed, "live_alpha-secret-value-1"), (&counted, "live_alpha-secret-value-1"), (&large, big.as_str()), (&sized, "live_alpha-secret-value-1")] {
+    for (slug, value) in [(&signed, "live_alpha-secret-value-1"), (&counted, "live_alpha-secret-value-1"), (&large, big.as_str()), (&sized, "live_alpha-secret-value-1"), (&cards, "live_alpha-secret-value-1")] {
         let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
         assert_eq!(route(&state, &set).status_code, 200);
     }
@@ -10622,6 +10648,10 @@ route.post("/upload", async (req) => {
         let (status, body, _) = data_call(&state, &sized, "POST", "/send", &format!("{n}{}", "x".repeat(20 * 1024)));
         assert_eq!(status, 200, "{body}");
         let (status, body, _) = data_call(&state, &sized, "POST", "/upload", n);
+        assert_eq!(status, 200, "{body}");
+        let (status, body, _) = data_call(&state, &cards, "POST", "/sign", &format!("cvc=737&amount=1737&n={n}&sig=SIG"));
+        assert_eq!(status, 200, "{body}");
+        let (status, body, _) = data_call(&state, &cards, "POST", "/plain", &format!("cvc=737&amount=1737&n={n}"));
         assert_eq!(status, 200, "{body}");
     }
     let (status, body, _) = data_call(&state, &reads, "PUT", "/keep", "1");
@@ -10674,20 +10704,32 @@ export const pay = action(async (order) => {
     // run not re-run, a call's answer changed.
     let mut per_flow: BTreeMap<String, [usize; 7]> = BTreeMap::new();
     let (mut unrun, mut answered, mut flips) = (0, 0, Vec::new());
-    for slug in ["c", "seen", calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), sized.as_str(), reads.as_str(), "payouts"] {
+    for slug in ["c", "seen", calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), sized.as_str(), cards.as_str(), reads.as_str(), "payouts"] {
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req_as(&ada, "GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
         let honest = verify::check(&export, None, &BTreeMap::new());
         // The flow whose record withholds isn't run again: each of its runs says so.
         let skipped = |seq: u64| honest.reruns.iter().any(|(s, r)| *s == seq && matches!(r, verify::Rerun::Skipped(_)));
-        match slug == counted {
-            true => assert!(honest.ok() && !honest.reruns.is_empty() && honest.reruns.iter().all(|(s, _)| skipped(*s)), "{slug} as the server wrote it:\n{}", verify::describe(&honest, None)),
-            false => assert!(honest.ok() && honest.complete(), "{slug} as the server wrote it:\n{}", verify::describe(&honest, None)),
+        if slug == cards {
+            // Its /sign runs withhold, for the CVC in the text they computed, and say so; its
+            // /plain runs are run again.
+            let lines: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+            for line in &lines {
+                let (seq, signs) = (line["seq"].as_u64().unwrap(), line["url"] == "/sign");
+                assert_eq!(line["withheld"] == true, signs, "{slug} run {seq}: {line}");
+                assert_eq!(skipped(seq), signs, "{slug} run {seq}:\n{}", verify::describe(&honest, None));
+                assert!(!line.to_string().contains("cvc=737"), "{slug} run {seq} keeps the CVC: {line}");
+            }
+            assert!(honest.ok() && honest.reruns.iter().any(|(_, r)| matches!(r, verify::Rerun::Skipped(why) if why.contains("never keeps, cvc"))), "{slug} as the server wrote it:\n{}", verify::describe(&honest, None));
+        } else if slug == counted {
+            assert!(honest.ok() && !honest.reruns.is_empty() && honest.reruns.iter().all(|(s, _)| skipped(*s)), "{slug} as the server wrote it:\n{}", verify::describe(&honest, None));
+        } else {
+            assert!(honest.ok() && honest.complete(), "{slug} as the server wrote it:\n{}", verify::describe(&honest, None));
         }
         // Each run that called out is said so, an `ok` with it: what a call was answered is the
         // line's say-so (R61). And the flow whose secret is larger than a step's record keeps its
         // step on the mark (R63).
         let said = verify::describe(&honest, None);
-        let called = [calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), sized.as_str(), reads.as_str()].contains(&slug);
+        let called = [calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), sized.as_str(), cards.as_str(), reads.as_str()].contains(&slug);
         // The reading flow's line holds what it read, and what it claimed before it called out.
         if slug == reads {
             assert!(export.lines.iter().any(|l| l.contains("\"reads\":") && l.contains("\"claims\":")), "{slug}: its lines hold reads and claims");

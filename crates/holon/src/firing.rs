@@ -448,7 +448,7 @@ impl Drop for RunLocked {
 /// 503, a clock tick is skipped, both logged.
 fn turned_away(permit: &Permit, inputs: &[Option<Value>], extra_sourced: &[(Capability, Value)], nonce: &[u8; 16], resource: &str) -> FiredRun {
     let mut run = FiredRun::nothing();
-    run.run_id = to_hex(&run_id_of(permit.deployment, inputs, None, extra_sourced, nonce));
+    run.run_id = to_hex(&run_id_of(permit.deployment, inputs, None, extra_sourced, nonce, &permit.never_keep));
     run.unit = to_hex(&permit.deployment);
     run.nonce = hex_bytes(nonce);
     run.grant = permit.grant.clone();
@@ -462,7 +462,7 @@ fn turned_away(permit: &Permit, inputs: &[Option<Value>], extra_sourced: &[(Capa
 /// past things done). The panic itself is on the server's console, with where.
 fn panicked(permit: &Permit, inputs: &[Option<Value>], extra_sourced: &[(Capability, Value)], nonce: &[u8; 16]) -> FiredRun {
     let mut run = FiredRun::nothing();
-    run.run_id = to_hex(&run_id_of(permit.deployment, inputs, None, extra_sourced, nonce));
+    run.run_id = to_hex(&run_id_of(permit.deployment, inputs, None, extra_sourced, nonce, &permit.never_keep));
     run.unit = to_hex(&permit.deployment);
     run.nonce = hex_bytes(nonce);
     run.grant = permit.grant.clone();
@@ -669,7 +669,7 @@ fn run_attempt(
     prior: Vec<Round>,
     claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>, bool)>,
 ) -> Attempt {
-    let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, nonce);
+    let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, nonce, &permit.never_keep);
     // Its resume tokens are derived from its id (durable.rs).
     // Hex once: its resume tokens, its claims and its entry all name it so.
     let run_hex = to_hex(&run_id);
@@ -727,8 +727,13 @@ fn run_attempt(
     // A step that may hold a secret's value, or what is computed from one, kept when it fits as
     // its record writes it, each such value as its mark: whether it is kept, and so whether the
     // record withholds, doesn't say how long the secret is (R63).
-    if !secret_fed.is_empty() && !waits.unrecorded {
-        timer = timer.measured(Box::new(secrets::Measured::new(secret_fed.clone(), born_key.clone(), run_hex.clone(), Redactor::of(secrets))));
+    // A value its flow never keeps is measured as its mark too, where it stands and, found so in
+    // what started the run, by its text, in each step that holds one, with a secret or not:
+    // whether a step is kept doesn't say how long it was.
+    if (!secret_fed.is_empty() || !permit.never_keep.is_empty()) && !waits.unrecorded {
+        let never = data::never_kept_in(&permit.never_keep, inputs);
+        let marks = Redactor::of(secrets).and(Redactor::never_kept(crate::never_keep::Places::new(&permit.never_keep), &never));
+        timer = timer.measured(Box::new(secrets::Measured::new(secret_fed.clone(), born_key.clone(), run_hex.clone(), marks)));
     }
     // Outbound requests go only where the grant allows, within its limits.
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
@@ -999,15 +1004,20 @@ fn hex_bytes(bytes: &[u8]) -> String {
 }
 
 /// A run's id (§4.4): its deployment, and the Merkle root of what it started from: the host
-/// nonce, each input, the state (by its root), and each sourced value, each by its hash.
+/// nonce, each input, the state (by its root), and each sourced value, each by its hash. A value
+/// under a key its flow never keeps (`never_keep`) is hashed as its mark, where it stands: the id
+/// is in the run's record beside its nonce and the rest of what it hashes, so an id of the value
+/// itself would be a CVC a thousand tries from it (as a hash of a text holding one would be,
+/// `secrets::born`). So marked, `holon verify` makes the id again from the record.
 pub(crate) fn run_id_of(
     deployment: Hash,
     inputs: &[Option<Value>],
     state: Option<&State>,
     sourced: &[(Capability, Value)],
     nonce: &[u8; 16],
+    never_keep: &[String],
 ) -> Hash {
-    let h = |v: &Value| hash_value(v).unwrap_or([0xff; 32]);
+    let h = |v: &Value| hash_value(&crate::never_keep::marked(v, never_keep)).unwrap_or([0xff; 32]);
     let mut entries: BTreeMap<String, Hash> = BTreeMap::new();
     entries.insert("nonce".into(), h(&Value::Text(hex_bytes(nonce))));
     for (i, input) in inputs.iter().enumerate() {

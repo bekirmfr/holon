@@ -224,6 +224,8 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
     let Some(key) = key.filter(|_| !fed.is_empty()) else { return Default::default() };
     let mut whole = kept && fed.followed_to(crate::recorder::Timer::DEPTH);
     let mut made: BTreeSet<&str> = BTreeSet::new();
+    // Whether a text it computed holds a value under a key its flow never keeps: listed for none.
+    let mut never_kept = false;
     for node in timeline.iter().filter(|n| fed.computes(&n.path)) {
         let Some(outputs) = &node.outputs else {
             whole = false;
@@ -238,7 +240,7 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
                 continue;
             };
             if crate::never_keep::in_text(text, never_keep) {
-                whole = false;
+                never_kept = true;
             } else if text.chars().count() >= MIN_SECRET_LEN {
                 made.insert(text);
                 // Found by its value, and as JSON text writes it once: one that JSON escapes (a
@@ -264,6 +266,13 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
     // value may be left out: verify computes it again on its marks (R66). A call gives what the
     // host answered, kept whole in the record's rounds.
     whole &= timeline.iter().filter(|n| fed.taken(&n.path)).all(|n| n.outputs.is_some());
+    // And no text it computed held a value its flow never keeps, under its key: no hash is
+    // listed for one (its value would be a few tries from it), so verify can't hold the step
+    // that gave it to a mark, and the record withholds, as for a step it takes and the record
+    // doesn't keep. Such a text is computed from a secret, so its step ran: `holon verify` takes
+    // a line that withholds for it as one something could have made withhold (`nothing_withheld`
+    // in its rerun), and says why among the rest (`withheld_why`).
+    whole &= !never_kept;
     crate::recorder::Born { values, whole }
 }
 
@@ -276,7 +285,11 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
 /// As written, each such value is its mark, as long for one secret as for another: the
 /// deployment's secrets as [`Redactor::of`] marks them, and each text the run computed from
 /// them so far as [`Redactor::born`] does, noted from the steps [`born`] notes them from, as
-/// each gives it (none for a run with no key, whose record marks none); and a look-alike of a
+/// each gives it (none for a run with no key, whose record marks none); each value its flow
+/// never keeps as [`Redactor::never_kept`] marks it, where it stands under its key and, one
+/// found so in what started the run, by its text (a CVC of 3 digits and one of 4 written alike),
+/// and each step that holds such a value measured so too, whether or not it may hold a secret;
+/// and a look-alike of a
 /// mark in the run's own text escaped, as written. Not the marks only its whole entry makes
 /// known (its tokens, the credentials its calls answered, its tainted values): those write a
 /// step it keeps longer, never take it out, so whether a step is kept for its size is decided
@@ -318,12 +331,28 @@ impl crate::recorder::Measure for Measured {
                 self.marks = marks.and(Redactor::born(&crate::recorder::Born { values, whole: true }));
             }
         }
-        if !self.fed.holds(path) {
+        let holds = self.fed.holds(path);
+        if !holds && self.marks.places.is_none() {
             return None;
         }
         let mut written = outputs.to_vec();
+        // Whether it holds a value its flow never keeps, wherever it is from: a step that does is
+        // measured as written too, secret or not, so its size doesn't say how long the value is.
+        let mut never = false;
+        let never_values: Vec<&str> = self.marks.pairs.iter().filter(|(_, mark)| mark.starts_with(crate::never_keep::MARK)).map(|(value, _)| value.as_str()).collect();
         for v in written.iter_mut().flatten() {
+            // A value its flow never keeps stood in for where it stands, as the entry is
+            // (`Redactor::entry`), so its mark, not its length, is measured.
+            if let Some(places) = &self.marks.places {
+                never |= places.svalue(v);
+            }
+            if !never && !never_values.is_empty() {
+                texts_mut(v, &mut |s: &mut String| never |= never_values.iter().any(|value| s.contains(value)));
+            }
             self.marks.logged_svalue(v);
+        }
+        if !holds && !never {
+            return None;
         }
         Some(crate::recorder::fits(&written))
     }
