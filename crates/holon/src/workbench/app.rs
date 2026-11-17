@@ -622,7 +622,7 @@ impl App {
             page: Page::Overview,
             sel: [0; 7],
             detail: None,
-            flow: FlowView { every: true, ..FlowView::default() },
+            flow: FlowView::default(),
             admin: Default::default(),
             tabs: vec![],
             tab: 0,
@@ -912,7 +912,7 @@ impl App {
         match c.detail(slug) {
             Ok(d) => {
                 if self.detail.as_ref().map(|o| &o.slug) != Some(&d.slug) {
-                    self.flow = FlowView { every: self.flow.every, ..FlowView::default() };
+                    self.flow = FlowView { level: self.flow.level, ..FlowView::default() };
                 }
                 self.detail = Some(d);
                 self.page = Page::Flow;

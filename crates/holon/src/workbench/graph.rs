@@ -1,7 +1,8 @@
 //! A flow's graph, as `holon editor` shows it: on a deployment's page (its Graph section, over
 //! the text deployed, with what its latest runs reached) and in an editor tab (over the text as
-//! typed). Its statements by trigger, each a row with its wires drawn as lanes beside it
-//! (holon_author::graph); the picked row's text, wires and nodes on the right.
+//! typed). By trigger, each row with its wires drawn as lanes beside it (holon_author::graph), at
+//! one of the web canvas's three levels (canvasLevel.ts): every node a row, the statements, or
+//! the nodes grouped under their statements; the picked row's text, wires and nodes on the right.
 
 use std::collections::HashSet;
 
@@ -27,6 +28,53 @@ fn tone(k: Kind) -> Tone {
     }
 }
 
+/// The graph's levels, in the order `a` steps through them, as the web's canvas has them
+/// (canvasLevel.ts): the nodes the core runs, each a row; the statements, the flow as its text
+/// says it; and the nodes grouped, each statement a frame over its own nodes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Level {
+    #[default]
+    Nodes,
+    Statements,
+    Grouped,
+}
+
+impl Level {
+    pub(crate) const ALL: [Level; 3] = [Level::Nodes, Level::Statements, Level::Grouped];
+
+    pub(crate) fn next(self) -> Level {
+        match self {
+            Level::Nodes => Level::Statements,
+            Level::Statements => Level::Grouped,
+            Level::Grouped => Level::Nodes,
+        }
+    }
+
+    /// Its name, as the web's canvas head writes it.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Level::Nodes => "nodes",
+            Level::Statements => "statements",
+            Level::Grouped => "grouped",
+        }
+    }
+
+    /// What it shows, said when `a` steps to it.
+    pub(crate) fn said(self) -> &'static str {
+        match self {
+            Level::Nodes => "nodes: every node a row, as the core runs them (a: the statements)",
+            Level::Statements => "statements: the flow as its text says it, a statement a row (a: the nodes grouped by statement)",
+            Level::Grouped => "grouped: each statement over the nodes it is made of (a: every node)",
+        }
+    }
+}
+
+/// A statement's frame, drawn between the rows above it and its first node: only the lanes that
+/// pass down through it (those the row below joins from above).
+fn through(below: &str) -> String {
+    below.chars().map(|c| if matches!(c, '│' | '├' | '┤' | '┼' | '╰' | '╯' | '┴') { '│' } else { ' ' }).collect()
+}
+
 /// A graph as drawn: its rows in order, each with its band and its lanes.
 pub(crate) struct GraphView {
     /// What it was built from, to tell when to build it again.
@@ -36,12 +84,16 @@ pub(crate) struct GraphView {
     pub(crate) text: Vec<String>,
     /// Every row: its band, its index in the band, its lanes (padded to one width).
     pub(crate) rows: Vec<(usize, usize, String)>,
+    /// Grouped, the statements framing the nodes; else empty.
+    pub(crate) statements: Graph,
+    /// Grouped, which rows are a statement's frame (its index is in `statements`); else empty.
+    pub(crate) framed: Vec<bool>,
     /// The lines the newest run of each trigger reached, when it ran on this text.
     pub(crate) reached: HashSet<u32>,
     /// Why there is no graph: the text doesn't compile.
     pub(crate) error: Option<String>,
-    /// Every node a row, not only the statements.
-    pub(crate) every: bool,
+    /// Which level it is drawn at.
+    pub(crate) level: Level,
     /// Over a run: what it didn't reach is dimmed.
     pub(crate) dim: bool,
 }
@@ -56,27 +108,72 @@ pub(crate) struct TabGraph {
 }
 
 impl GraphView {
-    pub(crate) fn build(key: String, text: &str, every: bool) -> GraphView {
+    pub(crate) fn build(key: String, text: &str, level: Level) -> GraphView {
         let lines = text.lines().map(str::to_string).collect();
-        let (graph, error) = match graph::graph(text, every) {
+        let (graph, error) = match graph::graph(text, level != Level::Statements) {
             Ok(g) => (g, None),
             Err(e) => (Graph::default(), Some(e)),
         };
-        let drawn: Vec<Vec<String>> = graph.bands.iter().map(|b| graph::lanes(&b.rows)).collect();
-        let width = drawn.iter().flatten().map(|l| l.chars().count()).max().unwrap_or(1);
-        let mut rows = vec![];
-        for (b, lanes) in drawn.into_iter().enumerate() {
-            for (r, l) in lanes.into_iter().enumerate() {
+        let statements = if level == Level::Grouped && error.is_none() { graph::graph(text, false).unwrap_or_default() } else { Graph::default() };
+        // Each band's rows: its index, whether it is a statement's frame, its lanes.
+        let mut drawn: Vec<Vec<(usize, bool, String)>> = vec![];
+        for (b, band) in graph.bands.iter().enumerate() {
+            let lanes = graph::lanes(&band.rows);
+            let mut out: Vec<(usize, bool, String)> = vec![];
+            let mut next = 0;
+            // Grouped: the trigger, then each statement's frame over its nodes, as many as it is
+            // made of (the nodes come by statement, in the text's order).
+            for (s, row) in statements.bands.get(b).map(|s| s.rows.as_slice()).unwrap_or_default().iter().enumerate() {
+                let take = if row.head { 1 } else { row.parts.len() };
+                if !row.head
+                    && let Some(below) = lanes.get(next)
+                {
+                    out.push((s, true, through(below)));
+                }
+                out.extend((next..(next + take).min(lanes.len())).map(|r| (r, false, lanes[r].clone())));
+                next += take;
+            }
+            out.extend(lanes.iter().enumerate().skip(next).map(|(r, l)| (r, false, l.clone())));
+            drawn.push(out);
+        }
+        let width = drawn.iter().flatten().map(|(_, _, l)| l.chars().count()).max().unwrap_or(1);
+        let (mut rows, mut framed) = (vec![], vec![]);
+        for (b, band) in drawn.into_iter().enumerate() {
+            for (r, frame, l) in band {
                 let pad = width - l.chars().count();
                 rows.push((b, r, format!("{l}{}", " ".repeat(pad))));
+                framed.push(frame);
             }
         }
-        GraphView { key, graph, text: lines, rows, reached: HashSet::new(), error, every, dim: false }
+        if level != Level::Grouped {
+            framed.clear();
+        }
+        GraphView { key, graph, text: lines, rows, statements, framed, reached: HashSet::new(), error, level, dim: false }
+    }
+
+    /// Whether row `i` is a statement's frame (Grouped).
+    pub(crate) fn is_frame(&self, i: usize) -> bool {
+        self.framed.get(i).copied().unwrap_or(false)
+    }
+
+    /// The band row `i` is in: of the statements, for a frame.
+    fn band(&self, i: usize) -> Option<&graph::Band> {
+        let (b, _, _) = self.rows.get(i)?;
+        if self.is_frame(i) { self.statements.bands.get(*b) } else { self.graph.bands.get(*b) }
     }
 
     pub(crate) fn row(&self, i: usize) -> Option<&graph::Row> {
-        let (b, r, _) = self.rows.get(i)?;
-        self.graph.bands.get(*b)?.rows.get(*r)
+        let (_, r, _) = self.rows.get(i)?;
+        self.band(i)?.rows.get(*r)
+    }
+
+    /// How many statements it has, whatever its level.
+    pub(crate) fn statement_count(&self) -> usize {
+        match self.level {
+            Level::Nodes => self.graph.bands.iter().flat_map(|b| &b.rows).filter(|r| !r.head).map(|r| r.line).collect::<HashSet<_>>().len(),
+            Level::Statements => self.rows.len().saturating_sub(self.graph.bands.len()),
+            Level::Grouped => self.framed.iter().filter(|f| **f).count(),
+        }
     }
 
     /// The (first) row of the statement a line of the text is in, else the nearest before it.
@@ -101,8 +198,7 @@ impl GraphView {
 
     /// A row's part of a run: its text with the values there, and when it ran.
     pub(crate) fn run_pane(&self, i: usize, v: &holon_author::agent::RunView) -> Vec<Row> {
-        let Some(row) = self.row(i) else { return vec![Row::Text(Tone::Dim, "Nothing here.".into())] };
-        let band = &self.graph.bands[self.rows[i].0];
+        let (Some(row), Some(band)) = (self.row(i), self.band(i)) else { return vec![Row::Text(Tone::Dim, "Nothing here.".into())] };
         let mut rows = vec![Row::Text(Tone::Head, if row.head { band.title.clone() } else { format!("{}  ({})", row.name, band.title) })];
         if !(row.line..=row.last).any(|n| self.reached.contains(&n)) {
             rows.push(Row::Text(Tone::Dim, "This run didn't play it.".into()));
@@ -138,9 +234,8 @@ impl GraphView {
         if let Some(e) = &self.error {
             return vec![text(Tone::Bad, "It doesn't compile, so it has no graph yet:".into()), text(Tone::Plain, e.clone())];
         }
-        let Some(row) = self.row(i) else { return vec![text(Tone::Dim, "Nothing here.".into())] };
-        let (b, r, _) = self.rows[i];
-        let band = &self.graph.bands[b];
+        let (Some(row), Some(band)) = (self.row(i), self.band(i)) else { return vec![text(Tone::Dim, "Nothing here.".into())] };
+        let (_, r, _) = self.rows[i];
         let code = |notes: &dyn Fn(u32) -> Vec<String>| -> Vec<Row> {
             (row.line..=row.last).map(|n| Row::Code { n, text: self.text.get(n as usize - 1).cloned().unwrap_or_default(), notes: notes(n) }).collect()
         };
@@ -255,12 +350,12 @@ impl App {
             }
             None => tab.buf.text(),
         };
-        // Every node a row, until a says the statements.
-        let every = tab.graph.as_ref().is_none_or(|g| g.view.every);
-        let key = format!("{every}\n{text}");
+        // Every node a row, until a steps to another level.
+        let level = tab.graph.as_ref().map_or(Level::Nodes, |g| g.view.level);
+        let key = format!("{level:?}\n{text}");
         if tab.graph.as_ref().is_none_or(|g| g.view.key != key) {
             let line = tab.graph.as_ref().and_then(|g| g.view.row(g.sel)).map_or(tab.buf.row as u32 + 1, |r| r.line);
-            let view = GraphView::build(key, &text, every);
+            let view = GraphView::build(key, &text, level);
             let sel = view.row_at(line);
             let right = tab.graph.as_ref().is_some_and(|g| g.right);
             tab.graph = Some(TabGraph { view, sel, right, scroll: 0 });
@@ -355,18 +450,20 @@ impl App {
         }
     }
 
-    /// A tab's graph: every node a row, or the statements with their nodes under each; the
-    /// same statement stays picked.
+    /// A tab's graph at its next level: every node a row, the statements, or the nodes grouped
+    /// by statement; the same statement stays picked.
     pub(crate) fn tab_every(&mut self) {
         self.sync_graph();
         let Some(g) = self.tabs.get_mut(self.tab).and_then(|t| t.graph.as_mut()) else { return };
         let line = g.view.row(g.sel).map(|r| r.line).unwrap_or(1);
         let text = g.view.text.join("\n");
         let (reached, dim) = (std::mem::take(&mut g.view.reached), g.view.dim);
-        g.view = GraphView::build(format!("{}\n{text}", !g.view.every), &text, !g.view.every);
+        let level = g.view.level.next();
+        g.view = GraphView::build(format!("{level:?}\n{text}"), &text, level);
         (g.view.reached, g.view.dim) = (reached, dim);
         g.sel = g.view.row_at(line);
         g.scroll = 0;
+        self.tell(level.said());
     }
 
     pub(crate) fn tab_graph_key(&mut self, k: KeyEvent) {

@@ -272,10 +272,13 @@ crumb going back to it; the line above the keys says what just happened.
 | 6 Library | the samples, with what each shows and its `holon new` line; enter opens a copy, `/` filters them |
 | 7 Admin | people (invite, role, email, disable, a reset link, remove), API keys, the folders, databases, mail and feeds flows use (bound with the same flags as [`holon folder`](#holon-folder), [`holon database`](#holon-database), [`holon mail`](#holon-mail) and [`holon feed`](#holon-feed)), the secrets each flow reads, and the server: its policy, the grants held, the sign-in provider, sweeping the store and the folder texts. An admin's page |
 
-A flow's graph is its statements, one a row, under what starts them (a route, a clock, an
-action), with the lines between them showing what feeds what, as `git log --graph` draws
-branches. A statement's own plumbing is folded into it: its detail lists the nodes it is made of,
-and `a` shows every node instead. On a deployment it marks what the newest run reached. A tab
+A flow's graph is drawn under what starts each part of it (a route, a clock, an action), with
+the lines between its rows showing what feeds what, as `git log --graph` draws branches. As the
+web editor's canvas, it has three levels, and `a` (or the switch on its edge) steps through them:
+**nodes**, every node the core runs a row, as it opens; **statements**, the flow as its text says
+it, each statement a row with its own plumbing folded in (its detail lists the nodes it is made
+of); and **grouped**, each statement heading the nodes it is made of. On a deployment it marks
+what the newest run reached. A tab
 shows its code, its code with the graph beside it (following the cursor), or the graph alone:
 `ctrl+b` goes round them, and enter on a statement edits it there.
 

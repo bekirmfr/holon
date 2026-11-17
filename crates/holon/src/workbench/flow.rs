@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use super::app::{App, Ask, List, Modal, Page, Said, Then, Tone};
 use super::client::{Client, Detail, Moment, Point};
-use super::graph::{GraphView, Kind};
+use super::graph::{GraphView, Kind, Level};
 use super::review::{self, Review};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -168,8 +168,9 @@ pub(crate) struct FlowView {
     pub(crate) cells: Vec<Cell>,
     /// The graph of the text deployed, once its section has been opened.
     pub(crate) graph: Option<GraphView>,
-    /// The graph shows every node, not only the statements (as it does unless a says otherwise).
-    pub(crate) every: bool,
+    /// The graph's level: every node a row (as it is unless a steps on), the statements, or the
+    /// nodes grouped by statement.
+    pub(crate) level: Level,
     /// Runs follows the newest: as runs come in, the newest is picked.
     pub(crate) follow: bool,
     /// The log lines of the Logs section, oldest first (logs.rs): read again with the deployment.
@@ -185,17 +186,17 @@ pub(crate) struct FlowView {
 }
 
 impl App {
-    /// The flow page's graph: every node a row, or the statements with their nodes under
-    /// each. The same statement stays picked, as its first node or as the statement.
+    /// The flow page's graph at its next level: every node a row, the statements, or the nodes
+    /// grouped by statement. The same statement stays picked, as its first node or as the statement.
     pub(crate) fn flow_every(&mut self) {
         let line = self.flow.graph.as_ref().and_then(|g| g.row(self.flow.sel[Section::Graph as usize])).map(|r| r.line);
-        self.flow.every = !self.flow.every;
+        self.flow.level = self.flow.level.next();
         self.flow_load();
         if let (Some(line), Some(g)) = (line, self.flow.graph.as_ref()) {
             self.flow.sel[Section::Graph as usize] = g.row_at(line);
             self.flow_load();
         }
-        self.tell(if self.flow.every { "every node, each a row: a again for the statements" } else { "the statements, their nodes under each: a again for every node" });
+        self.tell(self.flow.level.said());
     }
 }
 
@@ -394,13 +395,13 @@ impl App {
                 make = Box::new(move || super::settings::settings_pane(d, &row));
             }
             Section::Graph => {
-                // Built again for a new version, a new run (what it reached), or every node.
-                let built = format!("{} {} {}", d.entry["unit"], self.flow.every, d.runs.len());
+                // Built again for a new version, a new run (what it reached), or another level.
+                let built = format!("{} {:?} {}", d.entry["unit"], self.flow.level, d.runs.len());
                 if self.flow.graph.as_ref().map(|g| &g.key) != Some(&built) {
                     let mut g = match c.text(&d.slug, None) {
-                        Ok(text) => GraphView::build(built, &text, self.flow.every),
+                        Ok(text) => GraphView::build(built, &text, self.flow.level),
                         Err(e) => {
-                            let mut g = GraphView::build(built, "", false);
+                            let mut g = GraphView::build(built, "", Level::Statements);
                             g.error = Some(e);
                             g
                         }

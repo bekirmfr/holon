@@ -8,6 +8,7 @@ use ratatui::Terminal;
 use super::app::{App, Click, List, Modal, Page, RunPane, Runs, Show, Tone};
 use super::client::{Client, Moment};
 use super::flow::{Row, Section};
+use super::graph::Level;
 use super::ui;
 use crate::mcp::{Api, Body};
 use crate::tests::{body_bytes, req, test_state};
@@ -558,10 +559,10 @@ fn a_flows_graph_is_its_statements_wired_and_what_its_newest_run_reached() {
     press(&mut app, KeyCode::Char('3'));
     press(&mut app, KeyCode::Enter);
     app.flow_section(Section::Graph);
-    // Every node a row at first; a (or its button on the panel's edge) the statements.
-    assert!(app.flow.graph.as_ref().expect("built as its section opens").every);
+    // Every node a row at first; a (or its switch on the panel's edge) the statements.
+    assert_eq!(app.flow.graph.as_ref().expect("built as its section opens").level, Level::Nodes);
     let shown = screen(&mut app, 130, 40);
-    assert!(shown.contains("Every node (") && shown.contains(" a  statements "), "{shown}");
+    assert!(shown.contains("Nodes: ") && shown.contains(" a  nodes ") && shown.contains(" Graph "), "{shown}");
     click(&mut app, Click::Every);
     let g = app.flow.graph.as_ref().unwrap();
     let names: Vec<String> = (0..g.rows.len()).filter_map(|i| g.row(i)).map(|r| r.name.clone()).collect();
@@ -571,7 +572,7 @@ fn a_flows_graph_is_its_statements_wired_and_what_its_newest_run_reached() {
     let write = (0..g.rows.len()).filter_map(|i| g.row(i)).find(|r| r.name == "state.n").unwrap().line;
     assert!(g.reached.contains(&write), "the newest run's values, by line: {:?}", g.reached);
     let shown = screen(&mut app, 130, 40);
-    assert!(shown.contains("Graph: 3 statements") && shown.contains("state.n = n") && shown.contains('●'), "{shown}");
+    assert!(shown.contains("Statements: 3 of") && shown.contains("state.n = n") && shown.contains('●'), "{shown}");
 
     // The newest run of the trigger, found by its name, beside the trigger's line.
     press(&mut app, KeyCode::Right);
@@ -585,10 +586,37 @@ fn a_flows_graph_is_its_statements_wired_and_what_its_newest_run_reached() {
     assert!(pane(&app).iter().any(|r| matches!(r, Row::Field(k, v, _) if k == "Feeds" && v.contains("state.n"))), "{:?}", pane(&app));
     assert!(pane(&app).iter().any(|r| matches!(r, Row::Text(Tone::Head, t) if t.starts_with("Made of"))), "{:?}", pane(&app));
 
+    // Grouped: each statement heads the nodes it is made of, down the page, the same statement
+    // still picked; its frame's detail is the statement's.
+    press(&mut app, KeyCode::Char('a'));
+    let g = app.flow.graph.as_ref().unwrap();
+    assert_eq!(g.level, Level::Grouped);
+    assert_eq!(g.framed.iter().filter(|f| **f).count(), 3);
+    let frames: Vec<String> = (0..g.rows.len()).filter(|i| g.is_frame(*i)).filter_map(|i| g.row(i)).map(|r| r.name.clone()).collect();
+    assert_eq!(frames, ["n", "state.n", "return"]);
+    // Every node is under the frame of its statement, which is on its line.
+    let mut under = None;
+    for i in 0..g.rows.len() {
+        let r = g.row(i).unwrap();
+        if g.is_frame(i) {
+            under = Some(r.line);
+        } else if !r.head {
+            assert_eq!(Some(r.line), under, "{} under its statement", r.name);
+        }
+    }
+    assert_eq!(g.rows.len(), 3 + g.graph.bands.iter().map(|b| b.rows.len()).sum::<usize>(), "every node once, and a frame a statement");
+    assert!(g.is_frame(app.flow.sel()) && g.row(app.flow.sel()).map(|r| r.line) == Some(7), "the same statement picked");
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Text(Tone::Head, t) if t.starts_with("Made of"))), "{:?}", pane(&app));
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.contains("Grouped: ") && shown.contains("▾ state.n = n"), "{shown}");
+    for (w, h) in [(80, 24), (50, 12)] {
+        screen(&mut app, w, h);
+    }
+
     // Every node a row again, the same statement still picked; enter edits the text there.
     press(&mut app, KeyCode::Char('a'));
     let g = app.flow.graph.as_ref().unwrap();
-    assert!(g.every && g.rows.len() > 4);
+    assert!(g.level == Level::Nodes && g.rows.len() > 4);
     assert_eq!(g.row(app.flow.sel()).map(|r| r.line), Some(7));
     screen(&mut app, 130, 40);
     press(&mut app, KeyCode::Enter);
@@ -638,10 +666,10 @@ fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
     assert_eq!(app.show, Show::Both);
     assert!(app.typing, "the text keeps the keys");
     let shown = screen(&mut app, 130, 40);
-    assert!(app.tabs[0].graph.as_ref().is_some_and(|g| g.view.every), "every node at first");
-    assert!(shown.contains(" a  statements ") && !shown.lines().last().unwrap_or_default().contains("statements"), "a on the graph's edge, not the bar:\n{shown}");
+    assert!(app.tabs[0].graph.as_ref().is_some_and(|g| g.view.level == Level::Nodes), "every node at first");
+    assert!(shown.contains(" a  nodes ") && !shown.lines().last().unwrap_or_default().contains("statements"), "a on the graph's edge, not the bar, the level shown in a narrow panel:\n{shown}");
     click(&mut app, Click::Every);
-    assert!(app.tabs[0].graph.as_ref().is_some_and(|g| !g.view.every), "its button: the statements");
+    assert!(app.tabs[0].graph.as_ref().is_some_and(|g| g.view.level == Level::Statements), "its switch: the statements");
     assert!(app.typing, "the text still has the keys");
     app.tabs[0].buf.go(8, 1);
     let shown = screen(&mut app, 130, 40);
@@ -660,7 +688,10 @@ fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
     let m = g.view.row(g.sel).unwrap().mark;
     assert_eq!((m.start.line, m.start.col, m.end.col), (8, 3, 10), "state.n, on line 8");
     press(&mut app, KeyCode::Char('a'));
-    assert!(app.tabs[0].graph.as_ref().is_some_and(|g| g.view.every) && app.beside_has_keys(), "a: every node, the graph keeping the keys");
+    assert!(app.tabs[0].graph.as_ref().is_some_and(|g| g.view.level == Level::Grouped) && app.beside_has_keys(), "a: grouped, the graph keeping the keys");
+    assert_eq!(picked(&app), "state.n", "its statement's frame");
+    press(&mut app, KeyCode::Char('a'));
+    assert!(app.tabs[0].graph.as_ref().is_some_and(|g| g.view.level == Level::Nodes), "a: every node");
     press(&mut app, KeyCode::Char('a'));
     press(&mut app, KeyCode::Esc);
     assert!(app.typing && !app.beside_has_keys() && app.tabs[0].buf.row == 7, "esc: the text has the keys, the cursor where it was");
@@ -708,7 +739,9 @@ fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
     let shown = screen(&mut app, 130, 40);
     assert!(shown.contains("as typed") && shown.contains("state.n = n") && shown.contains("Takes from") && shown.contains('●'), "{shown}");
     press(&mut app, KeyCode::Char('a'));
-    assert!(app.tabs[0].graph.as_ref().is_some_and(|g| g.view.every), "a: every node");
+    assert!(app.tabs[0].graph.as_ref().is_some_and(|g| g.view.level == Level::Grouped), "a: grouped");
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.contains("Grouped: ") && shown.contains("▾ state.n = n"), "{shown}");
     assert_eq!(app.tabs[0].buf.text(), BUMP, "nothing typed into the text");
     screen(&mut app, 80, 24);
 
@@ -2442,6 +2475,16 @@ fn live_settings() {
     press(&mut app, KeyCode::Enter);
     keep("run from its session", &mut app);
     assert_eq!(app.client.as_ref().unwrap().deployment("bump").unwrap()["status"], "running", "{}", note(&app));
+
+    // Its graph, over the text the server has, at each level.
+    app.flow_section(Section::Graph);
+    for level in [Level::Statements, Level::Grouped, Level::Nodes] {
+        press(&mut app, KeyCode::Char('a'));
+        keep(&format!("Graph, {}", level.name()), &mut app);
+        assert_eq!(app.flow.graph.as_ref().map(|g| g.level), Some(level), "{}", note(&app));
+    }
+    assert!(app.flow.graph.as_ref().is_some_and(|g| g.error.is_none() && g.rows.len() > 4));
+    app.flow_section(Section::Settings);
 
     pick_setting(&mut app, |s| matches!(s, Setting::Remove { forget: false }));
     press(&mut app, KeyCode::Enter);

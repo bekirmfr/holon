@@ -16,7 +16,7 @@ use super::{bold, chips, coloured, dim, fit, list, pad, panel, reach, scrollbar,
 use crate::workbench::app::{App, Click, List, Tone};
 use crate::workbench::client::{Detail, Moment};
 use crate::workbench::flow::{access_rows, at_ms, came_in, failed, tabs, took, Access, Held, Row, Section, SECTIONS};
-use crate::workbench::graph::{GraphView, Kind};
+use crate::workbench::graph::{GraphView, Kind, Level};
 
 pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(d) = app.detail.as_ref() else { return };
@@ -63,7 +63,8 @@ fn draw_head(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
 }
 
 fn draw_sections(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
-    let counts = [None, Some(d.runs.len()), None, Some(d.moments().len()), Some(app.flow.cells.len()), None, None];
+    // A count a section, so a section added without one doesn't build (Graph went missing so).
+    let counts: [Option<usize>; SECTIONS.len()] = [None, Some(d.runs.len()), None, Some(d.moments().len()), Some(app.flow.cells.len()), None, None, None];
     let mut x = area.x + 1;
     for ((s, name), n) in SECTIONS.iter().zip(counts) {
         let here = app.flow.section == *s;
@@ -424,7 +425,8 @@ fn access_row(a: &Access, width: usize) -> Line<'static> {
 }
 
 /// A row of a graph: its line, its lanes (the dot green where the newest run reached it), then
-/// the statement as written; a trigger in the accent, heading its band.
+/// the statement as written; a trigger in the accent, heading its band. Grouped, a statement's
+/// frame heads its nodes, which are set in under it.
 pub(super) fn graph_row(g: &GraphView, i: usize, width: usize) -> Line<'static> {
     let (_, _, lanes) = &g.rows[i];
     let Some(row) = g.row(i) else { return Line::default() };
@@ -432,6 +434,22 @@ pub(super) fn graph_row(g: &GraphView, i: usize, width: usize) -> Line<'static> 
     // Its data purple, a call outside teal, a wait amber, wherever they show; what the newest run
     // reached green.
     let kind = kind_colour(row.kind);
+    if g.is_frame(i) {
+        let rest = width.saturating_sub(5 + lanes.chars().count() + 2);
+        let does = format!("  {}", fit(&row.does, 16));
+        let style = match kind {
+            Some(k) => Style::new().fg(k).add_modifier(Modifier::BOLD),
+            None => Style::new().add_modifier(Modifier::BOLD),
+        };
+        let text = format!("▾ {}", row.text);
+        let spans = vec![
+            dim(format!("{:>4} ", row.line)),
+            Span::styled(format!("{lanes}  "), Style::new().fg(Color::Indexed(244))),
+            Span::styled(pad(&fit(&text, rest.saturating_sub(does.chars().count())), rest.saturating_sub(does.chars().count())), if g.dim && !reached { Style::new().fg(DARK) } else { style }),
+            if g.dim && !reached { Span::styled(does, Style::new().fg(DARK)) } else { dim(does) },
+        ];
+        return Line::from(spans);
+    }
     let dot = if reached { GOOD } else if row.head { ACCENT } else if let Some(k) = kind { k } else if row.effect { Color::White } else { Color::Gray };
     let (before, after) = lanes.split_once('●').unwrap_or((lanes, ""));
     let mut spans = vec![dim(format!("{:>4} ", row.line)), Span::styled(before.to_string(), Style::new().fg(Color::Indexed(244))), Span::styled("●", Style::new().fg(dot)), Span::styled(format!("{after}  "), Style::new().fg(Color::Indexed(244)))];
@@ -441,8 +459,10 @@ pub(super) fn graph_row(g: &GraphView, i: usize, width: usize) -> Line<'static> 
         let does = if row.does.is_empty() { String::new() } else { format!("  {}", row.does) };
         spans.push(Span::styled(fit(&row.text, rest.saturating_sub(does.chars().count())), Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)));
         spans.push(dim(does));
-    } else if g.every {
-        spans.push(bold(pad(&row.name, 16)));
+    } else if g.level != Level::Statements {
+        // Grouped, a node is set in under its statement.
+        let name = if g.level == Level::Grouped { format!("  {}", row.name) } else { row.name.clone() };
+        spans.push(bold(pad(&name, 16)));
         spans.push(dim(pad(&row.does, 14)));
         spans.push(dim(fit(&row.text, rest.saturating_sub(30))));
     } else {
@@ -471,18 +491,30 @@ pub(super) fn graph_list(f: &mut Frame, app: &App, area: Rect, g: &GraphView, se
     }
 }
 
-/// A graph's list title: how many rows of how many nodes, and what `a` does.
+/// A graph's list title: its level, and how many statements of how many nodes.
 pub(super) fn graph_title(g: &GraphView) -> String {
-    let rows = g.rows.len().saturating_sub(g.graph.bands.len());
-    if g.every { format!("Every node ({})", g.graph.nodes) } else { format!("Graph: {rows} statements of {} nodes", g.graph.nodes) }
+    let (s, n) = (g.statement_count(), g.graph.nodes);
+    match g.level {
+        Level::Nodes => format!("Nodes: {n} in {s} statements"),
+        Level::Statements => format!("Statements: {s} of {n} nodes"),
+        Level::Grouped => format!("Grouped: {n} nodes in {s} statements"),
+    }
 }
 
-/// The graph's switch, a button at the right of its panel's bottom edge, whether the panel
-/// has the keys or not: a shows every node, or the statements again. The panel's other keys,
-/// when it has them, keep to the left of it.
+/// How wide the graph's switch is in a panel `panel` wide: its key and the three levels' names
+/// where there is room beside the panel's other keys; else its key and the level shown.
+pub(super) fn every_chip_width(panel: u16) -> u16 {
+    let full = (3 + Level::ALL.iter().map(|l| l.name().chars().count() + 2).sum::<usize>()) as u16;
+    let one = (3 + Level::ALL.iter().map(|l| l.name().chars().count() + 2).max().unwrap_or(0)) as u16;
+    if panel >= full + 32 { full } else { one }
+}
+
+/// The graph's levels, a switch at the right of its panel's bottom edge, whether the panel has
+/// the keys or not: the three, the one shown lit, as the web's canvas head has them (in a narrow
+/// panel, the one shown alone); a (or a click) steps to the next. The panel's other keys, when it
+/// has them, keep to the left of it.
 pub(super) fn every_chip(f: &mut Frame, app: &App, panel: Rect, g: &GraphView) {
-    let what = if g.every { " statements " } else { " every node " };
-    let width = (3 + what.chars().count()) as u16;
+    let width = every_chip_width(panel.width);
     if panel.width < width + 12 || panel.height < 3 {
         return;
     }
@@ -490,7 +522,17 @@ pub(super) fn every_chip(f: &mut Frame, app: &App, panel: Rect, g: &GraphView) {
         keys.width -= width + 1;
     }
     let rect = Rect { x: panel.x + panel.width - width - 2, y: panel.y + panel.height - 1, width, height: 1 };
-    f.render_widget(Paragraph::new(Line::from(vec![Span::styled(" a ", Style::new().fg(Color::Black).bg(Color::Gray)), dim(what.to_string())])), rect);
+    let mut spans = vec![Span::styled(" a ", Style::new().fg(Color::Black).bg(Color::Gray))];
+    let lit = |name: String| Span::styled(name, Style::new().fg(ACCENT).add_modifier(Modifier::BOLD));
+    if width == every_chip_width(u16::MAX) {
+        for l in Level::ALL {
+            let name = format!(" {} ", l.name());
+            spans.push(if l == g.level { lit(name) } else { dim(name) });
+        }
+    } else {
+        spans.push(lit(format!(" {} ", g.level.name())));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), rect);
     app.hit(rect, Click::Every);
 }
 
