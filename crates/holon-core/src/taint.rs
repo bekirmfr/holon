@@ -107,8 +107,9 @@ const ONE_WAY: &[&str] = &["sha256", "hmac_sha256", "secure_equals"];
 const MAKES: &[&str] = &["sha256", "hmac_sha256"];
 
 /// Leaves whose output holds their inputs as they are, or a part of them unchanged: a secret in
-/// an input is in the output literally, where redaction finds it. (`json_stringify` escapes, but
-/// redaction matches a secret's JSON-escaped form too.) The list leaves that rearrange a list's
+/// an input is in the output literally, where redaction finds it. (`json_stringify` escapes, and
+/// so does a second one over it; the host finds a secret in every spelling that gives, and
+/// withholds whole a text that holds it in any other: `secrets::spellings` in holon.) The list leaves that rearrange a list's
 /// items by their places are here; those that take a text too (`at`, `slice`) are not, since a
 /// part of a text isn't the secret, nor those that place items by what they hold (`sort`,
 /// `unique`): where a secret lands among the others, or whether it is left out as another's

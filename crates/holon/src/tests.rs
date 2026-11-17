@@ -7295,6 +7295,180 @@ fn a_run_that_received_a_secret_or_a_token_keeps_its_logged_run_id() {
     assert!(verify::describe(&report, None).contains("checked given the run id the log kept"), "{}", verify::describe(&report, None));
 }
 
+/// **Guards:** a secret is the secret in every spelling JSON gives it. A flow sends its secret as
+/// it is and written out as JSON one, two and three deep (a stringified payload inside a JSON
+/// body is two); writes each of those to a collection; and, in a run that was given the secret,
+/// passes on to another host what a caller sent, which is the secret in each such spelling,
+/// one longer than a mark is looked for, and in a spelling of another writer's (`\u0022` for a
+/// quote); it also writes it out seven deep itself, and joins what a caller sent into a longer
+/// text. For a secret with a quote and a backslash, one with newlines (a PEM block's shape), one
+/// with a control character, and a plain token: no run's record holds the secret in any
+/// spelling, no write of it lands, and it isn't sent to a host its approval doesn't show. A mark
+/// stands in place however deep, whatever the secret holds; only a text no mark can be put into
+/// is withheld whole, as `‹respelled:secret:k›`, and `holon verify` calls no such run changed,
+/// one that computed on such a text included.
+///
+/// **Why:** the record found a secret as it is and written out once, and the guards on a write
+/// and a send found it only as it is (audit R67). A password with a quote in it, written out
+/// once, reached the store; written out twice, it stood in the run's record in the clear, and
+/// in the record of every later run that read it back.
+///
+/// **If it fails:** a place that finds a value by its text looks for fewer spellings than
+/// another writes (`secrets::spellings`, `secrets::holds_spelled`): the row says which secret,
+/// how deep, and which of the three it reached.
+#[test]
+fn a_secret_is_found_in_every_spelling_json_gives_it() {
+    let (shown, _) = counting_server();
+    let (other, other_hits) = counting_server();
+    let state = claims_state("");
+    let fixtures: [(&str, &str, u16); 4] = [
+        ("quoted", "pa\"ss\\word-123456", 18391),
+        ("lined", "-----BEGIN KEY-----\nabcDEF123456ghiJKL\n-----END KEY-----", 18392),
+        ("control", "tab\there-and-\u{1}-123456", 18393),
+        ("plain", "plain-token-value-123456", 18394),
+    ];
+    // The secret written out as JSON `deep` times, as a text: what a caller could send, and what
+    // no record may hold.
+    let spelled = |secret: &str, deep: usize| {
+        let mut text = secret.to_string();
+        for _ in 0..deep {
+            let quoted = serde_json::to_string(&text).unwrap();
+            text = quoted[1..quoted.len() - 1].to_string();
+        }
+        text
+    };
+    // Every text in a logged entry, keys included.
+    fn texts(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            serde_json::Value::Array(xs) => xs.iter().for_each(|x| texts(x, out)),
+            serde_json::Value::Object(o) => o.iter().for_each(|(k, x)| {
+                out.push(k.clone());
+                texts(x, out)
+            }),
+            _ => {}
+        }
+    }
+    let mut wrong: Vec<String> = Vec::new();
+    for (name, secret, port) in fixtures {
+        let nested = ["k", "JSON.stringify({ key: k })", "JSON.stringify({ p: JSON.stringify({ key: k }) })", "JSON.stringify({ q: JSON.stringify({ p: JSON.stringify({ key: k }) }) })"];
+        let routes: String = nested
+            .iter()
+            .enumerate()
+            .map(|(deep, written)| {
+                format!(
+                    "route.post(\"/send{deep}\", async (req) => {{\n  const got = await shown.post(\"/a\", {{ body: {written} }})\n  return {{ status: got.status }}\n}})\n\nroute.post(\"/write{deep}\", (req) => {{\n  seen[\"w{deep}\"] = {{ v: {written} }}\n  return {{ ok: true }}\n}})\n\n"
+                )
+            })
+            .collect();
+        // Written out seven deep by the flow itself, and joined into a longer text; and what a
+        // caller sent, joined into one: a step computed on a text the record may withhold whole.
+        let seven = (0..7).fold("k".to_string(), |inner, _| format!("JSON.stringify({{ p: {inner} }})"));
+        let routes = format!(
+            "{routes}route.post(\"/deep\", async (req) => {{\n  const got = await shown.post(\"/a\", {{ body: `deep ${{{seven}}}` }})\n  return {{ status: got.status }}\n}})\n\nroute.post(\"/join\", async (req) => {{\n  const got = await shown.post(\"/a\", {{ body: `said ${{req.body}}` }})\n  return {{ status: got.status }}\n}})\n\n"
+        );
+        let text = format!(
+            "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport shown from \"host:{shown}\"\nimport other from \"host:{other}\"\nimport seen from \"collection:seen\"\n\nflow(\"spelled-{name}\", {{ port: {port} }})\n\n{routes}route.post(\"/pass\", async (req) => {{\n  const authed = await shown.post(\"/a\", {{ body: k }})\n  const got = await other.post(\"/b\", {{ body: req.body }})\n  return {{ authed: authed.status, passed: got.error ?? got.status }}\n}})\n\nroute.get(\"/read\", () => seen.list())\n"
+        );
+        let slug = deploy_text_to(&state, &text, &[&shown, &other]);
+        let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+
+        // (what the run is, what it is expected to answer or hold)
+        let mut runs: Vec<String> = Vec::new();
+        for deep in 0..nested.len() {
+            let (status, body, _) = data_call(&state, &slug, "POST", &format!("/send{deep}"), "");
+            if status != 200 {
+                wrong.push(format!("{name}, sent {deep} deep: answered {status} {body}"));
+            }
+            runs.push(format!("sent {deep} deep"));
+            let (status, body, _) = data_call(&state, &slug, "POST", &format!("/write{deep}"), "");
+            if status != 200 {
+                wrong.push(format!("{name}, written {deep} deep: answered {status} {body}"));
+            }
+            runs.push(format!("written {deep} deep"));
+        }
+        {
+            let (status, body, _) = data_call(&state, &slug, "POST", "/deep", "");
+            if status != 200 {
+                wrong.push(format!("{name}, sent 7 deep in a longer text: answered {status} {body}"));
+            }
+            runs.push("sent 7 deep in a longer text".into());
+        }
+        // What a caller sends: each spelling eight deep and more, then one longer than the
+        // record looks for (where there is one), then another writer's: its first character as
+        // `\uXXXX`, and each quote as `\u0022`.
+        let first = secret.chars().next().unwrap();
+        let escaped = format!("{{\"v\":\"\\u{:04x}{}\"}}", first as u32, spelled(&secret[first.len_utf8()..], 1));
+        let mut sent: Vec<(String, String)> = (0..=8).map(|deep| (format!("passed on {deep} deep"), spelled(secret, deep))).collect();
+        if let Some(long) = (1..40).map(|deep| spelled(secret, deep)).find(|s| s.len() > 64 * 1024) {
+            sent.push(("passed on too long to mark".into(), long));
+        }
+        sent.push(("passed on with its first character escaped".into(), escaped.clone()));
+        sent.push(("passed on with its quotes as \\u0022".into(), format!("{{\"v\":\"{}\"}}", spelled(secret, 1).replace("\\\"", "\\u0022"))));
+        {
+            let (status, body, _) = data_call(&state, &slug, "POST", "/join", &escaped);
+            if status != 200 {
+                wrong.push(format!("{name}, joined with its first character escaped: answered {status} {body}"));
+            }
+            runs.push("joined with its first character escaped".into());
+        }
+        for (what, body) in &sent {
+            let (status, answer, _) = data_call(&state, &slug, "POST", "/pass", body);
+            let passed = serde_json::from_str::<serde_json::Value>(&answer).ok().map(|a| a["passed"].clone());
+            if status != 200 || passed != Some("blocked_secret".into()) {
+                wrong.push(format!("{name}, {what}: not refused the host: {status} {passed:?}"));
+            }
+            runs.push(what.clone());
+        }
+        // Nothing of it was written: the store keeps no text that holds it, however spelled.
+        let (_, kept, _) = data_call(&state, &slug, "GET", "/read", "");
+        let mut stored = Vec::new();
+        texts(&serde_json::from_str(&kept).unwrap_or_default(), &mut stored);
+        runs.push("read back".into());
+
+        let entries = log_entries(&state, &slug);
+        assert_eq!(entries.len(), runs.len(), "{name}");
+        let spellings: Vec<String> = (0..=10).map(|deep| spelled(secret, deep)).collect();
+        for (entry, what) in entries.iter().zip(&runs) {
+            let mut held = Vec::new();
+            texts(entry, &mut held);
+            if let Some(deep) = spellings.iter().position(|spelling| held.iter().any(|t| t.contains(spelling.as_str()))) {
+                wrong.push(format!("{name}, {what}: its record holds the secret, written out {deep} deep"));
+            }
+            if what.starts_with("written") && entry["performed"].as_array().is_some_and(|p| !p.is_empty()) {
+                wrong.push(format!("{name}, {what}: the write was performed"));
+            }
+            // Longer than a mark is looked for, or in another writer's spelling: the text whole.
+            // However deep otherwise, a mark in place, whatever the secret holds: how a record
+            // is shaped says nothing of that.
+            let whole = what.contains("too long") || what.contains("escaped") || what.contains("u0022") && secret.contains('"');
+            if whole != held.iter().any(|t| t.contains("‹respelled:secret:k›")) {
+                wrong.push(format!("{name}, {what}: a text of its record withheld whole isn't {whole}"));
+            }
+            if what.starts_with("sent") && !held.iter().any(|t| t.contains("‹secret:k")) {
+                wrong.push(format!("{name}, {what}: its record marks no secret"));
+            }
+        }
+        if let Some(deep) = spellings.iter().position(|spelling| stored.iter().any(|t| t.contains(spelling.as_str()))) {
+            wrong.push(format!("{name}: the store keeps the secret, written out {deep} deep"));
+        }
+        // And run again from its record, no run reads as changed.
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let report = verify::check(&export, None, &BTreeMap::new());
+        for (seq, rerun) in &report.reruns {
+            if let verify::Rerun::Differs(why) = rerun {
+                wrong.push(format!("{name}, {}: holon verify says it differs: {why}", runs[*seq as usize]));
+            }
+        }
+        if !report.ok() {
+            wrong.push(format!("{name}: {}", verify::describe(&report, None)));
+        }
+    }
+    assert_eq!(other_hits.lock().unwrap().get("/b").copied().unwrap_or(0), 0, "the host no approval shows was sent something");
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 // ── key claims: a key read before a call is held until the run commits ───────────────────────
 // (docs/L4s/key-claims-L4.md §10)
 
@@ -7905,9 +8079,18 @@ fn gated_counting_server() -> (String, Hits, Arc<Gate>) {
             let counted = Arc::clone(&counted);
             let passing = Arc::clone(&passing);
             std::thread::spawn(move || {
-                let Some((head, _)) = read_request(&mut stream) else { return };
+                let Some((head, sent)) = read_request(&mut stream) else { return };
                 let path = head.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("").to_string();
                 *counted.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
+                // What a far side answers that writes JSON with each character past ASCII
+                // escaped (Python's `ensure_ascii`): what it was sent, so spelled.
+                let ascii: String = String::from_utf8_lossy(&sent)
+                    .chars()
+                    .map(|c| match c.is_ascii() {
+                        true => c.to_string(),
+                        false => c.encode_utf16(&mut [0; 2]).iter().map(|u| format!("\\u{u:04x}")).collect(),
+                    })
+                    .collect();
                 let body = match path.as_str() {
                     "/slow" => {
                         passing.pass();
@@ -7916,6 +8099,7 @@ fn gated_counting_server() -> (String, Hits, Arc<Gate>) {
                     "/name" => "k",
                     // What a token exchange answers.
                     "/token" => r#"{"access_token":"tok_live_abcdef123456","token_type":"bearer","expires_in":3600}"#,
+                    "/ascii" => ascii.as_str(),
                     _ => "fast",
                 };
                 let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
@@ -8611,6 +8795,48 @@ route.post("/go", (req) => {
     assert!(report.ok(), "{}", verify::describe(&report, None));
 }
 
+/// A record as it reads but for what is the secret's own by design: a mark's version and
+/// print, the hashes and commitments its entry lists; and what any two runs differ in (when,
+/// how long, which run, the bytes each drew, which commit, how long a claim waited and held).
+const OWN: [&str; 16] = [
+    "seq", "prev", "at_ms", "duration_ms", "start_us", "end_us", "run_id", "nonce", "sourced", "session", "secrets", "committed", "derived", "commit", "waited_ms", "held_ms",
+];
+/// A run's record, `v`, as [`OWN`] says to read it.
+fn but_marks(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::String(s) => secrets::read_marked(s, true)
+            .into_iter()
+            .map(|(piece, mark)| match mark {
+                true if piece.starts_with(secrets::DERIVED_MARK) => "‹derived›".to_string(),
+                true if piece.starts_with("‹secret:") => format!("{}›", piece.split(' ').next().unwrap()),
+                _ => piece,
+            })
+            .collect::<String>()
+            .into(),
+        serde_json::Value::Array(items) => items.iter().map(but_marks).collect::<Vec<_>>().into(),
+        serde_json::Value::Object(fields) => fields.iter().filter(|(k, _)| !OWN.contains(&k.as_str())).map(|(k, v)| (k.clone(), but_marks(v))).collect::<serde_json::Map<_, _>>().into(),
+        other => other.clone(),
+    }
+}
+/// Where two records differ, by path: every place.
+fn differs(a: &serde_json::Value, b: &serde_json::Value, at: String, out: &mut Vec<String>) {
+    match (a, b) {
+        (serde_json::Value::Object(x), serde_json::Value::Object(y)) => {
+            let keys: BTreeSet<&String> = x.keys().chain(y.keys()).collect();
+            for k in keys {
+                differs(x.get(k).unwrap_or(&serde_json::Value::Null), y.get(k).unwrap_or(&serde_json::Value::Null), format!("{at}.{k}"), out);
+            }
+        }
+        (serde_json::Value::Array(x), serde_json::Value::Array(y)) if x.len() == y.len() => {
+            for (i, (x, y)) in x.iter().zip(y).enumerate() {
+                differs(x, y, format!("{at}[{i}]"), out);
+            }
+        }
+        _ if a != b => out.push(format!("{at}: {a} | {b}")),
+        _ => {}
+    }
+}
+
 /// **Guards:** a run's record says nothing of what the run computed from a secret. A flow that
 /// computes from its secret in each way a flow does (encoded into a header, beside headers that
 /// are nobody's secret, into a JSON body, answered to the caller, encoded twice and joined,
@@ -8785,46 +9011,6 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         }
     }
 
-    // A record as it reads but for what is the secret's own by design: a mark's version and
-    // print, the hashes and commitments its entry lists; and what any two runs differ in (when,
-    // how long, which run, the bytes each drew, which commit, how long a claim waited and held).
-    const OWN: [&str; 16] = [
-        "seq", "prev", "at_ms", "duration_ms", "start_us", "end_us", "run_id", "nonce", "sourced", "session", "secrets", "committed", "derived", "commit", "waited_ms", "held_ms",
-    ];
-    fn but_marks(v: &serde_json::Value) -> serde_json::Value {
-        match v {
-            serde_json::Value::String(s) => secrets::read_marked(s, true)
-                .into_iter()
-                .map(|(piece, mark)| match mark {
-                    true if piece.starts_with(secrets::DERIVED_MARK) => "‹derived›".to_string(),
-                    true if piece.starts_with("‹secret:") => format!("{}›", piece.split(' ').next().unwrap()),
-                    _ => piece,
-                })
-                .collect::<String>()
-                .into(),
-            serde_json::Value::Array(items) => items.iter().map(but_marks).collect::<Vec<_>>().into(),
-            serde_json::Value::Object(fields) => fields.iter().filter(|(k, _)| !OWN.contains(&k.as_str())).map(|(k, v)| (k.clone(), but_marks(v))).collect::<serde_json::Map<_, _>>().into(),
-            other => other.clone(),
-        }
-    }
-    // Where two records differ, by path: every place.
-    fn differs(a: &serde_json::Value, b: &serde_json::Value, at: String, out: &mut Vec<String>) {
-        match (a, b) {
-            (serde_json::Value::Object(x), serde_json::Value::Object(y)) => {
-                let keys: BTreeSet<&String> = x.keys().chain(y.keys()).collect();
-                for k in keys {
-                    differs(x.get(k).unwrap_or(&serde_json::Value::Null), y.get(k).unwrap_or(&serde_json::Value::Null), format!("{at}.{k}"), out);
-                }
-            }
-            (serde_json::Value::Array(x), serde_json::Value::Array(y)) if x.len() == y.len() => {
-                for (i, (x, y)) in x.iter().zip(y).enumerate() {
-                    differs(x, y, format!("{at}[{i}]"), out);
-                }
-            }
-            _ if a != b => out.push(format!("{at}: {a} | {b}")),
-            _ => {}
-        }
-    }
     let entries = log_entries(&state, &slug);
     assert_eq!(entries.len(), 2 * rows.len());
     let export_text = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
@@ -8886,6 +9072,71 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         }
     }
     assert!(report.ok(), "{said}");
+}
+
+/// **Guards:** what R67 leaves of a record saying what its secret holds, named. A far side that
+/// writes JSON with each character past ASCII escaped (Python's `ensure_ascii`) answers a secret
+/// that has one with that character as `\uXXXX`: a spelling no mark is put into, so the record
+/// withholds the answer's text whole (`‹respelled:secret:k›`), where an ASCII secret comes back as
+/// it went and its mark stands in place. So the record says whether the secret has a character
+/// past ASCII, through what a far side echoes (a caller can't send that spelling without the
+/// secret). Two secrets the same but for one letter: their records differ in the answer's text,
+/// and in the answer's `content-length`, and nothing else; `holon verify` runs both again.
+///
+/// The `content-length` is a leak of its own, found here: the record keeps the far side's
+/// headers as they came, and an answer that echoes a secret says, in its length, how long the
+/// secret is as the far side spelled it (here 27 and 32: the escaped letter is six characters).
+/// It isn't R67's: two ASCII secrets of other lengths, echoed, differ in it too. The class test's
+/// far sides answer the same whatever they are sent, so it doesn't show there.
+///
+/// **Why:** `a_runs_record_reads_the_same_whatever_its_secret` holds a record to reading the same
+/// whatever its secret, with two ASCII secrets. This is the difference R67 leaves (secrets.rs,
+/// `held_whole`), and the length an echo tells, kept in sight, as R65's is there, until each is
+/// closed.
+///
+/// **If it fails:** where the second record keeps its mark in place, the residual is closed;
+/// where the two lengths no longer show, the length is: take each out of what is excused, and
+/// when both are, make this a plain equality. Anything else the two records differ in is a leak
+/// of its own.
+#[test]
+fn a_far_sides_spelling_says_whether_a_secret_has_a_letter_past_ascii() {
+    let (host, _) = counting_server();
+    let state = claims_state("");
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\n\nflow(\"spelled\", {{ port: {} }})\n\nroute.post(\"/echo\", async (req) => {{\n  const got = await host.post(\"/ascii\", {{ body: JSON.stringify({{ v: k }}) }})\n  return {{ status: got.status }}\n}})\n",
+        free_port()
+    );
+    let slug = deploy_text(&state, &text, &host);
+    let secrets = ["live_alpha-key-1234", "live_alpha-k\u{e9}y-1234"];
+    for secret in secrets {
+        let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+        let (status, body, _) = data_call(&state, &slug, "POST", "/echo", "");
+        assert_eq!(status, 200, "{body}");
+    }
+    let entries = log_entries(&state, &slug);
+    assert_eq!(entries.len(), 2);
+    let mut at = Vec::new();
+    differs(&but_marks(&entries[0]), &but_marks(&entries[1]), String::new(), &mut at);
+    // The answer: the first secret's mark in place, the second's text withheld whole.
+    let answer = |d: &String| d.ends_with(r#": "{\"v\":\"‹secret:k›\"}" | "‹respelled:secret:k›""#);
+    assert!(at.iter().any(answer), "the residual is closed: take it out of what is excused:\n  {}", at.join("\n  "));
+    at.retain(|d| !answer(d));
+    // Its length, as the far side counted what it echoed: each letter past ASCII six characters.
+    let echoed = |s: &str| serde_json::json!({ "v": s }).to_string().chars().map(|c| if c.is_ascii() { 1 } else { 6 }).sum::<usize>();
+    let lengths = format!(r#".value: "{}" | "{}""#, echoed(secrets[0]), echoed(secrets[1]));
+    let length = |d: &String| d.ends_with(&lengths);
+    assert!(
+        at.iter().any(|d| d.starts_with(".rounds[0].exchanges[0].response.") && length(d)),
+        "the answer's length no longer tells the secret's: take it out of what is excused:\n  {}",
+        at.join("\n  ")
+    );
+    at.retain(|d| !length(d));
+    assert!(at.is_empty(), "two secrets, two records:\n  {}", at.join("\n  "));
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let said = verify::describe(&report, None);
+    assert!(report.ok() && report.reruns.iter().all(|(_, rerun)| matches!(rerun, verify::Rerun::Matched)), "{said}");
 }
 
 /// The read-call-write flows the claim tests run, calling `host` over plain HTTP: the call is

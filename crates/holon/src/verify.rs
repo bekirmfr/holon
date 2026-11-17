@@ -634,6 +634,9 @@ pub(crate) struct Stood {
     /// Whether its inputs held a value the run computed from a secret (`‹derived #7c1e9a02›`).
     /// Not which: such a mark is a run's own, and the same step in two runs reads as one here.
     pub(crate) derived: bool,
+    /// Whether its inputs held a text the record withheld whole, for holding a secret spelled as
+    /// no mark could stand for (`‹respelled:secret:name›`), or its own record is one.
+    pub(crate) respelled: bool,
 }
 
 impl Stood {
@@ -649,6 +652,7 @@ impl Stood {
             some("the token", "the tokens", &self.tokens),
             some("the request's", "the request's", &self.tainted).map(|t| t + ", which the log never keeps"),
             self.derived.then(|| "a value computed from a secret".to_string()),
+            self.respelled.then(|| "a text that held a secret spelled another way, withheld whole".to_string()),
         ]
         .into_iter()
         .flatten()
@@ -2449,8 +2453,14 @@ impl Observer for Asserting {
                 }
                 holon_core::taint::OnAMark::Compares => self.compared(name, unit, inputs),
             };
+            // A text the record withheld whole (`secrets::RESPELLED`) isn't one a mark was put
+            // into: it held a value in a spelling no mark stands for, which only the value
+            // tells. Computed on the marks, the step gives the text with a mark in place, and
+            // can't give the record's; so such a record is taken, and named, as a step's that
+            // computes with the value is.
+            let whole = |recorded: &[Option<Value>]| recorded.iter().flatten().any(|v| !self.marks.rest_of(&secrets::RESPELLED['‹'.len_utf8()..], v).is_empty());
             match self.at(path).ok().flatten() {
-                Some(recorded) if *recorded != gave && self.unrecorded.is_empty() => {
+                Some(recorded) if *recorded != gave && self.unrecorded.is_empty() && !whole(recorded) => {
                     self.belied = true;
                     return Some(gave);
                 }
@@ -2491,7 +2501,8 @@ impl Observer for Asserting {
                         self.taken.insert(path.to_vec(), Taken { of, leaf: leaf.clone(), outputs });
                     }
                 }
-                self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2), derived });
+                let respelled = inputs.iter().flatten().copied().chain(outputs.iter().flatten()).any(|v| !self.marks.rest_of(&secrets::RESPELLED['‹'.len_utf8()..], v).is_empty());
+                self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2), derived, respelled });
                 Some(outputs)
             }
             // None kept, for a leaf that only moves what it is handed: computed on its marks,
@@ -2623,7 +2634,13 @@ impl Marks {
         // A credential a call answered to a request that held a secret (`secrets::answered_tokens`)
         // is refused a write as the secret is.
         // So is what the run computed from a secret.
-        let secret = |t: &str| t.contains(&format!("{}secret:", self.start)) || t.contains(&format!("{}token:answer ", self.start)) || t.contains(&format!("{}{}", self.start, Marks::DERIVED));
+        // And a text that held one spelled as no mark could stand for (`secrets::RESPELLED`).
+        let secret = |t: &str| {
+            t.contains(&format!("{}secret:", self.start))
+                || t.contains(&format!("{}token:answer ", self.start))
+                || t.contains(&format!("{}{}", self.start, Marks::DERIVED))
+                || t.contains(&format!("{}{}", self.start, &secrets::RESPELLED['‹'.len_utf8()..]))
+        };
         match v {
             Value::Text(t) => secret(t),
             Value::List(items) => items.iter().any(|v| self.carries_secret(v)),
