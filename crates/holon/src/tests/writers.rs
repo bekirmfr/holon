@@ -1,6 +1,6 @@
 //! A writer whose failure the server can't simply go on from reaches an admin and `/health`
 //! (failing.rs): audit R39. And whoever asked is told that it failed, never where the file is
-//! or the error's own text: audit R71.
+//! or the error's own text: audit R71. A run's record names a file only as its flow does: R72.
 
 use super::*;
 
@@ -245,4 +245,87 @@ fn a_file_that_fails_tells_whoever_asked_neither_where_nor_why() {
     }
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Guards: a run whose read or write of a file fails says so in its record, naming a folder and a
+/// file only as the flow names them, by every source of such an error: the state's head that
+/// can't be written (its action's run), the server's store of texts that can't keep a big file's
+/// text (a route reading it), a bound folder gone (a route listing it), and a capped folder whose
+/// size can't be read (`folders::usage`, what a write to it asks first). The whole log entry is
+/// held, so its error, decide's `run_error` and an unrecorded run's `last_failure` (the same
+/// text) with it. The server's own files are held as R71's are (`neither_where_nor_why`: no OS
+/// error's text either); a bound folder's place, wherever it is.
+/// Why: each named the server's data folder or a bound folder's whole path, and the run's record
+/// is read by whoever may read or decide that flow's runs; where a resource is goes only to
+/// whoever may bind it (R51), why the server's own file failed to the admin (audit R72).
+/// If it fails: the row says which source put a place in the record: name the folder as the flow
+/// does, or give the server's own error to the admin (`failing::Failed`).
+#[test]
+fn a_run_whose_file_fails_names_it_only_as_the_flow_does() {
+    use serde_json::json;
+    // Apart: a folder inside the server's data can't be bound.
+    let data = std::env::temp_dir().join(format!("holon-r72-{}-{}", std::process::id(), rand::random::<u32>()));
+    let bound = data.with_extension("bound");
+    for d in [data.clone(), bound.join("inbox"), bound.join("reports")] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let mut state = test_state_at(Place::parse(&data.join("deployments.json").to_string_lossy()));
+    state.folders = std::sync::Arc::new(crate::folders::Folders::memory().with_blobs(crate::blobs::Blobs::at(data.join("blobs"))));
+    for name in ["inbox", "reports"] {
+        let body = json!({ "name": name, "path": bound.join(name).display().to_string(), "access": "read-write", "keep": "bytes" });
+        assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200, "{name}");
+    }
+    let slug = deploy_plain_text(
+        &state,
+        "import { action, flow, route } from \"holon\"\nimport state from \"state\"\nimport inbox from \"folder:inbox\"\nimport reports from \"folder:reports\"\n\nflow(\"leaky\", { port: 8372 })\n\nroute.get(\"/read\", () => inbox[\"big.txt\"])\n\nroute.get(\"/list\", () => reports.list())\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n",
+    );
+    // Where neither may be: the bound folders' place, as written or as JSON escapes it.
+    let nowhere = |what: &str, text: &str| {
+        for at in [&bound, &bound.join("inbox"), &bound.join("reports")] {
+            let at = at.display().to_string();
+            for part in [at.clone(), at.replace('\\', "\\\\")] {
+                assert!(!text.contains(&part), "{what}: where a bound folder is ({part:?}), in the run's record: {text}");
+            }
+        }
+    };
+    let last = || {
+        let entry = log_entries(&state, &slug).last().cloned().unwrap();
+        (entry["error"].as_str().unwrap_or("").to_string(), serde_json::to_string(&entry).unwrap())
+    };
+
+    // The state's head, a folder in the way of the file.
+    let head = crate::persist::state_head_for(&state.deployments_path, &slug).unwrap();
+    let _ = std::fs::remove_file(&head);
+    std::fs::create_dir_all(&head).unwrap();
+    run_action_named(&state, &slug, "bump", json!({}));
+    let (error, entry) = last();
+    assert!(error.starts_with(crate::folders::WRITE_FAILED) && error.contains("the state it left"), "the head's row ran: {error}");
+    neither_where_nor_why("the state's head", &entry, &data, &[]);
+    nowhere("the state's head", &entry);
+
+    // The store of texts, a file in the way of its folder: a read too big for its log line.
+    let _ = std::fs::remove_dir_all(data.join("blobs"));
+    std::fs::write(data.join("blobs"), b"in the way").unwrap();
+    std::fs::write(bound.join("inbox").join("big.txt"), "x".repeat(2 * crate::folders::LOG_INLINE_BYTES as usize)).unwrap();
+    let (status, _, _) = data_call(&state, &slug, "GET", "/read", "");
+    let (error, entry) = last();
+    assert!(status == 500 && error.starts_with(crate::folders::READ_FAILED) && error.contains("inbox/big.txt"), "the store's row ran ({status}): {error}");
+    neither_where_nor_why("the store of texts", &entry, &data, &[]);
+    nowhere("the store of texts", &entry);
+
+    // A bound folder gone, listed.
+    std::fs::remove_dir_all(bound.join("reports")).unwrap();
+    let (status, _, _) = data_call(&state, &slug, "GET", "/list", "");
+    let (error, entry) = last();
+    assert!(status == 500 && error.starts_with(crate::folders::READ_FAILED) && error.contains("\"reports\" can't be listed"), "the listing's row ran ({status}): {error}");
+    nowhere("a folder listed", &entry);
+    assert!(!entry.contains(&data.display().to_string().replace('\\', "\\\\")), "a folder listed: the data folder, in the run's record: {entry}");
+
+    // A capped folder whose size can't be read: what a write to it is told.
+    let said = crate::folders::usage("reports", &bound.join("reports")).unwrap_err();
+    assert!(said.contains("\"reports\" can't be read"), "the size's row ran: {said}");
+    nowhere("a capped folder's size", &said);
+
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&bound);
 }
