@@ -92,17 +92,25 @@ pub(crate) const MARK_STANDS_FOR: &str = "only a text of 6 characters or more, i
 /// Why a run that came out other than its entry says isn't said to differ, if the log left out
 /// what it would take to run it again: the outputs of a node that may compute from a secret,
 /// which the run ran ([`withheld_why`]), or of a node this check asked for (`unrecorded`) that
-/// was too large or too deep to keep. None: the log kept all it keeps, and the run differs.
-fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry, unrecorded: &BTreeSet<Vec<u32>>) -> Option<String> {
+/// was too large or too deep to keep; or where it computed a step the log left out on a record
+/// keyed by a mark (`keyed`, [`Asserting`]). None: the log kept all it keeps, and the run
+/// differs.
+fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry, unrecorded: &BTreeSet<Vec<u32>>, keyed: bool) -> Option<String> {
     let fed = taint::SecretFed::of(root, resolver);
     let derived_missing = entry.timeline.iter().any(|t| t.outputs.is_none() && fed.derives(&t.path)) || unrecorded.iter().any(|p| fed.derives(p));
     if entry.withheld && derived_missing {
         return Some(withheld_why(root, resolver, &fed, entry));
     }
-    // A line that says it marked every value the run computed from a secret kept each step that
-    // made one (`secrets::born`): one without is taken out, and the run differs.
-    if derived_missing {
+    // A line that says it marked every value the run computed from a secret kept each step this
+    // check takes from it (`secrets::born`, `SecretFed::taken`), as deep as the log follows a
+    // run's steps: one without is taken out, and the run differs.
+    let deep = |p: &Vec<u32>| p.len() > recorder::Timer::DEPTH;
+    let taken_missing = entry.timeline.iter().any(|t| t.outputs.is_none() && fed.taken(&t.path)) || unrecorded.iter().any(|p| fed.taken(p) && !deep(p));
+    if !entry.withheld && taken_missing {
         return None;
+    }
+    if keyed {
+        return Some("it computed a step the log leaves out (too large) on a record keyed by a mark, which orders and finds by the mark, not by the value it stands for".into());
     }
     (!unrecorded.is_empty()).then(|| "it computed with a secret or a resume token at a node the log keeps no outputs for (too large, or too deep)".into())
 }
@@ -111,9 +119,10 @@ fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry,
 /// which leaf, from which secret, and why no mark stands for what it gave. The leaf is one that
 /// computes something of its own from a secret (`SecretFed::computes`) and ran; one whose output
 /// is declared as something a mark can't be (a number, a true or false, a list) is named before
-/// one that gives a text, which may have been too short, or held by a step too large to keep
-/// even with its marks (`secrets::Measured`): the line doesn't say which. A run that computed
-/// where the log follows no steps says that.
+/// one that gives a text, which may have been too short, or given by a step the log doesn't
+/// keep (too large even with its marks, `secrets::Measured`, or carrying a file it keeps by
+/// its hash): the line doesn't say which. A run that computed where the log follows no steps
+/// says that.
 fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::SecretFed, entry: &LogEntry) -> String {
     if !fed.followed_to(recorder::Timer::DEPTH) {
         return "it computed with a secret inside a function applied to each item, inside a module, or deeper than the log records a run's steps: the values made there can't each be marked, so the log withholds them, and only the secret could compute them again".into();
@@ -150,7 +159,7 @@ fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::
     };
     match what {
         Some(what) => format!("{leaf} computed {what} from {from}: {MARK_STANDS_FOR}"),
-        None => format!("{leaf} computed from {from} a value no mark stands for (too short, or not a text), or one a step too large to keep held, even marked: {MARK_STANDS_FOR}"),
+        None => format!("{leaf} computed from {from} a value no mark stands for (too short, or not a text), or one a step the log doesn't keep gave (too large even marked, or carrying a file it keeps by its hash): {MARK_STANDS_FOR}"),
     }
 }
 
@@ -1669,7 +1678,13 @@ fn rerun(
     };
     let limits = rerun_limits();
     let mut host = RecordingHost::new();
-    let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped);
+    // What may be computed from a secret it was given, by the walk the server withholds and
+    // marks it by (`firing::without_secret_derived`, `FiredRun::withholds_output`,
+    // `secrets::born`), of the same unit: which steps the check takes from the log, and which
+    // it computes again on its marks (`SecretFed::taken`).
+    let given_one = entry.secrets.keys().any(|name| caps.iter().any(|c| matches!(c, Capability::SecretRead(s) if s == *name)));
+    let fed = if given_one { taint::SecretFed::of(root, resolver) } else { taint::SecretFed::default() };
+    let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped, fed.clone());
     let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &network, &limits, &mut observer, &mut waits, &prior);
     // A node computed on its placeholders gives what the run gave, written with them; the log
     // recording other for it is a record that isn't the run's.
@@ -1724,22 +1739,17 @@ fn rerun(
     if json(&performed) != json(&entry.performed) {
         differs.push("the effects it performed");
     }
-    // What may be computed from a secret it was given is withheld as the server withholds it
-    // (`firing::without_secret_derived`, `FiredRun::withholds_output`), from the same walk of
-    // the same unit.
-    let given_one = entry.secrets.keys().any(|name| caps.iter().any(|c| matches!(c, Capability::SecretRead(s) if s == *name)));
-    let fed = if given_one { taint::SecretFed::of(root, resolver) } else { taint::SecretFed::default() };
     // A line that says its record withholds keeps nothing that may be computed from a secret,
     // and is one that computed with one: else it says other than the server writes. Nor is it
     // one where nothing made the record withhold (`secrets::born`): given a secret it had a
     // key for (it commits to one), each step that may compute from one followed and none of
-    // them run, and each step that may hold one kept.
+    // them run, and each step the check takes from it kept (`SecretFed::taken`, R66).
     let nothing_withheld = given_one
         && !entry.committed.is_empty()
         && !entry.timeline.is_empty()
         && fed.followed_to(recorder::Timer::DEPTH)
         && !entry.timeline.iter().any(|t| fed.derives(&t.path))
-        && entry.timeline.iter().filter(|t| fed.holds(&t.path)).all(|t| t.outputs.is_some());
+        && entry.timeline.iter().filter(|t| fed.taken(&t.path)).all(|t| t.outputs.is_some());
     if entry.withheld && (fed.is_empty() || nothing_withheld || entry.timeline.iter().any(|t| t.outputs.is_some() && fed.derives(&t.path))) {
         return Rerun::Differs("its line says it withholds what the run computed from a secret, and keeps a step that may hold it, computed with none, or did nothing that makes it withhold".into());
     }
@@ -1754,9 +1764,20 @@ fn rerun(
     kept.extend(folders::written_bytes(&host.performed).into_iter().filter_map(|b| carried_text(&Value::Bytes(b.to_vec()))));
     let again = std::mem::take(&mut observer.timer.timeline);
     // Where the line says the run marked every value computed from a secret, the steps it kept
-    // whole for it (`secrets::born`, by the same walk).
+    // for it (`secrets::born`, by the same walk: those the check takes from it), and those it
+    // kept unless too large as it writes them (one that only moves such a value).
     let whole = given_one && !entry.withheld;
-    let steps = steps_of(&entry.timeline, &again, &|path| entry.withheld && fed.derives(path), &|path| whole && fed.holds(path), &kept, !observer.unrecorded.is_empty(), marks, entry.escaped);
+    let steps = steps_of(
+        &entry.timeline,
+        &again,
+        &|path| entry.withheld && fed.derives(path),
+        &|path| whole && fed.taken(path),
+        &|path| whole && fed.holds(path) && !fed.taken(path),
+        &kept,
+        !observer.unrecorded.is_empty(),
+        marks,
+        entry.escaped,
+    );
     if !steps.whole {
         differs.push("the steps it took (its timeline)");
     }
@@ -1867,7 +1888,7 @@ fn rerun(
         // it was, whether or not a node here asked for what the log left out (one that reads a
         // secret inside a function applied to each item is asked for nothing). For other nodes,
         // the outputs were too large or too deep to keep. Each is a different thing to be told.
-        false if let Some(why) = left_out(root, resolver, entry, &observer.unrecorded) => Rerun::Skipped(why),
+        false if let Some(why) = left_out(root, resolver, entry, &observer.unrecorded, observer.keyed) => Rerun::Skipped(why),
         // Stopped by a limit verify isn't held to (its budget, the clock), or one past which the
         // server dropped what it did (a file's, a queue's size): run again, it goes further. So
         // its entry may say less than the run again does, never other: the same run, each output
@@ -2084,6 +2105,7 @@ fn steps_of(
     again: &[recorder::NodeTiming],
     withheld: &dyn Fn(&[u32]) -> bool,
     kept_whole: &dyn Fn(&[u32]) -> bool,
+    moved: &dyn Fn(&[u32]) -> bool,
     kept: &[String],
     short: bool,
     marks: &Marks,
@@ -2102,13 +2124,29 @@ fn steps_of(
         let outputs = match (&l.outputs, &a.outputs) {
             (Some(l), Some(a)) => json(l) == json(&a.iter().map(|o| o.clone().map(|v| marks.write(v))).collect::<Vec<_>>()),
             (None, None) => true,
+            // A step the line says the run kept whole (`kept_whole`: it marked every value
+            // computed from a secret, and this is a step the check takes from the record,
+            // `SecretFed::taken`; `secrets::born` asks the same, of the steps as the record keeps
+            // them): one without is taken out, whatever it carries (R61, R66).
+            (None, Some(_)) if kept_whole(&l.path) => false,
             (None, Some(a)) if held || carries_kept(a) => true,
+            // One that only moves such a value, where the line says the same (`moved`): kept
+            // unless too large as the record writes it, each value as its mark
+            // (`secrets::Measured`), or written longer by a mark the measure doesn't know (a
+            // token's, a tainted value's: only the whole entry makes those known). The check
+            // computes it again on its marks.
+            (None, Some(a)) if moved(&l.path) => {
+                let written: Vec<Option<SValue>> = a.iter().map(|o| o.clone().map(|v| marks.write(v))).collect();
+                let unknown = |v: &SValue| {
+                    let v = v.clone().into_core();
+                    !marks.tokens_in(&v).is_empty() || !marks.tainted_in(&v).is_empty()
+                };
+                !recorder::fits(&written) || a.iter().flatten().any(unknown)
+            }
             // A step holding a mark: too large to keep as the run had it (the mark is shorter
-            // than the value). Not a step the line says the run kept whole (`kept_whole`: it
-            // marked every value computed from a secret, and the walk says this step may give
-            // one; `secrets::born` asks the same): one without is taken out. Where the walk says
-            // clean, a mark is a copy a caller sent or a host echoed, and explains it.
-            (None, Some(a)) => !kept_whole(&l.path) && a.iter().flatten().any(|v| marks.carried(&v.clone().into_core())),
+            // than the value). Where the walk says clean, a mark is a copy a caller sent or a
+            // host echoed, and explains it.
+            (None, Some(a)) => a.iter().flatten().any(|v| marks.carried(&v.clone().into_core())),
             (Some(l), None) => l.iter().flatten().any(|v| marks.carried(&marks.read(v, escaped))),
         };
         let reason = match (&l.reason, &a.reason) {
@@ -2225,6 +2263,13 @@ impl Waits for Logged {
 /// held to what they give: a record that says other differs (`belied`). Unless a node before it
 /// in the run couldn't be computed nor stood in for (`unrecorded`): what this run again computes
 /// after that one isn't the run's, so the record is taken, as for any other leaf.
+///
+/// Where the log keeps no outputs for a leaf, one that only moves what it is handed by the walk
+/// the record is kept by (`SecretFed::holds` and not `SecretFed::taken`, and acting on nothing)
+/// is computed on its marks too: a record that marks every value computed from a secret may
+/// leave it out, too large as it writes it (`secrets::born`, R66). Only a leaf the check takes
+/// from the record is `unrecorded`. A mark that is a record's key in what such a leaf is fed
+/// orders and finds by the mark (`keyed`): a run that then comes out other isn't run again.
 struct Asserting {
     timer: recorder::Timer,
     /// Each node's outputs, by path and by the round the log recorded them in.
@@ -2246,17 +2291,45 @@ struct Asserting {
     /// The nodes that needed standing in for and that the log keeps no outputs for (computed from
     /// a secret, larger than the log keeps, or deeper than it records).
     unrecorded: BTreeSet<Vec<u32>>,
+    /// Whether a leaf computed on its marks where the log keeps no outputs for it was fed a mark
+    /// as a record's key.
+    keyed: bool,
+    /// What a secret the run was given reaches: which leaves the check takes from the log.
+    fed: taint::SecretFed,
     marks: Marks,
 }
 
 impl Asserting {
-    fn from_timeline(timeline: &[recorder::NodeTiming], marks: &Marks, escaped: bool) -> Asserting {
+    fn from_timeline(timeline: &[recorder::NodeTiming], marks: &Marks, escaped: bool, fed: taint::SecretFed) -> Asserting {
         let mut recorded: BTreeMap<Vec<u32>, BTreeMap<u32, Vec<Option<Value>>>> = BTreeMap::new();
         for t in timeline {
             let Some(outputs) = &t.outputs else { continue };
             recorded.entry(t.path.clone()).or_default().insert(t.round, outputs.iter().map(|o| o.as_ref().map(|v| marks.read(v, escaped))).collect());
         }
-        Asserting { timer: recorder::Timer::new(), recorded, round: 0, belied: false, taken: BTreeMap::new(), misshapen: false, stood_in: BTreeMap::new(), unrecorded: BTreeSet::new(), marks: marks.clone() }
+        Asserting {
+            timer: recorder::Timer::new(),
+            recorded,
+            round: 0,
+            belied: false,
+            taken: BTreeMap::new(),
+            misshapen: false,
+            stood_in: BTreeMap::new(),
+            unrecorded: BTreeSet::new(),
+            keyed: false,
+            fed,
+            marks: marks.clone(),
+        }
+    }
+
+    /// Whether the leaf `unit` at `path` only moves what it is handed, by the walk the record is
+    /// kept by (`SecretFed::holds`, not `SecretFed::taken`), and acts on nothing: computed on its
+    /// marks where the log keeps no outputs for it.
+    fn moved(&self, path: &[u32], unit: &holon_core::Unit) -> bool {
+        let holon_core::UnitBody::Primitive { name } = &unit.body else { return false };
+        self.fed.holds(path)
+            && !self.fed.taken(path)
+            && !holon_core::taint::is_answered(name)
+            && holon_core::capabilities_of(name, &unit.params).is_some_and(|c| c.is_pure())
     }
 
     /// What the log recorded for the node at `path` in this round, as it ran: in a round it
@@ -2420,6 +2493,13 @@ impl Observer for Asserting {
                 }
                 self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2), derived });
                 Some(outputs)
+            }
+            // None kept, for a leaf that only moves what it is handed: computed on its marks,
+            // as one that moves a value is above (R66), noting a mark in a record's key.
+            None if self.moved(path, unit) => {
+                self.keyed |= inputs.iter().flatten().any(|v| self.marks.in_a_key(v));
+                let inputs: Vec<Option<Value>> = inputs.iter().map(|v| v.cloned()).collect();
+                Some(holon_core::eval(unit, &inputs, &holon_core::MapResolver::new()).into_vec())
             }
             None => {
                 self.unrecorded.insert(path.to_vec());
@@ -3391,7 +3471,7 @@ mod tests {
                 },
             }
         };
-        let asserting = Asserting::from_timeline(&[], &marks, false);
+        let asserting = Asserting::from_timeline(&[], &marks, false, taint::SecretFed::default());
         let resolver = holon_core::MapResolver::new();
         let mut computed: BTreeMap<&str, usize> = BTreeMap::new();
         for name in holon_core::GENESIS.iter().copied().filter(|n| holon_core::taint::on_a_mark(n).is_some()) {

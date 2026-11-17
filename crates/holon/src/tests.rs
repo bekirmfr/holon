@@ -8662,10 +8662,11 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
     // sized so that, as the run had it, the step fits a record's limit with the shorter secret
     // and not with the longer: as its record writes it, the value as its mark, it fits with
     // either, and is kept with either (R63). Sized so it fits as the run had it with the
-    // shorter, and not with its mark, longer than the value: left out with either, and the
-    // record withholds (`secrets::born`), the same for both. Given look-alikes of a mark, sized
-    // so it fits with the value's mark but not with each look-alike escaped as written: the
-    // same.
+    // shorter, and not with its mark, longer than the value: left out with either, the same
+    // for both, and as the step only moves the two (a record, written as JSON), the check
+    // builds it again on the marks and the record withholds nothing (R66). Given look-alikes
+    // of a mark, sized so it fits with the value's mark but not with each look-alike escaped
+    // as written: the same.
     let encoded = |s: &str| holon_core::bytes_text(s.as_bytes(), "base64").unwrap();
     let step = |k: &str, pad: &str| {
         let record = holon_core::Value::Record(BTreeMap::from([("k".to_string(), holon_core::Value::Text(k.into())), ("pad".to_string(), holon_core::Value::Text(pad.into()))]));
@@ -8685,6 +8686,8 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
     type Sent<'a> = &'a dyn Fn(&str) -> String;
     let nothing: Sent = &|_: &str| String::new();
     let (large, tight, alikes) = (|_: &str| large.clone(), |_: &str| tight.clone(), |_: &str| alikes.clone());
+    // And a body past what a record keeps of a step, whatever the secret.
+    let sized = |_: &str| "x".repeat(20 * 1024);
     let rows: Vec<(&str, &str, Sent, bool)> = vec![
         ("basic", "const got = await host.get(\"/a\", { headers: { authorization: `Basic ${btoa(`user:${k}`)}` } })\n  return { status: got.status }", nothing, true),
         (
@@ -8741,12 +8744,28 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
             false,
         ),
         ("large", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &large, true),
-        ("tight", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &tight, false),
-        ("lookalike", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &alikes, false),
+        ("tight", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &tight, true),
+        ("lookalike", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &alikes, true),
         // A value computed from it beside a file's text the log keeps by its hash: the step that
         // gives the two isn't kept, as the file is the log's already, and the check computes it
         // on the marks.
         ("filed", "const text = notes[\"five\"]\n  const got = await host.post(\"/a\", { body: JSON.stringify({ auth: btoa(k), text }) })\n  return { status: got.status }", nothing, true),
+        // The same text and the secret in a value a leaf computes (trimmed): the step that gives
+        // it carries the file and isn't kept, and the check can't compute it on a mark, so the
+        // record withholds (R66).
+        ("computed", "const text = notes[\"five\"]\n  const got = await host.post(\"/a\", { body: (text + k).trim() })\n  return { status: got.status }", nothing, false),
+        // A body that carries a credential computed from it beside what the caller sent, past
+        // what a record keeps of a step: written as JSON, or joined into a text. The step that
+        // holds the two only moves them, isn't kept, and the check builds it again on the marks
+        // (R66). A credential in a header beside such a body isn't this: the two reach the call
+        // apart, no step holds both, and the record is whole before R66 as after.
+        ("header", "const got = await host.post(\"/a\", { headers: { authorization: `Basic ${btoa(`user:${k}`)}` }, body: req.body })\n  return { status: got.status }", &sized, true),
+        ("sized","const got = await host.post(\"/a\", { body: JSON.stringify({ auth: btoa(`user:${k}`), data: req.body }) })\n  return { status: got.status }", &sized, true),
+        ("joined", "const got = await host.post(\"/a\", { body: `${btoa(`user:${k}`)}:${req.body}` })\n  return { status: got.status }", &sized, true),
+        // A body that is a record keyed by a value computed from it, past what a record keeps of
+        // a step: the steps that build and write it only move it, and the check builds them again
+        // on the mark, a key of one (R66).
+        ("keyed", "const sent = { [btoa(`user:${k}`)]: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(sent) })\n  return { status: got.status }", &sized, true),
     ];
     // And a route that writes the collection the rows read, never called: the deployment may write
     // it, so a run that reads it claims what it read before it calls out.
@@ -9518,6 +9537,21 @@ fn changes_of(line: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
 /// of the kinds of runs there are: an action's that writes the state, a request's that reads its
 /// query and answers, and an approval's two parts, the second resumed by two people's decisions.
 ///
+/// Its zero is only as wide as its flows: R61's sweep passed none as checked, and the same code
+/// passed 36 changes as checked once a flow sent a credential beside a file (R66). Of the calls
+/// a secret reaches, it covers: a credential computed from the secret in a header ("signed");
+/// a number computed from it, which no mark stands for, withheld ("counted"); the secret as it
+/// is in a body larger than the log keeps of a step ("large", R63); a credential computed from
+/// it in a JSON body beside what the caller sent past that size, and beside a file's text the
+/// log keeps by its hash ("sized", R66); and calls, reads and a claim with no secret ("calls",
+/// "reads"). Not, and so where to look next: a step that computes from a secret past that size
+/// or carrying such a file (withheld, its record held by the "computed" row of
+/// `a_runs_record_reads_the_same_whatever_its_secret`); a mark as a record's key (its "keyed"
+/// row); a value computed from a secret answered to the caller; a call whose answer echoes the
+/// secret; a resume token or a tainted value (a caller's key) in a call; a secret JSON spells
+/// another way; one reached inside a function applied to each item or inside a module; and
+/// runs of other kinds (a feed's, a schedule's, one flow calling another).
+///
 /// **Why:** verify passed lines changed and chained again by roads one at a time: an `error` and
 /// a status put in (it matched, exit 0), a source it couldn't name, a read's text taken out, a
 /// secret-fed node's outputs deleted (not run again, exit 3, the state it named after it never
@@ -9578,6 +9612,36 @@ fn no_line_changed_and_chained_again_passes_as_checked() {
         free_port()
     );
     let large = deploy_text(&state, &text, &host);
+    // And one that sends a credential computed from its secret beside what is past what the log
+    // keeps of a step: a request's body (past 16 KiB), a file's text the log keeps by its hash
+    // (past 4 KiB). The steps that hold the two only move them: left out, and built again on the
+    // marks by the check, so its record withholds nothing (R66).
+    let papers = std::env::temp_dir().join(format!("holon-sweep-papers-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&papers).unwrap();
+    std::fs::write(papers.join("five.txt"), "a note of five. ".repeat(320)).unwrap();
+    let folder = serde_json::json!({ "name": "papers", "path": papers.display().to_string() });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&folder).unwrap())).status_code, 200);
+    let text = r#"import { flow, route } from "holon"
+import k from "secret:k"
+import host from "host:HOST"
+import papers from "folder:papers"
+
+flow("sized", { port: PORT })
+
+route.post("/send", async (req) => {
+  const got = await host.post("/a", { body: JSON.stringify({ auth: btoa(`user:${k}`), data: req.body }) })
+  return { status: got.status }
+})
+
+route.post("/upload", async (req) => {
+  const text = papers["five.txt"]
+  const got = await host.post("/a", { body: JSON.stringify({ auth: btoa(`user:${k}`), text }) })
+  return { status: got.status, n: req.body }
+})
+"#
+    .replace("HOST", &host)
+    .replace("PORT", &free_port().to_string());
+    let sized = deploy_text(&state, &text, &host);
     // And one that reads: an item of a collection it writes (so it claims it before it calls
     // out), a folder's file, a database's row. Each read is answered from the line (R62).
     let files = std::env::temp_dir().join(format!("holon-sweep-reads-{}-{}", std::process::id(), rand::random::<u32>()));
@@ -9593,7 +9657,7 @@ fn no_line_changed_and_chained_again_passes_as_checked() {
     );
     let reads = deploy_text(&state, &text, &host);
     let big = format!("live_{}", "q".repeat(recorder::Timer::MAX_RECORDED_BYTES));
-    for (slug, value) in [(&signed, "live_alpha-secret-value-1"), (&counted, "live_alpha-secret-value-1"), (&large, big.as_str())] {
+    for (slug, value) in [(&signed, "live_alpha-secret-value-1"), (&counted, "live_alpha-secret-value-1"), (&large, big.as_str()), (&sized, "live_alpha-secret-value-1")] {
         let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
         assert_eq!(route(&state, &set).status_code, 200);
     }
@@ -9605,6 +9669,10 @@ fn no_line_changed_and_chained_again_passes_as_checked() {
         let (status, body, _) = data_call(&state, &counted, "POST", "/count", n);
         assert_eq!(status, 200, "{body}");
         let (status, body, _) = data_call(&state, &large, "POST", "/big", n);
+        assert_eq!(status, 200, "{body}");
+        let (status, body, _) = data_call(&state, &sized, "POST", "/send", &format!("{n}{}", "x".repeat(20 * 1024)));
+        assert_eq!(status, 200, "{body}");
+        let (status, body, _) = data_call(&state, &sized, "POST", "/upload", n);
         assert_eq!(status, 200, "{body}");
     }
     let (status, body, _) = data_call(&state, &reads, "PUT", "/keep", "1");
@@ -9657,7 +9725,7 @@ export const pay = action(async (order) => {
     // run not re-run, a call's answer changed.
     let mut per_flow: BTreeMap<String, [usize; 7]> = BTreeMap::new();
     let (mut unrun, mut answered, mut flips) = (0, 0, Vec::new());
-    for slug in ["c", "seen", calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), reads.as_str(), "payouts"] {
+    for slug in ["c", "seen", calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), sized.as_str(), reads.as_str(), "payouts"] {
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req_as(&ada, "GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
         let honest = verify::check(&export, None, &BTreeMap::new());
         // The flow whose record withholds isn't run again: each of its runs says so.
@@ -9670,12 +9738,15 @@ export const pay = action(async (order) => {
         // line's say-so (R61). And the flow whose secret is larger than a step's record keeps its
         // step on the mark (R63).
         let said = verify::describe(&honest, None);
-        let called = [calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), reads.as_str()].contains(&slug);
+        let called = [calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), sized.as_str(), reads.as_str()].contains(&slug);
         // The reading flow's line holds what it read, and what it claimed before it called out.
         if slug == reads {
             assert!(export.lines.iter().any(|l| l.contains("\"reads\":") && l.contains("\"claims\":")), "{slug}: its lines hold reads and claims");
         }
         assert_eq!(said.contains("called out: what their calls were answered is the log's say-so"), called, "{slug}:\n{said}");
+        if slug == sized {
+            assert!(export.lines.iter().all(|l| !l.contains("\"withheld\":true")), "{slug}: a line withholds");
+        }
         if slug == large {
             assert!(export.lines.iter().all(|l| !l.contains("\"withheld\":true") && l.contains("‹secret:k ")), "{slug}: a line withholds, or keeps no step with its secret's mark");
         }
@@ -9865,6 +9936,7 @@ export const pay = action(async (order) => {
     assert!(marks >= 2, "the signed flow's records hold a mark where each value computed from its secret was: {marks}");
     assert!(less_state.iter().any(|at| at.contains(": commit/")), "a commit's cell or number changed checks less of a state: {less_state:?}");
     let _ = std::fs::remove_dir_all(&files);
+    let _ = std::fs::remove_dir_all(&papers);
 }
 
 /// `v` with every value in it that is `from` (a whole JSON value: a string, a record's field as

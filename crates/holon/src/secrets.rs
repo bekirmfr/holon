@@ -207,7 +207,8 @@ pub(crate) fn derived_hash(key: &[u8], run: &str, value: &str) -> String {
 
 /// What the run `run` computed from its secrets, as its record marks it: each text of
 /// [`MIN_SECRET_LEN`] characters or more that a leaf computing something of its own from a
-/// secret gave (`SecretFed::computes`, read off `timeline`), with its hash under `key`.
+/// secret gave (`SecretFed::computes`, read off `timeline`, its steps as the record keeps
+/// them), with its hash under `key`.
 ///
 /// And whether that is all of it (`whole`): every node that may compute from a secret was
 /// followed and observed (`kept`: the run kept a timeline; none deeper than it records, none
@@ -247,12 +248,16 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
     values.sort();
     // Two values under one mark would read as one.
     whole &= values.windows(2).all(|pair| pair[0].0[..8] != pair[1].0[..8]);
-    // And each step that gives a secret's value, or one computed from it, kept its outputs: one
-    // too large to keep as its record writes it ([`Measured`]: each such value as its mark,
-    // whatever the secret) would read, in a record marked whole, as one taken out, which
-    // `holon verify` refuses (R61), asking the same of each step (`SecretFed::holds`). A call
-    // that sends one gives what the host answered, kept whole in the record's rounds.
-    whole &= timeline.iter().filter(|n| fed.holds(&n.path)).all(|n| n.outputs.is_some());
+    // And each step `holon verify` takes from the record rather than computing it again on a
+    // mark (`SecretFed::taken`: each leaf a secret reaches, as it is or computed from it, but a
+    // call and one that only moves what it is handed) kept its outputs, in `timeline` as the
+    // record keeps it: one too large to keep as its record writes it ([`Measured`]: each such
+    // value as its mark, whatever the secret), or one carrying a file the log keeps by its hash
+    // (`firing::without_kept_files`), would read, in a record marked whole, as one taken out,
+    // which verify refuses (R61), asking the same of each step. One that only moves such a
+    // value may be left out: verify computes it again on its marks (R66). A call gives what the
+    // host answered, kept whole in the record's rounds.
+    whole &= timeline.iter().filter(|n| fed.taken(&n.path)).all(|n| n.outputs.is_some());
     crate::recorder::Born { values, whole }
 }
 
@@ -260,7 +265,8 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
 /// (`SecretFed::holds`), measured as its record writes it, for the run's timer to keep the step
 /// when it fits so (`recorder::Measure`, R63). As the run had it, such a step is longer by as
 /// much as its secret is: kept for a short one and left out for a long one, its record would
-/// withhold for the one and not the other ([`born`]'s last clause), and so say which it had.
+/// say which it had, by the step's outputs, and, for a step `holon verify` takes from the
+/// record, by withholding for the one and not the other ([`born`]'s last clause).
 /// As written, each such value is its mark, as long for one secret as for another: the
 /// deployment's secrets as [`Redactor::of`] marks them, and each text the run computed from
 /// them so far as [`Redactor::born`] does, noted from the steps [`born`] notes them from, as

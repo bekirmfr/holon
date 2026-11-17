@@ -791,8 +791,6 @@ fn run_attempt(
     // The credentials the calls that sent a secret were answered with: kept out of the log by
     // their value, and out of what is written, as the secret is.
     let answered = secrets::answered_tokens(&outcome.rounds, secrets, &secret_fed);
-    // What it computed from its secrets, for its record to mark each by its value.
-    let born = secrets::born(&timer.timeline, &secret_fed, born_key.as_ref().map(|k| k.as_slice()), &run_hex, !waits.unrecorded);
     let holds_answered = |payload: &Value| answered.iter().find(|(_, v)| secrets::value_holds(payload, &|s: &str| s.contains(v.as_str()))).map(|(name, _)| name.clone());
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
     // carrying a secret's value, or something computed from one (taint.rs), which would put it on
@@ -865,11 +863,18 @@ fn run_attempt(
         progress.clear();
     }
 
+    // Its steps as its record keeps them: one that carries a file the log keeps by its hash left
+    // out. And what it computed from its secrets, for its record to mark each by its value, read
+    // off them: a step `holon verify` takes from the record (`SecretFed::taken`) left out there
+    // makes its record withhold, as one too large to keep does (`secrets::born`, R66).
+    let reads = std::mem::take(&mut waits.reads);
+    let timeline = without_kept_files(timer.timeline, &reads, &host.performed);
+    let born = secrets::born(&timeline, &secret_fed, born_key.as_ref().map(|k| k.as_slice()), &run_hex, !waits.unrecorded);
     let run = FiredRun {
         outputs: outcome.outputs,
         performed: host.performed,
         lines: host.logs,
-        timeline: timer.timeline,
+        timeline,
         rounds: outcome.rounds,
         error: failed_read
             .or(past_limit.map(|e| format!("{}{e}", folders::WRITE_FAILED)))
@@ -884,7 +889,7 @@ fn run_attempt(
         waiting: outcome.waiting,
         progress,
         start_state: start.clone(),
-        reads: std::mem::take(&mut waits.reads),
+        reads,
         retries: 0,
         claims: waits.claiming.as_ref().map(|c| c.records.clone()).unwrap_or_default(),
         secret_fed,
@@ -1282,7 +1287,8 @@ fn redacted_line(redactor: &Redactor, entry: &mut LogEntry) -> recorder::Made {
 
 /// The timeline, with the outputs of each node that carries the text or bytes of a file the log
 /// keeps by hash (read, or written past the inline size) left out: they aren't in the log by
-/// another way.
+/// another way. What a run computed from its secrets is read off the steps left so
+/// (`secrets::born`, R66).
 fn without_kept_files(mut timeline: Vec<recorder::NodeTiming>, reads: &[collections::Read], performed: &[(Capability, Value)]) -> Vec<recorder::NodeTiming> {
     let read = reads.iter().filter(|r| r.file.as_ref().is_some_and(|f| !f.inline)).filter_map(|r| match &r.answer {
         Some(Value::Text(t)) => Some(t.as_str()),
