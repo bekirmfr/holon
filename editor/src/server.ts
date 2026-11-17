@@ -103,20 +103,24 @@ function endSession(): void {
  *  version a page follows (can.tsx). */
 const ask = (url: string, init: RequestInit = {}): Promise<Response> => fetch(url, { ...init, cache: "no-store" });
 
+/** Whom this tab acts as, as the server is told: the session's token, else the ID token of a
+ *  sign-in through the provider; "" for no one. What the buttons follow is kept for it (can.tsx). */
+export const bearer = (): string => getSession()?.token ?? signedIn()?.idToken ?? "";
+
 /** `fetch` against the server, carrying who is signed in: the session's token, else the ID
  *  token of a sign-in through the server's identity provider (signin.ts). A 401 to what this tab
  *  is signed in with (not a token since replaced), or to none since its ID token expired, means
  *  the sign-in has ended: it is forgotten, and the editor asks to sign in again over what is open.
  *  A request that gets no answer is told (the host card reads the host again). */
 async function api(url: string, init: RequestInit = {}): Promise<Response> {
-  const token = getSession()?.token ?? signedIn()?.idToken;
+  const token = bearer() || undefined;
   const res = await ask(url, token ? { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } } : init).catch(
     (e: unknown) => {
       window.dispatchEvent(new Event("holon:unanswered"));
       throw e;
     },
   );
-  if (res.status === 401 && (token ? token === (getSession()?.token ?? signedIn()?.idToken) : signInExpired())) endSession();
+  if (res.status === 401 && (token ? token === bearer() : signInExpired())) endSession();
   if (mayHaveChanged(url, init.method ?? "GET", res.status)) window.dispatchEvent(new Event("holon:can"));
   return res;
 }
