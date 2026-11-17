@@ -46,6 +46,10 @@ pub(crate) const WRITE_FAILED: &str = "a database write didn't land: ";
 /// What the error of a run whose statement changed other than the rows it expects starts with:
 /// nothing it did was written, and it answers 409 (the data said no; it isn't run again).
 pub(crate) const UNMET: &str = "a statement didn't change the rows it expects: ";
+/// What a run is told of a Postgres, MySQL or MongoDB it couldn't reach: where it is (its
+/// address), and the driver's text, which can name it, are the admin's, on stderr; and whoever
+/// binds it is told why when they do (audit R82).
+pub(crate) const UNREACHED: &str = "the database couldn't be reached";
 
 /// One bound database.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -86,9 +90,18 @@ enum Open {
 }
 
 impl Open {
-    /// The database at a connection's `url`: a MongoDB, else a Postgres or MySQL.
+    /// The database at a connection's `url`: a MongoDB, else a Postgres or MySQL; reached now,
+    /// so a run whose database can't be reached fails at once (its claims are held in it).
     fn at_url(url: zeroize::Zeroizing<String>) -> Result<Open, String> {
-        Ok(if crate::mongo::is_mongo(&url) { Open::Mongo(Arc::new(Mongo::open(url)?)) } else { Open::Remote(Arc::new(Remote::open(url)?)) })
+        Ok(if crate::mongo::is_mongo(&url) {
+            let mongo = Mongo::open(url)?;
+            mongo.check()?;
+            Open::Mongo(Arc::new(mongo))
+        } else {
+            let remote = Remote::open(url)?;
+            remote.check()?;
+            Open::Remote(Arc::new(remote))
+        })
     }
 
     /// Where claims for several servers are held in it: a Postgres, MySQL or MongoDB.
@@ -265,6 +278,7 @@ impl Databases {
                 return Err("a MongoDB database has no schema to run: its collections are made as documents are written (and its indexes are the admin's, made in MongoDB)".into());
             }
             let mongo = Mongo::open(url)?;
+            mongo.check()?;
             // A commit is a transaction, and a run lock is held in it too.
             if access == FolderAccess::ReadWrite || lock == locks::Setting::Run {
                 mongo.keep_collections()?;
@@ -273,6 +287,7 @@ impl Databases {
             return Ok((database, Open::Mongo(Arc::new(mongo))));
         }
         let remote = Remote::open(url)?;
+        remote.check()?;
         if let Some(schema) = schema {
             remote.run_schema(schema)?;
         }
@@ -352,24 +367,31 @@ impl Databases {
         crate::at_rest::write_table(file, crate::at_rest::role::DATABASES, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
     }
 
-    /// `database`, opened on first use: a SQLite file read and write, or read only where it can't
-    /// be written (read-only media); a Postgres or MySQL database by fetching its connection again.
-    fn connection(&self, database: &Database) -> Result<Open, String> {
+    /// `database`, bound as `name`, opened on first use: a SQLite file read and write, or read only
+    /// where it can't be written (read-only media); a Postgres, MySQL or MongoDB database by
+    /// fetching its connection again, and reaching it (one reached before and gone since tells a
+    /// run [`UNREACHED`]). `Err`: that it
+    /// couldn't be, as a run is told it, by the binding's name, and why, for the admin: its file,
+    /// the source its URL is fetched from and what the driver said are never a run's (audit R82).
+    fn connection(&self, database: &Database, name: &str) -> Result<Open, crate::failing::Failed> {
         let at = database.at();
         if let Some(c) = self.open.lock().unwrap().get(&at) {
             return Ok(c.clone());
         }
-        let opened = match &database.connection {
-            Some(source) => Open::at_url(self.sources.fetch(&Reference::parse(source)?)?)?,
-            None => {
-                let path = database.path.as_ref().ok_or("a SQLite database is bound by its file, and this one has none")?;
-                let rw = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-                let conn = Connection::open_with_flags(path, rw)
-                    .or_else(|_| Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX))
-                    .map_err(|e| format!("the database at {path} can't be opened: {e}"))?;
-                Open::Sqlite(Arc::new(Mutex::new(conn)))
-            }
+        let opened = || -> Result<Open, String> {
+            Ok(match &database.connection {
+                Some(source) => Open::at_url(self.sources.fetch(&Reference::parse(source)?)?)?,
+                None => {
+                    let path = database.path.as_ref().ok_or("a SQLite database is bound by its file, and this one has none")?;
+                    let rw = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+                    let conn = Connection::open_with_flags(path, rw)
+                        .or_else(|_| Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX))
+                        .map_err(|e| format!("the database at {path} can't be opened: {e}"))?;
+                    Open::Sqlite(Arc::new(Mutex::new(conn)))
+                }
+            })
         };
+        let opened = opened().map_err(|why| crate::failing::Failed::reason(format!("the database {name:?} couldn't be opened"), format!("the database {name:?}: {why}")))?;
         // Two runs may have opened it at once: the first one in is the one kept.
         Ok(self.open.lock().unwrap().entry(at).or_insert(opened).clone())
     }
@@ -386,7 +408,7 @@ impl Databases {
             }
         };
         let Some(database) = database else { return Ok(None) };
-        let mut tables = match self.connection(&database)? {
+        let mut tables = match self.connection(&database, name).map_err(crate::failing::Failed::said)? {
             Open::Sqlite(c) => {
                 let conn = c.lock().unwrap();
                 let sql = "select name from sqlite_schema where type in ('table', 'view') and substr(name, 1, 7) != 'sqlite_' order by name";
@@ -489,7 +511,7 @@ impl Databases {
             let label = format!("the database {name:?}");
             wanted.push(locks::Wanted { address: format!("run:db:{}", d.at()), label: label.clone(), mode, file: None });
             // One that can't be reached holds nothing there: its run's first read says why.
-            if let Some(shared) = self.connection(&d).ok().as_ref().and_then(Open::shared) {
+            if let Some(shared) = self.connection(&d, name).ok().as_ref().and_then(Open::shared) {
                 remote.push((shared, exclusive, label));
             }
         }
@@ -618,7 +640,7 @@ fn claims_on(folders: &folders::Scoped, name: &str, sql: &str, params: &[Value],
     let at = d.at();
     let insert = write && sql.trim_start().get(..6).is_some_and(|w| w.eq_ignore_ascii_case("insert") || w.eq_ignore_ascii_case("replac"));
     let row = holon_core::sql::pins(sql, write).and_then(|(table, pinned)| {
-        let key = primary_key(folders, &d, &table)?;
+        let key = primary_key(folders, name, &d, &table)?;
         let values: Option<Vec<serde_json::Value>> = key.iter().map(|c| pinned.get(c).and_then(|n| params.get(n - 1)).map(claim_value)).collect();
         Some((table, serde_json::Value::Array(values?).to_string()))
     });
@@ -652,8 +674,8 @@ fn document_claims(folders: &folders::Scoped, name: &str, collection: &str, pins
 
 /// The columns of `table`'s primary key, in order and in lower case; none for a table without
 /// one, or one that isn't there.
-fn primary_key(folders: &folders::Scoped, d: &Database, table: &str) -> Option<Vec<String>> {
-    let conn = match folders.all.databases.connection(d).ok()? {
+fn primary_key(folders: &folders::Scoped, name: &str, d: &Database, table: &str) -> Option<Vec<String>> {
+    let conn = match folders.all.databases.connection(d, name).ok()? {
         Open::Sqlite(c) => c,
         Open::Remote(r) => return r.primary_key(table),
         Open::Mongo(_) => return None,
@@ -887,7 +909,7 @@ impl Readable {
         let rows_left = self.limits.max_db_rows.saturating_sub(self.rows);
         let bytes_left = self.limits.max_db_read_bytes.saturating_sub(self.bytes);
         let mut g = Gather::new(asked.sql, asked.one, rows_left, bytes_left);
-        let read = match all.connection(&database)? {
+        let read = match all.connection(&database, asked.database).map_err(crate::failing::Failed::said)? {
             Open::Sqlite(conn) => select(&conn.lock().unwrap(), asked.sql, asked.params, Instant::now() + self.limits.db_statement, &mut g),
             Open::Remote(remote) => remote.read(asked.sql, asked.params, &mut g, self.limits.db_statement),
             Open::Mongo(_) => Err(format!("the database {:?} is a MongoDB: it is read with find, not SQL", asked.database)),
@@ -912,7 +934,7 @@ impl Readable {
         }
         let what = f.what();
         let mut g = Gather::new(&what, f.one, self.limits.max_db_rows.saturating_sub(self.rows), self.limits.max_db_read_bytes.saturating_sub(self.bytes));
-        match all.connection(&database)? {
+        match all.connection(&database, f.database).map_err(crate::failing::Failed::said)? {
             Open::Mongo(m) => m.read(&f, &mut g, self.limits.db_statement),
             _ => Err(format!("the database {:?} isn't a MongoDB: it is read with SQL (query, one)", f.database)),
         }
@@ -1021,9 +1043,9 @@ pub(crate) fn commit<T>(
     if work.is_empty() || (!check && work.values().all(|w| w.execs.is_empty())) {
         return Commit::Done(then(), Vec::new());
     }
-    let opens: Vec<Open> = match work.values().map(|w| all.connection(&w.database)).collect() {
+    let opens: Vec<Open> = match work.values().map(|w| all.connection(&w.database, &w.name)).collect() {
         Ok(c) => c,
-        Err(e) => return Commit::Refused(format!("{WRITE_FAILED}{e}")),
+        Err(e) => return Commit::Refused(format!("{WRITE_FAILED}{}", e.said())),
     };
     let lim = &permit.databases;
     let mut held: Vec<Held> = Vec::new();

@@ -1,6 +1,6 @@
 //! A writer whose failure the server can't simply go on from reaches an admin and `/health`
 //! (failing.rs): audit R39. And whoever asked is told that it failed, never where the file is
-//! or the error's own text: audit R71. A run's record names a file only as its flow does: R72.
+//! or the error's own text: audit R71. A run's record names a file only as its flow does: R72; and a database: R82.
 
 use super::*;
 
@@ -328,4 +328,125 @@ fn a_run_whose_file_fails_names_it_only_as_the_flow_does() {
 
     let _ = std::fs::remove_dir_all(&data);
     let _ = std::fs::remove_dir_all(&bound);
+}
+
+/// Guards: a run whose database can't be opened or reached says so in its record by the binding's
+/// name only, on every engine, each failing for real with no server: SQLite with its file gone;
+/// Postgres, MySQL and MongoDB at a closed port on this machine (MongoDB told to give up in
+/// 300 ms); and a connection whose source isn't set. First use (the database opened then), by a
+/// run's read and its commit; and a database reached before and gone since, by each engine's
+/// read and a Postgres and MySQL commit's begin. The whole log entry is held: no address, file,
+/// source, password or driver's words.
+/// Why: the record is read by whoever may read or decide that flow's runs; where a database is
+/// goes only to whoever may bind it (R51), and why it failed to the admin (audit R82).
+/// If it fails: the row names the engine and the way that put where, or the driver's words, in
+/// the record: give them to the admin (`failing::Failed`), and the run the binding's name.
+#[test]
+fn a_run_whose_database_fails_names_it_only_as_the_flow_does() {
+    use crate::databases::{Bound, Database, Databases, READ_FAILED, UNREACHED, WRITE_FAILED};
+    use std::time::Duration;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let dir = std::env::temp_dir().join(format!("holon-r82-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let gone = dir.join("shop.db");
+    let pw = "s3cretpw";
+    let pg = format!("postgres://holon:{pw}@127.0.0.1:{closed}/shop?sslmode=disable");
+    let my = format!("mysql://holon:{pw}@127.0.0.1:{closed}/shop");
+    let mongo = format!("mongodb://holon:{pw}@127.0.0.1:{closed}/notes?serverSelectionTimeoutMS=300&connectTimeoutMS=300&directConnection=true");
+    let remote = |engine: &str, address: String| Database {
+        engine: engine.into(),
+        path: None,
+        connection: Some("env:HOLON_SECRET_SHOP_URL".into()),
+        address: Some(address),
+        access: crate::folders::FolderAccess::ReadWrite,
+        lock: crate::locks::Setting::Commit,
+    };
+    // What none may hold: where, the source, the password, and the drivers' words.
+    let gone_at = gone.display().to_string();
+    let banned: Vec<String> = [
+        "127.0.0.1", "localhost", "postgres://", "mysql://", "mongodb://", pw, "HOLON_SECRET_SHOP_URL", "os error",
+        "actively refused", "Connection refused", "Server selection", "Topology", "error connecting", "Could not connect", "shop.db",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .chain([gone_at.clone(), gone_at.replace('\\', "\\\\")])
+    .collect();
+    let held = |what: &str, text: &str| {
+        for b in &banned {
+            assert!(!text.contains(b.as_str()), "{what}: {b:?} in what a run is told: {text}");
+        }
+    };
+
+    // First use: each engine, through a run.
+    let rows = [
+        (
+            "SQLite, its file gone",
+            Database {
+                engine: "sqlite".into(),
+                path: Some(crate::paths::HostPath::new(&gone)),
+                connection: None,
+                address: None,
+                access: crate::folders::FolderAccess::ReadWrite,
+                lock: crate::locks::Setting::Commit,
+            },
+            None,
+            "shop",
+        ),
+        ("Postgres, its port closed", remote("postgres", format!("postgres://127.0.0.1:{closed}/shop")), Some(pg.as_str()), "shop"),
+        ("MySQL, its port closed", remote("mysql", format!("mysql://127.0.0.1:{closed}/shop")), Some(my.as_str()), "shop"),
+        ("MongoDB, its port closed", remote("mongodb", format!("mongodb://127.0.0.1:{closed}/notes")), Some(mongo.as_str()), "notes"),
+        ("a source not set", remote("postgres", format!("postgres://127.0.0.1:{closed}/shop")), None, "shop"),
+    ];
+    for (what, database, url, name) in rows {
+        let file = dir.join(format!("databases-{}.json", rand::random::<u32>()));
+        let bound = Bound { deployments: Default::default(), server: [(name.to_string(), database)].into() };
+        crate::at_rest::write_table(&file, crate::at_rest::role::DATABASES, &serde_json::to_vec(&bound).unwrap()).unwrap();
+        let vars: Vec<(&str, &str)> = url.map(|u| ("HOLON_SECRET_SHOP_URL", u)).into_iter().collect();
+        let databases = Databases::open(file.to_str().unwrap(), &[]).unwrap().with_sources(crate::secret_sources::Sources::of(&vars));
+        let mut state = claims_state("");
+        state.folders = std::sync::Arc::new(crate::folders::Folders::memory().with_databases(databases));
+        let (text, calls): (&str, &[(&str, &str, &str, &str)]) = match name {
+            "notes" => (include_str!("../../../holon-author/samples/atlas-notes.holon.ts"), &[("GET", "/notes/ada", "", READ_FAILED)]),
+            _ => (
+                include_str!("../../../holon-author/samples/orders-api.holon.ts"),
+                &[("GET", "/orders/ada", "", READ_FAILED), ("POST", "/orders", r#"{"customer":"ada","total":"1.00"}"#, WRITE_FAILED)],
+            ),
+        };
+        let slug = deploy_text(&state, text, "");
+        for (method, path, body, failed) in calls {
+            let (status, _, _) = data_call(&state, &slug, method, path, body);
+            let entry = log_entries(&state, &slug).last().cloned().unwrap();
+            let error = entry["error"].as_str().unwrap_or("").to_string();
+            let told = format!("the database {name:?} couldn't be opened");
+            assert!(status >= 500 && error.starts_with(failed) && error.contains(&told), "{what}, {method} {path} ({status}): {error}");
+            held(&format!("{what}, {method} {path}"), &serde_json::to_string(&entry).unwrap());
+        }
+    }
+
+    // Reached before and gone since: what each engine tells a run, its handle open.
+    let gather = || crate::databases::Gather::new("select 1", false, 10, 1000);
+    for (what, url) in [("Postgres", &pg), ("MySQL", &my)] {
+        let remote = crate::engines::Remote::open(zeroize::Zeroizing::new(url.clone())).unwrap();
+        let read = remote.read("select 1", &[], &mut gather(), Duration::from_secs(5)).unwrap_err();
+        let begin = remote.begin(Duration::from_secs(1), Duration::from_secs(1)).err().map(|f| f.why).unwrap_or_default();
+        for (how, said) in [("read", read), ("begin", begin)] {
+            assert_eq!(said, UNREACHED, "{what}, gone since, {how}");
+        }
+    }
+    let notes = crate::mongo::Mongo::open(zeroize::Zeroizing::new(mongo.clone())).unwrap();
+    let request = holon_core::Value::Record(
+        [
+            ("database".to_string(), holon_core::Value::Text("notes".into())),
+            ("find".to_string(), holon_core::Value::Text("notes".into())),
+            ("filter".to_string(), holon_core::Value::Text("{}".into())),
+            ("params".to_string(), holon_core::Value::List(vec![])),
+        ]
+        .into(),
+    );
+    let found = crate::mongo::found(&request).unwrap();
+    let said = notes.read(&found, &mut gather(), Duration::from_secs(5)).unwrap_err();
+    assert!(said.ends_with(UNREACHED), "MongoDB, gone since, read: {said}");
+    held("MongoDB, gone since, read", &said);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
