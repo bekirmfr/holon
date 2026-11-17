@@ -32,6 +32,9 @@ mod whereabouts;
 mod semantics;
 /// A writer that fails reaches an admin and /health.
 mod writers;
+/// Which lines of a source file are a test module's, for the sweeps of the source (R78).
+mod source;
+use source::{in_test_modules, inert, test_modules};
 
 pub(crate) fn test_state() -> AppState {
     test_state_with(SharedStore::new(Box::new(MemStore::new())))
@@ -6900,18 +6903,9 @@ fn every_body_the_control_plane_reads_is_read_by_the_deadline() {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();
-            // Each test-only module left out: from its `#[cfg(test)]` to the `}` that closes it,
-            // the first at the start of a line.
-            let (mut lines, mut in_tests) = (text.lines().enumerate().peekable(), false);
-            let mut code = Vec::new();
-            while let Some((n, line)) = lines.next() {
-                let opens = line == "#[cfg(test)]" && lines.peek().is_some_and(|(_, l)| l.starts_with("mod ") || l.starts_with("pub(crate) mod "));
-                in_tests = (in_tests || opens) && line != "}";
-                if !in_tests && line != "}" {
-                    code.push((n, line));
-                }
-            }
-            for (n, line) in code.into_iter().filter(|(_, l)| l.contains(".data()")) {
+            // Each test module left out, by its braces, wherever it sits (source.rs, R78).
+            let code = text.lines().enumerate().zip(in_test_modules(&text)).filter(|(_, test)| !test).map(|(line, _)| line);
+            for (n, line) in code.filter(|(_, l)| l.contains(".data()")) {
                 let in_read_body = path.ends_with("http.rs") && line.trim_start().starts_with("let read = owned.data()");
                 if !in_read_body {
                     read_elsewhere.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
@@ -8333,99 +8327,14 @@ fn second_meets_first<A: Send, B: Send>(state: &AppState, gate: &Gate, first: im
     })
 }
 
-/// `text` (Rust) with its strings, chars and comments made inert for the sweep below: in strings
-/// and chars, brackets, operators and commas are spaces (words stay, so `claim["waited_ms"]` still
-/// says what it reads); comments are gone. Every line stays where it was.
-fn inert(text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let quiet = |c: char| if c.is_alphanumeric() || c == '_' || c == '\n' { c } else { ' ' };
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < chars.len() {
-        let (c, next) = (chars[i], chars.get(i + 1).copied());
-        let after = if i > 0 { chars[i - 1] } else { ' ' };
-        if c == '/' && next == Some('/') {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-        } else if c == '/' && next == Some('*') {
-            i += 2;
-            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
-                out.push(quiet(chars[i]));
-                i += 1;
-            }
-            i += 2;
-        } else if c == 'r' && matches!(next, Some('"' | '#')) && (after == 'b' || !(after.is_alphanumeric() || after == '_')) && chars[i + 1..].iter().find(|&&h| h != '#') == Some(&'"') {
-            // A raw string: r"…", r#"…"#.
-            let hashes = chars[i + 1..].iter().take_while(|&&h| h == '#').count();
-            out.push('"');
-            i += 2 + hashes;
-            while i < chars.len() && !(chars[i] == '"' && (1..=hashes).all(|k| chars.get(i + k) == Some(&'#'))) {
-                out.push(quiet(chars[i]));
-                i += 1;
-            }
-            out.push('"');
-            i += 1 + hashes;
-        } else if c == '"' {
-            out.push('"');
-            i += 1;
-            while i < chars.len() && chars[i] != '"' {
-                if chars[i] == '\\' {
-                    out.push(' ');
-                    i += 1;
-                }
-                if i < chars.len() {
-                    out.push(quiet(chars[i]));
-                    i += 1;
-                }
-            }
-            out.push('"');
-            i += 1;
-        } else if c == '\'' && (next == Some('\\') || chars.get(i + 2) == Some(&'\'')) {
-            // A char ('{', '\'', '\u{1F600}'), not a lifetime.
-            let mut end = i + 2;
-            if next == Some('\\') {
-                end = if chars.get(i + 2) == Some(&'u') { (i..chars.len()).find(|&j| chars[j] == '}').unwrap_or(i) + 1 } else { i + 3 };
-            }
-            out.extend(std::iter::repeat_n(' ', end + 1 - i));
-            i = end + 1;
-        } else {
-            out.push(c);
-            i += 1;
-        }
-    }
-    out
-}
-
 /// What of `code` (made [`inert`]) is a test's: all of it in a tests.rs or under a tests folder,
 /// else its `#[cfg(test)]` modules; the rest blank lines, so every line stays where it was.
 fn test_code(path: &str, code: &str) -> String {
     if path.ends_with("tests.rs") || path.contains("/tests/") {
         return code.to_string();
     }
-    let lines: Vec<&str> = code.lines().collect();
-    let mut keep = vec![false; lines.len()];
-    let mut i = 0;
-    while i < lines.len() {
-        let module = |l: &&&str| {
-            let l = l.trim();
-            (l.starts_with("mod ") || l.starts_with("pub mod ") || l.starts_with("pub(crate) mod ")) && l.ends_with('{')
-        };
-        if lines[i].trim() == "#[cfg(test)]" && lines[i + 1..].iter().find(|l| !l.trim().is_empty()).is_some_and(|l| module(&l)) {
-            let (mut depth, mut j) = (0i32, i + 1);
-            while j < lines.len() {
-                depth += lines[j].matches('{').count() as i32 - lines[j].matches('}').count() as i32;
-                keep[j] = true;
-                if depth <= 0 && lines[j].contains('}') {
-                    break;
-                }
-                j += 1;
-            }
-            i = j;
-        }
-        i += 1;
-    }
-    lines.iter().zip(keep).map(|(l, k)| if k { *l } else { "" }).collect::<Vec<_>>().join("\n")
+    let keep = test_modules(code);
+    code.lines().zip(keep).map(|(l, k)| if k { l } else { "" }).collect::<Vec<_>>().join("\n")
 }
 
 /// Whether a comparison in `condition` (an assert's, made [`inert`]) holds a measured time from
