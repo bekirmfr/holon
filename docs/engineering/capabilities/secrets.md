@@ -82,8 +82,8 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   set here reading the fingerprint its entry lists (`verify::listed_secrets`).
 - **The server's own** are kept under `SERVER` (`*`) and read by a deployment with none of its
   own of that name; `--to` caps where one may go (`SecretStore::refuses` at deploy).
-- **Redacted.** `Redactor::of(vault)` pairs each current and retired value, and its JSON-escaped
-  form, with its mark, `‹secret:name v3 #a1b2c3d4›` (`mark`: the version and an 8-hex fingerprint
+- **Redacted.** `Redactor::of(vault)` pairs each current and retired value, in every spelling
+  JSON gives it, with its mark, `‹secret:name v3 #a1b2c3d4›` (`mark`: the version and an 8-hex fingerprint
   keyed by a key derived from the `secrets` scope's first data key, `Keyring::fingerprint`, so it
   stays the same across a rotation). `Redactor::entry` marks everything a log entry
   carries (request, sourced values, state before, outputs, effects, reads, timeline, rounds,
@@ -91,23 +91,39 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   replies go through `Redactor::json`; exports carry the log's lines, already marked. Credentials
   a call answered to a request that held a secret (`ANSWER_FIELDS`: `access_token`, `token`, …)
   read `‹token:name #…›` (`Redactor::answers`), resume tokens `‹token:name›`.
+- **In every spelling JSON gives it.** A value with a quote, a backslash, a newline or another
+  control character is spelled another way each time it is written out as JSON, and as it was it
+  no longer appears: a stringified payload inside a JSON body is two deep. `secrets::spellings`
+  gives a value's spellings, each for as long as it differs from the last and is no longer than
+  `SPELLED_LONG` (some fifteen deep: the backslashes double each time), and every pair a
+  redactor has is made from it, so a mark stands in place at each depth and the rest of the
+  text is kept. There is no count of depths: how deep a mark is put in place must not depend on
+  what the secret holds, or a record's shape would say whether it has such a character. The guards that find a secret by its value (`secrets_in`: a write, a send to
+  a host its approval doesn't show, an answer) undo a text's JSON escapes until none is left and
+  look again each time (`holds_spelled`, `unspelled`): no depth, and another writer's spelling
+  too (`\u0022` for a quote). A text that still holds a value so, with no pair to mark it by, is
+  written whole as `‹respelled:secret:name›` (`Redactor::respelled`; `token:` and `taint:` for
+  those): a mark of its own kind, which a caller can't forge (`MARKED`) and which `holon verify`
+  treats as any value the log doesn't hold. A step computed on its marks whose record is such a
+  text is taken as recorded and named, not compared: computed on the marks it gives the text
+  with a mark in place, never the record's. A value with none of those characters has one spelling, and costs nothing more.
 - **Followed.** Core's taint walk follows a secret's value through the graph as literal or
   derived, cut by a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`), a Boolean or a call's
   answer. A state, collection, file, database or channel write of a secret or of what is derived
   from one is refused (`firing.rs`); a call to another flow's action carrying one is `refused`
   (`calls.rs`); a route answers with one only where `SecretAnswer("name")` is granted.
-- **What is derived is marked, or withheld.** The walk names the leaves that make something of a
-  secret (`SecretFed::makes`): each whose output may be computed from one and isn't only what it
+- **What is derived is marked, or withheld.** The walk names the leaves that compute something
+  of their own from a secret (`SecretFed::computes`): each whose output may be computed from one and isn't only what it
   was handed, moved (`PASSES_LITERALLY`, less `sort` and `unique`, and less a leaf a secret
   reaches at an input that only chooses). Every derived value in a run is what such a leaf gave,
-  or holds it. After a run, `secrets::born` reads what each maker gave off the timeline: a text
+  or holds it. After a run, `secrets::born` reads what each such leaf gave off the timeline: a text
   of `MIN_SECRET_LEN` or more gets a hash, `derived_hash`: HMAC-SHA-256 under a key made of the
   salts of the secrets the run was given (`derived_key`), of the run's id and the value. The
   entry lists the hashes (`derived`), and `Redactor::born` writes `‹derived #` and the first
   eight digits wherever the run's record holds the value, a secret's own mark first where a
-  value is both. That holds for the whole record only if the makers are all there (`Born::whole`):
+  value is both. That holds for the whole record only if those leaves are all there (`Born::whole`):
   every deriving node followed and no deeper than `Timer::DEPTH` (`SecretFed::followed_to`: none
-  inside a function `map` or `fold` applies, a module), the run kept a timeline, and each maker
+  inside a function `map` or `fold` applies, a module), the run kept a timeline, and each such leaf
   gave a text a mark stands for, one that reads the same written as JSON. Otherwise the record
   withholds what may be derived, by the graph alone, as before (`WITHHELD`:
   `FiredRun::withholds_output`, `withholds_effect`, `withholds_input`; a node's outputs left out
@@ -161,8 +177,9 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
 
 ## 4. Reach and limits
 
-- **Redaction catches literal values** (and their JSON escaping), nothing transformed: a value
-  hashed, encoded or sliced isn't recognised by value. The taint walk marks or withholds what the
+- **Redaction catches literal values** (and their JSON escaping, however deep), nothing
+  otherwise transformed: a value hashed, encoded or sliced isn't recognised by value, nor one a
+  far side sends back percent-encoded or as HTML. The taint walk marks or withholds what the
   graph derives; a value it can't follow (echoed back by an API and passed on) is caught only
   while it is literal.
 - **A mark stands for a text of 6 characters or more.** A true or false, a number, bytes, a
@@ -194,7 +211,9 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
 
 ## 5. What the tests hold
 
-- holon-core taint.rs: `a_leaf_makes_something_of_a_secret_unless_it_only_moves_what_it_was_handed`.
+- holon-core taint.rs: `a_leaf_computes_from_a_secret_unless_it_only_moves_what_it_was_handed`.
+- tests.rs: `a_secret_is_found_in_every_spelling_json_gives_it` (each kind of character, each
+  depth, each of the record, a write and a send).
 - secrets.rs: `a_value_computed_from_a_secret_has_one_mark_in_a_run_keyed_by_the_runs_salts`,
   `a_value_has_one_salt_drawn_once_sealed_and_kept_across_restarts`,
   `what_a_run_records_of_a_secret_is_where_it_is_kept_and_a_commitment_under_its_salt`,

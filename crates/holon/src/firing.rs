@@ -787,7 +787,7 @@ fn run_attempt(
     let answered = secrets::answered_tokens(&outcome.rounds, secrets, &secret_fed);
     // What it computed from its secrets, for its record to mark each by its value.
     let born = secrets::born(&timer.timeline, &secret_fed, born_key.as_ref().map(|k| k.as_slice()), &run_hex, !waits.unrecorded);
-    let holds_answered = |payload: &Value| answered.iter().find(|(_, v)| secrets::value_holds(payload, &|s: &str| s.contains(v.as_str()))).map(|(name, _)| name.clone());
+    let holds_answered = |payload: &Value| answered.iter().find(|(_, v)| secrets::value_holds(payload, &|s: &str| secrets::holds_spelled(s, v.as_str()))).map(|(name, _)| name.clone());
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
     // carrying a secret's value, or something computed from one (taint.rs), which would put it on
     // disk and in every later snapshot, and a copy from a folder the deployment doesn't read (a
@@ -1582,6 +1582,19 @@ pub(crate) fn started_now() -> (u64, std::time::Instant) {
 #[cfg(test)]
 mod commit_checks {
     use super::*;
+
+    /// Guards: the databases guide counts a contended run's tries as this code does:
+    /// `OPTIMISTIC_ATTEMPTS`, then once more holding the lock.
+    /// Why: the guide said the run runs again "four times", one try more than the code makes
+    /// (audit R49).
+    #[test]
+    fn the_databases_guide_counts_a_runs_tries() {
+        const WORDS: [&str; 11] = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/manual/guides/databases.md");
+        let guide = std::fs::read_to_string(path).unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+        let said = format!("({} tries in all, then once more holding the database", WORDS[OPTIMISTIC_ATTEMPTS as usize]);
+        assert!(guide.contains(&said), "docs/manual/guides/databases.md should say \"{said}\"");
+    }
 
     fn state_of(pairs: &[(&str, f64)]) -> State {
         State::from_values(pairs.iter().map(|(k, v)| (k.to_string(), Value::Number(*v))).collect()).unwrap()

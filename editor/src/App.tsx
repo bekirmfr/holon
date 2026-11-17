@@ -141,6 +141,7 @@ function Canvas({
   page,
   setPage,
   route,
+  routeFromReplace,
   navigate,
   pendingNew,
   docs,
@@ -172,6 +173,9 @@ function Canvas({
   setPage: (p: AppPage) => void;
   /** Where the address says the editor is (routes.ts), and going somewhere. */
   route: Route;
+  /** Whether a replace wrote `route` (useHashRoute.ts): the editor saying where it was, not a
+   *  place asked for. */
+  routeFromReplace: boolean;
   navigate: Navigate;
   pendingNew: { nonce: number } | null;
   docs: Map<string, string>;
@@ -755,7 +759,9 @@ function Canvas({
   // link, Back, a reload), the editor goes there: to its tab, else its saved copy, else its
   // deployment. Changed here (a tab picked, view mode, a run), the address follows, replaced
   // rather than added to, so Back leaves the editor rather than stepping through its clicks.
-  // While a place asked for is being reached, the address waits for it.
+  // While a place asked for is being reached, the address waits for it. An address written so is
+  // never gone to (useHashRoute.ts): `here` may have moved on before it rendered (back in edit
+  // while it said a run of view mode), and going there would undo that.
   const here = useMemo<Extract<Route, { kind: "editor" }>>(
     () => ({ kind: "editor", slug: flow.viewing ?? flow.name, view: flow.viewing !== null, seq: flow.viewing !== null ? (flow.selectedRun?.seq ?? null) : null }),
     [flow.viewing, flow.name, flow.selectedRun],
@@ -766,7 +772,7 @@ function Canvas({
   const [reached, setReached] = useState(0);
   const routeKey = format(route);
   useEffect(() => {
-    if (route.kind !== "editor" || route.slug === null || same(route, hereNow.current)) return;
+    if (route.kind !== "editor" || route.slug === null || routeFromReplace || same(route, hereNow.current)) return;
     const want = route;
     const slug = want.slug!;
     const at = hereNow.current;
@@ -1770,7 +1776,7 @@ function Canvas({
 function Editor({ me }: { me: Me }) {
   // What the work area shows: a page, or the canvas (the active flow's tab), as the address
   // says (routes.ts). A place shown by another page's is written as that page's.
-  const { route, navigate, arrivedAt } = useHashRoute();
+  const { route, navigate, arrivedAt, fromReplace } = useHashRoute();
   const page = pageOf(route);
   const setPage = useCallback((p: AppPage) => navigate(routeOfPage(p)), [navigate]);
   const toast = useToast();
@@ -1917,6 +1923,7 @@ function Editor({ me }: { me: Me }) {
                 page={page}
                 setPage={setPage}
                 route={route}
+                routeFromReplace={fromReplace}
                 navigate={navigate}
                 pendingNew={pendingNew}
                 docs={docs}

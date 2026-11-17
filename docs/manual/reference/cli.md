@@ -905,8 +905,9 @@ holon verify <export.json | export.json.gz> [--head HEX] [--files DIR] [--data D
 
 Checks exported runs, offline (an export, or a backup's gzipped one, [`[storage]
 backup`](server.md#the-policy)): the chain, each unit's hash, every run, run again, and that each
-run's state follows from the one before. `--head`
-checks that a head a witness holds is in the export. `--files` gives the files runs read whose
+run's state follows from the one before. `--head` checks that a head a witness holds is in the
+export, so no run in the export, from its oldest up to that head, was changed or removed (of runs
+a trimmed log no longer holds, it says nothing). `--files` gives the files runs read whose
 texts the export doesn't hold. An export `holon export` wrote is plain and needs no key; one the
 server keeps on disk (a backup's, a removed deployment's records) is sealed under its keys, and
 opens with the `keys.json` of the data folder it came from (`--data`, else this machine's

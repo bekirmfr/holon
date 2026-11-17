@@ -105,8 +105,8 @@ same only if no file has that name. Reads ask `FileRead("logs")`, writes `FileWr
   writes at the end, so nothing new to learn and the same commit check.
 - **Hashes, never big bytes, in the log** (NF §5): a write costs one line whatever its size;
   verify runs it again. A deleted text loses re-running, never tamper evidence.
-- **Chunks of 64 KiB, not ~1 MiB from 4 MiB** as designed: a run reads 1 MiB at most, so no blob
-  is bigger (NF §11, slice 3).
+- **Chunks of 64 KiB, not ~1 MiB from 4 MiB** as designed: one read is 1 MiB at most by default
+  (`inline_file_bytes`, 16 MiB at the ceiling; a run reads 64 MiB in all), so no blob is bigger (NF §11, slice 3).
 - **`max_file_write_bytes` 1 GiB, not the designed 64 MiB**: a copy by handle is how a big file
   moves, so the default doesn't stop one (NF §11, slice 5).
 - **The slow part before the lock.** Filling a file happens before the commit locks; under them,
@@ -120,8 +120,9 @@ same only if no file has that name. Reads ask `FileRead("logs")`, writes `FileWr
 
 ## 4. Reach and limits
 
-- **Text only, read whole.** No bytes value: a binary file is copied or sent by handle, never
-  read ([host capabilities L4](../../L4s/host-capabilities-L4.md) §1).
+- **Read whole, as text or bytes.** A file is read whole (`inbox[n]` as text, `inbox.bytes(n)` as
+  bytes, `file_read_bytes`) up to `inline_file_bytes`; a larger one goes by handle or by range
+  ([host capabilities L4](../../L4s/host-capabilities-L4.md) §1).
 - **Not atomic across files.** Each file lands by its own rename; one that fails leaves the
   others landed, and the run says which didn't. The folder is synced after each rename (or
   link), so a file a run is said to have written is still there after a power loss.

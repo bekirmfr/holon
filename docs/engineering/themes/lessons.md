@@ -39,9 +39,10 @@ and [Measuring](measuring.md) hold the details.
   C# service keeping the same record (77–96% of it); the gap to plain .NET is the record, not the
   language. A faster path that keeps less (dropping each step's output, Q16, 40% faster) is a
   change to what Holon promises, not an optimisation, and was not taken.
-- **Weakening a record is a person's choice, written where they see it.** `lazy` and
-  `unrecorded` are words on a handler, approved at deploy; the defaults that weaken records are
-  listed as policy (RA §2.5).
+- **Weakening a record is the author's choice, written where they see it.** `lazy` and
+  `unrecorded` are words on a handler; `unrecorded` is approved at deploy, and `lazy`, whose lines a
+  crash in the second after its answer can lose, is not. The defaults that weaken records
+  are listed as policy (RA §2.5).
 - **"Unrecorded" means unrecorded.** Logging a failed unrecorded run so it could be debugged
   (Q10) undid the reason it was declared (keeping requests out of the log), turned failures anyone
   can force into extra runs and lines, and answered from a second run. A declaration is a reason;

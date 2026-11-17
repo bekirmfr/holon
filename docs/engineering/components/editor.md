@@ -246,8 +246,7 @@ sweep's; the sweep skips `atlas-notes` and `ledger-watch` without `HOLON_TEST_MO
 - `accounts.e2e.ts`, `home.e2e.ts`, `docs.e2e.ts`: sign-in and roles, the home tab's panes, the
   manual.
 
-**The terminal editor**: `crates/holon/src/workbench/tests.rs`, 22 tests (counted by `#[test]`),
-among them `deploying_shows_what_it_may_do_and_deploys_on_enter` and
+**The terminal editor**: `crates/holon/src/workbench/tests.rs`, among them `deploying_shows_what_it_may_do_and_deploys_on_enter` and
 `a_saved_flow_waits_for_a_person_who_approves_it_from_the_approvals_page`.
 
 Gaps: components drawn only in a browser; the built editor not driven end
