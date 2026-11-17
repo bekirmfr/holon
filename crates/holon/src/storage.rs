@@ -1266,8 +1266,15 @@ pub(crate) fn route(state: &AppState, request: &rouille::Request, by: &str) -> O
 
 /// Write `set` into the policy file's `[storage]` and read it again, holding every deployment to
 /// it as a reload does. The file is left as it was if the new text isn't a policy.
+///
+/// One at a time, from reading the file to reloading it (`AppState::hold_policy_file`, R75): two
+/// admins setting two keys at once each read the file before the other wrote it, and the second
+/// write left the first's key out, answered 200 and never in force. Only this writes the file:
+/// `holon policy --sweep-every …` and the other flags ask this route, and the rest of the file is
+/// the operator's to edit, followed by a reload.
 fn set_storage(state: &AppState, set: &[(&str, &str)], by: &str) -> Response {
     let Some(policy_path) = state.policy_path.at() else { return err(409, "this server reads its policy from no file, so there is none to write it into") };
+    let file = state.hold_policy_file();
     let mut text = match std::fs::read_to_string(policy_path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -1291,7 +1298,8 @@ fn set_storage(state: &AppState, set: &[(&str, &str)], by: &str) -> Response {
     if let Err(e) = holon_host::write_atomically(policy_path, text.as_bytes()) {
         return err(500, format!("could not write {policy_path:?}: {e}"));
     }
-    let reloaded = crate::grants::handle_post_permissions_reload(state);
+    let reloaded = crate::grants::reload_policy(state, &file);
+    drop(file);
     if reloaded.status_code != 200 {
         return reloaded;
     }

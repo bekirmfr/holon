@@ -84,21 +84,37 @@ fn one_slow_expiry_holds_no_other_deadline() {
 
 /// At most `EXPIRING_AT_ONCE` go on at once: with every place taken, a pass sets none going and
 /// they stay due; with one place, it sets one going, and the other goes on at the next pass.
+///
+/// The one set going asks the far end, which holds it (the gate), so it keeps its place while the
+/// pass looks at the other, however fast a run goes on (R76): with runs that finished as soon as
+/// they were given their event, the first could finish and give its place back before the pass
+/// looked at the second, and the pass set both going, within the limit, failing the test.
 #[test]
 fn expiries_go_on_at_most_so_many_at_once() {
+    let (host, hits, gate) = gated_counting_server();
     let state = test_state();
-    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_private_addresses = true\n").unwrap());
-    assert_eq!(deploy_text_to(&state, QUICK, &[]), "b-quick");
-    hold(&state, "b-quick", 2);
-    let pass = || durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n").unwrap());
+    assert_eq!(deploy_text(&state, &slow_text(&host), &host), "a-slow");
+    hold(&state, "a-slow", 2);
+    let pass = || durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    let places = || state.store.1.expiring.load(SeqCst);
 
+    // The gate open: one set going would be answered, go on and stop waiting.
     state.store.1.expiring.store(EXPIRING_AT_ONCE, SeqCst);
-    pass();
-    assert_eq!(waiting(&state, "b-quick"), 2, "every place taken: none set going, both still due");
+    pass().wait();
+    assert_eq!((waiting(&state, "a-slow"), hits_of(&hits, "/slow")), (2, 0), "every place taken: none set going, both still due");
+
+    gate.shut();
     state.store.1.expiring.store(EXPIRING_AT_ONCE - 1, SeqCst);
-    pass();
-    assert_eq!(waiting(&state, "b-quick"), 1, "one place: one set going");
-    assert_eq!(state.store.1.expiring.load(SeqCst), EXPIRING_AT_ONCE - 1, "its place given back as it went on");
-    pass();
-    assert_eq!(waiting(&state, "b-quick"), 0, "the other, at the next pass");
+    let going = pass();
+    assert!(gate.out_at_once(1), "one set going: its part asks the far end, which holds it");
+    assert_eq!(places(), EXPIRING_AT_ONCE, "the pass over, one place taken: the other wasn't set going");
+    gate.open();
+    going.wait();
+    assert_eq!((waiting(&state, "a-slow"), hits_of(&hits, "/slow")), (1, 1), "one place: one set going");
+    assert_eq!(places(), EXPIRING_AT_ONCE - 1, "its place given back as it went on");
+
+    pass().wait();
+    assert_eq!((waiting(&state, "a-slow"), hits_of(&hits, "/slow")), (0, 2), "the other, at the next pass");
+    assert_eq!(places(), EXPIRING_AT_ONCE - 1, "its place given back too");
 }

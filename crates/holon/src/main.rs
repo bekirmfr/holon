@@ -305,6 +305,11 @@ struct AppState {
     policy: crate::sync::RwLock<Arc<Policy>>,
     /// Where the policy is read from: nowhere, the defaults (the tests).
     policy_path: Place,
+    /// Held from reading the policy file to putting what it says in force, so a setting written
+    /// into it (storage.rs's `set_storage`) and a reload go one at a time (R75): two admins'
+    /// settings each kept, and what is in force what the file says. Taken as
+    /// [`AppState::hold_policy_file`].
+    policy_file: Mutex<()>,
     /// Every deployment's secrets (`--secrets`, secrets.rs): written over the control plane,
     /// never returned.
     secrets: Arc<SecretStore>,
@@ -320,6 +325,22 @@ struct AppState {
     checked: Mutex<Option<summary::Check>>,
     /// The replays running, how many at once and for how long (verify/replay.rs).
     replays: verify::Replays,
+}
+
+/// The policy file held (R75). Only [`AppState::hold_policy_file`] makes one, and a reload
+/// (grants.rs's `reload_policy`) asks for one: it can't be written to hold a lock of its own, and
+/// so put a policy it read before a setting's write in force after it.
+mod policy_file {
+    pub(crate) struct Held<'a> {
+        _file: std::sync::MutexGuard<'a, ()>,
+    }
+
+    impl crate::AppState {
+        /// The policy file, held until what is returned is dropped (`AppState::policy_file`).
+        pub(crate) fn hold_policy_file(&self) -> Held<'_> {
+            Held { _file: self.policy_file.lock().unwrap() }
+        }
+    }
 }
 
 impl AppState {
@@ -1265,6 +1286,7 @@ fn serve(args: Vec<String>) {
         data_limits,
         policy: crate::sync::RwLock::new(policy),
         policy_path: policy_at,
+        policy_file: Mutex::new(()),
         secrets,
         folders,
         activity,
