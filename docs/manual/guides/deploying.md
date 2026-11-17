@@ -145,7 +145,7 @@ When a service sends your secret back in its reply, what your flow reads from th
 treated as the secret too. A number, a true or false, or a text shorter than six characters read
 from it passes as before (a balance, a count, a currency code). A longer text read from it is
 refused to callers (500) and to storage (the write doesn't land), even a harmless one such as a
-customer's name, and the run's log says so and what to do. The server decides this by where the
+customer's name, and the run's log says so, which service sent the secret back, and what to do. The server decides this by where the
 value came from and what kind of value it is, never by looking for the secret's characters in
 it, so nobody calling your flow can learn anything of the secret from which answers are refused.
 The ways on: answer with a number or a shorter value; stop the service sending the secret back

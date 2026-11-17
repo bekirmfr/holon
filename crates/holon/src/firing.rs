@@ -89,6 +89,8 @@ impl Host for RecordingHost {
 pub(crate) struct Echoed {
     /// The secrets a reply held, by name.
     pub(crate) names: Vec<String>,
+    /// The hosts whose reply held one.
+    pub(crate) hosts: Vec<String>,
     /// What the flow read out of those replies.
     pub(crate) fed: taint::SecretFed,
 }
@@ -101,10 +103,17 @@ impl Echoed {
     }
 
     /// Why an answer read out of a reply that held the secret `name` isn't given, for the
-    /// flow's author: what happened, and the two ways on.
-    pub(crate) fn refusal(name: &str) -> String {
+    /// flow's author: what happened, and the way on that there is. Only the one: a flow
+    /// approved to answer its callers with that secret (`SecretAnswer`, asked at deploy where a
+    /// route answers with the secret itself) is never refused this, so naming that approval
+    /// here would point at nothing this flow can do.
+    pub(crate) fn refusal(&self, name: &str) -> String {
+        let from = match self.hosts.as_slice() {
+            [] => "the service".to_string(),
+            hosts => hosts.join(" and "),
+        };
         format!(
-            "refused to answer with what was read from a reply that sent the secret {name:?} back: a text of six characters or more from such a reply is taken as the secret's. Answer with a number, a true or false, or a shorter text; or, if its callers may have what that reply said, this flow needs the approval to answer its callers with that secret"
+            "refused to answer with what {from} sent back: its reply held the secret {name:?}, and a text of six characters or more read from such a reply is taken as the secret's. Change the flow so this route doesn't answer with what {from} sent back; a number, a true or false, or a text shorter than six characters from it may be answered"
         )
     }
 }
@@ -846,9 +855,9 @@ fn run_attempt(
     let echoed = match secret_fed.is_empty() {
         true => Echoed::default(),
         false => {
-            let (at, names) = secrets::echoing(prior.iter().chain(&outcome.rounds), secrets);
+            let (at, names, hosts) = secrets::echoing(prior.iter().chain(&outcome.rounds), secrets);
             let fed = if at.is_empty() { taint::SecretFed::default() } else { taint::SecretFed::echoed_at(root_unit, resolver, &at, &secrets::short_steps(&timer.timeline)) };
-            Echoed { names, fed }
+            Echoed { names, hosts, fed }
         }
     };
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write

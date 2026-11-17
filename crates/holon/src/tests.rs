@@ -8225,7 +8225,9 @@ fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
     let echo = echoing_server(false);
     let plain = echoing_server(true);
     let (other, other_hits) = counting_server();
-    let state = claims_state("");
+    let mut state = claims_state("");
+    // Each flow's own port, for its WebSocket.
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
     const J: &str = "const said = JSON.parse(got.body)\n  ";
     // (the route, what it does with the reply `got`, the far side's path it calls, whether it
     // answers with a text of six characters or more read from the reply)
@@ -8245,11 +8247,11 @@ fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
         ("kept", format!("{J}seen[\"b\"] = {{ v: said.balance }}\n  return {{ ok: true }}"), "/j", false),
     ];
     // (its name, the far side, the secret, whether the flow may answer with its secret)
-    let sides: [(&str, &str, &str, bool, u16); 4] = [
-        ("echoes", &echo, "kq7_alpha-zx9kp2-wm4tn8-1", false, 18401),
-        ("silent", &plain, "kq7_alpha-zx9kp2-wm4tn8-1", false, 18402),
-        ("allowed", &echo, "kq7_alpha-zx9kp2-wm4tn8-1", true, 18403),
-        ("quoted", &echo, "pa\"ss\\word-and-more-x7q9z2", false, 18404),
+    let sides: [(&str, &str, &str, bool); 4] = [
+        ("echoes", &echo, "kq7_alpha-zx9kp2-wm4tn8-1", false),
+        ("silent", &plain, "kq7_alpha-zx9kp2-wm4tn8-1", false),
+        ("allowed", &echo, "kq7_alpha-zx9kp2-wm4tn8-1", true),
+        ("quoted", &echo, "pa\"ss\\word-and-more-x7q9z2", false),
     ];
     // Every text in a logged entry, keys included.
     fn texts(v: &serde_json::Value, out: &mut Vec<String>) {
@@ -8264,7 +8266,11 @@ fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
         }
     }
     let mut wrong: Vec<String> = Vec::new();
-    for (side, far, secret, may_answer, port) in sides {
+    // What a refused caller is told, as on main: the plain sentence, nothing of where or why.
+    let plain_http = String::from_utf8(data::DataResponse::json_error(500, "this deployment may not answer its callers with the secret \"k\"").body).unwrap();
+    let plain_ws = format!("500 {}", String::from_utf8(data::DataResponse::json_error(500, "the WebSocket's block failed: its run log says why").body).unwrap());
+    for (side, far, secret, may_answer) in sides {
+        let port = free_port();
         let bodies: String = routes
             .iter()
             .map(|(path, does, at, _)| format!("route.post(\"/{path}\", async (req) => {{\n  const got = await far.post(\"{at}\", {{ body: k }})\n  {does}\n}})\n\n"))
@@ -8272,10 +8278,12 @@ fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
         // The note its caller chose goes to the far side beside the secret, and what comes back
         // for it is answered.
         let note = "route.post(\"/note\", async (req) => {\n  const got = await far.post(\"/n\", { body: `${k}|${req.body}` })\n  const said = JSON.parse(got.body)\n  return { note: said.note }\n})\n\n";
+        // A WebSocket whose open block answers with a slice of the reply, as a route can.
+        let socket = "route.websocket(\"/w\", {\n  open: async () => {\n    const got = await far.post(\"/e\", { body: k })\n    return got.body.slice(8, 20)\n  },\n})\n\n";
         // A flow that may answer with its secret has a route that does: its approval asks.
         let shows = if may_answer { "route.get(\"/shows\", () => ({ k }))\n\n" } else { "" };
         let text = format!(
-            "import {{ flow, route, text_length }} from \"holon\"\nimport k from \"secret:k\"\nimport far from \"host:{far}\"\nimport other from \"host:{other}\"\nimport seen from \"collection:seen\"\n\nflow(\"parts-{side}\", {{ port: {port} }})\n\n{bodies}{note}{shows}route.get(\"/read\", () => seen.list())\n"
+            "import {{ flow, route, text_length }} from \"holon\"\nimport k from \"secret:k\"\nimport far from \"host:{far}\"\nimport other from \"host:{other}\"\nimport seen from \"collection:seen\"\n\nflow(\"parts-{side}\", {{ port: {port} }})\n\n{bodies}{note}{socket}{shows}route.get(\"/read\", () => seen.list())\n"
         );
         let slug = deploy_text_to(&state, &text, &[far, &other]);
         let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
@@ -8306,6 +8314,11 @@ fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
             if refused != (status == 500) || (!refused && status != 200) {
                 wrong.push(format!("{side}, /{path}: answered {}", said(status, &body)));
             }
+            // A refused caller is told the plain sentence, as on main: not which service the flow
+            // talks to, nor the rule, nothing a right guess and a wrong one could differ by.
+            if refused && body != plain_http {
+                wrong.push(format!("{side}, /{path}: a refused caller is told {}", said(status, &body)));
+            }
             if *path == "balance" && !body.contains("12") {
                 wrong.push(format!("{side}, /balance: what isn't the secret isn't answered: {body}"));
             }
@@ -8331,6 +8344,9 @@ fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
             }
             if closed != (status == 500) || (!closed && status != 200) {
                 wrong.push(format!("{side}, /note, {what}: answered {}", said(status, &body)));
+            }
+            if closed && body != plain_http {
+                wrong.push(format!("{side}, /note, {what}: a refused caller is told {}", said(status, &body)));
             }
             // What a caller can tell a right guess from a wrong one by: nothing but its own text.
             answers.push((status, body.replace(&guess.to_lowercase(), "<the note>")));
@@ -8374,9 +8390,19 @@ fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
             if entry["withheld"] == true {
                 wrong.push(format!("{side}, /{path}: its record withholds"));
             }
-            // A refusal tells the flow's author what to do; the secret whole says it is that.
+            // A refusal tells the flow's author what to do, and only what this flow can do: it
+            // names the service that sent the secret back and the change to make, never the
+            // approval to answer with the secret, since a flow that has it isn't refused (the
+            // "allowed" side, which answers every route). The secret whole says it is that.
             let error = entry["error"].as_str().unwrap_or_default();
-            let told = if path == "whole" { error.contains("refused to answer with the secret \"k\"") } else { error.contains("sent the secret \"k\" back") && error.contains("Answer with a number") && error.contains("needs the approval to answer its callers with that secret") };
+            let told = if path == "whole" {
+                error.contains("refused to answer with the secret \"k\"")
+            } else {
+                error.contains(&format!("refused to answer with what {far} sent back: its reply held the secret \"k\""))
+                    && error.contains(&format!("Change the flow so this route doesn't answer with what {far} sent back"))
+                    && error.contains("a number, a true or false, or a text shorter than six characters")
+                    && !error.contains("approv")
+            };
             if *refused != told {
                 wrong.push(format!("{side}, /{path}: its record says {error:?}"));
             }
@@ -8392,6 +8418,58 @@ fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
         let marked: Vec<bool> = (0..3).map(|i| entries[first_guess + i]["derived"].as_array().is_some_and(|hashes| !hashes.is_empty())).collect();
         if marked != [echoed, echoed, false] {
             wrong.push(format!("{side}, /note: of a right guess, how it begins and a wrong guess, its record marks {marked:?}"));
+        }
+        // On a WebSocket, as on a route: an open block that answers with what the far side sent
+        // back is refused where the flow may not answer with its secret. The page is told only
+        // the sentence any failed block gets, as on main; the run's record names the service and
+        // the change to make, never an approval.
+        sync_listeners(&state);
+        let opened: Result<String, String> = {
+            use tungstenite::client::IntoClientRequest;
+            let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
+            match tungstenite::client(format!("ws://127.0.0.1:{port}/w").into_client_request().unwrap(), stream) {
+                Ok((mut ws, _)) => loop {
+                    match ws.read() {
+                        Ok(tungstenite::Message::Text(t)) => break Ok(t.to_string()),
+                        Ok(_) => continue,
+                        Err(e) => break Err(format!("read: {e}")),
+                    }
+                },
+                Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))) => {
+                    Err(format!("{} {}", response.status().as_u16(), String::from_utf8_lossy(response.body().as_deref().unwrap_or_default())))
+                }
+                Err(e) => Err(format!("handshake: {e}")),
+            }
+        };
+        let fine = match &opened {
+            Err(told) => closed && *told == plain_ws,
+            Ok(first) => !closed && holds_a_part(first) == may_answer,
+        };
+        if !fine {
+            let shown = match &opened {
+                Ok(t) | Err(t) => if holds_a_part(t) { "(with a part)".to_string() } else { t.clone() },
+            };
+            wrong.push(format!("{side}, the WebSocket: opened as {} {shown}", if opened.is_ok() { "ok" } else { "refused" }));
+        }
+        let socket_run = (0..50).find_map(|_| {
+            let found = log_entries(&state, &slug).into_iter().find(|e| e["kind"] == "websocket");
+            if found.is_none() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            found
+        });
+        match socket_run {
+            None => wrong.push(format!("{side}, the WebSocket: no run in its log")),
+            Some(entry) => {
+                let error = entry["error"].as_str().unwrap_or_default();
+                let told = error.contains(&format!("refused to answer with what {far} sent back: its reply held the secret \"k\""))
+                    && error.contains(&format!("Change the flow so this route doesn't answer with what {far} sent back"))
+                    && !error.contains("approv");
+                if told != closed || (!closed && !error.is_empty()) {
+                    wrong.push(format!("{side}, the WebSocket: its record says {error:?}"));
+                }
+            }
         }
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
         let report = verify::check(&export, None, &BTreeMap::new());

@@ -1127,27 +1127,39 @@ pub(crate) fn holds_spelled(s: &str, value: &str) -> bool {
     !value.is_empty() && spelled_any(s, &|text: &str| text.contains(value))
 }
 
-/// The calls of a run whose reply held a secret whole, by the paths of their nodes, and those
-/// secrets' names: found by the secret's text in the reply, in every spelling JSON gives it
+/// The calls of a run whose reply held a secret whole, by the paths of their nodes, those
+/// secrets' names, and the hosts those calls went to (as a grant names them): found by the secret's text in the reply, in every spelling JSON gives it
 /// ([`secrets_in`]). Only a run can say which did: a reply is clean to the walk that follows a
 /// secret through the flow, so what the flow reads out of such a reply is followed from these
 /// calls once the run is over (`SecretFed::echoed_at`, R70).
-pub(crate) fn echoing<'a>(rounds: impl Iterator<Item = &'a holon_host::Round>, vault: &Vault) -> (BTreeSet<Vec<u32>>, Vec<String>) {
+pub(crate) fn echoing<'a>(rounds: impl Iterator<Item = &'a holon_host::Round>, vault: &Vault) -> (BTreeSet<Vec<u32>>, Vec<String>, Vec<String>) {
     let mut at = BTreeSet::new();
     let mut names: Vec<String> = Vec::new();
+    let mut hosts: Vec<String> = Vec::new();
     for exchange in rounds.flat_map(|round| &round.exchanges) {
         let held = secrets_in(&exchange.response, vault);
         if held.is_empty() {
             continue;
         }
         at.insert(exchange.path.clone());
+        let url = match &exchange.request {
+            holon_core::Value::Record(fields) => fields.get("url"),
+            _ => None,
+        };
+        if let Some(host) = url.and_then(|url| match url {
+            holon_core::Value::Text(url) => crate::outbound::authority_of(url),
+            _ => None,
+        }) && !hosts.contains(&host)
+        {
+            hosts.push(host);
+        }
         for name in held {
             if !names.contains(&name) {
                 names.push(name);
             }
         }
     }
-    (at, names)
+    (at, names, hosts)
 }
 
 /// How many of a secret's characters in a row make a part of it: what a mark stands for at the

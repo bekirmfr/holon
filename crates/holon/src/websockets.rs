@@ -235,7 +235,7 @@ impl Conn {
         let read_out = run.echoed.answered(0).iter().find(|name| !permit.allows(&Capability::SecretAnswer((*name).clone()))).cloned();
         let mut error = match (&unapproved, &read_out) {
             (Some(name), _) => Some(format!("refused to answer with the secret {name:?}: this deployment wasn't approved to answer its callers with it")),
-            (None, Some(name)) => Some(firing::Echoed::refusal(name)),
+            (None, Some(name)) => Some(run.echoed.refusal(name)),
             (None, None) => run.error.clone(),
         };
         let mut answer = match on {
