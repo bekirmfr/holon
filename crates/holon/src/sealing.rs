@@ -229,11 +229,17 @@ pub(crate) fn inside(path: &Path, dir: &Path) -> bool {
 /// that is there resolved (a link followed, its case the disk's), each that isn't yet kept as
 /// written, and a `..` the folder before it. So `DATA/x/../root.key`, with no `x`, is
 /// `DATA/root.key`, as the write would put it. Resolving the folder whole, as before, failed on
-/// Linux and macOS while `x` wasn't there (their kernel walks `x` for real; Windows drops `x/..`
-/// by text), and a key so spelled was let into the data folder.
+/// Linux and macOS while `x` wasn't there (their kernel walks `x` for real), and a key so spelled
+/// was let into the data folder.
+///
+/// Each OS's rule for `..`: Unix's is the link's, so `LINK/..` is the folder of what `LINK` points
+/// at, and the walk follows the link before it pops. Windows takes `..` out by text before it
+/// follows anything, so `JUNCTION\..` is the folder the junction is in: `std::path::absolute`
+/// (GetFullPathNameW, as `holon_host::verbatim` gives every write) drops it so first, and the
+/// walk meets no `..` there.
 fn resolved(path: &Path) -> Option<PathBuf> {
     use std::path::Component;
-    let path = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir().ok()?.join(path) };
+    let path = std::path::absolute(path).ok()?;
     let mut parts = path.components().peekable();
     let mut root = PathBuf::new();
     while let Some(part) = parts.next_if(|p| matches!(p, Component::Prefix(_) | Component::RootDir)) {
@@ -456,6 +462,9 @@ mod tests {
         for (path, expected) in &rows {
             assert_eq!(inside(path, &data), *expected, "{}", path.display());
         }
+        // A link into the folder's own `sub`: what `LINK/..` is tells each OS's rule apart.
+        std::fs::create_dir_all(data.join("sub")).unwrap();
+        let through = base.join("into-sub").join("..").join("root.key");
         #[cfg(unix)]
         {
             // A link to the folder, before a part that isn't there, and after a `..` past one.
@@ -463,6 +472,24 @@ mod tests {
             assert!(inside(&base.join("link").join("x").join("..").join("root.key"), &data));
             assert!(inside(&base.join("other").join("x").join("..").join("..").join("link").join("root.key"), &data));
             assert!(!inside(&base.join("link").join("..").join("other").join("root.key"), &data), "a link's `..` is its target's folder's");
+            // `into-sub/..` is `sub`'s folder, the data folder, where the write would put the key.
+            std::os::unix::fs::symlink(data.join("sub"), base.join("into-sub")).unwrap();
+            assert!(inside(&through, &data), "on Unix a link's `..` is its target's folder");
+        }
+        #[cfg(windows)]
+        {
+            // A junction (made without the right a symbolic link takes): `into-sub\..` is taken out
+            // by text, so the key would go beside the junction, not in the data folder.
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(base.join("into-sub"))
+                .arg(data.join("sub"))
+                .output()
+                .is_ok_and(|o| o.status.success());
+            if made {
+                assert!(base.join("into-sub").join("..").join("other").exists(), "Windows takes `..` out by text");
+                assert!(!inside(&through, &data), "on Windows a junction's `..` is the folder it is in");
+            }
         }
         assert!(!data.join("x").exists() && !base.join("other").join("x").exists(), "nothing made");
         let _ = std::fs::remove_dir_all(&base);
