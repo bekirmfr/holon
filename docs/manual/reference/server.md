@@ -12,7 +12,7 @@ Everything is under one folder, `~/.holon` (`%USERPROFILE%\.holon` on Windows), 
 | Path | |
 |---|---|
 | `bin/` | the program |
-| `data/` | the server's state: **the one folder to back up** |
+| `data/` | the server's state: back it up, and the root key apart from it ([The root key](#the-root-key)) |
 | `keys/` | the root key, where there is no OS key store |
 | `run/` | a file per running server, so commands on this machine find it and sign in |
 | `tokens.json` | the session `holon login` began on each server you signed in to, and the agents' tokens `holon mcp` signs in with: the one it made on a server you run, and those `holon mcp setup` keeps for servers elsewhere; readable only by you |
@@ -25,7 +25,7 @@ In the data folder (`--data`, `HOLON_DATA`):
 | `store/` | every unit, and under it the values (`values/`, the long-lived ones packed in `values/packs/`) and the texts of files runs read (`blobs/`): each sealed, and named by a keyed hash of its hash, not the hash itself | `--store` |
 | `deployments.json` | the deployments, their grants, sessions and parked runs | `--deployments` |
 | `deployments.logs/` | each deployment's run log: its newest 128 runs a line each, `<slug>.jsonl`, and the older ones it keeps gzipped in `<slug>.sealed/`; its events, `<slug>.events.jsonl`; its console lines in `<slug>.console.jsonl`, rolled to `<slug>.console.1.jsonl` and on. All sealed (see [The root key](#the-root-key)): `holon export` gives a run log readable | |
-| `deployments.state/` | each stateful deployment's state, `<slug>`: the hash of its current snapshot, whose values are in `store/`, written as each change lands | |
+| `deployments.state/` | each stateful deployment's state, `<slug>`: the hash of its current snapshot, whose values are in `store/`, written as each change lands, sealed | |
 | `flows.json` | saved flows: at most 1,000, with documents of 4 MiB each and 64 MiB in all; a save past them is refused (413 for the document, 409 for the rest), and one this file doesn't take answers 500 and changes nothing | `--flows` |
 | `accounts.json` | people, agents and services, sessions, invites and tokens (as hashes) | `--accounts` |
 | `access.json` | the roles bound to each of them; `access.versions.jsonl` beside it, every version, with who changed what and when | beside `--accounts` |
@@ -43,8 +43,16 @@ one open to others: put the data folder where only the server's user can read. T
 refuses to start when a file with secrets or tokens in it can't be read, rather than starting
 without it.
 
-To move a server, stop it and copy the data folder; the root key goes with it only if it is in a
-file (see [The root key](#the-root-key)).
+A change to a deployment (a deploy, a removal, a grant or a revoke, a pause, a stop or a run, its
+settings, its state put back, a decision on a waiting run, a run that waits) is written to
+`deployments.json` before it is answered. If the file can't be written (a full disk), the change
+is in effect but isn't saved, and the answer says so with a 500: it won't hold past a restart, so
+make it again once the disk takes it. The policy reloaded is answered as usual: a restart reads
+the policy again.
+
+To move a server, stop it and copy the data folder, and take its root key: `holon key export --to
+file:PATH` copies it out of the OS key store or `~/.holon/keys`, and the moved server starts with
+`--root-key file:PATH` (see [The root key](#the-root-key)).
 
 ### Stopping it
 
@@ -128,7 +136,9 @@ The server looks at what it holds every ten seconds, and warns of:
 - **a cache at its size** most of the last hour: it let go of flows (or values) to make room at
   most looks, so runs load them from disk again;
 - **sweeping off** while the store takes more than a tenth of its disk;
-- **a backup that can't be written to**: a log keeps the runs it would let go of until it can;
+- **a backup that can't be written to**: a log keeps the runs it would let go of until it can,
+  trying again after a pause that grows while it fails, up to five minutes, and at once when the
+  backup is set again;
 - **a batch of runs in the backup that can't be made an export**: its runs stay in it as the log
   wrote them, it is tried again at each look, and the other batches are made exports meanwhile;
 - **a pack of the store's values that can't be read** (cut short, or changed on disk): it is left
@@ -215,13 +225,20 @@ allow_plain_http = true
     keeps in sync: Dropbox, Google Drive, OneDrive), or `none` (the default). The runs a log lets
     go of, as it cuts back to what it keeps (or as `roll` cuts it), are written there first, and
     within ten seconds made into exports `holon verify` checks, gzipped, then sealed under the
-    server's keys as its data folder is (`holon verify --root-key` opens one; keep the root key
-    apart from the backup): `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`,
-    with the units the runs
-    ran and the file texts they read that the server keeps. Every file the server writes there
+    server's keys as its data folder is: `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>-<head>.json.gz`,
+    `<head>` the first 16 hex digits of the last run's hash, so a slug removed and deployed again,
+    its runs numbered from 0 again, never takes the place of the old one's archives. A removed
+    deployment's records go there too once its retention's time is up
+    (`<slug>/holon-archive-<slug>-removed-<ms>.json.gz`).
+    The folder keeps a copy of `keys.json` too, `<backup>/holon-archive-keys.json` (every key in it
+    wrapped under the root, as in the data folder), written again each time it changes, at once
+    (a forget's copy never opens what it put out of reach), so the backup and
+    the root key alone open every archive in it, the data folder lost: `holon verify <archive>
+    --root-key …` finds the copy beside it. Keep the root key apart from the backup. Each archive
+    holds the units its runs ran and the file texts they read that the server keeps. Every file the server writes there
     starts with `holon-archive-`, and the folder may hold other things: the server only ever
-    exports and removes the batches it wrote (`<slug>/holon-archive-<first>-<last>.jsonl`, each
-    seq 20 digits), and counts only its exports. Gzipped, a small route's run takes about 360
+    exports and removes the batches it wrote (`<slug>/holon-archive-<first>-<last>-<head>.jsonl`,
+    each seq 20 digits), and counts only its exports. Gzipped, a small route's run takes about 360
     bytes (13 times smaller than its line), a listing's about 2 KB (30 times). If it can't be
     written to, a log doesn't cut back: it keeps the runs until it can, and the host warns; only
     `roll` past `full_at` lets them go without. Object storage (`s3://`) is to come, and Holon
@@ -532,6 +549,10 @@ keyed hash of its content hash, so a name says nothing of what it holds; and wha
 sent (`mail-spool/`, `queue-spool/`), a removed deployment's records (`removed/`), and what a
 backup holds. Each is sealed for what it is, so
 one is never read as another, and a plain file where a sealed one belongs is refused, not read.
+An older sealed copy of a file put back in its place is not refused: a seal says what the file
+is and where it belongs, not when it was written, so whoever can write the folder can put back
+yesterday's deployments, accounts or access. Only a run log shows it, to a witness that holds a
+later head.
 `keys.json` is the one kept as it is. A run log's chain is over its lines as they were made, not
 as they are sealed: an export (`holon export`) is plain, and `holon verify` checks it with no key.
 `--root-key` says where the root is:
@@ -542,9 +563,20 @@ as they are sealed: an export (`holon export`) is plain, and `holon verify` chec
 | `file:PATH` | a file of 64 hex digits, readable only by the server's user, made if missing (the default on Linux: `~/.holon/keys/<id>.key`) |
 | `env:VAR` | an environment variable holding 64 hex digits; `holon serve --new-root-key` prints one |
 
-`<id>` is the one `keys.json` records. Without the right root the server doesn't start; nor does it
-when `keys.json` is missing beside data it sealed. Back the root up apart from the data: one
-without the other opens nothing. One server at a time runs on a data folder: it holds
+`<id>` is the one `keys.json` records. The first start makes the root and says where it is kept.
+Without the right root the server doesn't start; nor does it when `keys.json` is missing beside
+data it sealed, or is older than that data (a copy taken before a deployment was made or a key
+rotated): a deployment's run log or events holding a line whose key `keys.json` doesn't have
+stop the start, naming the deployment and the line, and a deploy onto them is refused. Nothing
+of such a log is read past, numbered over or cut; restore the `keys.json` that goes with the
+folder (a backup folder keeps a copy). A mailbox, queue, feed or folder watch whose record of what
+it has seen doesn't open holds the same way: it runs nothing and marks nothing seen, and says so.
+A root key file in the data folder is refused: a copy of the folder would open itself.
+
+Back the root up apart from the data: one without the other opens nothing. `holon key export --to
+file:PATH` copies it, from wherever it is kept, to a file only you can read (the OS key store shows
+no one its keys, so this is the one way to copy a root kept there); keep that file on another disk
+or in a password manager. A forget rotates the root (below): export it again after one. One server at a time runs on a data folder: it holds
 `keys.lock` while it runs, and a second one started on the same folder refuses.
 
 ### Rotating and forgetting keys
@@ -558,24 +590,40 @@ them; none of it ever shows a key.
   new version; what was sealed under the ones before still opens, so they are kept. `names` is
   never rotated: a store file's name must stay what it was.
 - **A new root**, `holon key rotate --root --to <SOURCE>`, with the server stopped: every data key
-  is wrapped under a new root, kept where `--to` says; start the server with `--root-key` set to
-  it. No data file is touched. A rotation cut short loses nothing: the next start finishes it, or
-  undoes it, whichever root it is given.
+  is wrapped under a new root, kept where `--to` says, which must hold no key yet (or be where the
+  root is kept now: a rotation in place); start the server with `--root-key` set to it. No data
+  file is touched. A root that opens more than one data folder (a copy of the folder, or a second
+  server given the same `--root-key`) is never rotated in place: the other folders would open
+  under none. Each folder a server opens is listed beside its root (`<key file>.keyrings`, or an
+  entry beside it in the OS key store), and a rotation in place refuses while another listed
+  folder still opens under the root, naming it: give that one a root of its own first (`holon key
+  rotate --root --data <its folder> --to file:PATH`), or delete it. A rotation cut short loses nothing: the next start finishes it, or undoes it,
+  whichever root it is given.
 - **Forgetting a deployment**, `holon remove <slug> --forget` (or the box in the editor's remove
-  section): its keys leave `keys.json`, so its kept records, its backups and every file it left
-  open nowhere again, and say they were forgotten rather than damaged. Then the root is rotated
+  section): its keys leave `keys.json`, so its kept log, events, records and backups open
+  nowhere again, and say they were forgotten rather than damaged. The content store, which every deployment shares and the server's keys seal, isn't forgotten:
+  the values nothing else names are swept from it at once (those written in the last hour by
+  the next sweep), and the flow's code stays in it. A copy of the content store taken before the
+forget still opens, with its state values, beside the folder's `keys.json`: the server's keys
+seal it, and a forget doesn't change them. Then the root is rotated
   where it is kept, so a copy of the whole folder taken before (which holds the old `keys.json`)
   needs the old root. A copy of that root kept elsewhere, as a backup should be, still opens such
-  a copy; forgetting doesn't reach it. A root in an environment variable can't be changed by the
-  server: it says so, and `holon key rotate --root` does it with the server stopped.
+  a copy; forgetting doesn't reach it. Back the new root up then (`holon key export`). A root in an
+  environment variable, or one another folder still opens (above), isn't rotated: the forget says
+  so, and `holon key rotate --root` does it with the server stopped. `holon key forget` asks for
+  `--yes`: a forget can't be undone.
 
 ### What the folder still says
 
 Sealing hides what flows were given and kept, not that they ran. Someone with the data folder and
 without the root learns: which deployments exist (file names are slugs), how many runs each kept
-and when (file sizes and times, a segment's sequence range in its name), how large what they keep
-is, and the state heads (hashes, as an export carries them). `holon.toml`, the witness's queue and
-receipts, and the clean-stop mark are kept as they are: none holds run data.
+and when (file sizes and times, a segment's sequence range in its name), and how large what they
+keep is. Each run-log line keeps in clear its number and the hash of the line before it (the chain
+`holon verify` checks, as an export carries it): a guess of a whole line could be checked against
+it, but every line holds its run's id, which holds a random nonce of the host's. A state head is
+sealed: a hash of a small state (a counter, a flag) in clear would let a guess of it be checked.
+`holon.toml`, the witness's queue and receipts, and the clean-stop mark are kept as they are:
+none holds run data.
 
 ### Secrets from elsewhere
 
@@ -617,7 +665,10 @@ says: JSON that echoes what its caller sent isn't run as a page. A flow that set
 its own. Whether a flow's page may be shown in another site's frame is the flow's to say, with its
 own headers (`X-Frame-Options`, `Content-Security-Policy: frame-ancestors`): a widget is meant to be.
 
-Every request is a run in the log, even one no route took.
+Every request that runs a handler is a run in the log. One that runs nothing (no route takes
+it, its route doesn't take its method, or its body isn't text) is counted instead, under
+`(ran nothing)` in the log's `tallies` (how many, and the last one's time, status and path), and
+leaves no entry: whoever reaches the port can't push a deployment's runs out of its log with them.
 
 The server holds every flow's connections together to 4,096 at once (1,024 a port), fewer where
 the open-file limit leaves less room: on Linux and macOS it raises its own limit to the most the
@@ -636,7 +687,11 @@ are cut from the front of the file, which keeps its newest line, so the chain go
 hears a `trim`. An entry holds the
 run's request, what it read (clock, randomness, state, files, each outbound response), its
 outputs, the effects it performed, its answer (up to 64 KiB of the body), its timings, the unit
-and the grant it ran under, and who started it. Secrets and resume tokens are replaced by
+and the grant it ran under, and who started it. A request body longer than 64 KiB as the line
+writes it is kept by hash beside the log, sealed with the server's file texts, and the entry
+names it (`body`: its hash, size and place) instead of holding it: what a caller sends decides
+nothing of how big a line is. An export ships it with the file texts (`blobs`), and `holon
+verify` and a replay put it back. Secrets and resume tokens are replaced by
 `‹secret:name v3 #a1b2c3d4›` (the version and a keyed fingerprint of the value; the entry's
 `secrets` lists each it was given) and `‹token:name›` before anything is written, and so are the
 values of the keys its flow taints, by `‹taint:key›`, wherever the run had them (the flow's
@@ -651,7 +706,7 @@ or not. Runs at once share the sync, so a busy deployment syncs its log far less
 a run. A handler may say `lazy` on its line ([Language
 reference](../language/reference.md#clocks-files-and-actions)): its runs' entries are written
 before the answer and synced within a second, as the deployment's events are, so a power loss can
-lose the last second of them, never more (a stop syncs them first: [Stopping it](#stopping-it)). So are requests no route took (a 404, a 405). A run
+lose the last second of them, never more (a stop syncs them first: [Stopping it](#stopping-it)). A run
 whose entry couldn't be written or synced is answered with a 500: it ran, but isn't known to be
 on record. The next entry written says which runs before it weren't, so `holon verify` reads them
 as lost, not as the log changed.

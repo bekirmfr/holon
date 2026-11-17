@@ -77,7 +77,7 @@ impl StateCell {
     /// in place is then not the one the server starts from again.
     pub(crate) fn write_head(&self, hex: &str) -> Result<(), String> {
         let Some(head) = &self.head else { return Ok(()) };
-        let written = head.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| crate::sealing::write_private(head, hex.as_bytes()));
+        let written = head.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| crate::persist::write_state_head(head, hex));
         written.map_err(|e| format!("it wasn't kept in {}: {e}", head.display()))
     }
 

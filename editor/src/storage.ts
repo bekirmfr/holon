@@ -69,12 +69,14 @@ export function diskLine(d: HostDisk): string {
   return `${diskFull(d)}% full: ${sizeText(d.free)} free of ${sizeText(d.size)} (${sizeText(d.used)} in use): ${d.holds.join(", ")}`;
 }
 
-/** What the host keeps, a line each (the store, the logs, the folders' texts, what crashes left), as of `now`. */
+/** What the host keeps, a line each (the store, the logs, removed deployments' records, the folders' texts, what crashes left), as of `now`. */
 export function keptLines(k: HostView["kept"], now: number): string[] {
   const lines = [k.at_ms === null ? "not counted yet: the server counts what it keeps shortly after it starts" : `counted ${span(now - k.at_ms)} ago`];
   if (k.store) lines.push(`the store: ${k.store.values} values, ${sizeText(k.store.on_disk)} on disk (${sizeText(k.store.bytes)} of bytes); ${k.store.put_since} put since`);
   if (k.logs) lines.push(`logs: ${k.logs.files}, ${sizeText(k.logs.on_disk)} on disk`);
   if (k.console) lines.push(`console lines: ${k.console.files} files, ${sizeText(k.console.on_disk)} on disk`);
+  if (k.removed_deployments && k.removed_deployments.files > 0)
+    lines.push(`removed deployments' records: ${k.removed_deployments.files}, ${sizeText(k.removed_deployments.on_disk)} on disk`);
   if (k.file_texts) lines.push(`file texts: ${k.file_texts.texts}, ${sizeText(k.file_texts.bytes)}`);
   const { removed, waiting } = k.leftovers;
   if (removed.files > 0 || waiting.files > 0) lines.push(`left by crashes: ${removed.files} files removed (${sizeText(removed.on_disk)}), ${waiting.files} still to remove`);

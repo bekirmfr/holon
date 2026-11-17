@@ -1,5 +1,6 @@
-//! The texts of files runs read, kept for their log (`docs/L4s/named-folders-L4.md` §5): what
-//! `holon verify` runs a run again from when its log entry holds only a reference to one.
+//! The texts of files runs read, kept for their log (`docs/L4s/named-folders-L4.md` §5), and the
+//! request bodies too long for a log's line (`LogEntry::body`): what `holon verify` runs a run
+//! again from when its log entry holds only a reference to one.
 //!
 //! - **By content.** A text is filed under the BLAKE3 of its bytes (hex), so the same file read
 //!   by 500 runs, or by two deployments, is kept once.

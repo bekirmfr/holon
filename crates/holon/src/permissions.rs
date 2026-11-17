@@ -48,6 +48,10 @@ pub(crate) const UNPARSED: &str = "the policy file doesn't parse";
 pub(crate) struct DurableLimits {
     pub(crate) max_await_seconds: u64,
     pub(crate) max_waiting_runs: u64,
+    /// How many bytes its waiting runs may keep, in all (what each keeps sealed: its inputs,
+    /// requests and events): past it a run that would wait fails as one past `max_waiting_runs`
+    /// does, and one parking again waits on as it was (release audit D4).
+    pub(crate) max_waiting_bytes: u64,
     /// How many flows a run may call down a chain (`shop` calls `billing` calls `ledger` is two
     /// deep): past it a call answers `too_deep` (docs/L4s/triggers-L4.md §9).
     pub(crate) max_call_depth: u64,
@@ -62,13 +66,14 @@ impl DurableLimits {
     /// What a deployment gets without asking: a month's wait (a 7-day `await` fits), and as many
     /// waiting runs as before this was a limit.
     pub(crate) fn defaults() -> DurableLimits {
-        DurableLimits { max_await_seconds: 30 * 24 * 3600, max_waiting_runs: 10_000, max_call_depth: 3, max_concurrent_runs: 64 }
+        DurableLimits { max_await_seconds: 30 * 24 * 3600, max_waiting_runs: 10_000, max_waiting_bytes: 64 << 20, max_call_depth: 3, max_concurrent_runs: 64 }
     }
 
     /// What no grant can exceed: core's longest wait, ten times the default number of waiting
-    /// runs, and the data plane's runs at once, every deployment's together.
+    /// runs, 1 GiB of what they keep, and the data plane's runs at once, every deployment's
+    /// together.
     pub(crate) fn ceilings() -> DurableLimits {
-        DurableLimits { max_await_seconds: holon_core::MAX_AWAIT_SECONDS, max_waiting_runs: 100_000, max_call_depth: 8, max_concurrent_runs: crate::dataplane::MAX_RUNS }
+        DurableLimits { max_await_seconds: holon_core::MAX_AWAIT_SECONDS, max_waiting_runs: 100_000, max_waiting_bytes: 1 << 30, max_call_depth: 8, max_concurrent_runs: crate::dataplane::MAX_RUNS }
     }
 }
 
@@ -215,6 +220,7 @@ fn limits_to_numbers(
         ("max_memory".into(), request.max_memory),
         ("max_await_seconds".into(), durable.max_await_seconds),
         ("max_waiting_runs".into(), durable.max_waiting_runs),
+        ("max_waiting_bytes".into(), durable.max_waiting_bytes),
         ("max_concurrent_runs".into(), durable.max_concurrent_runs),
         ("max_call_depth".into(), durable.max_call_depth),
         ("inline_file_bytes".into(), files.inline_file_bytes),
@@ -278,6 +284,7 @@ fn numbers_to_durable(base: &DurableLimits, numbers: &BTreeMap<String, u64>) -> 
     DurableLimits {
         max_await_seconds: numbers.get("max_await_seconds").copied().unwrap_or(base.max_await_seconds),
         max_waiting_runs: numbers.get("max_waiting_runs").copied().unwrap_or(base.max_waiting_runs),
+        max_waiting_bytes: numbers.get("max_waiting_bytes").copied().unwrap_or(base.max_waiting_bytes),
         max_call_depth: numbers.get("max_call_depth").copied().unwrap_or(base.max_call_depth),
         max_concurrent_runs: numbers.get("max_concurrent_runs").copied().unwrap_or(base.max_concurrent_runs),
     }
@@ -1213,7 +1220,8 @@ impl Permit {
     /// strict otherwise.
     pub(crate) fn log_level(&self, label: Option<&str>, declared: holon_core::LogLevel) -> holon_core::LogLevel {
         match declared {
-            holon_core::LogLevel::Unrecorded if !label.is_some_and(|l| self.unrecorded.contains(l)) => holon_core::LogLevel::Strict,
+            // A request that ran nothing is only ever counted (`firing::RAN_NOTHING`).
+            holon_core::LogLevel::Unrecorded if !label.is_some_and(|l| self.unrecorded.contains(l) || l == crate::firing::RAN_NOTHING) => holon_core::LogLevel::Strict,
             level => level,
         }
     }
