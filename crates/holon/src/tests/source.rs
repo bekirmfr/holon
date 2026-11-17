@@ -4,7 +4,11 @@
 //! at-rest writers scan (tests/at_rest.rs, which takes this file by its path), the body-read scan
 //! and R50's timing lint (tests.rs) all ask it, so none takes what follows a test module for test
 //! code: the writers scan cut each file at its first one, and main.rs declares `mod surfaces;`, a
-//! test module, near its top, so nine hundred lines of main.rs went unread.
+//! test module, near its top, so nine hundred lines of main.rs went unread. A test module in a
+//! file of its own ([`test_files`]) is test code to each of them too, and what it declares.
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 /// `text` (Rust) with its strings, chars and comments made inert for the sweeps of the source: in strings
 /// and chars, brackets, operators and commas are spaces (words stay, so `claim["waited_ms"]` still
@@ -118,4 +122,56 @@ pub(crate) fn in_test_modules(text: &str) -> Vec<bool> {
     // A last line [`inert`] left blank (a comment) is a line all the same.
     test.resize(text.lines().count(), false);
     test
+}
+
+/// Of `files` (Rust sources, read from disk), those a test module is the whole of: declared
+/// `#[cfg(test)] mod x;` (x.rs in its declarer's module folder, x/mod.rs, or its `#[path]`), and
+/// every module one of those declares in turn. surfaces.rs (main.rs's `mod surfaces;`) is one, and
+/// holon-author's golden.rs: never built into what ships.
+pub(crate) fn test_files(files: &[PathBuf]) -> BTreeSet<PathBuf> {
+    // Each out-of-line module declared at a file's top level: its declarer, its file, and whether
+    // a `#[cfg(test)]` is on it.
+    let mut declared: Vec<(&PathBuf, PathBuf, bool)> = Vec::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(file) else { continue };
+        let code = inert(&text);
+        let test = test_modules(&code);
+        let raw: Vec<&str> = text.lines().collect();
+        let folder = match file.file_name().and_then(|n| n.to_str()) {
+            Some("mod.rs" | "main.rs" | "lib.rs") => file.parent().map(Path::to_path_buf),
+            _ => file.parent().zip(file.file_stem()).map(|(parent, stem)| parent.join(stem)),
+        };
+        let Some(folder) = folder else { continue };
+        for (k, line) in code.lines().enumerate() {
+            // One inside an inline module would be under that module's name: none is, here.
+            let Some(name) = declared_module(line) else { continue };
+            let path = raw[..k.min(raw.len())].iter().rev().map(|l| l.trim()).take_while(|l| l.starts_with("#[")).find_map(|l| l.strip_prefix("#[path = \"")?.strip_suffix("\"]"));
+            let child = match path {
+                Some(path) => file.parent().unwrap_or(Path::new("")).join(path),
+                None if !folder.join(format!("{name}.rs")).exists() && folder.join(name).join("mod.rs").exists() => folder.join(name).join("mod.rs"),
+                None => folder.join(format!("{name}.rs")),
+            };
+            declared.push((file, child, test.get(k).copied().unwrap_or(false)));
+        }
+    }
+    let mut tests = BTreeSet::new();
+    loop {
+        let before = tests.len();
+        for (declarer, child, test) in &declared {
+            if *test || tests.contains(*declarer) {
+                tests.insert(child.clone());
+            }
+        }
+        if tests.len() == before {
+            return tests;
+        }
+    }
+}
+
+/// The name an out-of-line module is declared by at a file's top level, in `line` (made
+/// [`inert`]): `mod x;`, `pub(crate) mod x;`.
+fn declared_module(line: &str) -> Option<&str> {
+    let rest = ["mod ", "pub mod ", "pub(crate) mod ", "pub(super) mod "].iter().find_map(|m| line.trim_end().strip_prefix(m))?;
+    let name = rest.strip_suffix(';')?.trim();
+    (!name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')).then_some(name)
 }

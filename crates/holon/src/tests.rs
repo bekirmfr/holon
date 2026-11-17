@@ -34,7 +34,7 @@ mod semantics;
 mod writers;
 /// Which lines of a source file are a test module's, for the sweeps of the source (R78).
 mod source;
-use source::{in_test_modules, inert, test_modules};
+use source::{in_test_modules, inert, test_files, test_modules};
 
 pub(crate) fn test_state() -> AppState {
     test_state_with(SharedStore::new(Box::new(MemStore::new())))
@@ -6892,24 +6892,26 @@ export const look = action((input) => notes[input.id])
 #[test]
 fn every_body_the_control_plane_reads_is_read_by_the_deadline() {
     let mut read_elsewhere = Vec::new();
-    let mut dirs = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
+    let (mut dirs, mut files) = (vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))], Vec::new());
     while let Some(dir) = dirs.pop() {
         for path in std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()) {
             if path.is_dir() {
                 dirs.push(path);
-                continue;
+            } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("tests.rs") {
+                files.push(path);
             }
-            if path.extension().is_none_or(|e| e != "rs") || path.ends_with("tests.rs") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap();
-            // Each test module left out, by its braces, wherever it sits (source.rs, R78).
-            let code = text.lines().enumerate().zip(in_test_modules(&text)).filter(|(_, test)| !test).map(|(line, _)| line);
-            for (n, line) in code.filter(|(_, l)| l.contains(".data()")) {
-                let in_read_body = path.ends_with("http.rs") && line.trim_start().starts_with("let read = owned.data()");
-                if !in_read_body {
-                    read_elsewhere.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
-                }
+        }
+    }
+    // A test module's file of its own left out (`#[cfg(test)] mod x;`), and in the rest each test
+    // module, by its braces, wherever it sits (source.rs, R78).
+    let tests = test_files(&files);
+    for path in files.iter().filter(|path| !tests.contains(*path)) {
+        let text = std::fs::read_to_string(path).unwrap();
+        let code = text.lines().enumerate().zip(in_test_modules(&text)).filter(|(_, test)| !test).map(|(line, _)| line);
+        for (n, line) in code.filter(|(_, l)| l.contains(".data()")) {
+            let in_read_body = path.ends_with("http.rs") && line.trim_start().starts_with("let read = owned.data()");
+            if !in_read_body {
+                read_elsewhere.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
             }
         }
     }
@@ -8337,6 +8339,23 @@ fn test_code(path: &str, code: &str) -> String {
     code.lines().zip(keep).map(|(l, k)| if k { l } else { "" }).collect::<Vec<_>>().join("\n")
 }
 
+/// What R50's lint finds in `files` (under `root`, which their names are shown from): in each
+/// one's test code ([`test_code`]), or all of one a test module is the whole of ([`test_files`]).
+fn held_times(root: &std::path::Path, files: &[std::path::PathBuf]) -> Vec<String> {
+    let tests = test_files(files);
+    let mut found = Vec::new();
+    for path in files {
+        let shown = path.strip_prefix(root).unwrap().display().to_string().replace('\\', "/");
+        let text = std::fs::read_to_string(path).unwrap();
+        let whole = inert(&text);
+        let code = if tests.contains(path) { whole.clone() } else { test_code(&shown, &whole) };
+        found.extend(upper_bounds(&code).into_iter().map(|(line, condition)| format!("{shown}:{line}: holds a time from above: {condition}")));
+        found.extend(short_deadlines(&code, &whole, &text).into_iter().map(|(line, waits)| format!("{shown}:{line}: waits less than EVENTUALLY: {waits}")));
+        found.extend(sleeps_between_spawns(&code).into_iter().map(|line| format!("{shown}:{line}: a sleep between two spawns")));
+    }
+    found
+}
+
 /// Whether a comparison in `condition` (an assert's, made [`inert`]) holds a measured time from
 /// above: `took < x`, `x > t.elapsed()`, `claim["waited_ms"] < 250.0`.
 fn bounds_a_time_from_above(condition: &str) -> bool {
@@ -8622,6 +8641,19 @@ fn no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep() {
     let only_tests = test_code("crates/x/src/a.rs", &inert("fn f() {\n    assert!(t.elapsed() < cap);\n}\n#[cfg(test)]\nmod tests {\n    fn g() {\n        assert!(t.elapsed() < cap);\n    }\n}\nfn h() {\n    assert!(t.elapsed() < cap);\n}\n"));
     assert_eq!(upper_bounds(&only_tests).iter().map(|(line, _)| *line).collect::<Vec<_>>(), [7], "only a test module's, at its own line");
 
+    // A test module in a file of its own is test code, and what it declares in turn; a plain
+    // module's file isn't (R78).
+    let dir = std::path::PathBuf::from(unique_temp_path("held-times"));
+    std::fs::create_dir_all(dir.join("t")).unwrap();
+    let held = "fn f() {\n    assert!(t.elapsed() < cap);\n}\n";
+    let plan = [("lib.rs", "#[cfg(test)]\nmod t;\nmod p;\n".to_string()), ("t.rs", format!("{held}mod u;\n")), ("t/u.rs", held.to_string()), ("p.rs", held.to_string())];
+    for (file, text) in &plan {
+        std::fs::write(dir.join(file), text).unwrap();
+    }
+    let flagged: Vec<String> = held_times(&dir, &plan.iter().map(|(file, _)| dir.join(file)).collect::<Vec<_>>()).into_iter().map(|f| f.split(": ").next().unwrap().to_string()).collect();
+    assert_eq!(flagged, ["t.rs:2", "t/u.rs:2"], "a test module's own file, and the one it declares; not p.rs");
+    let _ = std::fs::remove_dir_all(&dir);
+
     // Every crate's tests.
     fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
@@ -8636,16 +8668,7 @@ fn no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep() {
     let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut files = Vec::new();
     sources(crates, &mut files);
-    let mut found = Vec::new();
-    for path in &files {
-        let shown = path.strip_prefix(crates).unwrap().display().to_string().replace('\\', "/");
-        let text = std::fs::read_to_string(path).unwrap();
-        let whole = inert(&text);
-        let code = test_code(&shown, &whole);
-        found.extend(upper_bounds(&code).into_iter().map(|(line, condition)| format!("{shown}:{line}: holds a time from above: {condition}")));
-        found.extend(short_deadlines(&code, &whole, &text).into_iter().map(|(line, waits)| format!("{shown}:{line}: waits less than EVENTUALLY: {waits}")));
-        found.extend(sleeps_between_spawns(&code).into_iter().map(|line| format!("{shown}:{line}: a sleep between two spawns")));
-    }
+    let found = held_times(crates, &files);
     assert!(found.is_empty(), "tests that hold how long something took, not what happened (hold an order of events: Gate, Waiters, soon; wait EVENTUALLY):\n{}", found.join("\n"));
     assert!(files.len() > 150, "the sweep read the source: {}", files.len());
 }
