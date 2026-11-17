@@ -13,6 +13,7 @@ mod graph;
 mod palette;
 mod policy;
 mod review;
+mod settings;
 mod shell;
 mod text;
 mod ui;

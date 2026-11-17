@@ -344,6 +344,10 @@ pub(crate) enum Then {
     Deploy(Box<Modal>),
     /// The Approvals page's pick, asked again: deployed.
     ApprovePicked,
+    /// A flow's settings changed (`…/settings`, or `…/grant` for keep running), and what to say.
+    Settings { slug: String, grant: bool, body: Value, said: String },
+    /// A secret rolled back to a version, its dry run read.
+    Rollback { slug: String, name: String, version: u64 },
 }
 
 /// A line typed outside a dialog of its own (those keep their own cursor): one at a time.
@@ -383,6 +387,12 @@ pub(crate) enum Ask {
     AccessDecline { id: u64, withdraw: bool },
     /// A note kept with a deploy: the deploy dialog it was typed from, back once it is.
     DeployNote(Box<Modal>),
+    /// A limit of a flow, lowered: to what, typed (it holds `now`).
+    Lower { slug: String, name: String, now: u64 },
+    /// A flow removed, its name typed; its keys forgotten too, when asked.
+    Remove { slug: String, forget: bool },
+    /// A secret rolled back: to which version, typed.
+    Rollback { slug: String, name: String },
 }
 
 /// The line at the bottom: what just happened.
@@ -2290,6 +2300,8 @@ impl App {
                 self.approve_now();
             }
             Then::ApprovePicked => self.approve_picked_now(),
+            Then::Settings { slug, grant, body, said } => self.change_settings(slug, grant, body, said),
+            Then::Rollback { slug, name, version } => self.rollback(slug, name, version),
         }
     }
 

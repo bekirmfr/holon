@@ -333,7 +333,7 @@ fn a_flows_page_is_a_dashboard_then_each_record_beside_its_tabs() {
     press(&mut app, KeyCode::Right);
     assert!(pane(&app).iter().any(|r| matches!(r, Row::Text(_, t) if t == "It didn't fail.")));
     for (w, h) in [(130, 40), (80, 24), (60, 16)] {
-        for s in [Section::Status, Section::Runs, Section::Logs, Section::History, Section::State, Section::Access, Section::Graph] {
+        for s in [Section::Status, Section::Runs, Section::Logs, Section::History, Section::State, Section::Access, Section::Settings, Section::Graph] {
             app.flow_section(s);
             screen(&mut app, w, h);
         }
@@ -2275,4 +2275,182 @@ fn live_approvals() {
     press(&mut b, KeyCode::Enter);
     keep("bob approved the change", &mut b);
     assert!(note(&b).contains("made, as access version"), "{}", note(&b));
+}
+
+/// The row of `app`'s Settings that `pick` finds, picked.
+fn pick_setting(app: &mut App, pick: impl Fn(&super::settings::Setting) -> bool) {
+    let d = app.detail.as_ref().expect("a flow's page");
+    let i = super::settings::settings_rows(d).iter().position(pick).unwrap_or_else(|| panic!("no such row: {:?}", super::settings::settings_rows(d)));
+    app.flow.sel[Section::Settings as usize] = i;
+    app.flow_load();
+}
+
+/// A flow's Settings, as the web console's: a limit lowered at once and a higher one refused
+/// (a new version raises it); keep running turned on; agents' proposals turned off; the flow stopped, then run again from a session's state; a secret rolled
+/// back after its dry run; and the flow removed, its name typed.
+#[test]
+fn a_flows_settings_lower_its_limits_turn_its_switches_and_remove_it() {
+    use super::flow::{access_rows, Access};
+    use super::settings::Setting;
+    let (mut app, state) = bumped(2);
+    app.open_flow("bump");
+    app.flow_section(Section::Settings);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Settings") && shown.contains("newest runs kept") && shown.contains("Agents"), "{shown}");
+
+    // keep_runs: lowered, then not raised.
+    pick_setting(&mut app, |s| matches!(s, Setting::Limit { name, .. } if name == "keep_runs"));
+    press(&mut app, KeyCode::Enter);
+    typed(&mut app, "5\n");
+    assert!(note(&app).contains("keep_runs lowered to 5"), "{}", note(&app));
+    let d = app.detail.as_ref().unwrap();
+    assert!(super::settings::settings_rows(d).iter().any(|s| matches!(s, Setting::Limit { name, now: 5, lowered: Some(5), .. } if name == "keep_runs")), "{:?}", super::settings::settings_rows(d));
+    pick_setting(&mut app, |s| matches!(s, Setting::Limit { name, .. } if name == "keep_runs"));
+    press(&mut app, KeyCode::Enter);
+    typed(&mut app, "50\n");
+    assert!(note(&app).contains("raising it takes a new version"), "{}", note(&app));
+
+    // Keep running, on.
+    pick_setting(&mut app, |s| matches!(s, Setting::KeepRunning(false)));
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.detail.as_ref().unwrap().grant["grant"]["keep_running"] == true, "{}", note(&app));
+
+    // Agents may no longer propose versions.
+    pick_setting(&mut app, |s| matches!(s, Setting::AgentsPropose(true)));
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Enter);
+    assert!(note(&app).contains("may no longer propose"), "{}", note(&app));
+    assert!(app.client.as_ref().unwrap().deployment("bump").unwrap()["agents_propose"] == false);
+
+    // A secret set twice, rolled back to its first version after a dry run.
+    let c = app.client.as_ref().unwrap();
+    c.set_secret("bump", "token", "first-value").unwrap();
+    c.set_secret("bump", "token", "second-value").unwrap();
+    app.refresh();
+    app.flow_section(Section::Access);
+    let at = access_rows(app.detail.as_ref().unwrap()).iter().position(|r| matches!(r, Access::Secret { name, set: true } if name == "token")).expect("its secret");
+    app.flow.sel[Section::Access as usize] = at;
+    press(&mut app, KeyCode::Char('R'));
+    typed(&mut app, "1\n");
+    let Some(Modal::Confirm { title, lines, .. }) = &app.modal else { panic!("no dry run: {}", note(&app)) };
+    assert!(title.contains("Roll token back to v1") && lines[0].contains("would make v1"), "{title} {lines:?}");
+    press(&mut app, KeyCode::Enter);
+    assert!(note(&app).contains("token is v1 again, as v3"), "{}", note(&app));
+
+    // Stopped, then run again from its first session's state.
+    app.lifecycle("bump", "stop", None);
+    app.flow_section(Section::Settings);
+    pick_setting(&mut app, |s| matches!(s, Setting::Session { state: true, ended: Some(_), .. }));
+    screen(&mut app, 140, 40);
+    press(&mut app, KeyCode::Enter);
+    let Some(Modal::Confirm { title, .. }) = &app.modal else { panic!("not asked: {}", note(&app)) };
+    assert!(title.starts_with("Run bump from session"), "{title}");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.client.as_ref().unwrap().deployment("bump").unwrap()["status"], "running", "{}", note(&app));
+
+    // Removed: not while it runs, as the web console; then not without its name typed.
+    pick_setting(&mut app, |s| matches!(s, Setting::Remove { forget: false }));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none() && note(&app).contains("once it is stopped"), "{}", note(&app));
+    app.lifecycle("bump", "stop", None);
+    pick_setting(&mut app, |s| matches!(s, Setting::Remove { forget: false }));
+    press(&mut app, KeyCode::Enter);
+    typed(&mut app, "bmup\n");
+    assert!(note(&app).contains("type bump to remove it"), "{}", note(&app));
+    assert!(app.client.as_ref().unwrap().deployment("bump").is_some());
+    press(&mut app, KeyCode::Enter);
+    typed(&mut app, "bump\n");
+    assert!(note(&app).starts_with("removed \"bump\""), "{}", note(&app));
+    assert!(!state.deployments.lock().unwrap().contains_key("bump"));
+}
+
+/// A flow's Settings run live: against a fresh server at `HOLON_LIVE` (started with
+/// `HOLON_SETUP_CODE=HOLON-LIVE`), over HTTP as the editor speaks to it. ada deploys `bump` from a
+/// tab, runs it twice, lowers a limit, turns keep running on and agents' proposals off, rolls a
+/// secret back after its dry run, runs it again from its first session, and removes it once
+/// stopped, its name typed. Each page it passes is written to `HOLON_SCREENS`.
+#[test]
+#[ignore = "runs against a live server at HOLON_LIVE"]
+fn live_settings() {
+    use super::flow::{access_rows, Access};
+    use super::settings::Setting;
+    let server = std::env::var("HOLON_LIVE").expect("HOLON_LIVE: the server's address");
+    let out = std::env::var("HOLON_SCREENS").expect("HOLON_SCREENS: where to write the pages");
+    let setup = Client::new(Box::new(crate::mcp::Http::new(&server, None))).post("/auth/setup", serde_json::json!({ "code": "HOLON-LIVE", "name": "ada", "password": "correct horse battery" }));
+    let ada = setup.unwrap_or_else(|e| panic!("setup: {e}"))["token"].as_str().unwrap().to_string();
+    let mut pages = String::new();
+    let mut keep = |name: &str, app: &mut App| {
+        pages += &format!("\n===== {name} =====\n{}\nnote: {}\n", screen(app, 140, 40), note(app));
+        std::fs::write(&out, &pages).unwrap();
+    };
+    let mut app = App::new(None);
+    app.attach(Client::new(Box::new(crate::mcp::Http::new(&server, Some(&ada)))));
+    tab_with(&mut app, BUMP);
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Enter);
+    keep("deployed from a tab", &mut app);
+    for _ in 0..2 {
+        app.client.as_ref().unwrap().post("/trigger/bump/bump", serde_json::json!({})).unwrap();
+    }
+    app.refresh();
+    app.open_flow("bump");
+    app.flow_section(Section::Settings);
+    keep("Settings", &mut app);
+
+    pick_setting(&mut app, |s| matches!(s, Setting::Limit { name, .. } if name == "keep_runs"));
+    press(&mut app, KeyCode::Enter);
+    typed(&mut app, "5\n");
+    keep("keep_runs lowered", &mut app);
+    assert!(note(&app).contains("keep_runs lowered to 5"), "{}", note(&app));
+    pick_setting(&mut app, |s| matches!(s, Setting::Limit { name, .. } if name == "keep_runs"));
+    press(&mut app, KeyCode::Enter);
+    typed(&mut app, "50\n");
+    assert!(note(&app).contains("raising it takes a new version"), "{}", note(&app));
+
+    pick_setting(&mut app, |s| matches!(s, Setting::KeepRunning(false)));
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Enter);
+    keep("keep running on", &mut app);
+    assert!(app.detail.as_ref().unwrap().grant["grant"]["keep_running"] == true, "{}", note(&app));
+    pick_setting(&mut app, |s| matches!(s, Setting::AgentsPropose(true)));
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Enter);
+    keep("agents may no longer propose", &mut app);
+    assert!(note(&app).contains("may no longer propose"), "{}", note(&app));
+
+    let c = app.client.as_ref().unwrap();
+    c.set_secret("bump", "token", "first-value").unwrap();
+    c.set_secret("bump", "token", "second-value").unwrap();
+    app.refresh();
+    app.flow_section(Section::Access);
+    let at = access_rows(app.detail.as_ref().unwrap()).iter().position(|r| matches!(r, Access::Secret { name, set: true } if name == "token")).expect("its secret");
+    app.flow.sel[Section::Access as usize] = at;
+    press(&mut app, KeyCode::Char('R'));
+    typed(&mut app, "1\n");
+    keep("the roll-back's dry run", &mut app);
+    assert!(matches!(&app.modal, Some(Modal::Confirm { title, .. }) if title.contains("Roll token back to v1")), "{}", note(&app));
+    press(&mut app, KeyCode::Enter);
+    keep("rolled back", &mut app);
+    assert!(note(&app).contains("token is v1 again, as v3"), "{}", note(&app));
+
+    app.lifecycle("bump", "stop", None);
+    app.flow_section(Section::Settings);
+    pick_setting(&mut app, |s| matches!(s, Setting::Session { state: true, ended: Some(_), .. }));
+    keep("a session picked", &mut app);
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Enter);
+    keep("run from its session", &mut app);
+    assert_eq!(app.client.as_ref().unwrap().deployment("bump").unwrap()["status"], "running", "{}", note(&app));
+
+    pick_setting(&mut app, |s| matches!(s, Setting::Remove { forget: false }));
+    press(&mut app, KeyCode::Enter);
+    assert!(note(&app).contains("once it is stopped"), "{}", note(&app));
+    app.lifecycle("bump", "stop", None);
+    pick_setting(&mut app, |s| matches!(s, Setting::Remove { forget: false }));
+    press(&mut app, KeyCode::Enter);
+    typed(&mut app, "bump\n");
+    keep("removed", &mut app);
+    assert!(note(&app).starts_with("removed \"bump\""), "{}", note(&app));
+    assert!(app.client.as_ref().unwrap().deployment("bump").is_none());
 }

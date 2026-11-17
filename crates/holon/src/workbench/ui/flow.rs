@@ -556,6 +556,7 @@ fn split(f: &mut Frame, app: &mut App, area: Rect) {
         Section::History => ("History, newest first: one chain".to_string(), d.moments().len()),
         Section::State => (format!("Its state ({})", app.flow.cells.len()), app.flow.cells.len()),
         Section::Graph => (app.flow.graph.as_ref().map(graph_title).unwrap_or_else(|| "Graph".into()), app.flow.graph.as_ref().map_or(0, |g| g.rows.len())),
+        Section::Settings => ("Settings".to_string(), crate::workbench::settings::settings_rows(d).len()),
         _ => ("Access".to_string(), access_rows(d).len()),
     };
     let block = panel(&title, focused);
@@ -600,6 +601,17 @@ fn split(f: &mut Frame, app: &mut App, area: Rect) {
                     let c = &cells[i];
                     let value = if c.collection { dim("a collection".to_string()) } else { Span::raw(fit(&agent::show(&c.value), w.saturating_sub(24))) };
                     Line::from(vec![bold(pad(&c.name, 22)), value])
+                });
+            }
+            Section::Settings => {
+                let rows = crate::workbench::settings::settings_rows(d);
+                let status = d.entry["status"].as_str().unwrap_or_default().to_string();
+                list(f, app_ref, inner, List::Section, n, Some(sel), focused, |i, w| {
+                    let (said, what, how) = crate::workbench::settings::setting_line(&rows[i], &status);
+                    match said {
+                        Tone::Head => Line::from(bold(what)),
+                        t => Line::from(vec![Span::styled(pad(&what, 38), tone(t)), dim(fit(&how, w.saturating_sub(39)))]),
+                    }
                 });
             }
             _ => {

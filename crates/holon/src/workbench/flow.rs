@@ -20,11 +20,20 @@ pub(crate) enum Section {
     History,
     State,
     Access,
+    Settings,
     Graph,
 }
 
-pub(crate) const SECTIONS: [(Section, &str); 7] =
-    [(Section::Status, "Status"), (Section::Runs, "Runs"), (Section::Logs, "Logs"), (Section::History, "History"), (Section::State, "State"), (Section::Access, "Access"), (Section::Graph, "Graph")];
+pub(crate) const SECTIONS: [(Section, &str); 8] = [
+    (Section::Status, "Status"),
+    (Section::Runs, "Runs"),
+    (Section::Logs, "Logs"),
+    (Section::History, "History"),
+    (Section::State, "State"),
+    (Section::Access, "Access"),
+    (Section::Settings, "Settings"),
+    (Section::Graph, "Graph"),
+];
 
 /// The right pane's tabs, by section.
 pub(crate) fn tabs(s: Section) -> &'static [&'static str] {
@@ -35,6 +44,7 @@ pub(crate) fn tabs(s: Section) -> &'static [&'static str] {
         Section::History => &["Detail", "Code", "State"],
         Section::State => &["Value", "History"],
         Section::Access => &["Detail", "History"],
+        Section::Settings => &["Detail"],
         Section::Graph => &["Statement", "Newest run"],
     }
 }
@@ -147,9 +157,9 @@ pub(crate) enum Held {
 pub(crate) struct FlowView {
     pub(crate) section: Section,
     /// The row picked, by section.
-    pub(crate) sel: [usize; 7],
+    pub(crate) sel: [usize; 8],
     /// The right pane's tab, by section.
-    pub(crate) tab: [usize; 7],
+    pub(crate) tab: [usize; 8],
     /// The right pane has the arrows: they scroll it.
     pub(crate) right: bool,
     pub(crate) scroll: usize,
@@ -284,6 +294,7 @@ impl App {
             Section::History => d.moments().len(),
             Section::State => self.flow.cells.len(),
             Section::Access => access_rows(d).len(),
+            Section::Settings => super::settings::settings_rows(d).len(),
             Section::Graph => self.flow.graph.as_ref().map_or(0, |g| g.rows.len()),
         }
     }
@@ -373,6 +384,14 @@ impl App {
                 };
                 key = format!("{row:?} {tab} {}", d.grant["hash"]);
                 make = Box::new(move || access_pane(c, d, &row, tab));
+            }
+            Section::Settings => {
+                let Some(row) = super::settings::settings_rows(d).get(sel).cloned() else {
+                    self.flow.pane = None;
+                    return;
+                };
+                key = format!("setting {row:?} {} {} {}", d.grant["hash"], d.entry, d.sessions.len());
+                make = Box::new(move || super::settings::settings_pane(d, &row));
             }
             Section::Graph => {
                 // Built again for a new version, a new run (what it reached), or every node.
@@ -684,6 +703,18 @@ impl App {
                 }
                 _ => {}
             },
+            (Section::Settings, KeyCode::Enter) => {
+                if let Some(row) = super::settings::settings_rows(d).get(sel).cloned() {
+                    self.setting_enter(slug, row);
+                }
+            }
+            // A secret rolled back to an earlier version: which, typed; then its dry run.
+            (Section::Access, KeyCode::Char('R')) => {
+                if let Some(Access::Secret { name, set: true }) = access_rows(d).get(sel).cloned() {
+                    let lines = vec!["Which version: its History tab lists them. A dry run says what it would do, before anything changes.".into()];
+                    self.modal = Some(Modal::input(format!("Roll {name} back to"), lines, String::new(), false, Ask::Rollback { slug: slug.to_string(), name }));
+                }
+            }
             (Section::Access, KeyCode::Delete | KeyCode::Char('-')) => {
                 if let Some(Access::Secret { name, set: true }) = access_rows(d).get(sel).cloned() {
                     self.modal = Some(Modal::Confirm {
@@ -701,7 +732,16 @@ impl App {
         let (title, line) = match action {
             "run" => (format!("Run {slug}?"), "It takes calls and runs its clocks again, as you.".to_string()),
             "pause" => (format!("Pause {slug}?"), "Calls get 503 until it runs again; runs in flight finish. Its state stays.".to_string()),
-            _ => (format!("Stop {slug}?"), "It stops and frees its port. Running it again starts a new session.".to_string()),
+            _ => {
+                // A stop ends the runs that wait.
+                let waiting = self.client.as_ref().and_then(|c| c.deployment(slug)).and_then(|d| d["waiting"].as_u64()).unwrap_or(0);
+                let ends = match waiting {
+                    0 => String::new(),
+                    1 => " It ends the run that waits.".into(),
+                    n => format!(" It ends the {n} runs that wait."),
+                };
+                (format!("Stop {slug}?"), format!("It stops and frees its port. Running it again starts a new session.{ends}"))
+            }
         };
         self.modal = Some(Modal::Confirm { title, lines: vec![format!("\"{slug}\" is {} now.", self.status_of(slug)), line], then: Then::Lifecycle(slug.to_string(), action, None) });
     }
@@ -868,6 +908,9 @@ impl App {
             Ask::Decline(p) => return self.decline(p, value),
             Ask::AccessDecline { id, .. } => return self.decide_change(id, false, value),
             Ask::DeployNote(deploy) => return self.noted(*deploy, value),
+            Ask::Lower { slug, name, now } => return self.lower_limit(slug, name, now, value),
+            Ask::Remove { slug, forget } => return self.remove_typed(slug, forget, value),
+            Ask::Rollback { slug, name } => return self.rollback_typed(slug, name, value),
             Ask::Secret(slug, name) => (slug, name, None),
             Ask::SecretFrom(slug, name, kind) => (slug, name, Some(kind)),
         };
@@ -1403,7 +1446,7 @@ fn access_pane(c: &Client, d: &Detail, row: &Access, tab: usize) -> Vec<Row> {
             }
             let reads = d.secrets["reads"].as_array().is_some_and(|r| r.iter().any(|n| n == name));
             rows.push(field("Read", if reads { "by the version deployed now" } else { "not by the version deployed now" }));
-            rows.push(text(Tone::Dim, if *set { "enter: change it (a value, a name the server reads, or Vault) · del: remove it" } else { "enter: set it (a value, a name the server reads, or Vault)" }));
+            rows.push(text(Tone::Dim, if *set { "enter: change it (a value, a name the server reads, or Vault) · R: roll it back · del: remove it" } else { "enter: set it (a value, a name the server reads, or Vault)" }));
             rows
         }
         (Access::Secret { name, .. }, _) => match c.secret_history(&d.slug, name) {

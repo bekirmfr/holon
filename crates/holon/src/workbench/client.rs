@@ -76,6 +76,11 @@ pub(crate) struct Detail {
     /// follow the one before them: what a run's record says of its chain.
     pub(crate) head: String,
     pub(crate) breaks: Vec<u64>,
+    /// The host's policy (`GET /permissions`): its limits' defaults and ceilings, as Settings says
+    /// them; null for whoever may not read it (policy.view).
+    pub(crate) policy: Value,
+    /// Its sessions, oldest first (`…/sessions`), each with the state it ended with.
+    pub(crate) sessions: Vec<Value>,
 }
 
 /// One moment of a deployment's history: a run, or something done to it.
@@ -307,7 +312,9 @@ impl Client {
         secrets["reads"] = json!(crate::secretcmd::reads(&manifest));
         let parked = if entry["waiting"].as_u64().unwrap_or_default() > 0 { self.get(&format!("{path}/runs")).map(|r| list(&r, "runs")).unwrap_or_default() } else { vec![] };
         let holds = self.get(&format!("{path}/holds")).unwrap_or(Value::Null);
-        Ok(Detail { slug: slug.to_string(), entry, manifest, runs, events, versions, grant, secrets, parked, holds, head, breaks })
+        let policy = if self.may("policy.view", None).is_ok() { self.get("/permissions").unwrap_or(Value::Null) } else { Value::Null };
+        let sessions = self.get(&format!("{path}/sessions")).map(|s| list(&s, "sessions")).unwrap_or_default();
+        Ok(Detail { slug: slug.to_string(), entry, manifest, runs, events, versions, grant, secrets, parked, holds, head, breaks, policy, sessions })
     }
 
     /// Its text as deployed now, or as version `unit` was.
