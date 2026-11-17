@@ -3,6 +3,7 @@
 //! dialog over them. Whatever can be clicked says where it was drawn (`App::hit`).
 
 mod admin;
+mod approvals;
 mod editor;
 mod flow;
 mod modal;
@@ -293,7 +294,7 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
     }
     if let Some(c) = &app.client {
         right.push((Span::raw(format!("{} deployed", c.deployments.len())), Some(Page::Flows)));
-        let waiting = app.waiting().len();
+        let waiting = app.waiting_total();
         right.push((dim(" · "), None));
         right.push((if waiting > 0 { coloured(format!("● {waiting} waiting for you"), WARN) } else { dim("nothing waiting") }, Some(Page::Approvals)));
         let paused = c.deployments.iter().filter(|d| d["status"] == "paused").count();
@@ -411,7 +412,7 @@ fn clock() -> String {
 /// The pages down the side, in two groups (the work, then the host), each with its count on the
 /// right; under them, how the server is, and the keys that work anywhere.
 fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
-    let waiting = app.waiting().len();
+    let waiting = app.waiting_total();
     let width = area.width.saturating_sub(1) as usize;
     let mut y = area.y + 1;
     let head = |f: &mut Frame, y: u16, name: &str| f.render_widget(Paragraph::new(Span::styled(format!("  {name}"), Style::new().fg(DARK).add_modifier(Modifier::BOLD))), Rect { x: area.x, y, width: area.width.saturating_sub(1), height: 1 });
@@ -901,6 +902,10 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     }
     let c = app.client.as_ref().unwrap();
     let waiting = app.waiting();
+    // The runs waiting at a step the caller may take, beside the versions and flows that wait.
+    let mine: Vec<Value> = app.runs_waiting().into_iter().filter(|r| crate::workbench::approvals::yours(r).is_some()).collect();
+    let changes = app.changes_yours();
+    let total = waiting.len() + mine.len() + changes;
     let running = c.deployments.iter().filter(|d| d["status"] == "running").count();
     let runs: u64 = c.deployments.iter().filter_map(|d| d["trigger_count"].as_u64()).sum();
     let failed: u64 = c.deployments.iter().filter_map(|d| d["error_count"].as_u64()).sum();
@@ -908,19 +913,19 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     // What the host warns of, then what waits for a person, in one panel.
     let warned: Vec<(String, String)> = c.warnings.iter().map(|w| (w["says"].as_str().unwrap_or_default().to_string(), w["todo"].as_str().unwrap_or_default().to_string())).collect();
     let asked: usize = waiting.iter().take(6).map(|(slug, w)| if w.starts_with("to start") || w.starts_with("to free") { 0 } else { app.asks(slug).len().min(3) }).sum();
-    let wait_height = (waiting.len().clamp(1, 6) + asked + warned.len().min(3) * 2 + 2) as u16;
+    let wait_height = ((waiting.len() + mine.len().min(3) + usize::from(changes > 0)).clamp(1, 9) + asked + warned.len().min(3) * 2 + 2) as u16;
     let [said, tiles, rest] = Layout::vertical([Constraint::Length(1), Constraint::Length(tiles_height), Constraint::Min(3)]).areas(area);
     // The page in a line: who, what waits, what runs, what failed.
     let who = c.me.clone().map(|m| format!("{m}: ")).unwrap_or_default();
     let mut head = vec![Span::raw(" "), bold(who)];
-    head.push(if waiting.is_empty() { coloured("nothing waits for you", GOOD) } else { coloured(format!("{} wait{} for you", waiting.len(), if waiting.len() == 1 { "s" } else { "" }), WARN) });
+    head.push(if total == 0 { coloured("nothing waits for you", GOOD) } else { coloured(format!("{total} wait{} for you", if total == 1 { "s" } else { "" }), WARN) });
     head.push(dim(format!("  ·  {running} of {} running", c.deployments.len())));
     head.push(if failed > 0 { coloured(format!("  ·  {failed} failed of {runs} runs"), BAD) } else { dim(format!("  ·  {runs} runs, none failed")) });
     f.render_widget(Paragraph::new(Line::from(head)), said);
     if tiles_height > 0 {
         let parts = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(tiles);
         tile(f, parts[0], "Deployed", &c.deployments.len().to_string(), &format!("{running} running"), ACCENT);
-        tile(f, parts[1], "Waiting for you", &waiting.len().to_string(), if waiting.is_empty() { "nothing to approve" } else { "2 opens them" }, if waiting.is_empty() { GOOD } else { WARN });
+        tile(f, parts[1], "Waiting for you", &total.to_string(), if total == 0 { "nothing to approve" } else { "2 opens them" }, if total == 0 { GOOD } else { WARN });
         let day = last_day(c);
         let at_least = if day.more { "≥" } else { "" };
         let times = match (day.p50, day.p99) {
@@ -949,7 +954,14 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let mut lines: Vec<Line> = warned.iter().take(3).flat_map(|(says, todo)| [Line::from(vec![coloured("! ", BAD), Span::raw(says.clone())]), Line::from(dim(format!("  {todo}")))]).collect();
-    if waiting.is_empty() {
+    for r in mine.iter().take(3) {
+        let point = crate::workbench::approvals::yours(r).map(|(w, _)| w["name"].as_str().unwrap_or("?").to_string()).unwrap_or_default();
+        lines.push(Line::from(vec![coloured("◷ ", WARN), bold(format!("{}  ", r["slug"].as_str().unwrap_or("?"))), Span::raw(format!("run {} waits at {point:?} for you ({})", crate::decidecmd::short(r["run_id"].as_str().unwrap_or("?")), crate::workbench::approvals::what(r)))]));
+    }
+    if changes > 0 {
+        lines.push(Line::from(vec![coloured("◆ ", WARN), Span::raw(format!("{changes} access change{} wait{} for you to approve or decline (Approvals › Access changes)", if changes == 1 { "" } else { "s" }, if changes == 1 { "s" } else { "" }))]));
+    }
+    if total == 0 {
         lines.push(Line::from(dim("Nothing waits for a person.")));
     } else {
         // Each wait, then what its version asks that the flow may not do now.
@@ -967,7 +979,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     }
     let room = waits.width.saturating_sub(2) as usize;
     let lines: Vec<Line> = lines.into_iter().map(|l| fit_line(l, room)).collect();
-    f.render_widget(Paragraph::new(lines).block(panel(&format!("Waiting for you ({})", waiting.len()), false)), waits);
+    f.render_widget(Paragraph::new(lines).block(panel(&format!("Waiting for you ({total})"), false)), waits);
     app.hit(waits, Click::Page(Page::Approvals));
 
     if wide {
@@ -992,6 +1004,13 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
 fn draw_approvals(f: &mut Frame, app: &mut App, area: Rect) {
     if offline(f, app, area, "Approvals") {
         return;
+    }
+    let [bar, area] = Layout::vertical([Constraint::Length(2), Constraint::Min(3)]).areas(area);
+    approvals::draw_parts(f, app, bar);
+    match app.approvals_part {
+        crate::workbench::approvals::Part::Runs => return approvals::draw_runs(f, app, area),
+        crate::workbench::approvals::Part::Access => return approvals::draw_access(f, app, area),
+        crate::workbench::approvals::Part::Deploys => {}
     }
     app.sync_approval();
     let waiting = app.waiting();
@@ -1036,6 +1055,11 @@ fn draw_approvals(f: &mut Frame, app: &mut App, area: Rect) {
         }
         crate::workbench::app::Pending::Said(why) => f.render_widget(Paragraph::new(why.clone()).wrap(Wrap { trim: false }), inner),
         crate::workbench::app::Pending::Failed(why) => f.render_widget(Paragraph::new(vec![Line::from(coloured("It can't be reviewed here:", BAD)), Line::from(why.clone())]).wrap(Wrap { trim: false }), inner),
+        crate::workbench::app::Pending::Proposal(p, why) => {
+            let head = format!("v{} proposed by {}", p["version"].as_u64().unwrap_or(0), p["by"].as_str().unwrap_or("someone"));
+            let lines = vec![Line::from(head), Line::default(), Line::from(coloured("It can't be approved here:", BAD)), Line::from(why.clone()), Line::default(), Line::from(dim("d declines it, saying why: its author reads it."))];
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        }
     }
     let go = match &a.what {
         crate::workbench::app::Pending::Deploy(s) if s.staged.needs.is_empty() => "deploy",
@@ -1043,12 +1067,19 @@ fn draw_approvals(f: &mut Frame, app: &mut App, area: Rect) {
         crate::workbench::app::Pending::Start => "run it",
         _ => "",
     };
+    let proposed = matches!(&a.what, crate::workbench::app::Pending::Proposal(..)) || matches!(&a.what, crate::workbench::app::Pending::Deploy(s) if s.proposal.is_some());
     app.approval = Some(a);
     let mut keys: Vec<(&str, &str, KeyCode, KeyModifiers)> = vec![];
     if !go.is_empty() {
         keys.push(("enter", go, KeyCode::Enter, KeyModifiers::NONE));
     }
-    keys.extend([("]", "next", KeyCode::Char(']'), KeyModifiers::NONE), ("e", "open in the editor", KeyCode::Char('e'), KeyModifiers::NONE)]);
+    if proposed {
+        keys.push(("d", "decline", KeyCode::Char('d'), KeyModifiers::NONE));
+    }
+    if go.starts_with("approve") || go == "deploy" {
+        keys.push(("v", "replay", KeyCode::Char('v'), KeyModifiers::NONE));
+    }
+    keys.extend([("]", "next", KeyCode::Char(']'), KeyModifiers::NONE), ("e", "open in the editor", KeyCode::Char('e'), KeyModifiers::NONE), ("tab", "runs waiting", KeyCode::Tab, KeyModifiers::NONE)]);
     keys.push(if review_keys { ("esc", "back to the list", KeyCode::Esc, KeyModifiers::NONE) } else { ("→", "read it", KeyCode::Right, KeyModifiers::NONE) });
     let bar = Rect { x: right.x + 2, y: right.y + right.height - 1, width: right.width.saturating_sub(4), height: 1 };
     buttons(f, app, bar, &keys);

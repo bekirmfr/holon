@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::{bold, coloured, dim, fit, list, pad, panel, scrollbar, tone, ACCENT, GOOD, WARN};
+use super::{bold, coloured, dim, fit, list, pad, panel, scrollbar, tone, ACCENT, DIM, GOOD, WARN};
 use crate::workbench::app::{App, Click, List, Modal, Said, Tone};
 use crate::workbench::flow::restore_options;
 use crate::workbench::palette;
@@ -71,6 +71,11 @@ const HELP: &[(&str, &str)] = &[
     ("tab  shift+tab", "indent, outdent"),
     ("alt+f", "format, as holon fmt writes it"),
     ("ctrl+pgup pgdn", "the tab before or after; ctrl+w closes this one"),
+    ("", ""),
+    ("Approvals", ""),
+    ("tab", "deploys waiting, runs waiting at an approval (await approval(…)), access changes"),
+    ("a  d", "a run's step or an access change: approve it, decline it (with why); its author withdraws it"),
+    ("enter", "a deploy: review and deploy it; a run: its flow"),
     ("", ""),
     ("A deploy to approve, a dry run", ""),
     ("↑ ↓", "a line at a time (pgup pgdn a page, home end)"),
@@ -268,7 +273,11 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         Modal::Approve { slug, staged, review, .. } => {
             let title = if staged.needs.is_empty() { format!("Deploy {slug}?") } else { format!("Approve and deploy {slug}?") };
             let go = if staged.needs.is_empty() { "deploy" } else { "approve and deploy" };
-            reviewed(f, app, area, review, &title, go, Some(("s", "save, don't deploy")), None);
+            let note = match staged.note() {
+                Some(n) => format!("Note: {}  (m changes it)", fit(n, 90)),
+                None => "m adds a note, kept with the deploy  ·  v replays it on its last 20 runs".into(),
+            };
+            reviewed(f, app, area, review, &title, go, Some(("s", "save, don't deploy")), Some((&note, DIM)));
         }
         Modal::Lines { title, lines, scroll } => {
             let rect = centred(area, 100, lines.len() as u16 + 4);

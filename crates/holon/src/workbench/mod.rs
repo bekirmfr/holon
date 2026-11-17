@@ -5,11 +5,13 @@
 
 mod admin;
 mod app;
+mod approvals;
 mod client;
 mod diff;
 mod flow;
 mod graph;
 mod palette;
+mod policy;
 mod review;
 mod shell;
 mod text;

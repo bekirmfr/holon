@@ -263,6 +263,22 @@ pub(crate) struct Staged {
     pub(crate) approves: bool,
 }
 
+impl Staged {
+    /// A note kept with the deploy, on its event and in the activity log (deploy.rs): more than its
+    /// why for whoever reads what changed. Empty takes it away.
+    pub(crate) fn with_note(&mut self, note: &str) {
+        match note.trim() {
+            "" => _ = self.body.as_object_mut().map(|o| o.remove("note")),
+            n => self.body["note"] = serde_json::json!(n),
+        }
+    }
+
+    /// The note it is sent with, if any.
+    pub(crate) fn note(&self) -> Option<&str> {
+        self.body["note"].as_str()
+    }
+}
+
 /// Send `plan`'s units to `server`, and ask what deploying it as `slug` needs a person to approve;
 /// or why the server won't run it. `holon deploy` and `holon editor` deploy through this and
 /// [`commit`], as the editor does through the same two requests.

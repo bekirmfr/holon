@@ -204,7 +204,7 @@ const COUNTER: &str = "import { action, flow } from \"holon\"\nimport state from
 const TICKER: &str = "import { every, flow } from \"holon\"\nimport state from \"state\"\nimport { now } from \"holon:clock\"\n\nflow(\"tick\")\n\nevery(\"5s\", () => {\n  state.last_tick = now\n})\n";
 
 /// `text` compiled with the language and its units staged: its unit, to deploy under any slug.
-fn stage_text(state: &AppState, text: &str) -> Hash {
+pub(crate) fn stage_text(state: &AppState, text: &str) -> Hash {
     let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
     for u in &plan.units {
         assert_eq!(route(state, &req("POST", "/unit", u.clone())).status_code, 200);
@@ -233,7 +233,7 @@ fn stage_writer(state: &AppState, key: &str) -> Hash {
 }
 
 /// Run `slug`'s action `name`, sending `value` as its JSON.
-fn run_action_named(state: &AppState, slug: &str, name: &str, value: serde_json::Value) -> Response {
+pub(crate) fn run_action_named(state: &AppState, slug: &str, name: &str, value: serde_json::Value) -> Response {
     route(state, &req("POST", &format!("/trigger/{slug}/{name}"), serde_json::to_vec(&value).unwrap()))
 }
 
@@ -604,7 +604,7 @@ fn a_deployed_request_is_performed_between_rounds_and_logged() {
 
 // ── permissions: the manifest asks, the host grants ─────────────────────────────────
 
-fn deploy_json(state: &AppState, slug: &str, unit: Hash, extra: serde_json::Value) -> Response {
+pub(crate) fn deploy_json(state: &AppState, slug: &str, unit: Hash, extra: serde_json::Value) -> Response {
     let mut body = serde_json::json!({ "slug": slug, "unit": to_hex(&unit) });
     for (k, v) in extra.as_object().unwrap() {
         body[k] = v.clone();

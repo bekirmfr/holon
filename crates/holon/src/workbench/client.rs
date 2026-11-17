@@ -30,10 +30,24 @@ pub(crate) struct Client {
     /// The access document's version as `/auth/me` said it last: what `may` answers changes only
     /// with it (or a flow's tags, or a minute on), so its answers are read again when it moves.
     pub(crate) access_version: Option<u64>,
+    /// The runs waiting at a point that the caller may see (`GET /runs/waiting`), oldest first,
+    /// each with its `slug`; and why they couldn't be read, when they couldn't.
+    pub(crate) waiting_runs: Vec<Value>,
+    pub(crate) waiting_runs_error: Option<String>,
+    /// The versions proposed and waiting for a person (`GET /proposals`), oldest first: each
+    /// replaces its flow's "a version saved since" wait, which it saved.
+    pub(crate) proposals: Vec<Value>,
+    /// The access changes, newest first (`GET /access/proposals`), for whoever may see people; or
+    /// why they aren't read.
+    pub(crate) access_changes: Vec<Value>,
+    pub(crate) access_changes_error: Option<String>,
     /// What the caller may do (`GET /auth/me/can`), by flow ("" for the host and every flow at
     /// once), with when it was asked: each action's answer, or the words of its refusal.
-    pub(crate) can: std::collections::HashMap<String, (std::time::Instant, std::collections::HashMap<String, Result<(), String>>)>,
+    pub(crate) can: std::collections::HashMap<String, (std::time::Instant, Answers)>,
 }
+
+/// Each action's answer, or the words of its refusal.
+pub(crate) type Answers = std::collections::HashMap<String, Result<(), String>>;
 
 /// How long what the caller may do is kept before it is asked again, as the web console keeps it.
 const CAN_KEPT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -99,7 +113,7 @@ pub(crate) fn strings(v: &Value, key: &str) -> Vec<String> {
 
 impl Client {
     pub(crate) fn new(api: Box<dyn Api>) -> Client {
-        Client { api, me: None, role: None, deployments: vec![], flows: vec![], activity: vec![], recent: Default::default(), chains: Default::default(), warnings: vec![], access_version: None, can: Default::default() }
+        Client { api, me: None, role: None, deployments: vec![], flows: vec![], activity: vec![], recent: Default::default(), chains: Default::default(), warnings: vec![], access_version: None, can: Default::default(), waiting_runs: vec![], waiting_runs_error: None, proposals: vec![], access_changes: vec![], access_changes_error: None }
     }
 
     pub(crate) fn server(&self) -> String {
@@ -141,6 +155,23 @@ impl Client {
             (vec![], vec![])
         } else {
             (list(&self.get("/deployments")?, "deployments"), self.get("/flows")?.as_array().cloned().unwrap_or_default())
+        };
+        // Waiting ones come first in the answer, oldest first; whoever may not list flows reads none.
+        self.proposals = self.get("/proposals").map(|v| list(&v, "proposals")).unwrap_or_default().into_iter().filter(|p| p["state"] == "waiting").collect();
+        match self.get("/runs/waiting") {
+            Ok(v) => {
+                let mut runs = list(&v, "runs");
+                runs.sort_by_key(|r| r["parked_at"].as_u64().unwrap_or(0));
+                (self.waiting_runs, self.waiting_runs_error) = (runs, None);
+            }
+            Err(e) => (self.waiting_runs, self.waiting_runs_error) = (vec![], Some(e)),
+        }
+        (self.access_changes, self.access_changes_error) = match self.may("people.view", None) {
+            Err(why) => (vec![], Some(why)),
+            Ok(()) => match self.get("/access/proposals") {
+                Ok(v) => (list(&v, "proposals"), None),
+                Err(e) => (vec![], Some(e)),
+            },
         };
         // Only an admin may read it all; for anyone else it stays empty.
         self.activity = self.get("/activity?limit=30").map(|a| list(&a, "entries")).unwrap_or_default();
@@ -213,20 +244,42 @@ impl Client {
         self.flows.iter().find(|f| f["name"].as_str() == Some(name))
     }
 
-    /// What waits for a person, deployment by deployment, then the saved flows never deployed.
+    /// The version of `slug` proposed and waiting for a person, if one is.
+    pub(crate) fn proposal_for(&self, slug: &str) -> Option<&Value> {
+        self.proposals.iter().find(|p| p["slug"].as_str() == Some(slug))
+    }
+
+    /// What waits for a person, deployment by deployment, then the saved flows never deployed,
+    /// then what is proposed of a flow neither. A version proposed is said as one, in place of
+    /// the save it made.
     pub(crate) fn waiting(&self) -> Vec<(String, String)> {
         let mut out = vec![];
         for d in &self.deployments {
             let slug = d["slug"].as_str().unwrap_or("?").to_string();
+            let proposed = self.proposal_for(&slug);
             for w in crate::mcp::waits_for(d, self.saved(&slug)) {
-                out.push((slug.clone(), w));
+                if proposed.is_none() || !w.starts_with("to review a version saved since") {
+                    out.push((slug.clone(), w));
+                }
+            }
+            if let Some(p) = proposed {
+                out.push((slug.clone(), super::approvals::proposal_wait(p)));
             }
         }
         for f in &self.flows {
             let name = f["name"].as_str().unwrap_or("?");
-            if self.deployment(name).is_none() {
+            if let Some(p) = self.proposal_for(name).filter(|_| self.deployment(name).is_none()) {
+                out.push((name.to_string(), super::approvals::proposal_wait(p)));
+            } else if self.deployment(name).is_none() {
                 let by = f["saved_by"].as_str().unwrap_or("someone");
                 out.push((name.to_string(), format!("to deploy it for the first time: saved by {by}, at {}", crate::mcp::when(&f["saved_at_epoch_seconds"]))));
+            }
+        }
+        // A proposal of a flow neither deployed nor saved here waits all the same.
+        for p in &self.proposals {
+            let name = p["slug"].as_str().unwrap_or("?");
+            if self.deployment(name).is_none() && !self.flows.iter().any(|f| f["name"].as_str() == Some(name)) {
+                out.push((name.to_string(), super::approvals::proposal_wait(p)));
             }
         }
         out

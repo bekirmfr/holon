@@ -18,6 +18,8 @@ pub(crate) enum Act {
     Graph(usize),
     /// The admin page, at one of its parts.
     Admin(crate::workbench::admin::Part),
+    /// The Approvals page's runs waiting, at this run (by its id) when one is named.
+    Waiting(Option<String>),
     /// As if typed after `:`.
     Command(String),
     Help,
@@ -62,6 +64,11 @@ fn all(app: &App) -> Vec<Item> {
     }
     for (i, t) in app.tabs.iter().enumerate() {
         out.push(item(t.name.clone(), "tab", Act::Tab(i)));
+    }
+    out.push(item("Runs waiting", "approvals", Act::Waiting(None)));
+    for r in app.runs_waiting().iter().filter(|r| crate::workbench::approvals::yours(r).is_some()) {
+        let (slug, id) = (r["slug"].as_str().unwrap_or("?"), r["run_id"].as_str().unwrap_or("?"));
+        out.push(item(format!("Approve run {} of {slug}", crate::decidecmd::short(id)), "approvals", Act::Waiting(Some(id.to_string()))));
     }
     if let Some(c) = &app.client {
         for d in &c.deployments {
@@ -154,6 +161,7 @@ pub(crate) fn run(app: &mut App, act: &Act) {
         }
         Act::Command(c) => app.run_command(c),
         Act::Help => app.modal = Some(Modal::Help { scroll: 0 }),
+        Act::Waiting(id) => app.show_waiting_run(id.as_deref()),
     }
 }
 

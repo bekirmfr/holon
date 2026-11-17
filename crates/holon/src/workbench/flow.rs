@@ -864,6 +864,10 @@ impl App {
         let (slug, name, from) = match then {
             Ask::Admin(a) => return self.admin_answer(a, value),
             Ask::SaveAs(i) => return self.save_as(i, &value),
+            Ask::Decide(d) => return self.decide(d, value),
+            Ask::Decline(p) => return self.decline(p, value),
+            Ask::AccessDecline { id, .. } => return self.decide_change(id, false, value),
+            Ask::DeployNote(deploy) => return self.noted(*deploy, value),
             Ask::Secret(slug, name) => (slug, name, None),
             Ask::SecretFrom(slug, name, kind) => (slug, name, Some(kind)),
         };

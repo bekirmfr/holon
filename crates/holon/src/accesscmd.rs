@@ -747,7 +747,7 @@ fn approval_lines(v: &Value) -> Vec<String> {
 /// Where an access change `p` stands, as `holon access proposals` lists it: "waits, 1 of 2
 /// approved (bob)", "made as version 12 (approved by bob)", "declined by bob: not this week",
 /// "withdrawn by ada: the wrong flow", "stale: …".
-fn proposal_state(p: &Value) -> String {
+pub(crate) fn proposal_state(p: &Value) -> String {
     let approved = words(&p["approvals"].as_array().map(|a| a.iter().map(|a| a["who"].clone()).collect()).unwrap_or(Value::Null));
     let who = |s: &str| if approved.is_empty() { String::new() } else { format!(" ({s}{})", approved.join(", ")) };
     let reason = p["reason"].as_str().unwrap_or_default();
@@ -787,7 +787,7 @@ fn proposal_lines(v: &Value) -> Vec<String> {
 }
 
 /// What deciding the access change `p` did, as the server answers it.
-fn decided_line(p: &Value) -> String {
+pub(crate) fn decided_line(p: &Value) -> String {
     let (id, what) = (&p["id"], p["what"].as_str().unwrap_or_default());
     match p["state"].as_str().unwrap_or_default() {
         "waiting" => {

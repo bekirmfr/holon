@@ -62,6 +62,9 @@ pub(crate) struct Staging {
     /// What it may do while it runs, as a line each, and which of them are new.
     pub(crate) may: Vec<String>,
     pub(crate) new: Vec<bool>,
+    /// The proposal it deploys, when it is one (as `GET /proposals` lists it): deploying it
+    /// approves it, and declining it says why.
+    pub(crate) proposal: Option<Value>,
 }
 
 /// The Approvals page's pick, beside its list: what approving it does.
@@ -82,6 +85,9 @@ pub(crate) enum Pending {
     Said(String),
     /// It can't be reviewed: why.
     Failed(String),
+    /// A proposal that can't be approved here (its text builds another unit than proposed, say):
+    /// it, and why. It can still be declined.
+    Proposal(Box<Value>, String),
 }
 
 pub(crate) struct Runs {
@@ -332,6 +338,12 @@ pub(crate) enum Then {
     Grant { slug: String, item: String, back: bool },
     RemoveSecret(String, String),
     Admin(super::admin::AdminDo),
+    /// An access change approved, by its id.
+    AccessApprove(u64),
+    /// A deploy asked again (its runs would wait where no one can decide): its dialog, to deploy.
+    Deploy(Box<Modal>),
+    /// The Approvals page's pick, asked again: deployed.
+    ApprovePicked,
 }
 
 /// A line typed outside a dialog of its own (those keep their own cursor): one at a time.
@@ -363,6 +375,14 @@ pub(crate) enum Ask {
     Admin(super::admin::AdminAsk),
     /// A file to save tab `0` to (a draft's first save).
     SaveAs(usize),
+    /// A waiting run's step decided: the reason typed, which a decline must give.
+    Decide(super::approvals::Decision),
+    /// A proposed version declined: why, which its author reads.
+    Decline(super::approvals::Proposed),
+    /// An access change declined, or withdrawn by its author: why.
+    AccessDecline { id: u64, withdraw: bool },
+    /// A note kept with a deploy: the deploy dialog it was typed from, back once it is.
+    DeployNote(Box<Modal>),
 }
 
 /// The line at the bottom: what just happened.
@@ -414,6 +434,8 @@ pub(crate) enum Click {
     Section(super::flow::Section),
     /// One of the admin page's sections.
     Part(super::admin::Part),
+    /// One of the Approvals page's parts.
+    ApprovalPart(super::approvals::Part),
     DetailTab(usize),
     Tab(usize),
     CloseTab(usize),
@@ -449,13 +471,14 @@ pub(crate) enum HomeRow {
 }
 
 /// The `:` commands: each, what it takes, what it does (`:` suggests them as they are typed).
-pub(crate) const COMMANDS: [(&str, &str, &str); 20] = [
+pub(crate) const COMMANDS: [(&str, &str, &str); 21] = [
     ("theme", "[light|dark]", "colours for a light terminal, or a dark one (HOLON_THEME=light)"),
     ("open", "<file|slug>", "open a file, or a flow from the server, in a tab"),
     ("new", "[sample]", "a new draft, or a copy of a sample"),
     ("w", "[file]", "save the tab: to its file, to another, else on the server"),
     ("deploy", "", "deploy the tab, approving what it asks"),
     ("fmt", "", "format the tab, as holon fmt writes it"),
+    ("replay", "[slug]", "replay the tab, offline, on a deployed flow's last 20 runs: which answer differently"),
     ("close", "", "close the tab"),
     ("flow", "<slug>", "a deployed flow's page"),
     ("call", "[slug]", "call a flow: a route, an action"),
@@ -521,6 +544,12 @@ pub(crate) struct App {
     pub(crate) shown: Shown,
     /// The Approvals page's pick, reviewed beside its list.
     pub(crate) approval: Option<Approval>,
+    /// Which of the Approvals page's parts is shown: deploys, or runs waiting at an approval.
+    pub(crate) approvals_part: super::approvals::Part,
+    /// The access change picked on the Approvals page, of those waiting.
+    pub(crate) change_sel: usize,
+    /// The run picked among those waiting.
+    pub(crate) run_sel: usize,
     /// Drawn for a light terminal (`:theme`, or HOLON_THEME=light): dark grounds made light.
     pub(crate) light: bool,
     /// The editor's Home tab is shown (it always is with no tab open).
@@ -597,6 +626,9 @@ impl App {
             filtering: false,
             shown: Shown::All,
             approval: None,
+            approvals_part: Default::default(),
+            change_sel: 0,
+            run_sel: 0,
             light: std::env::var("HOLON_THEME").is_ok_and(|t| t.eq_ignore_ascii_case("light")),
             home: false,
             home_sel: 0,
@@ -1057,6 +1089,26 @@ impl App {
     }
 
     /// Stage a tab's deploy, and show what it asks a person to approve and what it changes.
+    /// Replay tab `i`'s text, offline, on the deployment it deploys as (or `on`): its last runs,
+    /// which answer differently, as the web editor's Replay draft. Nothing is deployed.
+    fn replay_tab(&mut self, i: usize, on: &str) {
+        let Some(tab) = self.tabs.get(i) else { return };
+        let plan = match agent::plan(&tab.buf.text()) {
+            Ok(p) => p,
+            Err(e) => return self.fail(format!("can't replay: {e}")),
+        };
+        let slug = if on.is_empty() { tab.deploys_as(&plan.name) } else { on.to_string() };
+        let Some(c) = self.client.as_mut() else {
+            return self.fail(format!("no server to replay on: {}", self.offline.clone().unwrap_or_else(|| "start holon serve".into())));
+        };
+        c.ask_can(Some(&slug));
+        if let Err(e) = c.stage(&plan, &slug) {
+            return self.fail(format!("can't replay: {e}"));
+        }
+        let lines = replayed(c, &slug, &plan.unit);
+        self.modal = Some(Modal::Lines { title: format!("This text replayed on \"{slug}\""), lines, scroll: 0 });
+    }
+
     pub(crate) fn deploy(&mut self, i: usize) {
         let Some(tab) = self.tabs.get(i) else { return };
         let text = tab.buf.text();
@@ -1096,8 +1148,40 @@ impl App {
         }
     }
 
-    /// Deploy what the review shows, approving it as us.
+    /// Type the note kept with the deploy the dialog shows (empty takes it away).
+    fn ask_note(&mut self) {
+        let Some(deploy @ Modal::Approve { .. }) = self.modal.take() else { return };
+        let Modal::Approve { staged, .. } = &deploy else { return };
+        let now = staged.note().unwrap_or_default().to_string();
+        let lines = vec!["It is kept with the deploy, on its event and in the activity log: more than its why, for whoever reads what changed.".into()];
+        self.modal = Some(Modal::input("A note kept with this deploy".into(), lines, now, false, Ask::DeployNote(Box::new(deploy))));
+    }
+
+    /// The note typed, set on the deploy, and its dialog back.
+    pub(crate) fn noted(&mut self, deploy: Modal, note: String) {
+        let mut deploy = deploy;
+        if let Modal::Approve { staged, .. } = &mut deploy {
+            staged.with_note(&note);
+        }
+        self.modal = Some(deploy);
+    }
+
+    /// Deploy what the review shows, approving it as us: asked again first when its runs would wait
+    /// at an approval no one here can decide.
     fn approve(&mut self) {
+        let Some(deploy @ Modal::Approve { .. }) = self.modal.take() else { return };
+        let Modal::Approve { slug, staged, .. } = &deploy else { return };
+        if let Some(lines) = super::approvals::ask_again(slug, &staged.touches) {
+            let go = if staged.needs.is_empty() { "Deploy" } else { "Approve and deploy" };
+            self.modal = Some(Modal::Confirm { title: format!("{go} \"{slug}\" anyway?"), lines, then: Then::Deploy(Box::new(deploy)) });
+            return;
+        }
+        self.modal = Some(deploy);
+        self.approve_now();
+    }
+
+    /// Deploy what the dialog shows, as it is.
+    fn approve_now(&mut self) {
         let Some(Modal::Approve { slug, plan, staged, text, tab, .. }) = self.modal.take() else { return };
         self.commit_deploy(slug, plan, staged, text, Some(tab));
     }
@@ -1301,6 +1385,10 @@ impl App {
             ("deploy", _) => match tab {
                 Some(i) => self.deploy(i),
                 None => self.fail("no tab to deploy: open a flow first"),
+            },
+            ("replay", a) => match tab {
+                Some(i) => self.replay_tab(i, a),
+                None => self.fail("no tab to replay: open a flow first"),
             },
             ("fmt" | "format", _) => match tab {
                 Some(i) => self.format(i),
@@ -1772,8 +1860,20 @@ impl App {
             }
             return self.editor_key(k);
         }
-        if page == Page::Approvals && self.approval_key(k) {
+        if page == Page::Approvals && matches!(k.code, KeyCode::Tab | KeyCode::BackTab) && !self.approval.as_ref().is_some_and(|a| a.keys) {
+            self.approvals_part = self.approvals_part.next(k.code == KeyCode::BackTab);
             return;
+        }
+        if page == Page::Approvals {
+            use super::approvals::Part;
+            let taken = match self.approvals_part {
+                Part::Deploys => self.approval_key(k),
+                Part::Runs => self.runs_key(k),
+                Part::Access => self.access_key(k),
+            };
+            if taken {
+                return;
+            }
         }
         match k.code {
             KeyCode::Up | KeyCode::Char('k') => return self.select(page, -1),
@@ -1847,8 +1947,29 @@ impl App {
         }
         let Some(c) = self.client.as_ref() else { return };
         let (slug, wait) = (&of.0, &of.1);
+        let proposed = c.proposal_for(slug).filter(|_| wait.starts_with("to review v")).cloned();
         let what = if wait.starts_with("to start it") {
             Pending::Start
+        } else if let Some(p) = proposed {
+            // The proposal's own document, never the newest save (R79), and its words above the review.
+            let place = c.proposals.iter().position(|q| q["id"] == p["id"]).map_or(0, |i| i + 1);
+            let staged = c.get(&format!("/proposals/{}", p["id"])).and_then(|full| super::approvals::proposed_plan(&full)).and_then(|(plan, text)| staging(c, slug.clone(), plan, text, None));
+            match staged {
+                Ok(mut s) => {
+                    let by = p["by"].as_str().unwrap_or("someone");
+                    let at = crate::mcp::when(&serde_json::json!(p["at_ms"].as_u64().unwrap_or(0) / 1000));
+                    let mut top = vec![(Tone::Warn, format!("Proposed by {by}{}, at {at}  ·  {place} of {} waiting", if p["agent"] == true { " (an agent)" } else { "" }, c.proposals.len()))];
+                    top.push((Tone::Plain, format!("Why: {}", p["why"].as_str().filter(|w| !w.trim().is_empty()).unwrap_or("no why was given"))));
+                    if let Some(note) = p["note"].as_str() {
+                        top.push((Tone::Plain, format!("Note: {note}")));
+                    }
+                    top.append(&mut s.review.top);
+                    s.review.top = top;
+                    s.proposal = Some(p);
+                    Pending::Deploy(Box::new(s))
+                }
+                Err(e) => Pending::Proposal(Box::new(p), e),
+            }
         } else if wait.starts_with("to free its port") {
             Pending::Said(format!("Its port is taken: {wait}. Stop what holds it, then deploy it again."))
         } else {
@@ -1883,7 +2004,24 @@ impl App {
             return true;
         }
         match k.code {
-            KeyCode::Right | KeyCode::Tab if matches!(a.what, Pending::Deploy(_)) => a.keys = true,
+            KeyCode::Right if matches!(a.what, Pending::Deploy(_)) => a.keys = true,
+            KeyCode::Char('v') => {
+                if let (Pending::Deploy(s), Some(c)) = (&mut a.what, self.client.as_mut()) {
+                    c.ask_can(Some(&s.slug));
+                    replay_into(c, &s.slug, &s.plan.unit, &mut s.review);
+                }
+            }
+            KeyCode::Char('d') => {
+                let p = match &a.what {
+                    Pending::Deploy(s) => s.proposal.clone(),
+                    Pending::Proposal(p, _) => Some((**p).clone()),
+                    _ => None,
+                };
+                match p {
+                    Some(p) => self.ask_decline(super::approvals::Proposed::of(&p)),
+                    None => self.fail("Only a proposed version is declined here: the others are deployed, run or left."),
+                }
+            }
             KeyCode::Char(']') if n > 0 => self.sel[at] = (self.sel[at] + 1) % n,
             KeyCode::Char('[') if n > 0 => self.sel[at] = (self.sel[at] + n - 1) % n,
             KeyCode::Enter => self.approve_picked(),
@@ -1899,18 +2037,40 @@ impl App {
     /// Do what the Approvals page's pick waits for: deploy it, approving what it asks, or run it.
     fn approve_picked(&mut self) {
         // What a person does elsewhere stays picked, said again.
-        if let Some(Approval { what: Pending::Said(why) | Pending::Failed(why), .. }) = &self.approval {
+        if let Some(Approval { what: Pending::Said(why) | Pending::Failed(why) | Pending::Proposal(_, why), .. }) = &self.approval {
             let why = why.clone();
             return self.fail(why);
         }
+        // Its runs would wait where no one here can decide: asked again.
+        if let Some(Approval { what: Pending::Deploy(s), .. }) = &self.approval
+            && let Some(lines) = super::approvals::ask_again(&s.slug, &s.staged.touches)
+        {
+            let go = if s.staged.needs.is_empty() { "Deploy" } else { "Approve and deploy" };
+            self.modal = Some(Modal::Confirm { title: format!("{go} \"{}\" anyway?", s.slug), lines, then: Then::ApprovePicked });
+            return;
+        }
+        self.approve_picked_now();
+    }
+
+    /// Do what the Approvals page's pick waits for, as it is.
+    fn approve_picked_now(&mut self) {
         let Some(a) = self.approval.take() else { return };
         match a.what {
             Pending::Deploy(s) => {
-                let Staging { slug, plan, staged, text, .. } = *s;
+                let Staging { slug, plan, staged, text, proposal, .. } = *s;
                 self.commit_deploy(slug, Box::new(plan), staged, text, None);
+                // Deployed as proposed, it is approved: said so when the server didn't mark it.
+                if let (Some(p), Some(c)) = (proposal, self.client.as_ref()) {
+                    let now = c.get(&format!("/proposals/{}", p["id"])).map(|n| n["state"].as_str().unwrap_or_default().to_string());
+                    if let Some(state) = now.ok().filter(|s| s != "approved")
+                        && self.note.as_ref().is_some_and(|n| !n.error && n.text.starts_with("deployed"))
+                    {
+                        self.fail(format!("deployed, but proposal {} is {state}: what was deployed isn't what was proposed", p["id"]));
+                    }
+                }
             }
             Pending::Start => self.resolve(&a.of.0, &a.of.1),
-            Pending::Said(_) | Pending::Failed(_) => {}
+            Pending::Said(_) | Pending::Failed(_) | Pending::Proposal(..) => {}
         }
     }
 
@@ -2030,6 +2190,13 @@ impl App {
                 _ if review.key(k) => {}
                 KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('a') => self.approve(),
                 KeyCode::Char('s') => self.propose(),
+                KeyCode::Char('m') => self.ask_note(),
+                KeyCode::Char('v') => {
+                    if let (Some(Modal::Approve { slug, plan, review, .. }), Some(c)) = (self.modal.as_mut(), self.client.as_mut()) {
+                        c.ask_can(Some(slug));
+                        replay_into(c, slug, &plan.unit, review);
+                    }
+                }
                 KeyCode::Esc | KeyCode::Char('x') => {
                     self.modal = None;
                     self.tell("not deployed");
@@ -2053,6 +2220,12 @@ impl App {
             },
             Modal::Confirm { .. } => match k.code {
                 KeyCode::Enter | KeyCode::Char('y') => self.confirm(),
+                // A deploy asked again and not confirmed: back to it.
+                KeyCode::Esc | KeyCode::Char('n') if matches!(modal, Modal::Confirm { then: Then::Deploy(_), .. }) => {
+                    if let Some(Modal::Confirm { then: Then::Deploy(deploy), .. }) = self.modal.take() {
+                        self.modal = Some(*deploy);
+                    }
+                }
                 KeyCode::Esc | KeyCode::Char('n') => self.modal = None,
                 _ => {}
             },
@@ -2078,8 +2251,21 @@ impl App {
             Modal::SecretSource(_) => self.secret_source_key(k),
             Modal::DryRun { .. } => self.dry_run_key(k),
             Modal::Call(_) => self.call_key(k),
-            Modal::Input { value, at, .. } => match k.code {
+            Modal::Input { value, at, then, .. } => match k.code {
+                // A deploy's note not typed: back to the deploy, as it was.
+                KeyCode::Esc if matches!(then, Ask::DeployNote(_)) => {
+                    if let Some(Modal::Input { then: Ask::DeployNote(deploy), .. }) = self.modal.take() {
+                        self.modal = Some(*deploy);
+                    }
+                }
                 KeyCode::Esc => self.modal = None,
+                // A decline says why: the dialog stays until it does.
+                KeyCode::Enter if matches!(then, Ask::Decide(d) if !d.approve) && value.trim().is_empty() => self.fail("A decline says why: type the reason, it is kept with the run."),
+                KeyCode::Enter if matches!(then, Ask::Decline(_)) && value.trim().is_empty() => self.fail("A decline says why: tell them what to change."),
+                KeyCode::Enter if matches!(then, Ask::AccessDecline { .. }) && value.trim().is_empty() => {
+                    let withdraw = matches!(then, Ask::AccessDecline { withdraw: true, .. });
+                    self.fail(if withdraw { "Withdrawing says why: type a reason." } else { "A decline says why: type a reason." })
+                }
                 KeyCode::Enter => self.answer_input(),
                 _ => {
                     edit_line(value, at, k);
@@ -2098,6 +2284,12 @@ impl App {
             Then::Grant { slug, item, back } => self.change_grant(&slug, &item, back),
             Then::RemoveSecret(slug, name) => self.remove_secret(&slug, &name),
             Then::Admin(d) => self.admin_do(d),
+            Then::AccessApprove(id) => self.decide_change(id, true, String::new()),
+            Then::Deploy(deploy) => {
+                self.modal = Some(*deploy);
+                self.approve_now();
+            }
+            Then::ApprovePicked => self.approve_picked_now(),
         }
     }
 
@@ -2177,6 +2369,7 @@ impl App {
             Click::Row(list, i) => self.click_row(list, i, again),
             Click::Section(s) => self.flow_section(s),
             Click::Part(p) => self.admin_part(p),
+            Click::ApprovalPart(p) => self.approvals_part = p,
             Click::DetailTab(t) => self.flow_detail_tab(t),
             Click::Tab(i) => {
                 self.show_tab(i);
@@ -2223,6 +2416,13 @@ impl App {
     fn click_row(&mut self, list: List, i: usize, again: bool) {
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         match list {
+            List::Page(Page::Approvals) if self.approvals_part == super::approvals::Part::Runs => {
+                self.run_sel = i;
+                if again {
+                    self.page_key(enter);
+                }
+            }
+            List::Page(Page::Approvals) if self.approvals_part == super::approvals::Part::Access => self.change_sel = i,
             List::Page(p) => {
                 self.sel[index(p)] = i;
                 self.page = p;
@@ -2392,6 +2592,35 @@ fn latest_text(c: &Client, name: &str) -> Result<(String, Option<u64>), String> 
 }
 
 /// A deploy staged and reviewed: what its dialog, or the Approvals page, shows and approves.
+/// A version replayed offline on the deployment's newest runs (`GET /deployments/<slug>/replay`,
+/// verify/replay.rs), as lines for the top of its review: how many answer the same, and each run
+/// that differs or can't be told. Nothing to replay on for a first deploy; without run.steps and
+/// run.export on the flow, which a replay takes, why not. Its units are staged already.
+pub(crate) fn replayed(c: &Client, slug: &str, unit: &str) -> Vec<Said> {
+    if c.deployment(slug).is_none() {
+        return vec![(Tone::Dim, format!("Replay: \"{slug}\" isn't deployed yet, so it has no runs to replay this version on."))];
+    }
+    if let Some(why) = ["run.steps", "run.export"].iter().find_map(|a| c.may(a, Some(slug)).err().map(|e| format!("{a}: {e}"))) {
+        return vec![(Tone::Warn, format!("Replay: not here. Replaying it on its runs takes run.steps and run.export ({why})."))];
+    }
+    match c.get(&format!("/deployments/{}/replay?unit={unit}&runs=20", crate::mcp::seg(slug))) {
+        Ok(r) => {
+            let differ = r["differ"].as_u64().unwrap_or(0) + r["cant_tell"].as_u64().unwrap_or(0);
+            crate::replaycmd::lines(slug, &r).into_iter().enumerate().map(|(i, l)| (if i == 0 && differ == 0 { Tone::Good } else if differ > 0 { Tone::Warn } else { Tone::Plain }, l)).collect()
+        }
+        Err(e) => vec![(Tone::Warn, format!("Replay: it didn't answer: {e}"))],
+    }
+}
+
+/// Replay what `review` deploys, its lines put at its top (in place of an earlier replay's).
+fn replay_into(c: &Client, slug: &str, unit: &str, review: &mut Review) {
+    review.top.retain(|(_, l)| !l.starts_with("Replay:") && !l.starts_with("This version replayed") && !l.starts_with("  run ") && !l.contains("has no runs yet to replay"));
+    let mut lines = replayed(c, slug, unit);
+    lines.append(&mut review.top);
+    review.top = lines;
+    review.scroll = 0;
+}
+
 fn staging(c: &Client, slug: String, plan: agent::Plan, text: String, before: Option<String>) -> Result<Staging, String> {
     let now = c.deployment(&slug).and_then(|_| c.text(&slug, None).ok());
     let staged = c.stage(&plan, &slug)?;
@@ -2408,7 +2637,24 @@ fn staging(c: &Client, slug: String, plan: agent::Plan, text: String, before: Op
     let deployed: Vec<String> = c.deployment(&slug).and_then(|_| c.get(&format!("/deployments/{}/manifest", crate::mcp::seg(&slug))).ok()).map(|m| client::strings(&m, "items")).unwrap_or_default();
     let may: Vec<String> = plan.may.iter().map(|m| agent::describe(m)).collect();
     let new: Vec<bool> = plan.may.iter().map(|m| !deployed.contains(m)).collect();
-    Ok(Staging { slug, plan, staged, text, review, may, new })
+    // While it runs, and the host's policy it relies on, as the web's review says them; the policy
+    // read only by whoever may (policy.view).
+    let policy = c.may("policy.view", None).ok().and_then(|_| c.get("/permissions").ok());
+    let asks = plan.requirements.clone().unwrap_or_default();
+    let mut foot = vec![(Tone::Head, "While it runs".to_string())];
+    let defaults = policy.as_ref().map_or(Value::Null, |p| p["defaults"].clone());
+    foot.extend(super::policy::while_it_runs(plan.port, &staged.touches, &asks["limits"], &defaults).into_iter().map(|(k, v)| (Tone::Plain, format!("  {k:<11} {v}"))));
+    foot.push((Tone::Head, "Host policy".to_string()));
+    if policy.is_none() {
+        foot.push((Tone::Dim, "  not read here: reading the host's policy takes policy.view".to_string()));
+    }
+    let approving = !staged.needs.is_empty();
+    let may_go = c.may(if approving { "flow.approve-deploy" } else { "flow.deploy" }, Some(&slug));
+    let rows = super::policy::policy_rows(&staged.touches, &staged.items, &asks["limits"], asks["private_addresses"] == true, policy.as_ref(), may_go, approving);
+    foot.extend(rows.into_iter().map(|(ok, t)| if ok { (Tone::Good, format!("  ✓ {t}")) } else { (Tone::Bad, format!("  ✗ {t}")) }));
+    foot.append(&mut review.foot);
+    review.foot = foot;
+    Ok(Staging { slug, plan, staged, text, review, may, new, proposal: None })
 }
 
 /// The name a text gives its flow, `flow("name", …)`, as typed, whether or not it compiles.

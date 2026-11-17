@@ -239,7 +239,7 @@ fn dashboard(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
     let [wait_area, versions, latest] = Layout::vertical([Constraint::Length(wait_h), Constraint::Length(versions_h), Constraint::Min(3)]).areas(right);
     if wait_h > 0 {
         let mut lines: Vec<Line> = waits.iter().map(|w| Line::from(vec![coloured("● ", WARN), Span::raw(w.clone())])).collect();
-        lines.extend(d.parked.iter().map(|r| Line::from(vec![coloured("◷ ", WARN), Span::raw(format!("a run waits: {} {}", r["kind"].as_str().unwrap_or_default(), r["route"].as_str().unwrap_or_default()))])));
+        lines.extend(d.parked.iter().map(|r| Line::from(vec![coloured("◷ ", WARN), Span::raw(format!("a run waits: {} {}", r["kind"].as_str().unwrap_or_default(), r["route"].as_str().unwrap_or_default())), dim("  (Approvals › Runs waiting decides it)")])));
         f.render_widget(Paragraph::new(lines).block(panel("Waiting", false)), wait_area);
     }
     let block = panel(&format!("Versions ({})", d.versions.len()), true);

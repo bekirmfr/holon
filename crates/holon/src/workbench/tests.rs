@@ -101,9 +101,19 @@ fn deploying_shows_what_it_may_do_and_deploys_on_enter() {
     assert!(!plan.may.is_empty());
     let shown = screen(&mut app, 120, 40);
     assert!(shown.contains("Deploying \"beats\""), "{shown}");
-    assert!(shown.contains("It may"), "{shown}");
+    assert!(shown.contains("It may") && shown.contains("m adds a note"), "{shown}");
+    // A note kept with it: typed, then the dialog is back, saying it; esc leaves it as it was.
+    press(&mut app, KeyCode::Char('m'));
+    typed(&mut app, "for the pilot
+");
+    assert!(matches!(&app.modal, Some(Modal::Approve { staged, .. }) if staged.note() == Some("for the pilot")));
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Esc);
+    assert!(screen(&mut app, 120, 40).contains("Note: for the pilot"));
     press(&mut app, KeyCode::Enter);
     assert!(app.modal.is_none());
+    let events = app.client.as_ref().unwrap().get("/deployments/beats/events").unwrap();
+    assert!(events.to_string().contains("for the pilot"), "the note is on the deploy's event: {events}");
     let note = app.note.as_ref().unwrap();
     assert!(!note.error && note.text.starts_with("deployed \"beats\""), "{}", note.text);
     assert_eq!(app.tabs[0].slug.as_deref(), Some("beats"));
@@ -829,6 +839,13 @@ fn every_page_draws_narrow_and_wide_and_without_a_server() {
             screen(&mut app, w, h);
         }
     }
+    // The Approvals page's runs waiting, as well as its deploys.
+    app.page = Page::Approvals;
+    app.approvals_part = super::approvals::Part::Runs;
+    for (w, h) in [(80, 24), (140, 45), (40, 12)] {
+        screen(&mut app, w, h);
+    }
+    app.approvals_part = super::approvals::Part::Deploys;
     let wide = screen(&mut app, 140, 45);
     assert!(wide.contains("Overview") && wide.contains("Library"), "the sidebar, when wide: {wide}");
     let narrow = screen(&mut app, 80, 24);
@@ -1072,6 +1089,121 @@ fn a_run_that_failed_opens_on_why_and_on_which_line() {
     assert!(shown.contains("It ran nothing this text says.") || shown.contains("recorded no timing"), "{shown}");
     for (w, h) in [(80, 24), (60, 16), (40, 12)] {
         screen(&mut app, w, h);
+    }
+}
+
+/// The calls an editor made, recorded.
+type Calls = std::sync::Arc<crate::sync::Mutex<Vec<String>>>;
+
+/// A server with accounts and two runs of `payouts` waiting at a two-person approval: ada and bob
+/// admins, wes a viewer; the editor as each, by name, each one's calls recorded.
+fn waiting_payouts() -> (&'static AppState, impl Fn(&str) -> (App, Calls)) {
+    let mut state = test_state();
+    let text = "import { action, approval, flow } from \"holon\"
+
+flow(\"payouts\")
+
+export const pay = action(async (order) => {
+  const decision = await approval(\"payout\", { expires: \"1h\", people: 2 })
+  return decision.approved
+})
+";
+    let unit = crate::tests::stage_text(&state, text);
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"pay\")", "Approval(\"payout/person*2\")"] });
+    assert_eq!(crate::tests::deploy_json(&state, "payouts", unit, ack).status_code, 200);
+    for amount in [10, 20] {
+        assert!(crate::tests::run_action_named(&state, "payouts", "pay", serde_json::json!({ "amount": amount })).is_success());
+    }
+    let book = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    let pw = "correct horse battery";
+    let (ada, _) = book.setup(&book.setup_code().unwrap(), "ada", pw).unwrap();
+    let bob = book.accept(&book.invite("bob", "admin", None, "ada").unwrap(), pw).unwrap().0;
+    let wes = book.accept(&book.invite("wes", "viewer", None, "ada").unwrap(), pw).unwrap().0;
+    state.access = crate::access::Access::new(std::sync::Arc::clone(&book), vec![], vec![]);
+    let state: &'static AppState = Box::leak(Box::new(state));
+    let tokens = [("ada", ada), ("bob", bob), ("wes", wes)];
+    let open = move |who: &str| {
+        let token = tokens.iter().find(|(n, _)| *n == who).unwrap().1.clone();
+        let calls = std::sync::Arc::new(crate::sync::Mutex::new(vec![]));
+        let mut app = App::new(None);
+        app.attach(Client::new(Box::new(Recorded(InProcess(state, Some(token)), std::sync::Arc::clone(&calls)))));
+        app.refresh();
+        app.go(Page::Approvals);
+        press(&mut app, KeyCode::Tab);
+        (app, calls)
+    };
+    (state, open)
+}
+
+fn note(app: &App) -> String {
+    app.note.as_ref().map(|n| n.text.clone()).unwrap_or_default()
+}
+
+/// Runs waiting at an approval are decided on the Approvals page, as the web console's Runs waiting
+/// decides them: ada approves one of two, and it waits for one more person; she can't approve it
+/// twice; bob's approval lets it go on. A decline is never sent without why, and with it ends the
+/// other run declined. wes, a viewer, sees them and can take no step, and sends nothing.
+#[test]
+fn the_approvals_page_decides_runs_waiting_at_an_approval() {
+    let (_, open) = waiting_payouts();
+    let (mut ada, _) = open("ada");
+    assert_eq!(ada.runs_waiting().len(), 2);
+    assert_eq!(ada.runs_yours(), 2, "both are hers to decide");
+    let shown = screen(&mut ada, 140, 40);
+    assert!(shown.contains("Runs waiting 2") && shown.contains("payouts") && shown.contains("payout") && shown.contains("a person 0/2"), "{shown}");
+    assert!(shown.contains("4 waiting for you") || shown.contains("2 waiting for you"), "the top bar counts them: {shown}");
+    let first = ada.runs_waiting()[0]["run_id"].as_str().unwrap().to_string();
+    let second = ada.runs_waiting()[1]["run_id"].as_str().unwrap().to_string();
+
+    // A decline without why stays open, saying so; nothing is sent.
+    press(&mut ada, KeyCode::Char('d'));
+    assert!(matches!(ada.modal, Some(Modal::Input { .. })));
+    press(&mut ada, KeyCode::Enter);
+    assert!(matches!(ada.modal, Some(Modal::Input { .. })), "still asks why");
+    assert!(note(&ada).contains("says why"), "{}", note(&ada));
+    press(&mut ada, KeyCode::Esc);
+
+    // ada approves the first: one of two.
+    press(&mut ada, KeyCode::Char('a'));
+    let Some(Modal::Input { title, lines, .. }) = &ada.modal else { panic!("no dialog: {}", note(&ada)) };
+    assert!(title.contains("Approve \"payout\"") && title.contains("payouts"), "{title}");
+    assert!(lines.iter().any(|l| l.contains("1 more person")), "{lines:?}");
+    typed(&mut ada, "fine by me
+");
+    assert!(note(&ada).contains("1 of 2") && note(&ada).contains("1 more person"), "{}", note(&ada));
+    // Not twice: the run is still there, and none of its steps is hers now.
+    let again = ada.runs_waiting().iter().position(|r| r["run_id"] == first.as_str()).unwrap();
+    ada.run_sel = again;
+    press(&mut ada, KeyCode::Char('a'));
+    assert!(ada.modal.is_none(), "not hers twice");
+
+    // bob approves it: it goes on.
+    let (mut bob, _) = open("bob");
+    bob.run_sel = bob.runs_waiting().iter().position(|r| r["run_id"] == first.as_str()).unwrap();
+    press(&mut bob, KeyCode::Char('a'));
+    press(&mut bob, KeyCode::Enter);
+    assert!(note(&bob).contains("goes on"), "{}", note(&bob));
+    assert!(!bob.runs_waiting().iter().any(|r| r["run_id"] == first.as_str()), "it no longer waits");
+
+    // bob declines the other, saying why: it ends declined.
+    bob.run_sel = bob.runs_waiting().iter().position(|r| r["run_id"] == second.as_str()).unwrap();
+    press(&mut bob, KeyCode::Char('d'));
+    typed(&mut bob, "too much at once
+");
+    assert!(note(&bob).contains("Declined"), "{}", note(&bob));
+    assert!(bob.runs_waiting().is_empty());
+
+    // wes sees what waits, and takes no step.
+    let (_, open) = waiting_payouts();
+    let (mut wes, calls) = open("wes");
+    assert_eq!(wes.runs_yours(), 0);
+    let shown = screen(&mut wes, 140, 40);
+    assert!(shown.contains("None of its steps is yours"), "{shown}");
+    press(&mut wes, KeyCode::Char('a'));
+    assert!(wes.modal.is_none());
+    assert!(!calls.lock().unwrap().iter().any(|c| c.contains("/decide")), "nothing sent");
+    for (w, h) in [(80, 24), (60, 16)] {
+        screen(&mut wes, w, h);
     }
 }
 
@@ -1785,4 +1917,362 @@ fn the_editor_shows_what_the_server_keeps_only_to_its_grants() {
         let strays: Vec<String> = called.lock().unwrap().iter().filter(|c| !editor.routes.iter().any(|r| crate::surfaces::calls(r, c))).cloned().collect();
         assert!(strays.is_empty(), "the editor called, as {name}, what surfaces.rs's row of editor doesn't name: {strays:?}");
     }
+}
+
+/// R79, as a class: approving a proposal deploys exactly the unit it proposed, or nothing. For
+/// every sample, its proposal as the server keeps it (slug, unit, document) plans to the unit
+/// proposed, or is refused, never to another; and it plans whenever the server would take it (its
+/// document deploys as its unit, deploy.rs `document_is_the_unit`). Its document under another
+/// sample's unit, another sample's document under its unit, and one without its document, are each
+/// refused.
+#[test]
+fn a_proposal_is_deployed_as_proposed_or_refused() {
+    use super::approvals::proposed_plan;
+    let planned: Vec<_> = holon_author::samples::samples().iter().map(|s| (s.name, holon_author::agent::plan(s.text).unwrap_or_else(|e| panic!("{}: {e}", s.name)))).collect();
+    assert!(planned.len() > 1);
+    let mut taken = vec![];
+    for (i, (name, plan)) in planned.iter().enumerate() {
+        let (_, other) = &planned[(i + 1) % planned.len()];
+        assert_ne!(plan.unit, other.unit, "{name}");
+        let proposal = |unit: &str, document: &serde_json::Value| serde_json::json!({ "id": 1, "slug": name, "unit": unit, "document": document });
+        let server_takes = holon_author::agent::deploys_as(&plan.document).is_ok_and(|(unit, _)| unit == plan.unit);
+        match proposed_plan(&proposal(&plan.unit, &plan.document)) {
+            Ok((got, _)) => assert_eq!(got.unit, plan.unit, "{name}: the unit proposed"),
+            Err(e) => assert!(!server_takes, "{name}: the server takes this proposal, and the terminal can't approve it: {e}"),
+        }
+        if server_takes {
+            taken.push(*name);
+        }
+        for tampered in [proposal(&other.unit, &plan.document), proposal(&plan.unit, &other.document)] {
+            assert!(proposed_plan(&tampered).is_err(), "{name}: tampered, it is refused");
+        }
+        assert!(proposed_plan(&serde_json::json!({ "slug": name, "unit": plan.unit })).is_err(), "{name}: without its document");
+    }
+    assert!(taken.len() * 2 > planned.len(), "most samples are proposable: {taken:?}");
+}
+
+/// R79, through the Approvals page: an agent proposes a version of "greet", then a person saves
+/// another text of it. Approving the proposal deploys what the agent proposed, not the newest
+/// save, and the server marks it approved. The agent's next proposal, a flow of its own (an agent
+/// doesn't replace a flow a person saved), is declined, saying why, and nothing of it is deployed.
+#[test]
+fn approving_a_proposal_deploys_what_was_proposed_not_the_newest_save() {
+    let mut state = test_state();
+    let book = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    let (ada, _) = book.setup(&book.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+    book.add("claude", crate::accounts::Kind::Agent, "agent", "ada", "ada").unwrap();
+    let claude = book.create_token("claude", "the test", "ada").unwrap().0;
+    let greet = |flow: &str, says: &str| format!("import {{ action, flow }} from \"holon\"\n\nflow(\"{flow}\")\n\nexport const hi = action(async (name) => \"{says}\")\n");
+    // Staged before accounts, which a stage then needs a sign-in for.
+    for (flow, says) in [("greet", "hello"), ("greet", "hello, newer"), ("welcome", "goodbye")] {
+        crate::tests::stage_text(&state, &greet(flow, says));
+    }
+    state.access = crate::access::Access::new(std::sync::Arc::clone(&book), vec![], vec![]);
+    let state: &'static AppState = Box::leak(Box::new(state));
+    let agent = Client::new(Box::new(InProcess(state, Some(claude))));
+    let propose = |flow: &str, says: &str| {
+        let text = greet(flow, says);
+        let plan = holon_author::agent::plan(&text).unwrap();
+        let said = agent.post("/deploy", serde_json::json!({ "slug": flow, "unit": plan.unit, "document": plan.document, "why": format!("says {says}") }));
+        assert!(said.as_ref().is_ok_and(|s| s["proposal"]["id"].is_u64()), "a proposal: {said:?}");
+        plan.unit
+    };
+    let proposed = propose("greet", "hello");
+
+    // ada saves another text of it, newer than the proposal.
+    let mut app = App::new(None);
+    app.attach(Client::new(Box::new(InProcess(state, Some(ada)))));
+    let newer = greet("greet", "hello, newer");
+    let newer_plan = holon_author::agent::plan(&newer).unwrap();
+    app.client.as_ref().unwrap().save("greet", &newer_plan, &newer, None).unwrap();
+    app.refresh();
+    let waiting = app.waiting();
+    assert_eq!(waiting.len(), 1, "{waiting:?}");
+    assert!(waiting[0].1.starts_with("to review v") && waiting[0].1.contains("claude, an agent") && waiting[0].1.contains("says hello"), "{waiting:?}");
+
+    // The review is the proposal's, with who proposed it and why; enter deploys it.
+    app.go(Page::Approvals);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Proposed by claude (an agent)") && shown.contains("Why: says hello"), "{shown}");
+    press(&mut app, KeyCode::Enter);
+    assert!(note(&app).starts_with("deployed \"greet\""), "{}", note(&app));
+    let deployed = app.client.as_ref().unwrap().deployment("greet").cloned().unwrap();
+    assert_eq!(deployed["unit"].as_str(), Some(proposed.as_str()), "the proposed unit, not the newest save ({})", &newer_plan.unit[..12]);
+    let approved = state.proposals.all().into_iter().find(|p| p.slug == "greet").unwrap();
+    assert_eq!(approved.state, crate::proposals::Decision::Approved);
+
+    // Its next proposal is declined: never without why, and with it the agent's note is kept.
+    propose("welcome", "goodbye");
+    app.refresh();
+    app.go(Page::Approvals);
+    screen(&mut app, 140, 40);
+    // A flow neither deployed nor saved here: its proposal waits all the same, after ada's save.
+    let at = app.waiting().iter().position(|(slug, w)| slug == "welcome" && w.starts_with("to review v")).unwrap_or_else(|| panic!("{:?}", app.waiting()));
+    for _ in 0..at {
+        press(&mut app, KeyCode::Down);
+    }
+    screen(&mut app, 140, 40);
+    press(&mut app, KeyCode::Char('d'));
+    assert!(matches!(app.modal, Some(Modal::Input { .. })), "asks why: {}", note(&app));
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.modal, Some(Modal::Input { .. })), "still asks why");
+    typed(&mut app, "keep saying hello\n");
+    assert!(note(&app).contains("Declined welcome") && note(&app).contains("agent gets your note"), "{}", note(&app));
+    let declined = state.proposals.all().into_iter().find(|p| p.slug == "welcome").unwrap();
+    assert_eq!(declined.state, crate::proposals::Decision::Declined);
+    assert!(app.client.as_ref().unwrap().deployment("welcome").is_none(), "nothing of it deployed");
+    assert_eq!(app.client.as_ref().unwrap().deployment("greet").unwrap()["unit"].as_str(), Some(proposed.as_str()), "what runs stays");
+    assert!(app.waiting().iter().all(|(_, w)| !w.starts_with("to review v")), "{:?}", app.waiting());
+}
+
+/// Access changes are decided on the Approvals page, as the web console's Access changes: while
+/// one person besides its author approves a change that gives more, ada's binding of dee as an
+/// admin waits. ada, its author, can't approve it, and sees withdraw; bob can't decline it
+/// without why, and approves it: it is made. ada's next change she withdraws, saying why. cy, a
+/// viewer, is told why the changes aren't shown.
+#[test]
+fn the_approvals_page_decides_access_changes() {
+    let mut state = test_state();
+    let book = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    let pw = "correct horse battery";
+    let (ada, _) = book.setup(&book.setup_code().unwrap(), "ada", pw).unwrap();
+    let bob = book.accept(&book.invite("bob", "admin", None, "ada").unwrap(), pw).unwrap().0;
+    book.accept(&book.invite("dee", "viewer", None, "ada").unwrap(), pw).unwrap();
+    book.accept(&book.invite("cy", "viewer", None, "ada").unwrap(), pw).unwrap();
+    state.access = crate::access::Access::new(std::sync::Arc::clone(&book), vec![], vec![]);
+    let state: &'static AppState = Box::leak(Box::new(state));
+    let as_ada = InProcess(state, Some(ada.clone()));
+    let send = |method: &str, path: &str, body: serde_json::Value| {
+        let (code, said) = as_ada.send(method, path, Some(Body::Json(body))).unwrap();
+        assert!((200..300).contains(&code), "{method} {path}: {}", String::from_utf8_lossy(&said));
+        serde_json::from_slice::<serde_json::Value>(&said).unwrap()
+    };
+    send("PUT", "/access/approvals", serde_json::json!({ "changes": 1 }));
+    let bind = |who: &str| send("POST", "/bindings", serde_json::json!({ "who": { "principal": who }, "role": "admin", "scope": "host", "why": format!("{who} runs the host") }))["proposal"]["id"].as_u64().expect("it waits");
+    let first = bind("dee");
+    let open = |token: &String| {
+        let mut app = App::new(None);
+        app.attach(Client::new(Box::new(InProcess(state, Some(token.clone())))));
+        app.refresh();
+        app.go(Page::Approvals);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        app
+    };
+
+    // ada proposed it: hers to withdraw, not to approve.
+    let mut a = open(&ada);
+    assert_eq!(a.changes_waiting().len(), 1);
+    assert_eq!(a.changes_yours(), 0);
+    let shown = screen(&mut a, 140, 40);
+    assert!(shown.contains("Access changes 1") && shown.contains("admin") && shown.contains("withdraw") && shown.contains("dee runs the host"), "{shown}");
+    press(&mut a, KeyCode::Char('a'));
+    assert!(a.modal.is_none() && note(&a).contains("you proposed it"), "{}", note(&a));
+
+    // bob: not declined without why; approved, it is made.
+    let mut b = open(&bob);
+    assert_eq!(b.changes_yours(), 1);
+    assert_eq!(b.waiting_total(), 1, "what waits for bob counts it");
+    press(&mut b, KeyCode::Char('d'));
+    press(&mut b, KeyCode::Enter);
+    assert!(matches!(b.modal, Some(Modal::Input { .. })) && note(&b).contains("says why"), "{}", note(&b));
+    press(&mut b, KeyCode::Esc);
+    press(&mut b, KeyCode::Char('a'));
+    let Some(Modal::Confirm { title, lines, .. }) = &b.modal else { panic!("no question: {}", note(&b)) };
+    assert_eq!(title, &format!("Approve access change {first}?"));
+    assert!(lines[0].contains("It gives") && lines[1].contains("Proposed by ada, saying: dee runs the host") && lines[1].contains("made once you do"), "{lines:?}");
+    press(&mut b, KeyCode::Enter);
+    assert!(note(&b).contains("made, as access version"), "{}", note(&b));
+    assert!(book.bindings_of("dee").iter().any(|x| x.role == "admin"), "dee is an admin now");
+    assert!(b.changes_waiting().is_empty());
+
+    // ada's next one, withdrawn with why.
+    let second = bind("cy");
+    let mut a = open(&ada);
+    press(&mut a, KeyCode::Char('d'));
+    let Some(Modal::Input { title, .. }) = &a.modal else { panic!("no question: {}", note(&a)) };
+    assert_eq!(title, &format!("Withdraw access change {second}?"));
+    press(&mut a, KeyCode::Enter);
+    assert!(note(&a).contains("Withdrawing says why"), "{}", note(&a));
+    typed(&mut a, "the wrong person\n");
+    assert!(note(&a).contains(&format!("withdrew access change {second}")), "{}", note(&a));
+    let shown = screen(&mut a, 140, 40);
+    assert!(shown.contains("withdrawn by ada: the wrong person") && shown.contains("made as version"), "decided lately: {shown}");
+
+    // cy, a viewer, is told why they aren't shown, and has nothing to decide.
+    let cy = book.sign_in("cy", pw).unwrap().0;
+    let mut c = open(&cy);
+    let shown = screen(&mut c, 140, 40);
+    assert!(shown.contains("can't be shown here") && shown.contains("needs an admin") && c.changes_yours() == 0, "{shown}");
+    for (w, h) in [(80, 24), (60, 16)] {
+        screen(&mut c, w, h);
+        screen(&mut a, w, h);
+    }
+}
+
+/// A version whose runs would all wait at an approval no one here can decide (its one step a role
+/// nobody holds) is asked about again before it deploys, naming the approval and why; esc goes
+/// back to the review, and confirming deploys it as it is.
+#[test]
+fn deploying_asks_again_when_no_one_here_can_decide_an_approval() {
+    let (_, open) = waiting_payouts();
+    let (mut ada, _) = open("ada");
+    let text = "import { action, approval, flow } from \"holon\"
+
+flow(\"audited\")
+
+export const close = action(async (books) => {
+  const decision = await approval(\"audit\", { steps: [{ role: \"auditor\" }], expires: \"1h\" })
+  return decision.approved
+})
+";
+    tab_with(&mut ada, text);
+    ctrl(&mut ada, 'd');
+    assert!(matches!(ada.modal, Some(Modal::Approve { .. })), "{}", note(&ada));
+    press(&mut ada, KeyCode::Enter);
+    let Some(Modal::Confirm { title, lines, .. }) = &ada.modal else { panic!("not asked again: {}", note(&ada)) };
+    assert!(title.contains("\"audited\" anyway?"), "{title}");
+    assert!(lines[0].contains("an approval no one here can decide") && lines.iter().any(|l| l.starts_with("• ") && l.contains("audit")), "{lines:?}");
+    screen(&mut ada, 120, 40);
+    press(&mut ada, KeyCode::Esc);
+    assert!(matches!(ada.modal, Some(Modal::Approve { .. })), "back to the review");
+    assert!(ada.client.as_ref().unwrap().deployment("audited").is_none());
+    press(&mut ada, KeyCode::Enter);
+    press(&mut ada, KeyCode::Char('y'));
+    assert!(note(&ada).starts_with("deployed \"audited\""), "{}", note(&ada));
+}
+
+/// v in the deploy review replays the version offline on the flow's last runs, and says which
+/// answer differently: bump's next version answers ten times as much, so each of its three runs
+/// differs. A first deploy has nothing to replay on, and says so.
+#[test]
+fn the_deploy_review_replays_a_version_on_recent_runs() {
+    let (mut app, _) = bumped(3);
+    tab_with(&mut app, &BUMP.replace("return n\n", "return n * 10\n"));
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('v'));
+    let Some(Modal::Approve { review, .. }) = &app.modal else { panic!("no dialog: {}", note(&app)) };
+    let top: Vec<&str> = review.top.iter().map(|(_, l)| l.as_str()).collect();
+    assert!(top[0].contains("replayed on \"bump\"'s last 3 runs") && top[0].contains("3 differ"), "{top:?}");
+    assert_eq!(top.iter().filter(|l| l.starts_with("  run ") && l.contains("differs")).count(), 3, "{top:?}");
+    // Again: in place of the first, not beside it.
+    press(&mut app, KeyCode::Char('v'));
+    let Some(Modal::Approve { review, .. }) = &app.modal else { panic!() };
+    assert_eq!(review.top.iter().filter(|(_, l)| l.contains("replayed on")).count(), 1);
+    screen(&mut app, 120, 40);
+    // :replay does it from the tab, deploying nothing.
+    press(&mut app, KeyCode::Esc);
+    app.run_command("replay");
+    let Some(Modal::Lines { title, lines, .. }) = &app.modal else { panic!("no lines: {}", note(&app)) };
+    assert!(title.contains("bump") && lines[0].1.contains("3 differ"), "{title} {lines:?}");
+
+    let (mut app, _) = super::tests::app();
+    tab_with(&mut app, BEATS);
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('v'));
+    let Some(Modal::Approve { review, .. }) = &app.modal else { panic!() };
+    assert!(review.top[0].1.contains("isn't deployed yet"), "{:?}", review.top);
+}
+
+/// The approvals steps run live: against a real server at `HOLON_LIVE` (a fresh one, started with
+/// `HOLON_SETUP_CODE=HOLON-LIVE`), over HTTP as the editor speaks to it. It sets the server up (ada,
+/// bob, an agent), runs a flow that waits at a two-person approval, and the editor decides it; the
+/// agent proposes a flow and ada's editor deploys it as proposed; an access change waits and bob's
+/// editor approves it. Every page it passes is written to `HOLON_SCREENS`, for a person to read.
+#[test]
+#[ignore = "runs against a live server at HOLON_LIVE"]
+fn live_approvals() {
+    let server = std::env::var("HOLON_LIVE").expect("HOLON_LIVE: the server's address");
+    let out = std::env::var("HOLON_SCREENS").expect("HOLON_SCREENS: where to write the pages");
+    let pw = "correct horse battery";
+    let open = |token: Option<&str>| Client::new(Box::new(crate::mcp::Http::new(&server, token)));
+    let ok = |said: Result<serde_json::Value, String>, what: &str| said.unwrap_or_else(|e| panic!("{what}: {e}"));
+    let ada = ok(open(None).post("/auth/setup", serde_json::json!({ "code": "HOLON-LIVE", "name": "ada", "password": pw })), "setup")["token"].as_str().unwrap().to_string();
+    let as_ada = open(Some(&ada));
+    let invite = ok(as_ada.post("/people", serde_json::json!({ "name": "bob", "kind": "person", "role": "admin" })), "bob")["invite"].as_str().unwrap().to_string();
+    let bob = ok(open(None).post("/auth/invite", serde_json::json!({ "token": invite, "password": pw })), "bob joins")["token"].as_str().unwrap().to_string();
+    let invite = ok(as_ada.post("/people", serde_json::json!({ "name": "cy", "kind": "person", "role": "admin" })), "cy")["invite"].as_str().unwrap().to_string();
+    let cy = ok(open(None).post("/auth/invite", serde_json::json!({ "token": invite, "password": pw })), "cy joins")["token"].as_str().unwrap().to_string();
+    ok(as_ada.post("/people", serde_json::json!({ "name": "claude", "kind": "agent", "role": "agent" })), "claude");
+    let agent = ok(as_ada.post("/people/claude/tokens", serde_json::json!({ "label": "live" })), "claude's token")["token"].as_str().unwrap().to_string();
+    let stage = |token: &str, text: &str| {
+        let plan = holon_author::agent::plan(text).unwrap();
+        for u in &plan.units {
+            let (code, said) = crate::mcp::Http::new(&server, Some(token)).send("POST", "/unit", Some(Body::Bytes(u.clone()))).unwrap();
+            assert!((200..300).contains(&code), "staged: {}", String::from_utf8_lossy(&said));
+        }
+        plan
+    };
+    // Each page as it passes, so a failure leaves what led to it.
+    let mut pages = String::new();
+    let mut keep = |name: &str, app: &mut App| {
+        pages += &format!("\n===== {name} =====\n{}\nnote: {}\n", screen(app, 140, 40), note(app));
+        std::fs::write(&out, &pages).unwrap();
+    };
+    let editor = |token: &str| {
+        let mut app = App::new(None);
+        app.attach(open(Some(token)));
+        app.go(Page::Approvals);
+        app
+    };
+
+    // Runs waiting at a two-person approval: ada starts it, bob and cy approve it, and it goes on.
+    let payouts = "import { action, approval, flow } from \"holon\"\n\nflow(\"payouts\")\n\nexport const pay = action(async (order) => {\n  const decision = await approval(\"payout\", { expires: \"1h\", people: 2 })\n  return decision.approved\n})\n";
+    let plan = stage(&ada, payouts);
+    let ack = serde_json::json!({ "slug": "payouts", "unit": plan.unit, "document": plan.document, "acknowledge": ["Action(\"pay\")", "Approval(\"payout/person*2\")"] });
+    ok(as_ada.post("/deploy", ack), "payouts deployed");
+    ok(as_ada.post("/trigger/payouts/pay", serde_json::json!({ "amount": 10 })).or_else(|e| if e.contains("wait") { Ok(serde_json::Value::Null) } else { Err(e) }), "a run");
+    // ada started it: it waits, and none of it is hers to decide.
+    let mut a = editor(&ada);
+    press(&mut a, KeyCode::Tab);
+    keep("ada: Runs waiting, hers", &mut a);
+    assert_eq!((a.runs_waiting().len(), a.runs_yours()), (1, 0), "{}", note(&a));
+    press(&mut a, KeyCode::Char('a'));
+    assert!(a.modal.is_none(), "not hers: {}", note(&a));
+    let mut b = editor(&bob);
+    press(&mut b, KeyCode::Tab);
+    keep("bob: Runs waiting", &mut b);
+    assert_eq!(b.runs_yours(), 1, "{}", note(&b));
+    press(&mut b, KeyCode::Char('a'));
+    typed(&mut b, "fine by me\n");
+    keep("bob approved", &mut b);
+    assert!(note(&b).contains("1 more person"), "{}", note(&b));
+    let mut c = editor(&cy);
+    press(&mut c, KeyCode::Tab);
+    press(&mut c, KeyCode::Char('a'));
+    press(&mut c, KeyCode::Enter);
+    keep("cy approved", &mut c);
+    assert!(note(&c).contains("goes on"), "{}", note(&c));
+
+    // The agent proposes a flow; ada's editor shows who and why, and deploys what was proposed.
+    let as_agent = open(Some(&agent));
+    let greet = "import { action, flow } from \"holon\"\n\nflow(\"greet\")\n\nexport const hi = action(async (name) => \"hello\")\n";
+    let plan = stage(&agent, greet);
+    let said = ok(as_agent.post("/deploy", serde_json::json!({ "slug": "greet", "unit": plan.unit, "document": plan.document, "why": "to say hello" })), "proposed");
+    assert!(said["proposal"]["id"].is_u64(), "{said}");
+    let mut a = editor(&ada);
+    keep("ada: Deploys, the proposal", &mut a);
+    let shown = screen(&mut a, 140, 40);
+    assert!(shown.contains("Proposed by claude (an agent)") && shown.contains("Why: to say hello"), "{shown}");
+    press(&mut a, KeyCode::Char('v'));
+    keep("ada: replayed", &mut a);
+    press(&mut a, KeyCode::Enter);
+    keep("ada deployed it", &mut a);
+    assert!(note(&a).starts_with("deployed \"greet\""), "{}", note(&a));
+    assert_eq!(a.client.as_ref().unwrap().deployment("greet").unwrap()["unit"].as_str(), Some(plan.unit.as_str()));
+
+    // An access change waits for a second person; bob's editor approves it.
+    let (code, said) = crate::mcp::Http::new(&server, Some(&ada)).send("PUT", "/access/approvals", Some(Body::Json(serde_json::json!({ "changes": 1 })))).unwrap();
+    assert!((200..300).contains(&code), "changes wait: {}", String::from_utf8_lossy(&said));
+    ok(as_ada.post("/people", serde_json::json!({ "name": "dee", "kind": "person", "role": "viewer" })), "dee");
+    ok(as_ada.post("/bindings", serde_json::json!({ "who": { "principal": "dee" }, "role": "admin", "scope": "host", "why": "dee runs the host" })), "the change");
+    let mut b = editor(&bob);
+    press(&mut b, KeyCode::Tab);
+    press(&mut b, KeyCode::Tab);
+    keep("bob: Access changes", &mut b);
+    assert_eq!(b.changes_yours(), 1, "{}", note(&b));
+    press(&mut b, KeyCode::Char('a'));
+    press(&mut b, KeyCode::Enter);
+    keep("bob approved the change", &mut b);
+    assert!(note(&b).contains("made, as access version"), "{}", note(&b));
 }
