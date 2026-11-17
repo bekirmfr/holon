@@ -24,6 +24,8 @@ mod sniffing;
 mod whereabouts;
 /// What a handler's text does, against what the same text does as JavaScript.
 mod semantics;
+/// A writer that fails reaches an admin and /health.
+mod writers;
 
 pub(crate) fn test_state() -> AppState {
     test_state_with(SharedStore::new(Box::new(MemStore::new())))

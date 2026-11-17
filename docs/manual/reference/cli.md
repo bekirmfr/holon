@@ -186,6 +186,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--value-cache SIZE` | memory kept for the values runs read from the store's disk (a collection's items and trie, a file's text by hash), so a read doesn't open the file again: `64M`, `1G`, or `0` to keep none (default `64M`; or `HOLON_VALUE_CACHE`). What it counts is the memory a value takes in it. Past the size, the values used least recently are let go |
 | `--max-memory SIZE` | the memory the server holds in all, every run's together with its caches: `512M`, `4G` (at least `64M`; or `HOLON_MAX_MEMORY`). Past it a run fails, its error saying so (`holon verify` reads it as one not run to its end, as one stopped for time), and a request is answered `503` with `Retry-After: 1` until the runs let some go. Default: half the machine's memory, or three quarters of what its container may hold, whichever is less ([Limits a run has](server.md#limits-a-run-has)) |
 | `--export-heads URL` | send each run's head to a witness (or `HOLON_EXPORT_HEADS`); its token in `HOLON_EXPORT_HEADS_TOKEN` |
+| `--stop-within TIME` | how long a stop waits for the runs going on: `30s`, `2m`, `0s` not waiting (default `1m`; or `HOLON_STOP_WITHIN`). Past it, the server syncs what is written and exits with status 1, the runs still going on cut off as a crash cuts them, and the next start says which deployments they may have left part-done. A service manager's own wait must be longer ([running it as a service](../guides/running-as-a-service.md)) |
 | `--root-key os\|env:VAR\|file:PATH` | where the root key is kept, which opens what the server seals in its data folder (`keys.json`); never in the folder (default: the OS key store) |
 | `--new-root-key` | print a fresh key for `--root-key env:VAR`, and exit |
 | `--dotenv FILE` | a `.env` file `HOLON_SECRET_*` values are also read from, again every minute while the server runs ([Secrets from a `.env` file](../guides/deploying.md#secrets-from-a-env-file)) |
@@ -1196,6 +1197,7 @@ Code extension starts it.
 | `HOLON_FLOW_CACHE` | `holon serve --flow-cache` |
 | `HOLON_VALUE_CACHE` | `holon serve --value-cache` |
 | `HOLON_MAX_MEMORY` | `holon serve --max-memory` |
+| `HOLON_STOP_WITHIN` | `holon serve --stop-within` |
 | `HOLON_SETUP_CODE` | the first admin's setup code |
 | `HOLON_EXPORT_HEADS`, `HOLON_EXPORT_HEADS_TOKEN` | the witness heads are sent to, and its token |
 | `HOLON_SECRET_<NAME>` | values for secrets whose source is env |
