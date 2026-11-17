@@ -1075,12 +1075,54 @@ fn a_run_that_failed_opens_on_why_and_on_which_line() {
     }
 }
 
+/// The admin page shows each part to whoever may see it, and a key whoever may not use it says
+/// why and sends nothing: wes, whose role holds people.view alone, reads the people, can't invite
+/// anyone, and is told why the folders aren't shown.
+#[test]
+fn the_admin_page_shows_each_part_to_whoever_may_see_it() {
+    let mut state = test_state();
+    let book = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    let pw = "correct horse battery";
+    let (ada, _) = book.setup(&book.setup_code().unwrap(), "ada", pw).unwrap();
+    state.access = crate::access::Access::new(std::sync::Arc::clone(&book), vec![], vec![]);
+    book.define_role(crate::bindings::RoleText { name: "lookout".into(), about: None, allows: vec!["people.view".into()], kinds: vec![crate::accounts::Kind::Person] }, "ada", None).unwrap();
+    let wes = book.accept(&book.invite("wes", "lookout", None, "ada").unwrap(), pw).unwrap().0;
+    let state: &'static AppState = Box::leak(Box::new(state));
+    let calls = std::sync::Arc::new(crate::sync::Mutex::new(vec![]));
+    let mut app = App::new(None);
+    app.attach(Client::new(Box::new(Recorded(InProcess(state, Some(wes)), std::sync::Arc::clone(&calls)))));
+    app.refresh();
+    press(&mut app, KeyCode::Char('7'));
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("ada") && shown.contains("wes"), "the people: {shown}");
+    let before = calls.lock().unwrap().len();
+    press(&mut app, KeyCode::Char('n'));
+    assert!(app.modal.is_none(), "no invite dialog for wes");
+    let note = app.note.as_ref().map(|n| n.text.clone()).unwrap_or_default();
+    assert!(note.contains("people.manage"), "says what it takes: {note}");
+    assert_eq!(calls.lock().unwrap().len(), before, "sends nothing");
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("It can't be shown here") && shown.contains("resource.view"), "folders: {shown}");
+    assert!(!calls.lock().unwrap().iter().any(|c| c.starts_with("GET /admin/folders")), "the folders aren't read for wes");
+    // ada, an admin, sees every part as before.
+    let mut app = App::new(None);
+    app.attach(Client::new(Box::new(InProcess(state, Some(ada)))));
+    app.refresh();
+    press(&mut app, KeyCode::Char('7'));
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
+    let shown = screen(&mut app, 140, 40);
+    assert!(!shown.contains("It can't be shown here"), "{shown}");
+}
+
 #[test]
 fn the_admin_page_invites_people_makes_keys_and_binds_folders_and_databases() {
     let (mut app, _) = app();
     press(&mut app, KeyCode::Char('7'));
     let shown = screen(&mut app, 140, 40);
-    assert!(shown.contains("This page is the server's admins'") && shown.contains("no accounts"), "{shown}");
+    assert!(shown.contains("It can't be shown here") && shown.contains("no accounts"), "{shown}");
 
     let mut app = admin_app();
     press(&mut app, KeyCode::Char('7'));

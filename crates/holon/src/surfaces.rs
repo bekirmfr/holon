@@ -14,7 +14,7 @@
 //!   shows them no canary; to a holder, it shows the canary.
 //! - src/tests/run_steps.rs: every route a row names is a route of can.rs's ROUTES, the table
 //!   that sweep holds to its grants, and the tools are `holon mcp`'s.
-//! - docs/manual/guides/surfaces.md is written from this table (HOLON_BLESS=1).
+//! - docs/manual/reference/surfaces.md is written from this table (HOLON_BLESS=1).
 
 /// What of a server's keeping a surface reads for its caller, and so which grant it takes: what it
 /// shows of it, or what follows from it (a replay says which runs answer otherwise).
@@ -104,7 +104,7 @@ pub(crate) const COMMANDS: &[Surface] = &[
     both(
         "editor",
         &[
-            "GET /auth/me", "GET /deployments", "GET /flows", "GET /flows/{slug}", "POST /flows", "GET /activity", "GET /admin/warnings",
+            "GET /auth/me", "GET /auth/me/can", "GET /deployments", "GET /flows", "GET /flows/{slug}", "POST /flows", "GET /activity", "GET /admin/warnings",
             "GET /deployments/{slug}/log", "GET /deployments/{slug}/log/heads", "GET /deployments/{slug}/document", "GET /deployments/{slug}/manifest", "GET /deployments/{slug}/events",
             "GET /deployments/{slug}/versions", "GET /deployments/{slug}/grant", "POST /deployments/{slug}/grant", "GET /deployments/{slug}/secrets",
             "GET /deployments/{slug}/secrets/{name}", "POST /deployments/{slug}/secrets/{name}", "DELETE /deployments/{slug}/secrets/{name}",
@@ -273,7 +273,7 @@ pub(crate) const TOOLS: &[Surface] = &[
     routes(
         "deployments",
         &[
-            "GET /auth/me", "GET /deployments", "GET /flows", "GET /proposals", "GET /deployments/{slug}/document", "GET /deployments/{slug}/manifest",
+            "GET /auth/me", "GET /auth/me/can", "GET /deployments", "GET /flows", "GET /proposals", "GET /deployments/{slug}/document", "GET /deployments/{slug}/manifest",
             "GET /deployments/{slug}/secrets",
         ],
         &[],

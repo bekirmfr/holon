@@ -40,8 +40,9 @@ pub(crate) struct AdminView {
     pub(crate) tokens: Vec<Value>,
     pub(crate) folders: Vec<Value>,
     pub(crate) databases: Vec<Value>,
-    /// Why the server's lists couldn't be read (not an admin, say).
-    pub(crate) error: Option<String>,
+    /// Why a part's list can't be read, by part: the caller may not see it (the server's
+    /// refusal, as `may` says it ahead), or the read failed.
+    pub(crate) refused: [Option<String>; 6],
     /// The right pane, for the row it shows.
     pub(crate) pane: Option<(String, Vec<Row>)>,
 }
@@ -49,6 +50,34 @@ pub(crate) struct AdminView {
 impl AdminView {
     pub(crate) fn sel(&self) -> usize {
         self.sel[self.part as usize]
+    }
+}
+
+/// What a key on a part does, as the action it takes: the routes' (can.rs's ROUTES), and for
+/// a role given, the binding it makes too.
+fn takes(p: Part, k: KeyCode, row: usize) -> &'static [&'static str] {
+    match (p, k) {
+        (Part::People, KeyCode::Enter) => &["people.manage", "people.assign"],
+        (Part::People, KeyCode::Char('n' | 'a' | 'o' | 'e' | 'x' | 's' | 'D') | KeyCode::Delete) => &["people.manage"],
+        (Part::Keys, KeyCode::Char('n' | 'D') | KeyCode::Delete) => &["people.manage"],
+        (Part::Folders | Part::Databases, KeyCode::Char('n')) => &["resource.bind"],
+        (Part::Folders | Part::Databases, KeyCode::Char('D') | KeyCode::Delete) => &["resource.unbind"],
+        (Part::Server, KeyCode::Enter) => match row {
+            0 => &["policy.edit"],
+            2 => &["people.manage"],
+            3 | 4 => &["host.operate"],
+            _ => &[],
+        },
+        _ => &[],
+    }
+}
+
+/// What reading each of the server part's rows takes.
+fn row_sees(row: usize) -> &'static str {
+    match row {
+        0 => "policy.view",
+        2 => "people.view",
+        _ => "host.view",
     }
 }
 
@@ -151,16 +180,26 @@ impl App {
     /// Read the server's lists again, then the right pane.
     pub(crate) fn admin_load(&mut self) {
         let Some(c) = self.client.as_ref() else { return };
-        let list = |path: &str| c.get(path).map(|v| v.as_array().cloned().unwrap_or_default());
-        let roles = c.get("/roles").map(|v| v["roles"].as_array().cloned().unwrap_or_default());
-        match (list("/people"), list("/admin/folders"), list("/admin/databases"), roles) {
-            (Ok(u), Ok(f), Ok(d), Ok(r)) => {
-                self.admin.tokens = u.iter().flat_map(|p| p["tokens"].as_array().cloned().unwrap_or_default()).collect();
-                (self.admin.users, self.admin.folders, self.admin.databases, self.admin.roles) = (u, f, d, r);
-                self.admin.error = None;
+        // Each part's list, read only by whoever may see it: a part they may not says why, the
+        // others are as an admin sees them.
+        let list = |path: &str, action: &str| match c.may(action, None) {
+            Ok(()) => c.get(path).map(|v| if v.is_array() { v } else { v["roles"].clone() }.as_array().cloned().unwrap_or_default()),
+            Err(why) => Err(why),
+        };
+        let (people, folders, databases) = (list("/people", "people.view"), list("/admin/folders", "resource.view"), list("/admin/databases", "resource.view"));
+        // The roles a principal may be given, for the role dialog: none read, it says "-".
+        self.admin.roles = list("/roles", "role.view").unwrap_or_default();
+        let mut refused: [Option<String>; 6] = Default::default();
+        for (parts, read) in [(&[Part::People, Part::Keys][..], people.as_ref().err()), (&[Part::Folders], folders.as_ref().err()), (&[Part::Databases], databases.as_ref().err())] {
+            for p in parts {
+                refused[*p as usize] = read.cloned();
             }
-            (Err(e), ..) | (_, Err(e), ..) | (_, _, Err(e), _) | (.., Err(e)) => self.admin.error = Some(e),
         }
+        refused[Part::Secrets as usize] = c.may("resource.view", None).err();
+        let users = people.unwrap_or_default();
+        self.admin.tokens = users.iter().flat_map(|p| p["tokens"].as_array().cloned().unwrap_or_default()).collect();
+        (self.admin.users, self.admin.folders, self.admin.databases) = (users, folders.unwrap_or_default(), databases.unwrap_or_default());
+        self.admin.refused = refused;
         let n = self.admin_rows();
         let p = self.admin.part as usize;
         self.admin.sel[p] = self.admin.sel[p].min(n.saturating_sub(1));
@@ -187,7 +226,12 @@ impl App {
                 Err(e) => vec![text(Tone::Bad, e)],
             }
         };
+        // A row the caller may not read says why, in place of what it would read.
+        let no = |why: String| vec![text(Tone::Bad, format!("It can't be shown here: {why}")), text(Tone::Dim, "Ask an admin for a role that holds it.")];
+        let server_refused = if a.part == Part::Server { c.may(row_sees(i), None).err() } else { None };
         let rows: Vec<Row> = match a.part {
+            _ if a.refused[a.part as usize].is_some() => no(a.refused[a.part as usize].clone().unwrap_or_default()),
+            Part::Server if server_refused.is_some() => no(server_refused.unwrap_or_default()),
             Part::People => match a.users.get(i) {
                 Some(u) if u["kind"] != "person" => vec![
                     text(Tone::Head, s(&u["name"])),
@@ -377,6 +421,11 @@ impl App {
             KeyCode::End => return self.admin_scroll(List::Admin, isize::MAX / 2),
             KeyCode::Esc => return self.go(Page::Overview),
             _ => {}
+        }
+        // A key the caller may not use says the server's refusal, and sends nothing.
+        let refusal = self.client.as_ref().and_then(|c| takes(self.admin.part, k.code, i).iter().find_map(|a| c.may(a, None).err()));
+        if let Some(why) = refusal {
+            return self.fail(why);
         }
         let user = self.admin.users.get(i).map(|u| (s(&u["name"]), u.clone()));
         match (self.admin.part, k.code) {

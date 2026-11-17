@@ -27,7 +27,16 @@ pub(crate) struct Client {
     pub(crate) chains: std::collections::HashMap<String, (usize, String)>,
     /// What the host warns of (`GET /admin/warnings`, storage.rs): says, todo. An admin's only.
     pub(crate) warnings: Vec<Value>,
+    /// The access document's version as `/auth/me` said it last: what `may` answers changes only
+    /// with it (or a flow's tags, or a minute on), so its answers are read again when it moves.
+    pub(crate) access_version: Option<u64>,
+    /// What the caller may do (`GET /auth/me/can`), by flow ("" for the host and every flow at
+    /// once), with when it was asked: each action's answer, or the words of its refusal.
+    pub(crate) can: std::collections::HashMap<String, (std::time::Instant, std::collections::HashMap<String, Result<(), String>>)>,
 }
+
+/// How long what the caller may do is kept before it is asked again, as the web console keeps it.
+const CAN_KEPT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// One deployment's pages: what it may do, its runs, its history, its access.
 pub(crate) struct Detail {
@@ -90,7 +99,7 @@ pub(crate) fn strings(v: &Value, key: &str) -> Vec<String> {
 
 impl Client {
     pub(crate) fn new(api: Box<dyn Api>) -> Client {
-        Client { api, me: None, role: None, deployments: vec![], flows: vec![], activity: vec![], recent: Default::default(), chains: Default::default(), warnings: vec![] }
+        Client { api, me: None, role: None, deployments: vec![], flows: vec![], activity: vec![], recent: Default::default(), chains: Default::default(), warnings: vec![], access_version: None, can: Default::default() }
     }
 
     pub(crate) fn server(&self) -> String {
@@ -115,13 +124,24 @@ impl Client {
 
     /// Read the deployments, saved flows and activity again.
     pub(crate) fn refresh(&mut self) -> Result<(), String> {
-        let deployments = list(&self.get("/deployments")?, "deployments");
-        let flows = self.get("/flows")?.as_array().cloned().unwrap_or_default();
-        if self.me.is_none() {
-            let me = self.get("/auth/me").ok();
-            self.me = me.as_ref().and_then(|m| m.get("name").and_then(Value::as_str).map(str::to_string));
-            self.role = me.as_ref().and_then(|m| m.get("role").and_then(Value::as_str).map(str::to_string));
+        // Who we are, and the access document's version: when it moves, what we may do is asked
+        // again (a server without accounts answers no version).
+        let me = self.get("/auth/me").ok();
+        self.me = me.as_ref().and_then(|m| m.get("name").and_then(Value::as_str).map(str::to_string));
+        self.role = me.as_ref().and_then(|m| m.get("role").and_then(Value::as_str).map(str::to_string));
+        let version = me.as_ref().and_then(|m| m["access_version"].as_u64());
+        if version != self.access_version {
+            self.can.clear();
+            self.access_version = version;
         }
+        self.ask_can(None);
+        // The flows, unless the server said the caller may see none (an admin of people alone, say):
+        // then none are listed, and the rest is read as ever.
+        let (deployments, flows) = if self.refused("flow.view").is_some() {
+            (vec![], vec![])
+        } else {
+            (list(&self.get("/deployments")?, "deployments"), self.get("/flows")?.as_array().cloned().unwrap_or_default())
+        };
         // Only an admin may read it all; for anyone else it stays empty.
         self.activity = self.get("/activity?limit=30").map(|a| list(&a, "entries")).unwrap_or_default();
         self.warnings = self.get("/admin/warnings").map(|w| list(&w, "warnings")).unwrap_or_default();
@@ -143,6 +163,46 @@ impl Client {
         self.deployments = deployments;
         self.flows = flows;
         Ok(())
+    }
+
+    /// Ask what the caller may do, every action at once, on `flow` or on the host and every flow,
+    /// unless it was asked within the minute. Answers are kept by this client, which signs in with
+    /// one token for its life (another server, or another sign-in, is another client), so an
+    /// answer is never another caller's. One that can't be read is kept as no answer.
+    pub(crate) fn ask_can(&mut self, flow: Option<&str>) {
+        let key = flow.unwrap_or_default().to_string();
+        if self.can.get(&key).is_some_and(|(at, _)| at.elapsed() < CAN_KEPT) {
+            return;
+        }
+        let actions: Vec<&str> = crate::can::Action::ALL.iter().map(|a| a.name()).collect();
+        let mut path = format!("/auth/me/can?actions={}", actions.join(","));
+        if let Some(f) = flow {
+            path.push_str(&format!("&flow={}", seg(f)));
+        }
+        let answers = match self.get(&path) {
+            Ok(Value::Object(m)) => m.into_iter().map(|(k, v)| (k, if v == Value::Bool(true) { Ok(()) } else { Err(v.as_str().unwrap_or("not yours to do here").to_string()) })).collect(),
+            Ok(_) => Default::default(),
+            Err(e) => [(String::new(), Err(e))].into(),
+        };
+        self.can.insert(key, (std::time::Instant::now(), answers));
+    }
+
+    /// The server's no to `action` on the host and every flow, when it answered one: not when it
+    /// hasn't answered, which [`Client::may`] takes as a no too.
+    pub(crate) fn refused(&self, action: &str) -> Option<String> {
+        self.can.get("").and_then(|(_, a)| a.get(action)).and_then(|a| a.clone().err())
+    }
+
+    /// Whether the caller may do `action` (a catalogue name, `people.manage`), on `flow` or on the
+    /// host and every flow: the refusal's words when not. Not asked yet, or not answered, is no
+    /// (R77): a key never works on a guess, only on the server's yes.
+    pub(crate) fn may(&self, action: &str, flow: Option<&str>) -> Result<(), String> {
+        let asked = flow.and_then(|f| self.can.get(f)).or_else(|| self.can.get(""));
+        match asked.map(|(_, a)| (a.get(action), a.get(""))) {
+            Some((Some(answer), _)) => answer.clone(),
+            Some((None, Some(Err(e)))) => Err(format!("the server didn't say what you may do ({e}): r asks again")),
+            _ => Err("the server hasn't said yet what you may do: r asks again".into()),
+        }
     }
 
     pub(crate) fn deployment(&self, slug: &str) -> Option<&Value> {

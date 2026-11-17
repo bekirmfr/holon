@@ -18,10 +18,6 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let [bar, body] = Layout::vertical([Constraint::Length(2), Constraint::Min(3)]).areas(area);
     draw_parts(f, app, bar);
-    if let Some(e) = &app.admin.error {
-        let lines = vec![Line::from(coloured(" This page is the server's admins':", BAD)), Line::from(format!(" {e}")), Line::from(dim(" Sign in as an admin (holon login), or ask one."))];
-        return f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
-    }
     let wide = body.width >= 100;
     let [left, right] = if wide { Layout::horizontal([Constraint::Percentage(48), Constraint::Percentage(52)]).areas(body) } else { Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(body) };
     draw_list(f, app, left);
@@ -87,6 +83,10 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     }
     let inner = block.inner(area);
     f.render_widget(block, area);
+    if let Some(why) = &a.refused[a.part as usize] {
+        let lines = vec![Line::from(coloured(" It can't be shown here:", BAD)), Line::from(format!(" {why}")), Line::from(dim(" Ask an admin for a role that holds it, or sign in as one (holon login)."))];
+        return f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    }
     let n = app.admin_rows();
     if n == 0 {
         let empty = match a.part {
