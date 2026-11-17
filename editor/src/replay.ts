@@ -55,7 +55,7 @@ export function hasPlaceholder(v: WValue | null): boolean {
   if (v === null) return false;
   switch (v.type) {
     case "Text":
-      return v.value.includes("‹secret:") || v.value.includes("‹token:") || v.value.includes("‹derived #") || v.value.includes("‹file:");
+      return v.value.includes("‹secret:") || v.value.includes("‹token:") || v.value.includes("‹derived #") || v.value.includes("‹respelled:") || v.value.includes("‹file:");
     case "List":
       return v.value.some(hasPlaceholder);
     case "Record":
