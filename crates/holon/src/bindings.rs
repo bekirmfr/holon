@@ -106,9 +106,9 @@ impl ApprovalSettings {
     /// that means here.
     pub(crate) fn each(&self) -> [(&'static str, String, String); 4] {
         let on = |b: bool| if b { "on" } else { "off" }.to_string();
-        let deployer = if self.exclude_deployer { "whoever deployed the version a run is on decides none of its approvals" } else { "whoever deployed the version a run is on may decide its approvals" };
+        let deployer = if self.exclude_deployer { "whoever deployed the version a run is on, and their party, decide none of its approvals" } else { "whoever deployed the version a run is on may decide its approvals" };
         let agents = if self.agents { "agents take the steps written for them" } else { "no agent decides an approval" };
-        let starter = if self.starter { "a person who started a run may take a step of it that says so" } else { "whoever started a run takes no step of it" };
+        let starter = if self.starter { "whoever started a run, or one of their party, may take a step of it that says so" } else { "whoever started a run, and their party, take no step of it" };
         let changes = match self.changes {
             Some(1) => "an access change that gives more waits until 1 person other than its author approves it".to_string(),
             Some(n) => format!("an access change that gives more waits until {n} people other than its author approve it"),
@@ -149,8 +149,43 @@ impl ApprovalSettings {
 
 /// A field a request may set to null, told apart from one it leaves out: `Some(None)` when it is
 /// null, `None` (`#[serde(default)]`) when it isn't there.
-fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+pub(crate) fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
     Option::<T>::deserialize(d).map(Some)
+}
+
+/// What a whole record made from a stale copy is refused with (409): the record changed since its
+/// author read it, and their copy would put back what was changed (a member taken out, an action
+/// a role no longer allows).
+pub(crate) const CHANGED_SINCE: &str = "since you read it";
+
+/// Whether `now`, the record `what` names as it is, is still as its author read it (`read`: as
+/// they read it, none when there was none; None when they didn't say), or why not.
+pub(crate) fn as_read<T: PartialEq>(what: &str, now: Option<&T>, read: Option<&Option<T>>) -> Result<(), String> {
+    let Some(read) = read else { return Ok(()) };
+    let how = match (read.as_ref(), now) {
+        (Some(read), Some(now)) if read == now => return Ok(()),
+        (None, None) => return Ok(()),
+        (Some(_), Some(_)) => "was changed",
+        (Some(_), None) => "was removed",
+        (None, Some(_)) => "was made",
+    };
+    Err(format!("{what} {how} {CHANGED_SINCE}: read it again, and make your change to it as it is now"))
+}
+
+/// The record `of` finds in the access document as version `base` left it (none: there was none):
+/// what a change made from that version replaces. The document now's when it is that version, the
+/// history's when it isn't; 409 when that version isn't one kept here.
+fn read_at<T>(accounts: &crate::accounts::Accounts, base: u64, of: impl Fn(&Document) -> Option<T>) -> Result<Option<T>, Response> {
+    let now = accounts.access_document();
+    if base == now.version {
+        return Ok(of(&now));
+    }
+    match accounts.access_version(base) {
+        Ok(Some(then)) if base < now.version => Ok(of(&then)),
+        Ok(None) if base == 0 => Ok(of(&Document::default())),
+        Ok(_) => Err(err(409, format!("access version {base} isn't one kept here (it is at version {}): read it again", now.version))),
+        Err(e) => Err(err(500, e)),
+    }
 }
 
 /// This host's approval settings: the access document's, the defaults on a server without
@@ -305,6 +340,9 @@ pub(crate) struct Held {
     /// The binding it is, and the document's version it was read in: what a decision keeps as
     /// what let it (the plan's D43). None for what no document holds (the OS user's admin).
     pub(crate) from: Option<Bound>,
+    /// When its binding expires (seconds), if it does: what its holder makes lasts no longer
+    /// (`Caller::lasting`).
+    pub(crate) until: Option<u64>,
 }
 
 /// A binding by its id, in the access document's version `access`.
@@ -316,7 +354,7 @@ pub(crate) struct Bound {
 
 impl Held {
     pub(crate) fn new(role: Arc<RoleDef>, scope: Scope) -> Held {
-        Held { role, scope, tagged: Arc::default(), from: None }
+        Held { role, scope, tagged: Arc::default(), from: None, until: None }
     }
 
     /// What the OS user's run file holds (local.rs): admin, on the host, while the server runs.
@@ -499,7 +537,7 @@ impl Document {
             };
             for name in names {
                 let from = Some(Bound { binding: b.id, access: self.version });
-                held.entry(name.clone()).or_default().push((Held { from, ..Held::new(Arc::clone(role), b.scope.clone()) }, b.expires_at));
+                held.entry(name.clone()).or_default().push((Held { from, until: b.expires_at, ..Held::new(Arc::clone(role), b.scope.clone()) }, b.expires_at));
             }
         }
         held
@@ -805,13 +843,31 @@ pub(crate) fn may_bind(who: &Caller, role: &Arc<RoleDef>, scope: &Scope) -> Resu
     }
 }
 
+/// `may_bind`, for a binding lasting `until` (none: for good): its author also holds what it gives
+/// there for as long (`Caller::lasting`), so an admin until Friday binds no one past Friday.
+pub(crate) fn may_bind_until(who: &Caller, role: &Arc<RoleDef>, scope: &Scope, until: Option<u64>) -> Result<(), Response> {
+    may_bind(who, role, scope)?;
+    may_bind(&who.lasting(until), role, scope).map_err(|_| {
+        let lasts = until.map_or("for good".to_string(), |at| format!("until {}", crate::cmdline::when(Some(at))));
+        err(403, format!("what {} gives {} you hold only until a binding of yours expires, and this one would last {lasts}: a binding lasts no longer than what lets its author make it", role.name, scope.said()))
+    })
+}
+
 /// The first of `bindings` that gives a principal of `kind` something `who` doesn't hold where it
 /// is made, and what (D19): what `who` may not give them, by adding them to a group, or let
 /// themselves have, by making their sign-in or tokens. One that has expired, or of a role `kind`
-/// may not hold, gives nothing.
-pub(crate) fn beyond<'a>(who: &Caller, document: &Document, kind: Kind, bindings: impl IntoIterator<Item = &'a Binding>, now: u64) -> Option<(&'a Binding, Action)> {
+/// may not hold, gives nothing. Giving (`for_as_long`), `who` holds it for as long as the binding
+/// lasts (`Caller::lasting`): an admin until Friday gives no one admin for good.
+pub(crate) fn beyond<'a>(who: &Caller, document: &Document, kind: Kind, bindings: impl IntoIterator<Item = &'a Binding>, now: u64, for_as_long: bool) -> Option<(&'a Binding, Action)> {
     bindings.into_iter().filter(|b| b.live(now)).find_map(|b| {
         let role = document.role(&b.role).filter(|r| r.kinds.contains(&kind))?;
+        let lasting;
+        let who = if for_as_long {
+            lasting = who.lasting(b.expires_at);
+            &lasting
+        } else {
+            who
+        };
         gives(&role, &b.scope).into_iter().find(|(a, on)| can(who, *a, on).is_err()).map(|(a, _)| (b, a))
     })
 }
@@ -869,7 +925,8 @@ fn refused(e: String, missing: &str) -> Response {
 /// - `GET /access/local`: the person this machine's run file signs in as (`Document::local`),
 ///   and whether it does now (`tied`: none while they are disabled), with the version;
 /// - `PUT /access/local` (`{account, why?}`): ties it to that person, as a new version: a
-///   handover; answered as the GET is;
+///   handover, by someone holding no less than them; answered as the GET is, or, while the host
+///   has people approve what gives more, 202 with the proposal (but through the run file itself);
 /// - `GET /roles`: every role, the built-in ones first, with how many bindings hold it;
 /// - `PUT /roles/<name>` (`{about?, allows, kinds, why?}`): an admin's role, defined or changed;
 /// - `DELETE /roles/<name>` (`?why=`): 204; 409 while it is bound (D28);
@@ -938,11 +995,12 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
                 Err(r) => return Some(r),
             };
             let Some(role) = document.role(&new.role) else { return Some(err(400, format!("no role {:?}: GET /roles lists them", new.role))) };
-            if let Err(r) = new.scope.check().map_err(|e| err(400, e)).and_then(|_| may_bind(caller, &role, &new.scope)) {
-                return Some(r);
-            }
             if new.expires_at.is_some_and(|at| at <= now) {
                 return Some(err(400, "expires_at has passed: a binding expires later than now"));
+            }
+            // What it gives, its author holds for as long as it lasts.
+            if let Err(r) = new.scope.check().map_err(|e| err(400, e)).and_then(|_| may_bind_until(caller, &role, &new.scope, new.expires_at)) {
+                return Some(r);
             }
             let change = Change::Bind { who: new.who.clone(), role: new.role.clone(), scope: new.scope.clone(), expires_at: new.expires_at };
             match govern(accounts, caller, change, new.why.as_deref(), || accounts.bind(new.who, &new.role, new.scope, new.expires_at, by, new.why.as_deref())) {
@@ -991,6 +1049,31 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
             settings.agents = change.agents.unwrap_or(settings.agents);
             settings.starter = change.starter.unwrap_or(settings.starter);
             settings.changes = change.changes.unwrap_or(settings.changes);
+            // Tightened, an access change can still be approved, these settings among them: as
+            // many people as one waits for, other than whoever sets it, may decide it (persons
+            // holding people.assign on the host). Past that, only this machine's run file could
+            // loosen them again.
+            // (A count out of 1 to 5 is refused as such, by `set_approvals`.)
+            if let Some(n) = settings.changes.filter(|n| (1..=5).contains(n) && *n > document.approvals.changes.unwrap_or(0)) {
+                let decides = |p: &&crate::accounts::Principal| {
+                    let them = Caller { name: Some(p.name.clone()), kind: Some(p.kind), holds: Some(accounts.holding(&p.name)), local: None };
+                    can(&them, Action::PeopleAssign, &Resource::Host).is_ok()
+                };
+                let principals = accounts.principals();
+                let others = principals.iter().filter(|p| p.kind == Kind::Person && !p.disabled && Some(p.name.as_str()) != caller.name.as_deref()).filter(decides).count();
+                if others < usize::from(n) {
+                    let wait = if n == 1 { "1 person".to_string() } else { format!("{n} people") };
+                    let hold = match others {
+                        0 => "no one holds".to_string(),
+                        1 => "1 person holds".to_string(),
+                        k => format!("{k} people hold"),
+                    };
+                    return Some(err(
+                        409,
+                        format!("an access change would wait for {wait} other than its author, and {hold} people.assign on this host besides you: one could wait for good, these settings too, and only this machine's run file would loosen them. Give people.assign to more people first"),
+                    ));
+                }
+            }
             let said = settings.said();
             let proposed = crate::access_proposals::Change::Approvals { settings: settings.clone() };
             match govern(accounts, caller, proposed, change.why.as_deref(), || accounts.set_approvals(settings, by, change.why.as_deref())) {
@@ -1017,13 +1100,21 @@ pub(crate) fn route(state: &crate::AppState, request: &Request, caller: &Caller)
                 Ok(c) => c,
                 Err(r) => return Some(r),
             };
-            match accounts.set_local(&change.account, by, change.why.as_deref()) {
-                Ok(changed) => {
+            // Whoever holds this machine then decides as them (D45): tied only by someone holding
+            // no less (D19), and, while this host has people approve what gives more, through
+            // them (access_proposals.rs), but from the run file itself, the machine's root (D11).
+            if let Err(r) = crate::auth::may_change(caller, accounts, &change.account) {
+                return Some(r);
+            }
+            let proposed = crate::access_proposals::Change::Local { account: change.account.clone() };
+            match govern(accounts, caller, proposed, change.why.as_deref(), || accounts.set_local(&change.account, by, change.why.as_deref())) {
+                Ok(Governed::Made(changed)) => {
                     if changed {
                         recorded("tied the run file", &change.account);
                     }
                     Response::json(&tie())
                 }
+                Ok(Governed::Waits(p)) => crate::access_proposals::waits(state, accounts, &p),
                 Err(e) => err(400, e),
             }
         }
@@ -1098,9 +1189,16 @@ fn define(state: &crate::AppState, request: &Request, caller: &Caller, accounts:
         kinds: Vec<Kind>,
         #[serde(default)]
         why: Option<String>,
+        /// The access version its author read the role at (`GET /roles`' `version`).
+        #[serde(default)]
+        base: Option<u64>,
     }
     let def: Def = match body(request, "a role is {\"allows\": [\"run.decide\", \"run.view\"], \"kinds\": [\"person\"]}") {
         Ok(def) => def,
+        Err(r) => return r,
+    };
+    let read = match def.base.map(|base| read_at(accounts, base, |d| d.roles.iter().find(|r| r.name == name).cloned())).transpose() {
+        Ok(read) => read,
         Err(r) => return r,
     };
     let about = def.about.map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
@@ -1118,7 +1216,8 @@ fn define(state: &crate::AppState, request: &Request, caller: &Caller, accounts:
         return err(403, format!("{name} allows {}, which you don't hold on this host: a role is changed only by someone who holds what it allows", a.name()));
     }
     let by = caller.name.as_deref().unwrap_or("");
-    match govern(accounts, caller, Change::Role { role: text.clone() }, def.why.as_deref(), || accounts.define_role(text, by, def.why.as_deref())) {
+    let change = Change::Role { role: text.clone(), read: read.clone() };
+    match govern(accounts, caller, change, def.why.as_deref(), || accounts.define_role_as_read(text, read, by, def.why.as_deref())) {
         Ok(Governed::Waits(p)) => crate::access_proposals::waits(state, accounts, &p),
         Ok(Governed::Made(changed)) => {
             state.activity.record(if changed { "changed the role" } else { "defined the role" }, name, Some(by));
@@ -1126,7 +1225,7 @@ fn define(state: &crate::AppState, request: &Request, caller: &Caller, accounts:
             let about = document.roles.iter().find(|r| r.name == name).and_then(|r| r.about.clone());
             Response::json(&serde_json::json!({ "role": role_listed(&role, about.as_deref(), document.bound(Some(name), None)), "version": document.version }))
         }
-        Err(e) => err(400, e),
+        Err(e) => err(if e.contains(CHANGED_SINCE) { 409 } else { 400 }, e),
     }
 }
 
@@ -1140,9 +1239,16 @@ fn make_group(state: &crate::AppState, request: &Request, caller: &Caller, accou
         members: Vec<String>,
         #[serde(default)]
         why: Option<String>,
+        /// The access version its author read the group at (`GET /groups`' `version`).
+        #[serde(default)]
+        base: Option<u64>,
     }
     let def: Def = match body(request, "a group is {\"members\": [\"bob\", \"cy\"]}") {
         Ok(def) => def,
+        Err(r) => return r,
+    };
+    let read = match def.base.map(|base| read_at(accounts, base, |d| d.group(name).cloned())).transpose() {
+        Ok(read) => read,
         Err(r) => return r,
     };
     let mut members = def.members;
@@ -1159,7 +1265,7 @@ fn make_group(state: &crate::AppState, request: &Request, caller: &Caller, accou
     let taken = before.iter().filter(|m| !group.members.contains(m)).map(|m| (m, false));
     for (m, joins) in added.chain(taken) {
         let Some(kind) = accounts.principal(m).map(|p| p.kind) else { continue };
-        if let Some((b, a)) = beyond(caller, &document, kind, bound.iter().copied(), crate::deploy::epoch_now()) {
+        if let Some((b, a)) = beyond(caller, &document, kind, bound.iter().copied(), crate::deploy::epoch_now(), joins) {
             let held = format!("{} {}, which holds {} there", b.role, b.scope.said(), a.name());
             return err(
                 403,
@@ -1171,14 +1277,15 @@ fn make_group(state: &crate::AppState, request: &Request, caller: &Caller, accou
         }
     }
     let by = caller.name.as_deref().unwrap_or("");
-    match govern(accounts, caller, Change::Group { group: group.clone() }, def.why.as_deref(), || accounts.set_group(group.clone(), by, def.why.as_deref())) {
+    let change = Change::Group { group: group.clone(), read: read.clone() };
+    match govern(accounts, caller, change, def.why.as_deref(), || accounts.set_group_as_read(group.clone(), read, by, def.why.as_deref())) {
         Ok(Governed::Waits(p)) => crate::access_proposals::waits(state, accounts, &p),
         Ok(Governed::Made(changed)) => {
             state.activity.record(if changed { "changed the group" } else { "made the group" }, name, Some(by));
             let document = accounts.access_document();
             Response::json(&serde_json::json!({ "group": group, "bound": document.bound(None, Some(name)), "version": document.version }))
         }
-        Err(e) => err(400, e),
+        Err(e) => err(if e.contains(CHANGED_SINCE) { 409 } else { 400 }, e),
     }
 }
 
@@ -1282,7 +1389,7 @@ mod tests {
         d.bind(Subject::Principal("bob".into()), "editor", flow.clone(), Some(100), "ada", 1);
         d.bind(Subject::Principal("bob".into()), "viewer", Scope::Host, None, "ada", 1);
         access.keep(d.after(&Document::default(), "ada", "bound", None, 1)).unwrap();
-        assert_eq!(&*access.held("bob", 99), [via(at(Role::Editor, flow), 0, 1), via(at_host(Role::Viewer), 1, 1)]);
+        assert_eq!(&*access.held("bob", 99), [Held { until: Some(100), ..via(at(Role::Editor, flow), 0, 1) }, via(at_host(Role::Viewer), 1, 1)], "each saying when it ends");
         assert_eq!(&*access.held("bob", 100), [via(at_host(Role::Viewer), 1, 1)], "expired at 100");
         assert_eq!(access.document().bindings.len(), 2, "kept until unbound");
     }

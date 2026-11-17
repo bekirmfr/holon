@@ -141,27 +141,29 @@ fn save(who: &str, args: &cmdline::Args, file: &str) -> i32 {
         }
     };
     let name = args.value("--name").map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&plan.name).to_string();
+    // What is saved under the name now: replaced only as read here (`base`), so a save made in
+    // between, by an agent or in the editor, is refused, not lost.
+    let saved = match local::send(who, args.server(), "GET", &format!("/flows/{}", seg(&name)), None) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    let saved = (saved.status == 200).then(|| serde_json::from_str::<Value>(&saved.body).unwrap_or(Value::Null));
+    let base = saved.as_ref().map_or(Value::Null, |s| s["saved_at_epoch_seconds"].clone());
     if !args.flag("--replace") {
         let me = local::send(who, args.server(), "GET", "/auth/me", None)
             .ok()
             .filter(|a| a.status == 200)
             .and_then(|a| serde_json::from_str::<Value>(&a.body).ok())
             .and_then(|m| m["name"].as_str().map(String::from));
-        let saved = match local::send(who, args.server(), "GET", &format!("/flows/{}", seg(&name)), None) {
-            Ok(a) => a,
-            Err(code) => return code,
-        };
-        if saved.status == 200 {
-            let by = serde_json::from_str::<Value>(&saved.body).ok().and_then(|s| s["saved_by"].as_str().map(String::from));
-            if by.is_some() && by != me {
-                eprintln!("{who}: {name:?} is saved by {}: --name saves yours under another name, --replace replaces theirs", by.unwrap_or_default());
-                return 1;
-            }
+        let by = saved.as_ref().and_then(|s| s["saved_by"].as_str().map(String::from));
+        if by.is_some() && by != me {
+            eprintln!("{who}: {name:?} is saved by {}: --name saves yours under another name, --replace replaces theirs", by.unwrap_or_default());
+            return 1;
         }
     }
     let mut document = plan.document.clone();
     document["source"] = json!(text);
-    match cmdline::json(who, args, "POST", "/flows", Some(&json!({ "name": name, "document": document }))) {
+    match cmdline::json(who, args, "POST", "/flows", Some(&json!({ "name": name, "document": document, "base": base }))) {
         Ok(_) => {
             println!("{name}: saved, not deployed (the editor's flows page opens it; holon deploy {file} deploys it)");
             0

@@ -102,7 +102,7 @@ pub(crate) fn guarded(response: Response) -> Response {
 }
 
 /// How long a request's body may take to arrive, all of it. Past it the client is told 408 and
-/// the request lets go of its admission (`IN_FLIGHT`, main.rs), so bodies that trickle in or stop
+/// the request lets go of its admission (`Slots`, main.rs), so bodies that trickle in or stop
 /// can't hold every slot and lock everyone out, signing in included. The data plane's is its
 /// `body_timeout`, the same 30 seconds. The tests hold it too: under a short one, any test that
 /// sends a body failed with 408 on a loaded machine (102 of them in one run, audit R50); the tests
@@ -301,7 +301,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "GET" && url == "/runs/waiting" {
-        return durable::handle_get_waiting(&state.deployments, &caller, &crate::bindings::approval_settings(state));
+        return durable::handle_get_waiting(&state.deployments, &caller, &durable::Rules::of(state));
     }
 
     if let Some(rest) = url.strip_prefix("/deployments/") {
@@ -319,7 +319,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         if let Some(slug) = rest.strip_suffix("/runs")
             && method == "GET"
         {
-            return durable::handle_get_runs(&state.deployments, slug, &caller, &crate::bindings::approval_settings(state));
+            return durable::handle_get_runs(&state.deployments, slug, &caller, &durable::Rules::of(state));
         }
         if let Some(slug) = rest.strip_suffix("/logs")
             && method == "GET"
@@ -350,6 +350,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             && method == "GET"
         {
             return changes::handle_get_changes(state, slug, request);
+        }
+        if let Some(slug) = rest.strip_suffix("/log/heads")
+            && method == "GET"
+        {
+            return handle_get_log_heads(&state.deployments, slug, request);
         }
         if let Some(slug) = rest.strip_suffix("/history") {
             if method == "GET" {
@@ -425,11 +430,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             }
         } else if let Some(slug) = rest.strip_suffix("/settings") {
             if method == "POST" {
-                return crate::proposals::handle_post_settings(state, slug, request, by);
+                return crate::proposals::handle_post_settings(state, slug, request, &caller);
             }
         } else if let Some(slug) = rest.strip_suffix("/tick") {
             if method == "POST" {
-                return scheduler::handle_post_tick(state, slug, request);
+                return scheduler::handle_post_tick(state, slug, request, &caller);
             }
         } else if method == "DELETE" {
             let response = handle_delete_deployment(&state.store, &state.folders, &state.deployments, &state.deployments_path, rest);

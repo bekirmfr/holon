@@ -138,10 +138,10 @@ Each point names where it is.
 - **A resumed run is pinned:** it reads the state as it was when it started, and "its state
   writes apply when it finishes, over whatever is there then" (module docs). `fire_with_state`'s
   `resumed` branch commits without `still_as_read`.
-- **The order of a resume** (`resume_parked`): `fire_with_state` (which commits), the log entry,
-  the parked record removed, then `persist_deployments`. A host that stops after the commit and
-  before the save still has the run parked, and it can be resumed, and commit, again. With whole-
-  value writes that is harmless.
+- **The order of a resume** (`resume_parked`): the run saved as going on (`persist_deployments`),
+  `fire_with_state` (which commits), the log entry, the parked record removed, then
+  `persist_deployments` again. A host that stops between the two saves finds the run going on as
+  it starts, and ends it (`end_cut_off_parts`): it isn't resumed, nor does it commit, again.
 
 **Today's route to a database:** `http.*` with a secret, for databases with an HTTP API
 (Supabase's REST, Neon's HTTP queries, Turso, Cloudflare D1). Logged and replayed like any call,

@@ -39,7 +39,7 @@ export function useModeSwitch({
     showTab: (id: number | null, t: TabState) => void;
     tabOf: (name: string) => number | null;
   };
-  tabFromDocument: (name: string | null, doc: FlowDocument, saved: boolean) => TabState;
+  tabFromDocument: (name: string | null, doc: FlowDocument, saved: boolean, savedAt?: number | null) => TabState;
   /** The canvas, to put an edit copy back. */
   canvas: {
     beforeView: MutableRefObject<TabState["beforeView"]>;
@@ -148,7 +148,8 @@ export function useModeSwitch({
     let t: TabState | null = null;
     if (flowName) {
       try {
-        t = tabFromDocument(flowName, (await getFlow(flowName)).document, true);
+        const rec = await getFlow(flowName);
+        t = tabFromDocument(flowName, rec.document, true, rec.saved_at_epoch_seconds);
       } catch {
         // not saved: start from what is deployed
       }

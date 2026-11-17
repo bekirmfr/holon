@@ -140,7 +140,8 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     let (runs, counted, tallies) = if events_only {
         (Vec::new(), Vec::new(), serde_json::Value::Null)
     } else {
-        match get(format!("/deployments/{slug}/log?limit={last}")) {
+        // The list of runs, run.view's: never a run's values (R55).
+        match get(format!("/deployments/{slug}/log/heads?limit={last}")) {
             Ok(v) => (v["entries"].as_array().cloned().unwrap_or_default(), unrecorded(&v), v["tallies"].clone()),
             Err(code) => return code,
         }
@@ -280,15 +281,17 @@ fn when(at_ms: Option<u64>) -> String {
 
 /// `#41  run        2026-10-30T09:12:03  PUT /prices/tea  200  v5`
 fn run_line(r: &serde_json::Value, versions: &Versions) -> String {
-    let what = match (r["method"].as_str(), r["url"].as_str()) {
-        (Some(m), Some(u)) => format!("{m} {u}"),
+    // A run as the list of runs says it has its route, not its URL (R55).
+    let what = match (r["method"].as_str(), r["url"].as_str(), r["route"].as_str()) {
+        (Some(m), Some(u), _) => format!("{m} {u}"),
+        (_, None, Some(route)) => route.to_string(),
         _ => r["kind"].as_str().unwrap_or("run").to_string(),
     };
     let mut line = format!("#{:<5} {:<10} {}  {what}", r["seq"].as_u64().unwrap_or_default(), "run", when(r["at_ms"].as_u64()));
     if let Some(status) = r["status"].as_u64() {
         line.push_str(&format!("  {status}"));
     }
-    if r["error"].is_string() {
+    if r["error"].is_string() || r["failed"] == true {
         line.push_str("  failed");
     }
     match r["unit"].as_str().and_then(|u| versions.ran_on(u, r["seq"].as_u64().unwrap_or_default())) {

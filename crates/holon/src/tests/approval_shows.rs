@@ -80,15 +80,19 @@ fn an_approval_shows_its_deciders_what_the_run_names_or_its_input_as_the_log_kee
     let dee = book.accept(&book.invite("dee", "viewer", None, "ada").unwrap(), PW).unwrap().0;
     let secret = "import key from \"secret:api_key\"\n";
     let big = "x".repeat(20_000);
-    let too_big = format!("‹{} bytes, more than an approval shows (16 KiB)›", big.len() + r#"{"blob":""}"#.len());
+    let cut = format!("{}‹… {} more bytes›", "x".repeat(1024), big.len() - 1024);
+    // Past the bound even cut down: 64 texts of 1000 bytes.
+    let many = json!({ "blob": vec!["x".repeat(1000); 64] });
+    let too_big = format!("‹{} bytes, more than an approval shows (16 KiB)›", many.to_string().len());
     type Row<'a> = (&'a str, &'a str, &'a str, &'a str, Value, &'a str, Value);
-    let rows: [Row; 7] = [
+    let rows: [Row; 8] = [
         ("what its shows names", "", "", ", shows: { amount: order.amount, payee: order.payee }", json!({ "amount": 30, "payee": "acme", "memo": "q3" }), "shows", json!({ "amount": 30, "payee": "acme" })),
         ("the run's input, naming none", "", "", "", json!({ "amount": 30, "payee": "acme" }), "input", json!({ "amount": 30, "payee": "acme" })),
         ("a key the flow taints, marked in its input", "", "", "", json!({ "amount": 30, "card": CARD }), "input", json!({ "amount": 30, "card": "‹taint:card›" })),
         ("and in what it names", "", "", ", shows: { amount: order.amount, card: order.card }", json!({ "amount": 30, "card": CARD }), "shows", json!({ "amount": 30, "card": "‹taint:card›" })),
         ("computed from a secret, withheld whole", secret, "", ", shows: { amount: order.amount, check: key.length }", json!({ "amount": 30 }), "shows", json!(crate::taint::WITHHELD)),
-        ("more than it shows, its size", "", "", "", json!({ "blob": big }), "input", json!(too_big)),
+        ("more than it shows, cut down", "", "", "", json!({ "blob": big }), "input", json!({ "blob": cut })),
+        ("more than it shows cut down, its size", "", "", "", many, "input", json!(too_big)),
         ("a value the run computed before it", "", "  const fee = order.amount / 10\n", ", shows: { amount: order.amount, fee }", json!({ "amount": 30 }), "shows", json!({ "amount": 30, "fee": 3 })),
     ];
     for (n, (what, imports, before, options, input, field, shown)) in rows.into_iter().enumerate() {
@@ -145,6 +149,37 @@ export const pay = action(async (order) => {
     *state.deployments.lock().unwrap() = reloaded;
     assert_eq!(waiting(&state, &ada, "p0").1["runs"][0]["waiting"][0]["shows"], json!({ "amount": 30, "payee": "acme" }), "after a restart");
     assert_eq!(waiting(&state, &ada, "two").1["runs"][0]["waiting"][0]["shows"], json!({ "amount": 30, "checked": true }), "after a restart");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The class (R42): what a run's starter sends can't hide the rest of what its approval shows.
+/// Past the bound, a field padded shows its head and how many more bytes, the field beside it
+/// whole; a record of so many fields its first 64 and how many more; and a secret a cut would run
+/// through is redacted first, none of it left in clear.
+#[test]
+fn padding_hides_nothing_beside_it_of_what_an_approval_shows() {
+    let (state, _, ada, dir) = server();
+    let padded = format!("acme{}x", " ".repeat(20_000));
+    let fields: serde_json::Map<String, Value> = (0..200).map(|i| (format!("f{i:03}"), json!("y".repeat(100)))).collect();
+    let across = format!("{}{SECRET}{}", "x".repeat(1010), "y".repeat(20_000));
+    let cases = [("padded", json!({ "payee": padded, "amount": 3000 })), ("fields", Value::Object(fields)), ("across", json!({ "note": across, "amount": 3000 }))];
+    let mut shown = BTreeMap::new();
+    for (name, input) in cases {
+        let slug = deploy(&state, &ada, &pay(&format!("shown-{name}"), "import key from \"secret:api_key\"\n", "", ""));
+        state.secrets.set(&slug, "api_key", SECRET, Some("ada")).unwrap();
+        assert_eq!(send(&state, &ada, "POST", &format!("/trigger/{slug}/pay"), input).0, 202, "{name}: it waits");
+        let (code, listed) = waiting(&state, &ada, &slug);
+        assert_eq!(code, 200, "{name}: {listed}");
+        shown.insert(name, listed["runs"][0]["waiting"][0]["input"].clone());
+    }
+    let payee = shown["padded"]["payee"].as_str().unwrap();
+    assert!(payee.starts_with("acme   ") && payee.ends_with(&format!("‹… {} more bytes›", padded.len() - 1024)), "{payee}");
+    assert_eq!(shown["padded"]["amount"], 3000, "the field beside it, whole: {}", shown["padded"]);
+    let kept = shown["fields"].as_object().unwrap();
+    assert_eq!((kept.len(), &kept["‹more›"], kept.contains_key("f063"), kept.contains_key("f064")), (65, &json!("‹136 more fields›"), true, false), "{}", shown["fields"]);
+    let note = shown["across"]["note"].as_str().unwrap();
+    assert!(note.starts_with(&"x".repeat(1010)) && !note.contains("sk_live"), "a secret across the cut, redacted before it: {note}");
+    assert_eq!(shown["across"]["amount"], 3000);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

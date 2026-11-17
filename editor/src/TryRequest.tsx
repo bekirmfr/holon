@@ -18,7 +18,7 @@ import {
   type EndpointDraft,
   type Method,
 } from "./endpoint";
-import { feedStates, queueStates, sendRequest, ServerError, tickNow, type FeedState, type HttpResponse, type QueueListening, type QueueSending } from "./server";
+import { feedStates, queueStates, sendRequest, ServerError, tickNow, tickSaid, type FeedState, type HttpResponse, type QueueListening, type QueueSending } from "./server";
 import { gateOf, type Answer } from "./can";
 import type { ActionDraft, ClockDraft, FeedDraft, FileDraft, MailDraft, QueueDraft, SocketDraft } from "./canvasOps";
 import { ActionRows } from "./ActionRows";
@@ -198,7 +198,7 @@ export function TryRequest({
   const tick = (clock: string) => {
     setTicked(`${clock}: ticking…`);
     tickNow(tickSlug, clock)
-      .then((t) => setTicked(`${clock}: ticked, ${t.performed.length} effect${t.performed.length === 1 ? "" : "s"} performed`))
+      .then((t) => setTicked(tickSaid(clock, t)))
       .catch((err: unknown) => setTicked(`${clock}: ${err instanceof Error ? err.message : String(err)}`));
   };
 

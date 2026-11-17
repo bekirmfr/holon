@@ -21,7 +21,7 @@ import type { Browser, Locator } from "@playwright/test";
 import { givesOf, type Tagged } from "../src/access";
 import type { Principal, RoleEntry } from "../src/server";
 import { ADMIN, expect, HOLON, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, navLink, peopleTab } from "./helpers";
+import { enter, flowRow, gotoPage, navLink, peopleTab } from "./helpers";
 
 /** A call to the control plane as whoever `token` signs in. */
 const control = (token: string, path: string, data?: unknown, method?: string) =>
@@ -112,7 +112,8 @@ test("an admin defines a role and binds through the forms; a person's page says 
   const bound = bobs.getByRole("table", { name: `what is bound to ${bob}` });
   await expect(bound.getByRole("row").filter({ hasText: `on "${slug}"` })).toContainText("viewer");
   const mayDo = bobs.locator('dl[aria-label="what it may do"] > div').filter({ hasText: `on ${slug}` });
-  await expect(mayDo).toContainText("flow view · run view, export · state view · secret list");
+  // A viewer reads a run's steps too (run.steps, R55).
+  await expect(mayDo).toContainText("flow view · run view, steps, export · state view · secret list");
 
   // bob now sees the flow.
   const asBob = await editorAs(browser, bobToken, bob);
@@ -325,7 +326,7 @@ test("someone who may deploy a flow but not approve what it asks proposes it fro
     await expect(deployButton).toBeEnabled();
     await deployButton.dispatchEvent("click");
     await asPia.locator('[aria-modal="true"]').locator("input").fill(slug);
-    await asPia.keyboard.press("Enter");
+    await enter(asPia);
     await asPia.getByRole("dialog").getByRole("button", { name: "Update", exact: true }).click();
     const asked = asPia.getByRole("dialog");
     await expect(asked).toContainText(`Propose "${slug}"?`);
@@ -375,7 +376,7 @@ test("a flow whose approval no one here can decide says so, and deploying it ask
       await canvas.getByRole("button", { name: /^deploy/ }).dispatchEvent("click");
       if (!named) {
         await page.locator('[aria-modal="true"]').locator("input").fill(slug);
-        await page.keyboard.press("Enter");
+        await enter(page);
       }
       const consent = page.getByRole("dialog");
       await expect(consent).toContainText(`approval ok: approved by a person holding ${first}`);
@@ -452,7 +453,7 @@ test("a step whoever started the run may take says so in words, and with its one
     // others start can be, so approving it deploys without asking again.
     await canvas.getByRole("button", { name: /^deploy/ }).dispatchEvent("click");
     await page.locator('[aria-modal="true"]').locator("input").fill(slug);
-    await page.keyboard.press("Enter");
+    await enter(page);
     const consent = page.getByRole("dialog");
     await expect(consent).toContainText(`approval ok: approved by a person holding ${role}`);
     await expect(consent).toContainText(`a run ${ADMIN.name} starts can't be decided, as they take no step of it`);
@@ -467,7 +468,7 @@ test("a step whoever started the run may take says so in words, and with its one
     await page.keyboard.press("Control+A");
     await page.keyboard.insertText(text(`{ role: "${role}", starter: true }`));
     // Compiled: what it may do says so (in the bottom pane, closed).
-    await expect(page.getByText(`wait for approval "ok" by a person holding ${role}, who may be whoever started the run, and continue later`, { exact: true }).first()).toBeAttached({ timeout: 15_000 });
+    await expect(page.getByText(`wait for approval "ok" by a person holding ${role}, who may be whoever started the run, or acting for them, and continue later`, { exact: true }).first()).toBeAttached({ timeout: 15_000 });
     // Saved a second after the deploy at least (both are kept in seconds).
     await page.waitForTimeout(1_100);
     const saved = page.waitForResponse((r) => r.request().method() !== "GET" && new URL(r.url()).pathname.startsWith("/flows"));
@@ -475,7 +476,7 @@ test("a step whoever started the run may take says so in words, and with its one
     expect((await saved).ok()).toBe(true);
     await page.goto(`/#approvals.${slug}.v2`);
     const may = page.getByRole("region", { name: "what it may do" });
-    await expect(may).toContainText(`approval ok: +approved by a person holding ${role}, who may be whoever started the run, −approved by a person holding ${role}`);
+    await expect(may).toContainText(`approval ok: +approved by a person holding ${role}, who may be whoever started the run, or acting for them, −approved by a person holding ${role}`);
     await expect(may).not.toContainText("can't be decided");
     await expect(page.getByRole("group", { name: "Can't be decided here" })).toHaveCount(0);
     const decide = page.getByRole("complementary", { name: "decision" });

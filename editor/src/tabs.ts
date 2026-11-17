@@ -28,6 +28,9 @@ export type FlowMeta = {
   name: string | null;
   /** Whether it exists as a saved flow (opened from one, or saved since). */
   saved: boolean;
+  /** The save it was opened from or last saved as, by its stamp: what saving it replaces, and no
+   *  save made since (useSavedFlows.ts); null for one not saved. */
+  savedAt: number | null;
   settings: FlowSettings;
   /** What it was last saved or opened as (App's savedKeyOf); "" for one never saved. */
   savedKey: string;
@@ -134,6 +137,7 @@ export function blankMeta(name: string | null): FlowMeta {
   return {
     name,
     saved: false,
+    savedAt: null,
     settings: DEFAULT_SETTINGS,
     savedKey: "",
     notice: "",
@@ -198,8 +202,8 @@ export function nextAfterClose(ids: number[], closing: number): number | null {
 
 /** A flow document as a tab: its composites put back into the workspace first, its node-id
  *  counter past every id it holds. `saved`: it is the saved flow of that name (else a draft,
- *  unsaved until saved). */
-export function tabFromDocument(name: string | null, doc: FlowDocument, saved: boolean, ev: Evaluator): TabState {
+ *  unsaved until saved), the save stamped `savedAt`. */
+export function tabFromDocument(name: string | null, doc: FlowDocument, saved: boolean, ev: Evaluator, savedAt: number | null = null): TabState {
   // A preimage is re-hashed on insert, so a tampered entry can only add a unit nobody
   // points at, never stand in for one.
   const failed = restoreDocument(doc, ev);
@@ -229,7 +233,7 @@ export function tabFromDocument(name: string | null, doc: FlowDocument, saved: b
   for (const n of ns) for (const m of n.id.matchAll(/\d+/g)) max = Math.max(max, Number(m[0]));
   return {
     ...blankTab(name),
-    meta: { ...blankMeta(name), saved, settings: server, savedKey: saved ? savedKeyOf(ns, es, server, source) : "", notice: msg, text },
+    meta: { ...blankMeta(name), saved, savedAt: saved ? savedAt : null, settings: server, savedKey: saved ? savedKeyOf(ns, es, server, source) : "", notice: msg, text },
     nodes: ns,
     edges: es,
     viewport: doc.viewport,

@@ -41,8 +41,10 @@ describe("the review's what it may do", () => {
     const undecided = { ...touch("approval", "refunds", "new", true, "triggers"), ready: "approver: no person holds it here" };
     // Not ready, but no approval: it stays where it is, saying why.
     const unset = { ...touch("secret", "stripe_key", "same", false, "resources"), ready: "not set: the steps that read it get nothing until it is" };
+    // Its code, handler by handler, is the page's code column, not what it may do.
+    const handler = { group: "code", kind: "handler", name: "POST /refund/:id", change: "changed" as const, uses: [], ready: null, has: null };
     const groups = mayGroups(
-      [touch("host", "api.stripe.com", "new", true), touch("requests", "", "same", false, "triggers"), touch("secret", "old_key", "gone", false, "resources"), undecided, unset],
+      [handler, touch("host", "api.stripe.com", "new", true), touch("requests", "", "same", false, "triggers"), touch("secret", "old_key", "gone", false, "resources"), undecided, unset],
       [{ name: "every", now: "1m", then: "5m" }],
       lines,
     );

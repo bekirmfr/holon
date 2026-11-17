@@ -50,7 +50,9 @@ it)** can be left out (see [Optional permissions](#optional-permissions)). **App
 grants the list; **Cancel** changes nothing.
 
 **What it touches** is the same list by thing rather than by permission, beside what the
-deployment touches now: what starts it (requests, actions, waits), the folders, databases and
+deployment touches now. A new version of a deployed flow begins with **Its handlers**: each
+handler whose code it changes (**~**), adds (**+**) or removes (**-**), by its label (`GET /a`, `every 1m`). Then
+what starts it (requests, actions, waits), the folders, databases and
 secrets it is given, what it reaches outside (each host it calls, the flows whose actions it runs,
 its channels, processes, the sites whose pages it answers), what it keeps (each state key and
 collection), and its limits. Each thing is one row, marked **+** new, **-** no longer (the new
@@ -60,9 +62,10 @@ folder or database not bound here (or bound read-only, and the flow writes it), 
 that isn't deployed here, or whose action you may not run yourself (a call runs it under that
 flow's grant, with what this flow sends, so someone who may run it deploys the version), a host or
 limit this server's policy refuses, an approval whose steps no one here can take (`approver: 1
-person holds it here; it needs 2`, or `a run pat starts can't be decided`: whoever starts a run
-decides none of its steps but one that says `starter: true`, nor, where the host says so, whoever
-deploys the version), or that this host refuses (a step for an agent where it lets no agent
+person holds it here; it needs 2`, or `a run pat starts can't be decided`: whoever starts a run,
+and their party, decide none of its steps but one that says `starter: true`, nor, where the host
+says so, whoever deploys the version and theirs; one party takes one step, an agent or a service
+counted with whoever owns it or made its token), or that this host refuses (a step for an agent where it lets no agent
 decide, a `starter` step where it lets no step take whoever started the run). When no
 run could be decided there, the editor asks again before deploying it, naming each such
 approval, and its runs wait there until someone is bound to take each step; when only the runs
@@ -71,12 +74,15 @@ schedule or a file starts has no starter, and can be decided. A row marked **+**
 *asked again* is granted now, and asked of a person again: an agent changed the code that uses
 it. A row that is ready says what the server has for it: a secret's version and where it comes from (`set, v3
 (env:HOLON_SECRET_SIGNING_KEY)`), a folder or a database bound. Below the rows, **Its settings**
-lists the deploy settings that change: how often it runs, the sites whose pages it answers.
+lists the deploy settings that change: how often it runs, the sites whose pages it answers, the
+keys it keeps out of its records (`taint`), its port, each handler's log level.
 `holon editor`, `holon deploy` (when it needs approval), `holon restore --dry-run` and the agent
 tools show the same rows, worked out by the server.
 
-Only a person can approve. An agent's deploy that needs approval is saved instead, for you to
-open and deploy ([Working with agents](agents.md)).
+Only a person can approve. Each version an agent deploys is saved instead, for you to read and
+deploy ([Working with agents](agents.md)), and what you read is what deploys: the server refuses
+a proposal whose text builds another version than the one proposed, or whose `browsers` line
+isn't the sites it sends.
 
 ## Deploy settings
 
@@ -382,7 +388,8 @@ Nothing is rewritten: what a restore replaces stays restorable in turn.
   update again.
 - Restoring is an editor's or an admin's: an agent can't (`POST /deployments/<slug>/restore`,
   `{"version": N}` or `{"run": SEQ}`, with `"code": true`, `"state": true` or both, and
-  `"dry_run": true` or `"acknowledge": […]`).
+  `"dry_run": true` or `"acknowledge": […]`). A state, restored or its dry run, is read as the
+  state is: it takes `state.view` on the flow too.
 
 The sample **price-rollback** walks through it; **stock-sheet** restores a state whose runs also
 wrote a file.
@@ -483,8 +490,9 @@ balances["a"], oldest first, now 101:
 A run that only read it isn't named, nor one that changed another item. A restore or a deploy
 that moved it between two runs is a row of its own, so each value follows from the one before.
 For a whole collection, each run's row names the items it changed. `GET
-/deployments/<slug>/changes?name=balances&item=a` answers it as JSON, newest first; it reads the
-newest 2000 runs the log keeps, and `before=SEQ` reads further back.
+/deployments/<slug>/changes?name=balances&item=a` answers it as JSON, newest first, to whoever may
+read the flow's state (`state.view`); it reads the newest 2000 runs the log keeps, and `before=SEQ`
+reads further back.
 
 In the editor, **⧗** beside a cell or a collection's item in view mode's **Flow state** (and in
 its full state) opens the same history, newest first; a run's row opens that run. The sample

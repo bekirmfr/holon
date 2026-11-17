@@ -208,6 +208,10 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
 - **`--secrets :memory:`** keeps nothing across a restart: a waiting run's requests are sealed in
   a persisted deployments file under a key that is never kept, so after a restart (the secrets
   gone with it) the run can't be opened, and says so.
+- **A run's status, how long it took and whether it parked show in the list of runs.** A run's
+  steps and values are read under `run.steps`, a grant of its own (R55); the list of runs, under
+  `run.view`, keeps each run's status, duration and whether it waits. Any of them, like its timing
+  to the caller, can tell which way a choice went, a choice by a secret included.
 
 ## 5. What the tests hold
 

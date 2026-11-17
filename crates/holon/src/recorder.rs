@@ -233,6 +233,60 @@ pub struct LogEntry {
     pub lines: Vec<(String, holon_core::Value)>,
 }
 
+/// A run as the list of runs says it (`GET …/log/heads`, run.view's; the audit register's R55):
+/// when it ran, what started it, its status, how long, who by, where it waits, whether it left a
+/// state to restore to. Never its values: its URL (its query is the request's), its request and
+/// answer, its steps, what it read, sent or failed with are run.steps', in the whole entry. Made
+/// field by field, so a field added to [`LogEntry`] stays out of the list until it is named here
+/// (`the_list_of_runs_says_what_it_names`).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct RunHead {
+    pub seq: u64,
+    pub session: u32,
+    pub at_ms: u64,
+    pub duration_ms: f64,
+    pub kind: String,
+    /// The matched route's pattern, `"GET /todos/:id"`, not the URL.
+    pub route: Option<String>,
+    pub method: Option<String>,
+    pub status: Option<u16>,
+    /// Whether it failed before it could settle: not why, which may say a value.
+    pub failed: bool,
+    /// Whether it left a state a restore can put back (its `state_after`): not the state, nor its
+    /// hash, which would let a guess at the state be checked (state.view's, R56).
+    pub left_state: bool,
+    pub by: Option<String>,
+    pub run_id: String,
+    pub unit: String,
+    /// The waiting points it settled waiting at, by name.
+    pub parked: Vec<String>,
+    pub retries: u32,
+    pub lost_since: Option<u64>,
+}
+
+impl From<&LogEntry> for RunHead {
+    fn from(e: &LogEntry) -> RunHead {
+        RunHead {
+            seq: e.seq,
+            session: e.session,
+            at_ms: e.at_ms,
+            duration_ms: e.duration_ms,
+            kind: e.kind.clone(),
+            route: e.route.clone(),
+            method: e.method.clone(),
+            status: e.status,
+            failed: e.error.is_some(),
+            left_state: e.state_after.is_some(),
+            by: e.by.clone(),
+            run_id: e.run_id.clone(),
+            unit: e.unit.clone(),
+            parked: e.parked.clone(),
+            retries: e.retries,
+            lost_since: e.lost_since,
+        }
+    }
+}
+
 /// Where a run stands among the commits to its deployment's state (firing.rs). Each run of a
 /// stateful deployment commits under the state's lock, a run that only read too, and each commit
 /// is counted there; its line is numbered after, outside that lock, so two runs committing close

@@ -116,6 +116,23 @@ describe("what a flow touches", () => {
     expect(askAgain("payouts", undefined, "Deploy")).toBeNull();
   });
 
+  // A deploy's handlers, as deploy.rs `code_rows` answers them and
+  // a_review_shows_all_a_version_changes_and_what_it_shows_deploys reads them: first.
+  it("says its handlers first: changed, added, removed", () => {
+    const handler = (name: string, change: Touch["change"]): Touch => ({ group: "code", kind: "handler", name, change, uses: [], ready: null, has: null });
+    const rows: Touch[] = [handler("GET /a", "changed"), handler("GET /c", "new"), handler("GET /b", "gone"), { group: "triggers", kind: "requests", name: "", change: "same", uses: [use("NetworkIngress", "receive", "same")], ready: null, has: null }];
+    expect(touchText(touchLines(rows, [{ name: "port", now: "18447", then: "18448" }]))).toEqual([
+      "Its handlers",
+      "  ~ handler GET /a",
+      "  + handler GET /c — new",
+      "  - handler GET /b — no longer",
+      "What starts it",
+      "  · requests: receive",
+      "Its settings",
+      "  ~ port: 18447 → 18448",
+    ]);
+  });
+
   it("says nothing for a server that doesn't answer them", () => {
     expect(touchLines(undefined, undefined)).toEqual([]);
   });

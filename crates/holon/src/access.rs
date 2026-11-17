@@ -22,8 +22,11 @@
 //! this run, good as an admin until it stops, that only that user can read.
 //!
 //! Hosts and origins: the server answers as loopback, and as the hosts and editor origins named
-//! with `--allow-host` / `--allow-origin`. Tokens are never logged or echoed.
+//! with `--allow-host` / `--allow-origin`. Tokens are never logged or echoed. A client is counted
+//! by its address, or, behind a proxy named with `--trust-proxy`, by the one that proxy forwarded
+//! for (`client`).
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -60,7 +63,7 @@ impl Role {
 /// the OS user's `local:<user>` while it is tied to none), its kind and what it holds
 /// (bindings.rs); no one for what is open (signing in, the health check), and on a server without
 /// accounts (the tests), who holds nothing at all and is let do everything (`holds` none).
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Caller {
     pub(crate) name: Option<String>,
     pub(crate) kind: Option<Kind>,
@@ -71,6 +74,16 @@ pub(crate) struct Caller {
 }
 
 impl Caller {
+    /// It, holding only what it holds for as long as `until` (none: for good): the bindings that
+    /// last that long, and what no document holds (the run file's admin). What it makes lasts no
+    /// longer than what lets it make it: an admin until Friday binds no one, gives no role and
+    /// makes no way in to anyone past Friday (bindings.rs `may_bind`, `beyond`).
+    pub(crate) fn lasting(&self, until: Option<u64>) -> Caller {
+        let lasts = |end: Option<u64>| end.is_none_or(|end| until.is_some_and(|until| until <= end));
+        let holds = self.holds.as_ref().map(|held| held.iter().filter(|h| lasts(h.until)).cloned().collect());
+        Caller { name: self.name.clone(), kind: self.kind, holds, local: self.local.clone() }
+    }
+
     /// Whether it is the run file tied to no account (before setup, or the account disabled): admin
     /// on the host, by the OS user's name, bound nowhere, so it decides no approval (D45).
     pub(crate) fn untied(&self) -> bool {
@@ -90,6 +103,17 @@ impl Caller {
     }
 }
 
+/// Whether a request that says it was forwarded, from a proxy the server doesn't trust, has been
+/// told of (`Access::client`): once a run.
+static FORWARDED_UNTRUSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// An address as a proxy writes it in `X-Forwarded-For`: `203.0.113.9`, `2001:db8::1`, and with
+/// a port, `203.0.113.9:4711` or `[2001:db8::1]:4711`. None for anything else (`unknown`).
+fn forwarded_address(entry: &str) -> Option<IpAddr> {
+    let ip = entry.parse::<IpAddr>().ok().or_else(|| entry.parse::<std::net::SocketAddr>().ok().map(|at| at.ip()))?;
+    Some(ip.to_canonical())
+}
+
 /// The control plane's access settings.
 #[derive(Default)]
 pub(crate) struct Access {
@@ -99,15 +123,60 @@ pub(crate) struct Access {
     pub(crate) hosts: Vec<String>,
     /// Editor origins it answers CORS for besides localhost's (`https://holon.example.com`).
     pub(crate) origins: Vec<String>,
+    /// The proxies in front it trusts to say whom they forward for (`--trust-proxy`), as
+    /// `to_canonical` writes them.
+    pub(crate) proxies: Vec<IpAddr>,
 }
 
 impl Access {
     pub(crate) fn new(accounts: Arc<Accounts>, hosts: Vec<String>, origins: Vec<String>) -> Access {
-        Access { accounts: Some(accounts), hosts, origins }
+        Access { accounts: Some(accounts), hosts, origins, proxies: vec![] }
+    }
+
+    /// Trusting `proxies` to say whom they forward for (`client`).
+    pub(crate) fn trusting(mut self, proxies: Vec<IpAddr>) -> Access {
+        self.proxies = proxies.into_iter().map(|ip| ip.to_canonical()).collect();
+        self
     }
 
     pub(crate) fn accounts(&self) -> Option<&Arc<Accounts>> {
         self.accounts.as_ref()
+    }
+
+    /// Whom `request` comes from, as the control plane counts a client: its places at once
+    /// (main.rs, `Slots`) and its tries of a way in (accounts.rs, `counted`). The address it
+    /// connected from; or, connected from a proxy it trusts (`--trust-proxy`), the address that
+    /// proxy forwarded for: the nearest in `X-Forwarded-For`, read from the end, that isn't a
+    /// proxy it trusts itself (each proxy adds the address it was reached from at the end, so
+    /// what a client wrote there itself is never read). A list it can't read is the proxy's
+    /// address. An IPv6 address counts by its /64, which one client is commonly given whole.
+    ///
+    /// Behind a proxy it doesn't trust, every client is the proxy, and shares its places and its
+    /// tries: the first request that says it was forwarded tells the server's output so, once.
+    pub(crate) fn client(&self, request: &Request) -> String {
+        let peer = request.remote_addr().ip().to_canonical();
+        let forwarded = request.headers().filter(|(name, _)| name.eq_ignore_ascii_case("x-forwarded-for")).flat_map(|(_, list)| list.split(',')).map(str::trim);
+        let mut from = peer;
+        if self.proxies.contains(&peer) {
+            for entry in forwarded.collect::<Vec<_>>().into_iter().rev() {
+                let Some(ip) = forwarded_address(entry) else { break };
+                from = ip;
+                if !self.proxies.contains(&ip) {
+                    break;
+                }
+            }
+        } else if forwarded.count() > 0 && !FORWARDED_UNTRUSTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!(
+                "holon: a request from {peer} says it was forwarded (X-Forwarded-For), and {peer} isn't a proxy the server was told to trust: every client it forwards for counts as {peer}, sharing its requests at once and its sign-in tries. If it is your proxy, start the server with --trust-proxy {peer}"
+            );
+        }
+        match from {
+            IpAddr::V6(v6) => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+            ip => ip.to_string(),
+        }
     }
 
     /// Who `request` comes from, once its route lets them, or why it may not go on.
@@ -170,7 +239,9 @@ impl Access {
             }
             match accounts.through_provider(&oidc.issuer, &identity.subject, identity.email.as_deref()) {
                 Ok(who) => Ok(who),
-                Err(Some(name)) => Err(err(403, format!("{name}'s email is yours at your identity provider, but {name} signs in as someone else there: ask an admin to set {name}'s email again, which matches whoever signs in with it next"))),
+                // Not named: whoever holds an address learns that its account here isn't theirs,
+                // not whose it is (a name here is half of a password guess).
+                Err(Some(_)) => Err(err(403, format!("the account here with {} signs in as someone else at your identity provider: ask an admin to set that account's email again, which matches whoever signs in with it next", identity.email.as_deref().unwrap_or("your email")))),
                 Err(None) => match (identity.email, identity.unverified) {
                     (None, Some(email)) => Err(err(403, format!("your identity provider gave {email} but didn't say it verified it: an account here is matched by an email the provider vouches for (email_verified); ask your provider's admin"))),
                     (email, _) => {
@@ -318,9 +389,66 @@ mod tests {
         assert_eq!(call(&access, "GET", "/flows", Some(&expired)), Err(401));
     }
 
+    /// A sign-in through a provider that is refused names no account here, whichever way it is
+    /// refused: an email an account here has, another subject signing in with it; a subject tied
+    /// to a disabled account; a disabled account's email; an email the provider didn't say it
+    /// verified; one no account has; none at all. Whoever holds an address learns whether it is
+    /// theirs here, never whose it is. Each refusal still says what to do.
+    #[test]
+    fn a_refused_provider_sign_in_names_no_account() {
+        use crate::oidc::tests::{provider, token};
+        let accounts = Arc::new(Accounts::memory());
+        accounts.setup(&accounts.setup_code().unwrap(), "orla", PW).unwrap();
+        for (name, email) in [("piet", "two@example.com"), ("quin", "three@example.com"), ("rafe", "four@example.com")] {
+            accounts.accept(&accounts.invite(name, Role::Editor.name(), None, "orla").unwrap(), PW).unwrap();
+            accounts.set_email(name, Some(email.into()), "orla").unwrap();
+        }
+        accounts.set_email("orla", Some("one@example.com".into()), "orla").unwrap();
+        accounts.add("sian-bot", Kind::Agent, "agent", "orla", "orla").unwrap();
+        accounts.add("tove-ci", Kind::Service, "editor", "orla", "orla").unwrap();
+        accounts.use_oidc(provider());
+        let access = Access::new(Arc::clone(&accounts), vec![], vec![]);
+        let answer = |claims: serde_json::Value| {
+            let headers = vec![("Host".to_string(), "localhost:7420".to_string()), ("Authorization".to_string(), format!("Bearer {}", token(claims)))];
+            match access.admit(&Request::fake_http("GET", "/flows", headers, vec![])) {
+                Ok(c) => Ok(c.name),
+                Err(r) => Err((r.status_code, String::from_utf8(crate::tests::body_bytes(r)).unwrap())),
+            }
+        };
+        // piet and quin sign in once, tying them to their subjects; then quin and rafe are disabled.
+        for name in ["piet", "quin"] {
+            let email = accounts.principals().into_iter().find(|p| p.name == name).unwrap().email.unwrap();
+            let first = answer(serde_json::json!({ "sub": format!("sub-{name}"), "email": email, "email_verified": true }));
+            assert_eq!(first, Ok(Some(name.to_string())), "{name} signs in");
+        }
+        accounts.set_disabled("quin", true).unwrap();
+        accounts.set_disabled("rafe", true).unwrap();
+        let names: Vec<String> = accounts.principals().into_iter().map(|p| p.name).collect();
+        assert_eq!(names.len(), 6, "{names:?}");
+        let refused = [
+            ("another subject with piet's email", serde_json::json!({ "sub": "sub-other", "email": "two@example.com", "email_verified": true }), "email again"),
+            ("the same, written otherwise", serde_json::json!({ "sub": "sub-other", "email": "TWO@Example.com", "email_verified": true }), "email again"),
+            ("quin's subject, quin disabled", serde_json::json!({ "sub": "sub-quin", "email": "three@example.com", "email_verified": true }), "ask an admin"),
+            ("rafe's email, rafe disabled", serde_json::json!({ "sub": "sub-new", "email": "four@example.com", "email_verified": true }), "ask an admin"),
+            ("orla's email, not said to be verified", serde_json::json!({ "sub": "sub-new", "email": "one@example.com" }), "email_verified"),
+            ("piet's email, not said to be verified", serde_json::json!({ "sub": "sub-other", "email": "two@example.com", "email_verified": false }), "email_verified"),
+            ("an email no account has", serde_json::json!({ "sub": "sub-new", "email": "nobody@example.com", "email_verified": true }), "ask an admin"),
+            ("no email", serde_json::json!({ "sub": "sub-new" }), "ask an admin"),
+        ];
+        for (what, claims, says) in refused {
+            let Err((status, body)) = answer(claims) else { panic!("{what}: let in") };
+            assert_eq!(status, 403, "{what}: {body}");
+            let words: Vec<&str> = body.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_')).collect();
+            for name in &names {
+                assert!(!words.contains(&name.as_str()), "{what}: names {name}: {body}");
+            }
+            assert!(body.contains(says), "{what}: says what to do ({says}): {body}");
+        }
+    }
+
     #[test]
     fn unnamed_hosts_and_origins_are_refused() {
-        let access = Access { accounts: None, hosts: vec!["api.example.com".into()], origins: vec!["https://holon.example.com".into()] };
+        let access = Access { accounts: None, hosts: vec!["api.example.com".into()], origins: vec!["https://holon.example.com".into()], proxies: vec![] };
         assert!(access.allows_host("api.example.com:7420", 7420) && access.allows_host("localhost:7420", 7420));
         assert!(!access.allows_host("evil.example.com:7420", 7420));
         assert!(access.allows_origin("https://holon.example.com") && access.allows_origin("http://localhost:5173"));

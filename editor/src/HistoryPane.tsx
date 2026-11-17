@@ -71,7 +71,7 @@ export function HistoryTab({
   mayRestore?: Answer;
 }) {
   const history = useHistory(slug);
-  const { entries } = useFlowLog(slug);
+  const { entries, steps } = useFlowLog(slug);
   const currentUnit = history.versions.find((v) => v.current)?.unit;
   const timeline = useMemo(() => buildTimeline(entries, history.events, history.versions), [entries, history.events, history.versions]);
   const byKey = useMemo(() => new Map(timeline.map((item, i) => [item.key, i])), [timeline]);
@@ -91,6 +91,11 @@ export function HistoryTab({
         <input className="hl-flow__filter" aria-label="filter history" placeholder="filter history…" value={query} onChange={(e) => setQuery(e.target.value)} />
       </div>
       {restorer.modal}
+      {steps && (
+        <p className="hl-flow__note" role="note" aria-label="steps">
+          {steps}
+        </p>
+      )}
       {restorer.note && (
         <div className="hl-history__note" style={{ color: restorer.note.ok ? good : bad }}>
           {restorer.note.text}
