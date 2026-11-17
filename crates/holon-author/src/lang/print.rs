@@ -226,26 +226,12 @@ fn field(k: &str, v: &str) -> String {
     if is_identifier(k) && v == k { v.to_string() } else { format!("{}: {v}", key(k)) }
 }
 
-/// Whether `text` is a number as TypeScript writes one and ts.rs reads it back to the same text:
-/// decimal digits, a fraction, an exponent, and a minus first; no leading zero before more digits.
+/// Whether `text` is a finite number as JavaScript spells it (`holon_core::number_text`), the
+/// one spelling ts.rs reads a number literal back to: `0.5`, `1000`, `-2.5`, `1e+21`; not `.5`,
+/// `0.10` or `1e3`, which it reads as `0.5`, `0.1` and `1000`, so a value spelled so stays a
+/// call that keeps it as it is.
 fn is_number(text: &str) -> bool {
-    let digits = text.strip_prefix('-').unwrap_or(text);
-    let (mantissa, exponent) = match digits.find(['e', 'E']) {
-        Some(at) => (&digits[..at], Some(&digits[at + 1..])),
-        None => (digits, None),
-    };
-    let (whole, fraction) = match mantissa.split_once('.') {
-        Some((w, f)) => (w, Some(f)),
-        None => (mantissa, None),
-    };
-    let all_digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
-    let whole_ok = all_digits(whole) && !(whole.len() > 1 && whole.starts_with('0'));
-    let fraction_ok = fraction.is_none_or(|f| all_digits(f) && !(whole.is_empty() && f.is_empty()));
-    let exponent_ok = exponent.is_none_or(|e| {
-        let e = e.strip_prefix(['+', '-']).unwrap_or(e);
-        !e.is_empty() && all_digits(e)
-    });
-    !mantissa.is_empty() && (whole.is_empty() || whole_ok) && fraction_ok && exponent_ok && text.parse::<f64>().is_ok_and(f64::is_finite)
+    text.parse::<f64>().is_ok_and(|n| n.is_finite() && holon_core::number_text(n) == text)
 }
 
 /// A number literal with its precedence: a negative one is a unary minus.
@@ -5114,7 +5100,24 @@ export const t = action((input) => {
         assert_eq!(json_literal("{\"k\": 1}"), None, "a text that doesn't write back the same stays a const");
         assert_eq!(json_literal("{\"k\":[1,\"x\"],\"done\":false}"), None, "unsorted keys don't either");
         assert_eq!(json_literal("{\"k\":null}"), None, "TypeScript has no null here");
-        for (text, number) in [("1", true), ("-2.5", true), ("1e3", true), (".5", true), ("007", false), ("1.", true), ("x", false), ("", false)] {
+        for (text, number) in [
+            ("1", true),
+            ("-2.5", true),
+            ("1000", true),
+            ("0.5", true),
+            ("1e+21", true),
+            ("1.5e-7", true),
+            ("1e3", false),
+            (".5", false),
+            ("0.10", false),
+            ("1.", false),
+            ("-0", false),
+            ("+1", false),
+            ("007", false),
+            ("Infinity", false),
+            ("x", false),
+            ("", false),
+        ] {
             assert_eq!(is_number(text), number, "{text}");
         }
         assert_eq!(optional_secret("SecretRead(\"receipt_key\")"), Some("receipt_key"));
