@@ -182,6 +182,18 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   far side sends back percent-encoded or as HTML. The taint walk marks or withholds what the
   graph derives; a value it can't follow (echoed back by an API and passed on) is caught only
   while it is literal.
+- **The log keeps sizes as they came.** It keeps the headers of a reply as the other service
+  sent them, the size line among them (`content-length`; also `content-range`, `etag` and a
+  checksum, where one is sent), the headers of the request a caller made, and the size and hash
+  of a file a run read, beside its text. A secret in that reply, that request or that file is
+  marked, and the size is still the whole text's. So where another service sends a secret back,
+  a caller sends one, or a file holds one, the log shows how long the secret is, to people
+  allowed to read that run's details: the length of the text less what is left of it once the
+  mark stands in. This is a choice, not an oversight (the owner's, 2026-11-17): the log stays
+  whole and who may read a run's details is what is controlled, since writing those sizes as
+  marks would do so in every run of every deployment that has a secret, and a check would then
+  have to take on trust each step that reads one. A flow that works out a length itself
+  (`text_length` of a reply) writes it down as its own.
 - **A mark stands for a text of 6 characters or more.** A true or false, a number, bytes, a
   list, a record, a short text, and a text JSON escapes leave the run's record withheld whole,
   and so does a secret read inside a function applied to each item, inside a module, or deeper
