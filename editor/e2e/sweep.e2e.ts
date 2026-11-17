@@ -2,7 +2,7 @@
 // goes through the command line (`holon deploy`, which builds the unit the editor's Deploy builds:
 // holon-author's flow_unit, here native and there through wasm) to the real server, its port moved
 // as the editor's tests move it (SAMPLE_SHIFT). A request no route takes is sent to its port and
-// found in its own log: it listens, and what it is sent reaches it. Then it is removed, its state,
+// found in its own log (counted, or a run): it listens, and what it is sent reaches it. Then it is removed, its state,
 // its clocks and its port with it, so nothing after it meets it.
 //
 // A test for every few samples (SAMPLES_PER_TEST), each sample a step with a limit of its own
@@ -100,14 +100,16 @@ for (const group of GROUPS) {
               expect(deployment, "it is listed").toBeDefined();
               expect(deployment?.port, "its port").toBe(moved || null);
               if (moved) {
-                // A path no route takes: whatever the flow answers, the request is a run in its own log.
+                // A path no route takes: it reaches the flow's own log, as a run (a route that takes
+                // any path) or counted under "(ran nothing)", with its path.
                 const probe = `/e2e-sweep-${Date.now()}`;
                 await fetch(`http://127.0.0.1:${moved}${probe}`);
-                await expect
-                  .poll(async () => ((await (await control(adminToken, `/deployments/${name}/log?limit=5`)).json()) as { entries: { url?: string }[] }).entries.some((e) => e.url?.includes(probe)), {
-                    message: "the probe is in its log",
-                  })
-                  .toBe(true);
+                type Page = { entries: { url?: string }[]; tallies?: Record<string, { last_failure?: { error?: string } }> };
+                const reached = async () => {
+                  const page = (await (await control(adminToken, `/deployments/${name}/log?limit=5`)).json()) as Page;
+                  return page.entries.some((e) => e.url?.includes(probe)) || !!page.tallies?.["(ran nothing)"]?.last_failure?.error?.includes(probe);
+                };
+                await expect.poll(reached, { message: "the probe reached its log" }).toBe(true);
               }
             } finally {
               // Stopped, then removed (a running one can't be).

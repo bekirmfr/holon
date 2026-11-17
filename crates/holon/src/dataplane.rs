@@ -550,9 +550,15 @@ impl outbound::Forward for Replying {
 
 /// A streamed call's answer as it is read, then the end of the run: a run that failed after the
 /// reply began ends an event stream with `event: error`.
+/// A request's run, on the blocking pool: its answer, and the channel a subscription it answers
+/// with reads from, looked up there too (none: it subscribes to nothing, or the deployment is gone).
+type Ran = (DataResponse, Option<(Arc<channels::Channels>, channels::ChannelLimits)>);
+
 struct Forwarded {
     pieces: tokio::sync::mpsc::Receiver<Reply>,
-    run: tokio::task::JoinHandle<DataResponse>,
+    /// The run, with the subscription's channel it would have needed (none: a streamed answer
+    /// subscribes to nothing).
+    run: tokio::task::JoinHandle<Ran>,
     events: bool,
     ended: bool,
 }
@@ -569,7 +575,7 @@ impl Forwarded {
             Poll::Pending => return Poll::Pending,
         }
         let done = match Pin::new(&mut self.run).poll(cx) {
-            Poll::Ready(done) => done,
+            Poll::Ready(done) => done.map(|(answered, _)| answered),
             Poll::Pending => return Poll::Pending,
         };
         self.ended = true;
@@ -711,8 +717,10 @@ async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> h
     };
     let deployments = Arc::clone(&listener.deployments);
     let slug = listener.slug.clone();
-    let origin = allowed_origin(&deployments, &slug, &request.headers);
-    // Every run goes to the blocking pool, however short: nothing computes on a worker. The worker
+    // Every run goes to the blocking pool, however short: nothing computes on a worker.
+    // Nor does a worker take the deployments table's lock, whose holders write and seal: what the
+    // answer needs of the table (the origins it answers, a subscription's channel) is read there
+    // too (release audit R45, D5). The worker
     // that reads a request is the one watching the network for every listener on the server, and
     // tokio wakes another to take the watch over only when it has more than one task to share. A
     // run computing here, even a route's that waits on nothing, leaves the whole server deaf
@@ -736,10 +744,17 @@ async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> h
     // stops reading has its connection cut there ([`Deadlined`]), and the pieces nowhere to go.
     let (pieces, mut forwarded) = tokio::sync::mpsc::channel(64);
     let forward = outbound::Forwarder::new(Arc::new(Replying(pieces)));
-    let allowed = origin.clone();
+    // The origin, set before the run starts: a streamed answer's head, sent while it runs, needs it.
+    let origin: Arc<OnceLock<Option<String>>> = Arc::new(OnceLock::new());
+    let told = Arc::clone(&origin);
     let mut run = tokio::task::spawn_blocking(move || {
         let _admitted = admitted;
-        serve_data_forwarding(&listener.store, &listener.deployments, &listener.deployments_path, &listener.slug, &request, Some(forward), allowed)
+        let (deployments, slug) = (&listener.deployments, listener.slug.as_str());
+        let allowed = allowed_origin(deployments, slug, &request.headers);
+        let _ = told.set(allowed.clone());
+        let answered = serve_data_forwarding(&listener.store, deployments, &listener.deployments_path, slug, &request, Some(forward), allowed);
+        let channel = answered.subscribe.as_ref().and_then(|_| deployments.lock().unwrap().get(slug).map(|d| (Arc::clone(&d.channels), d.permit.channels.clone())));
+        (answered, channel)
     });
     let (head, done) = tokio::select! {
         head = forwarded.recv() => (head, None),
@@ -747,7 +762,7 @@ async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> h
     };
     if let Some(Reply::Head(content_type)) = head {
         let mut headers = vec![("content-type".to_string(), content_type.clone()), ("cache-control".into(), "no-cache".into()), ("x-accel-buffering".into(), "no".into())];
-        if let Some(o) = origin {
+        if let Some(o) = origin.get().cloned().flatten() {
             headers.extend([("access-control-allow-origin".to_string(), o), ("vary".into(), "Origin".into())]);
         }
         let events = content_type.starts_with("text/event-stream");
@@ -757,14 +772,13 @@ async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> h
         Some(done) => done,
         None => run.await,
     };
-    let answered = done.unwrap_or_else(|_| DataResponse::json_error(500, "the request's handler failed"));
+    let (answered, channel) = done.unwrap_or_else(|_| (DataResponse::json_error(500, "the request's handler failed"), None));
     // A big file: its bytes follow the headers, read from the file the host opened.
     if let Some(file) = answered.file.clone().filter(|f| f.opened.is_some()) {
         return with_headers(answered.status, &answered.headers, Answer::File(stream_file(file, deployments, slug)));
     }
     let Some(ask) = answered.subscribe.clone() else { return to_hyper(answered) };
     // A subscription: its packs follow the headers, from the deployment's channel.
-    let channel = deployments.lock().unwrap().get(&slug).map(|d| (Arc::clone(&d.channels), d.permit.channels.clone()));
     let Some((channels, limits)) = channel else {
         return to_hyper(DataResponse::json_error(503, &format!("{slug:?} is not deployed as a server")));
     };

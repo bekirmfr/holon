@@ -832,6 +832,12 @@ pub(crate) struct ParkedRun {
     /// the server starts (`open`). Never set on a run in memory that could be opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) sealed: Option<String>,
+    /// That part sealed once, as it parked or parked again (`persist::keep_waiting`), for every
+    /// save to write as it is: whatever changes its inputs, sourced values, requests, tokens,
+    /// events or what a point shows keeps it through `keep_waiting` again (a debug build checks
+    /// at each save, `persist::check_sealed`). Never persisted: a server starting seals each again.
+    #[serde(skip)]
+    pub(crate) sealed_part: Option<std::sync::Arc<crate::persist::SealedPart>>,
     /// Whether a resume holds it right now: claimed under the deployments lock when its token
     /// is checked (or its deadline passes), so a token resumes it once even when requests carrying
     /// it arrive together. Never persisted: a restart frees it.
@@ -859,7 +865,7 @@ struct Sealable {
     shown: BTreeMap<String, Shown>,
 }
 
-fn parked_context(slug: &str, run_id: &str) -> String {
+pub(crate) fn parked_context(slug: &str, run_id: &str) -> String {
     format!("holon-parked/v1\0{slug}\0{run_id}")
 }
 
@@ -949,6 +955,7 @@ impl ParkedRun {
             sent: Vec::new(),
             started_by: waits.started_by.clone(),
             sealed: None,
+            sealed_part: None,
             resuming: false,
             going_on: None,
         })
@@ -1017,12 +1024,9 @@ impl ParkedRun {
         Ok(Resumption { unit, inputs, sourced, waits, resumed: Resumed { state_before, nonce, prior } })
     }
 
-    /// This run as the deployments file keeps it: what may hold a secret sealed under its
-    /// deployment's keys (`at_rest::deployment`), bound to its run id; or why it can't be.
-    pub(crate) fn sealed_for_disk(&self, slug: &str, keys: &crate::at_rest::Keyring) -> Result<ParkedRun, String> {
-        if self.sealed.is_some() {
-            return Ok(self.clone());
-        }
+    /// What of it the deployments file keeps sealed, in the clear: what `persist::keep_waiting`
+    /// seals, and checks against.
+    pub(crate) fn plain_part(&self) -> zeroize::Zeroizing<String> {
         let part = Sealable {
             inputs: self.inputs.clone(),
             sourced: self.sourced.clone(),
@@ -1031,18 +1035,24 @@ impl ParkedRun {
             events: self.events.clone(),
             shown: self.waiting.iter().filter_map(|w| Some((w.name.clone(), w.shown.clone()?))).collect(),
         };
-        let plain = zeroize::Zeroizing::new(serde_json::to_string(&part).unwrap_or_default());
-        let sealed = keys.seal_line(&crate::at_rest::deployment(slug), &parked_context(slug, &self.run_id), plain.as_bytes())?;
-        Ok(ParkedRun {
-            inputs: Vec::new(),
-            sourced: Vec::new(),
-            rounds: Vec::new(),
-            tokens: BTreeMap::new(),
-            events: BTreeMap::new(),
-            waiting: self.waiting.iter().map(|w| StoredWaiting { shown: None, ..w.clone() }).collect(),
-            sealed: Some(sealed),
-            ..self.clone()
-        })
+        zeroize::Zeroizing::new(serde_json::to_string(&part).unwrap_or_default())
+    }
+
+    /// This run as the deployments file keeps it, its part `sealed` (`persist::SealedPart`): none
+    /// of what that holds copied, even for a moment (set aside while the rest is).
+    pub(crate) fn sealed_for_disk(&mut self, sealed: &str) -> ParkedRun {
+        let inputs = std::mem::take(&mut self.inputs);
+        let sourced = std::mem::take(&mut self.sourced);
+        let rounds = std::mem::take(&mut self.rounds);
+        let tokens = std::mem::take(&mut self.tokens);
+        let events = std::mem::take(&mut self.events);
+        let shown: Vec<Option<Shown>> = self.waiting.iter_mut().map(|w| w.shown.take()).collect();
+        let kept = ParkedRun { sealed: Some(sealed.to_string()), sealed_part: None, ..self.clone() };
+        (self.inputs, self.sourced, self.rounds, self.tokens, self.events) = (inputs, sourced, rounds, tokens, events);
+        for (w, shown) in self.waiting.iter_mut().zip(shown) {
+            w.shown = shown;
+        }
+        kept
     }
 
     /// Open what the deployments file sealed, with `keys`; nothing to do for a run not sealed.
@@ -1265,7 +1275,8 @@ pub(crate) fn park_if_waiting(
         w.expires_at = w.expires_at.min(record.parked_at + limits.max_await_seconds);
     }
     let names = record.waiting.iter().map(|w| w.name.clone()).collect();
-    dep.parked.insert(record.run_id.clone(), record);
+    // Sealed once, and within the bytes its waiting runs may hold (`max_waiting_bytes`).
+    crate::persist::keep_waiting(slug, dep, record)?;
     Ok(names)
 }
 
@@ -1366,7 +1377,7 @@ pub(crate) fn resume_parked(
     going_on(Some(name));
     if let Err(e) = persist_deployments(deployments_path, deployments) {
         going_on(None);
-        return Err(format!("it wasn't saved as going on, so it waits on: {e}"));
+        return Err(format!("{NOT_SAVED_GOING_ON}, so it waits on: {e}"));
     }
     let run = fire_with_state(root, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &secrets, &mut waits, Some(resumed));
 
@@ -1392,6 +1403,9 @@ pub(crate) fn resume_parked(
         l.said(slug);
     }
 
+    // Kept as it was when what it learned is past the bytes its deployment's waiting runs may
+    // hold: it waits on where it waited, its event deliverable again.
+    let mut not_kept = None;
     {
         let mut table = deployments.lock().unwrap();
         if let Some(dep) = table.get_mut(slug) {
@@ -1405,7 +1419,7 @@ pub(crate) fn resume_parked(
                 eprintln!("holon: run {run_id} in {slug:?} waits on: its event can be delivered again");
             } else if run.waiting.is_empty() || run.error.is_some() {
                 dep.parked.remove(run_id);
-            } else if let Some(kept) = dep.parked.get_mut(run_id) {
+            } else if let Some(mut kept) = dep.parked.get(run_id).cloned() {
                 // Still waiting: what it learned is kept; a point it was already waiting at keeps
                 // its deadline.
                 let now = epoch_now();
@@ -1423,13 +1437,18 @@ pub(crate) fn resume_parked(
                         }
                     })
                     .collect();
+                // Sealed again, in place of what it was, or not at all.
+                if let Err(e) = crate::persist::keep_waiting(slug, dep, kept) {
+                    eprintln!("holon: run {run_id} in {slug:?} waits on as it was, its event deliverable again: {e}");
+                    not_kept = Some(e);
+                }
             }
         }
     }
     let saved = persist_deployments(deployments_path, deployments);
-    match (run.error, saved) {
+    match (run.error.or(not_kept), saved) {
         (Some(e), _) => Err(e),
-        (None, Err(e)) => Err(format!("it went on, but {e}")),
+        (None, Err(e)) => Err(format!("{WENT_ON_UNSAVED} {e}")),
         (None, Ok(())) => Ok(()),
     }
 }
@@ -1529,8 +1548,13 @@ pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Arc<Mutex<BTreeM
             let Some(claimed) = claim(&deployments, &slug, &run_id, &name) else {
                 return;
             };
-            if let Err(e) = resume_parked(&store, &deployments, &deployments_path, &slug, claimed, &name, event) {
-                eprintln!("holon: expiring {name:?} of run {run_id} in {slug:?}: {e}");
+            match resume_parked(&store, &deployments, &deployments_path, &slug, claimed, &name, event) {
+                Ok(()) => {}
+                // It waits on, and its deadline's event goes again at the next pass: turned away
+                // by a run lock, or not saved as going on (so it didn't run); or it went on and
+                // the table wasn't saved after, which ending it wouldn't mend.
+                Err(e) if goes_again(&e) => eprintln!("holon: expiring {name:?} of run {run_id} in {slug:?}: {e}"),
+                Err(e) => end_unresumable(&deployments, &deployments_path, &slug, &run_id, &name, &e),
             }
         });
         match spawned {
@@ -1539,6 +1563,43 @@ pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Arc<Mutex<BTreeM
         }
     }
     Expiring(going)
+}
+
+/// How [`resume_parked`] says a run wasn't saved as going on, so its part didn't run.
+const NOT_SAVED_GOING_ON: &str = "it wasn't saved as going on";
+/// How [`resume_parked`] says a run went on and the table wasn't saved after.
+const WENT_ON_UNSAVED: &str = "it went on, but";
+
+/// Whether a resume that failed with `e` leaves its run as it was, to be given its event again: one
+/// turned away by a run lock (firing.rs) or not saved as going on didn't run; one that went on
+/// and wasn't saved after is over, or waits again, as it should. None of them is a run that can't
+/// be resumed ([`end_unresumable`]).
+fn goes_again(e: &str) -> bool {
+    e.starts_with("busy:") || e.starts_with(NOT_SAVED_GOING_ON) || e.starts_with(WENT_ON_UNSAVED)
+}
+
+/// End waiting run `run_id` of `slug`, past its deadline at `name`, whose resume failed for a
+/// reason a pass a second later finds again (`why`: its record won't open, its unit isn't in the
+/// store, what it learned can't be kept): no longer waiting, its log saying why, and said once.
+/// Left waiting, it was resumed again every second, for good, and said each time (release audit
+/// R46, D12). Its first part's entry in the log keeps what it was started with.
+fn end_unresumable(deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, slug: &str, run_id: &str, name: &str, why: &str) {
+    let ended = {
+        let mut table = deployments.lock().unwrap();
+        // One a request claimed meanwhile is its to resume.
+        table.get_mut(slug).filter(|d| d.parked.get(run_id).is_some_and(|p| !p.resuming)).and_then(|d| d.parked.remove(run_id))
+    };
+    let Some(run) = ended else { return };
+    let error = format!("its deadline at {name:?} passed and it can't be resumed, so it ends: {why}");
+    eprintln!("holon: run {run_id} in {slug:?}: {error}");
+    let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let unit = if run.version.is_empty() { run.unit.clone() } else { run.version.clone() };
+    let entry = crate::recorder::LogEntry { kind: "resume".into(), at_ms, run_id: run_id.to_string(), unit, route: run.route.clone(), error: Some(error), ..Default::default() };
+    let declared = holon_core::LogLevel::parse(&run.log).unwrap_or_default();
+    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&run.tokens), declared) {
+        l.said(slug);
+    }
+    let _ = persist_deployments(deployments_path, deployments);
 }
 
 /// `GET /deployments/<slug>/runs` — the runs waiting in it, without their tokens; each approval
@@ -1871,6 +1932,12 @@ pub(crate) fn handle_post_decide(state: &AppState, slug: &str, run_id: &str, cal
             let mut answer = reply(slot, &slots, if approved { "approved" } else { "declined" });
             if let Err(e) = resume_parked(&state.store, deployments, path, slug, claimed, &body.name, event) {
                 answer["run_error"] = e.into();
+            }
+            // Saved again here, where the decision is answered by whether it holds: the resume's
+            // own saves answer it only as `run_error`, and one with the run's error (or one that
+            // wasn't saved as going on, so didn't run) says nothing of whether the table took it.
+            if let Err(e) = persist_deployments(path, deployments) {
+                return err(500, format!("your decision is taken, but {e}: after a restart it isn't"));
             }
             Response::json(&answer)
         }

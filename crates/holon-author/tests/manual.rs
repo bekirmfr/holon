@@ -1,7 +1,8 @@
 //! The docs (the README and docs/manual) stay true to the code: every flow in them (a `ts` block)
 //! compiles, as TypeScript, every `holon check` they show is what it prints, and the page of leaves
 //! is what the catalog says. The blocks are written to be read, so they needn't be as `holon fmt`
-//! writes them.
+//! writes them. What the engineering docs and the code cite (a test by its name, a docs page by
+//! its path) is there.
 //!
 //! `HOLON_BLESS=1 cargo test -p holon-author --test manual` writes the page of leaves again.
 
@@ -196,4 +197,83 @@ fn the_page_of_leaves_is_the_catalog() {
     }
     let kept = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
     assert!(kept == page, "{} is out of date: HOLON_BLESS=1 cargo test -p holon-author --test manual writes it again", path.display());
+}
+
+/// Every file under `dir` whose name ends with one of `ends`, past what a build or a package
+/// manager writes, and past other worktrees.
+fn sources(dir: &Path, ends: &[&str], out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if path.is_dir() {
+            if !["target", "node_modules", ".git", ".claude", "dist", "wasm"].contains(&name.as_str()) {
+                sources(&path, ends, out);
+            }
+        } else if ends.iter().any(|e| name.ends_with(e)) {
+            out.push(path);
+        }
+    }
+}
+
+/// Guards: a test or function a page of the engineering docs, the manual or the README names (a
+/// `snake_case` name of four words or more, in backticks) is one the code has, and a docs page the
+/// code or those pages name (`docs/….md`) is there.
+/// Why: these pages say what the code does by naming the test that holds it. A test renamed or
+/// dropped, or a design note never added, leaves a page vouching for what nothing holds, and
+/// nobody reading it can tell (release audit R49: security.md cited two tests gone with the old
+/// secrets key, and the encryption-at-rest design every module cites wasn't in the repository).
+#[test]
+fn what_the_docs_and_the_code_cite_is_there() {
+    let root = manual().join("../..");
+    let read = |p: &Path| std::fs::read_to_string(p).unwrap_or_default();
+    let shown = |p: &Path| p.strip_prefix(&root).unwrap().display().to_string().replace('\\', "/");
+    let mut code = vec![];
+    sources(&root, &[".rs", ".ts", ".tsx", ".js", ".mjs", ".py", ".yml", ".toml"], &mut code);
+    let words: std::collections::HashSet<String> = code
+        .iter()
+        .flat_map(|p| read(p).split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).map(str::to_string).collect::<Vec<_>>())
+        .collect();
+    let mut pages = vec![root.join("README.md")];
+    for dir in ["docs/engineering", "docs/manual"] {
+        sources(&root.join(dir), &[".md"], &mut pages);
+    }
+    let mut wrong = vec![];
+    let (mut names, mut cited) = (0, 0);
+    for page in &pages {
+        let text = read(page);
+        for (i, span) in text.split('`').enumerate() {
+            let name = i % 2 == 1
+                && span.matches('_').count() >= 3
+                && span.starts_with(|c: char| c.is_ascii_lowercase())
+                && span.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+            if name {
+                names += 1;
+                if !words.contains(span) {
+                    wrong.push(format!("{} names `{span}`, which no code has", shown(page)));
+                }
+            }
+        }
+    }
+    let rust = code.iter().filter(|p| p.extension().is_some_and(|e| e == "rs"));
+    for file in rust.chain(&pages) {
+        let text = read(file);
+        let path_char = |c: char| c.is_ascii_alphanumeric() || "_./-".contains(c);
+        for (at, _) in text.match_indices("docs/") {
+            if text[..at].chars().next_back().is_some_and(path_char) {
+                continue;
+            }
+            let end = text[at..].find(|c: char| !path_char(c)).map_or(text.len(), |n| at + n);
+            let named = text[at..end].trim_end_matches('.');
+            if named.ends_with(".md") {
+                cited += 1;
+                if !root.join(named).is_file() {
+                    wrong.push(format!("{} names {named}, which isn't there", shown(file)));
+                }
+            }
+        }
+    }
+    wrong.sort();
+    wrong.dedup();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert!(names >= 500 && cited >= 100, "only {names} test names and {cited} docs pages found named: is the scan reading the pages?");
 }
