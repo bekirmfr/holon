@@ -16,6 +16,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+mod common;
+use common::{answering, free_port};
+
 #[path = "../src/surfaces.rs"]
 #[allow(dead_code)]
 mod surfaces;
@@ -31,10 +34,6 @@ const KEPT_CANARY: &str = "kept_canary_4d2b";
 /// agents read its logs.
 const LOG_CANARY: &str = "log_canary_9e1c";
 const CANARIES: [&str; 3] = [CANARY, KEPT_CANARY, LOG_CANARY];
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-}
 
 /// The routes each surface called, as `METHOD /path?query`, in order.
 type Seen = Arc<Mutex<Vec<String>>>;
@@ -238,6 +237,7 @@ fn world() -> (World, [Caller; 4], u64) {
     let files = home.join("files");
     std::fs::create_dir_all(&files).unwrap();
     let port = free_port();
+    let said = home.join("serve.err");
     let code = "SURFACES-1";
     let server = Command::new(HOLON)
         .args(["serve", "--at", &format!("127.0.0.1:{port}"), "--root-key", &format!("file:{}", server_home.join("root.key").display())])
@@ -247,16 +247,14 @@ fn world() -> (World, [Caller; 4], u64) {
         .env_remove("HOLON_DATA")
         .env_remove("HOLON_TOKEN")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(std::fs::File::create(&said).unwrap())
         .spawn()
         .expect("holon serve starts");
     let (proxy, seen) = proxy(port);
-    let world = World { server, home: home.clone(), port, lane: Lane { port: proxy, seen }, files };
-    let until = Instant::now() + Duration::from_secs(60);
-    while world.ask(None, "GET", "/health", None).0 != 200 {
-        assert!(Instant::now() < until, "holon serve answers on {port}");
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let mut world = World { server, home: home.clone(), port, lane: Lane { port: proxy, seen }, files };
+    // An answer, not a connection taken, waited for as every test that starts a server waits: a
+    // refused one (no port yet) asked again rather than failing (common/mod.rs).
+    answering(&mut world.server, port, &said);
     let (status, said) = world.ask(None, "POST", "/auth/setup", Some(json!({ "code": code, "name": "ada", "password": PW })));
     assert_eq!(status, 200, "{said}");
     let ada_token: String = serde_json::from_str::<Value>(&said).unwrap()["token"].as_str().unwrap().into();
