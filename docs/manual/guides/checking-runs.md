@@ -74,7 +74,7 @@ notes-api: 42 runs, runs 1 to 42
   chain: unbroken
   head: 3f9c2a7be01d is the newest run's
   events: 3, chain unbroken from the first
-  held by the chain alone, not by running each run again (a witnessed head holds it too): when it began, how long it took, when each step began, when each step ended, its run session, which load of the state it committed to, its commit's number, how many times it ran again before its commit landed (its tries), who called it (the server's account of its caller), the grant it ran under (by its hash), when each call began, when each call ended, the rest of each hash of a value computed from a secret, past what its mark shows (only the secret makes the value again), the commitments to its secrets (only a secret and its salt make one again)
+  held by the chain alone, not by running each run again (a witnessed head holds it too): when it began, how long it took, when each step began, when each step ended, its run session, which load of the state it committed to, its commit's number, how many times it ran again before its commit landed (its tries), which keys it claimed before calling out, how long each waited and was held, and whether another run overtook it, who called it (the server's account of its caller), the grant it ran under (by its hash), when each call began, when each call ended, the rest of each hash of a value computed from a secret, past what its mark shows (only the secret makes the value again), the commitments to its secrets (only a secret and its salt make one again)
   re-ran 42 runs: each produced what its log entry says, 3 of them given what the log kept for a step (named below)
   3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret, a token or a tainted value (not computed again):
     hmac_sha256 fed the secret stripe_key v3 #a1b2c3d4: 3 nodes in 3 runs: 4, 17, 30, as recorded
@@ -104,7 +104,11 @@ ok
    same steps in the same rounds (its timeline: what each step gave, or why it gave nothing), and
    the same points it waits at. Outbound calls are answered from the log, so nothing is sent:
    what each was answered is the log's say-so, which no run again makes, held by the chain alone
-   (and a witnessed head), and the report says so of the runs that called out, `ok` or not. A
+   (and a witnessed head), and the report says so of the runs that called out, `ok` or not.
+   Reads are answered from the log too, and each read the log records is one the run makes
+   again: the server records a read once, however often a run asks it, so one put in twice, or
+   one no step asks for, differs. A whole file it read is the file its line names, by its hash
+   and size, whether the line keeps its text or the export does. A
    run that failed is run again too: what it computed is checked, what its writes made of its
    state, and its status, unless that is its failure's. What a resumed run was delivered is held
    to what it waited for: an approval's decisions, taken in the order they came, are ones its
@@ -164,6 +168,7 @@ chain the lines after them again: without a witnessed head that passes, and with
 | `session` | the run session it ran in | the deployment's own count of each time it was started or restored, which no run sees | the chain, and so a witness |
 | `commit`'s `cell` and `n` | which load of the state it committed to, and its commit's number | they number commits as they landed beside other runs; they say which run's state it began after, so changed, `verify` may check less of its state, and says which runs it didn't | the chain, and so a witness |
 | `retries` | how many times it ran again before its commit landed | a try that was overtaken leaves nothing but the answers it got, which the last try is given | the chain, and so a witness |
+| `claims` | which keys it claimed before calling out, how long each waited and was held, and whether another run overtook it | they are what other runs did beside it, which no run again has | the chain, and so a witness |
 | `by` | who called it | the caller is the server's account: nothing in a run makes it | the chain, and so a witness; an approval's decisions are held to it (below) |
 | `grant` | the grant it ran under, by its hash | the export holds the units the runs ran, not the grants | the chain, and so a witness |
 
@@ -219,8 +224,10 @@ are checked in what it left. The report counts those.
 A run's line is numbered once it has committed, so two runs that commit close together can be
 numbered the other way round. Each entry also says which commit to the state its run began after,
 and its own (`commit`): the run before a run is the one whose commit it began after, wherever its
-line is, and a run no other commit landed beside is checked whole, however close its times. A log
-written before entries said so is taken by each line's place and times.
+line is. It began from the state that run left and from no other, unless a deploy, a restore or a
+stop put one in place between them (the events say which), however close their times: a line's
+times are its say-so. A run no other commit landed beside is checked whole. A log written before
+entries said so is taken by each line's place and times.
 
 A node fed a secret, a resume token or a tainted value (a caller's API key:
 [tainted keys](../language/reference.md#imports-and-settings)) gets a placeholder where the value
@@ -353,8 +360,9 @@ Each file is found by its hash, wherever it is under that folder.
 
 The chain shows a run changed after the fact, unless whoever changed it also rewrote every entry
 after it. Someone who holds the server's data can do that. A **witness** stops it: another server
-that is sent each new head as it is made, and keeps them. A head the witness holds can't be
-rewritten.
+that is sent the new heads every few seconds, and keeps them. A head the witness holds can't be
+rewritten; a run newer than the last head it took, or one queued while it can't be reached, isn't
+pinned yet.
 
 Start the server with a witness to send heads to:
 

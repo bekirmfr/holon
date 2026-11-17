@@ -568,8 +568,8 @@ Each of these is one building block, and each is one thing the flow may do.
 | `coll[k] = e`, `coll.put(k, e)` | put it when the run finishes |
 | `delete coll[k]`, `coll.delete(k)` | delete it when the run finishes |
 | `coll.list({ prefix: p, after: a, limit: n })` | a page of items, in key order |
-| `dir[name]`, `dir.get(name)` | a file's text, in a folder, as the run began (up to 1 MiB) |
-| `dir.bytes(name)` | a file's bytes, any file, as the run began (up to 1 MiB): a `Uint8Array`, its `.length` and `.slice(start, end)` read as JavaScript's |
+| `dir[name]`, `dir.get(name)` | a file's text, in a folder, as the run began (up to 1 MiB by default, the `inline_file_bytes` limit; a bigger file fails the run) |
+| `dir.bytes(name)` | a file's bytes, any file, as the run began (up to 1 MiB by default, as above): a `Uint8Array`, its `.length` and `.slice(start, end)` read as JavaScript's |
 | `dir[name] = text`, `dir.put(name, text)` | write the whole file when the run finishes: a text as its UTF-8, bytes as they are |
 | `delete dir[name]`, `dir.delete(name)` | delete the file when the run finishes |
 | `dir.list({ prefix: p, after: a, limit: n })` | a page of files: `{size, hash, modified}` by name |
@@ -578,7 +578,7 @@ Each of these is one building block, and each is one thing the flow may do.
 | `dir.lines(name, { from: i, limit: n })` | `n` lines from line `i` (from the end when negative) |
 | `dir.slice(name, { offset: o, length: n })` | `n` bytes from offset `o`, as text |
 | `dir[name] = handle`, `dir.copy(name, handle)` | copy a file by handle when the run finishes |
-| `dir.create(name, text)`, `dir.create_copy(name, handle)` | the same write (a text or bytes) or copy, only if there is no such file yet: else the run fails, and nothing it did lands |
+| `dir.create(name, text)`, `dir.create_copy(name, handle)` | the same write (a text or bytes) or copy, only if there is no such file yet: else the run fails, and none of its writes land (requests it made before then have gone out) |
 | `f` in `on.file.created(dir, (f) => …)` | the handle of the file that started the run: `{folder, name, size, hash, modified, event}` |
 | `m` in `on.mail(ops, (m) => …)` | the message that started the run: `{from, name, to, cc, subject, date, message_id, text, html, attachments, authenticated, verdict}`; `authenticated` is the mailbox's own server's word that the domain in `from` sent it |
 | `e` in `on.feed(prices, (e) => …)` | the event that started the run: `{data, event, id}`; `data` a value when it is JSON, else its text; `event` its name, `"message"` when it gives none; `id` only when it has one |
@@ -759,19 +759,21 @@ route.get("/seen/:name", (req) => seen[req.params.name])
 - **`on.feed(prices, (e) => { … })`** runs for each event the feed an admin bound `prices` to
   sends (`holon feed add prices --url …`), one at a time, in the order they came; `e` is the
   event. One handler a feed; it answers nobody. The host keeps where the feed is: a connection
-  lost is opened again from the last event run on, and an event sent again is passed over
+  lost is opened again from the last event run on, and an event sent again, by an id among the
+  last 1,000 run on, is passed over
   ([Feeds](../guides/feeds.md)).
 - **`on.queue(payouts, (m) => { … })`** runs for each message the queue an admin bound `payouts`
   to holds (`holon queue add payouts --url …`), one at a time, in the order received; `m` is the
   message, `{data, id, attributes, sent, count, group}`, and it is deleted once its run's record
   is on disk. One handler a queue, one deployment listening to it; it answers nobody. A message
-  run already is passed over ([Queues](../guides/queues.md)).
+  among the last 1,000 run on is passed over ([Queues](../guides/queues.md)).
 - **`export const NAME = action((input) => { … })`** runs when someone runs it by its name,
   `input` what they sent (a JSON value; `{}` for nothing). It answers with what it returns, a
   value alone (no `status(…)` or `respond(…)`); one that only writes answers nothing. It is
   exported, as it is what reaches the flow from outside: an `action(…)` that isn't exported is
-  refused. The network never reaches it: a person runs it from the editor or a script, an agent
-  only one a person lets agents run, and another flow by importing it
+  refused. No route path reaches it: a person runs it from the editor or a script, an agent
+  only one a person lets agents run, another flow by importing it, and this flow's own handlers
+  by calling it
   ([Actions](../guides/actions.md)).
 
 A file starts a run once it stops changing: the server looks at the folder every second, and a
@@ -949,8 +951,8 @@ those fields (several).
 - **Budgets:** `fuel` is instructions per call (default 200M), `memory` the memory per call
   (default 16 MiB). The deploy asks for the budgets, and the server's policy caps them. A run's
   calls between two of its outbound calls run no more than `max_fuel` instructions in all (4G
-  unless the flow asks for more with `limits: { max_fuel }`); a run that wants more fails and
-  performs nothing. A call's own memory is its `memory`, freed as it answers; what it answers
+  unless the flow asks for more with `limits: { max_fuel }`); a run that wants more fails: its
+  writes and sends aren't performed, though the requests it made before that stretch are sent. A call's own memory is its `memory`, freed as it answers; what it answers
   counts toward the run's `max_memory`.
 - **Failures:** an exception, or a call that runs out of fuel, gives no value, and the run
   records why: `explain` shows it under the statement. A syntax error is found by `holon check`.
@@ -983,14 +985,16 @@ The syntax is TypeScript's, and these meanings are Holon's. Where a JavaScript r
 misled, the compiler refuses instead.
 
 - **Dataflow, not control flow.** A value is computed when what it needs has arrived. The order
-  of statements only matters for names (defined before use).
+  of statements matters for names (defined before use), for a `let` assigned again, and for what
+  a `return` or an `if` cuts off.
 - **Absence.** A value that doesn't arrive makes everything built from it absent: `a.b` on no
   value is no value, never an error. That is how a flow says "not found" (`?? status(404)`), "not
   allowed" (`ok ? x : undefined`) and "not verified". Absence isn't a value: it can't be stored or
   compared. `none()` is a value, and unrelated.
 - **Reads at the start, writes at the end.** `state.x`, `coll[k]` and `dir[name]` are the values as
   the run began. Writes are performed when the run finishes, and only if granted. A run never sees
-  its own writes. When two runs change the same item at once, one is run again, so none is lost;
+  its own writes. When two runs change the same item at once, one is run again, so none is lost (one that
+  would wait past its `claim_wait` for the other fails, busy, writing nothing);
   for now, except a run that waited at an `await`: its writes land over what was written while
   it waited.
 - **Calls out happen between rounds.** A request is made when the run gets to it; the run
@@ -1044,11 +1048,12 @@ everything.
 ## Identity and canonical form
 
 - **A flow's identity is the hash of its graph** (`unit` in `holon check`). Names of bindings and
-  functions, comments, blank lines and the order of independent statements aren't in it: two
+  functions, comments, blank lines and the order of independent statements aren't in it (inside a
+  `js()` body they are: its text is its identity): two
   texts that build the same graph are the same unit. A function's parameter and output names are,
   as they are its ports.
-- **Any change to what the flow computes is a new version** with a new hash. Every run names the
-  version it ran.
+- **Any change to what the flow computes is a new version** with a new hash. Every run the log keeps
+  names the version it ran.
 - **`holon fmt`** lays the text out. Formatting twice changes nothing.
 
 ## Mistakes
