@@ -5787,14 +5787,13 @@ route.get("/paid/:token", () => "ok", {{ resumes: "paid" }})
         ("a delete", &|| ask(&ada, "DELETE", "/deployments/counter", J::Null), 500, "\"counter\" is deleted, but"),
     ];
     // And none says where the file is, or the error's text (audit R71): a flow's caller is told
-    // by the first row. The folder's name is this test's own, so no answer has it but by leaking.
-    let folder = dir.file_name().unwrap().to_string_lossy().to_string();
+    // by the first row.
     for (what, answer, status, said) in rows {
         let (code, text) = answer();
         assert_eq!(code, status, "{what}: {text}");
         let text = text.replace("\\\"", "\"");
         assert!(text.contains(said) && text.contains(crate::persist::UNWRITTEN), "{what}: {text}");
-        assert!(!text.contains(&folder) && !text.contains("os error"), "{what}: where, or why, to whoever asked: {text}");
+        writers::neither_where_nor_why(what, &text, &dir, &[]);
     }
     // Saved again, each answers as before.
     std::fs::remove_dir(&path).unwrap();

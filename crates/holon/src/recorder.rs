@@ -964,6 +964,9 @@ fn keep_segments_aside(backup: Option<&(PathBuf, bool)>, path: &Path, segments: 
 /// at most (docs/L4s/request-path-L4.md, C2 d).
 pub const SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// What a strict run's caller is told when its record's sync fails (`Log::sync_through`).
+pub(crate) const UNSYNCED: &str = "its record couldn't be synced to disk";
+
 /// Sync the directory holding `path`, so a file just renamed into it stays renamed after a crash
 /// (where the system has directories to sync; a failure is only said: the file itself is synced).
 fn sync_dir_of(path: &Path) {
@@ -1374,10 +1377,14 @@ impl LogCell {
     /// run's before it: a sync puts what was written on disk, and says nothing of an entry that
     /// wasn't. With no line lost lately, which is the usual case, the log's lock isn't taken to
     /// ask (`lost`).
+    ///
+    /// The error is said to the run's caller, a flow's caller among them: that the record isn't
+    /// on disk, not where its file is or the sync's own error (audit R71). The admin hears both
+    /// from the syncer's `sync` (failing.rs), which fails the same way within a second.
     pub fn sync_through(&self, seq: u64) -> Result<(), String> {
         let mut synced = self.synced.lock().unwrap();
         if *synced <= seq {
-            self.sync_locked(&mut synced)?;
+            self.sync_locked(&mut synced).map_err(|why| crate::failing::Failed::new(UNSYNCED, why).told())?;
         }
         if self.lost.load(Ordering::Acquire) && self.with(|log| log.unkept.contains(&seq)) {
             return Err(format!("its record (entry {seq}) couldn't be written to the log's file"));

@@ -94,12 +94,8 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
     let kept = written.clone().and_then(|()| if left_out.is_empty() { Ok(()) } else { Err(left_out.join("; ")) });
     crate::failing::note(place, crate::failing::Writer::Deployments, &kept);
     // Where and why go to the admin (that warning, and stderr), never to whoever asked for the
-    // write: a route's or an action's caller, a flow's caller among them. The place is the
-    // server's disk, and an error's text can name a path or a user (audit R71).
-    written.map_err(|why| {
-        eprintln!("warning: {UNWRITTEN}: {why}");
-        UNWRITTEN.to_string()
-    })
+    // write: a route's or an action's caller, a flow's caller among them (audit R71).
+    written.map_err(|why| crate::failing::Failed::new(UNWRITTEN, why).said())
 }
 
 /// What whoever asked for a write of the deployments file is told when it fails: that, and no

@@ -70,3 +70,60 @@ pub(crate) fn health(at: &Place) -> (u16, String) {
     let what: Vec<&str> = failing.iter().map(|(w, _)| w.health()).collect();
     (503, format!("{NOT_OK}: {}", what.join("; ")))
 }
+
+/// A write or read of the server's own files that failed, as two texts kept apart: what whoever
+/// asked is told, and why, which only an admin reads (the warnings, stderr). Why holds where on
+/// the server's disk and the error's own text, which can name a path or a user; whoever asked
+/// may be a flow's caller, or someone signing in (audit R71). What they are told is a fixed
+/// text, with at most a line and a column, or a reason holon gives of what it was sent: no place
+/// and no error's text can be put in it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Failed {
+    told: String,
+    why: String,
+}
+
+impl Failed {
+    /// `told` to whoever asked, `why` to the admin.
+    pub(crate) fn new(told: &'static str, why: impl Into<String>) -> Failed {
+        Failed { told: told.into(), why: why.into() }
+    }
+
+    /// A file that doesn't parse: `told` and where in it, as a line and a column (a line of it,
+    /// or a value its message quotes, can hold what the file names: a secret's source, say).
+    pub(crate) fn at(told: &'static str, line: usize, column: usize, why: impl Into<String>) -> Failed {
+        Failed { told: format!("{told} (line {line}, column {column})"), why: why.into() }
+    }
+
+    /// A reason holon writes itself of what it was given (a limit it doesn't know, say), with
+    /// nothing of the server's disk or an error's text in it, told as it is; `why` may add where.
+    pub(crate) fn reason(reason: String, why: impl Into<String>) -> Failed {
+        Failed { told: reason, why: why.into() }
+    }
+
+    /// Why, for the admin.
+    pub(crate) fn why(&self) -> &str {
+        &self.why
+    }
+
+    /// What whoever asked is told, where the admin hears why another way (a writer's warning).
+    pub(crate) fn told(self) -> String {
+        self.told
+    }
+
+    /// What whoever asked is told, once why is on stderr for the admin.
+    pub(crate) fn said(self) -> String {
+        if self.why != self.told {
+            eprintln!("warning: {}: {}", self.told, self.why);
+        }
+        self.told
+    }
+}
+
+/// Where in `text` byte `at` is: its line and column, from 1.
+pub(crate) fn line_and_column(text: &str, at: usize) -> (usize, usize) {
+    let before = String::from_utf8_lossy(&text.as_bytes()[..at.min(text.len())]);
+    let line = before.matches('\n').count() + 1;
+    let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+    (line, column)
+}
