@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Reviewable } from "./approvals";
 import { useDecline } from "./ApprovalsPage";
+import { browsersOf } from "./DeploySettings";
 import { useDialog } from "./Dialog";
 import { codeHunk, touchHunks } from "./hunks";
 import { holonGraph, type FlowGraph } from "./holonText";
@@ -127,7 +128,13 @@ export function ReviewPage({
       const deployedDoc = entry ? await getDeployedDocument(slug) : null;
       const versions = entry ? await getVersions(slug) : [];
       const { hash, document } = await prepare(slug, saved.document);
-      const preview = await previewDeploy(slug, hash, saved.document.server?.requirements);
+      // What it shows is its document; what approving deploys is the unit that builds. The server
+      // refuses a proposal whose document builds another unit than the one proposed: should one
+      // still differ, it isn't approved here.
+      if (proposal && hash !== proposal.unit) {
+        throw new Error(`this proposal's document builds another version (${hash.slice(0, 12)}) than the one proposed (${proposal.unit.slice(0, 12)}): what it shows isn't what was proposed, so it isn't approved here. Decline it from Approvals.`);
+      }
+      const preview = await previewDeploy(slug, hash, saved.document.server?.requirements, saved.document.server ? browsersOf(saved.document.server) : undefined);
       const written = (doc: FlowDocument) => {
         try {
           return textOf(slug, doc);
@@ -173,7 +180,9 @@ export function ReviewPage({
   const lines = useMemo(() => textLines(data?.text ?? ""), [data]);
   const groups = useMemo(() => (data ? mayGroups(data.preview.touches, data.preview.settings, lines) : []), [data, lines]);
   const asked = data?.preview.needs_approval.length ?? 0;
-  const newer = !entry || (data !== null && data.saved.saved_at_epoch_seconds > entry.deployed_at_epoch_seconds);
+  // A proposal waiting is newer than what is deployed, whatever the stamps say: they are seconds,
+  // and an agent's version proposed in the second its last one was deployed is saved at it.
+  const newer = !entry || (data !== null && (data.proposal !== null || data.saved.saved_at_epoch_seconds > entry.deployed_at_epoch_seconds));
 
   const show = (n: number) => {
     setView("whole");
@@ -183,7 +192,7 @@ export function ReviewPage({
   const dialog = useDialog();
   const approve = async () => {
     if (!data) return;
-    const action = asked > 0 ? "Approve and deploy" : entry ? "Update" : "Deploy";
+    const action = asked > 0 || data.proposal ? "Approve and deploy" : entry ? "Update" : "Deploy";
     const again = askAgain(slug, data.preview.touches, action);
     if (again && !(await dialog.confirm(again, `${action} anyway`))) return;
     setBusy(true);
@@ -392,8 +401,9 @@ export function ReviewPage({
                   <input type="checkbox" checked={read} onChange={(e) => setRead(e.target.checked)} />
                   {asked > 0 ? `I read the ${asked} new permission${asked === 1 ? "" : "s"} and the change.` : "I read the change."}
                 </label>
-                <button className="hl-flow__button hl-flow__button--go" {...can.gate(asked > 0 ? "approve" : "deployNow", { disabled: !read || busy })} onClick={() => void approve()}>
-                  {busy ? "Deploying…" : asked > 0 ? "Approve and deploy" : entry ? "Update" : "Deploy"}
+                {/* An agent's version is approved, whatever it asks for: by someone who may approve its deploys. */}
+                <button className="hl-flow__button hl-flow__button--go" {...can.gate(asked > 0 || data.proposal ? "approve" : "deployNow", { disabled: !read || busy })} onClick={() => void approve()}>
+                  {busy ? "Deploying…" : asked > 0 || data.proposal ? "Approve and deploy" : entry ? "Update" : "Deploy"}
                 </button>
               </>
             )}

@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { RootBoundary } from "./ui/Boundary";
 // The editor's faces, served with it rather than by a font service: nothing loads from elsewhere,
 // so the page works offline, tells no one who opened it, and holds to its policy (editor.rs).
 // Each is under the SIL Open Font License 1.1 (its package's LICENSE; the files name it too):
@@ -24,6 +25,8 @@ applyUi(storedUi());
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <RootBoundary>
+      <App />
+    </RootBoundary>
   </StrictMode>,
 );

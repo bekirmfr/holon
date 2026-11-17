@@ -11,7 +11,7 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import { expect, FOLDERS, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, navLink, newFlow, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun, expectVerified } from "./helpers";
+import { enter, flowRow, gotoPage, navLink, newFlow, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun, expectVerified } from "./helpers";
 
 const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
 
@@ -93,7 +93,7 @@ test("a flow nothing would start can't deploy; given an action, it deploys and r
   await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeEnabled();
   await canvas.getByRole("button", { name: /^deploy/ }).dispatchEvent("click");
   await page.locator('[aria-modal="true"]').locator("input").fill(`by-hand-${Date.now()}`);
-  await page.keyboard.press("Enter");
+  await enter(page);
   const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
   await page.getByRole("dialog").getByRole("button", { name: /^(Approve and deploy|Deploy)$/ }).click();
   expect((await deployed).status()).toBe(200);
@@ -279,7 +279,7 @@ test("a port added inside a holon takes its first wire's type, and the flow's no
   const overlay = page.locator(".hl-overlay");
   await overlay.getByRole("button", { name: "add an output" }).dispatchEvent("click");
   await page.locator('[aria-modal="true"] input').fill("stamp");
-  await page.keyboard.press("Enter");
+  await enter(page);
   const outputs = overlay.locator(".react-flow__node", { hasText: "outputs" });
   const stamp = outputs.locator(".hl-port__label", { hasText: "stamp" });
   await expect(stamp).toHaveAttribute("title", /^any/);
@@ -322,7 +322,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
     await expect(flow.locator(".react-flow__node")).toHaveCount(1);
     await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
     await ask.locator("input").fill(name);
-    await page.keyboard.press("Enter");
+    await enter(page);
     await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
     await expect(page.locator(".hl-tab--active")).toContainText(name);
   };
@@ -334,7 +334,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   await dropFromPalette(page, "concat");
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
   await ask.locator("input").fill(shout);
-  await page.keyboard.press("Enter");
+  await enter(page);
   await expect(ask).toContainText(`A flow named "${shout}" is saved already`);
   await ask.getByRole("button", { name: "Cancel" }).click();
   await expect(page.locator(".hl-tab--active")).toContainText("untitled");
@@ -375,7 +375,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
   const ask = page.locator('[aria-modal="true"]');
   const answer = async (text: string) => {
     await ask.locator("input").fill(text);
-    await page.keyboard.press("Enter");
+    await enter(page);
   };
   await newFlow(page);
   await nodesLevel(page);
@@ -435,7 +435,7 @@ test("a flow as text: exported as .holon.ts, checked by the command line, import
   await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node", { hasText: "uppercase" })).toHaveCount(1, { timeout: 15_000 });
   await canvas.getByRole("button", { name: "save", exact: true }).dispatchEvent("click");
   await page.locator('[aria-modal="true"] input').fill(name);
-  await page.keyboard.press("Enter");
+  await enter(page);
   await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
   await expect(page.locator(".hl-tab--active")).toContainText(name);
 
@@ -705,7 +705,7 @@ test("price-rules: a new version is replayed on its recent runs before it goes l
   const name = page.locator('[aria-modal="true"] input');
   if (await name.isVisible({ timeout: 2_000 }).catch(() => false)) {
     await name.fill("price-rules");
-    await page.keyboard.press("Enter");
+    await enter(page);
   }
   await expect(notices(page)).toContainText("saved");
   await page.getByRole("navigation", { name: "main" }).getByRole("link", { name: /^Approvals/ }).click();

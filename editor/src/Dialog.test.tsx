@@ -2,12 +2,16 @@
 // Esc cancels, and a yes/no question takes y and n, shown as chips that stay out of the buttons'
 // names. Keys that answer it don't reach the page beneath; typing in a prompt still reaches its
 // field. A choice takes each answer's letter, and a notice has one button, and its letter. (Tab
-// staying in it is every modal's: modals.test.tsx.)
+// staying in it is every modal's: modals.test.tsx.) It takes no answer but no until it has been
+// shown a moment with no key pressed: the last describe.
 
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { DialogProvider, useDialog } from "./Dialog";
+import ts from "typescript";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { ARM_MS, DialogProvider, TOO_SOON, useDialog, WAIT_SAID } from "./Dialog";
 import { lap, press } from "./ui/pressKey";
 
 beforeAll(() => {
@@ -24,8 +28,9 @@ afterEach(() => {
 
 type Dialogs = ReturnType<typeof useDialog>;
 
-/** The dialogs, over a page with a control of its own: where a Tab that left the dialog would go. */
-function mount(): Dialogs {
+/** The dialogs, over a page with a control of its own: where a Tab that left the dialog would go.
+ *  Its questions take an answer at once, unless `armMs` says how long they wait first. */
+function mount(armMs = 0): Dialogs {
   container = document.createElement("div");
   document.body.appendChild(container);
   let dialogs: Dialogs | null = null;
@@ -36,7 +41,7 @@ function mount(): Dialogs {
   root = createRoot(container);
   act(() =>
     root!.render(
-      <DialogProvider>
+      <DialogProvider armMs={armMs}>
         <button>the page's own button</button>
         <Grab />
       </DialogProvider>,
@@ -281,5 +286,271 @@ describe("the focused control answers", () => {
       await press("Escape");
       expect(second).toBe(false);
     }
+  });
+});
+
+describe("a prompt that offers an empty answer", () => {
+  // Guards: a prompt whose question offers empty ("empty for none", "empty: wherever…") takes an
+  // empty line as its answer and Cancel as none: every such prompt in the console is asked
+  // `optional`. Needed because a prompt left empty answered null, as Cancel does, so "empty for
+  // none" did nothing: an email, a marketplace's address or where a server's secret may go
+  // couldn't be cleared. If it fails, the prompt it names drops the empty answer it offers.
+  it("takes empty as its answer, and Cancel as none", async () => {
+    const d = mount();
+    for (const [press, answer] of [["OK", ""], ["Cancel", null]] as const) {
+      const { answer: got } = await ask(() => d.prompt("An email (empty for none):", "ada@example.com", undefined, "optional"));
+      const field = dialog()!.querySelector("input")!;
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "");
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      act(() => buttons().find((b) => nameOf(b) === press)!.click());
+      expect(await got, press).toBe(answer);
+    }
+  });
+
+  it("is asked so, wherever the console's text offers it", () => {
+    const dir = join(process.cwd(), "src");
+    const files = readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f));
+    const offering: string[] = [];
+    const dropped: string[] = [];
+    for (const file of files) {
+      const source = ts.createSourceFile(file, readFileSync(join(dir, file), "utf8"), ts.ScriptTarget.Latest, true, file.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+      const visit = (node: ts.Node) => {
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "prompt" && node.arguments.length > 0) {
+          const question = node.arguments[0].getText();
+          if (/\bempty\b/i.test(question)) {
+            const where = `${file.replace(/\\/g, "/")}:${source.getLineAndCharacterOfPosition(node.getStart()).line + 1}`;
+            offering.push(where);
+            if (node.arguments[3]?.getText() !== '"optional"') dropped.push(where);
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+    }
+    expect(offering.length, "the console's prompts that offer empty are found").toBeGreaterThanOrEqual(3);
+    expect(dropped).toEqual([]);
+  });
+});
+
+describe("a question for a secret", () => {
+  // Guards: a secret typed into the console (a password, a key) is never shown. It is asked with
+  // `secret`, whose field hides it (a password field, filled by a password manager as its
+  // `autoComplete` says) and which answers it as typed; and every question in the console for a
+  // password or a key is asked so. Needed because changing a password asked the current one and
+  // the new one in a line of plain text, for anyone looking at the screen to read, and the
+  // marketplace's publish key the same. If it fails, the question it names shows what is typed
+  // into it: ask it with `secret`.
+  const type = (field: HTMLInputElement, text: string) =>
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, text);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+  it("hides what is typed, and answers it as typed", async () => {
+    const d = mount();
+    for (const fill of ["current-password", "new-password", "off"] as const) {
+      const typed = `  correct horse ${fill}  `;
+      const { answer } = await ask(() => d.secret("Your current password:", fill));
+      const field = dialog()!.querySelector("input")!;
+      expect(field.type, fill).toBe("password");
+      expect(field.getAttribute("autocomplete"), fill).toBe(fill);
+      type(field, typed);
+      expect(document.body.textContent, `${fill}: not in the page's text`).not.toContain("horse");
+      act(() => buttons().find((b) => nameOf(b) === "OK")!.click());
+      expect(await answer, `${fill}: its spaces its own`).toBe(typed);
+    }
+    // Left empty, or cancelled: none.
+    for (const press of ["OK", "Cancel"]) {
+      const { answer } = await ask(() => d.secret("A key:", "off"));
+      act(() => buttons().find((b) => nameOf(b) === press)!.click());
+      expect(await answer, press).toBeNull();
+    }
+    // A prompt after it is a line of text again, opened empty.
+    const { answer } = await ask(() => d.prompt("A name:"));
+    expect(dialog()!.querySelector("input")!.type).toBe("text");
+    expect(dialog()!.querySelector("input")!.value).toBe("");
+    act(() => buttons().find((b) => nameOf(b) === "Cancel")!.click());
+    await answer;
+  });
+
+  it("is how every password and key is asked in the console", () => {
+    const dir = join(process.cwd(), "src");
+    const files = readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f));
+    const SECRET = /password|passphrase|\bkey\b/i;
+    const asked: string[] = [];
+    const shown: string[] = [];
+    for (const file of files) {
+      const source = ts.createSourceFile(file, readFileSync(join(dir, file), "utf8"), ts.ScriptTarget.Latest, true, file.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+      const visit = (node: ts.Node) => {
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.arguments.length > 0) {
+          const where = `${file.replace(/\\/g, "/")}:${source.getLineAndCharacterOfPosition(node.getStart()).line + 1}`;
+          const how = node.expression.name.text;
+          if (how === "secret") asked.push(where);
+          if (how === "prompt" && SECRET.test(node.arguments[0].getText())) shown.push(where);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+    }
+    // A password changed (the current one, the new one twice) and the marketplace's key (twice).
+    expect(asked.length, "the console's questions for a secret are found").toBeGreaterThanOrEqual(5);
+    expect(shown).toEqual([]);
+  });
+});
+
+describe("a question that opens while you type", () => {
+  // Guards: a question takes no answer but no until it has been shown ARM_MS with no key pressed,
+  // for every kind and every control that answers it; a key or a click on an answer while it waits
+  // starts the wait again, a held key never answers, and the letters typed into a prompt's field
+  // still reach it. Needed because a question can open a moment after the key that asked for it,
+  // with the focus on its yes (a deploy's consent, read after Ctrl+D, which sits beside Ctrl+S):
+  // the next Enter or y typed for the page answered it unread (R43). If it fails, a key or a click
+  // meant for something else answers a question before it is read, or a no is held up.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  /** A key pressed as the browser sends it, without `press`'s waits: the clock is the test's. */
+  const key = (k: string, init: KeyboardEventInit = {}, at: Element = document.activeElement ?? document.body) => {
+    const event = new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...init });
+    act(() => {
+      at.dispatchEvent(event);
+    });
+    return event;
+  };
+  const later = (ms: number) =>
+    act(() => {
+      vi.advanceTimersByTime(ms);
+    });
+  const flush = () => act(async () => {});
+  const waiting = () => buttons().filter((b) => b.getAttribute("aria-disabled") === "true").map(nameOf);
+  /** The control a table row names, in the open question. */
+  const control = (name: string) => [...dialog()!.querySelectorAll("button, input, [data-own-keys]")].find((el) => called(el) === name) as HTMLElement;
+
+  it.each(KINDS)("$kind: Enter and a click answer only once the wait is over; Cancel at once", async ({ open, answers }) => {
+    const d = mount(ARM_MS);
+    for (const [name, answer] of Object.entries(answers)) {
+      if (answer === UNANSWERED) continue;
+      let answered: unknown = UNANSWERED;
+      await ask(() => open(d).then((a) => (answered = a)));
+      control(name).focus();
+      const enter = key("Enter");
+      await flush();
+      expect(enter.defaultPrevented, `Enter on ${name} is kept from the button`).toBe(true);
+      if (name === "Cancel") {
+        expect(answered, "Cancel answers at once").toEqual(answer);
+        continue;
+      }
+      expect(answered, `Enter on ${name} at once`).toBe(UNANSWERED);
+      expect(waiting().length, "its answers look disabled").toBeGreaterThan(0);
+      if (control(name) instanceof HTMLButtonElement) {
+        act(() => control(name).click());
+        await flush();
+        expect(answered, `a click on ${name} at once`).toBe(UNANSWERED);
+      }
+      later(ARM_MS);
+      expect(waiting()).toEqual([]);
+      control(name).focus();
+      key("Enter");
+      await flush();
+      expect(answered, `Enter on ${name} once the wait is over`).toEqual(answer);
+      expect(dialog()).toBeNull();
+    }
+  });
+
+  it.each(KINDS)("$kind: a screen reader hears why its answers wait, and that one came too soon", async ({ open, answers }) => {
+    const d = mount(ARM_MS);
+    await ask(() => open(d));
+    const status = () => dialog()!.querySelector('[role="status"]')!.textContent;
+    const described = (el: Element) => (el.getAttribute("aria-describedby") ?? "").split(" ").map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
+    const answering = Object.entries(answers).filter(([name, a]) => a !== UNANSWERED && name !== "Cancel" && name !== "field");
+    for (const [name] of answering) expect(described(control(name)), `${name}, dimmed, says why`).toBe(WAIT_SAID);
+    expect(status(), "nothing said before an answer comes").toBe("");
+    const [first] = answering[0];
+    control(first).focus();
+    key("Enter");
+    await flush();
+    expect(status(), "an answer too soon is said not taken").toBe(TOO_SOON);
+    later(ARM_MS);
+    for (const [name] of answering) expect(control(name).getAttribute("aria-describedby"), `${name}, taking answers, says nothing more`).toBeNull();
+  });
+
+  it("waits again after each key pressed while it waits, and takes no answer from a held key", async () => {
+    const d = mount(ARM_MS);
+    let answered: unknown = UNANSWERED;
+    await ask(() => d.confirm('Deploy "shop"?', "Approve and deploy").then((a) => (answered = a)));
+    control("Approve and deploy").focus();
+    later(ARM_MS - 100);
+    key("e");
+    later(200);
+    key("y");
+    await flush();
+    expect(answered, "a y typed 200 ms after another key").toBe(UNANSWERED);
+    later(ARM_MS - 1);
+    expect(waiting()).toEqual(["Approve and deploy"]);
+    later(1);
+    expect(waiting()).toEqual([]);
+    key("y", { repeat: true });
+    key("Enter", { repeat: true });
+    await flush();
+    expect(answered, "a held key").toBe(UNANSWERED);
+    key("y");
+    await flush();
+    expect(answered).toBe(true);
+  });
+
+  it("takes no at once: n, Esc, Cancel, a click beside it", async () => {
+    const d = mount(ARM_MS);
+    const nos: [string, () => void][] = [
+      ["n", () => key("n")],
+      ["Esc", () => key("Escape")],
+      ["Cancel", () => act(() => control("Cancel").click())],
+      ["a click beside it", () => act(() => void dialog()!.parentElement!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })))],
+    ];
+    for (const [what, no] of nos) {
+      let answered: unknown = UNANSWERED;
+      await ask(() => d.confirm("Remove it?", "Remove").then((a) => (answered = a)));
+      no();
+      await flush();
+      expect(answered, what).toBe(false);
+    }
+  });
+
+  it("lets a prompt's field be typed into while it waits, the letters not starting it again", async () => {
+    const d = mount(ARM_MS);
+    let answered: unknown = UNANSWERED;
+    await ask(() => d.prompt("Name this flow:", "", "Name it").then((a) => (answered = a)));
+    const field = document.querySelector<HTMLInputElement>("[aria-modal=true] input")!;
+    later(ARM_MS - 100);
+    expect(key("s", {}, field).defaultPrevented, "the letter reaches the field").toBe(false);
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "shout");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    later(100);
+    key("Enter", {}, field);
+    await flush();
+    expect(answered).toBe("shout");
+  });
+
+  it("waits again for the question an answer opens", async () => {
+    const d = mount(ARM_MS);
+    let second: unknown = UNANSWERED;
+    await ask(() => d.confirm("Save it?", "Save").then(() => d.confirm("Deploy it now?", "Deploy").then((a) => (second = a))));
+    later(ARM_MS);
+    key("y");
+    await flush();
+    expect(dialog()?.textContent).toContain("Deploy it now?");
+    key("y");
+    await flush();
+    expect(second).toBe(UNANSWERED);
+    later(ARM_MS);
+    key("y");
+    await flush();
+    expect(second).toBe(true);
   });
 });

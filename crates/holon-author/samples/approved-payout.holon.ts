@@ -5,9 +5,10 @@
 // and starts the payout's run, an action, which waits at an approval in three steps, in turn, a
 // day at most: an agent classifies the payout, with a note the run is given (its label, its
 // confidence), a person reviews it, and another approves it. Each step is taken by whoever is
-// bound to its role on the flow, of its kind, each a different principal, and never by whoever
-// started the run; one decline, with a reason, ends it. Each sees what they decide: the account,
-// the amount and the balance the run read (its shows). They decide in the editor's Approvals
+// bound to its role on the flow, of its kind, each of another party (an agent is one party with
+// whoever owns it or made its token), and never by whoever started the run, nor their party; one
+// decline, with a reason, ends it. Each sees what they decide: the account, the amount and the
+// balance the run read (its shows). They decide in the editor's Approvals
 // (Runs waiting draws the three steps as a chain: who took each, the classifier's note, what is
 // open) or with holon decide: a person on another machine signs in first with holon login, the
 // agent uses its own token or holon mcp's decide tool.
@@ -25,34 +26,36 @@
 // the tag, and on no other. A version that adds or drops a tag is approved like anything a flow
 // asks for, and the review says who the tag lets in.
 //
-// Before it works, an admin says who takes each step: the three roles, an agent, a person (who is
-// printed the link they join with) and you, each bound on the tag. Deployed before they are, its
-// review marks its approval as one no one here can decide yet (classifier: no agent holds it
-// here), and the editor asks again before deploying it. Bound so, with you its one approver, it
-// still notes that a run you start yourself can't be decided (you take no step of it), without
-// asking: the runs its route starts can be. On the server's machine holon signs in as you, the
-// account that set the server up:
+// Before it works, an admin says who takes each step: the three roles, an agent of yours and two
+// people (each printed the link they join with), each bound on the tag. You take no step: you own
+// the agent and make its token, so you and it are one party, and a party takes one step of an
+// approval. Deployed before they are bound, its review marks its approval as one no one here can
+// decide yet (classifier: no agent holds it here), and the editor asks again before deploying it.
+// Bound so, it still notes that a run you start yourself can't be decided (you and scout take no
+// step of it), without asking: the runs its route starts can be. On the server's machine holon
+// signs in as you, the account that set the server up:
 //   holon roles define classifier --allow run.decide --kinds agent
 //   holon roles define reviewer --allow run.decide
 //   holon roles define approver --allow run.decide
 //   holon people add scout --agent
 //   holon people token scout                                         its token, printed once
 //   holon people add bob --person --role viewer
+//   holon people add cy --person --role viewer
 //   holon bind classifier --to scout --tag payments
 //   holon bind reviewer --to bob --tag payments
-//   holon bind approver --to <you> --tag payments
+//   holon bind approver --to cy --tag payments
 // Or in the editor's People and access: Roles defines the three (the classifier held by an agent
-// alone), Agents and tokens adds scout and makes its token, People adds bob, and the bind form,
-// on Bindings or on each one's page, binds each role to its principal on the flows with a tag,
-// payments (until: empty, for good; why: History keeps it). Each one's page then says what they
-// decide.
+// alone), Agents and tokens adds scout and makes its token, People adds bob and cy, and the bind
+// form, on Bindings or on each one's page, binds each role to its principal on the flows with a
+// tag, payments (until: empty, for good; why: History keeps it). Each one's page then says what
+// they decide.
 // With access changes governed, a binding that gives someone more waits for another admin. Add
 // one first (holon people add eve --person --role admin), then holon access approvals --changes
 // 1: binding reviewer to bob now isn't made at once. The form says it waits for 1 person other
 // than you to approve it (access change 1), and History lists it. Eve approves it in the editor's
 // Approvals › Access changes, which says what it gives and who could act as bob (you made bob's
-// invite link, so you don't approve it), or with holon access approve 1, and it is made. Binding
-// approver to you is made at once: it gives an admin nothing more.
+// invite link, so you don't approve it), or with holon access approve 1, and it is made; binding
+// approver to cy waits the same way.
 // And binds the database, with its tables and one account holding 100:
 //   holon database add bank ~/holon-bank.db --schema "create table if not exists accounts
 //     (id integer primary key, balance integer not null);
@@ -68,9 +71,9 @@
 // scout classifies it, with its token in HOLON_TOKEN, and a note:
 //   holon decide approved-payout <run> payout --approve --note '{"label":"invoice","confidence":0.93}'
 // then bob reviews it, in the editor's Approvals, or from another machine (holon login --server
-// <URL>, then the same holon decide), and you approve it on the server's machine, with
-// HOLON_TOKEN unset: each only their own step, and in turn. It pays it:
-//   holon decide approved-payout <run> payout --approve
+// <URL>, then the same holon decide), and cy approves it the same way: each only their own step,
+// and in turn. It pays it:
+//   holon decide approved-payout <run> payout --approve           as cy
 //   curl http://127.0.0.1:8153/accounts/1                            120: the deposit kept
 // Signed in as bob, the flow's page has each button that would change it disabled, saying why in
 // the server's words (no role bob holds on "approved-payout" holds flow.lifecycle): he reviews its

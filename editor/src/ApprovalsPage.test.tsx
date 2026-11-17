@@ -6,7 +6,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { ProposalCard } from "./ApprovalsPage";
+import { changeAsked, decideAsked, ProposalCard, WHY_CHARS } from "./ApprovalsPage";
 import { cardRows, mayGroups, textLines } from "./reviewMay";
 import { getProposal, mayI, previewDeploy, setSession, type DeployPreview, type FlowDocument, type Proposal } from "./server";
 import type { Touch } from "./touches";
@@ -61,7 +61,7 @@ describe("ProposalCard", () => {
   beforeEach(() => {
     setSession(null);
     vi.mocked(mayI).mockResolvedValue({ "flow.approve-deploy": true });
-    vi.mocked(getProposal).mockResolvedValue({ ...proposal, document: { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, source: TEXT } as FlowDocument });
+    vi.mocked(getProposal).mockResolvedValue({ ...proposal, document: { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, source: TEXT, server: { port: "", browsers: "https://shop.example *" } } as FlowDocument });
     vi.mocked(previewDeploy).mockResolvedValue({ touches: TOUCHES, settings: [] } as unknown as DeployPreview);
     vi.stubGlobal(
       "IntersectionObserver",
@@ -101,7 +101,8 @@ describe("ProposalCard", () => {
 
     await act(async () => shown!([{ isIntersecting: true }]));
     expect(getProposal).toHaveBeenCalledWith(7);
-    expect(previewDeploy).toHaveBeenCalledWith("refunds", proposal.unit, undefined);
+    // With the sites whose pages it answers, as its deploy sends them: a new one is approved here.
+    expect(previewDeploy).toHaveBeenCalledWith("refunds", proposal.unit, undefined, ["https://shop.example", "*"]);
     const rows = [...card.querySelectorAll("li")].map((li) => li.textContent);
     // Its text as typed, when the document can't be printed here.
     expect(rows).toEqual(["+host api.stripe.com: callline 2", "−host api.old.com: call"]);
@@ -109,5 +110,50 @@ describe("ProposalCard", () => {
     expect(card.textContent).toContain("2 the same");
     const buttons = [...card.querySelectorAll("button, a")].map((b) => b.textContent);
     expect(buttons).toEqual(["Decline with a reason…", "Review"]);
+  });
+});
+
+describe("the question that decides a run's approval", () => {
+  // R42: it names the run, its flow and how it started, and what the approval shows, a row each;
+  // a row that moved under the pointer is seen before it is decided.
+  const w = {
+    name: "payout",
+    expires_at: 0,
+    steps: "person",
+    said: "a person",
+    slots: [{ slot: 0, stage: 0, kind: "person" as const, people: 1, by: [] as string[], open: true }],
+    input: { payee: "acme · amount 30", amount: 3000 },
+  };
+  it("names the run and what it shows", () => {
+    expect(decideAsked("payments", "r7f3", "POST /pay", w, w.slots[0], true)).toBe(
+      [
+        'Approve "payout" for run r7f3 of payments (POST /pay)?',
+        "",
+        "It was started with:",
+        'payee "acme · amount 30"',
+        "amount 3000",
+        "",
+        "The run goes on once you do. A reason is optional, and kept with the run.",
+      ].join("\n"),
+    );
+    expect(decideAsked("payments", "r7f3", "POST /pay", { ...w, input: undefined, shows: { amount: 3000 } }, w.slots[0], false)).toBe(
+      ['Decline "payout" for run r7f3 of payments (POST /pay)?', "", "It shows:", "amount 3000", "", "Why: it is kept with the run, and the run goes on as declined."].join("\n"),
+    );
+  });
+});
+
+describe("the question that approves an access change", () => {
+  // R42: what it gives comes before its author's why, which is cut: a long why can't push it out of
+  // sight.
+  const p = { id: 4, author: "bo", at: 0, what: "bound approver to eve on payments", gives: ["run.decide on payments"], base: 1, needs: 1, approvals: [], state: "waiting" as const };
+  it("says what it gives first, then who proposed it and why, cut", () => {
+    const asked = changeAsked({ ...p, why: `urgent${" ".repeat(WHY_CHARS)}more` });
+    const [question, gives, proposed] = asked.split("\n\n");
+    expect(question).toBe("Approve access change 4?");
+    expect(gives).toBe("bound approver to eve on payments. It gives run.decide on payments.");
+    expect(proposed).toMatch(/^Proposed by bo, saying: urgent +… \+10 characters\. It is made once you do, checked again then\.$/);
+    expect(changeAsked(p)).toBe(
+      ["Approve access change 4?", "", "bound approver to eve on payments. It gives run.decide on payments.", "", "Proposed by bo. It is made once you do, checked again then."].join("\n"),
+    );
   });
 });

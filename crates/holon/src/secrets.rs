@@ -207,7 +207,8 @@ pub(crate) fn derived_hash(key: &[u8], run: &str, value: &str) -> String {
 
 /// What the run `run` computed from its secrets, as its record marks it: each text of
 /// [`MIN_SECRET_LEN`] characters or more that a leaf computing something of its own from a
-/// secret gave (`SecretFed::computes`, read off `timeline`), with its hash under `key`.
+/// secret gave (`SecretFed::computes`, read off `timeline`, its steps as the record keeps
+/// them), with its hash under `key`.
 ///
 /// And whether that is all of it (`whole`): every node that may compute from a secret was
 /// followed and observed (`kept`: the run kept a timeline; none deeper than it records, none
@@ -247,13 +248,79 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
     values.sort();
     // Two values under one mark would read as one.
     whole &= values.windows(2).all(|pair| pair[0].0[..8] != pair[1].0[..8]);
-    // And each step that gives a secret's value, or one computed from it, kept its outputs: one
-    // too large to keep as the run had it (a mark is shorter) would read, in a record marked
-    // whole, as one taken out, which `holon verify` refuses (R61), asking the same of each step
-    // (`SecretFed::holds`). A call that sends one gives what the host answered, kept whole in
-    // the record's rounds.
-    whole &= timeline.iter().filter(|n| fed.holds(&n.path)).all(|n| n.outputs.is_some());
+    // And each step `holon verify` takes from the record rather than computing it again on a
+    // mark (`SecretFed::taken`: each leaf a secret reaches, as it is or computed from it, but a
+    // call and one that only moves what it is handed) kept its outputs, in `timeline` as the
+    // record keeps it: one too large to keep as its record writes it ([`Measured`]: each such
+    // value as its mark, whatever the secret), or one carrying a file the log keeps by its hash
+    // (`firing::without_kept_files`), would read, in a record marked whole, as one taken out,
+    // which verify refuses (R61), asking the same of each step. One that only moves such a
+    // value may be left out: verify computes it again on its marks (R66). A call gives what the
+    // host answered, kept whole in the record's rounds.
+    whole &= timeline.iter().filter(|n| fed.taken(&n.path)).all(|n| n.outputs.is_some());
     crate::recorder::Born { values, whole }
+}
+
+/// Each step of a run that may hold a secret's value, or a text computed from one
+/// (`SecretFed::holds`), measured as its record writes it, for the run's timer to keep the step
+/// when it fits so (`recorder::Measure`, R63). As the run had it, such a step is longer by as
+/// much as its secret is: kept for a short one and left out for a long one, its record would
+/// say which it had, by the step's outputs, and, for a step `holon verify` takes from the
+/// record, by withholding for the one and not the other ([`born`]'s last clause).
+/// As written, each such value is its mark, as long for one secret as for another: the
+/// deployment's secrets as [`Redactor::of`] marks them, and each text the run computed from
+/// them so far as [`Redactor::born`] does, noted from the steps [`born`] notes them from, as
+/// each gives it (none for a run with no key, whose record marks none); and a look-alike of a
+/// mark in the run's own text escaped, as written. Not the marks only its whole entry makes
+/// known (its tokens, the credentials its calls answered, its tainted values): those write a
+/// step it keeps longer, never take it out, so whether a step is kept for its size is decided
+/// here, once.
+pub(crate) struct Measured {
+    fed: crate::taint::SecretFed,
+    key: Option<Zeroizing<Vec<u8>>>,
+    run: String,
+    marks: Redactor,
+}
+
+impl Measured {
+    /// For the run `run` (its id), its secrets' values written as `marks` ([`Redactor::of`]),
+    /// its marks for what it computes from them made under `key` ([`derived_key`]).
+    pub(crate) fn new(fed: crate::taint::SecretFed, key: Option<Zeroizing<Vec<u8>>>, run: String, marks: Redactor) -> Measured {
+        Measured { fed, key, run, marks }
+    }
+}
+
+impl crate::recorder::Measure for Measured {
+    fn fits(&mut self, path: &[u32], outputs: &[Option<SValue>]) -> Option<bool> {
+        if let Some(key) = &self.key
+            && self.fed.computes(path)
+        {
+            let marks = &self.marks;
+            let values: Vec<(String, String)> = outputs
+                .iter()
+                .enumerate()
+                .filter(|(port, _)| self.fed.output(path, *port).is_derived())
+                .filter_map(|(_, output)| match output {
+                    Some(SValue::Text(text)) if text.chars().count() >= MIN_SECRET_LEN && !marks.pairs.iter().any(|(value, _)| value == text) => {
+                        Some((derived_hash(key, &self.run, text), text.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !values.is_empty() {
+                let marks = std::mem::replace(&mut self.marks, Redactor { pairs: Vec::new(), whole: Vec::new() });
+                self.marks = marks.and(Redactor::born(&crate::recorder::Born { values, whole: true }));
+            }
+        }
+        if !self.fed.holds(path) {
+            return None;
+        }
+        let mut written = outputs.to_vec();
+        for v in written.iter_mut().flatten() {
+            self.marks.logged_svalue(v);
+        }
+        Some(crate::recorder::fits(&written))
+    }
 }
 
 /// What a run given `value`, the version `v` of `owner`'s secret `name`, records of it.
@@ -1514,6 +1581,37 @@ const MARKED: [&str; 5] = ["secret:", "token:", "taint:", "derived #", "respelle
 
 /// How a tainted value's mark begins: `‹taint:number›`.
 const TAINT_MARK: &str = "‹taint:";
+
+/// The longest answer a line keeps, as the line writes it, the `…` that says it was cut included.
+pub(crate) const ANSWER_KEPT: usize = 64 * 1024;
+
+/// `written`, an answer as a line writes it (each value its mark, a look-alike escaped), cut to
+/// what a line keeps ([`ANSWER_KEPT`]) with `…` after it; whether it was. After the marks are in
+/// place, never before: a value lying across the cut would leave its first part in the line, the
+/// whole of it no longer there to find, and a text read by its shape (JSON, for a key whose value
+/// is never kept) would no longer be one. And never inside a mark: one cut short would read as
+/// the run's own text. `holon verify` cuts what a run answers again the same way.
+pub(crate) fn cut_written(written: &mut String) -> bool {
+    if written.len() <= ANSWER_KEPT {
+        return false;
+    }
+    let mut at = ANSWER_KEPT - '…'.len_utf8();
+    while !written.is_char_boundary(at) {
+        at -= 1;
+    }
+    // A mark still open at the cut goes whole: back to where it, or the look-alike of one, begins.
+    if let Some(open) = written[..at].rfind('‹')
+        && !written[open..at].contains('›')
+    {
+        let begins = written[..open].trim_end_matches('‹').len();
+        if reads_as_mark(&written[begins..]) {
+            at = begins;
+        }
+    }
+    written.truncate(at);
+    written.push('…');
+    true
+}
 
 /// Whether `s` starts with what reads as a mark the log writes: a run of `‹` before `secret:`,
 /// `token:`, `taint:` or `derived #`.

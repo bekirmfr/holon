@@ -3,7 +3,6 @@
 //! own policy (editor.rs `PAGE_POLICY`).
 
 use super::*;
-use std::sync::atomic::AtomicUsize;
 
 /// Every kind of answer the control plane gives goes out with the four guards: the editor's page
 /// and one of its files, an API's JSON and its text, a 404 for no route and for no such thing, a
@@ -34,7 +33,7 @@ fn every_kind_of_control_plane_answer_carries_the_frame_guards() {
     let with = |method: &str, url: &str, headers: &[(&str, &str)]| {
         Request::fake_http(method, url, headers.iter().map(|&(k, v)| (k.to_string(), v.to_string())).collect(), vec![])
     };
-    let ask = |state: &AppState, request: Request| admitted(state, &request, &AtomicUsize::new(0), 1);
+    let ask = |state: &AppState, request: Request| admitted(state, &request, &crate::Slots::new(1, 1));
     let mut answers: Vec<(&str, u16, Response)> = vec![
         ("the editor's page", 200, ask(&state, req("GET", "/", vec![]))),
         ("an editor file", 200, ask(&state, req("GET", "/assets/app-1.js", vec![]))),
@@ -48,7 +47,7 @@ fn every_kind_of_control_plane_answer_carries_the_frame_guards() {
         ("a body sent as a form", 415, ask(&state, with("POST", "/deploy", &[("Host", &host), ("Content-Type", "text/plain")]))),
         ("no sign-in", 401, ask(&accounts, req("GET", "/deployments", vec![]))),
         ("a preflight", 204, ask(&state, with("OPTIONS", "/deploy", &[("Host", &host), ("Origin", "http://localhost:5173")]))),
-        ("too many at once", 503, admitted(&state, &req("GET", "/health", vec![]), &AtomicUsize::new(1), 1)),
+        ("too many at once", 503, admitted(&state, &req("GET", "/health", vec![]), &crate::Slots::new(0, 1))),
     ];
     state.store.1.stop();
     answers.push(("stopping", 503, ask(&state, req("GET", "/health", vec![]))));

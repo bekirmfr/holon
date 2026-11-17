@@ -399,6 +399,8 @@ fn the_editor_is_held_to_what_can_answers() {
         .iter()
         .filter_map(|r| match r.rule {
             Rule::Can(action, _) => Some((format!("{} {}", r.method, r.path), json!(action.name()))),
+            // Both actions, the first asked first (a run's evidence is its steps, R55).
+            Rule::Both(first, second, _) => Some((format!("{} {}", r.method, r.path), json!([first.name(), second.name()]))),
             _ => None,
         })
         .collect();
@@ -420,9 +422,9 @@ fn the_editor_is_held_to_what_can_answers() {
 /// No one gives more than they hold (D19), whichever route gives it: cy, holding a role that
 /// manages and assigns people on the host and a viewer's besides, doesn't make an admin or an
 /// editor by inviting, setting a role or adding to a group bound admin, and doesn't reset or make
-/// the tokens of someone holding more, so as to act as them, nor change or remove them. What holds
-/// no more than cy holds, cy gives and changes; an owner makes its service's tokens, as the design
-/// has it.
+/// the tokens of someone holding more, so as to act as them, nor change or remove them, nor someone
+/// who owns a service holding more, whose tokens they make. What holds no more than cy holds, cy
+/// gives and changes; an owner makes its service's tokens, as the design has it.
 #[test]
 fn no_one_gives_or_changes_more_than_they_hold() {
     let (state, t, _, _) = server();
@@ -451,6 +453,14 @@ fn no_one_gives_or_changes_more_than_they_hold() {
     assert_eq!(ada("POST", "/people/ci/tokens", json!({ "label": "CI" })).0, 200);
     assert_eq!(ada("POST", "/people", json!({ "name": "bot", "kind": "service", "role": "editor", "owner": "bob" })).0, 200);
     assert_eq!(send(&state, &t.bob, "POST", "/people/bot/tokens", json!({ "label": "bob's bot" })).0, 200, "its owner, holding less");
+    // Nor someone who owns more (the audit's R19): whoever acts as bob, a viewer now, makes bot's
+    // tokens, and so holds what bot holds. Not his password, email or whether he is enabled.
+    let owns = (403, "bob owns bot, which holds editor on this host, which holds flow.edit there, which you don't: you change, or act as, only someone who holds no more than you".to_string());
+    for (method, path, body) in [("POST", "/people/bob/reset", Value::Null), ("PATCH", "/people/bob", json!({ "email": "bob@example.com" })), ("PATCH", "/people/bob", json!({ "disabled": true }))] {
+        assert_eq!(refusal(cy(method, path, body.clone())), owns, "{method} {path} {body}");
+    }
+    assert_eq!(ada("PATCH", "/people/bot", json!({ "role": "viewer" })).0, 200);
+    assert_eq!(cy("POST", "/people/bob/reset", Value::Null).0, 200, "bot holding no more than cy");
 
     // Nor change someone holding more, so as to sign in as them, own them, or take from them (the
     // launch review's B4): not the admin's email, which a provider matches, nor whether they are
@@ -462,6 +472,86 @@ fn no_one_gives_or_changes_more_than_they_hold() {
     assert_eq!(refusal(cy("PATCH", "/people/ci", json!({ "owner": "cy" }))), acts_as("ci", "editor"));
     assert_eq!(cy("PATCH", "/people/dee", json!({ "email": "dee@example.com", "display": "Dee" })).0, 200);
     assert_eq!(cy("PATCH", "/people/cy", json!({ "display": "Cy" })).0, 200, "themself");
+}
+
+/// Giving is binding, whichever route gives: a role given with a principal, or set on one, takes
+/// people.assign on the host as a binding does, beside what it gives (D19). And what is given lasts
+/// no longer than its giver holds it: dee, admin until next week, binds no one past then, gives no
+/// role with a principal (that is for good), adds no one to a group bound for good, and makes no
+/// way in to someone holding more for good, so as to act as them; within her week, she binds.
+#[test]
+fn giving_takes_people_assign_and_lasts_no_longer_than_its_giver_holds_it() {
+    let (state, t, _, _) = server();
+    let ada = |method: &str, path: &str, body: Value| send(&state, &t.ada, method, path, body);
+    let cy = |method: &str, path: &str, body: Value| send(&state, &t.cy, method, path, body);
+    let dee = |method: &str, path: &str, body: Value| send(&state, &t.dee, method, path, body);
+
+    // cy manages people and assigns no one: makes and changes principals, gives no role.
+    assert_eq!(ada("PUT", "/roles/onboarding", json!({ "allows": ["people.view", "people.manage"], "kinds": ["person"] })).0, 200);
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "principal": "cy" }, "role": "onboarding", "scope": "host" })).0, 200);
+    let assigns = |role: &str| (403, format!("giving {role} binds it on the host, which takes people.assign there, which you don't hold"));
+    assert_eq!(refusal(cy("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "viewer" }))), assigns("viewer"));
+    assert_eq!(refusal(cy("POST", "/people", json!({ "name": "bot", "kind": "agent", "role": "agent" }))), assigns("agent"));
+    assert_eq!(ada("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "viewer" })).0, 200);
+    assert_eq!(refusal(cy("PATCH", "/people/eve", json!({ "role": "viewer" }))), assigns("viewer"));
+    assert_eq!(cy("POST", "/bindings", json!({ "who": { "principal": "eve" }, "role": "viewer", "scope": "host" })).0, 403);
+    assert_eq!(cy("PATCH", "/people/eve", json!({ "display": "Eve" })).0, 200, "what people.manage changes");
+
+    // dee is admin until next week, and a viewer for good.
+    let week = crate::deploy::epoch_now() + 7 * 86_400;
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "principal": "dee" }, "role": "admin", "scope": "host", "expires_at": week })).0, 200);
+    let outlasts = |role: &str, lasts: &str| (403, format!("what {role} gives on this host you hold only until a binding of yours expires, and this one would last {lasts}: a binding lasts no longer than what lets its author make it"));
+    assert_eq!(refusal(dee("POST", "/bindings", json!({ "who": { "principal": "dee" }, "role": "admin", "scope": "host" }))), outlasts("admin", "for good"));
+    let later = week + 86_400;
+    let until_later = format!("until {}", crate::cmdline::when(Some(later)));
+    assert_eq!(refusal(dee("POST", "/bindings", json!({ "who": { "principal": "eve" }, "role": "editor", "scope": "host", "expires_at": later }))), outlasts("editor", &until_later));
+    assert_eq!(refusal(dee("POST", "/people", json!({ "name": "fay", "kind": "person", "role": "editor" }))), outlasts("editor", "for good"));
+    assert_eq!(refusal(dee("PATCH", "/people/eve", json!({ "role": "editor" }))), outlasts("editor", "for good"));
+    assert_eq!(ada("PUT", "/groups/admins", json!({ "members": ["ada"] })).0, 200);
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "group": "admins" }, "role": "admin", "scope": "host" })).0, 200);
+    let (code, said) = dee("PUT", "/groups/admins", json!({ "members": ["ada", "eve"] }));
+    assert_eq!(code, 403, "adding eve to a group bound admin for good: {said}");
+    assert_eq!(ada("PATCH", "/people/bob", json!({ "role": "editor" })).0, 200);
+    let (code, said) = dee("POST", "/people/bob/reset", Value::Null);
+    assert_eq!(code, 403, "a way in to bob, editor for good: {said}");
+    // Within her week, and what she holds for good, she gives.
+    assert_eq!(dee("POST", "/bindings", json!({ "who": { "principal": "eve" }, "role": "editor", "scope": "host", "expires_at": week })).0, 200, "until her own binding ends");
+    assert_eq!(dee("POST", "/people", json!({ "name": "fay", "kind": "person", "role": "viewer" })).0, 200, "a viewer, as she is for good");
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "principal": "dee" }, "role": "admin", "scope": "host" })).0, 200);
+    assert_eq!(dee("POST", "/bindings", json!({ "who": { "principal": "eve" }, "role": "admin", "scope": "host" })).0, 200, "admin for good now");
+}
+
+/// Deciding an access change is one thing whichever way it goes: someone other than its author
+/// declines it only if they may approve it (D6, D13); its author withdraws it. And no one tightens
+/// the settings past what can be decided: an access change waiting for more people than hold
+/// people.assign here besides whoever sets it would wait for good, loosening the settings again
+/// among them, but through this machine's run file.
+#[test]
+fn whoever_declines_an_access_change_may_approve_it_and_no_one_sets_approvals_none_can_give() {
+    let w = world();
+    let (state, t) = (&w.state, &w.t);
+    let ada = |method: &str, path: &str, body: Value| send(state, &t.ada, method, path, body);
+    let cy = |method: &str, path: &str, body: Value| send(state, &t.cy, method, path, body);
+    let id = |name: &str| w.ids.iter().find(|(n, _)| *n == name).unwrap().1.clone();
+    let decline = |id: String| format!("/access/proposals/{id}/decline");
+    // cy holds people.assign, and not what admin gives: approves dee made admin no more than
+    // declines it; dee given people-admin, which cy holds, cy declines.
+    let (code, said) = cy("POST", &decline(id("admin-change")), json!({ "reason": "no" }));
+    assert_eq!(code, 403, "{said}");
+    assert!(error_of(&said).ends_with("; it is declined only by its author or someone who may approve it"), "{said}");
+    assert_eq!(cy("POST", &decline(id("assign-change")), json!({ "reason": "not yet" })).0, 200);
+    assert_eq!(ada("POST", &decline(id("admin-change")), json!({ "reason": "withdrawn" })).0, 200, "its author");
+
+    // ada and cy hold people.assign: a change by either waits for 1 other at most.
+    let wait = |n: u8, hold: &str| (409, format!("an access change would wait for {} other than its author, and {hold} people.assign on this host besides you: one could wait for good, these settings too, and only this machine's run file would loosen them. Give people.assign to more people first", if n == 1 { "1 person".to_string() } else { format!("{n} people") }));
+    assert_eq!(refusal(cy("PUT", "/access/approvals", json!({ "changes": 2 }))), wait(2, "1 person holds"));
+    assert_eq!(refusal(ada("PUT", "/access/approvals", json!({ "changes": 3 }))), wait(3, "1 person holds"));
+    assert_eq!(cy("PUT", "/access/approvals", json!({ "changes": 1, "starter": false })).0, 200, "as many as it was, and not looser");
+    let (state, t, _, _) = server();
+    let ada = |method: &str, path: &str, body: Value| send(&state, &t.ada, method, path, body);
+    assert_eq!(refusal(ada("PUT", "/access/approvals", json!({ "changes": 1 }))), wait(1, "no one holds"), "ada alone holds it");
+    assert_eq!(ada("PATCH", "/people/bob", json!({ "role": "admin" })).0, 200);
+    assert_eq!(ada("PUT", "/access/approvals", json!({ "changes": 1 })).0, 200);
 }
 
 /// Everyone `world` makes, and what it made, by name: bindings and tokens by id.
@@ -524,7 +614,7 @@ fn every_route_that_changes_a_principal_holds_its_caller_to_what_they_hold() {
     type Ask = (&'static str, &'static str, Value);
     // (route, cy refused, (by ada?, the same to someone holding no more)).
     type Case = ((&'static str, &'static str), Ask, (bool, Ask));
-    let cases: [Case; 12] = [
+    let cases: [Case; 13] = [
         (("POST", "/people"), ("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "editor" })), (false, ("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "viewer" })))),
         (("POST", "/admin/oidc"), ("POST", "/admin/oidc", json!({ "settings": null })), (true, ("POST", "/admin/oidc", json!({ "settings": null })))),
         (("POST", "/people/{name}/tokens"), ("POST", "/people/ci/tokens", json!({ "label": "mine" })), (false, ("POST", "/people/reader/tokens", json!({ "label": "mine" })))),
@@ -539,10 +629,12 @@ fn every_route_that_changes_a_principal_holds_its_caller_to_what_they_hold() {
         // Approving an access change gives what it gives (D6): dee made an admin, which cy isn't;
         // dee given people-admin, which cy holds.
         (("POST", "/access/proposals/{id}/approve"), ("POST", "/access/proposals/{admin-change}/approve", Value::Null), (false, ("POST", "/access/proposals/{assign-change}/approve", Value::Null))),
+        // Whoever holds this machine decides as whom its run file is tied to (D45): bob, an
+        // editor, which cy isn't; dee, a viewer (it waits, as what gives more does here).
+        (("PUT", "/access/local"), ("PUT", "/access/local", json!({ "account": "bob" })), (false, ("PUT", "/access/local", json!({ "account": "dee" })))),
     ];
     let neither = [
         (("PUT", "/access/approvals"), "how this host decides approvals: no one's sign-in, tokens or holdings"),
-        (("PUT", "/access/local"), "whom the run file signs in as, which is admin on the host whoever it is (D45)"),
         (("DELETE", "/roles/{name}"), "refused while the role is bound (D28): it takes from no one"),
         (("DELETE", "/groups/{name}"), "refused while the group is bound (D28): it takes from no one"),
         (("POST", "/access/proposals/{id}/decline"), "a change declined is never made: it gives and takes nothing"),
@@ -625,7 +717,7 @@ fn no_one_takes_over_someone_holding_what_waits_for_people() {
         (("POST", "/access/proposals/{id}/approve"), "makes what waited, by its author"),
         (("POST", "/access/proposals/{id}/decline"), "makes nothing"),
         (("PUT", "/access/approvals"), "how this host decides approvals: no one's way in"),
-        (("PUT", "/access/local"), "the run file's own way in, which is this machine's: the root here (D11)"),
+        (("PUT", "/access/local"), "the run file's way in, which is this machine's (D11): tied to someone else, it waits for people"),
     ];
     let changing: Vec<(&str, &str)> = ROUTES
         .iter()
@@ -675,8 +767,21 @@ fn no_one_takes_over_someone_holding_what_waits_for_people() {
         assert_eq!(send(&state, &t.ada, "PATCH", "/people/bob", same.clone()).0, 200, "{same}");
     }
     // That way, through the rules there are: taken away at once, reset, and given back, which
-    // waits, its proposal saying who made bob's link.
+    // waits, its proposal saying who made bob's link. Taken from bob, it is still held by bot,
+    // which bob owns and whose tokens whoever acts as bob makes (the audit's R19): each way in to
+    // bob is refused, saying so, until it is taken from bot too.
     assert_eq!(send(&state, &t.ada, "PATCH", "/people/bob", json!({ "role": "viewer" })).0, 200);
+    assert_eq!(
+        refusal(send(&state, &t.ada, "POST", "/people/bob/reset", Value::Null)),
+        (403, "bob owns bot, which holds run.decide on this host, as classifier, and giving that waits here for 1 person other than its giver: whoever resets bob's password could act as bob, counted as another person, so it is done only through this server's machine (its run file); or take that from bot first, which applies at once, and give it back after, which waits".into())
+    );
+    for (method, path, body) in [("PATCH", "/people/bob", json!({ "email": "someone@example.com" })), ("POST", "/admin/oidc", json!({ "settings": { "issuer": "http://127.0.0.1:9", "client_id": "holon" } }))] {
+        let (code, said) = refusal(send(&state, &t.ada, method, path, body));
+        assert!(code == 403 && said.starts_with("bob owns bot, which holds run.decide on this host, as classifier, and giving that waits"), "{path}: {code} {said}");
+    }
+    let classifier = state.access.accounts().unwrap().bindings_of("bot").into_iter().find(|b| b.role == "classifier").unwrap().id;
+    let (code, said) = send(&state, &t.ada, "DELETE", &format!("/bindings/{classifier}"), Value::Null);
+    assert!((200..300).contains(&code), "taken from bot, at once: {code} {said}");
     assert_eq!(send(&state, &t.ada, "POST", "/people/bob/reset", Value::Null).0, 200);
     let (code, said) = send(&state, &t.ada, "PATCH", "/people/bob", json!({ "role": "admin" }));
     assert_eq!(code, 202, "{said}");
@@ -692,7 +797,9 @@ fn no_one_takes_over_someone_holding_what_waits_for_people() {
 /// but what gives no more (a display name beside a role); a new principal with a role that would
 /// wait is refused (409). The proposals are listed newest first; their author doesn't approve
 /// them, another admin does, each then made as its author asked, by them, its why saying who
-/// approved it; a decline needs a reason. The activity log says each.
+/// approved it; a decline needs a reason. The activity log says each. (Each gives to someone of its
+/// own: one made before another that gives to the same person would change what the other gives,
+/// which makes it stale, access_proposals.rs.)
 #[test]
 fn an_access_change_that_gives_more_waits_for_people_whichever_route_makes_it() {
     let (state, t, _, _) = server();
@@ -702,16 +809,21 @@ fn an_access_change_that_gives_more_waits_for_people_whichever_route_makes_it() 
     assert_eq!(ada("PUT", "/roles/approver", json!({ "allows": ["run.decide", "run.view"], "kinds": ["person"] })).0, 200);
     assert_eq!(ada("PUT", "/groups/team", json!({ "members": ["cy"] })).0, 200);
     assert_eq!(ada("POST", "/bindings", json!({ "who": { "group": "team" }, "role": "approver", "scope": { "flows": { "slug": "d" } } })).0, 200);
+    for name in ["gil", "hal", "ivy"] {
+        assert_eq!(ada("POST", "/people", json!({ "name": name, "kind": "person", "role": "viewer" })).0, 200);
+    }
+    assert_eq!(ada("PUT", "/roles/keeper", json!({ "allows": ["run.view"], "kinds": ["person"] })).0, 200);
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "principal": "hal" }, "role": "keeper", "scope": "host" })).0, 200);
     assert_eq!(ada("PUT", "/access/approvals", json!({ "changes": 1 })).0, 200, "turning it up is made at once");
     let accounts = Arc::clone(state.access.accounts().unwrap());
     let base = accounts.access_document().version;
 
     let waiting = [
         ("POST", "/bindings", json!({ "who": { "principal": "dee" }, "role": "approver", "scope": "host", "why": "on call" }), "bound approver to dee on this host"),
-        ("PUT", "/groups/team", json!({ "members": ["cy", "dee"] }), "changed the group team: cy, dee"),
-        ("PUT", "/roles/approver", json!({ "allows": ["run.decide", "run.view", "secret.set"], "kinds": ["person"] }), "changed the role approver: run.decide, run.view, secret.set, held by a person"),
-        ("PATCH", "/people/dee", json!({ "role": "editor", "display": "Dee" }), "bound editor to dee on this host"),
-        ("PUT", "/access/approvals", json!({ "changes": null }), "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them; a person who started a run may take a step of it that says so; an access change applies at once"),
+        ("PUT", "/groups/team", json!({ "members": ["cy", "gil"] }), "changed the group team: cy, gil"),
+        ("PUT", "/roles/keeper", json!({ "allows": ["run.view", "secret.set"], "kinds": ["person"] }), "changed the role keeper: run.view, secret.set, held by a person"),
+        ("PATCH", "/people/ivy", json!({ "role": "editor", "display": "Ivy" }), "bound editor to ivy on this host"),
+        ("PUT", "/access/approvals", json!({ "changes": null }), "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them; whoever started a run, or one of their party, may take a step of it that says so; an access change applies at once"),
     ];
     for (n, (method, path, body, what)) in waiting.iter().enumerate() {
         let (code, said) = ada(method, path, body.clone());
@@ -721,7 +833,7 @@ fn an_access_change_that_gives_more_waits_for_people_whichever_route_makes_it() 
         assert_eq!((p["id"].as_u64(), p["what"].as_str(), p["state"].as_str(), p["author"].as_str(), p["base"].as_u64()), (Some(n as u64 + 1), Some(*what), Some("waiting"), Some("ada"), Some(base)), "{said}");
     }
     assert_eq!(accounts.access_document().version, base, "nothing it gives is made");
-    assert_eq!(accounts.principal("dee").unwrap().display.as_deref(), Some("Dee"), "a display name gives nothing");
+    assert_eq!(accounts.principal("ivy").unwrap().display.as_deref(), Some("Ivy"), "a display name gives nothing");
     assert_eq!(listed(&state, &t.ada, "/access/proposals", Some("proposals"), "what"), waiting.iter().rev().map(|w| w.3.to_string()).collect::<Vec<_>>());
     let (code, said) = refusal(ada("POST", "/people", json!({ "name": "eve", "kind": "person", "role": "editor" })));
     assert_eq!(code, 409, "{said}");
@@ -737,7 +849,7 @@ fn an_access_change_that_gives_more_waits_for_people_whichever_route_makes_it() 
     let document = accounts.access_document();
     assert_eq!((document.version, document.by.as_str(), document.why.as_deref()), (base + 5, "ada", Some("access change 5, approved by bob")));
     assert_eq!(accounts.access_version(base + 1).unwrap().unwrap().why.as_deref(), Some("on call; access change 1, approved by bob"));
-    assert_eq!((accounts.host_role("dee"), document.approvals.changes), (Some(crate::access::Role::Editor), None));
+    assert_eq!((accounts.host_role("ivy"), document.approvals.changes), (Some(crate::access::Role::Editor), None));
 
     // Back on: a decline needs a reason.
     assert_eq!(ada("PUT", "/access/approvals", json!({ "changes": 1 })).0, 200);
@@ -789,4 +901,140 @@ fn where_a_resource_is_shows_only_to_whoever_may_bind_one() {
     assert_eq!(databases, json!([{ "name": "shop", "deployment": null, "engine": "sqlite", "access": "read-write", "lock": "commit" }]));
     assert_eq!(refusal(send(&state, &t.cy, "POST", "/admin/folders", json!({ "name": "x", "path": folder }))).0, 403, "cy only views");
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A record a page writes whole, from the copy it read: one kind of each (R32).
+struct Whole {
+    what: &'static str,
+    /// Where it is written: a method and a path.
+    write: (&'static str, &'static str),
+    /// Its body, holding `content`, made from `base` (left out when it is None).
+    body: fn(&str, Option<Value>) -> Value,
+    /// What its author sends as `base`, from what they read.
+    base: fn(&AppState, &str) -> Value,
+    /// What it holds now, as its content says it; none when it isn't there.
+    now: fn(&AppState, &str) -> Option<String>,
+    /// Where it is removed.
+    remove: &'static str,
+    /// What it holds, in turn: made first, ada's, bob's, and later.
+    says: [&'static str; 4],
+}
+
+fn with_base(mut body: Value, base: Option<Value>) -> Value {
+    if let Some(base) = base {
+        body["base"] = base;
+    }
+    body
+}
+
+fn read_json(state: &AppState, token: &str, path: &str) -> Value {
+    let (code, said) = send(state, token, "GET", path, Value::Null);
+    if code == 404 {
+        return Value::Null;
+    }
+    assert_eq!(code, 200, "{path}: {said}");
+    serde_json::from_str(&said).unwrap()
+}
+
+const WHOLES: [Whole; 3] = [
+    Whole {
+        what: "a saved flow",
+        write: ("POST", "/flows"),
+        body: |content, base| with_base(json!({ "name": "draft", "document": { "says": content } }), base),
+        base: |state, token| read_json(state, token, "/flows/draft").get("saved_at_epoch_seconds").cloned().unwrap_or(Value::Null),
+        now: |state, token| read_json(state, token, "/flows/draft").pointer("/document/says").and_then(Value::as_str).map(String::from),
+        remove: "/flows/draft",
+        says: ["first", "ada's", "bob's", "later"],
+    },
+    Whole {
+        what: "a group's members",
+        write: ("PUT", "/groups/crew"),
+        body: |content, base| with_base(json!({ "members": content.split(',').collect::<Vec<_>>() }), base),
+        base: |state, token| read_json(state, token, "/groups")["version"].clone(),
+        now: |state, token| {
+            let groups = read_json(state, token, "/groups");
+            groups["groups"].as_array().unwrap().iter().find(|g| g["name"] == "crew").map(|g| g["members"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect::<Vec<_>>().join(","))
+        },
+        remove: "/groups/crew",
+        says: ["cy", "cy,dee", "dee", "bob"],
+    },
+    Whole {
+        what: "a role's actions",
+        write: ("PUT", "/roles/watcher"),
+        body: |content, base| with_base(json!({ "allows": content.split(',').collect::<Vec<_>>(), "kinds": ["person"] }), base),
+        base: |state, token| read_json(state, token, "/roles")["version"].clone(),
+        now: |state, token| {
+            let roles = read_json(state, token, "/roles");
+            roles["roles"].as_array().unwrap().iter().find(|r| r["name"] == "watcher").map(|r| r["allows"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect::<Vec<_>>().join(","))
+        },
+        remove: "/roles/watcher",
+        says: ["run.view", "flow.view,run.view", "flow.view", "people.view"],
+    },
+];
+
+/// Each record a page writes whole, from the copy it read (a saved flow, a group's members, a
+/// role's actions), as two people read it at once and write theirs in turn (R32): the first is
+/// kept; the second, made from the copy they read, is refused (409), says what was done since, and
+/// leaves the first's; made again from the record as it is now, it is kept. One made as new (read
+/// before there was one) where there is one, or from one removed since, is refused too, and one that doesn't say what it
+/// was read as replaces whatever is there. An access change waiting for people, made from a copy
+/// changed before it is approved, goes stale, and what was changed since stands.
+#[test]
+fn a_whole_record_written_from_a_stale_copy_is_refused_and_changes_nothing() {
+    let (state, t, _, _) = server();
+    assert_eq!(send(&state, &t.ada, "PATCH", "/people/bob", json!({ "role": "admin" })).0, 200);
+    for w in &WHOLES {
+        let (method, path) = w.write;
+        let write = |token: &str, content: &str, base: Option<Value>| send(&state, token, method, path, (w.body)(content, base));
+        let now = || (w.now)(&state, &t.ada);
+        let [first, ada_s, bob_s, later] = w.says;
+
+        // Read before there is one: none (a flow's null), or the access version without it.
+        let none = (w.base)(&state, &t.ada);
+        assert_eq!(write(&t.ada, first, Some(none.clone())).0, 200, "{}: made as new", w.what);
+        let (code, said) = refusal(write(&t.bob, first, Some(none)));
+        assert_eq!(code, 409, "{}: made as new where there is one: {said}", w.what);
+        assert!(said.contains("was made since you") || said.contains("is saved already"), "{}: {said}", w.what);
+        let (ada_read, bob_read) = ((w.base)(&state, &t.ada), (w.base)(&state, &t.bob));
+        assert_eq!(write(&t.ada, ada_s, Some(ada_read)).0, 200, "{}: ada's, from what she read", w.what);
+        let (code, said) = refusal(write(&t.bob, bob_s, Some(bob_read)));
+        assert_eq!(code, 409, "{}: bob's, from the copy he read: {said}", w.what);
+        assert!(said.contains("since you"), "{}: {said}", w.what);
+        assert_eq!(now().as_deref(), Some(ada_s), "{}: ada's stands", w.what);
+        assert_eq!(write(&t.bob, bob_s, Some((w.base)(&state, &t.bob))).0, 200, "{}: bob's, from it as it is now", w.what);
+        assert_eq!(now().as_deref(), Some(bob_s), "{}", w.what);
+        assert_eq!(write(&t.ada, later, None).0, 200, "{}: not saying what it was read as replaces it", w.what);
+        assert_eq!(now().as_deref(), Some(later), "{}", w.what);
+
+        let read = (w.base)(&state, &t.ada);
+        let (code, said) = send(&state, &t.bob, "DELETE", w.remove, Value::Null);
+        assert!(code == 200 || code == 204, "{}: {said}", w.what);
+        let (code, said) = refusal(write(&t.ada, ada_s, Some(read)));
+        assert_eq!(code, 409, "{}: from one removed since: {said}", w.what);
+        assert!(said.contains("removed since you"), "{}: {said}", w.what);
+        assert_eq!(now(), None, "{}: it stays removed", w.what);
+    }
+    let (code, said) = refusal(send(&state, &t.ada, "PUT", "/groups/crew", json!({ "members": ["cy"], "base": 999 })));
+    assert_eq!((code, said.contains("isn't one kept here")), (409, true), "{said}");
+
+    // Waiting for people: ada's change to the team, from the team as she read it; bob takes cy out
+    // of it before it is approved, and approving ada's would put cy back.
+    let ada = |method: &str, path: &str, body: Value| send(&state, &t.ada, method, path, body);
+    assert_eq!(ada("PUT", "/roles/approver", json!({ "allows": ["run.decide", "run.view"], "kinds": ["person"] })).0, 200);
+    assert_eq!(ada("PUT", "/groups/team", json!({ "members": ["cy", "dee"] })).0, 200);
+    assert_eq!(ada("POST", "/bindings", json!({ "who": { "group": "team" }, "role": "approver", "scope": { "flows": { "slug": "d" } } })).0, 200);
+    assert_eq!(ada("POST", "/people", json!({ "name": "gil", "kind": "person", "role": "viewer" })).0, 200);
+    assert_eq!(ada("PUT", "/access/approvals", json!({ "changes": 1 })).0, 200);
+    let read = read_json(&state, &t.ada, "/groups")["version"].clone();
+    let (code, said) = ada("PUT", "/groups/team", json!({ "members": ["cy", "dee", "gil"], "base": read }));
+    assert_eq!(code, 202, "giving gil run.decide on d waits: {said}");
+    let id = serde_json::from_str::<Value>(&said).unwrap()["proposal"]["id"].as_u64().unwrap();
+    assert_eq!(send(&state, &t.bob, "PUT", "/groups/team", json!({ "members": ["dee"], "base": read })).0, 200, "taking cy out is made at once");
+    let (code, said) = refusal(send(&state, &t.bob, "POST", &format!("/access/proposals/{id}/approve"), json!({})));
+    assert_eq!(code, 409, "{said}");
+    assert!(said.contains("so it is stale: the group team was changed since"), "{said}");
+    let proposals = read_json(&state, &t.ada, "/access/proposals");
+    assert_eq!(proposals["proposals"][0]["state"], "stale", "{proposals}");
+    let team = read_json(&state, &t.ada, "/groups")["groups"].as_array().unwrap().iter().find(|g| g["name"] == "team").unwrap()["members"].clone();
+    assert_eq!(team, json!(["dee"]), "what bob did stands");
 }

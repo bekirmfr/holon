@@ -330,8 +330,9 @@ describe("closing a changed tab", () => {
 
   function open(save: () => Promise<{ name: string; key: string } | null> = vi.fn(async () => ({ name: "a", key: "saved-a" }))) {
     const handle: { current: Handle | null } = { current: null };
+    // Its question answered at once: the wait before one takes an answer is Dialog.test.tsx's.
     mount(
-      <DialogProvider>
+      <DialogProvider armMs={0}>
         <Harness handle={handle} save={save} />
       </DialogProvider>,
     );

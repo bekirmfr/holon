@@ -88,9 +88,22 @@ pub(crate) struct TickNowBody {
     pub(crate) clock: String,
 }
 
+/// A tick as `POST /deployments/<slug>/tick` answers it to whoever doesn't read its flow's runs'
+/// steps (run.steps, R57): when it ticked and which clock, field by field. Its outputs and what it
+/// did are its run's values, left out; `left_out` says so, and what would give them.
+#[derive(Serialize)]
+struct TickHead<'a> {
+    at_epoch_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<&'a str>,
+    left_out: String,
+}
+
 /// `POST /deployments/<slug>/tick`: that clock ticks now, as the scheduler would tick it (its
 /// next tick a period from now), and the tick's history entry answers. The editor's "tick now".
-pub(crate) fn handle_post_tick(state: &AppState, slug: &str, request: &Request) -> Response {
+/// Ticking is flow.lifecycle's; the entry's outputs and what it did, a run's values, are
+/// run.steps': to a caller who doesn't hold it, a [`TickHead`] answers (R57).
+pub(crate) fn handle_post_tick(state: &AppState, slug: &str, request: &Request, caller: &crate::access::Caller) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
         Err(r) => return r,
@@ -114,7 +127,12 @@ pub(crate) fn handle_post_tick(state: &AppState, slug: &str, request: &Request) 
     fire_one_clock_tick(&state.store, &state.deployments, &state.deployments_path, slug.to_string(), unit, cell, &permit, &secrets, &clock, SystemTime::now());
     let deployments = state.deployments.lock().unwrap();
     let Some(dep) = deployments.get(slug) else { return Response::empty_404() };
-    let mut reply = serde_json::to_value(dep.history.last()).unwrap_or_default();
+    let Some(tick) = dep.history.last() else { return Response::json(&serde_json::Value::Null) };
+    if let Err(refused) = crate::can::can(caller, crate::can::Action::RunSteps, &crate::can::Resource::Flow(slug)) {
+        let left_out = format!("its outputs and what it did are its run's values, left out: {}", refused.0);
+        return Response::json(&TickHead { at_epoch_seconds: tick.at_epoch_seconds, label: tick.label.as_deref(), left_out });
+    }
+    let mut reply = serde_json::to_value(tick).unwrap_or_default();
     Redactor::of(&dep.secrets).json(&mut reply);
     Response::json(&reply)
 }
@@ -221,7 +239,8 @@ pub(crate) fn fire_one_clock_tick(
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.
     if parked_any {
-        persist_deployments(deployments_path, deployments);
+        // Nobody waits on an answer: the server's output says so when it isn't saved.
+        let _ = persist_deployments(deployments_path, deployments);
     }
 }
 
@@ -237,10 +256,11 @@ fn redact_tick(tick: &mut TickEntry, redactor: &Redactor) {
 
 /// The clock scheduler: two threads that act on their own, every second, with nobody asking.
 /// One starts the clocks due (`start_due_clock_ticks`) and doesn't wait for them; the other
-/// expires the waiting runs past their deadlines, each resumed run going on in it. Apart, so
-/// neither waits on a call the other's run makes: a tick waiting 30 s on a call held every
-/// deployment's clocks and every deadline as long when one thread did both and waited for its
-/// ticks (R34). Each ends once the table it serves is gone (a test's; the server's lives on).
+/// expires the waiting runs past their deadlines, each resumed run set going in a thread of its
+/// own (`durable::expire_waiting`) and waited for by no pass. Apart, so neither waits on a call
+/// the other's run makes: a tick waiting 30 s on a call held every deployment's clocks and every
+/// deadline as long when one thread did both and waited for its ticks (R34). Each ends once the
+/// table it serves is gone (a test's; the server's lives on).
 pub(crate) fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: Place) {
     let (clocks, at) = (Arc::downgrade(&deployments), deployments_path.clone());
     let clock_store = store.clone();
@@ -257,14 +277,16 @@ pub(crate) fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<B
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(1));
         let Some(deployments) = deadlines.upgrade() else { return };
-        expire_waiting(&store, &deployments, &deployments_path, epoch_now());
+        // Each expired run goes on in its own thread, waited for by no pass (R34).
+        drop(expire_waiting(&store, &deployments, &deployments_path, epoch_now()));
     });
 }
 
 /// The waiting runs past their deadlines go on, timed out (`durable::expire_waiting`), unless the
 /// server is stopping (stopping.rs): then they wait on, and time out once it is back.
-pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, now: u64) {
-    if !store.1.stopping() {
-        durable::expire_waiting(store, deployments, deployments_path, now);
+pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: &Place, now: u64) -> durable::Expiring {
+    if store.1.stopping() {
+        return durable::Expiring::none();
     }
+    durable::expire_waiting(store, deployments, deployments_path, now)
 }

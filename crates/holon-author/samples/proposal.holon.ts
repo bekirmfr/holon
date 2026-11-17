@@ -5,6 +5,8 @@
 // tool, with a why) doesn't deploy it: the server keeps it as a proposal, which waits in the
 // editor's Approvals with the agent's why and note and what it asks for. A person approves it,
 // which deploys it, or declines it with a reason the agent reads back (holon mcp's deployments).
+// Each version the agent deploys after that waits the same way, whatever it changes, unless a
+// person lets the flow take the agent's versions that ask for nothing more at once (its settings).
 //
 // Try it: connect an agent (holon mcp --server http://127.0.0.1:7420), ask it to deploy this
 // with a why, then review it under Approvals and approve it, and

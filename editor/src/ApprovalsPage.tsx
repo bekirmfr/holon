@@ -12,12 +12,13 @@
 // Approve and Decline to whoever the server would let, its author's Withdraw, and those decided
 // lately.
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { changeState, decidedChange, notYours } from "./access";
 import { reviewQueue, routeOf, said, versionsSaid, type Approval, type Reviewable } from "./approvals";
 import type { Me } from "./AuthGate";
 import { canOn, useCan } from "./can";
-import { approvalSaid, chainOf, chainSaid, decidedLine, decidedSaid, inSteps, isApproval, shownSaid, stepName, waitsAfter, yourDecision, yourSteps, type ChainStep, type WaitingPoint, type WaitingStep } from "./decisions";
+import { approvalSaid, chainOf, chainSaid, clipped, decidedLine, decidedSaid, inSteps, isApproval, shownSaid, stepName, waitsAfter, yourDecision, yourSteps, type ChainStep, type WaitingPoint, type WaitingStep } from "./decisions";
+import { browsersOf } from "./DeploySettings";
 import { useDialog } from "./Dialog";
 import { cardRows, mayGroups, textLines, type CardRows } from "./reviewMay";
 import { follow, format, type ApprovalsTab, type Route } from "./routes";
@@ -33,10 +34,12 @@ import {
   type DeploymentEntry,
   type FlowDocument,
   type Proposal,
+  type WaitingRun,
 } from "./server";
 import { useKeys, useListKeys } from "./ui/Keys";
 import { useToast } from "./ui/Toast";
-import type { WaitingRunOf } from "./useApprovals";
+import type { Unread as Unreads, WaitingRunOf } from "./useApprovals";
+import { Unread } from "./ui/Unread";
 
 const when = (seconds: number) => new Date(seconds * 1000).toLocaleString();
 
@@ -72,6 +75,7 @@ export function ApprovalsPage({
   deployments,
   runs,
   access,
+  unread,
   me,
   navigate,
   textOf,
@@ -87,6 +91,8 @@ export function ApprovalsPage({
   runs: WaitingRunOf[] | null;
   /** Every access change, newest first (useApprovals), null until first read. */
   access: AccessProposal[] | null;
+  /** Each list whose last read failed, why (useApprovals): said in place of its being empty. */
+  unread: Unreads;
   me: Me;
   navigate: (r: Route) => void;
   /** A document as its text, for the lines a card's rows point at. Throws when it can't be written. */
@@ -116,21 +122,31 @@ export function ApprovalsPage({
           return (
             <a key={t} href={format(to)} aria-current={t === tab ? "page" : undefined} onClick={follow(to, navigate)}>
               {label}
-              <span className="hl-flow__count">{n}</span>
+              <span className="hl-flow__count" title={unread[t] ? `couldn't read it: ${unread[t]}` : undefined}>
+                {unread[t] ? "?" : n}
+              </span>
             </a>
           );
         })}
       </nav>
+      {unread[tab] && <Unread what={UNREAD_SAID[tab]} why={unread[tab]} polled />}
       {tab === "deploys" ? (
-        <Deploys approvals={approvals} navigate={navigate} textOf={textOf} onDeclined={onDeclined} />
+        <Deploys approvals={approvals} unread={unread.deploys !== ""} navigate={navigate} textOf={textOf} onDeclined={onDeclined} />
       ) : tab === "runs" ? (
-        <RunsWaiting runs={runs} listed={new Set(deployments.map((d) => d.slug))} me={me} navigate={navigate} onDecided={onDecided} />
+        <RunsWaiting runs={runs} unread={unread.runs !== ""} listed={new Set(deployments.map((d) => d.slug))} me={me} navigate={navigate} onDecided={onDecided} />
       ) : (
-        <AccessChanges changes={access} me={me} onDecided={onDecided} />
+        <AccessChanges changes={access} unread={unread.access !== ""} me={me} onDecided={onDecided} />
       )}
     </div>
   );
 }
+
+/** What each tab lists, as its failed read says it. */
+const UNREAD_SAID: Record<ApprovalsTab, string> = {
+  deploys: "what waits to be deployed",
+  runs: "the runs waiting",
+  access: "the access changes",
+};
 
 /** Decline a proposal of `slug`'s, for whoever may approve its deploys (`flow.approve-deploy`
  *  on the flow, as declining asks it); disabled, saying why not, for anyone else. */
@@ -153,7 +169,7 @@ const proposed = (a: Approval): a is Reviewable & { proposal: Proposal } => (a.k
  *  against the grant now, each row pointing at its line. */
 export async function readCard(p: Proposal, textOf: (slug: string, doc: FlowDocument) => string): Promise<CardRows> {
   const { document } = await getProposal(p.id);
-  const preview = await previewDeploy(p.slug, p.unit, document?.server?.requirements);
+  const preview = await previewDeploy(p.slug, p.unit, document?.server?.requirements, document?.server ? browsersOf(document.server) : undefined);
   let text = document?.source ?? "";
   try {
     if (document) text = textOf(p.slug, document);
@@ -298,11 +314,14 @@ export function ProposalCard({
 
 function Deploys({
   approvals,
+  unread,
   navigate,
   textOf,
   onDeclined,
 }: {
   approvals: Approval[];
+  /** Its list couldn't be read: none shown is not none waiting. */
+  unread: boolean;
   navigate: (r: Route) => void;
   textOf: (slug: string, doc: FlowDocument) => string;
   onDeclined: () => void;
@@ -343,7 +362,7 @@ function Deploys({
       });
     },
   });
-  if (approvals.length === 0) return <p className="hl-flow__none">Nothing waits for you: every saved version is deployed, and no agent asked for anything.</p>;
+  if (approvals.length === 0) return unread ? null : <p className="hl-flow__none">Nothing waits for you: every saved version is deployed, and no agent asked for anything.</p>;
   return (
     <section aria-label="deploys">
       {cards.length > 0 && (
@@ -410,24 +429,30 @@ function Deploys({
   );
 }
 
+/** The question that decides a step of `w`: which run of which flow, started how, and what it
+ *  shows, a row each, so a row that moved under the pointer is seen before it is decided (R42). */
+export function decideAsked(slug: string, runId: string, started: string, w: WaitingPoint, step: WaitingStep, approve: boolean): string {
+  const as = step.role ? ` as ${step.role}` : "";
+  const shown = shownSaid(w);
+  const what = shown ? `\n\nIt ${shown.label === "shows" ? "shows" : "was started with"}:\n${shown.rows.join("\n")}` : "";
+  const after = waitsAfter(w, step);
+  const then = approve
+    ? `${after ? `It then waits for ${after}.` : "The run goes on once you do."} A reason is optional, and kept with the run.`
+    : "Why: it is kept with the run, and the run goes on as declined.";
+  return `${approve ? "Approve" : "Decline"} "${w.name}"${as} for run ${runId} of ${slug} (${started})?${what}\n\n${then}`;
+}
+
 /** Approve, or decline with a reason, a step of an approval a run waits at, asked first: what
  *  the decision did is said, and `onDecided` once it is made. */
 function useDecide(onDecided: () => void) {
   const dialog = useDialog();
   const toast = useToast();
-  return async (slug: string, runId: string, w: WaitingPoint, step: WaitingStep, approve: boolean) => {
-    const as = step.role ? ` as ${step.role}` : "";
-    const after = waitsAfter(w, step);
+  return async (slug: string, run: WaitingRun, w: WaitingPoint, step: WaitingStep, approve: boolean) => {
+    const runId = run.run_id;
+    const asked = decideAsked(slug, runId, run.route ?? run.kind, w, step, approve);
     const reason = approve
-      ? await dialog.prompt(
-          `Approve "${w.name}"${as} for this run of ${slug}?\n\n${after ? `It then waits for ${after}.` : "The run goes on once you do."} A reason is optional, and kept with the run.`,
-          "",
-          "Approve",
-          "optional",
-        )
-      : await dialog.prompt(`Decline "${w.name}"${as} for this run of ${slug}?\n\nWhy: it is kept with the run, and the run goes on as declined.`, "", "Decline", {
-          required: "A decline says why: type a reason.",
-        });
+      ? await dialog.prompt(asked, "", "Approve", "optional")
+      : await dialog.prompt(asked, "", "Decline", { required: "A decline says why: type a reason." });
     if (reason === null) return;
     try {
       const d = await decideRun(slug, runId, w.name, step.slot, approve, reason);
@@ -465,6 +490,20 @@ function Chain({ w }: { w: WaitingPoint }) {
 }
 
 
+/** What an approval shows, a row each (`shownSaid`). */
+function Shown({ label, rows, name }: { label: string; rows: string[]; name: string }) {
+  return (
+    <div className="hl-flow__shown" aria-label={`what "${name}" shows`}>
+      {label}:{" "}
+      {rows.map((row, i) => (
+        <span key={i} className="hl-flow__shown-row">
+          {row}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 /** Runs waiting's list, by its name (ui/Keys.tsx's `pick`: the palette goes to a row of it). */
 export const WAITING_LIST = "approvals.runs";
 /** A run's key in Runs waiting's list. */
@@ -474,12 +513,15 @@ export const waitingKey = (slug: string, runId: string) => `${slug}:${runId}`;
  *  approval is decided here a step at a time, each step by whoever the server says may take it. */
 function RunsWaiting({
   runs,
+  unread,
   listed,
   me,
   navigate,
   onDecided,
 }: {
   runs: WaitingRunOf[] | null;
+  /** Its list couldn't be read: none shown is not none waiting. */
+  unread: boolean;
   /** The flows they may open: whoever only decides an approval of another sees its slug alone. */
   listed: Set<string>;
   me: Me;
@@ -488,30 +530,33 @@ function RunsWaiting({
 }) {
   const decide = useDecide(onDecided);
   const toast = useToast();
+  // Oldest first: a run that starts waiting is added below, moving no row under the pointer.
+  const ordered = useMemo(() => (runs === null ? null : [...runs].sort((a, b) => a.run.parked_at - b.run.parked_at || waitingKey(a.slug, a.run.run_id).localeCompare(waitingKey(b.slug, b.run.run_id)))), [runs]);
   // j and k move through the runs; Enter opens the flow the run is of.
   const list = useListKeys(
     WAITING_LIST,
-    (runs ?? []).map(({ slug, run }) => waitingKey(slug, run.run_id)),
+    (ordered ?? []).map(({ slug, run }) => waitingKey(slug, run.run_id)),
     (key) => {
-      const r = (runs ?? []).find(({ slug, run }) => waitingKey(slug, run.run_id) === key);
+      const r = (ordered ?? []).find(({ slug, run }) => waitingKey(slug, run.run_id) === key);
       if (r) navigate({ kind: "flow", slug: r.slug, tab: "settings" });
     },
   );
   // a and d: the selected run's first step whoever is signed in may take, asked first (the question
   // is its review); else why not.
   const decideSelected = (approve: boolean) => {
-    const r = (runs ?? []).find(({ slug, run }) => waitingKey(slug, run.run_id) === list.at);
+    const r = (ordered ?? []).find(({ slug, run }) => waitingKey(slug, run.run_id) === list.at);
     if (!r) return toast("Select a run first: j and k.", "info");
     const points = r.run.waiting.filter(isApproval);
     const mine = points.find((w) => yourSteps(w).length > 0);
-    if (mine) return void decide(r.slug, r.run.run_id, mine, yourSteps(mine)[0], approve);
+    if (mine) return void decide(r.slug, r.run, mine, yourSteps(mine)[0], approve);
     if (points.length === 0) return toast("It waits for an event, which its flow's own route delivers: nobody approves it here.", "info");
     const done = points.map((w) => yourDecision(w, me)).find((d) => d);
     if (done) return toast(`You decided it (${done}): it waits for others.`, "info");
     toast("No step of it is yours to take now.", "bad");
   };
   useKeys("approvals", { a: () => decideSelected(true), d: () => decideSelected(false) });
-  if (runs !== null && runs.length === 0) return <p className="hl-flow__none">No run is waiting.</p>;
+  if (ordered !== null && ordered.length === 0) return unread ? null : <p className="hl-flow__none">No run is waiting.</p>;
+  if (ordered === null && unread) return null;
   return (
     <section aria-label="runs waiting">
       <p className="hl-flow__note">
@@ -532,7 +577,7 @@ function RunsWaiting({
           </tr>
         </thead>
         <tbody>
-          {(runs ?? []).map(({ slug, run }) => {
+          {(ordered ?? []).map(({ slug, run }) => {
             const to: Route = { kind: "flow", slug, tab: "settings" };
             return (
               <tr key={waitingKey(slug, run.run_id)} {...list.row(waitingKey(slug, run.run_id))}>
@@ -564,11 +609,7 @@ function RunsWaiting({
                     return (
                       <div key={w.name}>
                         {inSteps(w) ? <Chain w={w} /> : isApproval(w) ? approvalSaid(w) : "its event"}
-                        {shown && (
-                          <div className="hl-flow__shown" aria-label={`what "${w.name}" shows`}>
-                            {shown.label}: {shown.text}
-                          </div>
-                        )}
+                        {shown && <Shown label={shown.label} rows={shown.rows} name={w.name} />}
                       </div>
                     );
                   })}
@@ -590,10 +631,10 @@ function RunsWaiting({
                       const label = `"${w.name}"${as} of ${slug} (${run.route ?? run.kind})`;
                       return (
                         <div key={`${w.name}:${step.slot}`} className="hl-flows__step">
-                          <button className="hl-flow__button" onClick={() => void decide(slug, run.run_id, w, step, false)} aria-label={`decline ${label}`}>
+                          <button className="hl-flow__button" onClick={() => void decide(slug, run, w, step, false)} aria-label={`decline ${label}`}>
                             Decline{as}…
                           </button>
-                          <button className="hl-flow__button" onClick={() => void decide(slug, run.run_id, w, step, true)} aria-label={`approve ${label}`}>
+                          <button className="hl-flow__button" onClick={() => void decide(slug, run, w, step, true)} aria-label={`approve ${label}`}>
                             Approve{as}…
                           </button>
                         </div>
@@ -604,7 +645,7 @@ function RunsWaiting({
               </tr>
             );
           })}
-          {runs === null && (
+          {ordered === null && (
             <tr>
               <td colSpan={7} className="hl-table__dim">
                 reading…
@@ -617,16 +658,26 @@ function RunsWaiting({
   );
 }
 
+/** The most of an access change's why its question and its row say, in characters. */
+export const WHY_CHARS = 300;
+
+/** The question that approves access change `p`: what it changes and what it gives first, then
+ *  who proposed it, their why cut, so it can't push what it gives out of sight (R42). */
+export function changeAsked(p: AccessProposal): string {
+  const more = p.needs - p.approvals.length;
+  const then = more > 1 ? `It then waits for ${more - 1} more ${more - 1 === 1 ? "person" : "people"}.` : "It is made once you do, checked again then.";
+  const why = p.why ? `, saying: ${clipped(p.why, WHY_CHARS)}` : "";
+  return `Approve access change ${p.id}?\n\n${p.what}. It gives ${p.gives.join("; ")}.\n\nProposed by ${p.author}${why}. ${then}`;
+}
+
 /** Approve, or decline with a reason, an access change that waits for people, asked first (its
  *  author withdraws it so): what deciding it did is said, and `onDecided` once it is. */
 function useDecideChange(me: string, onDecided: () => void) {
   const dialog = useDialog();
   const toast = useToast();
   return async (p: AccessProposal, approve: boolean) => {
-    const more = p.needs - p.approvals.length;
     if (approve) {
-      const then = more > 1 ? `It then waits for ${more - 1} more ${more - 1 === 1 ? "person" : "people"}.` : "It is made once you do, checked again then.";
-      const ok = await dialog.confirm(`Approve access change ${p.id}?\n\n${p.what}, proposed by ${p.author}${p.why ? `: ${p.why}` : ""}. It gives ${p.gives.join("; ")}. ${then}`, "Approve");
+      const ok = await dialog.confirm(changeAsked(p), "Approve");
       if (!ok) return;
     }
     const reason = approve
@@ -650,7 +701,7 @@ function useDecideChange(me: string, onDecided: () => void) {
  *  gives, who could act as whom it gives more, who proposed it and why, and who approved it so far;
  *  Approve and Decline to whoever the server would let (can.tsx), Withdraw to its author. Then the
  *  last ten decided, and how. */
-function AccessChanges({ changes, me, onDecided }: { changes: AccessProposal[] | null; me: Me; onDecided: () => void }) {
+function AccessChanges({ changes, unread, me, onDecided }: { changes: AccessProposal[] | null; unread: boolean; me: Me; onDecided: () => void }) {
   const can = useCan();
   const decide = useDecideChange(me.name, onDecided);
   const waiting = (changes ?? []).filter((p) => p.state === "waiting");
@@ -662,7 +713,7 @@ function AccessChanges({ changes, me, onDecided }: { changes: AccessProposal[] |
         of an admin&apos;s waits here until N people other than whoever proposed it approve it: each holding what it gives, and none who could act as whom it
         gives more. Taking access away applies at once.
       </p>
-      {changes === null ? (
+      {unread ? null : changes === null ? (
         <p className="hl-table__dim">reading…</p>
       ) : (
         waiting.length === 0 && <p className="hl-flow__none">No access change waits.</p>
@@ -693,7 +744,11 @@ function AccessChanges({ changes, me, onDecided }: { changes: AccessProposal[] |
                   </td>
                   <td>
                     {p.author}, {when(p.at)}
-                    {p.why && <div className="hl-flow__note">why: {p.why}</div>}
+                    {p.why && (
+                      <div className="hl-flow__note" title={p.why}>
+                        why: {clipped(p.why, WHY_CHARS)}
+                      </div>
+                    )}
                   </td>
                   <td>{changeState(p)}</td>
                   <td className="hl-flows__do">

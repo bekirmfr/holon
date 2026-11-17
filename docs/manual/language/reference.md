@@ -591,9 +591,9 @@ Each of these is one building block, and each is one thing the flow may do.
 | `await charge(x)` (`import { charge } from "flow:billing"`) | run the action `charge` of the deployed flow `billing` with `x`, a value (`{}` when none is written); the answer is `{answer, run}` when it ran, `{error, message}` when it didn't |
 | `payment(x)`, `charge(x)`, not awaited | start a run of this flow's action, or another flow's, with `x`; the answer is `{run, waiting}` once it waits, `waiting` the token for each point it waits at, `{answer, run}` if it finishes first, `{error, message}` when it didn't run |
 | `await event(name, { expires: d })` | park the run until the event `name` arrives (in an action, not a route); the answer is the request that brought it, or `{ expired: true }` when none came in time. The run goes on either way, so say what running out means before anything is done: `if (got.expired ?? false) return …` (an event that came has no `expired`, and an `if` on no value runs neither branch, nor what follows) |
-| `await approval(name, { expires: d, people: n })` | park the run until `n` different people (1 to 5, 1 when left out), signed in to Holon, approve it, or one declines; the answer is `{approved, by, decisions}`, `by` who approved and `decisions` every decision taken, a decline included (`{slot, who, kind, role, at, approved, reason, binding, access}`, `slot` 0 and no `role` for `people`; `binding` the id of the binding that let its decider, and `access` the access document's version it was read in), with `declined_by` and `reason` when declined, `expired: true` when no one decided in time (in an action, not a route); a decision may carry a `note`, any JSON, given to the run with it |
+| `await approval(name, { expires: d, people: n })` | park the run until `n` different people (1 to 5, 1 when left out), signed in to Holon, approve it, or one declines; the answer is `{approved, by, decisions}`, `by` who approved and `decisions` every decision taken, a decline included (`{slot, who, kind, role, at, approved, reason, binding, access, via}`, `slot` 0 and no `role` for `people`; `binding` the id of the binding that let its decider, `access` the access document's version it was read in, and `via` `local:<user>` when it came through the machine's run file), with `declined_by` and `reason` when declined, `expired: true` when no one decided in time (in an action, not a route); a decision may carry a `note`, any JSON, given to the run with it |
 | `await approval(name, { steps: [{ role: "reviewer" }, { role: "approver", people: 2 }] })` | the same, decided in steps: each step in turn (`order: "any"`: in any order; a list inside `steps`: a stage, its steps in any order), each taken by principals bound to its role where the approval is (no role: anyone holding `run.decide`, a person; `kind: "agent"` for an agent's step). Up to 5 steps. Each principal decides one step, once, and not of a run they started; one decline ends it |
-| `await approval(name, { people: 2, shows: { amount, payee } })` | the same, showing those who decide it what they approve: `shows` is any value the run has before it waits. Without it they see what the run was started with (an action's argument, a request without its headers, what a source delivered; nothing for a clock), each as the run's log keeps it: a field tainted by a secret's mark redacted, a value a secret may have made withheld, past 16 KiB its size |
+| `await approval(name, { people: 2, shows: { amount, payee } })` | the same, showing those who decide it what they approve: `shows` is any value the run has before it waits. Without it they see what the run was started with (an action's argument, a request without its headers, what a source delivered; nothing for a clock), each as the run's log keeps it: a field tainted by a secret's mark redacted, a value a secret may have made withheld, past 16 KiB cut down (each text to its first KiB, saying how much more) |
 | `ops.send({ to, cc, subject, text, html, attachments })` | mail a message when the run is over, from the binding's sender: `to` and `cc` an address or a list, `html` beside the text, `attachments` a record of a file name to its text or bytes. A message that isn't one (a field it doesn't know, no recipient, a subject on two lines) has no value, and nothing is sent |
 | `payouts.send({ data, group })` | send a message to the queue `payouts` once the run is over and its writes have landed: `data` text as it is, anything else as JSON; `group` a FIFO queue's message group. A message without `data` has no value, and nothing is sent |
 | `JSON.stringify(x)`, `JSON.parse(text)` | JSON out, JSON in (see [Records](#records) for a replacer, a reviver and an indent) |
@@ -1017,16 +1017,28 @@ misled, the compiler refuses instead.
   steps, `steps: [{ role: "reviewer" }, { role: "approver" }]`, names who takes each step by the
   role they hold, and its permission names the steps,
   `Approval("name/person:reviewer>person:approver")`; `people: n` is its short form. Each step
-  is taken in turn, by a principal of its kind bound to its role where the approval is, never
-  whoever started the run but on a step that says `starter: true` (`{ role: "editor", starter:
-  true }`, `^` in its permission: an output review, the one who asked checking what was made),
-  and then a person: an agent never decides a run it started. Each decision is kept with the
+  is taken in turn, by a principal of its kind bound to its role where the approval is, one
+  step a party (an agent or a service is one party with whoever owns it or made a token of it),
+  never whoever started the run nor their party but on a step that says `starter: true` (`{
+  role: "editor", starter: true }`, `^` in its permission: an output review, the one who asked
+  checking what their own agent made), which the starter's party fills, one principal each: an
+  agent never decides a run it started. Each decision is kept with the
   binding that let it (`binding`,
   `access`), in the run's log and its export. Those who decide it see what they approve:
   `shows: { amount, payee }`, or the run's input when it names nothing, redacted as the run's log
   is; one who may decide a flow's approvals but not view its runs sees only the runs waiting at
   an approval they may decide. The design is
   [`docs/L4s/access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8.
+- **A paused deployment's runs wait on.** Paused or stopped, a deployment takes no run, and a
+  run waiting in it goes on from neither a decision (refused, 409, and not kept), its deadline,
+  nor a request to its resume route. It waits on, and once the deployment runs again it is
+  decided, times out or is resumed as before; a run that went on before the pause goes on to
+  its end.
+- **A crash doesn't run a part twice.** A waiting run is saved as going on, with the decision or
+  event it was given, before the part that follows runs. If the server stops without finishing
+  (a crash, a power loss) while it runs, what it does may have been done, so the server, starting
+  again, ends the run rather than run the part again, and the deployment's timeline says so: a
+  payout isn't sent twice. Its log says how far it got; someone starts it again if it didn't.
 - **Sharing is explicit.** A binding is one value used many times. The same expression written
   twice is computed twice.
 - **Every run ends.** There are no loops and no recursion: `map`, `reduce` and a list's other
