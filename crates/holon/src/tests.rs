@@ -18637,31 +18637,34 @@ fn a_change_the_deployments_file_didnt_take_is_never_answered_as_done() {
         ("arrivals.rs fire_one_arrival", "a file's arrival parked a run: no one asked"),
         ("dequeue.rs fire_one_queue", "a queue's message parked a run: no one asked"),
         ("durable.rs end_unresumable", "a run past its deadline ended: no one asked"),
-        ("grants.rs handle_post_permissions_reload", "nothing is lost: a restart reads the policy again and holds each deployment to it"),
+        ("grants.rs reload_policy", "the policy reloaded, by its route or a storage setting written into the policy file: nothing is lost, a restart reads the policy again and holds each deployment to it"),
         ("inbox.rs fire_one_mail", "a mail parked a run: no one asked"),
         ("main.rs serve", "the server starting, its runs a crash cut off ended: a start that doesn't save ends them again"),
         ("scheduler.rs fire_one_clock_tick", "a tick parked a run: no one asked"),
         ("storage.rs act", "the host's room: runs kept as granted again"),
         ("subscriptions.rs fire_one_feed", "a feed's event parked a run: no one asked"),
     ];
-    fn calls(dir: &Path, found: &mut Vec<(String, bool)>) {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
+    // Each file's code: a test module left out by its braces, wherever it sits, and a test
+    // module's file of its own (`#[cfg(test)] mod x;`: this one, and what it declares) left out
+    // whole (source.rs, R78). A cut at a file's first inline test module took the code after one
+    // for test code, and a caller there went unlisted.
+    fn calls(src: &Path, found: &mut Vec<(String, bool)>) {
+        let (mut dirs, mut files) = (vec![src.to_path_buf()], Vec::new());
+        while let Some(dir) = dirs.pop() {
+            for path in std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()) {
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        let tests = test_files(&files);
+        for path in files.iter().filter(|path| !tests.contains(*path)) {
             let file = path.file_name().unwrap().to_string_lossy().to_string();
-            if path.is_dir() {
-                calls(&path, found);
-                continue;
-            }
-            if !file.ends_with(".rs") || file == "tests.rs" {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
-            // Test code (a `#[cfg(test)]` module written inline, to the end of the file) aside; a
-            // module declared there (`mod tests;`) is a file of its own.
-            let inline = |at: &usize| text[*at..].lines().nth(2).is_some_and(|l| l.trim_start_matches("pub(crate) ").starts_with("mod ") && l.trim_end().ends_with('{'));
-            let code = text.match_indices("\n#[cfg(test)]\n").map(|(at, _)| at).find(inline).map_or(&text[..], |at| &text[..at]);
+            let text = std::fs::read_to_string(path).unwrap();
             let mut function = String::new();
-            for line in code.lines().map(str::trim_start).filter(|l| !l.starts_with("//")) {
+            for (line, _) in text.lines().map(str::trim_start).zip(in_test_modules(&text)).filter(|(l, test)| !test && !l.starts_with("//")) {
                 let head = line.trim_start_matches("pub(crate) ").trim_start_matches("pub ");
                 if let Some(rest) = head.strip_prefix("fn ") {
                     function = rest.split(['(', '<']).next().unwrap_or_default().to_string();
