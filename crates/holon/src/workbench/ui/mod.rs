@@ -679,13 +679,20 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
                 use crate::workbench::admin::Part;
                 let mut keys = vec![("↑↓", "pick", Down, NONE)];
                 keys.extend(match app.admin.part {
-                    Part::People => vec![("n", "invite", Char('n'), NONE), ("a", "agent or service", Char('a'), NONE), ("enter", "role", Enter, NONE), ("e", "email", Char('e'), NONE), ("o", "owner", Char('o'), NONE), ("x", "disable", Char('x'), NONE), ("s", "reset link", Char('s'), NONE), ("del", "remove", Delete, NONE)],
+                    Part::People => vec![("n", "invite", Char('n'), NONE), ("a", "agent or service", Char('a'), NONE), ("enter", "role", Enter, NONE), ("b", "bind", Char('b'), NONE), ("e", "email", Char('e'), NONE), ("o", "owner", Char('o'), NONE), ("x", "disable", Char('x'), NONE), ("s", "reset link", Char('s'), NONE), ("del", "remove", Delete, NONE)],
+                    Part::Groups => vec![("n", "new group", Char('n'), NONE), ("+", "add members", Char('+'), NONE), ("-", "take out", Char('-'), NONE), ("del", "remove", Delete, NONE)],
+                    Part::Roles => vec![("n", "define a role", Char('n'), NONE), ("enter", "change it", Enter, NONE), ("del", "remove", Delete, NONE)],
+                    Part::Bindings => vec![("n", "bind a role", Char('n'), NONE), ("del", "unbind", Delete, NONE)],
+                    Part::History => vec![("enter", "approval settings", Enter, NONE)],
+                    Part::Yours => vec![("n", "new key", Char('n'), NONE), ("del", "revoke a key", Delete, NONE)],
                     Part::Keys => vec![("n", "new key", Char('n'), NONE), ("del", "revoke", Delete, NONE)],
                     Part::Folders => vec![("n", "bind a folder", Char('n'), NONE), ("del", "unbind", Delete, NONE)],
                     Part::Databases => vec![("n", "bind a database", Char('n'), NONE), ("enter", "tables", Enter, NONE), ("del", "unbind", Delete, NONE)],
                     Part::Secrets => vec![("enter", "set them", Enter, NONE)],
                     Part::Server => vec![("enter", "do it", Enter, NONE)],
-                });
+                }
+                .into_iter()
+                .filter(|(_, _, code, _)| app.admin_may(*code)));
                 keys.extend([("tab", "part", Tab, NONE), ("esc", "overview", Esc, NONE)]);
                 keys
             }

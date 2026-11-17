@@ -14,6 +14,13 @@ use crate::mcp::seg;
 pub(crate) enum Part {
     #[default]
     People,
+    Groups,
+    Roles,
+    Bindings,
+    /// The access document's versions, the approval settings first.
+    History,
+    /// Your own agents and services.
+    Yours,
     Keys,
     Folders,
     Databases,
@@ -21,7 +28,19 @@ pub(crate) enum Part {
     Server,
 }
 
-pub(crate) const PARTS: [(Part, &str); 6] = [(Part::People, "People"), (Part::Keys, "API keys"), (Part::Folders, "Folders"), (Part::Databases, "Databases"), (Part::Secrets, "Secrets"), (Part::Server, "Server")];
+pub(crate) const PARTS: [(Part, &str); 11] = [
+    (Part::People, "People"),
+    (Part::Groups, "Groups"),
+    (Part::Roles, "Roles"),
+    (Part::Bindings, "Bindings"),
+    (Part::History, "Access history"),
+    (Part::Yours, "Your agents"),
+    (Part::Keys, "API keys"),
+    (Part::Folders, "Folders"),
+    (Part::Databases, "Databases"),
+    (Part::Secrets, "Secrets"),
+    (Part::Server, "Server"),
+];
 
 /// The server section's rows.
 pub(crate) const SERVER_ROWS: [&str; 6] = ["Permissions (holon.toml)", "Grants held", "Sign-in provider", "Store", "Folder texts", "Host: memory and disks"];
@@ -29,20 +48,33 @@ pub(crate) const SERVER_ROWS: [&str; 6] = ["Permissions (holon.toml)", "Grants h
 #[derive(Default)]
 pub(crate) struct AdminView {
     pub(crate) part: Part,
-    pub(crate) sel: [usize; 6],
+    pub(crate) sel: [usize; PARTS.len()],
     pub(crate) right: bool,
     pub(crate) scroll: usize,
     /// Every principal: people, agents and services.
     pub(crate) users: Vec<Value>,
     /// Every role (`GET /roles`): the built-in ones, and the ones an admin defined.
     pub(crate) roles: Vec<Value>,
+    /// The access version the roles were read at: a change is made from it (`base`).
+    pub(crate) roles_version: Value,
+    /// The groups (`GET /groups`), and the access version they were read at.
+    pub(crate) groups: Vec<Value>,
+    pub(crate) groups_version: Value,
+    /// Every binding, expired ones too (`GET /bindings`).
+    pub(crate) bindings: Vec<Value>,
+    /// The access document's versions, newest first (`GET /access/versions`).
+    pub(crate) versions: Vec<Value>,
+    /// The access document as it is (`GET /access`): its approval settings.
+    pub(crate) access: Value,
+    /// The caller's own agents and services (`GET /auth/owned`).
+    pub(crate) owned: Vec<Value>,
     /// The agents' and services' tokens, each with its `principal`.
     pub(crate) tokens: Vec<Value>,
     pub(crate) folders: Vec<Value>,
     pub(crate) databases: Vec<Value>,
     /// Why a part's list can't be read, by part: the caller may not see it (the server's
     /// refusal, as `may` says it ahead), or the read failed.
-    pub(crate) refused: [Option<String>; 6],
+    pub(crate) refused: [Option<String>; PARTS.len()],
     /// The right pane, for the row it shows.
     pub(crate) pane: Option<(String, Vec<Row>)>,
 }
@@ -59,6 +91,7 @@ fn takes(p: Part, k: KeyCode, row: usize) -> &'static [&'static str] {
     match (p, k) {
         (Part::People, KeyCode::Enter) => &["people.manage", "people.assign"],
         (Part::People, KeyCode::Char('n' | 'a' | 'o' | 'e' | 'x' | 's' | 'D') | KeyCode::Delete) => &["people.manage"],
+        (Part::People, KeyCode::Char('b')) => &["people.assign"],
         (Part::Keys, KeyCode::Char('n' | 'D') | KeyCode::Delete) => &["people.manage"],
         (Part::Folders | Part::Databases, KeyCode::Char('n')) => &["resource.bind"],
         (Part::Folders | Part::Databases, KeyCode::Char('D') | KeyCode::Delete) => &["resource.unbind"],
@@ -92,6 +125,8 @@ pub(crate) enum AdminAsk {
     Email(String),
     Owner(String),
     Oidc,
+    /// A dialog of the access parts (access.rs).
+    Access(super::access::AccessAsk),
 }
 
 /// What a confirmed dialog on this page does.
@@ -156,6 +191,23 @@ fn host_role(u: &Value) -> String {
     own.map(|b| s(&b["role"])).unwrap_or_default()
 }
 
+/// What a principal holds, a row a binding: its id (Bindings unbinds it), its role, where, and
+/// through which group and until when.
+fn held(u: &Value) -> Vec<Row> {
+    let bindings = u["bindings"].as_array().cloned().unwrap_or_default();
+    let mut rows = vec![text(Tone::Head, format!("Holds ({})", bindings.len()))];
+    if bindings.is_empty() {
+        rows.push(text(Tone::Dim, "  nothing: b binds a role"));
+    }
+    rows.extend(bindings.iter().map(|b| {
+        let via = b["group"].as_str().map(|g| format!(", through {g}")).unwrap_or_default();
+        let until = b["expires_at"].as_u64().map(|at| format!(", until {}", crate::cmdline::when(Some(at)))).unwrap_or_default();
+        let tone = if b["expired"] == true { Tone::Dim } else { Tone::Plain };
+        text(tone, format!("  #{} {} {}{via}{until}{}", b["id"], s(&b["role"]), crate::accesscmd::place(&b["scope"]), if b["expired"] == true { " (expired)" } else { "" }))
+    }));
+    rows
+}
+
 fn only(v: &Value) -> String {
     v["deployment"].as_str().map(|d| format!("?deployment={}", seg(d))).unwrap_or_default()
 }
@@ -174,6 +226,7 @@ impl App {
             Part::Databases => a.databases.len(),
             Part::Secrets => 1 + self.deployments().len(),
             Part::Server => SERVER_ROWS.len(),
+            p => self.access_part_rows(p),
         }
     }
 
@@ -183,13 +236,11 @@ impl App {
         // Each part's list, read only by whoever may see it: a part they may not says why, the
         // others are as an admin sees them.
         let list = |path: &str, action: &str| match c.may(action, None) {
-            Ok(()) => c.get(path).map(|v| if v.is_array() { v } else { v["roles"].clone() }.as_array().cloned().unwrap_or_default()),
+            Ok(()) => c.get(path).map(|v| v.as_array().cloned().unwrap_or_default()),
             Err(why) => Err(why),
         };
         let (people, folders, databases) = (list("/people", "people.view"), list("/admin/folders", "resource.view"), list("/admin/databases", "resource.view"));
-        // The roles a principal may be given, for the role dialog: none read, it says "-".
-        self.admin.roles = list("/roles", "role.view").unwrap_or_default();
-        let mut refused: [Option<String>; 6] = Default::default();
+        let mut refused: [Option<String>; PARTS.len()] = Default::default();
         for (parts, read) in [(&[Part::People, Part::Keys][..], people.as_ref().err()), (&[Part::Folders], folders.as_ref().err()), (&[Part::Databases], databases.as_ref().err())] {
             for p in parts {
                 refused[*p as usize] = read.cloned();
@@ -200,6 +251,7 @@ impl App {
         self.admin.tokens = users.iter().flat_map(|p| p["tokens"].as_array().cloned().unwrap_or_default()).collect();
         (self.admin.users, self.admin.folders, self.admin.databases) = (users, folders.unwrap_or_default(), databases.unwrap_or_default());
         self.admin.refused = refused;
+        self.access_part_load();
         let n = self.admin_rows();
         let p = self.admin.part as usize;
         self.admin.sel[p] = self.admin.sel[p].min(n.saturating_sub(1));
@@ -233,27 +285,27 @@ impl App {
             _ if a.refused[a.part as usize].is_some() => no(a.refused[a.part as usize].clone().unwrap_or_default()),
             Part::Server if server_refused.is_some() => no(server_refused.unwrap_or_default()),
             Part::People => match a.users.get(i) {
-                Some(u) if u["kind"] != "person" => vec![
-                    text(Tone::Head, s(&u["name"])),
-                    field("Kind", if u["kind"] == "agent" { "an agent" } else { "a service" }),
-                    field("Holds", crate::accesscmd::bindings_said(&u["bindings"])),
-                    Row::Field("Owner".into(), format!("{}{}", s(&u["owner"]), if u["owner_disabled"] == true { " (disabled: its tokens are refused)" } else { "" }), if u["owner_disabled"] == true { Tone::Bad } else { Tone::Plain }),
+                Some(u) if u["kind"] != "person" => [
+                    vec![text(Tone::Head, s(&u["name"])), field("Kind", if u["kind"] == "agent" { "an agent" } else { "a service" })],
+                    held(u),
+                    vec![Row::Field("Owner".into(), format!("{}{}", s(&u["owner"]), if u["owner_disabled"] == true { " (disabled: its tokens are refused)" } else { "" }), if u["owner_disabled"] == true { Tone::Bad } else { Tone::Plain }),
                     field("API keys", u["tokens"].as_array().map_or(0, Vec::len).to_string()),
                     Row::Field("State".into(), if u["disabled"] == true { "disabled: its keys are refused".into() } else { "active".into() }, if u["disabled"] == true { Tone::Warn } else { Tone::Plain }),
                     field("Since", crate::mcp::when(&u["created_at"])),
                     field("By", s(&u["created_by"])),
-                    text(Tone::Dim, "It signs in with its own API keys. enter: role · o: owner · x: disable or enable · del: remove"),
-                ],
-                Some(u) => vec![
-                    text(Tone::Head, s(&u["name"])),
-                    field("Kind", "a person"),
-                    field("Holds", crate::accesscmd::bindings_said(&u["bindings"])),
-                    field("Email", s(&u["email"])),
+                    text(Tone::Dim, "It signs in with its own API keys. enter: role · b: bind a role · o: owner · x: disable or enable · del: remove")],
+                ]
+                .concat(),
+                Some(u) => [
+                    vec![text(Tone::Head, s(&u["name"])), field("Kind", "a person")],
+                    held(u),
+                    vec![field("Email", s(&u["email"])),
                     Row::Field("State".into(), if u["disabled"] == true { "disabled: can't sign in".into() } else if u["invited"] == true { "invited, not joined yet".into() } else { "active".into() }, if u["disabled"] == true { Tone::Warn } else { Tone::Plain }),
                     field("Since", crate::mcp::when(&u["created_at"])),
                     field("By", s(&u["created_by"])),
-                    text(Tone::Dim, "enter: role · e: email · x: disable or enable · s: a new link to set a password · del: remove"),
-                ],
+                    text(Tone::Dim, "enter: role · b: bind a role · e: email · x: disable or enable · s: a new link to set a password · del: remove")],
+                ]
+                .concat(),
                 None => vec![text(Tone::Dim, "n invites someone; a adds an agent or a service.")],
             },
             Part::Keys => match a.tokens.get(i) {
@@ -349,9 +401,18 @@ impl App {
                     rows
                 }
             },
+            p => self.access_part_pane(p, i),
         };
         self.admin.pane = Some((key, rows));
         self.admin.scroll = 0;
+    }
+
+    /// Whether the caller may use key `k` on the part shown: the part is shown to them, and they
+    /// hold what the key takes, as `may` says it ahead. A key they may not use isn't offered.
+    pub(crate) fn admin_may(&self, k: KeyCode) -> bool {
+        let (part, i) = (self.admin.part, self.admin.sel());
+        let Some(c) = self.client.as_ref() else { return false };
+        self.admin.refused[part as usize].is_none() && takes(part, k, i).iter().chain(super::access::takes(part, k, i)).all(|a| c.may(a, None).is_ok())
     }
 
     pub(crate) fn admin_part(&mut self, p: Part) {
@@ -384,7 +445,7 @@ impl App {
         }
     }
 
-    fn ask(&mut self, title: impl Into<String>, lines: &[&str], value: impl Into<String>, then: AdminAsk) {
+    pub(super) fn ask(&mut self, title: impl Into<String>, lines: &[&str], value: impl Into<String>, then: AdminAsk) {
         self.modal = Some(Modal::input(title.into(), lines.iter().map(|l| l.to_string()).collect(), value.into(), false, Ask::Admin(then)));
     }
 
@@ -423,9 +484,13 @@ impl App {
             _ => {}
         }
         // A key the caller may not use says the server's refusal, and sends nothing.
-        let refusal = self.client.as_ref().and_then(|c| takes(self.admin.part, k.code, i).iter().find_map(|a| c.may(a, None).err()));
+        let part = self.admin.part;
+        let refusal = self.client.as_ref().and_then(|c| takes(part, k.code, i).iter().chain(super::access::takes(part, k.code, i)).find_map(|a| c.may(a, None).err()));
         if let Some(why) = refusal {
             return self.fail(why);
+        }
+        if matches!(part, Part::Groups | Part::Roles | Part::Bindings | Part::History | Part::Yours) {
+            return self.access_part_key(part, k.code, i);
         }
         let user = self.admin.users.get(i).map(|u| (s(&u["name"]), u.clone()));
         match (self.admin.part, k.code) {
@@ -455,8 +520,13 @@ impl App {
             (Part::People, KeyCode::Enter) => {
                 if let Some((name, u)) = user {
                     let roles = format!("Their role on this host: {}.", roles_of(&self.admin.roles, &u["kind"]));
-                    let elsewhere = "On one flow or approval point: holon bind ROLE --to NAME --flow SLUG.";
+                    let elsewhere = "On one flow, flows with a tag or an approval point: b binds a role there.";
                     self.ask(format!("{name}'s role"), &[roles.as_str(), elsewhere], host_role(&u), AdminAsk::Role(name));
+                }
+            }
+            (Part::People, KeyCode::Char('b')) => {
+                if let Some((name, _)) = user {
+                    self.ask_bind(&format!("--to {name} "));
                 }
             }
             (Part::People, KeyCode::Char('o')) => {
@@ -540,7 +610,7 @@ impl App {
     }
 
     /// After a change: the lists again, and what happened.
-    fn admin_done(&mut self, r: Result<Value, String>, said: impl FnOnce(&Value) -> String) {
+    pub(super) fn admin_done(&mut self, r: Result<Value, String>, said: impl FnOnce(&Value) -> String) {
         match r {
             Ok(v) => {
                 let line = said(&v);
@@ -553,7 +623,7 @@ impl App {
     }
 
     /// A one-time secret (an invite link, a key): shown once, and copied.
-    fn show_once(&mut self, title: String, what: &str, secret: String, after: &str) {
+    pub(super) fn show_once(&mut self, title: String, what: &str, secret: String, after: &str) {
         self.to_clipboard = Some(secret.clone());
         self.modal = Some(Modal::Lines { title, lines: vec![(Tone::Plain, format!("{what}, copied to your clipboard:")), (Tone::Head, secret), (Tone::Dim, after.to_string())], scroll: 0 });
     }
@@ -731,6 +801,7 @@ impl App {
                 let r = c.post("/admin/oidc", json!({ "settings": settings }));
                 self.admin_done(r, |_| if cleared { "no sign-in provider: a password only".into() } else { "the sign-in provider is set".into() });
             }
+            AdminAsk::Access(ask) => self.access_part_answer(ask, value),
         }
     }
 }

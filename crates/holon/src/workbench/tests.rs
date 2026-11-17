@@ -8,6 +8,7 @@ use ratatui::Terminal;
 use super::app::{App, Click, List, Modal, Page, RunPane, Runs, Show, Tone};
 use super::client::{Client, Moment};
 use super::flow::{Row, Section};
+use super::admin::Part;
 use super::graph::Level;
 use super::ui;
 use crate::mcp::{Api, Body};
@@ -1266,8 +1267,7 @@ fn the_admin_page_shows_each_part_to_whoever_may_see_it() {
     let note = app.note.as_ref().map(|n| n.text.clone()).unwrap_or_default();
     assert!(note.contains("people.manage"), "says what it takes: {note}");
     assert_eq!(calls.lock().unwrap().len(), before, "sends nothing");
-    press(&mut app, KeyCode::Tab);
-    press(&mut app, KeyCode::Tab);
+    app.admin_part(Part::Folders);
     let shown = screen(&mut app, 140, 40);
     assert!(shown.contains("It can't be shown here") && shown.contains("resource.view"), "folders: {shown}");
     assert!(!calls.lock().unwrap().iter().any(|c| c.starts_with("GET /admin/folders")), "the folders aren't read for wes");
@@ -1276,8 +1276,7 @@ fn the_admin_page_shows_each_part_to_whoever_may_see_it() {
     app.attach(Client::new(Box::new(InProcess(state, Some(ada)))));
     app.refresh();
     press(&mut app, KeyCode::Char('7'));
-    press(&mut app, KeyCode::Tab);
-    press(&mut app, KeyCode::Tab);
+    app.admin_part(Part::Folders);
     let shown = screen(&mut app, 140, 40);
     assert!(!shown.contains("It can't be shown here"), "{shown}");
 }
@@ -1292,8 +1291,8 @@ fn the_admin_page_invites_people_makes_keys_and_binds_folders_and_databases() {
     let mut app = admin_app();
     press(&mut app, KeyCode::Char('7'));
     assert_eq!(app.page, Page::Admin);
-    let shown = screen(&mut app, 140, 40);
-    for part in ["People", "API keys", "Folders", "Databases", "Secrets", "Server"] {
+    let shown = screen(&mut app, 200, 40);
+    for part in ["People", "Groups", "Roles", "Bindings", "Access history", "Your agents", "API keys", "Folders", "Databases", "Secrets", "Server"] {
         assert!(shown.contains(part), "{part}: {shown}");
     }
 
@@ -1322,7 +1321,7 @@ fn the_admin_page_invites_people_makes_keys_and_binds_folders_and_databases() {
     assert!(shown.contains("a service") && shown.contains("Owner"), "{shown}");
 
     // API keys: made for the service, shown once, then revoked.
-    press(&mut app, KeyCode::Tab);
+    app.admin_part(Part::Keys);
     press(&mut app, KeyCode::Char('n'));
     answer(&mut app, "nightly the nightly report");
     assert!(matches!(&app.modal, Some(Modal::Lines { title, .. }) if title == "nightly: an API key"), "{:?}", app.note.as_ref().map(|n| &n.text));
@@ -1335,7 +1334,7 @@ fn the_admin_page_invites_people_makes_keys_and_binds_folders_and_databases() {
     // Folders: bound with holon folder add's flags, then unbound.
     let dir = std::env::temp_dir().join(format!("holon-admin-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    press(&mut app, KeyCode::Tab);
+    app.admin_part(Part::Folders);
     press(&mut app, KeyCode::Char('n'));
     answer(&mut app, &format!("inbox {} --read-only", dir.display()));
     let f = app.admin.folders.first().unwrap_or_else(|| panic!("not bound: {:?}", app.note.as_ref().map(|n| &n.text)));
@@ -1347,7 +1346,7 @@ fn the_admin_page_invites_people_makes_keys_and_binds_folders_and_databases() {
     assert!(app.admin.folders.is_empty(), "{:?}", app.note.as_ref().map(|n| &n.text));
 
     // Databases: a SQLite file, its schema, its tables.
-    press(&mut app, KeyCode::Tab);
+    app.admin_part(Part::Databases);
     press(&mut app, KeyCode::Char('n'));
     answer(&mut app, &format!("shop {} --schema create table if not exists items (id integer primary key)", dir.join("shop.db").display()));
     assert_eq!(app.admin.databases.len(), 1, "{:?}", app.note.as_ref().map(|n| &n.text));
@@ -1357,10 +1356,10 @@ fn the_admin_page_invites_people_makes_keys_and_binds_folders_and_databases() {
     press(&mut app, KeyCode::Esc);
 
     // Secrets and the server: their panes read the server.
-    press(&mut app, KeyCode::Tab);
+    app.admin_part(Part::Secrets);
     let shown = screen(&mut app, 140, 40);
     assert!(shown.contains("Read from the environment"), "{shown}");
-    press(&mut app, KeyCode::Tab);
+    app.admin_part(Part::Server);
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Down);
     let shown = screen(&mut app, 140, 40);
@@ -1790,9 +1789,12 @@ fn every_page() -> Vec<(String, App)> {
     app.tab = 0;
     ctrl(&mut app, 'd');
     out.push(("Deploy dialog".into(), app));
-    let mut app = admin_app();
-    app.go(Page::Admin);
-    out.push(("Admin".into(), app));
+    for (part, name) in super::admin::PARTS {
+        let mut app = admin_app();
+        app.go(Page::Admin);
+        app.admin_part(part);
+        out.push((format!("Admin {name}"), app));
+    }
     out
 }
 
@@ -2496,4 +2498,291 @@ fn live_settings() {
     keep("removed", &mut app);
     assert!(note(&app).starts_with("removed \"bump\""), "{}", note(&app));
     assert!(app.client.as_ref().unwrap().deployment("bump").is_none());
+}
+
+/// A server with accounts, set up by ada (an admin), and `people` invited, each `(name, role)`:
+/// the server, its accounts, and each one's sign-in by name.
+fn people_server(people: &[(&str, &str)]) -> (&'static AppState, std::sync::Arc<crate::accounts::Accounts>, std::collections::HashMap<String, String>) {
+    let mut state = test_state();
+    let book = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    let pw = "correct horse battery";
+    let (ada, _) = book.setup(&book.setup_code().unwrap(), "ada", pw).unwrap();
+    state.access = crate::access::Access::new(std::sync::Arc::clone(&book), vec![], vec![]);
+    let mut tokens = std::collections::HashMap::from([("ada".to_string(), ada)]);
+    for (name, role) in people {
+        tokens.insert(name.to_string(), book.accept(&book.invite(name, role, None, "ada").unwrap(), pw).unwrap().0);
+    }
+    (Box::leak(Box::new(state)), book, tokens)
+}
+
+/// The editor on `state`'s admin page, signed in with `token`, its calls recorded.
+fn admin_page_as(state: &'static AppState, token: &str) -> (App, Calls) {
+    let calls: Calls = std::sync::Arc::new(crate::sync::Mutex::new(vec![]));
+    let mut app = App::new(None);
+    app.attach(Client::new(Box::new(Recorded(InProcess(state, Some(token.to_string())), std::sync::Arc::clone(&calls)))));
+    app.refresh();
+    press(&mut app, KeyCode::Char('7'));
+    assert_eq!(app.page, Page::Admin);
+    (app, calls)
+}
+
+/// The admin page's right pane, its rows' words each on a line, however narrow the pane.
+fn detail(app: &App) -> String {
+    let rows = app.admin.pane.as_ref().map(|(_, rows)| rows.as_slice()).unwrap_or_default();
+    rows.iter()
+        .map(|r| match r {
+            Row::Text(_, t) => t.clone(),
+            Row::Field(k, v, _) => format!("{k}: {v}"),
+            other => format!("{other:?}"),
+        })
+        .collect::<Vec<_>>()
+        .join("
+")
+}
+
+/// A group made, a member added and a role bound to it on one flow; a role defined with two
+/// actions; each change on the access history, whose versions open whole.
+#[test]
+fn the_access_parts_make_a_group_define_a_role_and_bind_it() {
+    let (state, _, tokens) = people_server(&[("ana", "editor"), ("bob", "editor")]);
+    let (mut app, _) = admin_page_as(state, &tokens["ada"]);
+    app.admin_part(Part::Groups);
+    assert!(screen(&mut app, 140, 40).contains("No groups"));
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "payments ana --about the payments team --why for the pilot");
+    let g = app.admin.groups.first().unwrap_or_else(|| panic!("not made: {}", note(&app)));
+    assert_eq!((&g["name"], &g["members"], &g["about"]), (&serde_json::json!("payments"), &serde_json::json!(["ana"]), &serde_json::json!("the payments team")));
+    press(&mut app, KeyCode::Char('+'));
+    answer(&mut app, "bob");
+    assert_eq!(app.admin.groups[0]["members"], serde_json::json!(["ana", "bob"]), "{}", note(&app));
+    // A group by a name already taken isn't made again over it.
+    let read_at = app.admin.groups_version.clone();
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "payments cy");
+    assert!(app.note.as_ref().is_some_and(|n| n.error) && note(&app).contains("+ adds members"), "{}", note(&app));
+    assert_eq!(app.admin.groups_version, read_at);
+
+    app.admin_part(Part::Roles);
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "payout-approver run.view,run.decide --kinds person --about approves payouts");
+    let role = app.admin.roles.iter().find(|r| r["name"] == "payout-approver").unwrap_or_else(|| panic!("not defined: {}", note(&app)));
+    assert_eq!(role["allows"].as_array().map(Vec::len), Some(2), "{role}");
+    let at = app.admin.roles.iter().position(|r| r["name"] == "payout-approver").unwrap();
+    app.admin_pick(List::Admin, at, false);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Allows 2 actions") && shown.contains("run.decide") && shown.contains("approves payouts"), "{shown}");
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "nope run.nothing");
+    assert!(note(&app).contains("isn't an action"), "{}", note(&app));
+
+    app.admin_part(Part::Bindings);
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "payout-approver --group payments --flow payout --why the payout team decides");
+    let b = app.admin.bindings.iter().find(|b| b["who"]["group"] == "payments").unwrap_or_else(|| panic!("not bound: {}", note(&app)));
+    assert_eq!((&b["role"], &b["scope"]["flows"]["slug"]), (&serde_json::json!("payout-approver"), &serde_json::json!("payout")));
+    assert!(note(&app).starts_with("bound payout-approver to the group payments on \"payout\""), "{}", note(&app));
+    // Its members hold it there, through the group, as their own page says.
+    app.admin_part(Part::People);
+    let ana = app.admin.users.iter().position(|u| u["name"] == "ana").unwrap();
+    app.admin_pick(List::Admin, ana, false);
+    let shown = detail(&app);
+    assert!(shown.contains("payout-approver on \"payout\", through payments"), "{shown}");
+    app.admin_part(Part::Groups);
+    assert!(detail(&app).contains("1 binding"), "the group says what is bound to it: {}", detail(&app));
+
+    app.admin_part(Part::History);
+    assert!(app.admin.versions.len() >= 4, "{:?}", app.admin.versions);
+    let shown = detail(&app);
+    assert!(shown.contains("Who approves what") && shown.contains("an access change applies at once"), "{shown}");
+    press(&mut app, KeyCode::Down);
+    let shown = detail(&app);
+    assert!(shown.contains("What: bound payout-approver to") && shown.contains("payments: ana, bob") && shown.contains("payout-approver (person): run.view, run.decide"), "the newest version, whole: {shown}");
+    screen(&mut app, 80, 24);
+
+    // Unbound, saying why.
+    app.admin_part(Part::Bindings);
+    let at = app.admin.bindings.iter().position(|b| b["who"]["group"] == "payments").unwrap();
+    app.admin_pick(List::Admin, at, false);
+    press(&mut app, KeyCode::Delete);
+    answer(&mut app, "the pilot is over");
+    assert!(!app.admin.bindings.iter().any(|b| b["who"]["group"] == "payments" && b["expired"] != true), "{}", note(&app));
+}
+
+/// On a host where an access change that gives more waits for one person besides its author, a
+/// binding ada makes waits as a proposal: the line says so and where it is decided, and nothing is
+/// bound yet.
+#[test]
+fn a_binding_that_gives_more_waits_on_a_host_that_requires_approval() {
+    let (state, _, tokens) = people_server(&[("bob", "admin"), ("ana", "editor")]);
+    let (mut app, _) = admin_page_as(state, &tokens["ada"]);
+    app.admin_part(Part::History);
+    press(&mut app, KeyCode::Enter);
+    let Some(Modal::Input { value, .. }) = &app.modal else { panic!("no dialog: {}", note(&app)) };
+    assert_eq!(value, "--changes off --exclude-deployer off --agents on --starter on", "the settings as they are");
+    answer(&mut app, "--changes 1 --why two people see each change");
+    assert!(note(&app).starts_with("approval settings changed: --changes 1"), "{}", note(&app));
+    assert!(detail(&app).contains("waits until 1 person other than its author"), "{}", detail(&app));
+
+    app.admin_part(Part::Bindings);
+    let before = app.admin.bindings.len();
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "admin --to ana --until 7d --why covering for bob");
+    assert!(note(&app).contains("Approvals › Access changes decides it"), "{}", note(&app));
+    assert_eq!(app.admin.bindings.len(), before, "nothing bound while it waits");
+    let waiting = app.client.as_ref().unwrap().get("/access/proposals").unwrap();
+    assert!(waiting["proposals"].as_array().is_some_and(|p| p.len() == 1), "{waiting}");
+}
+
+/// Someone whose role holds role.view alone sees the roles, and none of the keys that change
+/// them; a key pressed anyway says what it takes and sends nothing. The other access parts say
+/// why they aren't shown.
+#[test]
+fn someone_holding_role_view_only_sees_the_roles_and_no_change_keys() {
+    let (state, book, _) = people_server(&[]);
+    book.define_role(crate::bindings::RoleText { name: "role-reader".into(), about: None, allows: vec!["role.view".into()], kinds: vec![crate::accounts::Kind::Person] }, "ada", None).unwrap();
+    let rita = book.accept(&book.invite("rita", "role-reader", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let (mut app, calls) = admin_page_as(state, &rita);
+    app.admin_part(Part::Roles);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("viewer") && shown.contains("role-reader") && shown.contains("Allows"), "{shown}");
+    for key in ["define a role", "change it", "remove"] {
+        assert!(!shown.contains(key), "no {key:?} key: {shown}");
+    }
+    let before = calls.lock().unwrap().len();
+    press(&mut app, KeyCode::Char('n'));
+    assert!(app.modal.is_none() && note(&app).contains("role.define"), "{}", note(&app));
+    assert_eq!(calls.lock().unwrap().len(), before, "sends nothing");
+    for part in [Part::People, Part::Groups, Part::Bindings, Part::History] {
+        app.admin_part(part);
+        let shown = screen(&mut app, 140, 40);
+        assert!(shown.contains("It can't be shown here") && shown.contains("people.view"), "{part:?}: {shown}");
+        assert!(!shown.contains("new group") && !shown.contains("bind a role"), "{part:?}: {shown}");
+    }
+    assert!(!calls.lock().unwrap().iter().any(|c| c.starts_with("GET /groups") || c.starts_with("GET /bindings")), "nor read for her");
+}
+
+/// An agent's owner, no admin, makes an API key for it on Your agents, and revokes it.
+#[test]
+fn an_agents_owner_makes_and_revokes_its_keys() {
+    let (state, book, tokens) = people_server(&[("ana", "editor")]);
+    book.add("claude", crate::accounts::Kind::Agent, "agent", "ana", "ada").unwrap();
+    let (mut app, _) = admin_page_as(state, &tokens["ana"]);
+    app.admin_part(Part::Yours);
+    assert!(screen(&mut app, 140, 40).contains("claude"));
+    assert!(detail(&app).contains("holon mcp setup claude-code --server the test server"), "{}", detail(&app));
+    assert!(!screen(&mut app, 140, 40).contains("People 0"), "a part not shown to ana counts nothing");
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "nightly report");
+    let Some(Modal::Lines { title, .. }) = &app.modal else { panic!("no key: {}", note(&app)) };
+    assert_eq!(title, "claude: an API key");
+    assert!(app.to_clipboard.is_some());
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.admin.owned[0]["tokens"].as_array().map(Vec::len), Some(1));
+    // Its newest key is offered: enter revokes it.
+    press(&mut app, KeyCode::Delete);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.admin.owned[0]["tokens"].as_array().map(Vec::len), Some(0), "{}", note(&app));
+}
+
+/// Step 6 against a live server: ada makes a group and a role, binds the role to the group on one
+/// flow and to ana at one approval point from her page, then asks for one person's approval of
+/// what gives more, and a binding waits for bob in Approvals › Access changes; ana, no admin,
+/// makes a key for her agent on Your agents. Each page it passes is written to `HOLON_SCREENS`.
+#[test]
+#[ignore = "runs against a live server at HOLON_LIVE"]
+fn live_access() {
+    let server = std::env::var("HOLON_LIVE").expect("HOLON_LIVE: the server's address");
+    let out = std::env::var("HOLON_SCREENS").expect("HOLON_SCREENS: where to write the pages");
+    let pw = "correct horse battery";
+    let open = |token: Option<&str>| Client::new(Box::new(crate::mcp::Http::new(&server, token)));
+    let ok = |said: Result<serde_json::Value, String>, what: &str| said.unwrap_or_else(|e| panic!("{what}: {e}"));
+    let ada = ok(open(None).post("/auth/setup", serde_json::json!({ "code": "HOLON-LIVE", "name": "ada", "password": pw })), "setup")["token"].as_str().unwrap().to_string();
+    let as_ada = open(Some(&ada));
+    let join = |name: &str, role: &str| {
+        let invite = ok(as_ada.post("/people", serde_json::json!({ "name": name, "kind": "person", "role": role })), name)["invite"].as_str().unwrap().to_string();
+        ok(open(None).post("/auth/invite", serde_json::json!({ "token": invite, "password": pw })), "joins")["token"].as_str().unwrap().to_string()
+    };
+    let bob = join("bob", "admin");
+    let ana = join("ana", "editor");
+    ok(as_ada.post("/people", serde_json::json!({ "name": "claude", "kind": "agent", "role": "agent", "owner": "ana" })), "claude");
+    let mut pages = String::new();
+    let mut keep = |name: &str, app: &mut App| {
+        pages += &format!("\n===== {name} =====\n{}\nnote: {}\n", screen(app, 140, 40), note(app));
+        std::fs::write(&out, &pages).unwrap();
+    };
+    let admin_page = |token: &str| {
+        let mut app = App::new(None);
+        app.attach(open(Some(token)));
+        app.refresh();
+        press(&mut app, KeyCode::Char('7'));
+        app
+    };
+
+    let mut app = admin_page(&ada);
+    app.admin_part(Part::Groups);
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "payments ana --about the payments team --why for the pilot");
+    press(&mut app, KeyCode::Char('+'));
+    answer(&mut app, "bob");
+    keep("Groups: payments made, bob added", &mut app);
+    assert_eq!(app.admin.groups[0]["members"], serde_json::json!(["ana", "bob"]), "{}", note(&app));
+
+    app.admin_part(Part::Roles);
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "payout-approver run.view,run.decide --kinds person --about approves payouts");
+    let at = app.admin.roles.iter().position(|r| r["name"] == "payout-approver").unwrap_or_else(|| panic!("{}", note(&app)));
+    app.admin_pick(List::Admin, at, false);
+    keep("Roles: payout-approver defined", &mut app);
+
+    app.admin_part(Part::Bindings);
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "payout-approver --group payments --flow payout --why the payout team decides");
+    keep("Bindings: to the group, on one flow", &mut app);
+    assert!(note(&app).starts_with("bound payout-approver to the group payments"), "{}", note(&app));
+
+    // From ana's own page: the bind dialog comes with her name in it.
+    app.admin_part(Part::People);
+    let at = app.admin.users.iter().position(|u| u["name"] == "ana").unwrap();
+    app.admin_pick(List::Admin, at, false);
+    press(&mut app, KeyCode::Char('b'));
+    keep("People: ana's bind dialog", &mut app);
+    typed(&mut app, "payout-approver --approval payout:ok --until 7d --why covering for bob\n");
+    keep("People: ana bound at one approval point", &mut app);
+    assert!(note(&app).contains("for \"payout\"'s approval \"ok\""), "{}", note(&app));
+
+    app.admin_part(Part::History);
+    press(&mut app, KeyCode::Enter);
+    answer(&mut app, "--changes 1 --why two people see each change");
+    keep("Access history: one approval asked", &mut app);
+    assert!(note(&app).starts_with("approval settings changed: --changes 1"), "{}", note(&app));
+    press(&mut app, KeyCode::Down);
+    keep("Access history: the newest version", &mut app);
+
+    app.admin_part(Part::Bindings);
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "admin --to ana --until 7d --why covering for bob");
+    keep("Bindings: one that gives more waits", &mut app);
+    assert!(note(&app).contains("Approvals › Access changes decides it"), "{}", note(&app));
+
+    // bob sees it waiting, in Approvals › Access changes.
+    let mut app = App::new(None);
+    app.attach(open(Some(&bob)));
+    app.refresh();
+    press(&mut app, KeyCode::Char('2'));
+    app.approvals_part = super::approvals::Part::Access;
+    keep("bob: Approvals › Access changes", &mut app);
+    assert!(!app.changes_waiting().is_empty(), "nothing waits for bob");
+
+    // ana, an editor, makes a key for her agent.
+    let mut app = admin_page(&ana);
+    app.admin_part(Part::Yours);
+    keep("ana: Your agents", &mut app);
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "nightly report");
+    assert!(matches!(&app.modal, Some(Modal::Lines { title, .. }) if title == "claude: an API key"), "{}", note(&app));
+    press(&mut app, KeyCode::Esc);
+    keep("ana: a key made", &mut app);
+    assert_eq!(app.admin.owned[0]["tokens"].as_array().map(Vec::len), Some(1));
+    app.admin_part(Part::Roles);
+    keep("ana: Roles, as an editor sees them", &mut app);
 }
