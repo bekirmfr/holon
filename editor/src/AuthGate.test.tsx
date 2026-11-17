@@ -108,6 +108,8 @@ const endsForCy: Step = {
 };
 const signInAgain = (page: HTMLElement) => page.querySelector('[aria-label="sign in again"]');
 
+/** Whether the pop-up a step opens has opened. */
+let popup = false;
 const CASES: Case[] = [
   {
     name: "an invite link, no one signed in",
@@ -225,6 +227,35 @@ const CASES: Case[] = [
     ],
     shows: editorOf("ada"),
   },
+  {
+    name: "signing in again as someone else through the provider's pop-up, once the sign-in ended",
+    address: "/",
+    sweepFrom: 1,
+    kept: { "holon.session": { token: "token-of-cy", name: "cy", kind: "person", role: "viewer" } },
+    steps: [
+      endsForCy,
+      {
+        when: (page) => !!signInAgain(page),
+        then: (page) => {
+          vi.stubGlobal("open", () => {
+            popup = true;
+            return {} as Window;
+          });
+          [...signInAgain(page)!.querySelectorAll("button")].find((b) => b.textContent === "sign in through id.example.com")!.click();
+        },
+      },
+      {
+        // Back at the provider's, signed in as ada, the pop-up keeps her ID token and tells this tab.
+        when: () => popup,
+        then: () => {
+          const token = jwt({ nonce: "n", exp: HOUR(), email: "ada@example.com" });
+          localStorage.setItem("holon.signin", JSON.stringify({ idToken: token, exp: HOUR(), who: "ada@example.com" }));
+          window.dispatchEvent(new MessageEvent("message", { data: "holon:signed-in", origin: location.origin }));
+        },
+      },
+    ],
+    shows: editorOf("ada"),
+  },
 ];
 
 beforeAll(() => {
@@ -250,6 +281,7 @@ async function open(c: Case, choices: number[]) {
   history.replaceState(null, "", c.address);
   localStorage.clear();
   ended = new Set();
+  popup = false;
   for (const [key, value] of Object.entries(c.kept ?? {})) localStorage.setItem(key, JSON.stringify(value));
   vi.resetModules();
   const { AuthGate } = await import("./AuthGate");
