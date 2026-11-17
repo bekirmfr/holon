@@ -1354,6 +1354,8 @@ export type RunHead = {
   method: string | null;
   status: number | null;
   failed: boolean;
+  /** Whether it left a state a restore can put back: never the state's hash (state.view's). */
+  left_state: boolean;
   by: string | null;
   run_id: string;
   unit: string;

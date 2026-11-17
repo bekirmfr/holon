@@ -14,7 +14,7 @@ import { ServerError } from "./server";
 import { useFlowLog } from "./useFlowLog";
 
 const REFUSED = "cy may not read \"pay\"'s runs' steps and values (explain, a run's detail, export, replay): no role cy holds there holds run.steps; a person gives it with `holon bind viewer --to cy --flow pay --why …`";
-const HEAD: RunHead = { seq: 3, session: 1, at_ms: 0, duration_ms: 2, kind: "request", route: "/check", method: "POST", status: 200, failed: false, by: "cy", run_id: "r3", unit: "u", parked: [], retries: 0, lost_since: null };
+const HEAD: RunHead = { seq: 3, session: 1, at_ms: 0, duration_ms: 2, kind: "request", route: "/check", method: "POST", status: 200, failed: false, left_state: false, by: "cy", run_id: "r3", unit: "u", parked: [], retries: 0, lost_since: null };
 const page = <T,>(entries: T[]) => ({ entries, next: 0, head: "h", breaks: [] });
 
 let seen: ReturnType<typeof useFlowLog> | null = null;

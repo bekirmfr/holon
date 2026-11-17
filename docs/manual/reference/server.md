@@ -233,8 +233,8 @@ there for a minute, so the code can't be guessed at speed.
 | agent | read, but not a run's steps and values; check, save flows (never replacing someone else's), deploy what needs no approval, call routes |
 
 A run is read at two depths. The list of runs (`GET /deployments/{slug}/log/heads`, `run.view`)
-names each run's route, method, status, how long it took, who sent it, whether it failed and what
-it waits at, and nothing it read or computed. A run's steps and values (`GET
+names each run's route, method, status, how long it took, who sent it, whether it failed, whether
+it left a state a restore can put back, and what it waits at, and nothing it read or computed. A run's steps and values (`GET
 /deployments/{slug}/log`, its export and replay, a waiting run's shown values) take `run.steps`:
 viewers, editors and admins hold it, the agent role doesn't, and a person gives it to an agent by
 binding it a role that holds it on a flow or a tag (`holon bind viewer --to claude --flow

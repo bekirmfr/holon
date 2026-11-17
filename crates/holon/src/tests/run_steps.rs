@@ -322,9 +322,13 @@ only those who hold `run.steps` on its flow can read it.
     assert!(kept == text, "{} is out of date: HOLON_BLESS=1 cargo test -p holon every_surface_is_in_the_manual writes it again", path.display());
 }
 
+/// The hash of a state a run left: state.view's, never in the list of runs.
+const STATE_HASH: &str = "5ea7e0f1c2d3b4a5968778695a4b3c2d1e0f1a2b3c4d5e6f708192a3b4c5d6e7";
+
 /// The list of runs says each run by what it names, field by field: when, what started it, its
-/// status, how long, who by, where it waits; never its URL, its error or any value of it. A field
-/// added to the log's entries is in the list only once it is named in `RunHead`.
+/// status, how long, who by, where it waits, whether it left a state to restore to; never its URL,
+/// its error, the state's hash or any value of it. A field added to the log's entries is in the
+/// list only once it is named in `RunHead`.
 #[test]
 fn the_list_of_runs_says_what_it_names() {
     let entry = crate::recorder::LogEntry {
@@ -346,14 +350,20 @@ fn the_list_of_runs_says_what_it_names() {
         retries: 1,
         lost_since: Some(3),
         secrets: BTreeMap::from([("api_key".to_string(), "v1 #a1b2c3d4".to_string())]),
+        state_after: Some(STATE_HASH.into()),
         ..Default::default()
     };
     let head = serde_json::to_value(crate::recorder::RunHead::from(&entry)).unwrap();
     let keys: BTreeSet<&str> = head.as_object().unwrap().keys().map(String::as_str).collect();
-    let named = ["seq", "session", "at_ms", "duration_ms", "kind", "route", "method", "status", "failed", "by", "run_id", "unit", "parked", "retries", "lost_since"];
+    let named = ["seq", "session", "at_ms", "duration_ms", "kind", "route", "method", "status", "failed", "left_state", "by", "run_id", "unit", "parked", "retries", "lost_since"];
     assert_eq!(keys, BTreeSet::from(named));
-    assert!(!head.to_string().contains(CANARY), "{head}");
+    assert!(!head.to_string().contains(CANARY) && !head.to_string().contains(STATE_HASH), "{head}");
     assert_eq!((head["failed"].as_bool(), head["route"].as_str(), head["status"].as_u64()), (Some(true), Some("POST /check"), Some(500)));
+    // A restore to a run needs to know it left a state, as `holon history` (the VS Code history)
+    // offers one: whether, never which.
+    assert_eq!(head["left_state"].as_bool(), Some(true));
+    let none = crate::recorder::RunHead::from(&crate::recorder::LogEntry { state_after: None, ..entry });
+    assert!(!none.left_state, "a run that left no state says so");
 }
 
 /// What the flow `kept` keeps in its state (R56): read by whoever holds state.view, by no one else.

@@ -234,10 +234,11 @@ pub struct LogEntry {
 }
 
 /// A run as the list of runs says it (`GET …/log/heads`, run.view's; the audit register's R55):
-/// when it ran, what started it, its status, how long, who by, where it waits. Never its values:
-/// its URL (its query is the request's), its request and answer, its steps, what it read, sent or
-/// failed with are run.steps', in the whole entry. Made field by field, so a field added to
-/// [`LogEntry`] stays out of the list until it is named here (`the_list_of_runs_says_what_it_names`).
+/// when it ran, what started it, its status, how long, who by, where it waits, whether it left a
+/// state to restore to. Never its values: its URL (its query is the request's), its request and
+/// answer, its steps, what it read, sent or failed with are run.steps', in the whole entry. Made
+/// field by field, so a field added to [`LogEntry`] stays out of the list until it is named here
+/// (`the_list_of_runs_says_what_it_names`).
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct RunHead {
     pub seq: u64,
@@ -251,6 +252,9 @@ pub struct RunHead {
     pub status: Option<u16>,
     /// Whether it failed before it could settle: not why, which may say a value.
     pub failed: bool,
+    /// Whether it left a state a restore can put back (its `state_after`): not the state, nor its
+    /// hash, which would let a guess at the state be checked (state.view's, R56).
+    pub left_state: bool,
     pub by: Option<String>,
     pub run_id: String,
     pub unit: String,
@@ -272,6 +276,7 @@ impl From<&LogEntry> for RunHead {
             method: e.method.clone(),
             status: e.status,
             failed: e.error.is_some(),
+            left_state: e.state_after.is_some(),
             by: e.by.clone(),
             run_id: e.run_id.clone(),
             unit: e.unit.clone(),
