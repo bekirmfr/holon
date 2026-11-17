@@ -450,6 +450,8 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let bottom = area.y + area.height;
     // How the server is, at the foot: what runs, what's paused, what it warns of.
     let mut health = vec![Line::from(Span::styled("  SERVER", Style::new().fg(DARK).add_modifier(Modifier::BOLD)))];
+    // Which of its lines is the "check now" button, when there is one.
+    let mut check_at = None;
     match (&app.client, &app.offline) {
         (Some(c), None) => {
             let running = c.deployments.iter().filter(|d| d["status"] == "running").count();
@@ -472,6 +474,14 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 _ => format!("{:.1}M", on_record as f64 / 1e6),
             };
             health.push(Line::from(dim(format!("    {n} on record"))));
+            if let Some(at) = c.summary["chain"]["checked"]["at_ms"].as_u64() {
+                let broke = c.summary["chain"]["checked"]["breaks"].as_array().map_or(0, Vec::len);
+                health.push(Line::from(if broke == 0 { dim(format!("    checked {}", flow::ago(at))) } else { coloured(format!("    {broke} found {}", flow::ago(at)), BAD) }));
+            }
+            if c.may("host.check", None).is_ok() {
+                check_at = Some(health.len());
+                health.push(Line::from(coloured("    check now", ACCENT)));
+            }
         }
         (Some(_), Some(_)) => health.push(Line::from(vec![coloured("  ● ", BAD), dim("can't reach it")])),
         (None, _) => health.push(Line::from(vec![coloured("  ○ ", WARN), dim("none: files only")])),
@@ -482,6 +492,9 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         let room = area.width.saturating_sub(1) as usize;
         let lines: Vec<Line> = health.into_iter().chain(help).map(|l| fit_line(l, room)).collect();
         f.render_widget(Paragraph::new(lines), Rect { y: bottom - need, height: need, ..area });
+        if let Some(i) = check_at {
+            app.hit(Rect { y: bottom - need + i as u16, height: 1, width: area.width.saturating_sub(1), ..area }, Click::Check);
+        }
     } else if bottom > y + 4 {
         f.render_widget(Paragraph::new(help.to_vec()), Rect { y: y + 1, height: bottom.saturating_sub(y + 1), ..area });
     }
@@ -662,15 +675,23 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
             Page::Flow => match app.flow.section {
                 Section::Status => vec![("← →", "sections", Right, NONE), ("enter", "go back to a version", Enter, NONE), ("c", "call", Char('c'), NONE), ("e", "edit", Char('e'), NONE), ("g p x", "run pause stop", Char('g'), NONE), ("esc", "flows", Esc, NONE)],
                 _ if in_flow_pane => vec![("← →", "tabs", Right, NONE), ("↑↓", "scroll", Down, NONE), ("tab", "next section", Tab, NONE), ("esc", "back to the list", Esc, NONE)],
-                Section::Runs => vec![("↑↓", "pick", Down, NONE), ("→", "its tabs", Right, NONE), ("enter", "step through", Enter, NONE), ("i", "explain", Char('i'), NONE), ("L", "its lines", Char('L'), NONE), ("/", "filter", Char('/'), NONE), ("F", if app.flow.follow { "stop following" } else { "follow" }, Char('F'), NONE), ("o", "export", Char('o'), NONE), ("b", "go back to it", Char('b'), NONE), ("c", "call", Char('c'), NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
+                Section::Runs => vec![("↑↓", "pick", Down, NONE), ("→", "its tabs", Right, NONE), ("enter", "step through", Enter, NONE), ("i", "explain", Char('i'), NONE), ("L", "its lines", Char('L'), NONE), ("/", "filter", Char('/'), NONE), ("F", if app.flow.follow { "stop following" } else { "follow" }, Char('F'), NONE), ("O", "export it", Char('O'), NONE), ("o", "export all", Char('o'), NONE), ("b", "go back to it", Char('b'), NONE), ("c", "call", Char('c'), NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
                 Section::Logs => vec![("↑↓", "pick", Down, NONE), ("→", "its line", Right, NONE), ("w", "level", Char('w'), NONE), ("u", "run's lines", Char('u'), NONE), ("F", if app.flow.log_paused { "follow" } else { "pause" }, Char('F'), NONE), ("enter", "step through", Enter, NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
                 Section::History => vec![("↑↓", "pick", Down, NONE), ("→", "its tabs", Right, NONE), ("enter", "go back to it", Enter, NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
+                Section::State if app.flow.cells.get(app.flow.sel()).is_some_and(|c| c.collection) => vec![("↑↓", "pick", Down, NONE), ("→", "its tabs", Right, NONE), ("enter", "its history", Enter, NONE), ("] [", "pages", Char(']'), NONE), ("i", "an item's history", Char('i'), NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
                 Section::State => vec![("↑↓", "pick", Down, NONE), ("→", "its tabs", Right, NONE), ("enter", "its history", Enter, NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
                 Section::Access => vec![("↑↓", "pick", Down, NONE), ("enter", "change it", Enter, NONE), ("R", "roll a secret back", Char('R'), NONE), ("del", "remove a secret", Delete, NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
                 Section::Settings => vec![("↑↓", "pick", Down, NONE), ("enter", "change it", Enter, NONE), ("→", "about it", Right, NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
                 Section::Graph => vec![("↑↓", "pick", Down, NONE), ("→", "its tabs", Right, NONE), ("enter", "edit it there", Enter, NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
             },
-            Page::Overview => vec![("↑↓", "pick", Down, NONE), ("enter", "open", Enter, NONE), ("e", "edit", Char('e'), NONE), ("c", "call", Char('c'), NONE), ("ctrl+p", "find", Char('p'), CTRL), ("q", "quit", Char('q'), NONE)],
+            Page::Overview => {
+                let mut keys = vec![("↑↓", "pick", Down, NONE), ("enter", "open", Enter, NONE), ("e", "edit", Char('e'), NONE), ("c", "call", Char('c'), NONE)];
+                if app.client.as_ref().is_some_and(|c| c.may("host.check", None).is_ok()) {
+                    keys.push(("C", "check the run logs", Char('C'), NONE));
+                }
+                keys.extend([("ctrl+p", "find", Char('p'), CTRL), ("q", "quit", Char('q'), NONE)]);
+                keys
+            }
             Page::Approvals => vec![("↑↓", "pick", Down, NONE), ("enter", "review and approve", Enter, NONE), ("q", "quit", Char('q'), NONE)],
             Page::Flows => vec![("↑↓", "pick", Down, NONE), ("enter", "open", Enter, NONE), ("e", "edit", Char('e'), NONE), ("c", "call", Char('c'), NONE), ("/", "filter", Char('/'), NONE), ("f", "live · waiting · paused", Char('f'), NONE), ("q", "quit", Char('q'), NONE)],
             Page::Library => vec![("↑↓", "pick", Down, NONE), ("enter", "open a copy", Enter, NONE), ("/", "filter", Char('/'), NONE), ("q", "quit", Char('q'), NONE)],
@@ -857,12 +878,21 @@ fn deployment_row(c: &Client, d: &Value, width: usize) -> Line<'static> {
     }
     spans.push(Span::raw(" ".repeat(17usize.saturating_sub(used))));
     if width >= 87 {
+        let glance = c.summary["deployments"].as_array().and_then(|all| all.iter().find(|f| f["slug"] == slug));
         let recent = c.recent.get(slug).map(|(_, r)| r.as_slice()).unwrap_or_default();
-        spans.extend(flow::spark(recent, 8).spans);
+        let (spark, last) = match glance {
+            Some(g) => {
+                // Whether its newest run failed, when it is among the host's newest.
+                let newest_failed = c.summary["latest"].as_array().and_then(|l| l.iter().find(|r| r["slug"] == slug)).is_some_and(|r| r["failed"] == true);
+                (flow::spark_hours(g, 8), g["last_ms"].as_u64().map(|at| (at, newest_failed)))
+            }
+            None => (flow::spark(recent, 8), recent.last().map(|r| (r["at_ms"].as_u64().unwrap_or(0), crate::workbench::flow::failed(r)))),
+        };
+        spans.extend(spark.spans);
         spans.push(Span::raw("  "));
-        spans.push(match recent.last() {
-            Some(r) if crate::workbench::flow::failed(r) => coloured(format!("{:<12}", flow::ago(r["at_ms"].as_u64().unwrap_or(0))), BAD),
-            Some(r) => dim(format!("{:<12}", flow::ago(r["at_ms"].as_u64().unwrap_or(0)))),
+        spans.push(match last {
+            Some((at, true)) => coloured(format!("{:<12}", flow::ago(at)), BAD),
+            Some((at, false)) => dim(format!("{:<12}", flow::ago(at))),
             None => dim(format!("{:<12}", "never")),
         });
     }
@@ -889,6 +919,8 @@ struct Day {
     failed: usize,
     p50: Option<f64>,
     p99: Option<f64>,
+    /// Each flow's median, from the summary: the host's isn't said, only theirs.
+    medians: Vec<f64>,
     more: bool,
 }
 
@@ -903,9 +935,17 @@ fn last_day(c: &Client) -> Day {
         failed += day.iter().filter(|r| crate::workbench::flow::failed(r)).count();
         times.extend(day.iter().filter_map(|r| r["duration_ms"].as_f64()));
     }
+    let mut medians = vec![];
+    for f in c.summary["deployments"].as_array().into_iter().flatten() {
+        let sum = |k: &str| f[k].as_array().into_iter().flatten().filter_map(Value::as_u64).sum::<u64>() as usize;
+        count += sum("runs");
+        failed += sum("failed");
+        medians.extend(f["p50_ms"].as_f64());
+    }
     times.sort_by(f64::total_cmp);
+    medians.sort_by(f64::total_cmp);
     let at = |p: f64| (!times.is_empty()).then(|| times[((times.len() - 1) as f64 * p).round() as usize]);
-    Day { runs: count, failed, p50: at(0.5), p99: at(0.99), more }
+    Day { runs: count, failed, p50: at(0.5), p99: at(0.99), medians, more }
 }
 
 fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
@@ -940,8 +980,13 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         tile(f, parts[1], "Waiting for you", &total.to_string(), if total == 0 { "nothing to approve" } else { "2 opens them" }, if total == 0 { GOOD } else { WARN });
         let day = last_day(c);
         let at_least = if day.more { "≥" } else { "" };
-        let times = match (day.p50, day.p99) {
-            (Some(a), Some(b)) => format!("p50 {} · p99 {}", crate::workbench::flow::took(a), crate::workbench::flow::took(b)),
+        let took = crate::workbench::flow::took;
+        let times = match (day.medians.as_slice(), day.p50, day.p99) {
+            // From the summary: one flow's median, or the range of theirs.
+            ([one], None, _) => format!("p50 {}", took(*one)),
+            ([low, .., high], _, _) => format!("p50 {} to {}, by flow", took(*low), took(*high)),
+            ([one], Some(a), _) => format!("p50 {} to {}, by flow", took(one.min(a)), took(one.max(a))),
+            (_, Some(a), Some(b)) => format!("p50 {} · p99 {}", took(a), took(b)),
             _ => format!("{runs} on record"),
         };
         tile(f, parts[2], "Runs, last 24 h", &format!("{at_least}{}", day.runs), &times, Color::White);

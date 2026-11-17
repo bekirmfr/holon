@@ -123,6 +123,7 @@ pub(crate) const COMMANDS: &[Surface] = &[
             "DELETE /admin/feeds/{name}", "DELETE /admin/queues/{name}", "POST /admin/store/sweep", "GET /admin/mails", "POST /admin/mails", "GET /admin/feeds",
             "POST /admin/feeds", "GET /admin/queues", "POST /admin/queues", "GET /admin/secrets", "GET /admin/secrets/{name}", "POST /admin/secrets/{name}",
             "POST /admin/secrets/{name}/cap", "POST /admin/secrets/{name}/rollback", "DELETE /admin/secrets/{name}", "POST /admin/storage", "GET /admin/folders/browse",
+            "GET /summary", "POST /summary/check", "GET /deployments/{slug}/feeds", "GET /deployments/{slug}/queues", "GET /deployments/{slug}/channels",
         ],
         "the flows' files it opens in tabs, and an export it writes (as holon export)",
         OWN,

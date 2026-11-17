@@ -112,6 +112,28 @@ fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
 
 const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
+/// The same from a summary's flow: its runs and failures an hour each, the oldest first.
+pub(super) fn spark_hours(g: &Value, cells: usize) -> Line<'static> {
+    let hours = |k: &str| -> Vec<u64> { g[k].as_array().into_iter().flatten().filter_map(Value::as_u64).collect() };
+    let (runs, bad) = (hours("runs"), hours("failed"));
+    let n = runs.len().max(1);
+    let mut each = vec![(0u64, 0u64); cells];
+    for (h, r) in runs.iter().enumerate() {
+        let c = &mut each[(h * cells / n).min(cells - 1)];
+        c.0 += r;
+        c.1 += bad.get(h).copied().unwrap_or(0);
+    }
+    let top = each.iter().map(|c| c.0).max().unwrap_or(0).max(1);
+    Line::from(
+        each.into_iter()
+            .map(|(n, bad)| {
+                let c = if n == 0 { '·' } else { BARS[((n * 7) / top).min(7) as usize] };
+                Span::styled(c.to_string(), Style::new().fg(if bad > 0 { BAD } else if n == 0 { DIM } else { ACCENT }))
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
 /// The last 24 hours in `cells` bars, as a list's row draws it: how many runs, red where some
 /// failed, a dot where none ran.
 pub(super) fn spark(runs: &[Value], cells: usize) -> Line<'static> {
@@ -196,7 +218,15 @@ fn dashboard(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
     // What it holds, in memory and on disk (storage.rs), below what it may do.
     let holds: Vec<String> = if d.holds.is_object() { crate::storage::holds_lines(&d.holds) } else { vec![] };
     let holds_h = if holds.is_empty() { 0 } else { holds.len() as u16 + 2 };
-    let [day, may_area, holds_area] = Layout::vertical([Constraint::Length(5), Constraint::Min(3), Constraint::Length(holds_h)]).areas(left);
+    // What it is connected to: its feeds, queues and channels, and how each is now.
+    let connected = crate::workbench::record::connection_lines(&d.feeds, &d.queues, &d.channels);
+    let connected_h = if connected.is_empty() { 0 } else { connected.len().min(6) as u16 + 2 };
+    let [day, may_area, connected_area, holds_area] = Layout::vertical([Constraint::Length(5), Constraint::Min(3), Constraint::Length(connected_h), Constraint::Length(holds_h)]).areas(left);
+    if connected_h > 0 {
+        let room = connected_area.width.saturating_sub(2) as usize;
+        let lines: Vec<Line> = connected.into_iter().map(|(t, l)| super::fit_line(Line::from(Span::styled(l, tone(t))), room)).collect();
+        f.render_widget(Paragraph::new(lines).block(panel("Connected", false)), connected_area);
+    }
     if holds_h > 0 {
         let room = holds_area.width.saturating_sub(2) as usize;
         f.render_widget(Paragraph::new(holds.into_iter().map(|l| super::fit_line(Line::from(Span::raw(l)), room)).collect::<Vec<_>>()).block(panel("It holds", false)), holds_area);

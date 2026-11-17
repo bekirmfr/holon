@@ -312,6 +312,9 @@ pub(crate) enum Modal {
     Approve { slug: String, plan: Box<agent::Plan>, staged: Staged, text: String, tab: usize, review: Review },
     /// Lines to read: a run explained, a cell's history, an answer.
     Lines { title: String, lines: Vec<Said>, scroll: usize },
+    /// What a check of every run log found: its lines, then the runs where a line doesn't follow
+    /// the one before, one picked; enter opens it.
+    Checked { lines: Vec<Said>, breaks: Vec<(String, u64)>, sel: usize, scroll: usize },
     Confirm { title: String, lines: Vec<String>, then: Then },
     Help { scroll: usize },
     /// Everything there is to do and open, by name.
@@ -393,6 +396,8 @@ pub(crate) enum Ask {
     Remove { slug: String, forget: bool },
     /// A secret rolled back: to which version, typed.
     Rollback { slug: String, name: String },
+    /// One item of a collection, its history read: which, by its key.
+    ItemHistory { slug: String, name: String },
 }
 
 /// The line at the bottom: what just happened.
@@ -457,6 +462,8 @@ pub(crate) enum Click {
     Show(Show),
     /// The graph's switch: every node a row, or the statements with their nodes under each.
     Every,
+    /// The sidebar's "check now": every run log's chain read again.
+    Check,
     /// A tab of a run's panel.
     RunPane(RunPane),
     /// Behind a dialog: a click there closes it, as esc does.
@@ -919,6 +926,42 @@ impl App {
                 self.flow_refreshed();
             }
             Err(e) => self.fail(e),
+        }
+    }
+
+    /// A flow's page on one of its runs, picked in Runs; or why it can't be.
+    pub(crate) fn open_run(&mut self, slug: &str, seq: u64) {
+        self.open_flow(slug);
+        if self.page != Page::Flow {
+            return;
+        }
+        self.flow_section(super::flow::Section::Runs);
+        let Some(d) = self.detail.as_ref() else { return };
+        match d.shown_runs(self.filter_of(Page::Flow)).iter().position(|&i| d.runs[i]["seq"].as_u64() == Some(seq)) {
+            Some(at) => {
+                self.flow.follow = false;
+                self.flow_pick(List::Section, at);
+                self.tell(format!("run #{seq} of {slug}"));
+            }
+            None => self.tell(format!("run #{seq} isn't among the newest runs read: holon export {slug} --run {seq} writes it")),
+        }
+    }
+
+    /// Every run log's chain read again now (`POST /summary/check`), host.check's: what it found,
+    /// each break a run to open.
+    pub(crate) fn check_now(&mut self) {
+        let Some(c) = self.client.as_mut() else { return self.fail("no server") };
+        if let Err(why) = c.may("host.check", None) {
+            return self.fail(format!("not checked: {why}"));
+        }
+        match c.post("/summary/check", serde_json::json!({})) {
+            Ok(check) => {
+                let (mut lines, breaks) = super::record::check_lines(&check);
+                lines.extend(breaks.iter().map(|(slug, seq)| (Tone::Bad, format!("  ✗ {slug}, run #{seq}"))));
+                let _ = c.refresh();
+                self.modal = Some(Modal::Checked { lines, breaks, sel: 0, scroll: 0 });
+            }
+            Err(e) => self.fail(format!("not checked: {e}")),
         }
     }
 
@@ -1902,6 +1945,7 @@ impl App {
                     (KeyCode::Enter, Some(s)) => self.open_flow(&s),
                     (KeyCode::Char('e'), Some(s)) => self.edit(&s),
                     (KeyCode::Char('c'), Some(s)) => self.call(&s),
+                    (KeyCode::Char('C'), _) => self.check_now(),
                     _ => {}
                 }
             }
@@ -2213,6 +2257,19 @@ impl App {
                 }
                 _ => {}
             },
+            Modal::Checked { sel, breaks, .. } => match k.code {
+                KeyCode::Up | KeyCode::Char('k') => *sel = sel.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => *sel = (*sel + 1).min(breaks.len().saturating_sub(1)),
+                KeyCode::Enter => {
+                    let picked = breaks.get(*sel).cloned();
+                    self.modal = None;
+                    if let Some((slug, seq)) = picked {
+                        self.open_run(&slug, seq);
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') => self.modal = None,
+                _ => {}
+            },
             Modal::Lines { scroll, lines, .. } => match k.code {
                 KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
                 KeyCode::Down | KeyCode::Char('j') => page(1, scroll, lines.len()),
@@ -2390,6 +2447,7 @@ impl App {
             Click::Show(s) => self.set_show(s),
             Click::Every if self.page == Page::Flow => self.flow_every(),
             Click::Every => self.tab_every(),
+            Click::Check => self.check_now(),
             Click::Shown(s) => self.show_flows(s),
             Click::Home => self.go_home(),
             Click::RunPane(p) => {

@@ -279,6 +279,18 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             };
             reviewed(f, app, area, review, &title, go, Some(("s", "save, don't deploy")), Some((&note, DIM)));
         }
+        Modal::Checked { lines, breaks, sel, scroll } => {
+            let rect = centred(area, 100, lines.len() as u16 + 5);
+            let keys: &[(&str, &str, KeyCode, KeyModifiers)] = if breaks.is_empty() { &[("esc", "close", KeyCode::Esc, NONE)] } else { &[("↑↓", "pick", KeyCode::Down, NONE), ("enter", "open the run", KeyCode::Enter, NONE), ("esc", "close", KeyCode::Esc, NONE)] };
+            let body = frame(f, app, rect, "The run logs, checked now", keys);
+            let first = lines.len() - breaks.len();
+            let mut shown = said(&lines[..first], body.width as usize);
+            for (i, l) in lines[first..].iter().enumerate() {
+                let line = said_line(l, body.width as usize);
+                shown.push(if i == *sel { line.style(Style::new().bg(super::PICKED)) } else { line });
+            }
+            scrolled(f, body, shown, scroll);
+        }
         Modal::Lines { title, lines, scroll } => {
             let rect = centred(area, 100, lines.len() as u16 + 4);
             let body = frame(f, app, rect, &fit(title, 70), &[("esc", "close", KeyCode::Esc, NONE)]);

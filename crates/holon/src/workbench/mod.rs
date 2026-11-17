@@ -12,6 +12,7 @@ mod diff;
 mod flow;
 mod graph;
 mod host;
+mod record;
 mod palette;
 mod policy;
 mod review;

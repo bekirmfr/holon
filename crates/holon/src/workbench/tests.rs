@@ -3096,3 +3096,294 @@ fn live_host() {
     keep("Policy: held off", &mut app);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The right pane's text, a line each.
+fn pane_text(app: &App) -> String {
+    app.flow
+        .pane
+        .as_ref()
+        .map(|(_, rows)| {
+            rows.iter()
+                .map(|r| match r {
+                    Row::Text(_, t) => t.clone(),
+                    Row::Field(k, v, _) => format!("{k}: {v}"),
+                    other => format!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+/// The flow page's Runs on the run `seq`.
+fn on_run(app: &mut App, slug: &str, seq: u64) {
+    app.open_flow(slug);
+    app.flow_section(Section::Runs);
+    let d = app.detail.as_ref().unwrap();
+    let at = d.shown_runs("").iter().position(|&i| d.runs[i]["seq"].as_u64() == Some(seq)).unwrap_or_else(|| panic!("no run {seq}"));
+    app.flow.follow = false;
+    app.flow_pick(List::Section, at);
+}
+
+/// A run decided by two people says who decided it, each in a line, as the web's run page does:
+/// ada approves with why, then bob, and the run that goes on says both, and what let them.
+#[test]
+fn a_run_decided_in_two_steps_shows_both_decisions() {
+    let (_, open) = waiting_payouts();
+    let (mut ada, _) = open("ada");
+    let first = ada.runs_waiting()[0]["run_id"].as_str().unwrap().to_string();
+    press(&mut ada, KeyCode::Char('a'));
+    typed(&mut ada, "fine by me\n");
+    let (mut bob, _) = open("bob");
+    bob.run_sel = bob.runs_waiting().iter().position(|r| r["run_id"] == first.as_str()).unwrap();
+    press(&mut bob, KeyCode::Char('a'));
+    press(&mut bob, KeyCode::Enter);
+    assert!(note(&bob).contains("goes on"), "{}", note(&bob));
+    ada.refresh();
+    ada.open_flow("payouts");
+    let d = ada.detail.as_ref().unwrap();
+    let went_on = d.runs.iter().find(|r| r["run_id"] == first.as_str() && r["events"].is_object()).unwrap_or_else(|| panic!("the part that went on: {:?}", d.runs));
+    let seq = went_on["seq"].as_u64().unwrap();
+    on_run(&mut ada, "payouts", seq);
+    let shown = pane_text(&ada);
+    assert!(shown.contains("Decided") && shown.contains("\"payout\": approved by ada and bob"), "{shown}");
+    let decided: Vec<&str> = shown.lines().filter(|l| l.contains(" approved")).collect();
+    assert!(decided.iter().any(|l| l.contains("ada approved: fine by me")), "{decided:?}");
+    assert!(decided.iter().any(|l| l.contains("bob approved")), "{decided:?}");
+    assert!(decided.iter().all(|l| !l.contains("approved by") || l.contains("\"payout\"")), "{decided:?}");
+    screen(&mut ada, 140, 40);
+}
+
+/// A run that read the server's secret and sent it in a request names the secret, its version,
+/// and the host it went to; never its value, anywhere on screen.
+#[test]
+fn a_run_that_sent_a_secret_names_the_host_and_never_the_value() {
+    let (host, _) = crate::tests::counting_server();
+    let state = crate::tests::claims_state("");
+    let bind = serde_json::json!({ "value": "srv_live_shared_77", "to": [host] });
+    assert_eq!(route(&state, &req("POST", "/admin/secrets/api_key", serde_json::to_vec(&bind).unwrap())).status_code, 200);
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport api_key from \"secret:api_key\"\nimport api from \"host:{host}\"\n\nflow(\"sends\", {{ port: 18193 }})\n\nroute.get(\"/go\", async () => {{\n  const called = await api.get(\"/api\", {{ headers: {{ authorization: `Bearer ${{api_key}}` }} }})\n  return {{ status: called.status }}\n}})\n"
+    );
+    let slug = crate::tests::deploy_text_to(&state, &text, &[&host]);
+    let (status, ..) = crate::tests::data_call(&state, &slug, "GET", "/go", "");
+    assert_eq!(status, 200);
+    let state: &'static AppState = Box::leak(Box::new(state));
+    let mut app = App::new(None);
+    app.attach(Client::new(Box::new(InProcess(state, None))));
+    app.refresh();
+    let seq = app.client.as_ref().unwrap().detail(&slug).unwrap().runs.last().unwrap()["seq"].as_u64().unwrap();
+    on_run(&mut app, &slug, seq);
+    let shown = pane_text(&app);
+    assert!(shown.contains("Secrets it read"), "{shown}");
+    let line = shown.lines().find(|l| l.starts_with("api_key ")).unwrap_or_else(|| panic!("{shown}"));
+    assert!(line.contains("v1 #") && line.contains("the server's own") && line.ends_with(&format!("sent to {host}")), "{line}");
+    assert!(shown.contains("Witnessed: no witness set"), "{shown}");
+    let drawn = screen(&mut app, 160, 60);
+    assert!(!shown.contains("srv_live") && !drawn.contains("srv_live"), "never the value");
+}
+
+/// A collection of 250 items is shown a page at a time, to its end and back; one item's history
+/// is the runs that changed it.
+#[test]
+fn a_collection_of_250_items_pages_to_the_end() {
+    let many = "import { action, flow } from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\n\nflow(\"many\")\n\nexport const add = action((input) => {\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  notes[`k${n}`] = n\n})\n";
+    let (mut app, state) = app();
+    tab_with(&mut app, many);
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Enter);
+    for _ in 0..250 {
+        assert_eq!(route(state, &req("POST", "/trigger/many/add", b"{}".to_vec())).status_code, 200);
+    }
+    app.refresh();
+    app.open_flow("many");
+    app.flow_section(Section::State);
+    let at = app.flow.cells.iter().position(|c| c.collection && c.name == "notes").unwrap_or_else(|| panic!("{:?}", app.flow.cells));
+    app.flow_pick(List::Section, at);
+    let page = |app: &App| pane_text(app).lines().next().unwrap_or_default().to_string();
+    assert_eq!(page(&app), "the collection notes: items 1 to 100");
+    let hints = screen(&mut app, 160, 40);
+    assert!(hints.contains("pages") && hints.contains("an item's history"), "{hints}");
+    press(&mut app, KeyCode::Char(']'));
+    assert_eq!(page(&app), "the collection notes: items 101 to 200");
+    press(&mut app, KeyCode::Char(']'));
+    assert_eq!(page(&app), "the collection notes: items 201 to 250");
+    assert!(pane_text(&app).contains("the last of them"), "{}", pane_text(&app));
+    let rows = pane_text(&app).lines().filter(|l| l.starts_with('k')).count();
+    assert_eq!(rows, 50, "the last 50");
+    press(&mut app, KeyCode::Char(']'));
+    assert!(note(&app).contains("the last page"), "{}", note(&app));
+    press(&mut app, KeyCode::Char('['));
+    assert_eq!(page(&app), "the collection notes: items 101 to 200");
+    press(&mut app, KeyCode::Char('i'));
+    answer(&mut app, "k7");
+    let Some(Modal::Lines { title, lines, .. }) = &app.modal else { panic!("no history: {}", note(&app)) };
+    assert!(title.contains("k7"), "{title}");
+    assert!(lines.iter().any(|(_, l)| l.contains("#6")), "run 6 put it: {lines:?}");
+}
+
+/// Check now, from the sidebar, reads every run log again: a line changed outside holon is a
+/// break, and enter opens its run. The overview reads the host in one summary, not run by run.
+#[test]
+fn check_now_on_a_log_edited_outside_holon_reports_the_break() {
+    let at = crate::tests::unique_temp_path("check-now");
+    let state: &'static AppState = Box::leak(Box::new(crate::tests::test_state_at(crate::paths::Place::parse(&at))));
+    let calls = std::sync::Arc::new(crate::sync::Mutex::new(vec![]));
+    let mut app = App::new(None);
+    app.attach(Client::new(Box::new(Recorded(InProcess(state, None), std::sync::Arc::clone(&calls)))));
+    tab_with(&mut app, BUMP);
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Enter);
+    for _ in 0..3 {
+        assert_eq!(route(state, &req("POST", "/trigger/bump/bump", b"{}".to_vec())).status_code, 200);
+    }
+    calls.lock().unwrap().clear();
+    app.refresh();
+    app.go(Page::Overview);
+    let read: Vec<String> = calls.lock().unwrap().clone();
+    assert!(read.iter().any(|c| c.contains("/summary?hours=24")), "{read:?}");
+    assert!(!read.iter().any(|c| c.contains("/deployments/bump/log?")), "no read of its own: {read:?}");
+    let shown = screen(&mut app, 160, 40);
+    assert!(shown.contains("check now") && shown.contains("3 runs"), "{shown}");
+
+    // Run 1's line changed: run 2's no longer names it.
+    let path = crate::recorder::file_for(&state.deployments_path, "bump").unwrap();
+    let mut lines = crate::at_rest::testing::open_lines(&path);
+    assert_eq!(lines.len(), 3);
+    lines[1] = lines[1].replacen("\"session\":", "\"session\" :", 1);
+    crate::at_rest::testing::write_lines(&path, &lines);
+    press(&mut app, KeyCode::Char('C'));
+    let Some(Modal::Checked { lines, breaks, .. }) = &app.modal else { panic!("no check: {}", note(&app)) };
+    assert_eq!(breaks, &[("bump".to_string(), 2)], "{lines:?}");
+    assert!(lines.iter().any(|(_, l)| l.starts_with("3 runs read")), "{lines:?}");
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("bump, run #2") && shown.contains("open the run"), "{shown}");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.page, Page::Flow);
+    let d = app.detail.as_ref().unwrap();
+    assert_eq!(d.shown_runs("").get(app.flow.sel()).map(|&i| d.runs[i]["seq"].clone()), Some(serde_json::json!(2)), "{}", note(&app));
+    let footer = screen(&mut app, 140, 40);
+    assert!(footer.contains("1 found"), "the sidebar says it: {footer}");
+    let _ = std::fs::remove_dir_all(&at);
+    let _ = std::fs::remove_file(&at);
+}
+
+/// Step 8 against a live server: a run decided by ada and bob says both; a run that sent the
+/// server's secret names the host and never the value; a collection of 250 items pages to its end;
+/// the overview reads one summary, and the run logs are checked from the sidebar. Each page it
+/// passes is written to `HOLON_SCREENS`.
+#[test]
+#[ignore = "drives a live server: HOLON_LIVE=http://127.0.0.1:7591 HOLON_SCREENS=pages.txt"]
+fn live_record() {
+    let server = std::env::var("HOLON_LIVE").expect("HOLON_LIVE: the server's address");
+    let out = std::env::var("HOLON_SCREENS").expect("HOLON_SCREENS: where to write the pages");
+    let pw = "correct horse battery";
+    let open = |token: Option<&str>| Client::new(Box::new(crate::mcp::Http::new(&server, token)));
+    let ok = |said: Result<serde_json::Value, String>, what: &str| said.unwrap_or_else(|e| panic!("{what}: {e}"));
+    let ada = ok(open(None).post("/auth/setup", serde_json::json!({ "code": "HOLON-LIVE", "name": "ada", "password": pw })), "setup")["token"].as_str().unwrap().to_string();
+    let as_ada = open(Some(&ada));
+    let invite = ok(as_ada.post("/people", serde_json::json!({ "name": "bob", "kind": "person", "role": "admin" })), "bob")["invite"].as_str().unwrap().to_string();
+    let bob = ok(open(None).post("/auth/invite", serde_json::json!({ "token": invite, "password": pw })), "joins")["token"].as_str().unwrap().to_string();
+    // cy starts the run: whoever started it can't approve it.
+    let invite = ok(as_ada.post("/people", serde_json::json!({ "name": "cy", "kind": "person", "role": "admin" })), "cy")["invite"].as_str().unwrap().to_string();
+    let cy = ok(open(None).post("/auth/invite", serde_json::json!({ "token": invite, "password": pw })), "joins")["token"].as_str().unwrap().to_string();
+    let mut pages = String::new();
+    let mut keep = |name: &str, app: &mut App| {
+        pages += &format!("\n===== {name} =====\n{}\nnote: {}\n", screen(app, 140, 40), note(app));
+        std::fs::write(&out, &pages).unwrap();
+    };
+    let signed_in = |token: &str| {
+        let mut app = App::new(None);
+        app.attach(open(Some(token)));
+        app.refresh();
+        app
+    };
+    let mut app = signed_in(&ada);
+    let deploy = |app: &mut App, text: &str| {
+        tab_with(app, text);
+        ctrl(app, 'd');
+        press(app, KeyCode::Enter);
+        app.refresh();
+    };
+
+    // A two-person approval, decided by ada and then bob.
+    let payouts = "import { action, approval, flow } from \"holon\"\n\nflow(\"payouts\")\n\nexport const pay = action(async (order) => {\n  const decision = await approval(\"payout\", { expires: \"1h\", people: 2 })\n  return decision.approved\n})\n";
+    deploy(&mut app, payouts);
+    assert!(app.client.as_ref().unwrap().deployment("payouts").is_some(), "{}", note(&app));
+    ok(open(Some(&cy)).post("/trigger/payouts/pay", serde_json::json!({ "amount": 10 })), "pay");
+    app.refresh();
+    app.go(Page::Approvals);
+    press(&mut app, KeyCode::Tab);
+    keep("Approvals › Runs waiting, as ada", &mut app);
+    press(&mut app, KeyCode::Char('a'));
+    assert!(matches!(app.modal, Some(Modal::Input { .. })), "no dialog: {}", note(&app));
+    typed(&mut app, "fine by me\n");
+    keep("ada approved", &mut app);
+    assert!(note(&app).contains("1 of 2"), "{}", note(&app));
+    let mut by_bob = signed_in(&bob);
+    by_bob.go(Page::Approvals);
+    press(&mut by_bob, KeyCode::Tab);
+    press(&mut by_bob, KeyCode::Char('a'));
+    press(&mut by_bob, KeyCode::Enter);
+    assert!(note(&by_bob).contains("goes on"), "{}", note(&by_bob));
+    app.refresh();
+    app.open_flow("payouts");
+    let seq = app.detail.as_ref().unwrap().runs.iter().rev().find(|r| r["events"].is_object()).and_then(|r| r["seq"].as_u64()).expect("the part that went on");
+    on_run(&mut app, "payouts", seq);
+    keep("payouts: the run that went on, decided by two", &mut app);
+    assert!(pane_text(&app).contains("approved by ada and bob"), "{}", pane_text(&app));
+
+    // The server's secret, sent to a host it may go to.
+    let (host, _) = crate::tests::counting_server();
+    ok(as_ada.post("/admin/secrets/api_key", serde_json::json!({ "value": "srv_live_shared_77", "to": [host] })), "the secret");
+    let sends = format!(
+        "import {{ flow, route }} from \"holon\"\nimport api_key from \"secret:api_key\"\nimport api from \"host:{host}\"\n\nflow(\"sends\", {{ port: 18194 }})\n\nroute.get(\"/go\", async () => {{\n  const called = await api.get(\"/api\", {{ headers: {{ authorization: `Bearer ${{api_key}}` }} }})\n  return {{ status: called.status }}\n}})\n"
+    );
+    deploy(&mut app, &sends);
+    keep("sends: deployed", &mut app);
+    assert!(app.client.as_ref().unwrap().deployment("sends").is_some(), "{}", note(&app));
+    ok(as_ada.request("sends", "GET", "/go", ""), "go");
+    app.refresh();
+    let seq = app.client.as_ref().unwrap().detail("sends").unwrap().runs.last().unwrap()["seq"].as_u64().unwrap();
+    on_run(&mut app, "sends", seq);
+    keep("sends: the run that sent the secret", &mut app);
+    let shown = pane_text(&app);
+    assert!(shown.lines().any(|l| l.starts_with("api_key ") && l.contains(&host)), "{shown}");
+    press(&mut app, KeyCode::Char('O'));
+    keep("sends: this run exported", &mut app);
+    assert!(note(&app).contains(&format!("sends-run-{seq}.json")), "{}", note(&app));
+    let _ = std::fs::remove_file(format!("sends-run-{seq}.json"));
+
+    // 250 items, a page at a time.
+    let many = "import { action, flow } from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\n\nflow(\"many\")\n\nexport const add = action((input) => {\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  notes[`k${n}`] = n\n})\n";
+    deploy(&mut app, many);
+    for _ in 0..250 {
+        ok(as_ada.post("/trigger/many/add", serde_json::json!({})), "add");
+    }
+    app.refresh();
+    app.open_flow("many");
+    keep("many: Status, connected to nothing", &mut app);
+    app.flow_section(Section::State);
+    let at = app.flow.cells.iter().position(|c| c.collection).expect("notes");
+    app.flow_pick(List::Section, at);
+    keep("many: notes, items 1 to 100", &mut app);
+    press(&mut app, KeyCode::Char(']'));
+    press(&mut app, KeyCode::Char(']'));
+    keep("many: notes, items 201 to 250", &mut app);
+    assert!(pane_text(&app).starts_with("the collection notes: items 201 to 250"), "{}", pane_text(&app));
+    press(&mut app, KeyCode::Char('i'));
+    answer(&mut app, "k250");
+    keep("many: k250's history", &mut app);
+    press(&mut app, KeyCode::Esc);
+
+    // The overview, from one summary; the run logs checked from the sidebar.
+    app.go(Page::Overview);
+    keep("Overview", &mut app);
+    press(&mut app, KeyCode::Char('C'));
+    keep("The run logs, checked now", &mut app);
+    assert!(matches!(&app.modal, Some(Modal::Checked { breaks, .. }) if breaks.is_empty()), "{}", note(&app));
+    press(&mut app, KeyCode::Esc);
+    keep("Overview, after the check", &mut app);
+    let written = std::fs::read_to_string(&out).unwrap();
+    assert!(!written.contains("srv_live"), "never the value");
+}

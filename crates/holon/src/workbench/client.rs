@@ -44,6 +44,10 @@ pub(crate) struct Client {
     /// What the caller may do (`GET /auth/me/can`), by flow ("" for the host and every flow at
     /// once), with when it was asked: each action's answer, or the words of its refusal.
     pub(crate) can: std::collections::HashMap<String, (std::time::Instant, Answers)>,
+    /// The host at a glance (`GET /summary?hours=24`), of the flows the caller may see the runs
+    /// of: each one's hours, median and newest run, the newest runs, and the run logs' chain and
+    /// witness. Null when it can't be read; a flow it doesn't cover is read run by run.
+    pub(crate) summary: Value,
 }
 
 /// Each action's answer, or the words of its refusal.
@@ -81,6 +85,12 @@ pub(crate) struct Detail {
     pub(crate) policy: Value,
     /// Its sessions, oldest first (`…/sessions`), each with the state it ended with.
     pub(crate) sessions: Vec<Value>,
+    /// What it is connected to (state.view's): the feeds its handlers listen to (`…/feeds`), the
+    /// queues it listens to and sends to (`…/queues`: `{listening, sending}`), and its channels
+    /// (`…/channels`). Empty for whoever may not read them.
+    pub(crate) feeds: Vec<Value>,
+    pub(crate) queues: Value,
+    pub(crate) channels: Vec<Value>,
 }
 
 /// One moment of a deployment's history: a run, or something done to it.
@@ -107,6 +117,11 @@ pub(crate) struct Point {
 pub(crate) const RUNS: u64 = 200;
 /// How many of its latest runs each deployment's row reads, for its spark and last run.
 pub(crate) const RECENT: u64 = 50;
+/// A page of a collection: its items, (key, value), and the key the next starts after.
+pub(crate) type Items = (Vec<(String, Value)>, Option<String>);
+
+/// How many of a collection's items a page of the State section shows.
+pub(crate) const PAGE: usize = 100;
 
 fn list(v: &Value, key: &str) -> Vec<Value> {
     v.get(key).and_then(Value::as_array).cloned().unwrap_or_default()
@@ -118,7 +133,7 @@ pub(crate) fn strings(v: &Value, key: &str) -> Vec<String> {
 
 impl Client {
     pub(crate) fn new(api: Box<dyn Api>) -> Client {
-        Client { api, me: None, role: None, deployments: vec![], flows: vec![], activity: vec![], recent: Default::default(), chains: Default::default(), warnings: vec![], access_version: None, can: Default::default(), waiting_runs: vec![], waiting_runs_error: None, proposals: vec![], access_changes: vec![], access_changes_error: None }
+        Client { api, me: None, role: None, deployments: vec![], flows: vec![], activity: vec![], recent: Default::default(), chains: Default::default(), warnings: vec![], access_version: None, can: Default::default(), waiting_runs: vec![], waiting_runs_error: None, proposals: vec![], access_changes: vec![], access_changes_error: None, summary: Value::Null }
     }
 
     pub(crate) fn server(&self) -> String {
@@ -185,11 +200,25 @@ impl Client {
         // Only an admin may read it all; for anyone else it stays empty.
         self.activity = self.get("/activity?limit=30").map(|a| list(&a, "entries")).unwrap_or_default();
         self.warnings = self.get("/admin/warnings").map(|w| list(&w, "warnings")).unwrap_or_default();
+        // The host at a glance, in one read: each flow it covers needs no read of its own.
+        self.summary = self.get("/summary?hours=24").unwrap_or(Value::Null);
+        let covered: Vec<(String, usize, String)> = self.summary["deployments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| Some((f["slug"].as_str()?.to_string(), f["breaks"].as_array().map_or(0, Vec::len), f["head"].as_str().unwrap_or_default().to_string())))
+            .collect();
         // The latest runs of what ran since it was last read; what is gone is forgotten.
-        self.recent.retain(|slug, _| deployments.iter().any(|d| d["slug"].as_str() == Some(slug.as_str())));
+        self.recent.retain(|slug, _| deployments.iter().any(|d| d["slug"].as_str() == Some(slug.as_str())) && !covered.iter().any(|(s, ..)| s == slug));
         self.chains.retain(|slug, _| deployments.iter().any(|d| d["slug"].as_str() == Some(slug.as_str())));
+        for (slug, breaks, head) in &covered {
+            self.chains.insert(slug.clone(), (*breaks, head.clone()));
+        }
         for d in &deployments {
             let (Some(slug), runs) = (d["slug"].as_str(), d["trigger_count"].as_u64().unwrap_or(0)) else { continue };
+            if covered.iter().any(|(s, ..)| s == slug) {
+                continue;
+            }
             if self.recent.get(slug).is_some_and(|(n, _)| *n == runs) {
                 continue;
             }
@@ -318,7 +347,10 @@ impl Client {
         let holds = self.get(&format!("{path}/holds")).unwrap_or(Value::Null);
         let policy = if self.may("policy.view", None).is_ok() { self.get("/permissions").unwrap_or(Value::Null) } else { Value::Null };
         let sessions = self.get(&format!("{path}/sessions")).map(|s| list(&s, "sessions")).unwrap_or_default();
-        Ok(Detail { slug: slug.to_string(), entry, manifest, runs, events, versions, grant, secrets, parked, holds, head, breaks, policy, sessions })
+        let feeds = self.get(&format!("{path}/feeds")).map(|f| list(&f, "feeds")).unwrap_or_default();
+        let queues = self.get(&format!("{path}/queues")).unwrap_or(Value::Null);
+        let channels = self.get(&format!("{path}/channels")).map(|c| list(&c, "channels")).unwrap_or_default();
+        Ok(Detail { slug: slug.to_string(), entry, manifest, runs, events, versions, grant, secrets, parked, holds, head, breaks, policy, sessions, feeds, queues, channels })
     }
 
     /// Its text as deployed now, or as version `unit` was.
@@ -449,11 +481,13 @@ impl Client {
         self.get(&format!("/deployments/{}/logs?{asked}", seg(slug))).map(|a| a["lines"].as_array().cloned().unwrap_or_default())
     }
 
-    /// A collection's first items: (key, value).
-    pub(crate) fn collection(&self, slug: &str, name: &str) -> Result<(Vec<(String, Value)>, bool), String> {
-        let c = self.get(&format!("/deployments/{}/collections/{}?limit=100", seg(slug), seg(name)))?;
+    /// A page of a collection's items, in key order, after the key `after` (from its first
+    /// without one): (key, value), and the key the next page starts after, when there may be more.
+    pub(crate) fn collection(&self, slug: &str, name: &str, after: Option<&str>) -> Result<Items, String> {
+        let after = after.map(|a| format!("&after={}", seg(a))).unwrap_or_default();
+        let c = self.get(&format!("/deployments/{}/collections/{}?limit={PAGE}{after}", seg(slug), seg(name)))?;
         let items = c["items"].as_array().into_iter().flatten().filter_map(|i| Some((i.get(0)?.as_str()?.to_string(), i.get(1).cloned().unwrap_or(Value::Null)))).collect();
-        Ok((items, !c["next"].is_null()))
+        Ok((items, c["next"].as_str().map(str::to_string)))
     }
 
     /// The runs that changed a cell (or a collection, or one item of it), as `holon history --cell`.
