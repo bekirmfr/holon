@@ -96,7 +96,15 @@ fn forms() -> Vec<Form> {
             let body = format!(r#"{{"amount":1737,"cvc":{v},"ref":{r}}}"#);
             format!(r#"{{"data":{},"json":{{"amount":1737}},"note":"a=1"}}"#, serde_json::to_string(&body).unwrap())
         }),
-        Form::Text("a URL's query in a JSON text's string", |v, r| format!(r#"{{"amount":1737,"url":{}}}"#,serde_json::to_string(&format!("https://h/pay?amount=1737&cvc={v}&ref={r}")).unwrap())),
+        // A stringified payload inside a JSON body: two deep, its quotes escaped twice (R67). (Its
+        // keys in order at each depth, as the record writes again a JSON text that holds a
+        // number under a key: `secrets::Redactor::logged`.)
+        Form::Text("a JSON text two deep in JSON texts' strings", |v, r| {
+            let body = format!(r#"{{"amount":1737,"cvc":{v},"ref":{r}}}"#);
+            let payload = format!(r#"{{"n":1,"payload":{}}}"#, serde_json::to_string(&body).unwrap());
+            format!(r#"{{"data":{},"note":"a=1"}}"#, serde_json::to_string(&payload).unwrap())
+        }),
+        Form::Text("a URL's query in a JSON text's string",|v, r| format!(r#"{{"amount":1737,"url":{}}}"#,serde_json::to_string(&format!("https://h/pay?amount=1737&cvc={v}&ref={r}")).unwrap())),
     ]
 }
 
@@ -248,6 +256,9 @@ fn whatever_spelling_a_flow_reads_as_the_key_is_replaced_wherever_the_request_is
             ("the raw body", SValue::Record(vec![("body".into(), SValue::Text(text.clone()))])),
             ("the request the host builds of a body", SValue::from_core(&as_body)),
             ("inside a JSON string", SValue::Text(serde_json::to_string(&serde_json::json!({ "data": text })).unwrap())),
+            // A stringified payload inside a JSON body: two deep, each quote and backslash of
+            // the text escaped twice (R67).
+            ("two deep in JSON strings", SValue::Text(serde_json::to_string(&serde_json::json!({ "outer": serde_json::to_string(&serde_json::json!({ "data": text })).unwrap() })).unwrap())),
         ];
         match json {
             true => places.push(("the value JSON.parse gives", SValue::from_core(&holon_core::parse_json(text).unwrap()))),

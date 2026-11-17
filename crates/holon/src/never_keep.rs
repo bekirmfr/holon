@@ -317,7 +317,9 @@ impl Places {
         self.placeholder(self.keys.iter().position(|k| k == key).expect("one of its keys"))
     }
 
-    /// Each stand-in with its key's mark: what the redactor replaces it by.
+    /// Each stand-in with its key's mark: what the redactor replaces it by. One pair a stand-in,
+    /// not one a spelling (`secrets::spellings`): its characters are none JSON escapes (no quote,
+    /// backslash or control character), so written out as JSON at any depth it reads the same.
     pub(crate) fn pairs(&self) -> Vec<(String, String)> {
         self.keys.iter().enumerate().map(|(i, k)| (self.placeholder(i), mark(k))).collect()
     }

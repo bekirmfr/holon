@@ -1334,17 +1334,21 @@ impl Redactor {
 
     /// A run's values its flow never keeps: each where it stands under its key, at any length
     /// (`places`), as `‹never_keep:key›`; and each found there that is as long as a secret may be
-    /// (`values`, `data::never_kept`) by its text too, as a tainted one is, as it reads inside JSON
-    /// text too, and a number that is one as it is written.
+    /// (`values`, `data::never_kept`) by its text too, as a tainted one is: in each spelling JSON
+    /// gives it ([`spelled`]), a text that holds it in one no pair has withheld whole
+    /// ([`held_whole`]), and a number that is one as it is written.
     pub(crate) fn never_kept(places: Option<crate::never_keep::Places>, values: &[(String, String)]) -> Redactor {
+        // A stand-in needs no other spelling: it is made of characters JSON never escapes (two of
+        // Unicode's private use, hex digits, a dot and digits: `never_keep::Places`), so it reads
+        // the same written out as JSON however deep, and one pair each finds it there.
         let mut pairs: Vec<(String, String)> = places.as_ref().map(crate::never_keep::Places::pairs).unwrap_or_default();
+        debug_assert!(pairs.iter().all(|(stand_in, _)| spellings(stand_in).len() == 1), "a stand-in JSON spells another way");
         for (key, value) in values {
-            let mark = crate::never_keep::mark(key);
-            let escaped = serde_json::to_string(value.as_str()).ok().map(|q| q[1..q.len() - 1].to_string()).filter(|e| e != value);
-            pairs.extend(std::iter::once((value.clone(), mark.clone())).chain(escaped.map(|e| (e, mark))));
+            pairs.extend(spelled(value, &crate::never_keep::mark(key)));
         }
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs, whole: Vec::new(), places }
+        let whole = values.iter().filter_map(|(key, value)| held_whole(value, "never_keep", key)).collect();
+        Redactor { pairs, whole, places }
     }
 
     /// The tokens a run's starts were handed (`calls::handed`), each as `‹token:name›`, as the
