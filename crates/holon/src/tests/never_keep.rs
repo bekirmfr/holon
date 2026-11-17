@@ -161,7 +161,7 @@ route.get(\"/x\", () => 1)
     let (scout, _) = book.create_token("scout", "Scout", "ada").unwrap();
     // What an agent's version asks a person, or nothing when it deploys.
     let by_scout = |settings: &str| {
-        let (code, said) = ask(&state, Some(&scout), "POST", "/deploy", serde_json::to_vec(&serde_json::json!({ "slug": "till", "unit": unit(settings), "document": {} })).unwrap());
+        let (code, said) = ask(&state, Some(&scout), "POST", "/deploy", serde_json::to_vec(&serde_json::json!({ "slug": "till", "unit": unit(settings), "document": document_of(&unit(settings)) })).unwrap());
         match code {
             200 => vec![],
             202 => serde_json::from_value::<Vec<String>>(serde_json::from_str::<serde_json::Value>(&said).unwrap()["proposal"]["needs"].clone()).unwrap(),
@@ -170,6 +170,9 @@ route.get(\"/x\", () => 1)
     };
     let first = serde_json::json!({ "slug": "till", "unit": unit(", taint: [\"cvc\"]"), "acknowledge": ["NetworkIngress"] });
     let (code, said) = ask(&state, Some(&ada), "POST", "/deploy", serde_json::to_vec(&first).unwrap());
+    assert_eq!(code, 200, "{said}");
+    // A person lets the flow take an agent's versions that ask for nothing more (R25).
+    let (code, said) = ask(&state, Some(&ada), "POST", "/deployments/till/settings", serde_json::to_vec(&serde_json::json!({ "agents_deploy_at_once": true })).unwrap());
     assert_eq!(code, 200, "{said}");
     // taint → never_keep: stricter, asks nothing, and deploys.
     assert_eq!(by_scout(", never_keep: [\"cvc\"]"), Vec::<String>::new());
