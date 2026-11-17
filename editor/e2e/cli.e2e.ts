@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, OWN_PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
-import { gotoPage } from "./helpers";
+import { enter, gotoPage } from "./helpers";
 
 const root = join(fileURLToPath(import.meta.url), "..", "..", "..");
 const HOLON = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
@@ -236,6 +236,10 @@ test("roles, groups and bindings are made and read back from the command line, a
   await expect(bindings).toContainText(`${role} at payout:ok via ${group}`);
   await expect(page.getByLabel(`${person}'s role`)).toHaveValue("viewer");
   await page.getByLabel(`${person}'s role`).selectOption(role);
+  // A role picked is asked first, naming it (R43): until it is given, the list keeps the one held.
+  await expect(page.getByRole("dialog")).toContainText(`Give ${person} the role ${role} on the host, in place of viewer?`);
+  await expect(page.getByLabel(`${person}'s role`)).toHaveValue("viewer");
+  await enter(page);
   await expect(page.getByLabel(`${person}'s role`)).toHaveValue(role);
   // Its role on the host is the admin's own now: a bare entry, not one at a scope.
   expect(ok(adminToken, ["people"])).toMatch(new RegExp(`^${person}\\s+person\\s+(.*, )?${role}(, |\\s)`, "m"));
