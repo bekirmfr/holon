@@ -11,7 +11,7 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import { expect, FOLDERS, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, navLink, newFlow, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
+import { enter, flowRow, gotoPage, navLink, newFlow, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun, expectVerified } from "./helpers";
 
 const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
 
@@ -93,7 +93,7 @@ test("a flow nothing would start can't deploy; given an action, it deploys and r
   await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeEnabled();
   await canvas.getByRole("button", { name: /^deploy/ }).dispatchEvent("click");
   await page.locator('[aria-modal="true"]').locator("input").fill(`by-hand-${Date.now()}`);
-  await page.keyboard.press("Enter");
+  await enter(page);
   const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
   await page.getByRole("dialog").getByRole("button", { name: /^(Approve and deploy|Deploy)$/ }).click();
   expect((await deployed).status()).toBe(200);
@@ -279,7 +279,7 @@ test("a port added inside a holon takes its first wire's type, and the flow's no
   const overlay = page.locator(".hl-overlay");
   await overlay.getByRole("button", { name: "add an output" }).dispatchEvent("click");
   await page.locator('[aria-modal="true"] input').fill("stamp");
-  await page.keyboard.press("Enter");
+  await enter(page);
   const outputs = overlay.locator(".react-flow__node", { hasText: "outputs" });
   const stamp = outputs.locator(".hl-port__label", { hasText: "stamp" });
   await expect(stamp).toHaveAttribute("title", /^any/);
@@ -322,7 +322,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
     await expect(flow.locator(".react-flow__node")).toHaveCount(1);
     await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
     await ask.locator("input").fill(name);
-    await page.keyboard.press("Enter");
+    await enter(page);
     await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
     await expect(page.locator(".hl-tab--active")).toContainText(name);
   };
@@ -334,7 +334,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   await dropFromPalette(page, "concat");
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
   await ask.locator("input").fill(shout);
-  await page.keyboard.press("Enter");
+  await enter(page);
   await expect(ask).toContainText(`A flow named "${shout}" is saved already`);
   await ask.getByRole("button", { name: "Cancel" }).click();
   await expect(page.locator(".hl-tab--active")).toContainText("untitled");
@@ -375,7 +375,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
   const ask = page.locator('[aria-modal="true"]');
   const answer = async (text: string) => {
     await ask.locator("input").fill(text);
-    await page.keyboard.press("Enter");
+    await enter(page);
   };
   await newFlow(page);
   await nodesLevel(page);
@@ -435,7 +435,7 @@ test("a flow as text: exported as .holon.ts, checked by the command line, import
   await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node", { hasText: "uppercase" })).toHaveCount(1, { timeout: 15_000 });
   await canvas.getByRole("button", { name: "save", exact: true }).dispatchEvent("click");
   await page.locator('[aria-modal="true"] input').fill(name);
-  await page.keyboard.press("Enter");
+  await enter(page);
   await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
   await expect(page.locator(".hl-tab--active")).toContainText(name);
 
@@ -705,7 +705,7 @@ test("price-rules: a new version is replayed on its recent runs before it goes l
   const name = page.locator('[aria-modal="true"] input');
   if (await name.isVisible({ timeout: 2_000 }).catch(() => false)) {
     await name.fill("price-rules");
-    await page.keyboard.press("Enter");
+    await enter(page);
   }
   await expect(notices(page)).toContainText("saved");
   await page.getByRole("navigation", { name: "main" }).getByRole("link", { name: /^Approvals/ }).click();
@@ -1291,7 +1291,7 @@ test("inbox-report reads a file from a bound folder and writes its report to ano
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
   expect(verified).toContain("re-ran 5 runs: each produced what its log entry says");
   expect(verified).not.toContain("not re-run");
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
 });
 
 test("log-archive reads the last lines of a log too big to read whole and archives it by handle, and its runs verify", async ({ page, request, adminToken }) => {
@@ -1333,7 +1333,7 @@ test("log-archive reads the last lines of a log too big to read whole and archiv
   expect(exported).not.toContain("line 30000 ");
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
   expect(verified).toContain("re-ran 4 runs: each produced what its log entry says");
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
 });
 
 test("journal appends to a page in a capped folder, a write past its cap answers 500, and its runs verify", async ({ page, request, adminToken }) => {
@@ -1368,7 +1368,7 @@ test("journal appends to a page in a capped folder, a write past its cap answers
   execFileSync(holon, ["export", "journal", "--server", SERVER, "-o", out], { encoding: "utf8", env });
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
   expect(verified).toContain("each produced what its log entry says");
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
 });
 
 test("orders-api places, lists and refunds orders in the database an admin bound; a second refund changes no row and answers 409", async ({ page, request }) => {
@@ -1455,7 +1455,7 @@ test("drop-box runs once for a file dropped in its folder, sends it by handle, w
   execFileSync(holon, ["export", "drop-box", "--server", SERVER, "-o", out], { encoding: "utf8", env });
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
   expect(verified).toContain("each produced what its log entry says");
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: true });
 });
 
 test("approval-mail mails a payout's approval link, its page's button approves it, and whoever asked is mailed", async ({ page, request, adminToken }) => {
@@ -1586,7 +1586,7 @@ test("remittance-mail settles an invoice from an authenticated mail, refuses one
   execFileSync(holon, ["export", "remittance-mail", "--server", SERVER, "-o", out], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
   expect(verified).toContain("each produced what its log entry says");
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
 
   // The admin's resources show the mailbox, its server without a login, and whose verdict counts.
   await page.goto("/");
@@ -1746,7 +1746,7 @@ test("ledger-watch keeps each account's balance from its ledger's channel, and r
   const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "ledger-watch.json");
   execFileSync(holon, ["export", "ledger-watch", "--server", SERVER, "-o", out], { encoding: "utf8", env });
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
 
   // The admin's resources show the feed on its channel, without the connection.
   await page.goto("/");
@@ -1827,7 +1827,7 @@ test("file-audit runs on a csv dropped in the inbox and on a file removed from i
   const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "file-audit.json");
   execFileSync(holon, ["export", "file-audit", "--server", SERVER, "-o", out], { encoding: "utf8", env });
   const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
 });
 
 test("the admin page's browse… lists the server's folders, and the one chosen fills the path", async ({ page }) => {
@@ -1898,11 +1898,11 @@ test("a deployment's runs export from view mode and from holon export, and holon
   const verified = execFileSync(holon, ["verify", file, "--head", head], { encoding: "utf8" });
   expect(verified).toContain("re-ran 4 runs: each produced what its log entry says");
   // And each began from the balances the one before left (the first, from what no run here left).
-  expect(verified).toContain("state: 3 runs began from the state the run before them left");
+  expect(verified).toContain("state: run 0 began from nothing, as a log's first does; 3 runs began from the state the run before them left");
   expect(verified).not.toContain("DOESN'T FOLLOW");
   expect(verified).toMatch(/so no run from \d+ to \d+ was changed or removed$/m);
   expect(verified).not.toContain("older runs were trimmed");
-  expect(verified.trim().endsWith("ok")).toBe(true);
+  expectVerified(verified, { calledOut: false });
 
   // The same file from the command line, signed in with a token.
   const out = join(dir, "from-cli.json");
@@ -1935,9 +1935,14 @@ test("a deployment's runs export from view mode and from holon export, and holon
   expect(((await posted.json()) as { balance: number }).balance).toBe(6);
   const again = join(dir, "restored.json");
   execFileSync(holon, ["export", "ledger", "--server", SERVER, "-o", again], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
-  const restored = execFileSync(holon, ["verify", again], { encoding: "utf8" });
-  expect(restored).toContain("(1 of them after a restore, from the state it put back)");
-  expect(restored.trim().endsWith("ok")).toBe(true);
+  // That run is the newest, and it wrote a collection: no run here began from the state it left,
+  // so what it left isn't checked. Verify says so, and ends 3 (R26): nothing fails, and a script
+  // reading the exit code doesn't take it as checked.
+  const restored = spawnSync(holon, ["verify", again], { encoding: "utf8" });
+  expect(restored.status).toBe(3);
+  expect(restored.stdout).toContain("(1 of them after a restore, from the state it put back)");
+  expect(restored.stdout).toMatch(/^  state not checked \(1 run: \d+\), what it left: it wrote a collection, and no run here began from the state it left$/m);
+  expect(restored.stdout.trim().split("\n").pop()).toBe("INCOMPLETE: nothing here fails, but not every run's state was checked (said above)");
 });
 
 test("site serves a built app from its folder: a deep link opens its page, its files as they are, a cached copy a 304, a missing asset a 404", async ({ page, request }) => {

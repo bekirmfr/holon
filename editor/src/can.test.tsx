@@ -26,12 +26,14 @@ describe("what the buttons ask", () => {
   });
 
   it("each button asks what its routes ask, or, inside, an action of the catalogue its handler asks", () => {
-    const routes = fixture.routes as Record<string, string>;
+    // A route asking two actions (can.rs's `Rule::Both`) lists them, the first asked first.
+    const routes = fixture.routes as Record<string, string | string[]>;
     for (const [name, b] of Object.entries(BUTTONS) as [Button, (typeof BUTTONS)[Button]][]) {
       for (const route of [b.route].flat()) {
         expect(routes[route], `${name}: ${route} is a route the server answers, asking can`).toBeDefined();
+        const asks = "also" in b ? [b.action, b.also] : [b.action];
         if ("inside" in b) expect(ACTIONS).toContain(b.action);
-        else expect(b.action, `${name}: ${route}`).toBe(routes[route]);
+        else expect(asks, `${name}: ${route}`).toEqual([routes[route]].flat());
       }
     }
   });
@@ -57,7 +59,7 @@ const TABLE: [Button, "host" | "flow", string][] = [
   ["grant", "flow", /*             */ "✓ ✓ · · ·"],
   ["settings", "flow", /*          */ "✓ ✓ · · ·"],
   ["restore", "flow", /*           */ "✓ ✓ · · ·"],
-  ["export", "flow", /*            */ "✓ ✓ ✓ · ✓"],
+  ["export", "flow", /*            */ "✓ ✓ ✓ · ·"],
   ["setSecret", "flow", /*         */ "✓ · · · ·"],
   ["removeSecret", "flow", /*      */ "✓ · · · ·"],
   ["rollBackSecret", "flow", /*    */ "✓ · · · ·"],
@@ -72,6 +74,15 @@ const TABLE: [Button, "host" | "flow", string][] = [
   ["forgetKeys", "host", /*        */ "✓ · · · ·"],
   ["check", "host", /*             */ "✓ ✓ · · ·"],
   ["reloadPolicy", "host", /*      */ "✓ ✓ · · ·"],
+  ["addPrincipal", "host", /*      */ "✓ · · · ·"],
+  ["giveRole", "host", /*          */ "✓ · · · ·"],
+  ["changePrincipal", "host", /*   */ "✓ · · · ·"],
+  ["resetPerson", "host", /*       */ "✓ · · · ·"],
+  ["removePrincipal", "host", /*   */ "✓ · · · ·"],
+  ["tokens", "host", /*            */ "✓ · · · ·"],
+  ["oidc", "host", /*              */ "✓ · · · ·"],
+  ["groups", "host", /*            */ "✓ · · · ·"],
+  ["roles", "host", /*             */ "✓ · · · ·"],
   ["bind", "host", /*              */ "✓ · · · ·"],
   ["unbind", "host", /*            */ "✓ · · · ·"],
   ["approveAccess", "host", /*     */ "✓ · · · ·"],
@@ -98,7 +109,8 @@ describe("each caller's buttons, as the server answers them", () => {
       if (may) expect(shown, `${who}: ${button}`).toEqual({ disabled: false, title: "what it does" });
       else {
         expect(shown, `${who}: ${button}`).toEqual({ disabled: true, title: answers[BUTTONS[button].action] });
-        expect(can.may(button), `${who}: ${button}`).toMatch(/may not do that: /);
+        // A run's steps are refused in words of their own, saying who gives them (R55).
+        expect(can.may(button), `${who}: ${button}`).toMatch(/may not do that: |may not read .+ run\.steps; a person gives it/);
       }
     }
   });
@@ -150,6 +162,8 @@ let answers: Record<string, Answers> = {};
 let version = 1;
 let owned: string[] = [];
 let asked: string[] = [];
+/** How many reads of `/auth/me` to come get no answer: held up, as a busy browser held them. */
+let meHeld = 0;
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
@@ -159,6 +173,7 @@ beforeEach(() => {
   version = 1;
   owned = [];
   asked = [];
+  meHeld = 0;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => {
@@ -169,6 +184,10 @@ beforeEach(() => {
         asked.push(flow);
         expect(u.searchParams.get("actions")?.split(",")).toEqual([...ACTIONS]);
         return json(answers[flow] ?? {});
+      }
+      if (u.pathname === "/auth/me" && meHeld > 0) {
+        meHeld -= 1;
+        return new Promise<Response>(() => undefined);
       }
       if (u.pathname === "/auth/me") return json({ name: "cy", kind: "person", role: "viewer", access_version: version });
       if (u.pathname === "/auth/owned") return json(owned.map((name) => ({ name, kind: "agent", owner: "cy" })));
@@ -273,6 +292,26 @@ describe("useCan", () => {
     await settle();
     expect(asked).toEqual(["d", "d"]);
     expect(shown.d.may("stop")).toBe(READS_ONLY);
+  });
+
+  it("access moving between the reads at the start, the page follows: a first version read held up, a binding made, coming back to the window reads it again", async () => {
+    // The page's first version read gets no answer; what the buttons follow is read meanwhile.
+    meHeld = 1;
+    await mount(<Shows flows={["d"]} />);
+    expect(shown.d.may("pause")).toBe(true);
+    // A binding takes the flow's lifecycle away: the version moves. The next version read, on
+    // coming back to the window, is the first answered: what was kept was asked before it.
+    version = 2;
+    answers.d = { "flow.lifecycle": READS_ONLY };
+    act(() => void window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(asked).toEqual(["d", "d"]);
+    expect(shown.d.may("pause")).toBe(READS_ONLY);
+    // Answered at once (the version read first, as the start asks it), what follows is kept:
+    // the window coming back again reads nothing more.
+    act(() => void window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(asked).toEqual(["d", "d"]);
   });
 
   it("a minute on, it reads it again however the version stands: a flow tagged by someone else's deploy shows", async () => {

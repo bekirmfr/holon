@@ -234,6 +234,7 @@ describe("Replay the draft", () => {
     same: 1,
     differ: 1,
     cant_tell: 1,
+    not_reached: 0,
     runs: [
       { seq: 7, at_ms: 0, kind: "request", route: "GET /hello/:name", outcome: "same", status: 200, now_status: 200 },
       { seq: 8, at_ms: 0, kind: "request", route: "POST /orders", outcome: "differs", why: ["it answers 500, not 201"], status: 201, now_status: 500 },
@@ -329,8 +330,9 @@ describe("closing a changed tab", () => {
 
   function open(save: () => Promise<{ name: string; key: string } | null> = vi.fn(async () => ({ name: "a", key: "saved-a" }))) {
     const handle: { current: Handle | null } = { current: null };
+    // Its question answered at once: the wait before one takes an answer is Dialog.test.tsx's.
     mount(
-      <DialogProvider>
+      <DialogProvider armMs={0}>
         <Harness handle={handle} save={save} />
       </DialogProvider>,
     );

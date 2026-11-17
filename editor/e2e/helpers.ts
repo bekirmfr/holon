@@ -179,3 +179,34 @@ export async function viewNewestRun(page: Page) {
 export function notices(page: Page): Locator {
   return page.getByRole("region", { name: "notices" });
 }
+
+/** Answer the question open in the page with `key` (Enter, or an answer's letter), once it takes
+ *  an answer. A question waits a moment after it shows, and after each key pressed while it waits,
+ *  its answers disabled till then (Dialog.tsx's ARM_MS): the Enter or the letter someone was
+ *  typing for the page can't answer it. A click waits for that by itself; a key pressed does not,
+ *  so a key that answers goes through here (Escape, a no, is taken at once). */
+export async function answer(page: Page, key: string) {
+  await expect(page.locator('[aria-modal="true"] button[aria-disabled="true"]')).toHaveCount(0);
+  await page.keyboard.press(key);
+}
+
+/** Answer the question open in the page with Enter, once it takes an answer (`answer`). */
+export async function enter(page: Page) {
+  await answer(page, "Enter");
+}
+
+/** That `holon verify` checked an export (it exited 0: `execFileSync` throws on any other code)
+ * and said so: its report ends on `ok`. A flow whose runs call out is said to, in the summary and
+ * once more after the `ok`, as the last line: what their calls were answered is the log's say-so,
+ * held by the chain (R61). */
+export function expectVerified(said: string, { calledOut }: { calledOut: boolean }): void {
+  const lines = said.trim().split("\n");
+  const runs = String.raw`\d+ runs?: [\d, …]+`;
+  if (calledOut) {
+    expect(said).toMatch(new RegExp(String.raw`^  ${runs} called out: what each call was answered is as recorded, held by the chain alone \(and a witnessed head\)$`, "m"));
+    expect(lines.pop()).toMatch(new RegExp(String.raw`^  \(${runs} called out: what their calls were answered is the log's say-so, held by the chain\)$`));
+  } else {
+    expect(said).not.toContain("called out");
+  }
+  expect(lines.pop()).toBe("ok");
+}

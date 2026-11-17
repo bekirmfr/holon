@@ -1,7 +1,7 @@
 // holon-server's live deployment table, kept fresh.
 
 import { useCallback, useEffect, useState } from "react";
-import { listDeployments, ServerError, type DeploymentEntry } from "./server";
+import { listDeployments, whyUnread, type DeploymentEntry } from "./server";
 import type { AppPage } from "./Pages";
 
 // `deployments` is the server's own table, re-fetched after every mutation rather than guessed
@@ -17,9 +17,7 @@ export function useDeployments(page: AppPage) {
         setDeployments(d);
         setListError("");
       })
-      .catch((e: unknown) =>
-        setListError(e instanceof ServerError ? e.message : `the server isn't answering (${String(e)})`),
-      );
+      .catch((e: unknown) => setListError(whyUnread(e)));
   }, []);
 
   // Fetched at start and then every few seconds, so the header's live status (and the flows

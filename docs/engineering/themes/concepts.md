@@ -71,7 +71,7 @@ collide (`value_hash.rs`). Changing the encoding changes every hash, run id and 
 
 **The store.** `holon_host::Store`: `put` and `get` for units, `put_value` and `get_value` for
 values, every read checked by re-hashing (`StoreError::Corrupt`). `FileStore` keeps one file per
-unit named by its hex hash and values under `values/`, long-lived ones packed (`packs.rs`);
+unit, named by a keyed hash of its hash (`AtRest::name`) and sealed, and values under `values/`, long-lived ones packed (`packs.rs`);
 `MemStore` is the same in memory. The server shares one (`SharedStore`) with a flow cache and a
 value cache in front (`units.rs`), and sweeps values nothing kept names (`sweep.rs`). See
 [Storage](../capabilities/storage.md).

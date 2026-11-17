@@ -11,13 +11,14 @@ drawn on the editor's canvas, into the units core runs, and back. It is pure lik
 its `Cargo.toml` says so), so it is the one implementation everywhere: the editor runs it compiled
 to wasm through `holon-wasm`, and `holon` runs it natively for `new`, `check`, `show`, `fmt`,
 `lsp`, `mcp`, `deploy` and the terminal editor. Its dependencies are `holon-core`, `holon-module`
-(the js engine's bytes, which lowering a `js()` function needs), oxc's TypeScript parser
-(`oxc_parser`, `oxc_ast`, `oxc_ast_visit`, `oxc_span`, `oxc_allocator`, pinned at 0.152.0, which
-builds for wasm) and serde.
+(the js engine's bytes, which lowering a `js()` function needs), oxc's TypeScript parser and
+formatter (`oxc_parser`, `oxc_ast`, `oxc_ast_visit`, `oxc_span`, `oxc_allocator`,
+`oxc_formatter`, `oxc_formatter_core`, taken from oxc's repository at its 0.152.0 tag, which
+builds for wasm), `serde` and `serde_json`.
 
 The language's reference is [`docs/LANGUAGE.md`](../../LANGUAGE.md); this doc is about the code.
 In `src/`: `lang/` is the language (`ts.rs`, `ast.rs`, `lower.rs`, `format.rs`, `print.rs`,
-`layout.rs`); `text.rs` holds `restore`, which puts a document's units in a store and which
+`layout.rs`, `nesting.rs`); `text.rs` holds `restore`, which puts a document's units in a store and which
 everything uses; `builder.rs`, `canvas.rs`, `templates.rs`, `group.rs`, `composites.rs`,
 `modules.rs` and `wire.rs` build flow documents from the live catalog and give the JSON forms the
 editor reads; `routes.rs` and `flow.rs` derive servers; `commands.rs`, `editing.rs`, `agent.rs`,
@@ -140,8 +141,8 @@ Each sample is a `.holon.ts` file in `samples/`, embedded by `include_str!` in a
 `source`, so the text pane opens on it and a deploy keeps its names. The editor reads them through
 the bridge (`samples`, `build_sample`); `holon new --sample` and the flows page's download write
 the text as it is. A sample without a port is started by its clock, its files or its actions, an `every(…)`,
-`on.file.*` or `action(…)` handler. There are 56, counted as the `.holon.ts` files in `samples/`
-and the `include_str!` lines in `samples.rs`, one each. Beside them, `holon.d.ts` and
+`on.file.*` or `action(…)` handler. Each `.holon.ts` file in `samples/` has one `include_str!`
+line in `samples.rs`. Beside them, `holon.d.ts` and
 `tsconfig.json` are as `types::types()` and `types::TSCONFIG` write them (`HOLON_BLESS=1` writes
 them again), and `editor/src/types.test.ts` runs TypeScript's checker over every sample with them.
 
@@ -155,8 +156,8 @@ commit says so, as `5877fa0` does), and deployed by the end-to-end tests.
 `fold`s), derives each, and evaluates every endpoint and action with three bodies (none, a record
 with the fields samples read, a list of 60 numbers) and every clock once, through
 `eval_observed`, writing every node's outputs in order (a value past 160 characters cut, with its
-hash). The result is compared with `tests/golden/eval.txt`, 379 cases (counted as its `== `
-lines); the first line that differs is named with its case. `HOLON_GOLDEN=update cargo test -p
+hash). The result is compared with `tests/golden/eval.txt`, a case to each of its `== ` lines;
+the first line that differs is named with its case. `HOLON_GOLDEN=update cargo test -p
 holon-author golden` writes it afresh.
 
 ## 3. Why it is this way
@@ -240,7 +241,7 @@ holon-author golden` writes it afresh.
   `a_samples_text_says_what_its_entry_says` (name, port, browsers, optional permissions and
   secrets agree between the text and the entry, both ways for secrets); `every_sample_is_as_fmt_writes_it` (`commands::fmt` leaves each file as
   it is; each opens with a comment); `every_samples_routes_give_what_the_eager_evaluator_gives`
-  (every route, with a body and without, against core's eager evaluator, at least 40 cases).
+  (every route, with a body and without, against core's eager evaluator, more than 40 cases).
 - **Reading** (`ts.rs`): `each_construct_lowers_as_its_plain_form` and
   `each_statement_lowers_as_its_plain_form` (each construct, beside the same flow written plainly,
   is the same unit); `a_refusal_says_what_to_write`; `a_mistake_names_its_line_and_column`;

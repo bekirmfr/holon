@@ -31,6 +31,7 @@ export const ACTIONS = [
   "flow.lifecycle",
   "flow.delete",
   "run.view",
+  "run.steps",
   "run.call",
   "run.decide",
   "run.export",
@@ -61,8 +62,8 @@ export type Answers = Partial<Record<Action, Answer>>;
 
 /** Each button that changes something, and each page whoever may view it is shown: the route it
  *  sends (or the routes, one for each kind it is shown for) and the action that route asks (can.rs's
- *  ROUTES: can.test.tsx holds each to it). `inside`: what the route's handler asks beyond the
- *  route's own action. */
+ *  ROUTES: can.test.tsx holds each to it), and `also`, the second a route asking both asks.
+ *  `inside`: what the route's handler asks beyond the route's own action. */
 export const BUTTONS = {
   // ── a flow, in the editor ──
   /** Save it. */
@@ -94,8 +95,9 @@ export const BUTTONS = {
   settings: { route: "POST /deployments/{slug}/settings", action: "flow.deploy" },
   /** Go back to a point in its history: the route asks for a dry run, its handler for going back. */
   restore: { route: "POST /deployments/{slug}/restore", action: "flow.restore", inside: true },
-  /** Save its runs and the units they ran, for `holon verify`. */
-  export: { route: "GET /deployments/{slug}/export", action: "run.export" },
+  /** Save its runs and the units they ran, for `holon verify`: their steps and values, and the
+   *  evidence made of them (R55). */
+  export: { route: "GET /deployments/{slug}/export", action: "run.steps", also: "run.export" },
   setSecret: { route: "POST /deployments/{slug}/secrets/{name}", action: "secret.set" },
   removeSecret: { route: "DELETE /deployments/{slug}/secrets/{name}", action: "secret.set" },
   rollBackSecret: { route: "POST /deployments/{slug}/secrets/{name}/rollback", action: "secret.roll-back" },
@@ -125,6 +127,25 @@ export const BUTTONS = {
   forgetKeys: { route: "POST /admin/keys/forget", action: "host.operate" },
   /** Read holon.toml again (Policy). */
   reloadPolicy: { route: "POST /permissions/reload", action: "policy.edit" },
+  // ── people (People and access) ──
+  /** Add a person (an invite) or an agent or a service. */
+  addPrincipal: { route: "POST /people", action: "people.manage" },
+  /** Give a role on the host, adding someone or changing theirs: binding it asks people.assign
+   *  in the handler (auth.rs's `may_give`). */
+  giveRole: { route: ["POST /people", "PATCH /people/{name}"], action: "people.assign", inside: true },
+  /** Change someone: their email, disabled, an agent's owner (a role, `giveRole` too). */
+  changePrincipal: { route: "PATCH /people/{name}", action: "people.manage" },
+  resetPerson: { route: "POST /people/{name}/reset", action: "people.manage" },
+  removePrincipal: { route: "DELETE /people/{name}", action: "people.manage" },
+  /** Make or revoke an agent's or a service's tokens: its owner may too (can.rs's `owns`), which
+   *  the host's answer can't say (`mayTokens` in PeoplePages). */
+  tokens: { route: ["POST /people/{name}/tokens", "DELETE /people/{name}/tokens/{id}"], action: "people.manage" },
+  /** The identity provider people sign in through. */
+  oidc: { route: "POST /admin/oidc", action: "people.manage" },
+  /** Make, change or remove a group (its members too). */
+  groups: { route: ["PUT /groups/{name}", "DELETE /groups/{name}"], action: "people.assign" },
+  /** Define, change or remove a role. */
+  roles: { route: ["PUT /roles/{name}", "DELETE /roles/{name}"], action: "role.define" },
   /** Bind a role (People and access's form). */
   bind: { route: "POST /bindings", action: "people.assign" },
   unbind: { route: "DELETE /bindings/{id}", action: "people.assign" },
@@ -138,7 +159,7 @@ export const BUTTONS = {
   policy: { route: "GET /permissions", action: "policy.view" },
   /** The host's own state: the overview's admin parts. */
   host: { route: "GET /admin/host", action: "host.view" },
-} as const satisfies Record<string, { route: string | readonly string[]; action: Action; inside?: true }>;
+} as const satisfies Record<string, { route: string | readonly string[]; action: Action; also?: Action; inside?: true }>;
 export type Button = keyof typeof BUTTONS;
 
 /** A control's own reasons to be disabled, and its own title. */
@@ -166,8 +187,13 @@ export type Can = {
 
 /** A `Can` from the server's answers (null while it hasn't answered). */
 export function canOf(answers: Answers | null): Can {
-  const may = (button: Button): Answer => answers?.[BUTTONS[button].action] ?? true;
-  return { may, holds: (button) => answers?.[BUTTONS[button].action] === true, gate: (button, own) => gateOf(may(button), own), known: answers !== null };
+  // Each action the button's route asks, the first refused saying why.
+  const asked = (button: Button): Action[] => {
+    const b: { action: Action; also?: Action } = BUTTONS[button];
+    return b.also ? [b.action, b.also] : [b.action];
+  };
+  const may = (button: Button): Answer => asked(button).map((a) => answers?.[a] ?? true).find((said) => said !== true) ?? true;
+  return { may, holds: (button) => asked(button).every((a) => answers?.[a] === true), gate: (button, own) => gateOf(may(button), own), known: answers !== null };
 }
 
 /** A form, or a group of controls, that needs `may`: every control in it disabled, with the
@@ -182,12 +208,14 @@ export function Gated({ may, children }: { may: Answer; children: ReactNode }) {
 }
 
 // ── what is kept ─────────────────────────────────────────────────────────────────────────────
-/** Each flow's answers ("" for none), with the round they were read in. */
-const kept = new Map<string, { answers: Answers; round: number }>();
+/** Each flow's answers ("" for none), with the round they were read in and when they were asked. */
+const kept = new Map<string, { answers: Answers; round: number; asked: number }>();
 /** The flows being read, by round. */
 const asking = new Set<string>();
 /** Moves on each time what was kept may be out of date. */
 let round = 0;
+/** Counts the reads sent, of answers and of the access version: which was asked before which. */
+let sent = 0;
 const listeners = new Set<() => void>();
 const tell = () => listeners.forEach((l) => l());
 
@@ -208,11 +236,12 @@ function read(flow: string): void {
   if ((now && now.round === round) || asking.has(tag)) return;
   asking.add(tag);
   const at = round;
+  const asked = ++sent;
   mayI([...ACTIONS], flow ? { flow } : {})
     .then(
       (answers) => {
         if (at !== round) return;
-        kept.set(flow, { answers: answers as Answers, round: at });
+        kept.set(flow, { answers: answers as Answers, round: at, asked });
         tell();
       },
       // Not read: kept as it was (nothing disabled before a first answer), asked again next round.
@@ -227,15 +256,23 @@ export const VERSION_EVERY_MS = 15_000;
 /** How often what is kept is read again however the version stands. */
 export const AGAIN_EVERY_MS = 60_000;
 let accessVersion: number | null = null;
+/** When the version kept was asked: an answer to a read asked before it is older, and dropped. */
+let versionAsked = 0;
 let timers: ReturnType<typeof setInterval>[] = [];
 
-/** Read `/auth/me`'s access version: moved since last read, what was kept is forgotten. */
+/** Read `/auth/me`'s access version: moved since last read, what was kept is forgotten. The
+ *  first one answered (the page's first, or one after a sign-in) has nothing to have moved from:
+ *  what was kept is forgotten when it was asked before this read was, access may have moved
+ *  between the two (the page's first version read held up, a binding made, a later one
+ *  answering). Reads asked at once at the start ask the version first, and keep what follows. */
 export async function checkVersion(): Promise<void> {
+  const asked = ++sent;
   try {
     const v = (await whoAmI()).access_version;
-    if (v === undefined) return;
-    const moved = accessVersion !== null && v !== accessVersion;
+    if (v === undefined || asked < versionAsked) return;
+    const moved = accessVersion === null ? [...kept.values()].some((k) => k.asked < asked) : v !== accessVersion;
     accessVersion = v;
+    versionAsked = asked;
     if (moved) forgetCan();
   } catch {
     // signed out, or the server away: read again next time
@@ -285,10 +322,11 @@ export async function canOn(flow: string): Promise<Can> {
   const now = kept.get(flow);
   if (now && now.round === round) return canOf(now.answers);
   const at = round;
+  const asked = ++sent;
   try {
     const answers = (await mayI([...ACTIONS], flow ? { flow } : {})) as Answers;
     if (at === round) {
-      kept.set(flow, { answers, round: at });
+      kept.set(flow, { answers, round: at, asked });
       tell();
     }
     return canOf(answers);
@@ -302,7 +340,9 @@ export function resetCan(): void {
   kept.clear();
   asking.clear();
   round = 0;
+  sent = 0;
   accessVersion = null;
+  versionAsked = 0;
 }
 
 // ── the host's pages ─────────────────────────────────────────────────────────────────────────

@@ -13,16 +13,17 @@ calling it without `await`, `const started = payment(req.json)`, and answers wit
 handed back, `started.waiting.paid` (a route answers and is done, so it never waits itself). A
 route with the option `{ resumes: "paid" }` continues the run:
 `route.get("/paid/:token", () => …, { resumes: "paid" })`. A run that settles still waiting at an
-`await` performs nothing, its starter gets the tokens of the points it waits at, and the host
-keeps a parked run: what it needs to run again, with the event, from where it began. A resumed
-part's log entry keeps its tokens as `‹token:NAME›`, as the starter's does.
+`await` performs no effect (the requests of its rounds before have gone out), its starter gets
+the tokens of the points it waits at, and the host keeps a parked run: what it needs to run
+again, with the event, from where it began. A resumed part's log entry keeps its tokens as
+`‹token:NAME›`, as the starter's does.
 
 In the code:
 
 - `crates/holon-core/src/catalog.rs`: the `await` leaf (params `name`, `expires`, default 604,800
   s) and `resume_token`; `primitives.rs`: `MAX_AWAIT_SECONDS` (90 days).
 - `crates/holon-host/src/rounds.rs`: the round loop's `Waits` and `Asking`; a run still waiting is
-  `RunOutcome::waiting` and performs nothing.
+  `RunOutcome::waiting` and performs no effect.
 - `crates/holon/src/durable.rs`: parking (`park_if_waiting`, `ParkedRun`), tokens (`token_for`,
   `load_host_key`), claiming (`claim_by_token`, `Claimed`), resuming (`resume_parked`), expiring
   (`expire_waiting`), `GET /deployments/<slug>/runs` (`handle_get_runs`) and `GET /runs/waiting`
@@ -79,7 +80,9 @@ deployments lock (`resuming`), so a second request carrying it at once finds not
 is a 404 ("no run is waiting here for that token"). The route's own handler then runs and is
 logged; then `resume_parked` delivers the request record as the event: it opens the record, makes
 a `Resumption` (the same unit, inputs, sourced values, nonce and starting state, its earlier
-requests answered from the record), and fires it with `fire_with_state`. The part is logged as a
+requests answered from the record), saves it as going on (`ParkedRun::going_on`, with the
+decision it was given; not saved, it doesn't go on and waits), and fires it with
+`fire_with_state`. The part is logged as a
 `resume` entry under the same run id, on the version it started on. It finishes (its effects
 performed now, once; it leaves `parked`), fails (it leaves too), waits again (its rounds and events
 kept, a point it already waited at keeping its deadline), or is turned away by a run lock (`busy:`)
@@ -119,7 +122,9 @@ as `can::holding` finds only what a binding of the document holds). Once as many
 the run is claimed, as a token claims it, and `resume_parked` gives it the decision as its event:
 `{approved, by, decisions}`, with `declined_by` and `reason` for a decline. The event is made from
 the decisions kept (`StoredWaiting::take`), so a decline a run lock turned away is still the
-decision when someone decides again. So the resumed part's log entry, and what `holon verify` and a
+decision when someone decides again. Only someone who could have decided a step of it delivers it
+again (`StoredWaiting::again`: the step's kind and role, and the starter only where a step takes
+them, as for a first decision), and nothing new is kept. So the resumed part's log entry, and what `holon verify` and a
 replay read, hold who decided. Each decision is in the activity log too (`approved`, `declined`).
 
 People decide in the editor's Approvals (Runs waiting) or with `holon decide <slug> <run> <name>
@@ -136,8 +141,12 @@ the route.
 
 The clock scheduler's thread, every second, calls `expire_waiting`: each waiting point past its
 deadline is claimed (one being resumed is left alone) and given `{expired: true}`
-(`expired_event`), so the flow decides what timing out means. An approval is given its decision
-as it stands, `approved` false, with `expired: true` and who had approved.
+(`expired_event`), so the flow decides what timing out means. Each goes on in a thread of its
+own, claimed there, at most `EXPIRING_AT_ONCE` (16) at once, the rest due at the next pass: a
+run slow to go on (a request its part sends) holds no other deadline, nor the next pass (R34). An approval is given its decision
+as it stands, `approved` false, with `expired: true` and who had approved; one decided already (a
+run lock turned its delivery away, and no one decided again before the deadline) is given that
+decision, approved or declined, and nothing says it expired (`StoredWaiting::decision`).
 
 A run past its deadline that can't be resumed (its record won't open, its unit isn't in the store,
 what it learned can't be kept) ends there (`end_unresumable`): no longer waiting, its log given a
@@ -155,6 +164,10 @@ is tried again by the next pass.
 - **Tokens**, because the host key is a file: losing or replacing it invalidates every outstanding
   token.
 - **Not the claim**: `resuming` is never persisted; a restart frees it.
+- **Not a part a crash cut off.** A run saved as going on when the server starts again had a part
+  running when it stopped, and what that part does may have been done: `end_cut_off_parts` ends it
+  rather than give it its event again, and its deployment's timeline says so. At most once: a part
+  cut off before it did anything isn't done either.
 - **Sessions**: a deployment is running, paused (answers 503, skips ticks, keeps its session) or
   stopped (the session ends, its state kept as the session's snapshot by reference); running again
   starts a session from the latest state, from nothing, or from an earlier session's snapshot
@@ -175,9 +188,10 @@ the nav the approvals with a step still theirs.
 
 - **The run continues; the author doesn't hand-roll state** (insert the context under an id, look
   it up in the callback): minted ids, pinned versions, expiry, visibility (`PLATFORM_LAYOUT.md` §4.3).
-- **Performs nothing while waiting.** A run's effects are decided when it finishes, once; a waiting
-  run that wrote would be a half-run. Progress packs are the one exception, because a parked run's
-  end may be days away ([channels §9](../../L4s/channels-L4.md)).
+- **Performs no effect while waiting.** A run's effects are decided when it finishes, once; a
+  waiting run that wrote would be a half-run. What it asked of the network before it parked has
+  been sent, as any round's requests are. Progress packs are the one exception among effects,
+  because a parked run's end may be days away ([channels §9](../../L4s/channels-L4.md)).
 - **Replays from its record.** Evaluation is pure, so the inputs, nonce, state read and the answers
   it already had are enough to run it again to where it waited; the record is also what `holon
   verify` checks.
@@ -200,13 +214,14 @@ the nav the approvals with a step still theirs.
 - **Defaults and ceilings** (`DurableLimits`): `max_await_seconds` 30 days by default, at most 90
   (`MAX_AWAIT_SECONDS`); `max_waiting_runs` 10,000 by default, at most 100,000. A deploy whose
   `await` waits longer than granted is refused, naming the limit to ask for.
-- **A crash between a resumed part's commit and the deployments file's write runs it again.** The
-  run is still parked after the restart; the same event resumes it again. Its database write
-  applies once (the commit is marked done), but its outbound requests go out again: its record of
-  the first resume was lost with the stop (`a_resumed_run_resumed_again_after_its_commit_applies_once`
-  asserts two hits).
-- **Each park and each resume writes the whole deployments file**, every deployment in it, not a
-  record of its own; not measured.
+- **A crash while a resumed part runs ends the run.** It was saved as going on before the part
+  ran, so the server, starting again, ends it (`end_cut_off_parts`) and its outbound requests don't
+  go out twice; a part the crash cut off before it did anything is ended too, and a person starts
+  it again (`a_waiting_run_a_crash_cuts_off_as_it_goes_on_is_ended_not_run_again`). Its database
+  write would apply once anyway (the commit is marked done:
+  `a_resumed_run_resumed_again_after_its_commit_applies_once`).
+- **Each park writes the whole deployments file, and each resume twice** (before its part runs, and
+  after), every deployment in it, not a record of its own; not measured.
 - **Expiry is a second's sweep of every waiting point**, under the deployments lock to list them,
   on the clock scheduler's thread, after its ticks: a slow tick delays expiry. `expire_waiting`
   doesn't look at a deployment's status, so a paused deployment's runs expire on time, while

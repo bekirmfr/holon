@@ -12,7 +12,7 @@ import { approvalSaid, isApproval, shownSaid } from "./decisions";
 import { summarizeState } from "./diagnostics";
 import { limitChange, limitRows, type LimitRow } from "./flowFacts";
 import { limitMeaning } from "./policyMeans";
-import { describeItem, permissionKind } from "./holon";
+import { permissionKind } from "./holon";
 import { KindBadge } from "./Manifest";
 import { holdsLines } from "./storage";
 import {
@@ -27,6 +27,7 @@ import {
   listSecrets,
   listWaitingRuns,
   setAgentsPropose,
+  setAgentsDeployAtOnce,
   type DeploymentEntry,
   type GrantView,
   type HostPolicy,
@@ -35,8 +36,11 @@ import {
   type SecretInfo,
   type SessionEntry,
   type WaitingRun,
+  whyUnread,
 } from "./server";
+import { Unread } from "./ui/Unread";
 import { Gated, gateOf, useCan, type Answer, type Can } from "./can";
+import { Said } from "./SecretSaid";
 
 const when = (secs: number) => new Date(secs * 1000).toLocaleString();
 const say = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -98,7 +102,7 @@ export function SettingsTab({
       <Limits slug={slug} title="Limits" group="limits" rows={rows} known={policy !== null} may={can.may("settings")} onChanged={reread} onEdit={onEdit} />
       <Limits slug={slug} title="Runs kept" group="runs kept" rows={rows} known={policy !== null} may={can.may("settings")} onChanged={reread} onEdit={onEdit} />
       <Network view={view} policy={policy} may={can.may("grant")} onChange={(item) => changeGrant(slug, { revoke: [item] }).then((v) => (setView(v), onChanged()))} onEdit={onEdit} />
-      <Agents slug={slug} entry={entry} agents={manifest?.requirements?.agents ?? []} may={can.may("settings")} onChanged={onChanged} />
+      <Agents slug={slug} entry={entry} agents={manifest?.requirements?.agents ?? []} may={can.may("settings")} mayLet={can.may("grant")} onChanged={onChanged} />
       {(entry.waiting ?? 0) > 0 && <Waiting slug={slug} count={entry.waiting ?? 0} />}
       <Sessions entry={entry} onRunFrom={(n) => onAction("run", n)} may={can.may("run")} />
       <Lifecycle entry={entry} onAction={onAction} can={can} />
@@ -108,17 +112,27 @@ export function SettingsTab({
 }
 
 /** Whether agents may propose its versions (proposals.rs): off, an agent's deploy of it is
- *  refused, neither proposed nor saved. Changing it is a deployer's (`flow.deploy`). Which of its
- *  actions agents may run is part of a version, approved with it. */
-function Agents({ slug, entry, agents, may, onChanged }: { slug: string; entry: DeploymentEntry; agents: string[]; may: Answer; onChanged: () => void }) {
+ *  refused, neither proposed nor saved. Changing it is a deployer's (`flow.deploy`). And whether an
+ *  agent's version that asks for nothing more deploys without a person (deploy.rs): off unless
+ *  someone who may approve its deploys (`flow.approve-deploy`) turns it on, where the host lets
+ *  them; a deployer turns it off. Which of its actions agents may run is part of a version,
+ *  approved with it. */
+function Agents({ slug, entry, agents, may, mayLet, onChanged }: { slug: string; entry: DeploymentEntry; agents: string[]; may: Answer; mayLet: Answer; onChanged: () => void }) {
   const [on, setOn] = useState(entry.agents_propose !== false);
+  const [atOnce, setAtOnce] = useState(entry.agents_deploy_at_once === true);
   const [msg, setMsg] = useState("");
-  // Whether the host takes agents' proposals at all (its policy's `[agents] propose`).
+  // Whether the host takes agents' proposals at all (its policy's `[agents] propose`), and lets a
+  // flow take their versions at once (`[agents] deploy_at_once`).
   const [hostTakes, setHostTakes] = useState(true);
+  const [hostLets, setHostLets] = useState(true);
   useEffect(() => {
     let live = true;
     getPermissions().then(
-      (p) => live && setHostTakes(p.agents_propose !== false),
+      (p) => {
+        if (!live) return;
+        setHostTakes(p.agents_propose !== false);
+        setHostLets(p.agents_deploy_at_once !== false);
+      },
       () => undefined,
     );
     return () => {
@@ -126,6 +140,7 @@ function Agents({ slug, entry, agents, may, onChanged }: { slug: string; entry: 
     };
   }, []);
   useEffect(() => setOn(entry.agents_propose !== false), [entry.agents_propose]);
+  useEffect(() => setAtOnce(entry.agents_deploy_at_once === true), [entry.agents_deploy_at_once]);
   const change = (next: boolean) => {
     // Shown at once; back as it was if the server refuses.
     setMsg("");
@@ -135,6 +150,17 @@ function Agents({ slug, entry, agents, may, onChanged }: { slug: string; entry: 
       setMsg(say(e));
     });
   };
+  const changeAtOnce = (next: boolean) => {
+    setMsg("");
+    setAtOnce(next);
+    setAgentsDeployAtOnce(slug, next).then(onChanged, (e: unknown) => {
+      setAtOnce(!next);
+      setMsg(say(e));
+    });
+  };
+  // Turning it on lets agents change what runs without a person: someone who may approve its
+  // deploys, where the host lets them. Turning it off, a deployer.
+  const mayAtOnce: Answer = atOnce ? may : !hostLets ? "this host lets no flow take agents' versions at once (agents.deploy_at_once = false)" : mayLet;
   return (
     <section className="hl-flow__section" aria-label="agents">
       <h2>Agents</h2>
@@ -143,7 +169,25 @@ function Agents({ slug, entry, agents, may, onChanged }: { slug: string; entry: 
         <input type="checkbox" checked={on} {...gateOf(may)} onChange={(e) => change(e.target.checked)} />
         agents may propose versions
       </label>
-      <p className="hl-flow__note">{on ? "An agent's version that asks for nothing new deploys at once; one that does waits in Approvals, for a person." : "An agent's deploy of it is refused."}</p>
+      <p className="hl-flow__note">{on ? "Each version an agent deploys waits in Approvals, for a person." : "An agent's deploy of it is refused."}</p>
+      {on && (
+        <>
+          <label className="hl-flow__check" title={mayAtOnce === true ? undefined : mayAtOnce}>
+            <input type="checkbox" checked={atOnce} {...gateOf(mayAtOnce)} onChange={(e) => changeAtOnce(e.target.checked)} />
+            agents' versions deploy at once
+          </label>
+          <p className="hl-flow__note">
+            {atOnce && hostLets
+              ? "An agent's version that asks for nothing more deploys without a person; one that asks for more, or sends something out through code it changed, still waits for one."
+              : "Off: nothing an agent writes runs before a person has read it."}
+          </p>
+          {atOnce && !hostLets && (
+            <p className="hl-flow__note" role="note">
+              This host lets no flow take agents' versions at once (its policy's agents.deploy_at_once = false): each still waits for a person, whatever this says.
+            </p>
+          )}
+        </>
+      )}
       <dl className="hl-flow__facts">
         <div>
           <dt>agents may run</dt>
@@ -152,7 +196,7 @@ function Agents({ slug, entry, agents, may, onChanged }: { slug: string; entry: 
       </dl>
       {on && !hostTakes && (
         <p className="hl-flow__note" role="note">
-          This host takes no proposals from agents (its policy's agents.propose = false): an agent's version that asks for something new is refused, whatever this says.
+          This host takes no proposals from agents (its policy's agents.propose = false): an agent's version is refused, whatever this says.
         </p>
       )}
     </section>
@@ -195,7 +239,9 @@ function Permissions({ slug, view, error, manifest, focus, onChanged, may }: { s
               .filter((item) => !item.startsWith("Limit("))
               .map((item) => (
                 <li key={item} title={item}>
-                  <span className="hl-flow__what">✓ {describeItem(item)}</span>
+                  <span className="hl-flow__what">
+                    ✓ <Said item={item} />
+                  </span>
                   <KindBadge item={item} optional={optional} trigger={trigger} />
                   <span className="hl-flow__spacer" />
                   <button className="hl-flow__button" onClick={() => change({ revoke: [item] })} {...gateOf(may, { title: revokeTitle(item) })}>
@@ -205,7 +251,9 @@ function Permissions({ slug, view, error, manifest, focus, onChanged, may }: { s
               ))}
             {(grant.revoked ?? []).map((item) => (
               <li key={item} title={item} className="hl-flow__revoked">
-                <span>{describeItem(item)}</span>
+                <span>
+                  <Said item={item} />
+                </span>
                 <span className="hl-table__dim"> · revoked</span>
                 <span className="hl-flow__spacer" />
                 <button className="hl-flow__button" onClick={() => change({ grant: [item] })} {...gateOf(may, { title: "grant it back" })}>
@@ -378,8 +426,16 @@ function Network({ view, policy, may, onChange, onEdit }: { view: GrantView | nu
  *  env variables' names are offered to whoever may view the host's resources (`envNames`). */
 function Secrets({ slug, names, may, envNames: offered }: { slug: string; names: string[]; may: Answer; envNames: boolean }) {
   const [infos, setInfos] = useState<SecretInfo[]>([]);
+  const [unread, setUnread] = useState("");
   const [envNames, setEnvNames] = useState<string[]>([]);
-  const reload = () => listSecrets(slug).then(setInfos, () => setInfos([]));
+  const reload = () =>
+    listSecrets(slug).then(
+      (s) => {
+        setInfos(s);
+        setUnread("");
+      },
+      (e: unknown) => setUnread(whyUnread(e)),
+    );
   useEffect(() => {
     void reload();
     if (offered) getEnvSecretNames().then((r) => setEnvNames(r.names), () => setEnvNames([]));
@@ -391,7 +447,7 @@ function Secrets({ slug, names, may, envNames: offered }: { slug: string; names:
       <div className="hl-flow__secrets">
         <Gated may={may}>
           {names.map((name) => (
-            <SecretRow key={name} slug={slug} name={name} info={infos.find((x) => x.name === name)} envNames={envNames} onChanged={() => void reload()} />
+            <SecretRow key={name} slug={slug} name={name} info={infos.find((x) => x.name === name)} unread={unread} envNames={envNames} onChanged={() => void reload()} />
           ))}
         </Gated>
       </div>
@@ -401,14 +457,22 @@ function Secrets({ slug, names, may, envNames: offered }: { slug: string; names:
 
 /** Its runs waiting for an approval or an event: what each waits for and until when, and what was delivered
  *  to it so far. Never their tokens (the server doesn't list them). */
-function Waiting({ slug, count }: { slug: string; count: number }) {
+export function Waiting({ slug, count }: { slug: string; count: number }) {
   const [runs, setRuns] = useState<WaitingRun[] | null>(null);
+  const [unread, setUnread] = useState("");
   useEffect(() => {
-    listWaitingRuns(slug).then(setRuns, () => setRuns([]));
+    listWaitingRuns(slug).then(
+      (rs) => {
+        setRuns(rs);
+        setUnread("");
+      },
+      (e: unknown) => setUnread(whyUnread(e)),
+    );
   }, [slug, count]);
   return (
     <section className="hl-flow__section" aria-label="waiting runs">
       <h2>Waiting runs</h2>
+      {unread && <Unread what="its waiting runs" why={unread} />}
       <ul className="hl-flow__changes">
         {(runs ?? []).map((r) => (
           <li key={r.run_id} title={`run ${r.run_id}`}>
@@ -420,7 +484,12 @@ function Waiting({ slug, count }: { slug: string; count: number }) {
               return (
                 shown && (
                   <div key={w.name} className="hl-flow__shown" aria-label={`what "${w.name}" shows`}>
-                    "{w.name}" {shown.label}: {shown.text}
+                    &quot;{w.name}&quot; {shown.label}:{" "}
+                    {shown.rows.map((row, i) => (
+                      <span key={i} className="hl-flow__shown-row">
+                        {row}
+                      </span>
+                    ))}
                   </div>
                 )
               );

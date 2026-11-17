@@ -10,7 +10,9 @@ set -euo pipefail
 # With its volumes: the image declares /data/db and /data/configdb, and a kept runner piled up one
 # of each per run.
 docker rm -f -v mongo 2>/dev/null || true
-docker run -d --name mongo -p 27017:27017 mongo:7.0 --replSet rs0 --bind_ip_all
+# Published on this machine's own address only: it takes no password, and a runner of ours is
+# on a network. (`--bind_ip_all` is inside the container, where Docker's forward reaches it.)
+docker run -d --name mongo -p 127.0.0.1:27017:27017 mongo:7.0 --replSet rs0 --bind_ip_all
 for _ in $(seq 1 60); do
   docker exec mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1 && break
   sleep 1

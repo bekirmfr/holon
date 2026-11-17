@@ -16,6 +16,12 @@ mod approval_shows;
 mod deploy_review;
 /// No page of another site may frame the control plane.
 mod frames;
+/// Reading a run's steps and values takes run.steps (R55).
+mod run_steps;
+/// An expired waiting run slow to go on holds no other deadline (R34).
+mod expiring;
+/// A deploy puts its version in only while the deployment is what it was worked out from (R25).
+mod meanwhile;
 mod scopes;
 mod tags;
 /// What a handler's text does, against what the same text does as JavaScript.
@@ -57,6 +63,7 @@ fn test_state_in(store: SharedStore, at: Place) -> AppState {
         sweeps: Default::default(),
         checked: Default::default(),
         proposals: Default::default(),
+        replays: Default::default(),
     }
 }
 
@@ -150,9 +157,13 @@ fn body_json(response: Response) -> serde_json::Value {
 /// directory or file by itself — `FileStore::new` creates the directory it needs;
 /// `std::fs::write` creates the file it needs.
 fn unique_temp_path(label: &str) -> String {
+    // Two tests started in the same tick of a coarse clock (Windows') got the same path, and wrote
+    // and removed each other's files: a count tells them apart.
+    static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = MADE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let mut path = std::env::temp_dir();
-    path.push(format!("holon-server-test-{label}-{}-{nanos}", std::process::id()));
+    path.push(format!("holon-server-test-{label}-{}-{nanos}-{n}", std::process::id()));
     path.to_string_lossy().to_string()
 }
 
@@ -198,7 +209,22 @@ fn stage_text(state: &AppState, text: &str) -> Hash {
     for u in &plan.units {
         assert_eq!(route(state, &req("POST", "/unit", u.clone())).status_code, 200);
     }
+    keep_document(&plan.unit, &plan.document);
     parse_hash(&plan.unit).unwrap()
+}
+
+/// The documents of the flows the tests staged, by unit.
+static DOCUMENTS: crate::sync::Mutex<BTreeMap<String, serde_json::Value>> = crate::sync::Mutex::new(BTreeMap::new());
+
+/// `document` kept as the document of `unit`, staged.
+pub(crate) fn keep_document(unit: &str, document: &serde_json::Value) {
+    DOCUMENTS.lock().unwrap().insert(unit.to_string(), document.clone());
+}
+
+/// The document of `unit`, staged: what a proposal of it sends (deploy.rs checks that a
+/// proposal's document builds its unit). An empty one for a unit no test staged.
+pub(crate) fn document_of(unit: &str) -> serde_json::Value {
+    DOCUMENTS.lock().unwrap().get(unit).cloned().unwrap_or_else(|| serde_json::json!({}))
 }
 
 /// [`writer_text`] staged: its unit.
@@ -317,7 +343,8 @@ fn clock_ticks_fire_when_due_and_not_before() {
 
 /// A clock run's history is redacted as its log entry is: whoever may read the deployment reads
 /// it. Here the write of a secret into state is refused, but the run's outputs still hold it; and a
-/// write of something computed from it is refused too, its output withheld.
+/// write of something computed from it is refused too, its output shown with the computed value
+/// as its mark.
 #[test]
 fn a_clock_runs_history_never_shows_a_secret() {
     let state = test_state();
@@ -339,7 +366,7 @@ fn a_clock_runs_history_never_shows_a_secret() {
     assert!(history.contains("\"ticks\":[{"), "it ticked: {history}");
     assert!(!history.contains(value), "the history leaks it: {history}");
     assert!(history.contains("‹secret:api_key v1 #"), "{history}");
-    assert!(!history.contains("c2tfbGl2ZV9rZXB0") && history.contains("‹withheld: computed from a secret›"), "{history}");
+    assert!(!history.contains("c2tfbGl2ZV9rZXB0") && history.contains(secrets::DERIVED_MARK) && !history.contains("‹withheld"), "{history}");
     let current = body_json(route(&state, &req("GET", "/deployments/leak/state", vec![])));
     assert!(current["state"].get("encoded").is_none(), "the derived write was refused: {current}");
     assert!(state.deployments.lock().unwrap()["leak"].history[0].outputs.iter().flatten().all(|o| !format!("{o:?}").contains(value)), "not kept either");
@@ -405,6 +432,86 @@ fn delete_unknown_deployment_is_404() {
     let answer = route(&state, &req("DELETE", "/deployments/nope", vec![]));
     assert_eq!(answer.status_code, 404);
     assert_eq!(body_json(answer)["error"], "no deployment \"nope\"", "it says why, for holon remove to print");
+}
+
+// ── the clock loop, in real time: a slow run holds nothing else of it ──────────────────
+
+/// **Guards:** a slow run the clock loop starts holds nothing else of it. While a clock's tick
+/// waits on a call: another deployment's clock ticks on, and the waiting clock isn't fired again
+/// over its own tick. While that goes on, a waiting run past its deadline is expired; resumed, it
+/// waits on a call too, and the clocks tick on. Let go, the held clock ticks again.
+/// **Why:** a pass joined every tick it started before the next pass began, and the deadlines
+/// were looked at after it on the same thread: one tick waiting 30 s on a call held every
+/// deployment's clocks and every waiting run's deadline as long, and a run resumed at its deadline
+/// held the clocks while it went on.
+/// **If it fails:** the steady clock stopped while a call was held (a pass waits for its ticks, or
+/// the deadlines share the clocks' thread), the waiting run wasn't expired under a held tick, the
+/// held clock was fired again over its own tick, or it never ticked again once let go (its clock
+/// not freed when its tick ended).
+#[test]
+fn a_slow_run_the_clock_loop_starts_holds_no_other_clock_or_deadline() {
+    use std::time::Instant;
+    let (host, hits, gate) = gated_counting_server();
+    gate.shut();
+    let state = claims_state("");
+    let held = format!(
+        r#"import {{ action, event, every, flow }} from "holon"
+import state from "state"
+import api from "host:{host}"
+
+flow("held")
+
+every("1s", async () => {{
+  const r = await api.get("/slow")
+  state.ticked = r.body
+}})
+
+export const later = action(async () => {{
+  const go = await event("go", {{ expires: "1h" }})
+  const r = await api.get(go.expired ? "/slow" : "/fast")
+  state.later = r.body
+}})
+"#
+    );
+    let steady = "import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"steady\")\n\nevery(\"1s\", () => {\n  state.ticks = (state.ticks ?? 0) + 1\n})\n";
+    assert_eq!(deploy_text_to(&state, &held, &[&host]), "held");
+    assert_eq!(deploy_text_to(&state, steady, &[]), "steady");
+    assert_eq!(run_action_named(&state, "held", "later", serde_json::json!(null)).status_code, 202, "it waits");
+    assert_eq!(state.deployments.lock().unwrap()["held"].parked.len(), 1, "the run waits for its event");
+
+    let within = |secs: u64, done: &dyn Fn() -> bool| {
+        let until = Instant::now() + Duration::from_secs(secs);
+        while !done() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        done()
+    };
+    let steady_ticks = || state.deployments.lock().unwrap()["steady"].trigger_count;
+    let slow_calls = || hits.lock().unwrap().get("/slow").copied().unwrap_or(0);
+    scheduler::spawn_clock_scheduler(state.store.clone(), Arc::clone(&state.deployments), state.deployments_path.clone());
+
+    // A clock's tick waits on its call.
+    assert!(gate.out_at_once(1), "the held clock's tick calls out");
+    let was = steady_ticks();
+    assert!(within(10, &|| steady_ticks() >= was + 2), "the steady clock ticks on while a tick waits on a call");
+    assert_eq!(slow_calls(), 1, "the held clock isn't fired again over its own tick");
+
+    // A waiting run at its deadline, the tick still held: expired, and resumed, it calls out.
+    for p in state.deployments.lock().unwrap().get_mut("held").unwrap().parked.values_mut() {
+        for w in &mut p.waiting {
+            w.expires_at = 0;
+        }
+    }
+    assert!(gate.out_at_once(2), "the waiting run is expired while a tick waits on a call, and its resumed run calls out");
+    let was = steady_ticks();
+    assert!(within(10, &|| steady_ticks() >= was + 2), "the clocks tick on while a resumed run waits on a call");
+    assert_eq!(slow_calls(), 2, "{:?}", hits.lock().unwrap());
+
+    // Let go: both end, and the held clock ticks again.
+    gate.open();
+    assert!(within(10, &|| slow_calls() >= 3), "the held clock ticks again once its tick ended");
+    let shown = |key: &str| body_json(route(&state, &req("GET", "/deployments/held/state", vec![])))["state"][key]["value"].clone();
+    assert!(within(10, &|| shown("later") == "slow" && shown("ticked") == "slow"), "both runs went on to their ends");
 }
 
 // ── capability-consent ───────────────────────────────────────────────────────────────
@@ -1926,7 +2033,8 @@ fn a_run_of_every_kind_finds_the_handler_it_ran_by_its_kind_and_label() {
 }
 
 /// A replayed version's outbound requests are answered by what the run was answered to the same
-/// request, wherever the version asks it from; one the run never sent can't be told.
+/// request, wherever the version asks it from; one the run never sent can't be told, and is named
+/// as it would go on the wire: plain HTTP to a host granted it, where the request says `https://`.
 #[test]
 fn a_replay_answers_a_request_the_run_sent_and_cant_tell_one_it_didnt() {
     use std::io::Write;
@@ -1978,7 +2086,82 @@ export const call = action(async (path) => {{
   const s = await api.get(\"/more\")
   return [r, s]");
     assert_eq!(r["cant_tell"], 1, "{r}");
-    assert!(r["runs"][0]["why"][0].as_str().unwrap().starts_with(&format!("it sends GET https://{host}/more")), "{r}");
+    // Named as it would go on the wire: plain HTTP, as the grant has it, where the request says https.
+    assert!(r["runs"][0]["why"][0].as_str().unwrap().starts_with(&format!("it sends GET http://{host}/more")), "{r}");
+}
+
+/// **Guards:** a replay needs no approval, and anyone who may read a deployment starts one with a
+/// version of their own (an agent, with its `replay` tool): whatever that version does, a replay
+/// is held to what the deployment's own runs are granted, and as a whole to a deadline and to how
+/// many run at once. A row for each road past a bound: a run that sends more requests than a run
+/// of its kind is granted (the run's own request again and again, each answered from the run's);
+/// a replay whose deadline passes before its runs (each counted as not reached, and said so by
+/// `holon replay` and the agent's tool); and one replay more than the server runs at once (503,
+/// and a place given back once one ends). A run that asks what its run didn't goes no further:
+/// that is held below the server, by verify/replay.rs's own test, as nothing outside it shows it.
+/// **Why:** a replayed run had an hour and any number of requests, and nothing held a replay as a
+/// whole, nor how many ran: one GET of up to 200 runs could keep a thread of the control plane for
+/// hours, and a few of them all of it.
+/// **If it fails:** the row names the bound a replay runs past: `within` (verify/replay.rs) doesn't
+/// take the grant's requests; `replay` doesn't stop at its deadline, or doesn't count what it
+/// left; `Replays::enter` lets one more in, or `Going` doesn't give its place back.
+#[test]
+fn a_replay_is_bounded_whatever_the_version_does() {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(3) {
+            let mut stream = stream.unwrap();
+            let _ = read_request(&mut stream);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello");
+        }
+    });
+    let mut state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
+    let unit = stage_text(&state, &caller_text(&host));
+    let ack = serde_json::json!(["Action(\"call\")", format!("HttpRequest({host:?})"), format!("PlainHttp({host:?})"), "PrivateAddresses"]);
+    let requirements = serde_json::json!({ "plain_http": [host], "private_addresses": true });
+    assert_eq!(deploy_json(&state, "local", unit, serde_json::json!({ "acknowledge": ack, "requirements": requirements })).status_code, 200);
+    for path in ["/a", "/b", "/c"] {
+        assert_eq!(run_action_named(&state, "local", "call", serde_json::json!(path)).status_code, 200);
+    }
+    let granted = state.deployments.lock().unwrap()["local"].permit.request_limits.max_requests;
+    let version = |state: &AppState, body: &str| {
+        stage_text(state, &format!("import {{ action, flow }} from \"holon\"\nimport api from \"host:{host}\"\n\nflow(\"caller\")\n\nexport const call = action(async (path) => {{\n{body}\n}})\n"))
+    };
+    let replay = |state: &AppState, unit: Hash| route(state, &req("GET", &format!("/deployments/local/replay?unit={}", to_hex(&unit)), vec![]));
+    let counts = |r: &serde_json::Value| ["replayed", "same", "differ", "cant_tell", "not_reached"].map(|k| r[k].as_u64().unwrap());
+
+    // Within every bound: the run's own request, answered as it was.
+    let own = version(&state, "  const r = await api.get(path)\n  return r");
+    let r = body_json(replay(&state, own));
+    assert_eq!(counts(&r), [3, 3, 0, 0, 0], "within: {r}");
+
+    // Requests: one more than a run of its kind is granted, each the run's own, answered from it.
+    let many: String = (0..=granted).map(|i| format!("  const r{i} = await api.get(path)\n")).collect::<String>() + &format!("  return r{granted}");
+    let r = body_json(replay(&state, version(&state, &many)));
+    assert_eq!(counts(&r), [3, 0, 3, 0, 0], "requests: {r}");
+    let why = r["runs"][0]["why"][0].as_str().unwrap();
+    assert!(why.starts_with("it doesn't finish within what the deployment is granted") && why.contains(&format!("more than {granted} outbound requests")), "requests: {why}");
+
+    // The deadline: past it before the first run, none run, each counted, and said.
+    state.replays = verify::Replays::new(2, Duration::ZERO);
+    let r = body_json(replay(&state, own));
+    assert_eq!(counts(&r), [0, 0, 0, 0, 3], "deadline: {r}");
+    let said = crate::replaycmd::lines("local", &r);
+    assert!(said[0].ends_with("last 3 runs, offline (nothing sent or written): 3 not reached in time"), "deadline: {said:?}");
+
+    // At once: with every place taken, one more is turned away, and let in once one ends.
+    state.replays = verify::Replays::new(1, Duration::from_secs(30));
+    let going = state.replays.enter().expect("a place");
+    let busy = replay(&state, own);
+    assert_eq!(busy.status_code, 503, "at once");
+    assert!(busy.headers.iter().any(|(k, v)| k == "Retry-After" && v == "5"), "at once: when to try again");
+    assert!(state.replays.enter().is_none(), "at once: still taken");
+    drop(going);
+    assert_eq!(counts(&body_json(replay(&state, own))), [3, 3, 0, 0, 0], "at once: its place given back");
+    assert!(state.replays.enter().is_some(), "at once: and given back by the replay that ran");
 }
 
 /// The grant is the boundary at run time: an effect it doesn't cover isn't performed, whatever
@@ -2478,7 +2661,7 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     *state.deployments.lock().unwrap().get_mut("shop").unwrap().state.as_ref().unwrap().state.lock().unwrap() = State::new();
     call("POST", "/orders");
     assert_eq!(runs().len(), 1);
-    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
     assert!(runs().is_empty(), "expired and finished");
     assert_eq!(written(), None);
     let entries = body_json(route(&state, &req("GET", "/deployments/shop/log", vec![])))["entries"].as_array().unwrap().clone();
@@ -2609,7 +2792,7 @@ export const pay = action(async (order) => {
 
     // Nobody else decides in time: it goes on as expired, with who approved.
     assert_eq!(decide(&ada, &ids[2], approve.clone()).0, 200);
-    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
     let d = decided();
     assert_eq!((&d["approved"], &d["expired"], &d["by"]), (&serde_json::json!(false), &serde_json::json!(true), &serde_json::json!(["ada"])), "{d}");
     assert_eq!(decisions(&d), [took("ada", true, None)], "{d}");
@@ -2661,6 +2844,103 @@ export const pay = action(async (order) => {
     assert_eq!(lines.iter().filter(|l| l.contains("(action pay, started by bob, since ")).count(), 1, "{lines:?}");
 }
 
+/// Whoever started a run started each run it leads to: a run another flow's call starts, from an
+/// action they ran, a request they sent over the control plane, a later part of their run, or a
+/// run their run started. Its approval's listing names them, and they decide none of it, as if
+/// they had started it themselves; someone else does.
+///
+/// **Why:** a run a flow's call started was started by "flow relay, run N", which is no one's
+/// name, so whoever started the run that called decided it (the separation of duties lost).
+#[test]
+fn whoever_started_a_run_started_each_run_it_leads_to() {
+    use serde_json::{json, Value as J};
+    let mut state = test_state();
+    let People { ada, .. } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let ask = |token: &str, method: &str, path: &str, body: J| {
+        let (code, said) = access_table::ask(&state, Some(token), method, path, if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() });
+        (code, serde_json::from_str::<J>(&said).unwrap_or(J::Null))
+    };
+    let deploy = |text: &str| {
+        let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(&state, &req_as(&ada, "POST", "/unit", u.clone())).status_code, 200);
+        }
+        let asked = ask(&ada, "POST", "/deploy/preview", json!({ "slug": plan.name, "unit": plan.unit })).1["needs_approval"].clone();
+        let (code, said) = ask(&ada, "POST", "/deploy", json!({ "slug": plan.name, "unit": plan.unit, "document": {}, "acknowledge": asked }));
+        assert_eq!(code, 200, "{said}");
+    };
+    deploy(
+        r#"import { action, approval, flow } from "holon"
+
+flow("payouts")
+
+export const pay = action(async (order) => {
+  const decision = await approval("payout", { expires: "1h" })
+  return decision.approved
+})
+"#,
+    );
+    deploy(
+        r#"import { action, flow } from "holon"
+import { pay } from "flow:payouts"
+
+flow("middle")
+
+export const pass = action((order) => pay(order))
+"#,
+    );
+    deploy(&format!(
+        r#"import {{ action, event, flow, route }} from "holon"
+import {{ pay }} from "flow:payouts"
+import {{ pass }} from "flow:middle"
+
+flow("relay", {{ port: {} }})
+
+route.post("/pay", (req) => pay({{ path: req.path }}))
+
+export const go = action((order) => pay(order))
+
+export const later = action(async (order) => {{
+  const went = await event("went", {{ expires: "1h" }})
+  return pay({{ via: went.method }})
+}})
+
+export const twice = action((order) => pass(order))
+
+route.get("/went/:token", () => "ok", {{ resumes: "went" }})
+"#,
+        free_port()
+    ));
+    let parked = |slug: &str| state.deployments.lock().unwrap()[slug].parked.keys().cloned().collect::<BTreeSet<String>>();
+    let resume_later = || {
+        let before = parked("relay");
+        assert_eq!(ask(&bob, "POST", "/trigger/relay/later", json!({})).0, 202);
+        let run = parked("relay").difference(&before).next().cloned().unwrap();
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "relay", &fake_data("GET", &format!("/went/{}", durable::token_for(&run, "went")), vec![]));
+        assert_eq!(r.status, 200);
+    };
+    let ways: [(&str, &dyn Fn()); 4] = [
+        ("an action bob ran", &|| assert!(ask(&bob, "POST", "/trigger/relay/go", json!({ "amount": 1 })).0 < 300)),
+        ("a request bob sent over the control plane", &|| assert_eq!(ask(&bob, "POST", "/deployments/relay/request", json!({ "method": "POST", "url": "/pay", "body": "{}" })).1["status"], 200)),
+        ("a later part of bob's run", &resume_later),
+        ("a run bob's run started", &|| assert!(ask(&bob, "POST", "/trigger/relay/twice", json!({})).0 < 300)),
+    ];
+    for (way, start) in ways {
+        let before = parked("payouts");
+        start();
+        let run = parked("payouts").difference(&before).next().cloned().unwrap_or_else(|| panic!("{way}: a run waits at payouts"));
+        let listed = ask(&ada, "GET", "/deployments/payouts/runs", J::Null).1["runs"].as_array().unwrap().iter().find(|r| r["run_id"] == run.as_str()).cloned().unwrap();
+        assert_eq!(listed["by"], "bob", "{way}: its listing names who started it: {listed}");
+        let decide = |token: &str| ask(token, "POST", &format!("/deployments/payouts/runs/{run}/decide"), json!({ "name": "payout", "approve": true }));
+        let (code, said) = decide(&bob);
+        assert_eq!((code, said["error"].as_str()), (403, Some("bob started this run: someone else decides its approval \"payout\"")), "{way}: {said}");
+        let (code, said) = decide(&ada);
+        assert_eq!((code, said["outcome"].as_str()), (200, Some("approved")), "{way}: {said}");
+    }
+}
+
 /// **Guards:** an approval's steps are what its deploy asks for. A version that changes them asks
 /// for the new item as any new permission does, and an agent's such version waits for a person
 /// as a proposal (docs/L4s/approval-steps-plan.md D29).
@@ -2689,7 +2969,7 @@ fn an_approval_s_steps_are_what_its_deploy_asks_for() {
     assert_eq!(code, 200, "{said}");
     // One person in place of two is a new item: an agent's version is a proposal needing it, and
     // a person's deploys once it is acknowledged.
-    let (code, said) = send(&scout, "/deploy", json!({ "slug": "payouts", "unit": one, "document": {}, "why": "one is enough" }));
+    let (code, said) = send(&scout, "/deploy", json!({ "slug": "payouts", "unit": one, "document": document_of(&one), "why": "one is enough" }));
     assert_eq!((code, &said["proposal"]["needs"]), (202, &json!(["Approval(\"payout/person\")"])), "{said}");
     let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": one, "document": {} }));
     assert!(code == 400 && said["error"].as_str().unwrap().contains("Approval(\"payout/person\")"), "{said}");
@@ -2706,8 +2986,9 @@ fn an_approval_s_steps_are_what_its_deploy_asks_for() {
 
 /// **Guards:** an approval in steps is decided a step at a time through the route (D36 to D40):
 /// the step named, or the one open step the caller may fill, of their kind, bound to its role
-/// where the approval is (at the flow, or at the point itself); never by the run's starter; a
-/// note given to the run with the decision, at most 16 KiB.
+/// where the approval is (at the flow, or at the point itself); never by the run's starter, nor
+/// two steps by one party (an agent and its owner, the audit's R18); a note given to the run with
+/// the decision, at most 16 KiB.
 /// **Why:** who decides each step is what the deploy's permission named, and the record of it is
 /// the evidence: the route must hold to it whoever asks.
 #[test]
@@ -2732,15 +3013,16 @@ export const pay = action(async (order) => {
     let accounts = Arc::clone(state.access.accounts().unwrap());
     // Viewers on the host: what lets them decide is the role each step names.
     let viewer = |name: &str| accounts.accept(&accounts.invite(name, "viewer", None, "ada").unwrap(), "correct horse battery").unwrap().0;
-    let (bob, cy, dee) = (viewer("bob"), viewer("cy"), viewer("dee"));
-    accounts.add("scout", Kind::Agent, "agent", "ada", "ada").unwrap();
-    let scout = accounts.create_token("scout", "Scout", "ada").unwrap().0;
+    let (bob, cy, dee, eve) = (viewer("bob"), viewer("cy"), viewer("dee"), viewer("eve"));
+    // eve's agent, its token hers: one party with her.
+    accounts.add("scout", Kind::Agent, "agent", "eve", "ada").unwrap();
+    let scout = accounts.create_token("scout", "Scout", "eve").unwrap().0;
     for (role, kind) in [("classifier", Kind::Agent), ("reviewer", Kind::Person), ("approver", Kind::Person)] {
         accounts.define_role(RoleText { name: role.into(), about: None, allows: vec!["run.decide".into(), "run.view".into()], kinds: vec![kind] }, "ada", None).unwrap();
     }
     let flow = Scope::Flows(Selector::Slug("payouts".into()));
     let point = Scope::Approval { flow: Selector::Slug("payouts".into()), name: "payout".into() };
-    for (who, role, at) in [("scout", "classifier", &flow), ("bob", "reviewer", &flow), ("dee", "reviewer", &flow), ("dee", "approver", &flow), ("cy", "approver", &point)] {
+    for (who, role, at) in [("scout", "classifier", &flow), ("bob", "reviewer", &flow), ("dee", "reviewer", &flow), ("dee", "approver", &flow), ("cy", "approver", &point), ("eve", "reviewer", &flow)] {
         accounts.bind(Subject::Principal(who.into()), role, at.clone(), None, "ada", None).unwrap();
     }
     let ask = |token: &str, method: &str, path: &str, body: Value| {
@@ -2781,8 +3063,9 @@ export const pay = action(async (order) => {
     let (code, said) = decide(&scout, approve(None, Some(note.clone())));
     assert_eq!((code, &said["slot"], &said["outcome"]), (200, &json!(0), &json!("waiting")), "{said}");
     assert_eq!(open(&said["slots"]), [false, true, true], "{said}");
-    assert_eq!([yours(&scout), yours(&bob), yours(&cy), yours(&dee)], [json!([]), json!([1]), json!([2]), json!([1, 2])], "{said}");
+    assert_eq!([yours(&scout), yours(&bob), yours(&cy), yours(&dee), yours(&eve)], [json!([]), json!([1]), json!([2]), json!([1, 2]), json!([])], "eve none: one party with scout; {said}");
     refused(&scout, approve(Some(1), None), 403, "scout is an agent, and slot 1 (reviewer) of \"payout\" is a person's");
+    refused(&eve, approve(Some(1), None), 403, "eve and scout are one party (eve owns scout), and scout decided slot 0 (classifier) of \"payout\": each step of an approval is another party's");
     refused(&dee, approve(None, None), 409, "dee may fill slot 1 (reviewer) and slot 2 (approver) of \"payout\": say which, with slot");
     refused(&bob, approve(Some(2), None), 403, "slot 2 (approver) of \"payout\" takes someone bound to approver here, and bob isn't");
     assert_eq!(decide(&dee, approve(Some(1), None)).1["outcome"], "waiting");
@@ -2839,8 +3122,9 @@ export const pay = action(async (order) => {
     let accounts = Arc::clone(state.access.accounts().unwrap());
     let invited = |name: &str, role: &str| accounts.accept(&accounts.invite(name, role, None, "ada").unwrap(), "correct horse battery").unwrap().0;
     let (bob, eve) = (invited("bob", "viewer"), invited("eve", "editor"));
-    accounts.add("scout", Kind::Agent, "agent", "ada", "ada").unwrap();
-    let scout = accounts.create_token("scout", "Scout", "ada").unwrap().0;
+    // bob's agent, its token his: ada, who takes the reviewer's step, is another party.
+    accounts.add("scout", Kind::Agent, "agent", "bob", "ada").unwrap();
+    let scout = accounts.create_token("scout", "Scout", "bob").unwrap().0;
     for (role, kind) in [("classifier", Kind::Agent), ("reviewer", Kind::Person)] {
         accounts.define_role(RoleText { name: role.into(), about: None, allows: vec!["run.decide".into(), "run.view".into()], kinds: vec![kind] }, "ada", None).unwrap();
     }
@@ -2895,7 +3179,7 @@ export const pay = action(async (order) => {
     let (code, said) = set(&ada, json!({ "exclude_deployer": false, "agents": true, "why": "both decide again" }));
     assert_eq!((code, &said["version"]), (200, &json!(before.as_u64().unwrap() + 1)), "{said}");
     let versions = ask(&ada, "GET", "/access/versions", Value::Null).1["versions"][0].clone();
-    let what = "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them; a person who started a run may take a step of it that says so; an access change applies at once";
+    let what = "set the approvals: whoever deployed the version a run is on may decide its approvals; agents take the steps written for them; whoever started a run, or one of their party, may take a step of it that says so; an access change applies at once";
     assert_eq!((&versions["by"], &versions["what"], &versions["why"]), (&json!("ada"), &json!(what), &json!("both decide again")), "{versions}");
     assert_eq!(decide(&scout).1["outcome"], "waiting");
     assert_eq!(decide(&ada).1["outcome"], "approved");
@@ -2907,9 +3191,13 @@ export const pay = action(async (order) => {
     assert_eq!(ask(&ada, "GET", "/access", Value::Null).1["approvals"], json!({ "exclude_deployer": false, "agents": true, "starter": true, "changes": null }));
 
     // How many people approve an access change that gives more: one to five, said in the
-    // version; null, none. Raising it is made at once; lowering it, or turning it off, gives more,
-    // and waits for that many people (access_proposals.rs). Each row: what is sent, and what is
-    // kept, or that it waits, or why it is refused.
+    // version; null, none. Raising it is made at once (while that many besides whoever raises it
+    // may decide one: five more admins here); lowering it, or turning it off, gives more, and
+    // waits for that many people (access_proposals.rs). Each row: what is sent, and what is kept,
+    // or that it waits, or why it is refused.
+    for name in ["gil", "hal", "ivy", "jo", "kim"] {
+        invited(name, "admin");
+    }
     enum Then {
         Kept(Value),
         Waits,
@@ -2955,7 +3243,8 @@ export const pay = action(async (order) => {
 /// takes the step bound to that account, through that account's binding; with `people: 2` it and
 /// the account's session are one person; a run it starts, and a version it deploys, are the
 /// account's, which the starter rule and `exclude_deployer` refuse it and the session alike; tied
-/// to no account (that account disabled), it decides nothing, its admin no binding.
+/// to no account (that account disabled), it decides nothing, its admin no binding. Each decision
+/// it takes says so (`via: local:<user>`), as the run is given it.
 /// **Why:** one human at the keyboard is one principal on the record, whichever way they signed
 /// in: two of them would let one person fill two steps, or approve what they started.
 #[test]
@@ -3005,12 +3294,13 @@ export const pay = action(async (order) => {{
     let deployed = "ada deployed the version this run is on: on this host, someone else decides its approval \"payout\"";
     let once = "ada already approved \"payout\": it needs 2 different people";
     // Each row: the flow, who starts its run, whether this host excludes the deployer, and each
-    // decision in turn, with the outcome or the refusal; then who decided it, through which binding.
-    type Row<'a> = (&'a str, &'a str, &'a str, bool, Vec<(&'a str, Result<&'a str, (u16, &'a str)>)>, Vec<(&'a str, &'a str)>);
+    // decision in turn, with the outcome or the refusal; then who decided it, through which binding,
+    // and whether through the run file.
+    type Row<'a> = (&'a str, &'a str, &'a str, bool, Vec<(&'a str, Result<&'a str, (u16, &'a str)>)>, Vec<(&'a str, &'a str, Option<&'a str>)>);
     let rows: Vec<Row> = vec![
-        ("the run file takes the step bound to its account", "steps", "eve", false, vec![("the run file", Ok("approved"))], vec![("ada", "approver")]),
-        ("as the account's session does", "steps", "eve", false, vec![("ada", Ok("approved"))], vec![("ada", "approver")]),
-        ("one person, whichever way they signed in", "pair", "eve", false, vec![("the run file", Ok("waiting")), ("ada", Err((409, once))), ("bob", Ok("approved"))], vec![("ada", "admin"), ("bob", "approver")]),
+        ("the run file takes the step bound to its account", "steps", "eve", false, vec![("the run file", Ok("approved"))], vec![("ada", "approver", Some("local:bma"))]),
+        ("as the account's session does", "steps", "eve", false, vec![("ada", Ok("approved"))], vec![("ada", "approver", None)]),
+        ("one person, whichever way they signed in", "pair", "eve", false, vec![("the run file", Ok("waiting")), ("ada", Err((409, once))), ("bob", Ok("approved"))], vec![("ada", "admin", Some("local:bma")), ("bob", "approver", None)]),
         ("a run the run file starts is ada's", "steps", "the run file", false, vec![("ada", Err((403, started))), ("the run file", Err((403, started)))], vec![]),
         ("a version the run file deployed is ada's", "steps", "eve", true, vec![("ada", Err((403, deployed))), ("the run file", Err((403, deployed)))], vec![]),
     ];
@@ -3037,8 +3327,8 @@ export const pay = action(async (order) => {{
         }
         let decided = state.deployments.lock().unwrap()[slug].state.as_ref().unwrap().state.lock().unwrap().get("decided").cloned().unwrap();
         let d: Value = serde_json::from_str(&holon_core::stringify_json(&decided).unwrap()).unwrap();
-        let kept: Vec<(Value, Value)> = d["decisions"].as_array().unwrap().iter().map(|x| (x["who"].clone(), x["binding"].clone())).collect();
-        assert_eq!(kept, took.iter().map(|(who, role)| (json!(who), through(who, role))).collect::<Vec<_>>(), "{what}: {d}");
+        let kept: Vec<(Value, Value, Value)> = d["decisions"].as_array().unwrap().iter().map(|x| (x["who"].clone(), x["binding"].clone(), x["via"].clone())).collect();
+        assert_eq!(kept, took.iter().map(|(who, role, via)| (json!(who), through(who, role), json!(via))).collect::<Vec<_>>(), "{what}: {d}");
     }
     // ada disabled, the run file is tied to no account: it decides nothing, saying so.
     assert_eq!(ask(&ada, "PUT", "/access/approvals", json!({ "exclude_deployer": false })).0, 200);
@@ -3261,7 +3551,7 @@ fn a_token_resumes_its_run_once_however_many_requests_carry_it() {
     // While a resume holds the run, its token finds nothing, and its deadline doesn't expire it.
     let held = durable::claim_by_token(&state.deployments, "once", "paid", &token).expect("the run waits for its token");
     assert_eq!(call("GET", &format!("/paid/{token}")), 404, "a second resume while the first runs");
-    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
     assert_eq!(resumes(), 0, "not expired under the resume");
     // Let go with the run still waiting (a resume that failed before it ran): the token works again.
     drop(held);
@@ -3381,6 +3671,7 @@ fn deployments_persist_across_a_simulated_restart() {
             sweeps: Default::default(),
             checked: Default::default(),
             proposals: Default::default(),
+            replays: Default::default(),
         };
         let unit = stage_text(&state, ECHO);
         let ack = serde_json::json!({ "acknowledge": ["Action(\"echo\")"] });
@@ -3414,6 +3705,7 @@ fn deployments_persist_across_a_simulated_restart() {
         sweeps: Default::default(),
         checked: Default::default(),
         proposals: Default::default(),
+        replays: Default::default(),
     };
     let ran = run_action_named(&state2, "echo", "echo", serde_json::json!("restarted"));
     assert_eq!(ran.status_code, 200);
@@ -3514,6 +3806,55 @@ fn flow_save_rejects_a_bad_name_and_a_malformed_body() {
 fn deleting_an_unknown_flow_is_404() {
     let state = test_state();
     assert_eq!(route(&state, &req("DELETE", "/flows/nope", vec![])).status_code, 404);
+}
+
+/// Saved flows are bounded, and kept or not as one with their file (R32): a document past
+/// `MAX_DOCUMENT_BYTES` is refused (413), and a new flow past `MAX_SAVED` or documents past
+/// `MAX_SAVED_BYTES` (409), while a flow there is still saved over within them; a save or a removal
+/// its file doesn't take (its place is a folder here) answers 500 and leaves the flows as they were.
+#[test]
+fn saved_flows_are_bounded_and_one_not_written_is_not_kept() {
+    use crate::flows::{MAX_DOCUMENT_BYTES, MAX_SAVED, MAX_SAVED_BYTES};
+    let state = test_state();
+    let save = |state: &AppState, name: &str, document: serde_json::Value| {
+        route(state, &req("POST", "/flows", serde_json::to_vec(&serde_json::json!({ "name": name, "document": document })).unwrap())).status_code
+    };
+    // A document of `n` bytes, as the server counts them.
+    let sized = |n: usize| serde_json::json!({ "pad": "x".repeat(n - r#"{"pad":""}"#.len()) });
+    let names = |state: &AppState| body_json(route(state, &req("GET", "/flows", vec![]))).as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+
+    assert_eq!(save(&state, "big", sized(MAX_DOCUMENT_BYTES + 1)), 413);
+    assert_eq!(save(&state, "big", sized(MAX_DOCUMENT_BYTES)), 200);
+    let fill = MAX_SAVED_BYTES / MAX_DOCUMENT_BYTES;
+    for n in 1..fill {
+        assert_eq!(save(&state, &format!("big{n}"), sized(MAX_DOCUMENT_BYTES)), 200, "{n}");
+    }
+    assert_eq!(save(&state, "over", sized(16)), 409, "{MAX_SAVED_BYTES} bytes of documents are saved");
+    assert_eq!(save(&state, "big", sized(MAX_DOCUMENT_BYTES)), 200, "one there is saved over");
+    assert_eq!(names(&state).len(), fill);
+    for name in names(&state) {
+        assert_eq!(route(&state, &req("DELETE", &format!("/flows/{name}"), vec![])).status_code, 200);
+    }
+    for n in 0..MAX_SAVED {
+        assert_eq!(save(&state, &format!("f{n}"), serde_json::json!({})), 200, "{n}");
+    }
+    assert_eq!(save(&state, "one-more", serde_json::json!({})), 409, "{MAX_SAVED} flows are saved");
+    assert_eq!(save(&state, "f0", serde_json::json!({ "v": 1 })), 200, "one there is saved over");
+
+    // Its file's place is a folder: nothing is written there, and nothing changes.
+    let mut state = test_state();
+    assert_eq!(save(&state, "kept", serde_json::json!({ "v": 1 })), 200);
+    let folder = unique_temp_path("flows-folder");
+    std::fs::create_dir_all(&folder).unwrap();
+    state.flows_path = folder.clone().into();
+    let kept = body_json(route(&state, &req("GET", "/flows/kept", vec![])));
+    assert_eq!(save(&state, "kept", serde_json::json!({ "v": 2 })), 500);
+    assert_eq!(body_json(route(&state, &req("GET", "/flows/kept", vec![]))), kept, "as it was");
+    assert_eq!(route(&state, &req("DELETE", "/flows/kept", vec![])).status_code, 500);
+    assert_eq!(route(&state, &req("GET", "/flows/kept", vec![])).status_code, 200, "still there");
+    assert_eq!(save(&state, "new", serde_json::json!({})), 500);
+    assert_eq!(names(&state), ["kept"], "nor is a new one there");
+    let _ = std::fs::remove_dir_all(&folder);
 }
 
 #[test]
@@ -3728,10 +4069,10 @@ fn persist_writes_whole_files_and_leaves_no_temp_files() {
             name.to_string(),
             FlowRecord { name: name.to_string(), saved_at_epoch_seconds: 0, document: serde_json::json!({}), saved_by: None, uses: None },
         );
-        persist_flows(&Place::parse(&path), &flows);
+        persist_flows(&Place::parse(&path), &flows).unwrap();
     }
     flows.remove("a");
-    persist_flows(&Place::parse(&path), &flows); // shrinking: no stale tail from the longer write
+    persist_flows(&Place::parse(&path), &flows).unwrap(); // shrinking: no stale tail from the longer write
     assert_eq!(load_flows(&Place::parse(&path)).unwrap().keys().collect::<Vec<_>>(), vec!["b"]);
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
@@ -4317,7 +4658,7 @@ export const later = action(async () => {
 fn raw_http(port: u16, request: &[u8]) -> String {
     use std::io::Write;
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     stream.write_all(request).unwrap();
     let mut out = Vec::new();
     let _ = stream.read_to_end(&mut out);
@@ -4358,10 +4699,16 @@ fn a_server_deployment_answers_on_its_own_port_within_limits() {
     let large = raw_http(port, b"POST /todos HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n");
     assert!(large.starts_with("HTTP/1.1 413"), "{large}");
 
-    // Headers that never finish: the connection is closed, not held.
-    let started = std::time::Instant::now();
-    let slow = raw_http(port, b"GET /todos HTTP/1.1\r\nHost: 127.0.0.1\r\n");
-    assert!(started.elapsed() < Duration::from_secs(5), "closed after the header timeout: {slow:?}");
+    // Headers that never finish: the server closes the connection, not held. (The client would
+    // wait a minute: its read ending is the server's doing, however slow the machine.)
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
+    std::io::Write::write_all(&mut stream, b"GET /todos HTTP/1.1\r\nHost: 127.0.0.1\r\n").unwrap();
+    let mut slow = Vec::new();
+    let closed = stream.read_to_end(&mut slow);
+    let held = closed.as_ref().is_err_and(|e| matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut));
+    assert!(!held, "closed by the server after the header timeout, not held: {closed:?}");
+    let slow = String::from_utf8_lossy(&slow);
     assert!(!slow.contains("200"), "{slow}");
 
     // Stopped: the port is released.
@@ -4371,6 +4718,253 @@ fn a_server_deployment_answers_on_its_own_port_within_limits() {
         std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
     });
     assert!(released, "the port is free again");
+}
+
+/// No deployment's callers hold more of the data plane than its share (audit R15): every run on
+/// the data plane (a request's; a WebSocket's open, message and close) takes a place in its
+/// deployment's `max_concurrent_runs` and in the server's `max_runs`, and every answer is written
+/// under the write deadline. The two ways callers held the pool, through real sockets:
+/// - runs held on a slow upstream (a gate): past the deployment's share a request is a 503 with
+///   `Retry-After` at once, never queued, while another deployment answers beside it; past the
+///   server's total, another deployment's request is too; a WebSocket's message waits for a place,
+///   holding no thread, and runs once one is free; every place is given back as its run ends;
+/// - callers that stop reading an answer of each kind (whole, a file streamed, an upstream
+///   forwarded as it is read): each connection is cut at the write deadline, so a listener whose
+///   every connection was held answers again, and the forwarded run, whose thread waited on its
+///   caller, ends and gives its place back.
+///
+/// If it fails: on a 503, `Share::try_admit` in `answer` (dataplane.rs) or `open` (websockets.rs);
+/// on a message run at once, `admit` in websockets.rs `work`; on a caller never cut, `Deadlined`
+/// around `serve_connection`; on a place never given back, `Admitted` dropped before its run ends,
+/// or a forwarded run's send to a caller gone that still waits.
+#[test]
+fn no_deployments_callers_hold_more_of_the_data_plane_than_its_share() {
+    use std::io::{Read, Write};
+    use tungstenite::client::IntoClientRequest;
+    use tungstenite::Message;
+    let get = |port: u16, path: &str| raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes());
+    // As the command line deploys a text: the limits it asks for beside its unit, its calls to
+    // `hosts` approved.
+    let deploy = |state: &AppState, text: &str, hosts: &[&str]| {
+        let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let mut requirements = plan.requirements.clone().unwrap_or_else(|| serde_json::json!({}));
+        requirements["plain_http"] = serde_json::json!(hosts);
+        requirements["private_addresses"] = serde_json::json!(true);
+        let asking = serde_json::json!({ "slug": plan.name, "unit": plan.unit, "requirements": requirements });
+        let preview = body_json(route(state, &req("POST", "/deploy/preview", serde_json::to_vec(&asking).unwrap())));
+        let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap_or_default();
+        let r = deploy_json(state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": asked, "requirements": requirements }));
+        let status = r.status_code;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
+    };
+
+    // Held on a slow upstream: "held" answers two at once, the server three.
+    let (host, _, gate) = gated_counting_server();
+    let mut state = claims_state("");
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    state.data_limits.max_runs = 3;
+    let (held_port, beside_port) = (free_port(), free_port());
+    let held = format!(
+        "import {{ flow, route }} from \"holon\"\nimport api from \"host:{host}\"\n\nflow(\"held\", {{ port: {held_port}, limits: {{ max_concurrent_runs: 2 }} }})\n\nroute.get(\"/slow\", async () => (await api.get(\"/slow\")).body)\n\nroute.get(\"/hi\", () => \"hi\")\n\nroute.websocket(\"/ws\", {{ message: (m) => `echo ${{m.text}}` }})\n"
+    );
+    deploy(&state, &held, &[&host]);
+    let beside = held.replace("flow(\"held\"", "flow(\"beside\"").replace(&format!("port: {held_port}, limits: {{ max_concurrent_runs: 2 }}"), &format!("port: {beside_port}"));
+    deploy(&state, &beside, &[&host]);
+    sync_listeners(&state);
+    gate.shut();
+    std::thread::scope(|s| {
+        let slow: Vec<_> = (0..2).map(|_| s.spawn(move || get(held_port, "/slow"))).collect();
+        assert!(gate.out_at_once(2), "held's two calls went out");
+        // At its share: refused at once, to try again; the deployment beside it answers.
+        let refused = get(held_port, "/hi");
+        let answered = get(beside_port, "/hi");
+        // A WebSocket's message waits for a place, not refused and not run past the share.
+        let stream = std::net::TcpStream::connect(("127.0.0.1", held_port)).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
+        let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{held_port}/ws").into_client_request().unwrap(), stream).unwrap();
+        // not a bound: nothing is to come in it (the message waits for a place)
+        ws.get_mut().set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        ws.send(Message::text("m1")).unwrap();
+        let early = ws.read();
+        // The server's third place taken: then any deployment's request is refused.
+        let third = s.spawn(move || get(beside_port, "/slow"));
+        assert!(gate.out_at_once(3), "beside's call went out");
+        let full = get(beside_port, "/hi");
+        let still = gate.out() == 3;
+        gate.open();
+        assert!(refused.starts_with("HTTP/1.1 503") && refused.contains("retry-after: 1") && refused.contains("max_concurrent_runs"), "{refused}");
+        assert!(answered.starts_with("HTTP/1.1 200") && answered.ends_with("hi"), "{answered}");
+        assert!(early.is_err(), "the message ran past the share: {early:?}");
+        assert!(full.starts_with("HTTP/1.1 503") && full.contains("retry-after: 1") && full.contains("the server is answering 3"), "{full}");
+        assert!(still, "the refusals came while the three calls were out, not queued behind them");
+        for done in slow.into_iter().chain([third]) {
+            let done = done.join().unwrap();
+            assert!(done.starts_with("HTTP/1.1 200") && done.ends_with("slow"), "{done}");
+        }
+        // The message ran once a place was free, and every place is given back.
+        ws.get_mut().set_read_timeout(Some(EVENTUALLY)).unwrap();
+        let echoed = match ws.read().unwrap() {
+            Message::Text(t) => serde_json::from_str::<serde_json::Value>(&t).unwrap_or_else(|_| serde_json::Value::String(t.to_string())),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(echoed, serde_json::json!("echo m1"));
+        assert!(get(held_port, "/hi").starts_with("HTTP/1.1 200"));
+        assert!(get(beside_port, "/hi").starts_with("HTTP/1.1 200"));
+    });
+
+    // Callers that stop reading: the listener takes three connections, "big" one run at once.
+    let size = 10_000_000usize;
+    let upstream = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let big_host = upstream.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        let body = Arc::new(vec![b'x'; size]);
+        for stream in upstream.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let body = Arc::clone(&body);
+            std::thread::spawn(move || {
+                if read_request(&mut stream).is_some() {
+                    let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n");
+                    let _ = stream.write_all(head.as_bytes()).and_then(|()| stream.write_all(&body));
+                }
+            });
+        }
+    });
+    let dir = std::env::temp_dir().join(format!("holon-share-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("big.txt"), vec![b'y'; size]).unwrap();
+    let mut state = claims_state("");
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    state.data_limits.max_connections = 3;
+    state.data_limits.write_timeout = Duration::from_secs(1);
+    let files = serde_json::json!({ "name": "files", "path": dir.display().to_string(), "access": "read" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&files).unwrap())).status_code, 200);
+    let port = free_port();
+    let text = format!(
+        "import {{ flow, respond, route }} from \"holon\"\nimport files from \"folder:files\"\nimport big from \"host:{big_host}\"\n\nflow(\"big\", {{ port: {port}, limits: {{ max_concurrent_runs: 1 }} }})\n\nroute.get(\"/whole\", async () => (await big.get(\"/big\")).body, {{ log: \"unrecorded\" }})\n\nroute.get(\"/file\", () => files.serve(\"big.txt\"))\n\nroute.get(\"/stream\", async () => {{\n  const sent = await big.get(\"/big\", {{ stream: true }})\n  return respond(sent.body, {{ stream: true }})\n}}, {{ log: \"unrecorded\" }})\n\nroute.get(\"/hi\", () => \"hi\")\n"
+    );
+    deploy(&state, &text, &[&big_host]);
+    sync_listeners(&state);
+    // Each asked for and its answer begun, then never read again. The whole answer's run and the
+    // file's are over before their bytes go; the forwarded one's holds the deployment's one place
+    // while it waits on its caller.
+    let stopped: Vec<(&str, std::net::TcpStream, usize)> = ["/whole", "/file", "/stream"]
+        .into_iter()
+        .map(|path| {
+            let mut caller = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            caller.set_read_timeout(Some(EVENTUALLY)).unwrap();
+            caller.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+            let mut head = Vec::new();
+            let mut piece = [0u8; 1024];
+            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = caller.read(&mut piece).unwrap();
+                assert!(n > 0, "{path}: closed before its head");
+                head.extend_from_slice(&piece[..n]);
+            }
+            assert!(head.starts_with(b"HTTP/1.1 200"), "{path}: {}", String::from_utf8_lossy(&head));
+            (path, caller, head.len())
+        })
+        .collect();
+    // A fourth caller waits for a connection the deadline cuts, and its run for the forwarded run
+    // to end (a 503 to try again until then): answered, where none was ever again.
+    let fourth = (0..50).find_map(|_| {
+        let hi = get(port, "/hi");
+        let busy = hi.starts_with("HTTP/1.1 503") && hi.contains("max_concurrent_runs");
+        if busy {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        (!busy).then_some(hi)
+    });
+    assert!(fourth.as_deref().is_some_and(|hi| hi.starts_with("HTTP/1.1 200") && hi.ends_with("hi")), "{fourth:?}");
+    // Each was cut: less than its whole answer reached it (its body alone is `size`). Windows
+    // takes one write of any size into its own buffers while they have room, so there a whole
+    // answer, written at once, is the system's to send and never holds its connection; elsewhere
+    // the write stalls as the others do.
+    for (path, mut caller, read) in stopped {
+        let mut rest = Vec::new();
+        // Ended by the server, not by this side's read timeout.
+        let ended = caller.read_to_end(&mut rest);
+        assert!(!matches!(&ended, Err(e) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)), "{path}: still open, {ended:?}");
+        if path != "/whole" || !cfg!(windows) {
+            assert!(read + rest.len() < size, "{path}: sent whole ({} bytes), not cut", read + rest.len());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// No server holds more connections open than its total, every listener's together, a WebSocket's
+/// for as long as it is open (audit R16): with a total of two, a kept-alive connection to one
+/// deployment and a WebSocket open on another, a third caller is not answered (it waits in the
+/// accept queue) until the WebSocket closes, and then is.
+/// Why: each listener held 1,024 connections and nothing held them together, and hyper is done
+/// with a connection switched to a WebSocket as it switches, so a WebSocket held no place at all:
+/// a server's open sockets, each a file, ran past its open-file limit, where every accept failed
+/// and its loop spun printing.
+/// If it fails: on the third answered at once, the accept loop doesn't take a place in
+/// `DataLimits::connections` (dataplane.rs), or the WebSocket doesn't keep its places
+/// (`Places::keep` in websockets.rs `open`); on it never answered, `serve` doesn't let them go as
+/// the connection ends.
+#[test]
+fn no_server_holds_more_connections_open_than_its_total() {
+    use std::io::{Read, Write};
+    use tungstenite::client::IntoClientRequest;
+    let mut state = claims_state("");
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    state.data_limits.max_connections_total = 2;
+    state.data_limits.connections = Arc::new(tokio::sync::Semaphore::new(2));
+    let (one, other) = (free_port(), free_port());
+    for (name, port) in [("one", one), ("other", other)] {
+        let text = format!("import {{ flow, route }} from \"holon\"\n\nflow(\"{name}\", {{ port: {port} }})\n\nroute.get(\"/hi\", () => \"hi\")\n\nroute.websocket(\"/ws\", {{ message: (m) => `echo ${{m.text}}` }})\n");
+        let plan = holon_author::agent::plan(&text).unwrap_or_else(|e| panic!("{e}"));
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": name, "unit": plan.unit })).unwrap())));
+        let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap_or_default();
+        let r = deploy_json(&state, name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": asked }));
+        assert_eq!(r.status_code, 200);
+    }
+    sync_listeners(&state);
+    let answered = |stream: &mut std::net::TcpStream| {
+        let mut got = Vec::new();
+        let mut piece = [0u8; 1024];
+        while !got.ends_with(b"hi") {
+            match stream.read(&mut piece) {
+                Ok(n) if n > 0 => got.extend_from_slice(&piece[..n]),
+                _ => break,
+            }
+        }
+        String::from_utf8_lossy(&got).into_owned()
+    };
+    // One place: a connection to "one", answered and kept alive.
+    let mut kept = std::net::TcpStream::connect(("127.0.0.1", one)).unwrap();
+    kept.set_read_timeout(Some(EVENTUALLY)).unwrap();
+    kept.write_all(b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
+    let first = answered(&mut kept);
+    assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+    // The other: a WebSocket open on "other", switched, and talking.
+    let stream = std::net::TcpStream::connect(("127.0.0.1", other)).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
+    let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{other}/ws").into_client_request().unwrap(), stream).unwrap();
+    ws.send(tungstenite::Message::text("m1")).unwrap();
+    assert!(matches!(ws.read(), Ok(tungstenite::Message::Text(t)) if t.contains("echo m1")));
+    // A third caller waits: nothing answers it while both are open.
+    let mut third = std::net::TcpStream::connect(("127.0.0.1", one)).unwrap();
+    // not a bound: nothing is to come in it
+    third.set_read_timeout(Some(Duration::from_millis(700))).unwrap();
+    third.write_all(b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").unwrap();
+    let early = answered(&mut third);
+    assert_eq!(early, "", "answered past the server's two connections, a WebSocket's among them");
+    // The WebSocket closed: its places go back, and the third is answered.
+    ws.close(None).unwrap();
+    while ws.read().is_ok() {}
+    drop(ws);
+    third.set_read_timeout(Some(EVENTUALLY)).unwrap();
+    let late = answered(&mut third);
+    assert!(late.starts_with("HTTP/1.1 200") && late.ends_with("hi"), "the third, once the WebSocket closed: {late:?}");
+    drop(kept);
 }
 
 /// A flow's WebSockets through a real socket (host-capabilities L4 §5.12.14): a GET there without
@@ -4396,7 +4990,7 @@ fn a_websocket_runs_its_blocks_through_a_real_socket() {
     let sockets = Arc::clone(&state.deployments.lock().unwrap()[&slug].sockets);
     let open = |path: &str, origin: Option<&str>| -> Result<WebSocket<TcpStream>, u16> {
         let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
         let mut request = format!("ws://127.0.0.1:{port}{path}").into_client_request().unwrap();
         if let Some(origin) = origin {
             request.headers_mut().insert("origin", origin.parse().unwrap());
@@ -4547,7 +5141,7 @@ route.websocket(\"/room/:name\", {{
     sync_listeners(&state);
     let open = |path: &str| {
         let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
         match tungstenite::client(format!("ws://127.0.0.1:{port}{path}").into_client_request().unwrap(), stream) {
             Ok((ws, _)) => Ok(ws),
             Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(r))) => Err(r.status().as_u16()),
@@ -4651,7 +5245,7 @@ on.file.created(inbox, (f) => {{
             arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
         }
     };
-    let deadline = || durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    let deadline = || durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
 
     // A way a run starts: what it counts in `seen` (a light request counts nothing: its answer
     // says it ran), what its log entry is called, what to do calm beforehand, and how it starts,
@@ -4755,15 +5349,18 @@ on.file.created(inbox, (f) => {{
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **Guards:** a server told to stop starts no run, whichever way a run starts, and the run going
-/// on when it was told goes on to its end and its log line (stopping.rs).
+/// **Guards:** a server told to stop starts no run, whichever way a run starts, and the runs going
+/// on when it was told go on to their end and their log line, holding the door the stop waits on
+/// (stopping.rs): an action's, and a clock's tick on its thread of its own (R34).
 ///
 /// **Why:** the server exits once no run goes on. A run a trigger started after it was told would
 /// keep the stop waiting, or be cut off at the exit half done: its calls made, its line never
 /// written.
 ///
 /// **If it fails:** a stop that never ends while a clock keeps starting runs, or a run cut off at
-/// the exit with what it did on no record; or the run going on refused its own end.
+/// the exit with what it did on no record; or the run going on refused its own end; or a tick,
+/// which no pass of the clock waits for, isn't counted at the door, and the server leaves before
+/// its line.
 ///
 /// Each way a run starts that a test drives without a far side is a row: a request to an
 /// unrecorded route and one to a recorded route, a WebSocket opened, an action over the control
@@ -4814,6 +5411,11 @@ every("1s", () => {{
   ++state.ticks
 }})
 
+every("1h", async () => {{
+  const r = await api.get("/slow")
+  state.slowTicks = (state.slowTicks ?? 0) + (r.body == "slow" ? 1 : 1)
+}})
+
 on.file.created(inbox, (f) => {{
   ++state.files
 }})
@@ -4837,14 +5439,14 @@ on.file.created(inbox, (f) => {{
     let hit = || Some(status(&get("/hit")));
     let socket = || {
         let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
         match tungstenite::client(format!("ws://127.0.0.1:{port}/hello").into_client_request().unwrap(), stream) {
             Ok(_) => Some(101),
             Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(r))) => Some(r.status().as_u16()),
             Err(e) => panic!("{e}"),
         }
     };
-    let bump = || Some(admitted(&state, &req("POST", "/trigger/stopping/bump", b"{}".to_vec()), &std::sync::atomic::AtomicUsize::new(0), 1).status_code);
+    let bump = || Some(admitted(&state, &req("POST", "/trigger/stopping/bump", b"{}".to_vec()), &crate::Slots::new(1, 1)).status_code);
     let passes = Cell::new(0u64);
     let tick = || {
         passes.set(passes.get() + 2);
@@ -4862,7 +5464,7 @@ on.file.created(inbox, (f) => {{
         None
     };
     let deadline = || {
-        scheduler::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+        scheduler::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
         None
     };
     let rows = [
@@ -4888,11 +5490,21 @@ on.file.created(inbox, (f) => {{
     }
     assert_eq!(run_action_named(&state, "stopping", "later", serde_json::json!({})).status_code, 202, "another waits");
 
-    // A run going on, its call out, as the server is told to stop.
+    // Runs going on, their calls out, as the server is told to stop: an action's, and the hour's
+    // clock's tick, on its own thread, which nothing of the clock waits for (an hour on, every
+    // clock is due: the second's tick ends at once).
+    let slow_ticks = shown("slowTicks").as_f64().unwrap_or(0.0);
     gate.shut();
     std::thread::scope(|s| {
         let going_on = s.spawn(|| run_action_named(&state, "stopping", "slow", serde_json::json!({})));
-        let out = gate.out_at_once(1);
+        let ticking = scheduler::start_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, SystemTime::now() + Duration::from_secs(3 * 3600), &scheduler::Ticking::default());
+        let out = gate.out_at_once(2);
+        let since = std::time::Instant::now();
+        while ticking.iter().filter(|t| !t.is_finished()).count() > 1 && since.elapsed() < Duration::from_secs(30) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // What the stopping server waits on (stopping::drain); other tests' runs may hold it too.
+        let held = stopping::DOOR.runs();
         let logged = log_entries(&state, "stopping").len();
         state.store.1.stop();
         let refused: Vec<(&str, bool, Option<u16>)> = rows
@@ -4906,7 +5518,11 @@ on.file.created(inbox, (f) => {{
         let (left_waiting, logged_after) = (waiting(), log_entries(&state, "stopping").len());
         gate.open();
         let answered = going_on.join().unwrap().status_code;
-        assert!(out, "its call went out");
+        for tick in ticking {
+            tick.join().unwrap();
+        }
+        assert!(out, "their calls went out");
+        assert!(held >= 2, "the action's run and the tick hold the door the stop waits on: {held}");
         for (what, ran, told) in refused {
             assert!(!ran, "{what}: told to stop, it doesn't run");
             assert!(told.is_none_or(|s| s == 503), "{what}: its caller is told to try again: {told:?}");
@@ -4916,9 +5532,12 @@ on.file.created(inbox, (f) => {{
         assert_eq!(answered, 200, "the run going on goes on to its end");
     });
     assert_eq!(shown("slow"), "slow");
-    assert_eq!(hits_of(&hits, "/slow"), 1);
+    assert_eq!(shown("slowTicks").as_f64(), Some(slow_ticks + 1.0), "the tick going on goes on to its end");
     let entries = log_entries(&state, "stopping");
     assert!(entries.iter().any(|e| e["kind"] == "trigger" && e["error"].is_null() && e.to_string().contains("/slow")), "its line is written");
+    let tick_lines = entries.iter().filter(|e| e["kind"] == "tick" && e["error"].is_null() && e.to_string().contains("/slow")).count();
+    assert_eq!(tick_lines as f64, slow_ticks + 1.0, "the tick's line is written, as each before it");
+    assert_eq!(hits_of(&hits, "/slow") as f64, 1.0 + slow_ticks + 1.0);
 
     // Every file that starts runs asks first, but those whose runs start only where another asked.
     let asked_elsewhere = [
@@ -4926,9 +5545,6 @@ on.file.created(inbox, (f) => {{
         "firing.rs",
         // An action: over the control plane (`admitted`), or by a flow's call inside a counted run.
         "deploy.rs",
-        // A waiting run going on: at a route (`serve_flow`), a decision (`admitted`) or its
-        // deadline (`scheduler::expire_waiting`).
-        "durable.rs",
     ];
     for entry in std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("src")).unwrap().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -5186,6 +5802,319 @@ fn the_flow_log_records_each_run_well_enough_to_replay_it() {
     assert_eq!(route(&state, &req("GET", "/deployments/todo/document", vec![])).status_code, 200, "kept");
 }
 
+/// A paused or stopped deployment takes no run, and a run waiting in it goes on by none of the ways
+/// one does: a decision (refused, nothing kept of it), its deadline, or a request to its resume
+/// route. Each waits on, and once the deployment runs again each goes on as before.
+#[test]
+fn a_paused_or_stopped_deployments_waiting_runs_wait_on() {
+    use serde_json::{json, Value as J};
+    let mut state = test_state();
+    let text = r#"import { action, approval, event, flow, route } from "holon"
+import state from "state"
+
+flow("held", { port: 18314 })
+
+route.post("/hold", () => {
+  const started = hold()
+  return { token: started.waiting.paid }
+})
+
+export const hold = action(async () => {
+  const paid = await event("paid", { expires: "1h" })
+  state.paid = paid.expired ?? false
+})
+
+export const pay = action(async () => {
+  const decision = await approval("payout", { expires: "1h" })
+  state.decided = decision.approved
+})
+
+route.get("/paid/:token", () => "ok", { resumes: "paid" })
+"#;
+    let ack = json!({ "acknowledge": ["NetworkIngress", "Action(\"hold\")", "Action(\"pay\")", "Await(\"paid\")", "Approval(\"payout/person\")", "StateWrite(\"paid\")", "StateWrite(\"decided\")", "RunsAction(\"held/hold\")"] });
+    let r = deploy_json(&state, "held", stage_text(&state, text), ack);
+    let code = r.status_code;
+    assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
+    let waiting = |state: &AppState| state.deployments.lock().unwrap()["held"].parked.keys().cloned().collect::<BTreeSet<String>>();
+    let serve = |state: &AppState, method: &str, url: &str| {
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "held", &fake_data(method, url, vec![]));
+        (r.status, String::from_utf8(r.body).unwrap())
+    };
+    // Started before anyone signs in, so ada didn't start them and may decide: an approval to
+    // decide, an event its route resumes, and one more of each for their deadlines.
+    let started = |state: &AppState, run: &dyn Fn()| {
+        let before = waiting(state);
+        run();
+        waiting(state).difference(&before).next().cloned().unwrap()
+    };
+    let decided = started(&state, &|| assert!(run_action_named(&state, "held", "pay", json!({})).is_success()));
+    let token = std::cell::RefCell::new(String::new());
+    let resumed = started(&state, &|| *token.borrow_mut() = crate::wire::read_json::<J>(serve(&state, "POST", "/hold").1.as_bytes()).unwrap()["token"].as_str().unwrap().to_string());
+    let timed_out = [
+        started(&state, &|| assert!(run_action_named(&state, "held", "pay", json!({})).is_success())),
+        started(&state, &|| assert!(run_action_named(&state, "held", "hold", json!({})).is_success())),
+    ];
+    let all: BTreeSet<String> = [decided.clone(), resumed.clone()].into_iter().chain(timed_out.iter().cloned()).collect();
+    assert_eq!(waiting(&state), all);
+    let People { ada, .. } = with_people(&mut state);
+    let ask = |method: &str, path: &str, body: J| {
+        let r = route(&state, &req_as(&ada, method, path, if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() }));
+        (r.status_code, crate::wire::read_json::<J>(&body_bytes(r)).unwrap_or(J::Null))
+    };
+    let decide = || ask("POST", &format!("/deployments/held/runs/{decided}/decide"), json!({ "name": "payout", "approve": true }));
+    let decisions = || {
+        let runs = ask("GET", "/deployments/held/runs", J::Null).1["runs"].clone();
+        runs.as_array().unwrap().iter().find(|r| r["run_id"] == decided.as_str()).unwrap()["waiting"][0]["decisions"].clone()
+    };
+    let deadline = || {
+        durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
+        scheduler::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
+    };
+    let paid = format!("/paid/{}", token.borrow());
+
+    for (action, status) in [("pause", "paused"), ("stop", "stopped")] {
+        let (code, said) = ask("POST", &format!("/deployments/held/{action}"), J::Null);
+        assert_eq!((code, said["status"].as_str()), (200, Some(status)), "{said}");
+        let (code, said) = decide();
+        let why = format!("\"held\" is {status}: a run waiting in it goes on once it runs again");
+        assert_eq!((code, said["error"].as_str()), (409, Some(why.as_str())), "{status}: a decision is refused");
+        assert!(decisions().as_array().is_none_or(|d| d.is_empty()), "{status}: nothing kept of it: {}", decisions());
+        assert_eq!(serve(&state, "GET", &paid).0, 503, "{status}: its resume route takes no run");
+        deadline();
+        assert_eq!(waiting(&state), all, "{status}: each waits on");
+        let (code, said) = ask("POST", "/deployments/held/run", J::Null);
+        assert_eq!((code, said["status"].as_str()), (200, Some("running")), "{said}");
+    }
+
+    // Running again, each goes on as before.
+    let (code, said) = decide();
+    assert_eq!((code, said["outcome"].as_str()), (200, Some("approved")), "{said}");
+    assert_eq!(serve(&state, "GET", &paid), (200, "ok".to_string()));
+    assert_eq!(waiting(&state), timed_out.iter().cloned().collect(), "decided and resumed, they went on");
+    deadline();
+    assert!(waiting(&state).is_empty(), "past their deadlines, they went on");
+    let kept = |key: &str| state.deployments.lock().unwrap()["held"].state.as_ref().unwrap().state.lock().unwrap().get(key).cloned();
+    assert_eq!((kept("decided"), kept("paid")), (Some(Value::Boolean(false)), Some(Value::Boolean(true))), "the last of each to go on timed out");
+}
+
+/// A crash while a waiting run's part goes on doesn't make its effects twice, whichever way it
+/// went on (a decision, its resume route, its deadline): it was saved as going on, with what it
+/// was given, before any of the part ran, and the server, starting again, ends it rather than run
+/// it again. Once the part is over, nothing is ended.
+///
+/// **Why:** the deciding approval was saved only after the part's effects (a payout sent), so a
+/// crash in between left the run waiting without its decision: approved again, it paid again.
+#[test]
+fn a_waiting_run_a_crash_cuts_off_as_it_goes_on_is_ended_not_run_again() {
+    use serde_json::{json, Value as J};
+    let (host, hits, gate) = gated_counting_server();
+    gate.shut();
+    let dir = std::env::temp_dir().join(format!("holon-cut-off-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("deployments.json");
+    let mut state = test_state_at(Place::parse(&path.display().to_string()));
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n").unwrap());
+    let text = format!(
+        r#"import {{ action, approval, event, flow, route }} from "holon"
+import api from "host:{host}"
+
+flow("payouts", {{ port: {} }})
+
+route.post("/hold", () => {{
+  const started = hold()
+  return {{ token: started.waiting.paid }}
+}})
+
+export const hold = action(async () => {{
+  const paid = await event("paid", {{ expires: "1h" }})
+  const sent = await api.get("/slow", {{ headers: {{ "x-paid": JSON.stringify(paid.expired ?? false) }} }})
+  return sent.body
+}})
+
+export const pay = action(async () => {{
+  const decision = await approval("payout", {{ expires: "1h", people: 2 }})
+  const sent = await api.get("/slow", {{ headers: {{ "x-approved": JSON.stringify(decision.approved) }} }})
+  return sent.body
+}})
+
+route.get("/paid/:token", () => "ok", {{ resumes: "paid" }})
+"#,
+        free_port()
+    );
+    assert_eq!(deploy_text(&state, &text, &host), "payouts");
+    let People { ada, .. } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let invited = |name: &str| accounts.accept(&accounts.invite(name, "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let (bob, cy) = (invited("bob"), invited("cy"));
+    let state = &state;
+    let waiting = || state.deployments.lock().unwrap()["payouts"].parked.keys().cloned().collect::<BTreeSet<String>>();
+    let serve = |method: &str, url: &str| {
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "payouts", &fake_data(method, url, vec![]));
+        (r.status, String::from_utf8(r.body).unwrap())
+    };
+    let ask = |token: &str, method: &str, path: &str, body: J| {
+        let r = route(state, &req_as(token, method, path, if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() }));
+        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    let started = |start: &dyn Fn()| {
+        let before = waiting();
+        start();
+        waiting().difference(&before).next().cloned().unwrap()
+    };
+    let held = || started(&|| assert_eq!(serve("POST", "/hold").0, 200));
+    let token_of = |run: &str| durable::token_for(run, "paid");
+    // As the server would find it starting again after a crash now: what it loads, once each run
+    // cut off going on is ended, and whether any was.
+    let restarted = || {
+        let mut loaded = load_deployments(&state.deployments_path, &state.store, &state.policy()).unwrap();
+        let ended = durable::end_cut_off_parts(&mut loaded);
+        (loaded, ended)
+    };
+
+    // Each way a waiting run goes on, and the run it is given: its part waits at the gate.
+    let decided = started(&|| assert_eq!(ask(&bob, "POST", "/trigger/payouts/pay", json!({})).0, 202));
+    let (code, said) = ask(&ada, "POST", &format!("/deployments/payouts/runs/{decided}/decide"), json!({ "name": "payout", "approve": true }));
+    assert_eq!(code, 200, "{said}");
+    let decide = || assert_eq!(ask(&cy, "POST", &format!("/deployments/payouts/runs/{decided}/decide"), json!({ "name": "payout", "approve": true })).0, 200);
+    let resumed = held();
+    let resume = || assert_eq!(serve("GET", &format!("/paid/{}", token_of(&resumed))).0, 200);
+    // A way: its name, the point it delivers to, the run it is given, and how it goes on.
+    type Way<'a> = (&'a str, &'a str, &'a dyn Fn() -> String, &'a (dyn Fn() + Sync));
+    let ways: [Way; 3] = [
+        ("a decision", "payout", &|| decided.clone(), &decide),
+        ("its resume route", "paid", &|| resumed.clone(), &resume),
+        ("its deadline", "paid", &held, &|| durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait()),
+    ];
+    for (n, (way, at, run, go_on)) in ways.into_iter().enumerate() {
+        let run = run();
+        std::thread::scope(|s| {
+            let going = s.spawn(go_on);
+            assert!(gate.out_at_once(1), "{way}: its part calls out");
+            let loaded = load_deployments(&state.deployments_path, &state.store, &state.policy()).unwrap();
+            let kept = &loaded["payouts"].parked[&run];
+            assert_eq!(kept.going_on.as_deref(), Some(at), "{way}: saved as going on before its part ran");
+            if way == "a decision" {
+                assert_eq!(kept.waiting[0].decisions.len(), 2, "{way}: with the decision it was given");
+            }
+            let (loaded, ended) = restarted();
+            assert!(ended && !loaded["payouts"].parked.contains_key(&run), "{way}: a crash now, and it is ended, not run again");
+            let noted = loaded["payouts"].events.entries().iter().any(|e| e.kind == "lifecycle" && e.what.contains(&format!("ended run {run}")));
+            assert!(noted, "{way}: its deployment's timeline says so");
+            gate.open();
+            going.join().unwrap();
+            gate.shut();
+        });
+        assert_eq!(hits_of(&hits, "/slow"), n + 1, "{way}: its part called out once");
+        let (loaded, ended) = restarted();
+        assert!(!ended && !loaded["payouts"].parked.contains_key(&run), "{way}: its part over, it is gone, and nothing is ended");
+    }
+    assert!(waiting().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What answers that something was kept doesn't, while the deployments file can't be saved: a
+/// run waiting (its token, from a route or an action), a decision taken, a state put back, a
+/// deploy, a delete, a pause, a stop, a run again, a grant and settings changed. Each says what
+/// was done, and that a restart won't keep it. Saved again, each answers as before.
+#[test]
+fn what_isnt_saved_isnt_answered_as_kept() {
+    use serde_json::{json, Value as J};
+    let dir = std::env::temp_dir().join(format!("holon-unsaved-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("deployments.json");
+    let mut state = test_state_at(Place::parse(&path.display().to_string()));
+    let text = format!(
+        r#"import {{ action, approval, event, flow, route }} from "holon"
+import state from "state"
+
+flow("payouts", {{ port: {} }})
+
+route.post("/hold", () => hold())
+
+export const hold = action(async () => {{
+  const paid = await event("paid", {{ expires: "1h" }})
+  state.paid = paid.expired ?? false
+}})
+
+export const pay = action(async () => {{
+  const decision = await approval("payout", {{ expires: "1h", people: 2 }})
+  state.paid = decision.approved
+}})
+
+export const bump = action(() => {{
+  state.n = (state.n ?? 0) + 1
+}})
+
+route.get("/paid/:token", () => "ok", {{ resumes: "paid" }})
+"#,
+        free_port()
+    );
+    let plan = holon_author::agent::plan(&text).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let counter = to_hex(&stage_text(&state, COUNTER));
+    let People { ada, .. } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let ask = |token: &str, method: &str, path: &str, body: J| {
+        let r = route(&state, &req_as(token, method, path, if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() }));
+        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    let preview = |slug: &str, unit: &str| crate::wire::read_json::<J>(ask(&ada, "POST", "/deploy/preview", json!({ "slug": slug, "unit": unit })).1.as_bytes()).unwrap()["needs_approval"].clone();
+    let deploy = |slug: &str, unit: &str| ask(&ada, "POST", "/deploy", json!({ "slug": slug, "unit": unit, "acknowledge": preview(slug, unit) }));
+    let (code, said) = deploy("payouts", &plan.unit);
+    assert_eq!(code, 200, "{said}");
+    let serve = || {
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, "payouts", &fake_data("POST", "/hold", vec![]));
+        (r.status, String::from_utf8(r.body).unwrap())
+    };
+    // Before the file can't be saved: a run waiting for a decision bob started, and a run whose
+    // state is put back.
+    assert_eq!(ask(&bob, "POST", "/trigger/payouts/pay", json!({})).0, 202);
+    let runs = crate::wire::read_json::<J>(ask(&ada, "GET", "/deployments/payouts/runs", J::Null).1.as_bytes()).unwrap();
+    let waiting_run = runs["runs"][0]["run_id"].as_str().unwrap().to_string();
+    let (code, said) = ask(&ada, "POST", "/trigger/payouts/bump", json!({}));
+    assert_eq!(code, 200, "{said}");
+    let bumped = crate::wire::read_json::<J>(said.as_bytes()).unwrap()["seq"].as_u64().unwrap();
+
+    // A folder where the file goes: it can't be written.
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let decide = || ask(&ada, "POST", &format!("/deployments/payouts/runs/{waiting_run}/decide"), json!({ "name": "payout", "approve": true }));
+    // Each with the status it is answered with: a route's start of a run that waits answers the
+    // route's run (which says it to its caller here) with `{error, message}`, as a start that
+    // didn't run.
+    type Answer<'a> = &'a dyn Fn() -> (u16, String);
+    let rows: [(&str, Answer, u16, &str); 11] = [
+        ("a route starts a run that waits", &serve, 200, "the action's run waits, but"),
+        ("an action's run waits", &|| ask(&ada, "POST", "/trigger/payouts/pay", json!({})), 500, "the action's run waits, but"),
+        ("a decision is taken", &decide, 500, "your decision is taken, but"),
+        ("a state is put back", &|| ask(&ada, "POST", "/deployments/payouts/restore", json!({ "run": bumped, "state": true })), 500, "is put back, in session"),
+        ("settings change", &|| ask(&ada, "POST", "/deployments/payouts/settings", json!({ "agents_propose": false })), 500, "settings are changed, but"),
+        ("a deploy", &|| deploy("counter", &counter), 500, "\"counter\" is deployed, but"),
+        ("a grant changes", &|| ask(&ada, "POST", "/deployments/counter/grant", json!({ "lower": { "keep_runs": 3 } })), 500, "grant is changed, but"),
+        ("a pause", &|| ask(&ada, "POST", "/deployments/counter/pause", J::Null), 500, "\"counter\" is paused, but"),
+        ("a run again", &|| ask(&ada, "POST", "/deployments/counter/run", J::Null), 500, "\"counter\" is running, but"),
+        ("a stop", &|| ask(&ada, "POST", "/deployments/counter/stop", J::Null), 500, "\"counter\" is stopped, but"),
+        ("a delete", &|| ask(&ada, "DELETE", "/deployments/counter", J::Null), 500, "\"counter\" is deleted, but"),
+    ];
+    for (what, answer, status, said) in rows {
+        let (code, text) = answer();
+        assert_eq!(code, status, "{what}: {text}");
+        let text = text.replace("\\\"", "\"");
+        assert!(text.contains(said) && text.contains("deployments file couldn't be written"), "{what}: {text}");
+    }
+    // Saved again, each answers as before.
+    std::fs::remove_dir(&path).unwrap();
+    let (code, text) = serve();
+    assert!(code == 200 && text.contains("\"waiting\""), "{text}");
+    assert_eq!(ask(&ada, "POST", "/trigger/payouts/pay", json!({})).0, 202);
+    assert_eq!(deploy("counter", &counter).0, 200);
+    assert_eq!(ask(&ada, "POST", "/deployments/counter/pause", J::Null).0, 200);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Run, pause, stop, and the sessions a deployment keeps until it is deleted.
 #[test]
 fn a_deployment_runs_pauses_stops_and_keeps_every_session() {
@@ -5281,7 +6210,6 @@ fn a_request_sent_through_the_control_plane_reaches_the_server() {
 #[test]
 fn a_fire_in_progress_does_not_stall_the_table() {
     use std::sync::mpsc;
-    use std::time::Duration;
 
     let mut state = test_state();
     let path = unique_temp_path("stall");
@@ -5301,13 +6229,16 @@ fn a_fire_in_progress_does_not_stall_the_table() {
     std::thread::scope(|s| {
         // Deploying "b" persists, and persisting needs "a"'s state, so this waits for "a".
         let deploying = s.spawn(|| deploy(&state, "b", a, serde_json::json!(["Action(\"put\")", "StateWrite(\"k\")"])));
-        std::thread::sleep(Duration::from_millis(200));
+        // Once "b" is in the table, which a deploy does just before it persists (looked at
+        // without waiting for the table, which a stalled persist would hold): not 200 ms later,
+        // which a loaded machine may spend before the deploy has begun.
+        soon(|| state.deployments.try_lock().is_some_and(|table| table.contains_key("b")));
 
         // ...but the table itself must stay usable meanwhile.
         let (tx, rx) = mpsc::channel();
         let shared = &state;
         s.spawn(move || tx.send(route(shared, &req("GET", "/deployments", vec![])).status_code).unwrap());
-        let listed = rx.recv_timeout(Duration::from_secs(5));
+        let listed = rx.recv_timeout(EVENTUALLY);
 
         // Let "a" finish before asserting, so a failure reports instead of hanging the scope.
         drop(mid_fire);
@@ -5430,6 +6361,7 @@ fn state_persists_across_a_simulated_restart() {
             sweeps: Default::default(),
             checked: Default::default(),
             proposals: Default::default(),
+            replays: Default::default(),
         };
         let writer = stage_writer(&state, "counter");
         let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"counter\")"] });
@@ -5463,6 +6395,7 @@ fn state_persists_across_a_simulated_restart() {
         sweeps: Default::default(),
         checked: Default::default(),
         proposals: Default::default(),
+        replays: Default::default(),
     };
     assert_eq!(put(&state2, "writer", "after-restart").status_code, 200);
     let s = body_json(route(&state2, &req("GET", "/deployments/writer/state", vec![])));
@@ -6213,7 +7146,7 @@ export const look = action((input) => notes[input.id])
     // A WebSocket's message.
     let ws_number = "6011000000000004";
     let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{port}/ws").into_client_request().unwrap(), stream).unwrap();
     ws.send(Message::text(format!(r#"{{"number":"{ws_number}"}}"#))).unwrap();
     let echoed = loop {
@@ -6301,23 +7234,26 @@ fn every_body_the_control_plane_reads_is_read_by_the_deadline() {
 
 /// A body that stops, or trickles in, holds its request's place no longer than the deadline, on
 /// every route here that reads one: past it the place is given back, and one that trickles is
-/// told 408. A whole body goes through as before.
+/// told 408. A whole body goes through as before. The deadline is a short one of the test's own,
+/// on the threads that answer its server (`http::in_test`): every other test reads bodies by the
+/// server's, so none is told 408 for a body a loaded machine was slow to hand over (audit R50).
 #[test]
 fn a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline() {
     use std::io::Write as _;
     use std::net::TcpStream;
-    use std::sync::atomic::{AtomicUsize, Ordering::Acquire};
+    use std::sync::atomic::{AtomicBool, Ordering::Acquire, Ordering::Release};
     use std::time::Instant;
-    static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+    let deadline = Duration::from_millis(600);
     let paths = ["/unit", "/flows", "/admin/storage"];
     let most = paths.len();
+    let slots: &'static crate::Slots = Box::leak(Box::new(crate::Slots::new(most, most)));
     let state: &'static AppState = Box::leak(Box::new(test_state()));
-    let server = rouille::Server::new("127.0.0.1:0", move |request| admitted(state, request, &IN_FLIGHT, most)).unwrap();
+    let server = rouille::Server::new("127.0.0.1:0", move |request| crate::http::in_test::with_body_deadline(deadline, || admitted(state, request, slots))).unwrap();
     let at = server.server_addr();
     let (_, stop) = server.stoppable();
     let send = |path: &str, body: &[u8], length: usize| {
         let mut s = TcpStream::connect(at).unwrap();
-        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        s.set_read_timeout(Some(EVENTUALLY)).unwrap();
         write!(s, "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{TEST_PORT}\r\nContent-Type: application/json\r\nContent-Length: {length}\r\n\r\n").unwrap();
         s.write_all(body).unwrap();
         s
@@ -6326,42 +7262,37 @@ fn a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline() {
         let mut head = [0u8; 12];
         s.read_exact(&mut head).map(|_| String::from_utf8_lossy(&head[9..]).into_owned()).unwrap_or_else(|e| format!("no answer: {e}"))
     };
-    let until = |what: &str, by: Duration, done: &dyn Fn() -> bool| {
-        let started = Instant::now();
-        while !done() {
-            assert!(started.elapsed() < by, "{what}");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    };
+    let until = |what: &str, done: &dyn Fn() -> bool| assert!(soon(done), "{what}");
 
     // Bodies that stop part way: each holds its place while it waits, every place is held...
     // (A body of 1 KiB or less tiny_http reads itself before handing the request on, holding no
     // place: these say they are longer.)
     let long = 100_000;
     let stopped: Vec<TcpStream> = paths.iter().map(|path| send(path, b"{\"a\"", long)).collect();
-    until("every route reads its body", Duration::from_secs(5), &|| IN_FLIGHT.load(Acquire) == most);
+    until("every route reads its body", &|| slots.taken() == most);
     assert_eq!(status(&mut send("/unit", b"{}", 2)), "503", "every place is held");
-    // ...and each gives it back by the deadline.
-    until("a stopped body held its place past the deadline", BODY_DEADLINE + Duration::from_secs(2), &|| IN_FLIGHT.load(Acquire) == 0);
+    // ...and each gives it back, their connections still open: only the deadline lets them go.
+    until("a stopped body held its place past the deadline", &|| slots.taken() == 0);
 
-    // A body that trickles in, a byte every 100ms, is told 408 at the deadline.
+    // A body that trickles in, a byte every 100ms for as long as it isn't answered, is told 408
+    // at the deadline: bytes still coming don't keep it.
     for path in paths {
+        let started = Instant::now();
         let mut s = send(path, b"", long);
         let mut trickle = s.try_clone().unwrap();
-        std::thread::spawn(move || {
-            for _ in 0..99 {
+        let answered = std::sync::Arc::new(AtomicBool::new(false));
+        let told = std::sync::Arc::clone(&answered);
+        let trickling = std::thread::spawn(move || {
+            while !told.load(Acquire) && trickle.write_all(b" ").is_ok() {
                 std::thread::sleep(Duration::from_millis(100));
-                if trickle.write_all(b" ").is_err() {
-                    return;
-                }
             }
         });
-        let started = Instant::now();
         assert_eq!(status(&mut s), "408", "{path}: a body that trickles is cut off");
-        let took = started.elapsed();
-        assert!(took >= BODY_DEADLINE && took < BODY_DEADLINE + Duration::from_secs(2), "{path}: told after {took:?}");
+        assert!(started.elapsed() >= deadline, "{path}: told at the deadline, not before");
+        answered.store(true, Release);
+        trickling.join().unwrap();
     }
-    until("a trickled body held its place", Duration::from_secs(2), &|| IN_FLIGHT.load(Acquire) == 0);
+    until("a trickled body held its place", &|| slots.taken() == 0);
 
     // A whole body is read as before: the route answers it.
     for path in paths {
@@ -6370,6 +7301,86 @@ fn a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline() {
     }
     drop(stopped);
     let _ = stop.send(());
+}
+
+/// A sign-out answers 204 only when it ended the sign-in it came with, which is refused from
+/// then on; whatever else it came with goes on, and the answer says why. For each way a caller
+/// is let in (a session, a provider's sign-in, an agent's or a service's API token, the run
+/// file's token), and a session whose ending can't be kept: what sign-out answers, and whether
+/// the same credential is let in after. 204 exactly when it isn't, and a second sign-out of
+/// what ended finds it ended.
+#[test]
+fn a_sign_out_answers_204_only_when_it_ended_a_sign_in() {
+    use crate::oidc::tests::{provider, token};
+    let dir = std::env::temp_dir().join(format!("holon-sign-out-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut state = test_state();
+    let accounts = std::sync::Arc::new(crate::accounts::Accounts::open(dir.join("accounts.json").to_str().unwrap()).unwrap());
+    state.access = access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+    let pw = "correct horse battery";
+    let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", pw).unwrap();
+    accounts.set_email("ada", Some("ada@example.com".into()), "ada").unwrap();
+    accounts.use_oidc(provider());
+    accounts.add("scout", crate::accounts::Kind::Agent, "agent", "ada", "ada").unwrap();
+    accounts.add("ci", crate::accounts::Kind::Service, "editor", "ada", "ada").unwrap();
+    let call = |method: &str, url: &str, token: &str| {
+        let mut headers = vec![("Host".to_string(), "localhost:7420".to_string()), ("Authorization".to_string(), format!("Bearer {token}"))];
+        let body = if method == "POST" { b"{}".to_vec() } else { vec![] };
+        if method == "POST" {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        }
+        let r = route(&state, &Request::fake_http(method, url, headers, body));
+        let status = r.status_code;
+        (status, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    let let_in = |token: &str| call("GET", "/auth/me", token).0 == 200;
+    // What it signs in with, how it is made, the status sign-out answers, and what it says.
+    type Way<'a> = (&'a str, Box<dyn Fn() -> String + 'a>, u16, &'a str);
+    let ways: Vec<Way> = vec![
+        ("a session", Box::new(|| accounts.sign_in("ada", pw).unwrap().0), 204, ""),
+        ("a provider's sign-in", Box::new(|| token(serde_json::json!({ "email": "ada@example.com", "email_verified": true, "nonce": rand::random::<u32>() }))), 204, ""),
+        ("an agent's API token", Box::new(|| accounts.create_token("scout", "live", "ada").unwrap().0), 409, "revoke it"),
+        ("a service's API token", Box::new(|| accounts.create_token("ci", "live", "ada").unwrap().0), 409, "revoke it"),
+        ("the run file's token", Box::new(|| accounts.new_local("bma")), 409, "ends when the server stops"),
+    ];
+    for (way, make, want, says) in &ways {
+        let credential = make();
+        assert!(let_in(&credential), "{way}: let in before");
+        let (status, said) = call("POST", "/auth/sign-out", &credential);
+        assert_eq!(status, *want, "{way}: {said}");
+        assert!(said.contains(says), "{way}: {said}");
+        assert_eq!(let_in(&credential), status != 204, "{way}: let in after a {status} exactly when it wasn't ended");
+        if status == 204 {
+            assert_eq!(call("POST", "/auth/sign-out", &credential).0, 401, "{way}: a second sign-out finds it ended");
+        }
+    }
+    // Past the gate, as a sign-out raced by another finds it (the gate let it in a moment
+    // before): one that had ended, or a provider's token no longer accepted, ends nothing, and
+    // answers so.
+    let past_gate = |credential: &str| {
+        let headers = vec![("Authorization".to_string(), format!("Bearer {credential}")), ("Content-Type".to_string(), "application/json".to_string())];
+        let r = crate::auth::route(&state, &Request::fake_http("POST", "/auth/sign-out", headers, b"{}".to_vec()), &access::Caller::default()).unwrap();
+        let status = r.status_code;
+        (status, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    let ended = accounts.sign_in("ada", pw).unwrap().0;
+    assert_eq!(call("POST", "/auth/sign-out", &ended).0, 204);
+    let (status, said) = past_gate(&ended);
+    assert_eq!((status, said.contains("had ended already")), (401, true), "a session that had ended: {said}");
+    let signed = token(serde_json::json!({ "email": "ada@example.com", "email_verified": true, "nonce": 7 }));
+    let not_accepted = format!("{}.{}", signed.rsplit_once('.').unwrap().0, "AAAA");
+    assert_eq!(past_gate(&not_accepted).0, 401, "a provider's token not accepted");
+    assert!(let_in(&signed), "and the one it was made from goes on");
+    // A session whose ending can't be kept goes on, and the answer says so.
+    let session = accounts.sign_in("ada", pw).unwrap().0;
+    std::fs::remove_dir_all(&dir).unwrap();
+    let (status, said) = call("POST", "/auth/sign-out", &session);
+    assert_eq!(status, 500, "{said}");
+    assert!(said.contains("still signed in") && let_in(&session), "{said}");
+    std::fs::create_dir_all(&dir).unwrap();
+    assert_eq!(call("POST", "/auth/sign-out", &session).0, 204, "kept again, it ends");
+    assert!(!let_in(&session) && let_in(&ada), "only the one signed out");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -6704,14 +7715,34 @@ fn verify_checks_that_each_runs_state_follows_from_the_one_before() {
     let s = report.states.as_ref().unwrap();
     assert_eq!((&s.began, &s.breaks), (&vec![1, 2], &vec![]));
 
-    // A second apart, each is checked whole: the first has no run before it here.
+    // A second apart, each is checked whole: the first began from nothing, as a log's first does.
     let apart = rechained(&|_, _| {});
     let report = verify::check(&apart, None, &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert_eq!(states(&apart), (vec![1, 2], vec![], vec![0, 1, 2], vec![]));
     let text = verify::describe(&report, None);
-    assert!(text.contains("state: 2 runs began from the state the run before them left, 3 left what their writes make of the one they began with"), "{text}");
-    assert!(text.contains("state not checked (1 run: 0), where it began: no run before it here"), "{text}");
+    assert!(
+        text.contains("state: run 0 began from nothing, as a log's first does; 2 runs began from the state the run before them left, 3 left what their writes make of the one they began with"),
+        "{text}"
+    );
+    assert!(report.complete() && !text.contains("state not checked") && text.ends_with("ok\n"), "{text}");
+    // From its second run on, an export begins after the log's first: what the first left, which
+    // the second began from, isn't in it. Nothing fails, and not everything was checked: exit 3.
+    let later = verify::Export { lines: apart.lines[1..].to_vec(), ..serde_json::from_value(serde_json::to_value(&apart).unwrap()).unwrap() };
+    let report = verify::check(&later, None, &BTreeMap::new());
+    let text = verify::describe(&report, None);
+    assert!(report.ok() && !report.complete(), "{text}");
+    assert_eq!(report.states.as_ref().unwrap().unchecked[verify::NONE_BEFORE], vec![1], "{text}");
+    assert!(text.ends_with("INCOMPLETE: nothing here fails, but not every run's state was checked (said above)\n"), "{text}");
+    // The log's first line, saying it began from a state: not from nothing, so not checked.
+    let said_more = rechained(&|i, v| {
+        if i == 0 {
+            v["state_before"] = serde_json::json!({ "k": { "type": "Text", "value": "planted" } });
+        }
+    });
+    let report = verify::check(&said_more, None, &BTreeMap::new());
+    assert_eq!(report.states.as_ref().unwrap().unchecked.get(verify::NOT_FROM_NOTHING), Some(&vec![0]), "{}", verify::describe(&report, None));
+    assert!(!report.complete(), "{}", verify::describe(&report, None));
 
     // Run 1 says it left another state: it re-runs as before, but its state doesn't follow, nor
     // does run 2's.
@@ -6725,10 +7756,10 @@ fn verify_checks_that_each_runs_state_follows_from_the_one_before() {
     assert!(!report.ok());
     let breaks = vec![
         (1, "the state it left isn't the one it began with, its writes applied".to_string()),
-        (2, "it began from a state the run before it (run 1) didn't leave, nor a run beside it".to_string()),
+        (2, "it began after run 1's commit, from a state other than the one that run left".to_string()),
     ];
     assert_eq!(states(&forged).3, breaks);
-    assert!(verify::describe(&report, None).contains("run 2's state DOESN'T FOLLOW: it began from a state the run before it (run 1) didn't leave"));
+    assert!(verify::describe(&report, None).contains("run 2's state DOESN'T FOLLOW: it began after run 1's commit, from a state other than the one that run left"));
 
     // Run 2 began from the state run 1 began with, as it would have beside it: it follows, and
     // what it left (beside another) is checked in no later run's state. Its line is without the
@@ -7098,7 +8129,8 @@ fn a_replay_computes_with_a_secret_on_a_budget_of_its_own() {
         let unit = stage_text(&state, &signer(n));
         let loaded = units::closure(&state.store, unit).unwrap_or_else(|_| panic!("the version's units"));
         let resolver = holon_module::WithEngine::new(&loaded, holon_module::shared());
-        let r = verify::replay(&export, unit, &resolver, 1, limits);
+        // No deadline to speak of: each run held to `limits` alone.
+        let r = verify::replay(&export, unit, &resolver, 1, &verify::Granted { request: limits, clock: limits }, std::time::Instant::now() + Duration::from_secs(3600), &BTreeSet::new());
         (r.differ, r.cant_tell, r.runs[0].why.join("; "))
     };
     let computed = |r: (usize, usize, String)| r.0 == 1 && r.2 == "its answer";
@@ -7145,8 +8177,16 @@ fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() 
     assert!(export.lines[0].contains(&signature), "it holds the signature the run answered");
     let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
     assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
-    assert_eq!(report.given, BTreeMap::from([(0, 1)]), "one node stood in for: the signing");
-    assert!(verify::describe(&report, None).contains("1 run: 0 checked given what the log kept for 1 node fed a secret"), "{}", verify::describe(&report, None));
+    let stood = &report.given[&0];
+    assert_eq!(stood.iter().map(|s| s.leaf.as_str()).collect::<Vec<_>>(), ["hmac_sha256"], "one node stood in for: the signing");
+    assert!(stood[0].secrets[0].starts_with("signing_key v1 #") && stood[0].tokens.is_empty(), "named by its secret, as the entry shows it: {stood:?}");
+    let said = verify::describe(&report, None);
+    assert!(said.contains("1 run: 0 checked given what the log kept for 1 node fed a secret"), "{said}");
+    // The report names the step it took on trust, and the line that says the run matched says it
+    // matched given that step: a matching run never reads as more than it is.
+    assert!(said.contains("re-ran 1 runs: each produced what its log entry says, 1 of them given what the log kept for a step (named below)"), "{said}");
+    assert!(said.contains("    hmac_sha256 fed the secret signing_key v1 #") && said.contains(": 1 node in 1 run: 0, as recorded"), "{said}");
+    assert!(!said.contains(value), "nothing of the value: {said}");
     assert!(report.ok(), "{}", verify::describe(&report, None));
 
     let forged_signature: String = signature.chars().rev().collect();
@@ -7171,7 +8211,9 @@ fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() 
     let (forged, head) = rechained(export.lines[0].replace(&signature, &forged_signature));
     let report = verify::check(&forged, Some(&head), &BTreeMap::new());
     assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
-    assert_eq!(report.given, BTreeMap::from([(0, 1)]));
+    assert_eq!(report.given[&0].len(), 1);
+    // Which is why the report names it: the forged signature rests on this line alone.
+    assert!(verify::describe(&report, None).contains("    hmac_sha256 fed the secret signing_key v1 #"), "{}", verify::describe(&report, None));
 }
 
 /// A condition reads a value that isn't a Boolean as JavaScript does (`!""` is true, `[]` is
@@ -7228,7 +8270,7 @@ fn a_look_alike_of_a_placeholder_is_computed_with_not_taken_as_given() {
     let head = recorder::line_hash(&line);
     let forged = verify::Export { lines: vec![line], head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
     let report = verify::check(&forged, Some(&head), &BTreeMap::new());
-    assert_eq!(report.reruns, vec![(0, verify::Rerun::Differs("its outputs".into()))], "{}", verify::describe(&report, None));
+    assert_eq!(report.reruns, vec![(0, verify::Rerun::Differs("its outputs, the steps it took (its timeline), what it answered".into()))], "{}", verify::describe(&report, None));
 }
 
 /// A run that received a real secret or a real token was given its id from the value, which the
@@ -7264,6 +8306,277 @@ fn a_run_that_received_a_secret_or_a_token_keeps_its_logged_run_id() {
     assert!(verify::describe(&report, None).contains("checked given the run id the log kept"), "{}", verify::describe(&report, None));
 }
 
+/// **Guards:** a secret is the secret in every spelling JSON gives it. A flow sends its secret as
+/// it is and written out as JSON one, two and three deep (a stringified payload inside a JSON
+/// body is two); writes each of those to a collection; and, in a run that was given the secret,
+/// passes on to another host what a caller sent, which is the secret in each such spelling,
+/// one longer than a mark is looked for, and in a spelling of another writer's (`\u0022` for a
+/// quote); it also writes it out seven deep itself, and joins what a caller sent into a longer
+/// text. For a secret with a quote and a backslash, one with newlines (a PEM block's shape), one
+/// with a control character, and a plain token: no run's record holds the secret in any
+/// spelling, no write of it lands, and it isn't sent to a host its approval doesn't show. A mark
+/// stands in place however deep, whatever the secret holds; only a text no mark can be put into
+/// is withheld whole, as `‹respelled:secret:k›`, and `holon verify` calls no such run changed,
+/// one that computed on such a text included.
+///
+/// **Why:** the record found a secret as it is and written out once, and the guards on a write
+/// and a send found it only as it is (audit R67). A password with a quote in it, written out
+/// once, reached the store; written out twice, it stood in the run's record in the clear, and
+/// in the record of every later run that read it back.
+///
+/// **If it fails:** a place that finds a value by its text looks for fewer spellings than
+/// another writes (`secrets::spellings`, `secrets::holds_spelled`): the row says which secret,
+/// how deep, and which of the three it reached.
+#[test]
+fn a_secret_is_found_in_every_spelling_json_gives_it() {
+    let (shown, _) = counting_server();
+    let (other, other_hits) = counting_server();
+    let state = claims_state("");
+    let fixtures: [(&str, &str, u16); 4] = [
+        ("quoted", "pa\"ss\\word-123456", 18391),
+        ("lined", "-----BEGIN KEY-----\nabcDEF123456ghiJKL\n-----END KEY-----", 18392),
+        ("control", "tab\there-and-\u{1}-123456", 18393),
+        ("plain", "plain-token-value-123456", 18394),
+    ];
+    // The secret written out as JSON `deep` times, as a text: what a caller could send, and what
+    // no record may hold.
+    let spelled = |secret: &str, deep: usize| {
+        let mut text = secret.to_string();
+        for _ in 0..deep {
+            let quoted = serde_json::to_string(&text).unwrap();
+            text = quoted[1..quoted.len() - 1].to_string();
+        }
+        text
+    };
+    // Every text in a logged entry, keys included.
+    fn texts(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            serde_json::Value::Array(xs) => xs.iter().for_each(|x| texts(x, out)),
+            serde_json::Value::Object(o) => o.iter().for_each(|(k, x)| {
+                out.push(k.clone());
+                texts(x, out)
+            }),
+            _ => {}
+        }
+    }
+    let mut wrong: Vec<String> = Vec::new();
+    for (name, secret, port) in fixtures {
+        let nested = ["k", "JSON.stringify({ key: k })", "JSON.stringify({ p: JSON.stringify({ key: k }) })", "JSON.stringify({ q: JSON.stringify({ p: JSON.stringify({ key: k }) }) })"];
+        let routes: String = nested
+            .iter()
+            .enumerate()
+            .map(|(deep, written)| {
+                format!(
+                    "route.post(\"/send{deep}\", async (req) => {{\n  const got = await shown.post(\"/a\", {{ body: {written} }})\n  return {{ status: got.status }}\n}})\n\nroute.post(\"/write{deep}\", (req) => {{\n  seen[\"w{deep}\"] = {{ v: {written} }}\n  return {{ ok: true }}\n}})\n\n"
+                )
+            })
+            .collect();
+        // Written out seven deep by the flow itself, and joined into a longer text; and what a
+        // caller sent, joined into one: a step computed on a text the record may withhold whole.
+        let seven = (0..7).fold("k".to_string(), |inner, _| format!("JSON.stringify({{ p: {inner} }})"));
+        let routes = format!(
+            "{routes}route.post(\"/deep\", async (req) => {{\n  const got = await shown.post(\"/a\", {{ body: `deep ${{{seven}}}` }})\n  return {{ status: got.status }}\n}})\n\nroute.post(\"/join\", async (req) => {{\n  const got = await shown.post(\"/a\", {{ body: `said ${{req.body}}` }})\n  return {{ status: got.status }}\n}})\n\nroute.post(\"/echo\", (req) => ({{ got: req.body }}))\n\n"
+        );
+        let text = format!(
+            "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport shown from \"host:{shown}\"\nimport other from \"host:{other}\"\nimport seen from \"collection:seen\"\n\nflow(\"spelled-{name}\", {{ port: {port} }})\n\n{routes}route.post(\"/pass\", async (req) => {{\n  const authed = await shown.post(\"/a\", {{ body: k }})\n  const got = await other.post(\"/b\", {{ body: req.body }})\n  return {{ authed: authed.status, passed: got.error ?? got.status }}\n}})\n\nroute.get(\"/read\", () => seen.list())\n"
+        );
+        let slug = deploy_text_to(&state, &text, &[&shown, &other]);
+        let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+
+        // (what the run is, what it is expected to answer or hold)
+        let mut runs: Vec<String> = Vec::new();
+        for deep in 0..nested.len() {
+            let (status, body, _) = data_call(&state, &slug, "POST", &format!("/send{deep}"), "");
+            if status != 200 {
+                wrong.push(format!("{name}, sent {deep} deep: answered {status} {body}"));
+            }
+            runs.push(format!("sent {deep} deep"));
+            let (status, body, _) = data_call(&state, &slug, "POST", &format!("/write{deep}"), "");
+            if status != 200 {
+                wrong.push(format!("{name}, written {deep} deep: answered {status} {body}"));
+            }
+            runs.push(format!("written {deep} deep"));
+        }
+        {
+            let (status, body, _) = data_call(&state, &slug, "POST", "/deep", "");
+            if status != 200 {
+                wrong.push(format!("{name}, sent 7 deep in a longer text: answered {status} {body}"));
+            }
+            runs.push("sent 7 deep in a longer text".into());
+        }
+        // What a caller sends: each spelling eight deep and more, then one longer than the
+        // record looks for (where there is one), then another writer's: its first character as
+        // `\uXXXX`, and each quote as `\u0022`.
+        let first = secret.chars().next().unwrap();
+        let escaped = format!("{{\"v\":\"\\u{:04x}{}\"}}", first as u32, spelled(&secret[first.len_utf8()..], 1));
+        let mut sent: Vec<(String, String)> = (0..=8).map(|deep| (format!("passed on {deep} deep"), spelled(secret, deep))).collect();
+        if let Some(long) = (1..40).map(|deep| spelled(secret, deep)).find(|s| s.len() > 64 * 1024) {
+            sent.push(("passed on too long to mark".into(), long));
+        }
+        sent.push(("passed on with its first character escaped".into(), escaped.clone()));
+        sent.push(("passed on with its quotes as \\u0022".into(), format!("{{\"v\":\"{}\"}}", spelled(secret, 1).replace("\\\"", "\\u0022"))));
+        {
+            let (status, body, _) = data_call(&state, &slug, "POST", "/join", &escaped);
+            if status != 200 {
+                wrong.push(format!("{name}, joined with its first character escaped: answered {status} {body}"));
+            }
+            runs.push("joined with its first character escaped".into());
+            // And answered: the host writes the answer out itself, a text no step made.
+            let (status, _, _) = data_call(&state, &slug, "POST", "/echo", &escaped);
+            if status != 200 {
+                wrong.push(format!("{name}, answered with its first character escaped: answered {status}"));
+            }
+            runs.push("answered with its first character escaped".into());
+        }
+        for (what, body) in &sent {
+            let (status, answer, _) = data_call(&state, &slug, "POST", "/pass", body);
+            let passed = serde_json::from_str::<serde_json::Value>(&answer).ok().map(|a| a["passed"].clone());
+            if status != 200 || passed != Some("blocked_secret".into()) {
+                wrong.push(format!("{name}, {what}: not refused the host: {status} {passed:?}"));
+            }
+            runs.push(what.clone());
+        }
+        // Nothing of it was written: the store keeps no text that holds it, however spelled.
+        let (_, kept, _) = data_call(&state, &slug, "GET", "/read", "");
+        let mut stored = Vec::new();
+        texts(&serde_json::from_str(&kept).unwrap_or_default(), &mut stored);
+        runs.push("read back".into());
+
+        let entries = log_entries(&state, &slug);
+        assert_eq!(entries.len(), runs.len(), "{name}");
+        let spellings: Vec<String> = (0..=10).map(|deep| spelled(secret, deep)).collect();
+        for (entry, what) in entries.iter().zip(&runs) {
+            let mut held = Vec::new();
+            texts(entry, &mut held);
+            if let Some(deep) = spellings.iter().position(|spelling| held.iter().any(|t| t.contains(spelling.as_str()))) {
+                wrong.push(format!("{name}, {what}: its record holds the secret, written out {deep} deep"));
+            }
+            if what.starts_with("written") && entry["performed"].as_array().is_some_and(|p| !p.is_empty()) {
+                wrong.push(format!("{name}, {what}: the write was performed"));
+            }
+            // Longer than a mark is looked for, or in another writer's spelling: the text whole.
+            // However deep otherwise, a mark in place, whatever the secret holds: how a record
+            // is shaped says nothing of that.
+            let whole = what.contains("too long") || what.contains("escaped") || what.contains("u0022") && secret.contains('"');
+            if whole != held.iter().any(|t| t.contains("‹respelled:secret:k›")) {
+                wrong.push(format!("{name}, {what}: a text of its record withheld whole isn't {whole}"));
+            }
+            if what.starts_with("sent") && !held.iter().any(|t| t.contains("‹secret:k")) {
+                wrong.push(format!("{name}, {what}: its record marks no secret"));
+            }
+        }
+        if let Some(deep) = spellings.iter().position(|spelling| stored.iter().any(|t| t.contains(spelling.as_str()))) {
+            wrong.push(format!("{name}: the store keeps the secret, written out {deep} deep"));
+        }
+        // And run again from its record, no run reads as changed.
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let report = verify::check(&export, None, &BTreeMap::new());
+        for (seq, rerun) in &report.reruns {
+            if let verify::Rerun::Differs(why) = rerun {
+                wrong.push(format!("{name}, {}: holon verify says it differs: {why}", runs[*seq as usize]));
+            }
+        }
+        if !report.ok() {
+            wrong.push(format!("{name}: {}", verify::describe(&report, None)));
+        }
+    }
+    assert_eq!(other_hits.lock().unwrap().get("/b").copied().unwrap_or(0), 0, "the host no approval shows was sent something");
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// **Guards:** what a line keeps of an answer is cut after its values are marked, never before. A
+/// route answers what a caller sent, as a text and inside JSON; a caller sends more than a line
+/// keeps (64 KiB) with the deployment's secret in it, placed well before where the line cuts,
+/// at each place across it, just after it, and at the end. For a plain token and for a secret
+/// JSON spells another way: the line holds no part of the secret, its answer is no longer than a
+/// line keeps and ends where no mark is cut short, and `holon verify`, which cuts what the run
+/// answers again the same way, runs each run again and finds it the same.
+///
+/// **Why:** the answer was cut at 64 KiB as the run had it, and marked afterwards (audit R68): a
+/// secret lying across the cut left its first part in the line, the whole of it no longer there
+/// to find. And a text read by its shape (JSON, for a key whose value is never kept) was no
+/// longer one once cut.
+///
+/// **If it fails:** an answer is cut somewhere before its entry is redacted (`recorder::body_text`
+/// is whole; `firing::cut_answer` cuts, in `redacted_line`), or verify cuts otherwise than the
+/// server (`secrets::cut_written`, one function for both).
+#[test]
+fn an_answer_is_cut_after_its_values_are_marked() {
+    let state = claims_state("");
+    let kept = secrets::ANSWER_KEPT;
+    let mut wrong: Vec<String> = Vec::new();
+    for (name, secret, port) in [("plain", "plain-token-value-123456", 18395u16), ("quoted", "pa\"ss\\word-123456", 18396)] {
+        let text = format!(
+            "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\n\nflow(\"cut-{name}\", {{ port: {port} }})\n\nroute.post(\"/text\", (req) => req.body)\n\nroute.post(\"/json\", (req) => ({{ got: req.body }}))\n\nroute.get(\"/has\", () => ({{ set: k.length > 0 }}))\n"
+        );
+        let slug = deploy_text_to(&state, &text, &[]);
+        let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+        // Where the secret begins in what is sent: well before the cut; each place that puts
+        // it across the cut as the run has it (the first character before, the last after, and
+        // between); just after; and at the end of a body twice as long.
+        let len = secret.len();
+        let mut begins: Vec<(String, usize, usize)> = vec![("well before the cut".into(), 1000, kept + 4096)];
+        for across in [1, len / 2, len - 1] {
+            begins.push((format!("across the cut, {across} of it before"), kept - across, kept + 4096));
+        }
+        // And across it as the line writes it: a mark is not as long as its value, so the cut
+        // falls elsewhere once the value is its mark.
+        for back in [8, 24, 40] {
+            begins.push((format!("{back} before the cut"), kept - back - len, kept + 4096));
+        }
+        begins.push(("just after the cut".into(), kept + 1, kept + 4096));
+        begins.push(("at the end".into(), 2 * kept, 2 * kept + len));
+        let mut runs: Vec<String> = Vec::new();
+        for path in ["/text", "/json"] {
+            for (what, at, total) in &begins {
+                let mut body = "x".repeat(*at);
+                body.push_str(secret);
+                body.push_str(&"y".repeat(total.saturating_sub(body.len())));
+                let (status, _, _) = data_call(&state, &slug, "POST", path, &body);
+                if status != 200 {
+                    wrong.push(format!("{name}, {path}, {what}: answered {status}"));
+                }
+                runs.push(format!("{path}, {what}"));
+            }
+        }
+        let entries = log_entries(&state, &slug);
+        assert_eq!(entries.len(), runs.len(), "{name}");
+        // No part of it: no six characters of it in a row, as it is or as JSON writes it.
+        let once = serde_json::to_string(secret).unwrap();
+        let parts: Vec<String> = [secret, &once[1..once.len() - 1]].iter().flat_map(|s| s.as_bytes().windows(6).filter_map(|w| std::str::from_utf8(w).ok().map(str::to_string)).collect::<Vec<_>>()).collect();
+        for (entry, what) in entries.iter().zip(&runs) {
+            let said = entry["response_body"].as_str().unwrap_or_default();
+            if let Some(part) = parts.iter().find(|part| said.contains(part.as_str())) {
+                wrong.push(format!("{name}, {what}: its answer holds {} characters of the secret", part.chars().count()));
+            }
+            if said.len() > kept || !said.ends_with('…') {
+                wrong.push(format!("{name}, {what}: its answer is {} bytes, ending {:?}", said.len(), said.chars().last()));
+            }
+            // No mark cut short: the last one it opens, it closes.
+            if said.rfind('‹').is_some_and(|open| !said[open..].contains('›')) {
+                wrong.push(format!("{name}, {what}: its answer ends inside a mark"));
+            }
+            if !entry.to_string().contains("‹secret:k") {
+                wrong.push(format!("{name}, {what}: its record marks no secret"));
+            }
+        }
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let report = verify::check(&export, None, &BTreeMap::new());
+        for (seq, rerun) in &report.reruns {
+            if *rerun != verify::Rerun::Matched {
+                wrong.push(format!("{name}, {}: holon verify: {rerun:?}", runs[*seq as usize]));
+            }
+        }
+        if !report.ok() {
+            wrong.push(format!("{name}: {}", verify::describe(&report, None)));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 // ── key claims: a key read before a call is held until the run commits ───────────────────────
 // (docs/L4s/key-claims-L4.md §10)
 
@@ -7277,10 +8590,35 @@ fn counting_server() -> (String, Hits) {
 /// A counting server's hits: path → how many requests came for it.
 type Hits = Arc<Mutex<BTreeMap<String, usize>>>;
 
+/// The longest a test waits for what it expects to happen soon (a thread to wait, a place to be
+/// given back, a connection to close): a guard against a hang, not a measure, so long that no
+/// load makes it late. A test holds an order of events, never how long one took (audit R50,
+/// [`no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep`]).
+pub(crate) const EVENTUALLY: Duration = Duration::from_secs(60);
+
+/// Whether `done` holds, looked at until it does or [`EVENTUALLY`] has passed.
+pub(crate) fn soon(mut done: impl FnMut() -> bool) -> bool {
+    let until = std::time::Instant::now() + EVENTUALLY;
+    loop {
+        if done() {
+            return true;
+        }
+        if std::time::Instant::now() > until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 /// The longest a shut [`Gate`] holds a call: under the 30 s a run waits for an answer, so a run
 /// held up behind a held call is let go by the gate, not by its own timeout, and fails its test
 /// rather than hanging it.
 const GATE_HOLDS: Duration = Duration::from_secs(20);
+
+/// The longest a test watches for what it waits on while a shut [`Gate`] holds a call (calls out
+/// at once, runs counted waiting): less than the gate holds one ([`GATE_HOLDS`]), so the call it
+/// waits behind wasn't let go meanwhile.
+const GATE_WAITS: Duration = Duration::from_secs(15);
 
 /// What a test holds `/slow` calls with, to see what happens while one is out without timing it:
 /// on a loaded machine (a sweep on every core beside it) "it took under 780 ms" fails, where "both
@@ -7297,15 +8635,27 @@ struct GateCalls {
     shut: bool,
     /// The `/slow` calls out now.
     out: usize,
+    /// How many calls have come, and how many of them a shut gate has let go, in the order they
+    /// came ([`Gate::let_one_go`]).
+    came: usize,
+    let_go: usize,
 }
 
 impl Gate {
     fn shut(&self) {
-        self.calls.lock().unwrap().shut = true;
+        let mut calls = self.calls.lock().unwrap();
+        calls.shut = true;
+        calls.let_go = calls.came;
     }
 
     fn open(&self) {
         self.calls.lock().unwrap().shut = false;
+        self.changed.notify_all();
+    }
+
+    /// Lets the call held longest go on, the gate staying shut to the rest.
+    fn let_one_go(&self) {
+        self.calls.lock().unwrap().let_go += 1;
         self.changed.notify_all();
     }
 
@@ -7314,20 +8664,21 @@ impl Gate {
         self.calls.lock().unwrap().out
     }
 
-    /// Whether `n` calls were out at once, waiting up to 15 s for them (less than a shut gate
-    /// holds one, so none of them was let go meanwhile).
+    /// Whether `n` calls were out at once, waiting up to [`GATE_WAITS`] for them.
     fn out_at_once(&self, n: usize) -> bool {
         let calls = self.calls.lock().unwrap();
-        self.changed.wait_timeout_while(calls, Duration::from_secs(15), |c| c.out < n).unwrap().0.out >= n
+        self.changed.wait_timeout_while(calls, GATE_WAITS, |c| c.out < n).unwrap().0.out >= n
     }
 
     /// One `/slow` call, answered once this returns.
     fn pass(&self) {
         let mut calls = self.calls.lock().unwrap();
+        let ticket = calls.came;
+        calls.came += 1;
         calls.out += 1;
         self.changed.notify_all();
         if calls.shut {
-            calls = self.changed.wait_timeout_while(calls, GATE_HOLDS, |c| c.shut).unwrap().0;
+            calls = self.changed.wait_timeout_while(calls, GATE_HOLDS, |c| c.shut && ticket >= c.let_go).unwrap().0;
         } else {
             drop(calls);
             std::thread::sleep(Duration::from_millis(400));
@@ -7336,6 +8687,489 @@ impl Gate {
         calls.out -= 1;
         self.changed.notify_all();
     }
+}
+
+/// How many runs of `state` wait now for a key or a lock another run holds: its folders' and
+/// databases' (one table and one set of locks for the server, another server's included) and
+/// each deployment's own keys'.
+fn waiting(state: &AppState) -> usize {
+    let own: usize = state.deployments.lock().unwrap().values().filter_map(|d| d.state.as_ref()).map(|s| s.claims.waiters.now()).sum();
+    own + state.folders.claims.waiters.now() + state.folders.locks.waiters.now()
+}
+
+/// Whether `n` runs of `state` wait at once for another's key or lock, watching up to
+/// [`GATE_WAITS`].
+fn waiting_at_once(state: &AppState, n: usize) -> bool {
+    let until = std::time::Instant::now() + GATE_WAITS;
+    while waiting(state) < n {
+        if std::time::Instant::now() > until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    true
+}
+
+/// `first`, held at the gate once its `/slow` call is out (holding what it holds then), and
+/// `second`, sent then, the gate opened once `second` waits on `state` for what `first` holds:
+/// so it waited, however slow the machine, where "sent 60 ms later" let it come after `first`
+/// was done. Their answers.
+fn second_waits_for_first<A: Send, B: Send>(state: &AppState, gate: &Gate, first: impl FnOnce() -> A + Send, second: impl FnOnce() -> B + Send) -> (A, B) {
+    gate.shut();
+    std::thread::scope(|s| {
+        let a = s.spawn(first);
+        let out = gate.out_at_once(1);
+        let b = s.spawn(second);
+        let waits = out && waiting_at_once(state, 1);
+        gate.open();
+        let (a, b) = (a.join().unwrap(), b.join().unwrap());
+        assert!(out, "the first's call went out");
+        assert!(waits, "the second waited for the first");
+        (a, b)
+    })
+}
+
+/// `first`, held at the gate once its `/slow` call is out, and `second`, sent and answered while
+/// it is: their answers.
+fn second_while_first_is_out<A: Send, B>(gate: &Gate, first: impl FnOnce() -> A + Send, second: impl FnOnce() -> B) -> (A, B) {
+    gate.shut();
+    std::thread::scope(|s| {
+        let a = s.spawn(first);
+        let out = gate.out_at_once(1);
+        let b = out.then(second);
+        gate.open();
+        let a = a.join().unwrap();
+        assert!(out, "the first's call went out");
+        (a, b.unwrap())
+    })
+}
+
+/// `first`, held at the gate once its `/slow` call is out, and `second`, sent then: the gate
+/// opened once `second` is answered or waits on `state` for what `first` holds, whichever the
+/// code does. Their answers.
+fn second_meets_first<A: Send, B: Send>(state: &AppState, gate: &Gate, first: impl FnOnce() -> A + Send, second: impl FnOnce() -> B + Send) -> (A, B) {
+    gate.shut();
+    std::thread::scope(|s| {
+        let a = s.spawn(first);
+        let out = gate.out_at_once(1);
+        let b = s.spawn(second);
+        let until = std::time::Instant::now() + GATE_WAITS;
+        while out && !b.is_finished() && waiting(state) == 0 && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        gate.open();
+        let (a, b) = (a.join().unwrap(), b.join().unwrap());
+        assert!(out, "the first's call went out");
+        (a, b)
+    })
+}
+
+/// `text` (Rust) with its strings, chars and comments made inert for the sweep below: in strings
+/// and chars, brackets, operators and commas are spaces (words stay, so `claim["waited_ms"]` still
+/// says what it reads); comments are gone. Every line stays where it was.
+fn inert(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let quiet = |c: char| if c.is_alphanumeric() || c == '_' || c == '\n' { c } else { ' ' };
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let (c, next) = (chars[i], chars.get(i + 1).copied());
+        let after = if i > 0 { chars[i - 1] } else { ' ' };
+        if c == '/' && next == Some('/') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && next == Some('*') {
+            i += 2;
+            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                out.push(quiet(chars[i]));
+                i += 1;
+            }
+            i += 2;
+        } else if c == 'r' && matches!(next, Some('"' | '#')) && (after == 'b' || !(after.is_alphanumeric() || after == '_')) && chars[i + 1..].iter().find(|&&h| h != '#') == Some(&'"') {
+            // A raw string: r"…", r#"…"#.
+            let hashes = chars[i + 1..].iter().take_while(|&&h| h == '#').count();
+            out.push('"');
+            i += 2 + hashes;
+            while i < chars.len() && !(chars[i] == '"' && (1..=hashes).all(|k| chars.get(i + k) == Some(&'#'))) {
+                out.push(quiet(chars[i]));
+                i += 1;
+            }
+            out.push('"');
+            i += 1 + hashes;
+        } else if c == '"' {
+            out.push('"');
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                if chars[i] == '\\' {
+                    out.push(' ');
+                    i += 1;
+                }
+                if i < chars.len() {
+                    out.push(quiet(chars[i]));
+                    i += 1;
+                }
+            }
+            out.push('"');
+            i += 1;
+        } else if c == '\'' && (next == Some('\\') || chars.get(i + 2) == Some(&'\'')) {
+            // A char ('{', '\'', '\u{1F600}'), not a lifetime.
+            let mut end = i + 2;
+            if next == Some('\\') {
+                end = if chars.get(i + 2) == Some(&'u') { (i..chars.len()).find(|&j| chars[j] == '}').unwrap_or(i) + 1 } else { i + 3 };
+            }
+            out.extend(std::iter::repeat_n(' ', end + 1 - i));
+            i = end + 1;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// What of `code` (made [`inert`]) is a test's: all of it in a tests.rs or under a tests folder,
+/// else its `#[cfg(test)]` modules; the rest blank lines, so every line stays where it was.
+fn test_code(path: &str, code: &str) -> String {
+    if path.ends_with("tests.rs") || path.contains("/tests/") {
+        return code.to_string();
+    }
+    let lines: Vec<&str> = code.lines().collect();
+    let mut keep = vec![false; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        let module = |l: &&&str| {
+            let l = l.trim();
+            (l.starts_with("mod ") || l.starts_with("pub mod ") || l.starts_with("pub(crate) mod ")) && l.ends_with('{')
+        };
+        if lines[i].trim() == "#[cfg(test)]" && lines[i + 1..].iter().find(|l| !l.trim().is_empty()).is_some_and(|l| module(&l)) {
+            let (mut depth, mut j) = (0i32, i + 1);
+            while j < lines.len() {
+                depth += lines[j].matches('{').count() as i32 - lines[j].matches('}').count() as i32;
+                keep[j] = true;
+                if depth <= 0 && lines[j].contains('}') {
+                    break;
+                }
+                j += 1;
+            }
+            i = j;
+        }
+        i += 1;
+    }
+    lines.iter().zip(keep).map(|(l, k)| if k { *l } else { "" }).collect::<Vec<_>>().join("\n")
+}
+
+/// Whether a comparison in `condition` (an assert's, made [`inert`]) holds a measured time from
+/// above: `took < x`, `x > t.elapsed()`, `claim["waited_ms"] < 250.0`.
+fn bounds_a_time_from_above(condition: &str) -> bool {
+    let measured = |side: &str| ["elapsed", "took", "waited", "_ms\"", "as_millis", "as_secs", "as_micros", "as_nanos", "duration_since"].iter().any(|m| side.contains(m));
+    let c: Vec<char> = condition.chars().collect();
+    // Its parts, between the &&s and ||s at the top.
+    let (mut parts, mut depth, mut from, mut i) = (vec![], 0i32, 0, 0);
+    while i < c.len() {
+        match c[i] {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '&' | '|' if depth == 0 && c.get(i + 1) == Some(&c[i]) => {
+                parts.push(&c[from..i]);
+                from = i + 2;
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(&c[from..]);
+    parts.iter().any(|part| {
+        let (mut depth, mut i) = (0i32, 0);
+        while i < part.len() {
+            match part[i] {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                ':' if part.get(i + 1) == Some(&':') && part.get(i + 2) == Some(&'<') => {
+                    // A turbofish: on past its closing '>'.
+                    let mut angle = 0;
+                    i += 2;
+                    while i < part.len() {
+                        angle += match part[i] {
+                            '<' => 1,
+                            '>' => -1,
+                            _ => 0,
+                        };
+                        if angle == 0 {
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                '<' | '>' if depth == 0 => {
+                    let (before, after) = (if i > 0 { part[i - 1] } else { ' ' }, part.get(i + 1).copied().unwrap_or(' '));
+                    if !(before == '-' || before == '=' || before == part[i] || after == part[i]) {
+                        let left: String = part[..i].iter().collect();
+                        let right: String = part[i + if after == '=' { 2 } else { 1 }..].iter().collect();
+                        return measured(if part[i] == '<' { &left } else { &right });
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    })
+}
+
+/// Each assert in `code` (made [`inert`]) that holds a measured time from above: its line, and
+/// its condition.
+fn upper_bounds(code: &str) -> Vec<(usize, String)> {
+    let mut found = vec![];
+    let mut at = 0;
+    while let Some(i) = code[at..].find("assert!(") {
+        let start = at + i + "assert!(".len();
+        let (mut depth, mut end, mut first) = (1, start, None);
+        for (j, c) in code[start..].char_indices() {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                ',' if depth == 1 && first.is_none() => first = Some(start + j),
+                _ => {}
+            }
+            if depth == 0 {
+                end = start + j;
+                break;
+            }
+        }
+        let condition = &code[start..first.unwrap_or(end)];
+        if bounds_a_time_from_above(condition) {
+            found.push((code[..start].matches('\n').count() + 1, condition.split_whitespace().collect::<Vec<_>>().join(" ")));
+        }
+        at = start;
+    }
+    found
+}
+
+/// The line of each `thread::sleep` in `code` (made [`inert`]) between two spawns in one block:
+/// a race ordered by the hope that the first is far enough along when the sleep ends.
+fn sleeps_between_spawns(code: &str) -> Vec<usize> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut depth = Vec::with_capacity(lines.len());
+    let mut d = 0i32;
+    for l in &lines {
+        depth.push(d);
+        d += l.matches('{').count() as i32 - l.matches('}').count() as i32;
+    }
+    let spawns = |l: &str| l.contains("spawn(") && !l.contains("spawn()");
+    (0..lines.len())
+        .filter(|&i| lines[i].contains("thread::sleep("))
+        .filter(|&i| {
+            let at = depth[i];
+            let before = (0..i).rev().take_while(|&j| depth[j] >= at).any(|j| spawns(lines[j]));
+            let after = (i + 1..lines.len()).take_while(|&j| depth[j] >= at).any(|j| spawns(lines[j]));
+            before && after
+        })
+        .map(|i| i + 1)
+        .collect()
+}
+
+/// The deadlines a test may give a wait of its own under [`EVENTUALLY`], by name: the [`Gate`]'s.
+/// A run gives up on an answer after 30 s, so a shut gate lets its call go before that
+/// ([`GATE_HOLDS`]), and a test watches for less than the gate holds ([`GATE_WAITS`]).
+const NAMED_CAPS: [&str; 2] = ["GATE_HOLDS", "GATE_WAITS"];
+
+/// The milliseconds `expr` (made [`inert`]) gives a duration, literally (`Duration::from_secs(5)`,
+/// `from_millis`, `from_micros`, `from_nanos`) or by a const of `consts`: the least, if any.
+fn least_millis(expr: &str, consts: &[(String, u128)]) -> Option<u128> {
+    let mut least: Option<u128> = None;
+    for (unit, per) in [("from_secs(", 1_000_000_000u128), ("from_millis(", 1_000_000), ("from_micros(", 1_000), ("from_nanos(", 1)] {
+        for (at, _) in expr.match_indices(unit) {
+            let written: String = expr[at + unit.len()..].chars().take_while(|c| c.is_ascii_digit() || *c == '_').collect();
+            let digits: String = written.chars().filter(|c| *c != '_').collect();
+            if expr[at + unit.len() + written.len()..].trim_start().starts_with(')')
+                && let Ok(n) = digits.parse::<u128>()
+            {
+                least = Some(least.map_or(n * per / 1_000_000, |l| l.min(n * per / 1_000_000)));
+            }
+        }
+    }
+    let words = expr.split(|c: char| !(c.is_alphanumeric() || c == '_'));
+    for word in words {
+        if let Some((_, ms)) = consts.iter().find(|(name, _)| name == word) {
+            least = Some(least.map_or(*ms, |l| l.min(*ms)));
+        }
+    }
+    least
+}
+
+/// The `Duration` consts `whole` (a file, made [`inert`]) defines, with their milliseconds.
+fn duration_consts(whole: &str) -> Vec<(String, u128)> {
+    whole
+        .lines()
+        .filter_map(|l| {
+            let (_, after) = l.split_once("const ")?;
+            let (name, rest) = after.split_once(':')?;
+            let (ty, value) = rest.split_once('=')?;
+            (ty.trim().ends_with("Duration") && name.trim().chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')).then_some(())?;
+            Some((name.trim().to_string(), least_millis(value, &[])?))
+        })
+        .collect()
+}
+
+/// Each deadline under [`EVENTUALLY`] in `code` (a file's test code, made [`inert`]) given to a
+/// wait whose passing fails a test: `recv_timeout`, `wait_timeout(_while)`, `set_read_timeout`,
+/// `set_write_timeout`, or `Instant::now() + d`, `d` a literal or one of `whole`'s consts (the
+/// file whole, made inert). Not one of [`NAMED_CAPS`], nor one that `text` (the file as written)
+/// says `not a bound:` of, on its line or in the comment above it: a product's own deadline
+/// under test, whose passing is what the test holds, or a tick of a stand-in's loop. Its line,
+/// and what it waits.
+fn short_deadlines(code: &str, whole: &str, text: &str) -> Vec<(usize, String)> {
+    let consts = duration_consts(whole);
+    let written: Vec<&str> = text.lines().collect();
+    let marked = |line: usize| {
+        let says = |l: &str| l.contains("not a bound:");
+        written.get(line - 1).is_some_and(|l| says(l)) || (0..line - 1).rev().map(|i| written[i].trim_start()).take_while(|l| l.starts_with("//")).any(says)
+    };
+    let mut found = vec![];
+    for form in [".recv_timeout(", ".wait_timeout(", ".wait_timeout_while(", ".set_read_timeout(", ".set_write_timeout(", "Instant::now() +"] {
+        for (at, _) in code.match_indices(form) {
+            // What it waits: a call's arguments, or what is added to now, to the end of its expression.
+            let from = at + form.len();
+            let (mut depth, mut end) = (i32::from(form.ends_with('(')), code.len());
+            for (j, c) in code[from..].char_indices() {
+                match c {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => depth -= 1,
+                    ',' | ';' | '\n' if depth == 0 => {
+                        end = from + j;
+                        break;
+                    }
+                    _ => {}
+                }
+                if depth < 0 || (depth == 0 && form.ends_with('(')) {
+                    end = from + j;
+                    break;
+                }
+            }
+            let waits = &code[from..end];
+            let line = code[..at].matches('\n').count() + 1;
+            let named = NAMED_CAPS.iter().any(|cap| waits.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == *cap));
+            if !named && least_millis(waits, &consts).is_some_and(|ms| ms < EVENTUALLY.as_millis()) && !marked(line) {
+                found.push((line, format!("{}{}{}", form.trim_start_matches('.'), if form.ends_with('+') { " " } else { "" }, waits.split_whitespace().collect::<Vec<_>>().join(" "))));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Guards: no test holds a measured time from above (`elapsed() < 5 s`, `took < deadline + 2 s`,
+/// `waited_ms < 250`), nor waits under a minute for what is to come (`recv_timeout(5 s)`, a read
+/// timeout of 10 s, a loop `until` ten seconds from now): a deadline that fails a test is a bound
+/// from above whatever call it hides in. And none orders two threads with a sleep between their
+/// spawns. In any crate's tests.
+/// Why: on a loaded machine (a sweep on every core beside the suite) anything takes longer, and a
+/// second thread started 60 ms after the first may come after the first is done: 102 tests failed
+/// with 408 under a short body deadline in one run, and races "ordered" by a sleep raced the other
+/// way (audit R50). What a test holds is an order of events: a [`Gate`] holding a call out while
+/// the second run comes, a run counted as waiting (`sync::Waiters`), [`soon`] for what is
+/// due; a lower bound (it waited the deadline) holds under any load. What a test waits for, it
+/// waits [`EVENTUALLY`] for: a guard against a hang, not a measure.
+/// If it fails: a test bounds a time from above, waits less than [`EVENTUALLY`] for what is to
+/// come, or sleeps between two spawns: hold what happened instead, with the tools above, and wait
+/// [`EVENTUALLY`] (a const of the file's own in an integration test). A deadline of the product's
+/// that the test holds it to (a lock refused at it, a statement run past it), or a stand-in's
+/// tick, says `not a bound:` and why, in a comment on or above its line.
+#[test]
+fn no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep() {
+    // The sweep's own eyes, on code it must and must not see.
+    for bound in [
+        "assert!(started.elapsed() < Duration::from_secs(5), \"closed\");",
+        "assert!(took >= deadline && took < deadline + Duration::from_secs(2), \"{path}: told after {took:?}\");",
+        "assert!(claim[\"waited_ms\"].as_f64().unwrap() < 250.0, \"{claim}\");",
+        "assert!(Duration::from_secs(2) > t.elapsed());",
+        "assert!(\n    a.elapsed()\n        <= limit,\n    \"x\"\n);",
+        "debug_assert!(at.duration_since(then) < gap);",
+    ] {
+        assert_eq!(upper_bounds(&inert(bound)).len(), 1, "an upper bound unseen: {bound}");
+    }
+    for fine in [
+        "assert!(took >= deadline, \"{path}: told at the deadline, not before\");",
+        "assert!(claim[\"waited_ms\"].as_f64().unwrap() > 0.0, \"it waited < 5 s\");",
+        "assert!(failures.len() < 10, \"the old ones forgotten\");",
+        "assert!(text.parse::<u64>().unwrap() < 3);",
+        "let said = \"assert!(took < cap)\";",
+        "// assert!(took < cap)\nlet c = '}';",
+        "assert!(matches!(x, Some(y) if y > 1) && waited > Duration::ZERO);",
+    ] {
+        assert!(upper_bounds(&inert(fine)).is_empty(), "not an upper bound: {fine}");
+    }
+    let sleeps = |code: &str| sleeps_between_spawns(&inert(code));
+    assert_eq!(sleeps("let a = s.spawn(|| one());\nstd::thread::sleep(Duration::from_millis(60));\nlet b = s.spawn(|| two());\n"), [2]);
+    assert_eq!(sleeps("let runs: Vec<_> = (0..n)\n    .map(|_| {\n        std::thread::spawn(spin)\n    })\n    .collect();\nstd::thread::sleep(alone / 4);\nlet probes: Vec<_> = (0..n).map(|_| std::thread::spawn(probe)).collect();\n"), [6]);
+    for fine in [
+        "let a = s.spawn(f);\nwhile !a.is_finished() {\n    std::thread::sleep(tick);\n}\nlet b = s.spawn(g);\n",
+        "std::thread::spawn(move || {\n    loop {\n        std::thread::sleep(tick);\n    }\n});\nlet b = s.spawn(g);\n",
+        "let a = s.spawn(f);\nstd::thread::sleep(tick);\nassert!(!a.is_finished());\n",
+        "let child = Command::new(x)\n    .spawn()\n    .unwrap();\nstd::thread::sleep(tick);\nlet b = Command::new(y).spawn();\n",
+        "let s = \"s.spawn(f); std::thread::sleep(t); s.spawn(g)\";\n",
+    ] {
+        assert!(sleeps(fine).is_empty(), "not a sleep between spawns: {fine}");
+    }
+    let deadlines = |text: &str| short_deadlines(&inert(text), &inert(text), text).into_iter().map(|(line, _)| line).collect::<Vec<_>>();
+    for (short, line) in [
+        ("let r = rx.recv_timeout(Duration::from_secs(5));", 1),
+        ("stream.set_read_timeout(Some(Duration::from_millis(700))).unwrap();", 1),
+        ("const WAIT: Duration = Duration::from_secs(20);\nlet x = rx.recv_timeout(WAIT);", 2),
+        ("let until = std::time::Instant::now() + Duration::from_secs(10);", 1),
+        ("let (g, _) = cv.wait_timeout_while(g, std::time::Duration::from_secs(15), |c| !c.done).unwrap();", 1),
+        ("let held = rx\n    .recv_timeout(\n        Duration::from_secs(1),\n    );", 2),
+        ("let (g, _) = cv.wait_timeout(g, Duration::from_millis(1_500)).unwrap();", 1),
+        ("// A comment that says nothing of it.\nlet r = rx.recv_timeout(Duration::from_secs(5));", 2),
+    ] {
+        assert_eq!(deadlines(short), [line], "a short deadline unseen: {short}");
+    }
+    for fine in [
+        "let r = rx.recv_timeout(Duration::from_secs(60));",
+        "let r = rx.recv_timeout(EVENTUALLY);",
+        "const GATE_HOLDS: Duration = Duration::from_secs(20);\nlet r = rx.recv_timeout(GATE_HOLDS);",
+        "// not a bound: the locks' own deadline, under test\nlet soon = || Instant::now() + Duration::from_millis(30);",
+        "// not a bound: a tick of the stand-in's loop,\n// which looks again\nlet g = cv.wait_timeout(g, Duration::from_millis(100));",
+        "let soon = || Instant::now() + Duration::from_millis(30); // not a bound: refused at it",
+        "let said = \"rx.recv_timeout(Duration::from_secs(1))\";",
+        "let r = rx.recv_timeout(d);",
+        "let t = Instant::now() + timeout;",
+        "let far = Instant::now() + Duration::from_secs(3600);",
+        "// rx.recv_timeout(Duration::from_secs(1))",
+    ] {
+        assert!(deadlines(fine).is_empty(), "not a short deadline: {fine}");
+    }
+    let only_tests = test_code("crates/x/src/a.rs", &inert("fn f() {\n    assert!(t.elapsed() < cap);\n}\n#[cfg(test)]\nmod tests {\n    fn g() {\n        assert!(t.elapsed() < cap);\n    }\n}\nfn h() {\n    assert!(t.elapsed() < cap);\n}\n"));
+    assert_eq!(upper_bounds(&only_tests).iter().map(|(line, _)| *line).collect::<Vec<_>>(), [7], "only a test module's, at its own line");
+
+    // Every crate's tests.
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() && !path.ends_with("target") && !path.ends_with("node_modules") {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let mut files = Vec::new();
+    sources(crates, &mut files);
+    let mut found = Vec::new();
+    for path in &files {
+        let shown = path.strip_prefix(crates).unwrap().display().to_string().replace('\\', "/");
+        let text = std::fs::read_to_string(path).unwrap();
+        let whole = inert(&text);
+        let code = test_code(&shown, &whole);
+        found.extend(upper_bounds(&code).into_iter().map(|(line, condition)| format!("{shown}:{line}: holds a time from above: {condition}")));
+        found.extend(short_deadlines(&code, &whole, &text).into_iter().map(|(line, waits)| format!("{shown}:{line}: waits less than EVENTUALLY: {waits}")));
+        found.extend(sleeps_between_spawns(&code).into_iter().map(|line| format!("{shown}:{line}: a sleep between two spawns")));
+    }
+    assert!(found.is_empty(), "tests that hold how long something took, not what happened (hold an order of events: Gate, Waiters, soon; wait EVENTUALLY):\n{}", found.join("\n"));
+    assert!(files.len() > 150, "the sweep read the source: {}", files.len());
 }
 
 /// [`counting_server`], and the [`Gate`] its `/slow` calls pass.
@@ -7353,9 +9187,18 @@ fn gated_counting_server() -> (String, Hits, Arc<Gate>) {
             let counted = Arc::clone(&counted);
             let passing = Arc::clone(&passing);
             std::thread::spawn(move || {
-                let Some((head, _)) = read_request(&mut stream) else { return };
+                let Some((head, sent)) = read_request(&mut stream) else { return };
                 let path = head.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("").to_string();
                 *counted.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
+                // What a far side answers that writes JSON with each character past ASCII
+                // escaped (Python's `ensure_ascii`): what it was sent, so spelled.
+                let ascii: String = String::from_utf8_lossy(&sent)
+                    .chars()
+                    .map(|c| match c.is_ascii() {
+                        true => c.to_string(),
+                        false => c.encode_utf16(&mut [0; 2]).iter().map(|u| format!("\\u{u:04x}")).collect(),
+                    })
+                    .collect();
                 let body = match path.as_str() {
                     "/slow" => {
                         passing.pass();
@@ -7364,6 +9207,7 @@ fn gated_counting_server() -> (String, Hits, Arc<Gate>) {
                     "/name" => "k",
                     // What a token exchange answers.
                     "/token" => r#"{"access_token":"tok_live_abcdef123456","token_type":"bearer","expires_in":3600}"#,
+                    "/ascii" => ascii.as_str(),
                     _ => "fast",
                 };
                 let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
@@ -7486,6 +9330,279 @@ route.post("/go", async (req) => {{
     assert!(!report.ok());
     assert_eq!(report.secrets_outside, vec![(0, "token".to_string(), other.clone())], "{}", verify::describe(&report, None));
     assert!(verify::describe(&report, None).contains(&format!("run 0 SENT the secret \"token\" to {other}, where its approval doesn't show it going")));
+}
+
+/// **Guards:** what `holon verify` makes of runs that read a secret. A step fed the secret can't be
+/// computed again (the log holds its placeholder, never its value), so what the log kept for it
+/// stands in: a token check and a receipt signed with the secret are taken from the log, the rest
+/// of the run is checked, and the report counts the steps taken. A step computed from the secret
+/// (a Basic header built from it, a true or false about it) leaves nothing to stand in, as the log
+/// never keeps it: the run isn't run again, and the report says that is why, not a size or a
+/// depth the log didn't keep.
+///
+/// **Why:** such a run was reported as one whose node was "too large, or too deep", which sends
+/// whoever reads it looking for a limit to raise, where only the secret could check it.
+///
+/// **If it fails:** a run verify can't check reads as a different gap than it is; or a step with
+/// the secret is computed again from its placeholder, and an honest run reads as changed.
+#[test]
+fn a_run_that_read_a_secret_is_checked_but_its_steps_with_the_secret_and_says_which() {
+    let state = claims_state("");
+    let text = r#"import { flow, hmac_sha256, route, secure_equals, status } from "holon"
+import api_token from "secret:api_token"
+
+flow("keyed", { port: 18153 })
+
+route.get("/me", (req) => {
+  const ok = secure_equals(req.headers.authorization, `Bearer ${api_token}`)
+  const receipt = hmac_sha256(api_token, req.path)
+  return (ok ? { receipt } : undefined) ?? status(401)
+})
+
+route.get("/basic", (req) => {
+  return { header: `Basic ${btoa(`user:${api_token}`)}`, long: api_token.length > 20 }
+})
+"#;
+    let slug = deploy_text_to(&state, text, &[]);
+    let set = req("POST", &format!("/deployments/{slug}/secrets/api_token"), serde_json::to_vec(&serde_json::json!({ "value": "a-dummy-token-for-tests" })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    assert_eq!(data_call(&state, &slug, "GET", "/me", "").0, 401);
+    assert_eq!(data_call(&state, &slug, "GET", "/basic", "").0, 200);
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let text = verify::describe(&report, None);
+    assert!(matches!(report.reruns[0].1, verify::Rerun::Matched), "{text}");
+    // No token came: the check against the secret is computed on its mark, with the texts that
+    // carry it (`holon_core::taint::on_a_mark`), and the receipt's signing never ran. So nothing
+    // of that run is taken from the log; and every leaf the report names is one a run's record
+    // stood in for, no more and no fewer.
+    assert!(report.given.is_empty(), "nothing taken as recorded: {text}");
+    assert!(text.contains("re-ran 1 runs: each produced what its log entry says\n"), "{text}");
+    let named: BTreeSet<&str> = text.lines().filter(|l| l.starts_with("    ") && l.ends_with(", as recorded")).filter_map(|l| l.trim_start().split(' ').next()).collect();
+    let stood: BTreeSet<&str> = report.given.values().flatten().map(|s| s.leaf.as_str()).collect();
+    assert_eq!(named, stood, "{text}");
+    assert!(!text.contains("fed a placeholder"), "each says what it was fed: {text}");
+    assert!(!text.contains("a-dummy-token-for-tests"), "nothing of the value: {text}");
+    // The Basic header alone a mark would stand for; whether the token is long is a true or
+    // false, which none does: the reason names a leaf, the secret and why.
+    match &report.reruns[1].1 {
+        verify::Rerun::Skipped(why) => {
+            assert!(why.starts_with('`') && (why.contains("computed a number from the secret api_token: ") || why.contains("computed a true or false from the secret api_token: ")), "{why}");
+            assert!(why.ends_with(verify::MARK_STANDS_FOR), "{why}");
+        }
+        other => panic!("a run that computed a true or false from the secret is not run again: {other:?}\n{text}"),
+    }
+    assert!(!text.contains("too large"), "{text}");
+    assert!(text.lines().last().is_some_and(|l| l.starts_with("INCOMPLETE")), "{text}");
+}
+
+/// A token check is computed on the marks, not taken from the log: the caller's token is the
+/// secret exactly when the log shows it as the secret's mark. A record of the check that says
+/// other than the marks give differs. Where the log holds no more of the caller's token than
+/// that it was one (a tainted value, when it isn't the secret), the check is still taken as
+/// recorded, and said.
+#[test]
+fn a_token_check_is_computed_on_the_marks_and_its_record_is_held_to_it() {
+    let state = claims_state("");
+    let text = r#"import { flow, route, secure_equals, status } from "holon"
+import api_token from "secret:api_token"
+
+flow("gated", { port: 18154 })
+
+route.get("/me", (req) => {
+  const ok = secure_equals(req.headers.authorization, `Bearer ${api_token}`)
+  return (ok ? { in: "yes" } : undefined) ?? status(401)
+})
+"#;
+    let slug = deploy_text_to(&state, text, &[]);
+    let value = "a-dummy-token-for-tests";
+    let set = req("POST", &format!("/deployments/{slug}/secrets/api_token"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    // No token, a wrong one, then the right one last (its line is the one changed below).
+    let call = |token: Option<&str>| {
+        let mut request = fake_data("GET", "/me", vec![]);
+        request.headers.extend(token.map(|t| ("authorization".to_string(), format!("Bearer {t}"))));
+        serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &request).status
+    };
+    assert_eq!((call(None), call(Some("not-the-token-at-all")), call(Some(value))), (401, 401, 200));
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    assert!(export.lines.iter().all(|l| !l.contains(value)), "the log never holds the value");
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    let said = verify::describe(&report, None);
+    assert!(report.reruns.iter().all(|(_, x)| *x == verify::Rerun::Matched) && report.ok() && report.complete(), "{said}");
+    // The right token and none: computed. The wrong one: the log holds it as a tainted value,
+    // which reads as any other, so that one check is taken as recorded, and named.
+    assert_eq!(report.given.keys().copied().collect::<Vec<_>>(), [1], "{said}");
+    assert_eq!(report.given[&1].iter().map(|s| (s.leaf.as_str(), s.tainted.join(","))).collect::<Vec<_>>(), [("secure_equals", "authorization".to_string())], "{said}");
+    assert!(said.contains("re-ran 3 runs: each produced what its log entry says, 1 of them given what the log kept for a step (named below)"), "{said}");
+
+    // Someone with the data folder turns the right token's check, in the node's own record, and
+    // chains the line again: computed on the marks it is true, and the record says false.
+    let (yes, no) = (serde_json::to_value(SValue::from_core(&Value::Boolean(true))).unwrap(), serde_json::to_value(SValue::from_core(&Value::Boolean(false))).unwrap());
+    let mut v: serde_json::Value = serde_json::from_str(&export.lines[2]).unwrap();
+    let turned = v["timeline"].as_array_mut().unwrap().iter_mut().filter(|node| node["outputs"] == serde_json::json!([yes])).map(|node| node["outputs"] = serde_json::json!([no])).count();
+    assert_eq!(turned, 1, "the check is the one node that gave true: {}", export.lines[2]);
+    let line = serde_json::to_string(&v).unwrap();
+    let head = recorder::line_hash(&line);
+    let lines = vec![export.lines[0].clone(), export.lines[1].clone(), line];
+    let forged = verify::Export { lines, head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let report = verify::check(&forged, Some(&head), &BTreeMap::new());
+    assert!(report.breaks.is_empty(), "re-chained, it links");
+    let came_to = &report.reruns[2].1;
+    assert_eq!(*came_to, verify::Rerun::Differs("what a step computed on its marks gives, from what the log recorded for it, the steps it took (its timeline)".into()), "{}", verify::describe(&report, None));
+    assert!(!report.ok());
+}
+
+/// A run's entry commits to each secret it was given: where its value is kept and a commitment
+/// to it, beside the version and fingerprint its marks name. Whoever holds the value and its
+/// salt computes the commitment again; the line holds neither. And `verify` holds an export to
+/// it: one value, one commitment, and a commitment that is one.
+#[test]
+fn a_runs_entry_commits_to_its_secrets_and_an_export_is_held_to_it() {
+    let state = claims_state("");
+    let text = r#"import { flow, hmac_sha256, route, status } from "holon"
+import signing_key from "secret:signing_key"
+
+flow("committing", { port: 18197 })
+
+route.post("/sign", (req) => hmac_sha256(signing_key, req.body) ?? status(400))
+"#;
+    let (first, second) = ("the-first-signing-key", "the-second-signing-key");
+    let set = |value: &str| route(&state, &req("POST", "/deployments/committing/secrets/signing_key", serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap())).status_code;
+    assert_eq!(set(first), 200);
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    let sign = |body: &str| data_call(&state, &slug, "POST", "/sign", body).0;
+    assert_eq!((sign("one"), sign("two")), (200, 200));
+    let salt_of = || *state.secrets.vault(&slug).lock().unwrap().salts["signing_key"].clone();
+    let salt = salt_of();
+    assert_eq!(set(second), 200);
+    assert_eq!(sign("three"), 200);
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let entries: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let said = |i: usize| (entries[i]["secrets"]["signing_key"].as_str().unwrap().to_string(), entries[i]["committed"]["signing_key"].clone());
+    // The first two runs had one value: one commitment, the value's under its salt.
+    let commitment = secrets::commitment(&slug, "signing_key", 1, &salt, first);
+    assert_eq!(said(0).1, serde_json::json!({ "kind": "local", "commitment": commitment }), "{}", export.lines[0]);
+    assert_eq!(said(0), said(1));
+    assert!(said(0).0.starts_with("v1 #"), "beside what its marks read: {:?}", said(0));
+    // The third had another, under another version and salt.
+    assert_eq!(said(2).1["commitment"], serde_json::json!(secrets::commitment(&slug, "signing_key", 2, &salt_of(), second)));
+    assert_ne!(said(2).1, said(0).1);
+    // Nothing a value can be had from: not the value, not its salt.
+    let salts = [salt, salt_of()].map(|s| s.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    for line in &export.lines {
+        assert!(!line.contains(first) && !line.contains(second) && salts.iter().all(|s| !line.contains(s.as_str())), "{line}");
+    }
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert!(report.reruns.iter().all(|(_, x)| *x == verify::Rerun::Matched) && report.ok(), "{}", verify::describe(&report, None));
+
+    // The second line's commitment changed, the line chained again and the third after it: the
+    // first run recorded another for the same value.
+    let rechained = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut second: serde_json::Value = serde_json::from_str(&export.lines[1]).unwrap();
+        edit(&mut second);
+        let second = serde_json::to_string(&second).unwrap();
+        let mut third: serde_json::Value = serde_json::from_str(&export.lines[2]).unwrap();
+        third["prev"] = serde_json::json!(recorder::line_hash(&second));
+        let third = serde_json::to_string(&third).unwrap();
+        let head = recorder::line_hash(&third);
+        let forged = verify::Export { lines: vec![export.lines[0].clone(), second, third], head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+        let mut report = verify::check(&forged, Some(&head), &BTreeMap::new());
+        assert!(report.breaks.is_empty(), "re-chained, it links: {}", verify::describe(&report, None));
+        let ok = report.ok();
+        (report.reruns.remove(1).1, ok)
+    };
+    let print = said(1).0.split_once(" #").unwrap().1.to_string();
+    let (came_to, ok) = rechained(&|v| v["committed"]["signing_key"]["commitment"] = serde_json::json!("0".repeat(64)));
+    assert_eq!(came_to, verify::Rerun::Differs(format!("the commitment its entry has for the secret signing_key v1 #{print}: run 0 recorded another for the same value")));
+    assert!(!ok);
+    // To something that is no commitment.
+    let (came_to, ok) = rechained(&|v| v["committed"]["signing_key"]["commitment"] = serde_json::json!("not one"));
+    assert_eq!(came_to, verify::Rerun::Differs("what its entry says the secret \"signing_key\" is held to isn't a kind and a commitment".into()));
+    assert!(!ok);
+    // Taken out: the key that marks what a run computes from a secret is made of a
+    // commitment's salt, and the server withholds without one, so a line that withholds
+    // nothing and commits to no secret isn't the server's (R63).
+    let (came_to, ok) = rechained(&|v| {
+        v.as_object_mut().unwrap().remove("committed");
+    });
+    assert_eq!(
+        came_to,
+        verify::Rerun::Differs("its line says it withholds nothing the run computed from a secret, and commits to no secret: the server has no key to mark such values without one".into())
+    );
+    assert!(!ok);
+}
+
+/// What `verify` takes from the log it can't compute again, but a leaf is a function of its
+/// inputs. So two runs that record other for one leaf and the same inputs can't both be the
+/// leaf's, and a signature that isn't 32 bytes is no HMAC's: each differs. A record rewritten
+/// whole, with no other run of the same inputs to hold it to, still passes: the trust that
+/// remains, which the report names.
+#[test]
+fn what_is_taken_from_the_log_agrees_with_itself_across_an_export() {
+    let state = claims_state("");
+    let value = "whsec_test_123456";
+    let set = req("POST", "/deployments/twice/secrets/signing_key", serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let text = "import { flow, hmac_sha256, route, status } from \"holon\"\nimport signing_key from \"secret:signing_key\"\n\nflow(\"twice\", { port: 18198 })\n\nroute.post(\"/sign\", (req) => hmac_sha256(signing_key, req.body) ?? status(400))\n";
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    // One body signed twice, then another: the last line is the one rewritten below.
+    let sign = |body: &str| data_call(&state, &slug, "POST", "/sign", body).1;
+    let (first, other, again) = (sign("hello"), sign("goodbye"), sign("hello"));
+    assert_eq!(first, again);
+    assert_ne!(first, other);
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
+    assert!(report.reruns.iter().all(|(_, x)| *x == verify::Rerun::Matched) && report.ok(), "{}", verify::describe(&report, None));
+    assert_eq!(report.given.len(), 3, "each signing is taken from the log");
+
+    // The last line, its signature rewritten everywhere (the answer, and the signing node's own
+    // record), chained again.
+    let rewritten = |to: &str| {
+        let line = export.lines[2].replace(&again, to);
+        assert_ne!(line, export.lines[2]);
+        let head = recorder::line_hash(&line);
+        let lines = vec![export.lines[0].clone(), export.lines[1].clone(), line];
+        let forged = verify::Export { lines, head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+        let mut report = verify::check(&forged, Some(&head), &BTreeMap::new());
+        assert!(report.breaks.is_empty(), "re-chained, it links");
+        let (ok, said) = (report.ok(), verify::describe(&report, None));
+        (report.reruns.remove(2).1, ok, said)
+    };
+    // To another signature of the right shape: run 0 recorded other for the same body.
+    let forged: String = again.chars().rev().collect();
+    let (came_to, ok, said) = rewritten(&forged);
+    assert_eq!(came_to, verify::Rerun::Differs("what the log recorded for hmac_sha256, taken from it: run 0 recorded other for the same inputs".into()), "{said}");
+    assert!(!ok, "{said}");
+    // To the signature the other body got: of the right shape, and a real one, but not this
+    // body's, as run 0 says.
+    let (came_to, _, said) = rewritten(&other);
+    assert!(matches!(&came_to, verify::Rerun::Differs(why) if why.contains("run 0 recorded other")), "{said}");
+    // Cut short: no HMAC-SHA-256 is 30 bytes, whatever the secret.
+    let (came_to, ok, said) = rewritten(&again[..60]);
+    assert!(matches!(&came_to, verify::Rerun::Differs(why) if why.contains("the shape of what the log recorded for a step taken from it")), "{said}");
+    assert!(!ok, "{said}");
+    // And not hex at all.
+    let (came_to, _, said) = rewritten(&"z".repeat(64));
+    assert!(matches!(&came_to, verify::Rerun::Differs(why) if why.contains("the shape of")), "{said}");
+
+    // The other body's line rewritten the same way has no second run to be held to, and passes:
+    // what one record of a node fed a secret says is taken from the log.
+    let forged: String = other.chars().rev().collect();
+    let line = export.lines[1].replace(&other, &forged);
+    let mut lines = vec![export.lines[0].clone(), line];
+    let last: serde_json::Value = serde_json::from_str(&export.lines[2]).unwrap();
+    assert!(last.get("prev").is_some(), "a line names the one before it");
+    lines.truncate(2);
+    let head = recorder::line_hash(&lines[1]);
+    let alone = verify::Export { lines, head: head.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let report = verify::check(&alone, Some(&head), &BTreeMap::new());
+    assert_eq!(report.reruns[1].1, verify::Rerun::Matched, "{}", verify::describe(&report, None));
+    assert!(verify::describe(&report, None).contains("    hmac_sha256 fed the secret signing_key v1 #"), "and it is named: {}", verify::describe(&report, None));
 }
 
 /// The server's own secret, bound once for every deployment that reads it, with where it may go:
@@ -7729,8 +9846,9 @@ fn the_preview_says_where_each_secret_is_sent() {
 /// What is computed from a secret isn't kept: a state, collection or channel write of it is
 /// refused, as a write of its value is (it would sit on disk, in every later snapshot, and in the
 /// channel's packs), while the run's other writes go through; and the run's answer, though the
-/// caller gets it (the deploy approved `SecretAnswer`), is withheld from the log, its output and
-/// its response body alike. Verify skips such a run rather than calling it changed.
+/// caller gets it (the deploy approved `SecretAnswer`), is in the log with the computed value as
+/// its mark, its output and its response body alike. Verify skips such a run rather than calling
+/// it changed: run again, it would make the writes the server refused.
 #[test]
 fn what_is_computed_from_a_secret_is_neither_kept_nor_logged() {
     let state = claims_state("");
@@ -7769,14 +9887,364 @@ route.post("/go", (req) => {
     let entry = entries.last().unwrap();
     let performed: Vec<&str> = entry["performed"].as_array().unwrap().iter().map(|p| p["capability"].as_str().unwrap()).collect();
     assert_eq!(performed, [r#"StateWrite("plain")"#], "no channel send to rebuild packs from: {entry}");
-    assert_eq!(entry["response_body"], "‹withheld: computed from a secret›", "{entry}");
+    let hash = entry["derived"][0].as_str().unwrap_or_else(|| panic!("its entry lists what it computed: {entry}"));
+    assert_eq!((entry["derived"].as_array().unwrap().len(), hash.len()), (1, 64), "{entry}");
+    assert_eq!(entry["response_body"], format!(r#"{{"echoed":"hello:‹derived #{}›"}}"#, &hash[..8]), "{entry}");
     let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
     assert!(!log.contains("c2tfbGl2ZV9kZXJp"), "base64 of the key: {log}");
+    assert!(!log.contains("‹withheld"), "every value it computed has a mark: {log}");
 
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
     let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
-    assert!(matches!(report.reruns[..], [(0, verify::Rerun::Skipped(_))]), "{}", verify::describe(&report, None));
+    match &report.reruns[..] {
+        [(0, verify::Rerun::Skipped(why))] => assert!(why.contains("which the server refuses"), "{why}"),
+        other => panic!("{other:?}\n{}", verify::describe(&report, None)),
+    }
     assert!(report.ok(), "{}", verify::describe(&report, None));
+}
+
+/// A record as it reads but for what is the secret's own by design: a mark's version and
+/// print, the hashes and commitments its entry lists; and what any two runs differ in (when,
+/// how long, which run, the bytes each drew, which commit, how long a claim waited and held).
+const OWN: [&str; 16] = [
+    "seq", "prev", "at_ms", "duration_ms", "start_us", "end_us", "run_id", "nonce", "sourced", "session", "secrets", "committed", "derived", "commit", "waited_ms", "held_ms",
+];
+/// A run's record, `v`, as [`OWN`] says to read it.
+fn but_marks(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::String(s) => secrets::read_marked(s, true)
+            .into_iter()
+            .map(|(piece, mark)| match mark {
+                true if piece.starts_with(secrets::DERIVED_MARK) => "‹derived›".to_string(),
+                true if piece.starts_with("‹secret:") => format!("{}›", piece.split(' ').next().unwrap()),
+                _ => piece,
+            })
+            .collect::<String>()
+            .into(),
+        serde_json::Value::Array(items) => items.iter().map(but_marks).collect::<Vec<_>>().into(),
+        serde_json::Value::Object(fields) => fields.iter().filter(|(k, _)| !OWN.contains(&k.as_str())).map(|(k, v)| (k.clone(), but_marks(v))).collect::<serde_json::Map<_, _>>().into(),
+        other => other.clone(),
+    }
+}
+/// Where two records differ, by path: every place.
+fn differs(a: &serde_json::Value, b: &serde_json::Value, at: String, out: &mut Vec<String>) {
+    match (a, b) {
+        (serde_json::Value::Object(x), serde_json::Value::Object(y)) => {
+            let keys: BTreeSet<&String> = x.keys().chain(y.keys()).collect();
+            for k in keys {
+                differs(x.get(k).unwrap_or(&serde_json::Value::Null), y.get(k).unwrap_or(&serde_json::Value::Null), format!("{at}.{k}"), out);
+            }
+        }
+        (serde_json::Value::Array(x), serde_json::Value::Array(y)) if x.len() == y.len() => {
+            for (i, (x, y)) in x.iter().zip(y).enumerate() {
+                differs(x, y, format!("{at}[{i}]"), out);
+            }
+        }
+        _ if a != b => out.push(format!("{at}: {a} | {b}")),
+        _ => {}
+    }
+}
+
+/// **Guards:** a run's record says nothing of what the run computed from a secret. A flow that
+/// computes from its secret in each way a flow does (encoded into a header, beside headers that
+/// are nobody's secret, into a JSON body, answered to the caller, encoded twice and joined,
+/// compared with what the caller sent; and a number, a true or false, a short text, and inside
+/// a function applied to each item), or chooses by it (a header's name, the order of a sort, a
+/// collection's key read, and claimed before a call, a file's name whose read fails, each with
+/// the secret recoded whole too), is run with one secret, then with another. Its two records
+/// read the same, but for the marks' prints and the hashes and commitments its entry lists:
+/// which of two secrets a run had can't be told from anything else in it. A branch a secret
+/// chooses (the row "ternary") shows in the run's steps, as the owner decided (whoever approves
+/// the flow reads what it chooses by, and reading a run's steps is a grant of its own), and in
+/// nothing else of its record. Where every computed value is a text of six characters or more,
+/// the record shows a mark for each and `holon verify` runs the run again; where one isn't, it
+/// withholds what follows and says why.
+///
+/// **Why:** before a computed value had a mark, everything computed from a secret was left out
+/// whole, by the graph alone. Marking is by value: a value the record didn't know was computed
+/// (one a step gave that wasn't kept, one no mark stands for) would be written as it is. This
+/// holds the two together: any difference between the two records is a leak, whatever made it.
+///
+/// **If it fails:** the row and the places named differ between two runs that differ only in
+/// their secret: each holds something computed from it, or chosen by it, in the clear (for
+/// "ternary", a place outside its steps, or its steps no longer show the branch it took). Or a
+/// run that could be run again no longer is, or one that can't be is said to differ.
+#[test]
+fn a_runs_record_reads_the_same_whatever_its_secret() {
+    let (host, _) = counting_server();
+    let state = claims_state("");
+    // A folder whose files a row reads by a name the secret chooses: neither is text, so the
+    // read fails the run, whichever it reads.
+    let dir = std::env::temp_dir().join(format!("holon-whatever-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in ["liv", "tes"] {
+        std::fs::write(dir.join(name), [0xff, 0xfe, 0x00]).unwrap();
+    }
+    // And a text past what a line keeps inline, kept by its hash.
+    std::fs::write(dir.join("five"), "a note of five. ".repeat(320)).unwrap();
+    let folder = serde_json::json!({ "name": "notes", "path": dir.display().to_string() });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&folder).unwrap())).status_code, 200);
+    // And a database a row reads by a value computed from the secret: no row has it.
+    let db = std::env::temp_dir().join(format!("holon-whatever-db-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&db).unwrap();
+    let keys = serde_json::json!({ "name": "keys", "path": db.join("keys.db").display().to_string(), "schema": "create table tokens (k text not null)" });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&keys).unwrap())).status_code, 200);
+    // Two secrets that differ in every way a row looks at: how long, how they begin.
+    // The first shorter than its marks, the second longer.
+    let secrets = ["live_alpha-key", "test_bravo-another-secret-value-22"];
+    // A step holding a value computed from the secret beside what the caller sent, the two
+    // sized so that, as the run had it, the step fits a record's limit with the shorter secret
+    // and not with the longer: as its record writes it, the value as its mark, it fits with
+    // either, and is kept with either (R63). Sized so it fits as the run had it with the
+    // shorter, and not with its mark, longer than the value: left out with either, the same
+    // for both, and as the step only moves the two (a record, written as JSON), the check
+    // builds it again on the marks and the record withholds nothing (R66). Given look-alikes
+    // of a mark, sized so it fits with the value's mark but not with each look-alike escaped
+    // as written: the same.
+    let encoded = |s: &str| holon_core::bytes_text(s.as_bytes(), "base64").unwrap();
+    let step = |k: &str, pad: &str| {
+        let record = holon_core::Value::Record(BTreeMap::from([("k".to_string(), holon_core::Value::Text(k.into())), ("pad".to_string(), holon_core::Value::Text(pad.into()))]));
+        serde_json::to_string(&[Some(crate::wire::SValue::from_core(&record))]).unwrap().len()
+    };
+    let most = recorder::Timer::MAX_RECORDED_BYTES;
+    let mark = format!("{}{}›", secrets::DERIVED_MARK, "0".repeat(8));
+    let large = "x".repeat(most - step(&mark, ""));
+    assert!(step(&encoded(secrets[0]), &large) <= most && step(&encoded(secrets[1]), &large) > most, "the large row straddles the limit");
+    let tight = "x".repeat(most - step(&encoded(secrets[0]), ""));
+    assert!(step(&mark, &tight) > most && step(&encoded(secrets[1]), &tight) > most, "the tight row fits only the shorter, unmarked");
+    let alike = "‹secret:";
+    let alikes = alike.repeat((most - step(&mark, "")) / alike.len());
+    assert!(step(&mark, &alikes) <= most && step(&mark, &alikes.replace('‹', "‹‹")) > most, "the look-alikes fit only unescaped");
+    // (the route, what it does with the secret `k`, what a caller sends given the secret,
+    // whether its record marks every value it computed)
+    type Sent<'a> = &'a dyn Fn(&str) -> String;
+    let nothing: Sent = &|_: &str| String::new();
+    let (large, tight, alikes) = (|_: &str| large.clone(), |_: &str| tight.clone(), |_: &str| alikes.clone());
+    // And a body past what a record keeps of a step, whatever the secret.
+    let sized = |_: &str| "x".repeat(20 * 1024);
+    let rows: Vec<(&str, &str, Sent, bool)> = vec![
+        ("basic", "const got = await host.get(\"/a\", { headers: { authorization: `Basic ${btoa(`user:${k}`)}` } })\n  return { status: got.status }", nothing, true),
+        (
+            "mixed",
+            "const got = await host.get(\"/a\", {\n    headers: { accept: \"application/json\", authorization: `Basic ${btoa(`user:${k}`)}`, \"x-n\": \"1\" },\n  })\n  return { status: got.status }",
+            nothing,
+            true,
+        ),
+        ("body", "const got = await host.post(\"/a\", { body: JSON.stringify({ auth: btoa(k), n: 1 }) })\n  return { status: got.status }", nothing, true),
+        ("answer", "return { header: `Basic ${btoa(k)}` }", nothing, true),
+        ("twice", "const got = await host.post(\"/a\", { body: `${btoa(k)}.${btoa(btoa(k))}` })\n  return { status: got.status }", nothing, true),
+        ("check", "const ok = secure_equals(req.body, btoa(k))\n  return (ok ? { ok } : undefined) ?? status(401)", &|k: &str| holon_core::bytes_text(k.as_bytes(), "base64").unwrap(), true),
+        // Asked across rounds on marks (a call fed one is asked again, R61): a value computed
+        // from the secret after a call's answer; a second call fed a mark and the first's
+        // answer; a database read by a value computed from it (its line's reads answer it).
+        ("after", "const got = await host.get(\"/a\")\n  return { h: btoa(`${k}:${got.status}`) }", nothing, true),
+        (
+            "both",
+            "const got = await host.get(\"/a\")\n  const again = await host.post(\"/a\", { headers: { authorization: `Basic ${btoa(k)}` }, body: String(got.status) })\n  return { status: again.status }",
+            nothing,
+            true,
+        ),
+        ("database", "const row = keys.one(\"select count(*) as n from tokens where k = $1\", btoa(k))\n  return { n: row.n }", nothing, true),
+        ("number", "const got = await host.get(\"/a\", { headers: { \"x-n\": String(k.length) } })\n  return { status: got.status }", nothing, false),
+        ("bool", "const got = await host.get(\"/a\", { headers: { \"x-live\": String(k.startsWith(\"live_\")) } })\n  return { status: got.status }", nothing, false),
+        ("short", "const got = await host.get(\"/a\", { headers: { \"x-start\": k.slice(0, 3) } })\n  return { status: got.status }", nothing, false),
+        ("each", "const got = await host.post(\"/a\", { body: [\"a\", \"b\"].map((p) => btoa(p + k)).join(\",\") })\n  return { status: got.status }", nothing, false),
+        // A hash of a part of it says the part (a table of the parts finds it): computed from
+        // it, as the part is, and a text, so marked.
+        ("hashed", "const got = await host.get(\"/a\", { headers: { \"x-h\": sha256(k.slice(0, 12)) } })\n  return { status: got.status }", nothing, true),
+        // A part that is the whole of the first secret and not of the second: a value computed
+        // from a secret that is the secret itself is written with the secret's mark, so the
+        // record tells a secret of 20 characters or fewer from a longer one (R65, the owner's to
+        // weigh). The records differ in that mark's kind and nothing else.
+        ("whole", "const got = await host.get(\"/a\", { headers: { \"x-h\": sha256(k.slice(0, 20)) } })\n  return { status: got.status }", nothing, true),
+        // Whether a part of it is what the caller sent, one way or not: a true or false. (The
+        // caller sends what is no part of either: a text that is one is marked where it came in,
+        // as any value the run computed is, and the two records would differ by that.)
+        ("part", "return { ok: String(secure_equals(req.body, k.slice(0, 8))) }", &|_: &str| "no-part-of-it".to_string(), false),
+        // Spelled as bytes and back: bytes have no mark, so what follows is withheld.
+        ("bytes", "const got = await host.post(\"/a\", { body: bytes_to_text(text_to_bytes(k)) })\n  return { status: got.status }", nothing, false),
+        ("ternary", "const got = await host.get(\"/a\", { headers: { \"x-mode\": k.startsWith(\"live_\") ? \"live mode\" : \"test mode\" } })\n  return { status: got.status }", nothing, false),
+        ("name", "const got = await host.get(\"/a\", { headers: { [`x-${k.slice(0, 3)}`]: \"1\" } })\n  return { status: got.status }", nothing, false),
+        ("order", "const got = await host.post(\"/a\", { body: [k, \"m\"].toSorted()[0] })\n  return { status: got.status }", nothing, false),
+        ("read", "const prior = seen[k.slice(0, 3)] ?? \"none\"\n  return { prior }", nothing, false),
+        ("claim", "const prior = seen[k.slice(0, 3)] ?? \"none\"\n  const got = await host.get(\"/a\")\n  return { status: got.status, prior }", nothing, false),
+        ("failure", "const text = notes[k.slice(0, 3)]\n  return { text }", nothing, false),
+        // The secret whole, recoded first (a recoding leaf gives it as it is, in other letters),
+        // then a read's key, claimed before a call, and a header's name: each says the secret.
+        (
+            "recoded",
+            "const e = encodeURIComponent(k)\n  const prior = seen[e] ?? \"none\"\n  const got = await host.get(\"/a\", { headers: { [e]: \"1\" } })\n  return { status: got.status, prior }",
+            nothing,
+            false,
+        ),
+        ("large", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &large, true),
+        ("tight", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &tight, true),
+        ("lookalike", "const big = { k: btoa(k), pad: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(big) })\n  return { status: got.status }", &alikes, true),
+        // A value computed from it beside a file's text the log keeps by its hash: the step that
+        // gives the two isn't kept, as the file is the log's already, and the check computes it
+        // on the marks.
+        ("filed", "const text = notes[\"five\"]\n  const got = await host.post(\"/a\", { body: JSON.stringify({ auth: btoa(k), text }) })\n  return { status: got.status }", nothing, true),
+        // The same text and the secret in a value a leaf computes (trimmed): the step that gives
+        // it carries the file and isn't kept, and the check can't compute it on a mark, so the
+        // record withholds (R66).
+        ("computed", "const text = notes[\"five\"]\n  const got = await host.post(\"/a\", { body: (text + k).trim() })\n  return { status: got.status }", nothing, false),
+        // A body that carries a credential computed from it beside what the caller sent, past
+        // what a record keeps of a step: written as JSON, or joined into a text. The step that
+        // holds the two only moves them, isn't kept, and the check builds it again on the marks
+        // (R66). A credential in a header beside such a body isn't this: the two reach the call
+        // apart, no step holds both, and the record is whole before R66 as after.
+        ("header", "const got = await host.post(\"/a\", { headers: { authorization: `Basic ${btoa(`user:${k}`)}` }, body: req.body })\n  return { status: got.status }", &sized, true),
+        ("sized","const got = await host.post(\"/a\", { body: JSON.stringify({ auth: btoa(`user:${k}`), data: req.body }) })\n  return { status: got.status }", &sized, true),
+        ("joined", "const got = await host.post(\"/a\", { body: `${btoa(`user:${k}`)}:${req.body}` })\n  return { status: got.status }", &sized, true),
+        // A body that is a record keyed by a value computed from it, past what a record keeps of
+        // a step: the steps that build and write it only move it, and the check builds them again
+        // on the mark, a key of one (R66).
+        ("keyed", "const sent = { [btoa(`user:${k}`)]: req.body }\n  const got = await host.post(\"/a\", { body: JSON.stringify(sent) })\n  return { status: got.status }", &sized, true),
+    ];
+    // And a route that writes the collection the rows read, never called: the deployment may write
+    // it, so a run that reads it claims what it read before it calls out.
+    let routes: String = rows.iter().map(|(path, body, _, _)| format!("route.post(\"/{path}\", async (req) => {{\n  {body}\n}})\n\n")).collect::<String>()
+        + "route.put(\"/keep\", (req) => {\n  seen[\"last\"] = { n: 1 }\n  return { kept: true }\n})\n";
+    let text = format!(
+        "import {{ bytes_to_text, flow, route, secure_equals, sha256, status, text_to_bytes }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\nimport seen from \"collection:seen\"\nimport notes from \"folder:notes\"\nimport keys from \"database:keys\"\n\nflow(\"whatever\", {{ port: 18301 }})\n\n{routes}"
+    );
+    let slug = deploy_text(&state, &text, &host);
+    for secret in secrets {
+        let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+        for (path, _, sent, _) in &rows {
+            let (status, body, _) = data_call(&state, &slug, "POST", &format!("/{path}"), &sent(secret));
+            // The failure row's read fails, whichever file the secret names.
+            assert_eq!(status, if *path == "failure" { 500 } else { 200 }, "{path}: {body}");
+        }
+    }
+
+    let entries = log_entries(&state, &slug);
+    assert_eq!(entries.len(), 2 * rows.len());
+    let export_text = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let export: verify::Export = serde_json::from_str(&export_text).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let said = verify::describe(&report, None);
+    let mut wrong: Vec<String> = Vec::new();
+    for (i, (path, _, _, marked)) in rows.iter().enumerate() {
+        let (one, other) = (&entries[i], &entries[rows.len() + i]);
+        assert_eq!(one["url"], format!("/{path}"), "{one}");
+        let mut at = Vec::new();
+        differs(&but_marks(one), &but_marks(other), String::new(), &mut at);
+        // A branch a secret chose shows in the run's steps (the branch's own, and the clean
+        // constants they give), and nowhere else.
+        if *path == "ternary" {
+            if !at.iter().any(|d| d.starts_with(".timeline")) {
+                wrong.push(format!("{path}: its steps don't show the branch it took"));
+            }
+            at.retain(|d| !d.starts_with(".timeline"));
+        }
+        // R65: the step that gave the whole of the first secret is written with its mark, where
+        // the second's part is a computed value's. Once that is fixed, this is a plain row.
+        if *path == "whole" {
+            let one_mark = |d: &String| d.starts_with(".timeline[") && d.ends_with(r#".value: "‹secret:k›" | "‹derived›""#);
+            if !at.iter().any(one_mark) {
+                wrong.push(format!("{path}: the whole secret is no longer written with its mark: R65 is fixed, make this a plain row"));
+            }
+            at.retain(|d| !one_mark(d));
+        }
+        if !at.is_empty() {
+            wrong.push(format!("{path}: two secrets, two records:\n  {}", at.join("\n  ")));
+        }
+        for (entry, rerun) in [(one, &report.reruns[i].1), (other, &report.reruns[rows.len() + i].1)] {
+            let line = entry.to_string();
+            if (line.contains(secrets::DERIVED_MARK) && !line.contains("‹withheld")) != *marked {
+                wrong.push(format!("{path}: marked isn't {marked}: {line}"));
+            }
+            match (marked, rerun) {
+                (true, verify::Rerun::Matched) => {}
+                (false, verify::Rerun::Skipped(why)) if why.ends_with(verify::MARK_STANDS_FOR) || why.contains("inside a function applied to each item") => {}
+                // The bytes of a mark, read back, are the mark: the check computes the step the
+                // record withholds, and what it sends is withheld the same way before the two
+                // are compared.
+                (false, verify::Rerun::Matched) if *path == "bytes" => {}
+                other => wrong.push(format!("{path}: {other:?}")),
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&db);
+    assert!(wrong.is_empty(), "{}\n{said}", wrong.join("\n"));
+    // And nothing of either secret, or of what the rows encode of it, anywhere in the log or
+    // an export of it.
+    let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
+    for secret in secrets {
+        let b64 = |s: &str| holon_core::bytes_text(s.as_bytes(), "base64").unwrap();
+        for (what, value) in [("the secret", secret.to_string()), ("it encoded", b64(secret)), ("it encoded with a user", b64(&format!("user:{secret}"))), ("it encoded twice", b64(&b64(secret)))] {
+            assert!(!log.contains(&value) && !export_text.contains(&value), "{what} is in the record");
+        }
+    }
+    assert!(report.ok(), "{said}");
+}
+
+/// **Guards:** what R67 leaves of a record saying what its secret holds, named. A far side that
+/// writes JSON with each character past ASCII escaped (Python's `ensure_ascii`) answers a secret
+/// that has one with that character as `\uXXXX`: a spelling no mark is put into, so the record
+/// withholds the answer's text whole (`‹respelled:secret:k›`), where an ASCII secret comes back as
+/// it went and its mark stands in place. So the record says whether the secret has a character
+/// past ASCII, through what a far side echoes (a caller can't send that spelling without the
+/// secret). Two secrets the same but for one letter: their records differ in the answer's text,
+/// and in the answer's `content-length`, and nothing else; `holon verify` runs both again.
+///
+/// The `content-length` is a leak of its own, found here: the record keeps the far side's
+/// headers as they came, and an answer that echoes a secret says, in its length, how long the
+/// secret is as the far side spelled it (here 27 and 32: the escaped letter is six characters).
+/// It isn't R67's: two ASCII secrets of other lengths, echoed, differ in it too. The class test's
+/// far sides answer the same whatever they are sent, so it doesn't show there.
+///
+/// **Why:** `a_runs_record_reads_the_same_whatever_its_secret` holds a record to reading the same
+/// whatever its secret, with two ASCII secrets. This is the difference R67 leaves (secrets.rs,
+/// `held_whole`), and the length an echo tells, kept in sight, as R65's is there, until each is
+/// closed.
+///
+/// **If it fails:** where the second record keeps its mark in place, the residual is closed;
+/// where the two lengths no longer show, the length is: take each out of what is excused, and
+/// when both are, make this a plain equality. Anything else the two records differ in is a leak
+/// of its own.
+#[test]
+fn a_far_sides_spelling_says_whether_a_secret_has_a_letter_past_ascii() {
+    let (host, _) = counting_server();
+    let state = claims_state("");
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\n\nflow(\"spelled\", {{ port: {} }})\n\nroute.post(\"/echo\", async (req) => {{\n  const got = await host.post(\"/ascii\", {{ body: JSON.stringify({{ v: k }}) }})\n  return {{ status: got.status }}\n}})\n",
+        free_port()
+    );
+    let slug = deploy_text(&state, &text, &host);
+    let secrets = ["live_alpha-key-1234", "live_alpha-k\u{e9}y-1234"];
+    for secret in secrets {
+        let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+        let (status, body, _) = data_call(&state, &slug, "POST", "/echo", "");
+        assert_eq!(status, 200, "{body}");
+    }
+    let entries = log_entries(&state, &slug);
+    assert_eq!(entries.len(), 2);
+    let mut at = Vec::new();
+    differs(&but_marks(&entries[0]), &but_marks(&entries[1]), String::new(), &mut at);
+    // The answer: the first secret's mark in place, the second's text withheld whole.
+    let answer = |d: &String| d.ends_with(r#": "{\"v\":\"‹secret:k›\"}" | "‹respelled:secret:k›""#);
+    assert!(at.iter().any(answer), "the residual is closed: take it out of what is excused:\n  {}", at.join("\n  "));
+    at.retain(|d| !answer(d));
+    // Its length, as the far side counted what it echoed: each letter past ASCII six characters.
+    let echoed = |s: &str| serde_json::json!({ "v": s }).to_string().chars().map(|c| if c.is_ascii() { 1 } else { 6 }).sum::<usize>();
+    let lengths = format!(r#".value: "{}" | "{}""#, echoed(secrets[0]), echoed(secrets[1]));
+    let length = |d: &String| d.ends_with(&lengths);
+    assert!(
+        at.iter().any(|d| d.starts_with(".rounds[0].exchanges[0].response.") && length(d)),
+        "the answer's length no longer tells the secret's: take it out of what is excused:\n  {}",
+        at.join("\n  ")
+    );
+    at.retain(|d| !length(d));
+    assert!(at.is_empty(), "two secrets, two records:\n  {}", at.join("\n  "));
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let said = verify::describe(&report, None);
+    assert!(report.ok() && report.reruns.iter().all(|(_, rerun)| matches!(rerun, verify::Rerun::Matched)), "{said}");
 }
 
 /// The read-call-write flows the claim tests run, calling `host` over plain HTTP: the call is
@@ -7873,6 +10341,15 @@ fn log_entries(state: &AppState, slug: &str) -> Vec<serde_json::Value> {
     body_json(route(state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))["entries"].as_array().unwrap().clone()
 }
 
+/// What a logged run read from the capabilities named `capability…` (`FeedEvent("posts")`,
+/// `FeedEvent`…), as JSON text: where a test looks for which event a run was. Not the whole of
+/// its `sourced`, which holds the run's random bytes in base64: a short name looked for there is
+/// found in them now and then ("3k3", once in a few hundred runs of the bluesky test).
+fn sourced_from(entry: &serde_json::Value, capability: &str) -> String {
+    let sourced = entry["sourced"].as_array().unwrap();
+    sourced.iter().filter(|p| p[0].as_str().unwrap().starts_with(capability)).map(|p| p[1].to_string()).collect::<Vec<_>>().join("\n")
+}
+
 /// The oracle a deployment's runs of every kind are held to: replayed on the version it runs now
 /// (`GET /deployments/<slug>/replay`), a run of that version that `holon verify` runs again as it
 /// ran replays as the same, and none replays differently. The kinds of the runs replayed as the
@@ -7909,47 +10386,56 @@ fn hits_of(hits: &Mutex<BTreeMap<String, usize>>, path: &str) -> usize {
 /// record, and sends nothing; both answer the same; the processor saw one call.
 #[test]
 fn a_racing_pair_on_one_key_calls_out_once() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let slug = deploy_text(&state, &idem_text(&host), &host);
-    let (a, b) = std::thread::scope(|s| {
-        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k2", ""));
-        std::thread::sleep(Duration::from_millis(60));
-        let b = s.spawn(|| data_call(&state, &slug, "POST", "/go/k2", ""));
-        (a.join().unwrap(), b.join().unwrap())
-    });
+    let held_while_out = std::sync::atomic::AtomicBool::new(false);
+    let (a, b) = second_waits_for_first(
+        &state,
+        &gate,
+        || data_call(&state, &slug, "POST", "/go/k2", ""),
+        || {
+            // Sent while the first's call is out: its key is held through it.
+            let held = state.deployments.lock().unwrap()[&slug].state.as_ref().unwrap().claims.held();
+            held_while_out.store(held.iter().any(|k| k.to_string() == "seen[k2]"), std::sync::atomic::Ordering::SeqCst);
+            data_call(&state, &slug, "POST", "/go/k2", "")
+        },
+    );
+    assert!(held_while_out.into_inner(), "the first held its key through its call");
     assert_eq!((a.0, b.0), (200, 200), "{a:?} {b:?}");
     assert_eq!(a.1, b.1, "both answer the first's record");
     assert_eq!(hits_of(&hits, "/slow"), 1, "one call for one key");
     let entries = log_entries(&state, &slug);
     let second = entries.iter().find(|e| e["retries"] == 1).unwrap_or_else(|| panic!("one run ran again: {entries:#?}"));
     let claims = second["claims"].as_array().unwrap();
-    assert!(claims.iter().any(|c| c["key"] == "seen[k2]" && c["waited_ms"].as_f64().unwrap() > 100.0 && c["overtaken"] == true), "{claims:?}");
+    assert!(claims.iter().any(|c| c["key"] == "seen[k2]" && c["waited_ms"].as_f64().unwrap() > 0.0 && c["overtaken"] == true), "{claims:?}");
     let first = entries.iter().find(|e| e["retries"] != 1).unwrap();
     let held = &first["claims"][0];
     assert_eq!((held["key"].as_str(), held["overtaken"].as_bool()), (Some("seen[k2]"), Some(false)), "{held}");
-    assert!(held["waited_ms"].as_f64().unwrap() < 50.0 && held["held_ms"].as_f64().unwrap() > 300.0, "held through its slow call: {held}");
 }
 
 /// Two keys never wait for each other: both call out, side by side.
 #[test]
 fn different_keys_never_wait() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let slug = deploy_text(&state, &idem_text(&host), &host);
-    let (a, b) = std::thread::scope(|s| {
+    gate.shut();
+    let (a, b, both, none_waits) = std::thread::scope(|s| {
         let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k3", ""));
-        std::thread::sleep(Duration::from_millis(60));
         let b = s.spawn(|| data_call(&state, &slug, "POST", "/go/k4", ""));
-        (a.join().unwrap(), b.join().unwrap())
+        let both = gate.out_at_once(2);
+        let none_waits = waiting(&state) == 0;
+        gate.open();
+        (a.join().unwrap(), b.join().unwrap(), both, none_waits)
     });
     assert_eq!((a.0, b.0), (200, 200));
     assert_eq!(hits_of(&hits, "/slow"), 2);
-    assert!(a.2 < Duration::from_millis(700) && b.2 < Duration::from_millis(700), "not serialized: {:?} {:?}", a.2, b.2);
+    assert!(both && none_waits, "not serialized: both calls out at once, neither run waiting");
     for e in log_entries(&state, &slug) {
         assert_eq!(e["retries"], serde_json::Value::Null, "{e}");
         for c in e["claims"].as_array().into_iter().flatten() {
-            assert!(c["waited_ms"].as_f64().unwrap() < 50.0, "{c}");
+            assert_eq!(c["overtaken"], false, "{c}");
         }
     }
 }
@@ -7962,15 +10448,18 @@ fn different_keys_never_wait() {
 /// after both broke; with them, a state the run it began after didn't leave still breaks.
 #[test]
 fn runs_beside_each_other_numbered_the_other_way_round_follow() {
-    let (host, _) = counting_server();
+    let (host, _, gate) = gated_counting_server();
     let state = claims_state("");
     let slug = deploy_text(&state, &idem_text(&host), &host);
-    let (a, b) = std::thread::scope(|s| {
+    gate.shut();
+    let (a, b, both) = std::thread::scope(|s| {
         let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k6", ""));
-        std::thread::sleep(Duration::from_millis(60));
         let b = s.spawn(|| data_call(&state, &slug, "POST", "/go/k7", ""));
-        (a.join().unwrap(), b.join().unwrap())
+        let both = gate.out_at_once(2);
+        gate.open();
+        (a.join().unwrap(), b.join().unwrap(), both)
     });
+    assert!(both, "beside each other: both calls out at once");
     assert_eq!((a.0, b.0), (200, 200));
     assert_eq!(data_call(&state, &slug, "PUT", "/set/k8", "after").0, 200);
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
@@ -7978,7 +10467,7 @@ fn runs_beside_each_other_numbered_the_other_way_round_follow() {
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert_eq!(report.states.as_ref().unwrap().breaks, vec![]);
 
-    // Both began from the state as deployed (/slow takes 400 ms) and landed in turn; the run
+    // Both began from the state as deployed (both were out at once) and landed in turn; the run
     // after them began after the second.
     let lines: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
     let commit = |v: &serde_json::Value| (v["commit"]["after"].as_u64().unwrap(), v["commit"]["n"].as_u64().unwrap());
@@ -8025,13 +10514,14 @@ fn runs_beside_each_other_numbered_the_other_way_round_follow() {
     let (s, _) = swapped_states(&swapped(&|_, v| drop(v.as_object_mut().unwrap().remove("commit"))));
     assert_eq!(s.breaks, vec![(2, "it began from a state the run before it (run 1) didn't leave, nor a run beside it".to_string())]);
 
-    // Run 0 says it left another state: run 2 began after it, from a state it didn't leave.
+    // Run 0 says it left another state: run 2 began after its commit, from a state it didn't
+    // leave, whatever run beside it began from that state (R62).
     let (s, text) = swapped_states(&swapped(&|i, v| {
         if i == 0 {
             v["state_after"] = serde_json::json!("00".repeat(32));
         }
     }));
-    assert_eq!(s.breaks, vec![(2, "it began from a state the run before it (run 1) didn't leave, nor a run beside it".to_string())], "{text}");
+    assert_eq!(s.breaks, vec![(2, "it began after run 0's commit, from a state other than the one that run left".to_string())], "{text}");
     assert!(text.contains("run 2's state DOESN'T FOLLOW"), "{text}");
 }
 
@@ -8040,18 +10530,25 @@ fn runs_beside_each_other_numbered_the_other_way_round_follow() {
 /// first hasn't, and isn't checked where it began. Without the commit numbers it broke.
 #[test]
 fn a_run_after_a_commit_the_trimmed_log_lost_has_no_run_before_it() {
-    let (host, _) = counting_server();
+    let (host, _, gate) = gated_counting_server();
     let state = claims_state("");
     let slug = deploy_text(&state, &idem_text(&host), &host);
     assert_eq!(data_call(&state, &slug, "PUT", "/set/k1", "p").0, 200);
-    // X calls out (400 ms); Q lands meanwhile, and Y begins from what Q left and calls out too.
-    let (x, y) = std::thread::scope(|s| {
+    // X calls out and is held there; Q lands meanwhile, and Y begins from what Q left and calls
+    // out too; X is let go and lands, then Y.
+    gate.shut();
+    let (x, y, order) = std::thread::scope(|s| {
         let x = s.spawn(|| data_call(&state, &slug, "POST", "/go/k6", ""));
-        std::thread::sleep(Duration::from_millis(60));
-        assert_eq!(data_call(&state, &slug, "PUT", "/set/k2", "q").0, 200);
+        let x_out = gate.out_at_once(1);
+        let q = data_call(&state, &slug, "PUT", "/set/k2", "q").0;
         let y = s.spawn(|| data_call(&state, &slug, "POST", "/go/k7", ""));
-        (x.join().unwrap(), y.join().unwrap())
+        let both = x_out && gate.out_at_once(2);
+        gate.let_one_go();
+        let x = x.join().unwrap();
+        gate.open();
+        (x, y.join().unwrap(), (x_out, q, both))
     });
+    assert_eq!(order, (true, 200, true), "X out, Q landed, Y out beside it");
     assert_eq!((x.0, y.0), (200, 200));
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
     let lines: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
@@ -8066,7 +10563,7 @@ fn a_run_after_a_commit_the_trimmed_log_lost_has_no_run_before_it() {
     let text = verify::describe(&report, None);
     assert!(report.ok(), "{text}");
     let s = report.states.unwrap();
-    assert_eq!((s.breaks, &s.unchecked["where it began: no run before it here"]), (vec![], &vec![2, 3]), "{text}");
+    assert_eq!((s.breaks, &s.unchecked[verify::NONE_BEFORE]), (vec![], &vec![2, 3]), "{text}");
 
     // The same two without their numbers, as a log written before them, chained again: Y broke.
     let mut x = lines[2].clone();
@@ -8448,6 +10945,534 @@ fn a_panic_holding_what_every_run_takes_stops_no_run_after_it() {
     assert_eq!(state.deployments.lock().unwrap()["c"].log.next_seq(), 1 + held as u64, "each run logged");
 }
 
+/// Each way to change one value of a line (its JSON): a leaf changed (a text's last character, a
+/// number by one, a true or false turned), an item of a list dropped or one repeated, a field
+/// taken out, or one the server writes only sometimes put in. Each with where, as `field/0/value`.
+fn changes_of(line: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
+    fn walk(at: &str, v: &serde_json::Value, out: &mut Vec<(String, serde_json::Value)>) {
+        use serde_json::Value as J;
+        match v {
+            J::String(s) => {
+                let changed = match s.chars().last() {
+                    None => "x".to_string(),
+                    Some(c) => {
+                        let other = if c == '0' { '1' } else if c.is_ascii_hexdigit() { '0' } else if c == 'x' { 'y' } else { 'x' };
+                        format!("{}{other}", &s[..s.len() - c.len_utf8()])
+                    }
+                };
+                out.push((at.to_string(), J::String(changed)));
+            }
+            J::Number(n) => out.push((at.to_string(), match n.as_u64() {
+                Some(u) => J::from(u + 1),
+                None => J::from(n.as_f64().unwrap_or(0.0) + 0.5),
+            })),
+            J::Bool(b) => out.push((at.to_string(), J::Bool(!b))),
+            J::Null => out.push((at.to_string(), serde_json::json!({ "type": "Number", "value": 1 }))),
+            J::Array(items) => {
+                if let Some(last) = items.last() {
+                    let mut fewer = items.clone();
+                    fewer.pop();
+                    out.push((format!("{at}/-"), J::Array(fewer)));
+                    let mut more = items.clone();
+                    more.push(last.clone());
+                    out.push((format!("{at}/+"), J::Array(more)));
+                }
+                for (i, item) in items.iter().enumerate() {
+                    let mut inner = Vec::new();
+                    walk(&format!("{at}/{i}"), item, &mut inner);
+                    for (where_, changed) in inner {
+                        let mut copy = items.clone();
+                        copy[i] = changed;
+                        out.push((where_, J::Array(copy)));
+                    }
+                }
+            }
+            J::Object(fields) => {
+                for (k, field) in fields {
+                    let mut without = fields.clone();
+                    without.remove(k);
+                    out.push((format!("{at}/{k}/out"), J::Object(without)));
+                    let mut inner = Vec::new();
+                    walk(&format!("{at}/{k}"), field, &mut inner);
+                    for (where_, changed) in inner {
+                        let mut copy = fields.clone();
+                        copy.insert(k.clone(), changed);
+                        out.push((where_, J::Object(copy)));
+                    }
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let serde_json::Value::Object(fields) = line else { return out };
+    for (k, field) in fields {
+        // `prev` is chained again whatever it was.
+        if k == "prev" {
+            continue;
+        }
+        let mut without = fields.clone();
+        without.remove(k);
+        out.push((format!("{k}/out"), serde_json::Value::Object(without)));
+        let mut inner = Vec::new();
+        walk(k, field, &mut inner);
+        for (where_, changed) in inner {
+            let mut copy = fields.clone();
+            copy.insert(k.clone(), changed);
+            out.push((where_, serde_json::Value::Object(copy)));
+        }
+    }
+    // What the server writes only sometimes: put in where the line has none.
+    let number = serde_json::json!({ "type": "Number", "value": 1 });
+    let sometimes = [
+        ("error", serde_json::json!("x")),
+        ("withheld", serde_json::json!(true)),
+        ("status", serde_json::json!(500)),
+        ("events", serde_json::json!({ "x": number })),
+        ("sourced", serde_json::json!([["x", number]])),
+        ("parked", serde_json::json!(["x"])),
+        ("by", serde_json::json!("mallory")),
+        ("retries", serde_json::json!(1)),
+        ("lost_since", serde_json::json!(0)),
+        ("state_after", serde_json::json!("00".repeat(32))),
+        ("response_body", serde_json::json!("x")),
+    ];
+    for (k, value) in sometimes {
+        if !fields.contains_key(k) {
+            let mut copy = fields.clone();
+            copy.insert(k.to_string(), value);
+            out.push((format!("{k}/in"), serde_json::Value::Object(copy)));
+        }
+    }
+    out
+}
+
+/// **Guards:** no line of an honest export passes `holon verify` once one value of it is changed
+/// and the lines are chained again (each way `changes_of` knows: a leaf, an item, a field out, a
+/// field the server writes only sometimes put in), but in a field verify says it doesn't hold
+/// ([`verify::NOT_HELD`], said in checking-runs.md): verify ends FAILED. Nor does it pass saying
+/// it checked less of a run than it does of the honest line; and a change that makes it check
+/// less of a state (a commit's cell or number, which are `NOT_HELD`) ends 3, never 0, as the
+/// honest export, checking every state, ends 0. With the head a witness holds,
+/// every change fails, those fields included: the chain holds each line whole. The exports are
+/// of the kinds of runs there are: an action's that writes the state, a request's that reads its
+/// query and answers, and an approval's two parts, the second resumed by two people's decisions.
+///
+/// Its zero is only as wide as its flows: R61's sweep passed none as checked, and the same code
+/// passed 36 changes as checked once a flow sent a credential beside a file (R66). Of the calls
+/// a secret reaches, it covers: a credential computed from the secret in a header ("signed");
+/// a number computed from it, which no mark stands for, withheld ("counted"); the secret as it
+/// is in a body larger than the log keeps of a step ("large", R63); a credential computed from
+/// it in a JSON body beside what the caller sent past that size, and beside a file's text the
+/// log keeps by its hash ("sized", R66); and calls, reads and a claim with no secret ("calls",
+/// "reads"). Not, and so where to look next: a step that computes from a secret past that size
+/// or carrying such a file (withheld, its record held by the "computed" row of
+/// `a_runs_record_reads_the_same_whatever_its_secret`); a mark as a record's key (its "keyed"
+/// row); a value computed from a secret answered to the caller; a call whose answer echoes the
+/// secret; a resume token or a tainted value (a caller's key) in a call; a secret JSON spells
+/// another way; one reached inside a function applied to each item or inside a module; and
+/// runs of other kinds (a feed's, a schedule's, one flow calling another).
+///
+/// **Why:** verify passed lines changed and chained again by roads one at a time: an `error` and
+/// a status put in (it matched, exit 0), a source it couldn't name, a read's text taken out, a
+/// secret-fed node's outputs deleted (not run again, exit 3, the state it named after it never
+/// checked), decisions put in an entry of any kind (its state then never checked), a resumed part
+/// on its own, lines that aren't runs (`0 runs … ok`). Each was found by hand (audit R26); this
+/// asks every value.
+///
+/// **If it fails:** the change it names passes as checked: what verify says of that field is no
+/// more than the line's say-so, and a forger who can chain the log again (no witness) makes it
+/// say anything there.
+#[test]
+fn no_line_changed_and_chained_again_passes_as_checked() {
+    // Granted plain HTTP to a host on this machine, for the flow that calls one with a secret.
+    let mut state = claims_state("");
+    // An action's runs, each writing the state.
+    let unit = stage_text(&state, COUNTER);
+    let ack = serde_json::json!(["Action(\"bump\")", "StateRead(\"count\")", "StateWrite(\"count\")"]);
+    assert_eq!(deploy_json(&state, "c", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
+    for _ in 0..2 {
+        assert_eq!(run_action_named(&state, "c", "bump", serde_json::json!({})).status_code, 200);
+    }
+    // A request's, reading its query and the state, answering.
+    let port = free_port();
+    let text = format!("import {{ flow, route }} from \"holon\"\nimport state from \"state\"\n\nflow(\"seen\", {{ port: {port} }})\n\nroute.get(\"/n\", (req) => {{\n  const seen = (state.seen ?? \"\") + req.query.n\n  state.seen = seen\n  return seen\n}})\n");
+    let unit = stage_text(&state, &text);
+    let ack = serde_json::json!(["NetworkIngress", "StateRead(\"seen\")", "StateWrite(\"seen\")"]);
+    assert_eq!(deploy_json(&state, "seen", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
+    for n in ["a", "b"] {
+        assert_eq!(data_call(&state, "seen", "GET", &format!("/n?n={n}"), "").0, 200);
+    }
+    // A request's that sends what it computes from a secret: its record has a mark where each
+    // such value was (S8), which verify holds by computing it again.
+    let (host, _) = counting_server();
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\n\nflow(\"signed\", {{ port: {} }})\n\nroute.post(\"/send\", async (req) => {{\n  const got = await host.get(\"/a\", {{ headers: {{ authorization: `Basic ${{btoa(`user:${{k}}`)}}` }} }})\n  return {{ status: got.status, n: req.body }}\n}})\n",
+        free_port()
+    );
+    let signed = deploy_text(&state, &text, &host);
+    // And one that calls the same host with what its caller sent, no secret in it: a call the
+    // check makes again, answered as the line says.
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport host from \"host:{host}\"\n\nflow(\"calls\", {{ port: {} }})\n\nroute.post(\"/get\", async (req) => {{\n  const got = await host.get(\"/a\", {{ headers: {{ \"x-n\": req.body }} }})\n  return {{ status: got.status, said: got.body }}\n}})\n",
+        free_port()
+    );
+    let calls = deploy_text(&state, &text, &host);
+    // And one that sends a number it computes from a secret: no mark stands for a number, so its
+    // record withholds what may be computed from the secret, and verify doesn't run it again.
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\n\nflow(\"counted\", {{ port: {} }})\n\nroute.post(\"/count\", async (req) => {{\n  const got = await host.get(\"/a\", {{ headers: {{ \"x-n\": String(k.length) }} }})\n  return {{ status: got.status, n: req.body }}\n}})\n",
+        free_port()
+    );
+    let counted = deploy_text(&state, &text, &host);
+    // And one that sends its secret as it is, a secret larger than the log keeps of a step: the
+    // step that gives it is kept as the record writes it, on its mark, so its record marks it
+    // and withholds nothing, as for a short secret, and the check runs it again (R63).
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport host from \"host:{host}\"\n\nflow(\"large\", {{ port: {} }})\n\nroute.post(\"/big\", async (req) => {{\n  const got = await host.post(\"/a\", {{ body: k }})\n  return {{ status: got.status, n: req.body }}\n}})\n",
+        free_port()
+    );
+    let large = deploy_text(&state, &text, &host);
+    // And one that sends a credential computed from its secret beside what is past what the log
+    // keeps of a step: a request's body (past 16 KiB), a file's text the log keeps by its hash
+    // (past 4 KiB). The steps that hold the two only move them: left out, and built again on the
+    // marks by the check, so its record withholds nothing (R66).
+    let papers = std::env::temp_dir().join(format!("holon-sweep-papers-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&papers).unwrap();
+    std::fs::write(papers.join("five.txt"), "a note of five. ".repeat(320)).unwrap();
+    let folder = serde_json::json!({ "name": "papers", "path": papers.display().to_string() });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&folder).unwrap())).status_code, 200);
+    let text = r#"import { flow, route } from "holon"
+import k from "secret:k"
+import host from "host:HOST"
+import papers from "folder:papers"
+
+flow("sized", { port: PORT })
+
+route.post("/send", async (req) => {
+  const got = await host.post("/a", { body: JSON.stringify({ auth: btoa(`user:${k}`), data: req.body }) })
+  return { status: got.status }
+})
+
+route.post("/upload", async (req) => {
+  const text = papers["five.txt"]
+  const got = await host.post("/a", { body: JSON.stringify({ auth: btoa(`user:${k}`), text }) })
+  return { status: got.status, n: req.body }
+})
+"#
+    .replace("HOST", &host)
+    .replace("PORT", &free_port().to_string());
+    let sized = deploy_text(&state, &text, &host);
+    // And one that reads: an item of a collection it writes (so it claims it before it calls
+    // out), a folder's file, a database's row. Each read is answered from the line (R62).
+    let files = std::env::temp_dir().join(format!("holon-sweep-reads-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&files).unwrap();
+    std::fs::write(files.join("a.txt"), "a note").unwrap();
+    let folder = serde_json::json!({ "name": "notes", "path": files.display().to_string(), "keep": "bytes" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&folder).unwrap())).status_code, 200);
+    let keys = serde_json::json!({ "name": "keys", "path": files.join("keys.db").display().to_string(), "schema": "create table tokens (k text not null)" });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&keys).unwrap())).status_code, 200);
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport box from \"collection:box\"\nimport notes from \"folder:notes\"\nimport keys from \"database:keys\"\nimport host from \"host:{host}\"\n\nflow(\"reads\", {{ port: {} }})\n\nroute.put(\"/keep\", (req) => {{\n  box[\"a\"] = {{ n: req.body }}\n  return {{ kept: true }}\n}})\n\nroute.post(\"/read\", async (req) => {{\n  const prior = box[\"a\"] ?? \"none\"\n  const text = notes[\"a.txt\"]\n  const row = keys.one(\"select count(*) as n from tokens where k = $1\", req.body)\n  const got = await host.get(\"/a\", {{ headers: {{ \"x-n\": req.body }} }})\n  return {{ prior, text, n: row.n, status: got.status }}\n}})\n",
+        free_port()
+    );
+    let reads = deploy_text(&state, &text, &host);
+    let big = format!("live_{}", "q".repeat(recorder::Timer::MAX_RECORDED_BYTES));
+    for (slug, value) in [(&signed, "live_alpha-secret-value-1"), (&counted, "live_alpha-secret-value-1"), (&large, big.as_str()), (&sized, "live_alpha-secret-value-1")] {
+        let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+    }
+    for n in ["a", "b"] {
+        let (status, body, _) = data_call(&state, &signed, "POST", "/send", n);
+        assert_eq!(status, 200, "{body}");
+        let (status, body, _) = data_call(&state, &calls, "POST", "/get", n);
+        assert_eq!(status, 200, "{body}");
+        let (status, body, _) = data_call(&state, &counted, "POST", "/count", n);
+        assert_eq!(status, 200, "{body}");
+        let (status, body, _) = data_call(&state, &large, "POST", "/big", n);
+        assert_eq!(status, 200, "{body}");
+        let (status, body, _) = data_call(&state, &sized, "POST", "/send", &format!("{n}{}", "x".repeat(20 * 1024)));
+        assert_eq!(status, 200, "{body}");
+        let (status, body, _) = data_call(&state, &sized, "POST", "/upload", n);
+        assert_eq!(status, 200, "{body}");
+    }
+    let (status, body, _) = data_call(&state, &reads, "PUT", "/keep", "1");
+    assert_eq!(status, 200, "{body}");
+    for n in ["a", "b"] {
+        let (status, body, _) = data_call(&state, &reads, "POST", "/read", n);
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("a note") && body.contains("\"prior\":{\"n\":\"1\"}"), "it read what it was given: {body}");
+    }
+    // An approval's, two people deciding it.
+    let text = r#"import { action, approval, flow } from "holon"
+import state from "state"
+
+flow("payouts")
+
+export const pay = action(async (order) => {
+  const decision = await approval("payout", { expires: "1h", people: 2 })
+  state.decided = decision.approved
+  return decision.approved
+})
+"#;
+    let unit = stage_text(&state, text);
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"pay\")", "Approval(\"payout/person*2\")", "StateWrite(\"decided\")"] });
+    assert_eq!(deploy_json(&state, "payouts", unit, ack).status_code, 200);
+    assert!(run_action_named(&state, "payouts", "pay", serde_json::json!({ "amount": 10 })).is_success());
+    let run = body_json(route(&state, &req("GET", "/deployments/payouts/runs", vec![])))["runs"][0]["run_id"].as_str().unwrap().to_string();
+    let People { ada, .. } = with_people(&mut state);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    let bob = accounts.accept(&accounts.invite("bob", "editor", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    for who in [&ada, &bob] {
+        let body = serde_json::to_vec(&serde_json::json!({ "name": "payout", "approve": true, "reason": "the invoice matches" })).unwrap();
+        assert_eq!(route(&state, &req_as(who, "POST", &format!("/deployments/payouts/runs/{run}/decide"), body)).status_code, 200);
+    }
+
+    // A field verify doesn't hold by running the run again (`verify::NOT_HELD`, a `*` for any
+    // index).
+    let not_held = |at: &str| {
+        verify::NOT_HELD.iter().any(|(f, _)| {
+            let (at, f): (Vec<&str>, Vec<&str>) = (at.split('/').collect(), f.split('/').collect());
+            f.len() <= at.len() && f.iter().zip(&at).all(|(f, a)| f == a || *f == "*")
+        })
+    };
+    // What a report says of each run: whether it checked it, and how far.
+    let account = |r: &verify::Report| format!("{:?} {:?} {:?} {:?} {}", r.reruns, r.states, r.given, r.ids_given, r.complete());
+    let (mut tried, mut passed, mut leaks, mut said_less, mut witnessed) = (0, 0, Vec::new(), Vec::new(), Vec::new());
+    let (mut less_state, mut ends_0) = (Vec::new(), Vec::new());
+    let mut by_field: BTreeMap<String, usize> = BTreeMap::new();
+    let mut marks = 0;
+    // Per flow: tried, passing without the head, passing with it, as checked, saying less, on a
+    // run not re-run, a call's answer changed.
+    let mut per_flow: BTreeMap<String, [usize; 7]> = BTreeMap::new();
+    let (mut unrun, mut answered, mut flips) = (0, 0, Vec::new());
+    for slug in ["c", "seen", calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), sized.as_str(), reads.as_str(), "payouts"] {
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req_as(&ada, "GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let honest = verify::check(&export, None, &BTreeMap::new());
+        // The flow whose record withholds isn't run again: each of its runs says so.
+        let skipped = |seq: u64| honest.reruns.iter().any(|(s, r)| *s == seq && matches!(r, verify::Rerun::Skipped(_)));
+        match slug == counted {
+            true => assert!(honest.ok() && !honest.reruns.is_empty() && honest.reruns.iter().all(|(s, _)| skipped(*s)), "{slug} as the server wrote it:\n{}", verify::describe(&honest, None)),
+            false => assert!(honest.ok() && honest.complete(), "{slug} as the server wrote it:\n{}", verify::describe(&honest, None)),
+        }
+        // Each run that called out is said so, an `ok` with it: what a call was answered is the
+        // line's say-so (R61). And the flow whose secret is larger than a step's record keeps its
+        // step on the mark (R63).
+        let said = verify::describe(&honest, None);
+        let called = [calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), sized.as_str(), reads.as_str()].contains(&slug);
+        // The reading flow's line holds what it read, and what it claimed before it called out.
+        if slug == reads {
+            assert!(export.lines.iter().any(|l| l.contains("\"reads\":") && l.contains("\"claims\":")), "{slug}: its lines hold reads and claims");
+        }
+        assert_eq!(said.contains("called out: what their calls were answered is the log's say-so"), called, "{slug}:\n{said}");
+        if slug == sized {
+            assert!(export.lines.iter().all(|l| !l.contains("\"withheld\":true")), "{slug}: a line withholds");
+        }
+        if slug == large {
+            assert!(export.lines.iter().all(|l| !l.contains("\"withheld\":true") && l.contains("‹secret:k ")), "{slug}: a line withholds, or keeps no step with its secret's mark");
+        }
+        let counts = per_flow.entry(slug.to_string()).or_default();
+        let values: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+        // Each mark of a value computed from the secret: changed as any value is below.
+        marks += export.lines.iter().map(|l| l.matches("\u{2039}derived #").count()).sum::<usize>();
+        for (i, line) in values.iter().enumerate() {
+            let seq = line["seq"].as_u64().unwrap();
+            // What the line says, as verify reads it: a change it reads back the same is none.
+            let read = |v: &serde_json::Value| crate::wire::read_json::<recorder::LogEntry>(serde_json::to_string(v).unwrap().as_bytes()).ok().map(|e| serde_json::to_value(e).unwrap());
+            let said = read(line);
+            for (at, changed) in changes_of(line) {
+                if said.is_some() && read(&changed) == said {
+                    continue;
+                }
+                tried += 1;
+                counts[0] += 1;
+                let mut lines: Vec<String> = Vec::new();
+                for (j, v) in values.iter().enumerate() {
+                    let mut v = if j == i { changed.clone() } else { v.clone() };
+                    if let Some(before) = lines.last() {
+                        v["prev"] = recorder::line_hash(before).into();
+                    }
+                    lines.push(serde_json::to_string(&v).unwrap());
+                }
+                let head = recorder::line_hash(lines.last().unwrap());
+                let copy = verify::Export { lines, head, ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+                // With the head a witness holds, every change fails, a field verify doesn't hold
+                // included: the chain holds the line whole.
+                if verify::check(&copy, Some(&export.head), &BTreeMap::new()).ok() {
+                    counts[2] += 1;
+                    witnessed.push(format!("{slug} run {seq}: {at}"));
+                }
+                // Without one, a change passes only as a field verify says it doesn't hold.
+                let report = verify::check(&copy, None, &BTreeMap::new());
+                if !report.ok() {
+                    continue;
+                }
+                passed += 1;
+                counts[1] += 1;
+                *by_field.entry(at.split('/').next().unwrap_or_default().to_string()).or_insert(0) += 1;
+                // A line that says it withholds, or that it doesn't, is held to what it keeps.
+                if at == "withheld" || at == "withheld/in" {
+                    flips.push(format!("{slug} run {seq}: {at}"));
+                }
+                // A change that makes it check less of a state (the honest export checks every
+                // one) ends 3, not 0, whatever field it is in: what it didn't check is said, and
+                // a script reading the exit code doesn't take it as checked.
+                if report.states.as_ref().is_some_and(|s| !s.unchecked.is_empty()) {
+                    less_state.push(format!("{slug} run {seq}: {at}"));
+                    if report.complete() {
+                        ends_0.push(format!("{slug} run {seq}: {at}"));
+                    }
+                }
+                if not_held(&at) {
+                    continue;
+                }
+                // A run the honest line isn't run again for says so (`not re-run`, exit 3): a
+                // change in it passes as that, not as checked.
+                if skipped(seq) {
+                    unrun += 1;
+                    counts[5] += 1;
+                    continue;
+                }
+                // So does one whose line no longer keeps the text of a file it read: it asks for
+                // the file (`--files`), as an export that left the texts out does. Its line can't
+                // say its folder kept the text (that say is taken out with it), so it reads as a
+                // folder that keeps hashes (R62).
+                let needs_file = |r: &verify::Rerun| matches!(r, verify::Rerun::Skipped(why) if why.ends_with("give it with --files"));
+                if report.reruns.iter().any(|(s, r)| *s == seq && needs_file(r)) && at.starts_with("reads/") {
+                    unrun += 1;
+                    counts[5] += 1;
+                    continue;
+                }
+                // What a call was answered is the line's say-so, for every call: the report says
+                // so of each run that called out, and only the chain holds it.
+                let parts: Vec<&str> = at.split('/').collect();
+                if parts.len() > 4 && parts[0] == "rounds" && parts[2] == "exchanges" && parts[4] == "response" {
+                    answered += 1;
+                    counts[6] += 1;
+                    continue;
+                }
+                match account(&report) == account(&honest) {
+                    true => {
+                        counts[3] += 1;
+                        leaks.push(format!("{slug} run {seq}: {at}"))
+                    }
+                    // Visible: it says it checked less of a run than it does of the honest line.
+                    false => {
+                        counts[4] += 1;
+                        said_less.push(format!("{slug} run {seq}: {at}"))
+                    }
+                }
+            }
+        }
+        // Where each run began is held by its commit's numbers, whatever the clock says: every
+        // line's start set to the first's (each run beside every other, as a line without the
+        // head may say), the export still checks, and the state each run left, changed, doesn't
+        // pass as checked. One a run after it began from breaks; the newest's is a break or said
+        // unchecked (R62).
+        let first_ms = values[0]["at_ms"].clone();
+        let chained = |values: &[serde_json::Value]| {
+            let mut lines: Vec<String> = Vec::new();
+            for v in values {
+                let mut v = v.clone();
+                v["at_ms"] = first_ms.clone();
+                if let Some(before) = lines.last() {
+                    v["prev"] = recorder::line_hash(before).into();
+                }
+                lines.push(serde_json::to_string(&v).unwrap());
+            }
+            let head = recorder::line_hash(lines.last().unwrap());
+            verify::Export { lines, head, ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() }
+        };
+        let at_once = verify::check(&chained(&values), None, &BTreeMap::new());
+        assert!(at_once.ok() && account(&at_once) == account(&honest), "{slug}, every run begun at once:\n{}", verify::describe(&at_once, None));
+        let newest = values.len() - 1;
+        for (i, line) in values.iter().enumerate() {
+            let Some(left) = line["state_after"].as_str() else { continue };
+            let mut forged = values.clone();
+            forged[i]["state_after"] = format!("{}{}", &left[..left.len() - 1], if left.ends_with('0') { '1' } else { '0' }).into();
+            let report = verify::check(&chained(&forged), None, &BTreeMap::new());
+            let seq = line["seq"].as_u64().unwrap();
+            assert!(!report.ok() || (i == newest && !report.complete()), "{slug} run {seq}, every run begun at once: the state it left, changed, passes:\n{}", verify::describe(&report, None));
+        }
+        // Decisions forged whole, each place the line says them (what was delivered, the steps
+        // that took it): one person deciding twice, a step there isn't, an agent on a person's
+        // step; and whoever started the run deciding a step that doesn't take them, its first
+        // part's line saying they started it. None passes: verify holds an approval's decisions
+        // to its steps (`durable::StoredWaiting::decided_as`).
+        if slug == "payouts" {
+            let number = |n: f64| serde_json::json!({ "type": "Number", "value": n });
+            let text = |s: &str| serde_json::json!({ "type": "Text", "value": s });
+            let pair = |k: &str, v: serde_json::Value| serde_json::json!([k, v]);
+            let resumed = values.iter().position(|v| v["kind"] == "resume").expect("the resumed part's line");
+            let first = values.iter().position(|v| v["kind"] == "trigger").expect("the first part's line");
+            let mut started = values[first].clone();
+            started["by"] = "ada".into();
+            let rows = [
+                ("one person deciding twice", resumed, rewritten(&values[resumed], &"bob".into(), &"ada".into())),
+                ("a step there isn't", resumed, rewritten(&values[resumed], &pair("slot", number(0.0)), &pair("slot", number(1.0)))),
+                ("an agent on a person's step", resumed, rewritten(&values[resumed], &pair("kind", text("person")), &pair("kind", text("agent")))),
+                ("whoever started it deciding", first, started),
+            ];
+            for (what, i, changed) in rows {
+                assert_ne!(changed, values[i], "{what}: the line changes");
+                tried += 1;
+                counts[0] += 1;
+                let mut lines: Vec<String> = Vec::new();
+                for (j, v) in values.iter().enumerate() {
+                    let mut v = if j == i { changed.clone() } else { v.clone() };
+                    if let Some(before) = lines.last() {
+                        v["prev"] = recorder::line_hash(before).into();
+                    }
+                    lines.push(serde_json::to_string(&v).unwrap());
+                }
+                let head = recorder::line_hash(lines.last().unwrap());
+                let copy = verify::Export { lines, head, ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+                let report = verify::check(&copy, None, &BTreeMap::new());
+                let said = verify::describe(&report, None);
+                assert!(report.ok() || said.contains("what was delivered to it"), "{what} fails, and not for its decisions:\n{said}");
+                if report.ok() {
+                    passed += 1;
+                    leaks.push(format!("{slug}: {what}"));
+                }
+            }
+        }
+    }
+    eprintln!(
+        "{tried} changes tried ({marks} marks in the records), {passed} pass verify without the head ({by_field:?}), {} with it; {} as checked, {} saying less, {} checking less of a state ({} ending 0)",
+        witnessed.len(),
+        leaks.len(),
+        said_less.len(),
+        less_state.len(),
+        ends_0.len()
+    );
+    for (slug, [tried, passed, witnessed, checked, less, unrun, answered]) in &per_flow {
+        eprintln!("  {slug}: {tried} tried, {passed} pass without the head, {witnessed} with it; {checked} as checked, {less} saying less, {unrun} on a run not re-run, {answered} a call's answer");
+    }
+    eprintln!("{unrun} pass on a run not re-run, {answered} change what a call was answered");
+    assert!(flips.is_empty(), "a line that says whether it withholds, changed, passes: {flips:?}");
+    assert!(witnessed.is_empty(), "{} of {tried} changes pass with the witnessed head:\n{}", witnessed.len(), witnessed.join("\n"));
+    assert!(leaks.is_empty(), "{} of {tried} changes pass as checked:\n{}", leaks.len(), leaks.join("\n"));
+    assert!(said_less.is_empty(), "{} of {tried} changes pass, saying less was checked:\n{}", said_less.len(), said_less.join("\n"));
+    assert!(ends_0.is_empty(), "{} of {tried} changes check less of a state and end 0:\n{}", ends_0.len(), ends_0.join("\n"));
+    assert!(marks >= 2, "the signed flow's records hold a mark where each value computed from its secret was: {marks}");
+    assert!(less_state.iter().any(|at| at.contains(": commit/")), "a commit's cell or number changed checks less of a state: {less_state:?}");
+    let _ = std::fs::remove_dir_all(&files);
+    let _ = std::fs::remove_dir_all(&papers);
+}
+
+/// `v` with every value in it that is `from` (a whole JSON value: a string, a record's field as
+/// its pair) made `to`: a line changed each place it says something, kept as one.
+fn rewritten(v: &serde_json::Value, from: &serde_json::Value, to: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value as J;
+    if v == from {
+        return to.clone();
+    }
+    match v {
+        J::Array(items) => J::Array(items.iter().map(|i| rewritten(i, from, to)).collect()),
+        J::Object(fields) => J::Object(fields.iter().map(|(k, f)| (k.clone(), rewritten(f, from, to))).collect()),
+        _ => v.clone(),
+    }
+}
+
 /// **Guards:** what `holon verify` makes of each kind of run an entry can say it was, and the exit
 /// that follows. A run that failed is run again: what it computed is checked, and what its writes
 /// made of its state (none, if its error says they were refused). Run again, it may get further
@@ -8611,11 +11636,12 @@ fn every_run_an_entry_can_say_it_was_comes_to_a_verdict_and_the_exit_says_the_wo
             failed(v, format!("busy: x is held by another run for its whole length {}", firing::TURNED_AWAY));
             emptied(v);
         })), vec![m, m, n], 0),
-        // A line naming no commit it began after is taken to have begun after the line before it.
+        // A run that kept the state it left committed it, and its line says where (audit R26):
+        // one naming no commit isn't a line the server writes, whatever running it again finds.
         ("the middle one failed after it finished, and the last's line names no commit", Box::new(|lines: &mut [serde_json::Value]| {
             failed(&mut lines[1], written.clone());
             lines[2].as_object_mut().unwrap().remove("commit");
-        }), vec![m, m, m], 0),
+        }), vec![m, m, m], 1),
         ("the middle one turned away, its line saying it did nothing", on(1, Box::new(|v| {
             failed(v, format!("busy: x is held by another run for its whole length {}", firing::TURNED_AWAY));
             emptied(v);
@@ -8928,10 +11954,10 @@ fn a_round_past_its_memory_fails_performs_nothing_and_a_flow_may_ask_for_more() 
 #[test]
 fn a_replay_computes_no_more_in_a_round_than_the_deployment_is_granted() {
     let state = test_state();
-    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nmax_steps = 5000\nmax_fuel = 50000000\nmax_memory = 4194304").unwrap());
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nmax_steps = 200000\nmax_fuel = 50000000\nmax_memory = 4194304").unwrap());
     let text = |times: u32, limits: &str| {
         format!(
-            "import {{ flow, js, range, route }} from \"holon\"\n\nflow(\"budget\", {{ port: 8309{limits} }})\n\nconst double = js(function twice(n) {{\n  return n * 2\n}}, {{ fuel: \"20M\" }})\n\nroute.post(\"/loop\", (req) => {{\n  const n = req.json.n * {times}\n  const total = range(n).reduce((acc, i) => acc + range(n).reduce((a, j) => a + i * j, 0), 0)\n  return `total ${{total}}`\n}})\n\nroute.post(\"/twice\", (req) => {{\n  const doubled = range(req.json.n * {times}).map(double)\n  return `total ${{doubled.reduce((acc, x) => acc + x, 0)}}`\n}})\n\nroute.post(\"/copies\", (req) => {{\n  const body = {{ text: req.json.text }}\n  const copies = range(req.json.n * {times}).map((i) => body.text + i)\n  return `count ${{copies.length}}`\n}})\n"
+            "import {{ flow, js, range, route }} from \"holon\"\n\nflow(\"budget\", {{ port: 8309{limits} }})\n\nconst double = js(function twice(n) {{\n  return n * 2\n}}, {{ fuel: \"20M\" }})\n\nroute.post(\"/loop\", (req) => {{\n  const n = req.json.n * {times} * 4\n  const total = range(n).reduce((acc, i) => acc + range(n).reduce((a, j) => a + i * j, 0), 0)\n  return `total ${{total}}`\n}})\n\nroute.post(\"/twice\", (req) => {{\n  const doubled = range(req.json.n * {times}).map(double)\n  return `total ${{doubled.reduce((acc, x) => acc + x, 0)}}`\n}})\n\nroute.post(\"/copies\", (req) => {{\n  const body = {{ text: req.json.text }}\n  const copies = range(req.json.n * {times}).map((i) => body.text + i)\n  return `count ${{copies.length}}`\n}})\n"
         )
     };
     let deploy = |text: &str, acknowledge: &serde_json::Value| {
@@ -8965,10 +11991,11 @@ fn a_replay_computes_no_more_in_a_round_than_the_deployment_is_granted() {
             .collect();
         by_route
     };
-    // Ten times the items: past the steps (100 × 100), the fuel (20 calls) and the memory (a
-    // hundred copies of 64 KiB) the grant gives.
+    // Ten times the items: past the steps (400 × 400), the fuel (20 calls) and the memory (a
+    // hundred copies of 64 KiB) the grant gives. A copy of 64 KiB is steps too (a step for each
+    // 128 bytes read and made), so the grant's steps hold the copies the memory stops.
     let heavier = text(10, "");
-    let rows = [("max_steps", "POST /loop", "5000"), ("max_fuel", "POST /twice", "50000000"), ("max_memory", "POST /copies", "4194304")];
+    let rows = [("max_steps", "POST /loop", "200000"), ("max_fuel", "POST /twice", "50000000"), ("max_memory", "POST /copies", "4194304")];
     let held = replay(&heavier);
     let own = replay(&text(1, ""));
     for (limit, label, granted) in rows {
@@ -8979,9 +12006,9 @@ fn a_replay_computes_no_more_in_a_round_than_the_deployment_is_granted() {
     }
 
     // Granted more by a person, the same version finishes.
-    let more = text(1, ", limits: { max_steps: 100000, max_fuel: 300000000, max_memory: 67108864 }");
+    let more = text(1, ", limits: { max_steps: 2000000, max_fuel: 300000000, max_memory: 67108864 }");
     let mut approved = ack.clone();
-    approved.as_array_mut().unwrap().extend(["Limit(max_fuel=300000000)".into(), "Limit(max_memory=67108864)".into(), "Limit(max_steps=100000)".into()]);
+    approved.as_array_mut().unwrap().extend(["Limit(max_fuel=300000000)".into(), "Limit(max_memory=67108864)".into(), "Limit(max_steps=2000000)".into()]);
     let r = deploy(&more, &approved);
     let code = r.status_code;
     assert_eq!(code, 200, "{}", body_json(r));
@@ -9016,17 +12043,12 @@ fn a_run_that_sends_nothing_claims_nothing() {
 /// read is never changed under it, so it runs once and calls out once.
 #[test]
 fn a_lock_free_writer_waits_for_a_claim() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let slug = deploy_text(&state, &idem_text(&host), &host);
-    let (a, w) = std::thread::scope(|s| {
-        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k5", ""));
-        std::thread::sleep(Duration::from_millis(100));
-        let w = s.spawn(|| data_call(&state, &slug, "PUT", "/set/k5", "mine"));
-        (a.join().unwrap(), w.join().unwrap())
-    });
+    // The writer waits for the claim (second_waits_for_first holds that it did).
+    let (a, w) = second_waits_for_first(&state, &gate, || data_call(&state, &slug, "POST", "/go/k5", ""), || data_call(&state, &slug, "PUT", "/set/k5", "mine"));
     assert_eq!((a.0, w.0), (200, 200), "{a:?} {w:?}");
-    assert!(w.2 >= Duration::from_millis(200), "the writer waited for the claim: {:?}", w.2);
     assert_eq!(hits_of(&hits, "/slow"), 1);
     assert_eq!(data_call(&state, &slug, "GET", "/seen/k5", "").1, r#"{"got":"mine"}"#, "the writer landed after the claimer");
     let entries = log_entries(&state, &slug);
@@ -9038,15 +12060,10 @@ fn a_lock_free_writer_waits_for_a_claim() {
 /// go, waits, and runs again; its earlier request is answered from its record, not sent again.
 #[test]
 fn a_later_round_needing_a_held_key_restarts_without_resending() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let slug = deploy_text(&state, &idem_text(&host), &host);
-    let (a, b) = std::thread::scope(|s| {
-        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k", ""));
-        std::thread::sleep(Duration::from_millis(100));
-        let b = s.spawn(|| data_call(&state, &slug, "POST", "/chain", "me"));
-        (a.join().unwrap(), b.join().unwrap())
-    });
+    let (a, b) = second_waits_for_first(&state, &gate, || data_call(&state, &slug, "POST", "/go/k", ""), || data_call(&state, &slug, "POST", "/chain", "me"));
     assert_eq!((a.0, b.0), (200, 200), "{a:?} {b:?}");
     assert_eq!(b.1, r#"{"other":{"got":"slow"}}"#, "the chain read what the first run wrote");
     assert_eq!((hits_of(&hits, "/name"), hits_of(&hits, "/slow"), hits_of(&hits, "/fast")), (1, 1, 1));
@@ -9054,26 +12071,22 @@ fn a_later_round_needing_a_held_key_restarts_without_resending() {
     let chain = entries.iter().find(|e| e["route"] == "POST /chain").unwrap();
     assert_eq!(chain["retries"], 1, "{chain}");
     let claims = chain["claims"].as_array().unwrap();
-    assert!(claims.iter().any(|c| c["key"] == "seen[k]" && c["overtaken"] == true && c["waited_ms"].as_f64().unwrap() > 100.0), "{claims:?}");
+    assert!(claims.iter().any(|c| c["key"] == "seen[k]" && c["overtaken"] == true && c["waited_ms"].as_f64().unwrap() > 0.0), "{claims:?}");
     assert!(claims.iter().any(|c| c["key"] == "seen[b]" && c["overtaken"] == false), "{claims:?}");
 }
 
 /// Past `claim_wait_ms`, a run waiting for a held key is turned away as busy (503), naming the key.
 #[test]
 fn busy_after_claim_wait() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("[limits]\nclaim_wait_ms = 50");
     let slug = deploy_text(&state, &idem_text(&host), &host);
-    let (a, b) = std::thread::scope(|s| {
-        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k6", ""));
-        std::thread::sleep(Duration::from_millis(100));
-        let b = s.spawn(|| data_call(&state, &slug, "POST", "/go/k6", ""));
-        (a.join().unwrap(), b.join().unwrap())
-    });
+    // Answered while the first's call is still out: turned away after its own wait, not the
+    // first's.
+    let (a, b) = second_while_first_is_out(&gate, || data_call(&state, &slug, "POST", "/go/k6", ""), || data_call(&state, &slug, "POST", "/go/k6", ""));
     assert_eq!(a.0, 200, "{a:?}");
     assert_eq!(b.0, 503, "{b:?}");
     assert!(b.1.contains("busy") && b.1.contains("seen[k6]"), "{}", b.1);
-    assert!(b.2 < Duration::from_millis(300), "turned away after its wait: {:?}", b.2);
     assert_eq!(hits_of(&hits, "/slow"), 1);
     let entries = log_entries(&state, &slug);
     let busy = entries.iter().find(|e| e["status"] == 503).unwrap();
@@ -9094,7 +12107,7 @@ fn a_parked_run_releases_its_claims() {
     assert_eq!(hits_of(&hits, "/slow"), 1);
     let entries = log_entries(&state, &slug);
     let go = entries.iter().find(|e| e["route"] == "POST /go/:k").unwrap();
-    assert!(go["claims"][0]["waited_ms"].as_f64().unwrap() < 50.0, "{go}");
+    assert_eq!(go["claims"][0]["overtaken"], false, "{go}");
     assert_eq!(go["retries"], serde_json::Value::Null, "{go}");
 }
 
@@ -9243,7 +12256,7 @@ fn two_deployments_counting_in_one_row_lose_no_count() {
 /// (docs/L4s/databases-L4.md §7.2). Orders apart never wait for each other.
 #[test]
 fn two_deployments_refunding_one_order_call_the_payment_api_once() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let dir = std::env::temp_dir().join(format!("holon-refunds-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -9253,36 +12266,33 @@ fn two_deployments_refunding_one_order_call_the_payment_api_once() {
     let text = include_str!("../../holon-author/samples/refund-once.holon.ts").replace("host:httpbin.org", &format!("host:{host}")).replace(r#""/anything/refunds""#, r#""/slow""#).replace("port: 8151", "port: 18151");
     let a = deploy_text(&state, &text, &host);
     let b = deploy_text(&state, &text.replace(r#"flow("refund-once""#, r#"flow("refund-once-2""#).replace("port: 18151", "port: 18152"), &host);
-    let race = |id: u32| -> Vec<u16> {
-        std::thread::scope(|s| {
-            let first = s.spawn(|| data_call(&state, &a, "POST", &format!("/refund/{id}"), ""));
-            std::thread::sleep(Duration::from_millis(60));
-            let second = s.spawn(|| data_call(&state, &b, "POST", &format!("/refund/{id}"), ""));
-            let mut statuses = vec![first.join().unwrap().0, second.join().unwrap().0];
-            statuses.sort();
-            statuses
-        })
-    };
-    assert_eq!(race(1), [200, 409]);
+    // The second waits for the first's row (second_waits_for_first holds that it did).
+    let (first, second) = second_waits_for_first(&state, &gate, || data_call(&state, &a, "POST", "/refund/1", ""), || data_call(&state, &b, "POST", "/refund/1", ""));
+    assert_eq!((first.0, second.0), (200, 409), "{} / {}", first.1, second.1);
     assert_eq!(hits_of(&hits, "/slow"), 1, "one payment for one order");
     let (_, refunds, _) = data_call(&state, &a, "GET", "/refunds/1", "");
     assert_eq!(serde_json::from_str::<serde_json::Value>(&refunds).unwrap(), serde_json::json!([{ "amount": 5, "status": 200 }]));
     let waited = log_entries(&state, &b);
     let claim = waited.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == "shop/orders[1]").unwrap_or_else(|| panic!("{waited:#?}"));
-    assert!(claim["waited_ms"].as_f64().unwrap() > 100.0 && claim["overtaken"] == true, "it waited for the first's row: {claim}");
+    assert!(claim["waited_ms"].as_f64().unwrap() > 0.0 && claim["overtaken"] == true, "it waited for the first's row: {claim}");
 
-    // Two orders at once: neither waits for the other's row.
-    let statuses: Vec<u16> = std::thread::scope(|s| {
+    // Two orders at once: neither waits for the other's row, so both calls are out at once.
+    gate.shut();
+    let (statuses, both, none_waits) = std::thread::scope(|s| {
         let state = &state;
         let calls = [(&a, 2), (&b, 3)].map(|(slug, id)| s.spawn(move || data_call(state, slug, "POST", &format!("/refund/{id}"), "").0));
-        calls.into_iter().map(|c| c.join().unwrap()).collect()
+        let both = gate.out_at_once(2);
+        let none_waits = waiting(state) == 0;
+        gate.open();
+        (calls.map(|c| c.join().unwrap()), both, none_waits)
     });
+    assert!(both && none_waits, "side by side: both calls out at once, neither run waiting");
     assert_eq!(statuses, [200, 200]);
     assert_eq!(hits_of(&hits, "/slow"), 3);
     for (slug, key) in [(&a, "shop/orders[2]"), (&b, "shop/orders[3]")] {
         let entries = log_entries(&state, slug);
         let claim = entries.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == key).unwrap_or_else(|| panic!("{entries:#?}"));
-        assert!(claim["overtaken"] == false && claim["waited_ms"].as_f64().unwrap() < 250.0, "its own row, taken at once: {claim}");
+        assert_eq!(claim["overtaken"], false, "its own row: {claim}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -9292,7 +12302,7 @@ fn two_deployments_refunding_one_order_call_the_payment_api_once() {
 /// never waits.
 #[test]
 fn two_deployments_caching_into_one_file_call_out_once() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let dir = std::env::temp_dir().join(format!("holon-memo-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -9303,12 +12313,7 @@ fn two_deployments_caching_into_one_file_call_out_once() {
     );
     let a = deploy_text(&state, &text, &host);
     let b = deploy_text(&state, &text.replace(r#"flow("memo""#, r#"flow("memo-2""#).replace("port: 18161", "port: 18162"), &host);
-    let (first, second) = std::thread::scope(|s| {
-        let first = s.spawn(|| data_call(&state, &a, "POST", "/memo/x.txt", ""));
-        std::thread::sleep(Duration::from_millis(60));
-        let second = s.spawn(|| data_call(&state, &b, "POST", "/memo/x.txt", ""));
-        (first.join().unwrap(), second.join().unwrap())
-    });
+    let (first, second) = second_waits_for_first(&state, &gate, || data_call(&state, &a, "POST", "/memo/x.txt", ""), || data_call(&state, &b, "POST", "/memo/x.txt", ""));
     assert_eq!((first.0, second.0, first.1.as_str(), second.1.as_str()), (200, 200, "slow", "slow"));
     assert_eq!(hits_of(&hits, "/slow"), 1, "one fetch for one file");
     let entries = log_entries(&state, &b);
@@ -9580,21 +12585,14 @@ fn two_servers_refunding_one_order_call_the_payment_api_once() {
         assert_eq!(bind_shop(&servers[1], None).status_code, 200, "{engine}");
         let text = include_str!("../../holon-author/samples/refund-once.holon.ts").replace("host:httpbin.org", &format!("host:{host}")).replace(r#""/anything/refunds""#, r#""/slow""#);
         let slugs = [deploy_text(&servers[0], &text, &host), deploy_text(&servers[1], &text, &host)];
-        let (first, second) = std::thread::scope(|s| {
-            let first = s.spawn(|| data_call(&servers[0], &slugs[0], "POST", "/refund/1", ""));
-            std::thread::sleep(Duration::from_millis(60));
-            let second = s.spawn(|| data_call(&servers[1], &slugs[1], "POST", "/refund/1", ""));
-            (first.join().unwrap(), second.join().unwrap())
-        });
-        let mut statuses = [first.0, second.0];
-        statuses.sort();
-        assert_eq!(statuses, [200, 409], "{engine}: {} / {}", first.1, second.1);
+        let (first, second) = second_waits_for_first(&servers[1], &gate, || data_call(&servers[0], &slugs[0], "POST", "/refund/1", ""), || data_call(&servers[1], &slugs[1], "POST", "/refund/1", ""));
+        assert_eq!((first.0, second.0), (200, 409), "{engine}: {} / {}", first.1, second.1);
         assert_eq!(hits_of(&hits, "/slow"), 1, "{engine}: one payment for one order, across servers");
         let (_, refunds, _) = data_call(&servers[1], &slugs[1], "GET", "/refunds/1", "");
         assert_eq!(serde_json::from_str::<serde_json::Value>(&refunds).unwrap(), serde_json::json!([{ "amount": "5.00", "status": 200 }]), "{engine}");
         let entries = log_entries(&servers[1], &slugs[1]);
         let claim = entries.iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).find(|c| c["key"] == "shop/orders[1]").unwrap_or_else(|| panic!("{engine}: {entries:#?}"));
-        assert!(claim["waited_ms"].as_f64().unwrap() > 100.0 && claim["overtaken"] == true, "{engine}: it waited for the other server's row: {claim}");
+        assert!(claim["waited_ms"].as_f64().unwrap() > 0.0 && claim["overtaken"] == true, "{engine}: it waited for the other server's row: {claim}");
 
         // Two orders at once, one on each server: neither waits for the other's row, so both
         // calls are out at once, each holding its order's.
@@ -9621,7 +12619,7 @@ fn two_servers_refunding_one_order_call_the_payment_api_once() {
 fn a_row_another_program_changed_sends_the_run_round_again() {
     for db in fresh_databases("counts") {
         let (engine, url) = (db.engine, db.url.clone());
-        let (host, hits) = counting_server();
+        let (host, hits, gate) = gated_counting_server();
         let state = server_with_database(&url);
         assert_eq!(bind_shop(&state, Some("create table counts (id integer primary key, n integer not null); insert into counts values (1, 0)")).status_code, 200, "{engine}");
         let text = format!(
@@ -9637,12 +12635,7 @@ fn a_row_another_program_changed_sends_the_run_round_again() {
                 mysql::Conn::new(mysql::Opts::from_url(&url).unwrap()).unwrap().query_drop("update counts set n = 100 where id = 1").unwrap();
             }
         };
-        let (status, body, _) = std::thread::scope(|s| {
-            let run = s.spawn(|| data_call(&state, &slug, "POST", "/tally", ""));
-            std::thread::sleep(Duration::from_millis(150));
-            outside();
-            run.join().unwrap()
-        });
+        let ((status, body, _), ()) = second_while_first_is_out(&gate, || data_call(&state, &slug, "POST", "/tally", ""), outside);
         assert_eq!(status, 200, "{engine}: {body}");
         assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["n"], 101, "{engine}: it ran again on 100");
         assert_eq!(hits_of(&hits, "/slow"), 1, "{engine}: its request was answered from its record");
@@ -9669,17 +12662,6 @@ fn overtaken_in(state: &AppState, slug: &str) -> bool {
     log_entries(state, slug).iter().flat_map(|e| e["claims"].as_array().cloned().unwrap_or_default()).any(|c| c["overtaken"] == true)
 }
 
-/// Two requests to `first` and `second` 60 ms apart: their answers, and how long the second took.
-fn two_at_once(state: &AppState, first: (&str, &str, &str), second: (&str, &str, &str)) -> ((u16, String), (u16, String, Duration)) {
-    std::thread::scope(|s| {
-        let a = s.spawn(|| data_call(state, first.0, first.1, first.2, ""));
-        std::thread::sleep(Duration::from_millis(60));
-        let b = s.spawn(|| data_call(state, second.0, second.1, second.2, ""));
-        let (a, b) = (a.join().unwrap(), b.join().unwrap());
-        ((a.0, a.1), b)
-    })
-}
-
 /// A database an admin set to `run`: a run that may write it holds it alone from before it starts
 /// until it commits, so two deployments' writers go one after the other, whole: the second never
 /// starts, reads or calls out until the first has committed (it is never overtaken, as it would be
@@ -9688,7 +12670,7 @@ fn two_at_once(state: &AppState, first: (&str, &str, &str), second: (&str, &str,
 /// nothing.
 #[test]
 fn a_database_held_for_whole_runs_runs_its_writers_one_at_a_time() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let dir = std::env::temp_dir().join(format!("holon-runlock-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
     let bind = |state: &AppState, file: &str| {
@@ -9705,24 +12687,31 @@ fn a_database_held_for_whole_runs_runs_its_writers_one_at_a_time() {
     assert_eq!(body_json(route(&state, &req("GET", "/admin/databases", vec![])))[0]["lock"], "run");
     let a = deploy_text(&state, &numbering_text(&host, "numbers", 18181), &host);
     let b = deploy_text(&state, &numbering_text(&host, "numbers-2", 18182), &host);
-    let (first, second) = two_at_once(&state, (&a, "POST", "/next"), (&b, "POST", "/next"));
+    // The second waits for the run lock while the first's call is out (second_waits_for_first
+    // holds that it did), so it ran after the first, whole.
+    let (first, second) = second_waits_for_first(&state, &gate, || data_call(&state, &a, "POST", "/next", ""), || data_call(&state, &b, "POST", "/next", ""));
     assert_eq!((first.0, second.0), (200, 200), "{} / {}", first.1, second.1);
-    let ns: BTreeSet<String> = [&first.1, &second.1].iter().map(|b| serde_json::from_str::<serde_json::Value>(b).unwrap()["n"].to_string()).collect();
-    assert_eq!(ns, BTreeSet::from(["1".to_string(), "2".to_string()]));
-    assert!(second.2 > Duration::from_millis(700), "it ran after the first, whole: {:?}", second.2);
+    let n = |answer: &str| serde_json::from_str::<serde_json::Value>(answer).unwrap()["n"].clone();
+    assert_eq!((n(&first.1), n(&second.1)), (serde_json::json!(1), serde_json::json!(2)), "in turn");
     assert!(!overtaken_in(&state, &b), "it started once the first had committed: {:#?}", log_entries(&state, &b));
     assert_eq!(hits_of(&hits, "/slow"), 2);
 
-    // Readers side by side; a reader after a writer.
+    // Readers side by side, their calls out at once; a reader after a writer.
     let r1 = deploy_text(&state, &peeking_text(&host, "peek", 18183), &host);
     let r2 = deploy_text(&state, &peeking_text(&host, "peek-2", 18184), &host);
-    let (one, two) = two_at_once(&state, (&r1, "GET", "/peek"), (&r2, "GET", "/peek"));
+    gate.shut();
+    let (one, two, both) = std::thread::scope(|s| {
+        let one = s.spawn(|| data_call(&state, &r1, "GET", "/peek", ""));
+        let two = s.spawn(|| data_call(&state, &r2, "GET", "/peek", ""));
+        let both = gate.out_at_once(2);
+        gate.open();
+        (one.join().unwrap(), two.join().unwrap(), both)
+    });
     assert_eq!((one.0, two.0), (200, 200));
-    assert!(two.2 < Duration::from_millis(650), "readers share it: {:?}", two.2);
-    let (_, after) = two_at_once(&state, (&a, "POST", "/next"), (&r1, "GET", "/peek"));
+    assert!(both, "readers share it: both calls out at once");
+    let (_, after) = second_waits_for_first(&state, &gate, || data_call(&state, &a, "POST", "/next", ""), || data_call(&state, &r1, "GET", "/peek", ""));
     assert_eq!(after.0, 200);
-    assert!(after.2 > Duration::from_millis(700), "a reader waits for a writer: {:?}", after.2);
-    assert_eq!(serde_json::from_str::<serde_json::Value>(&after.1).unwrap()["n"], 3, "and reads what it wrote");
+    assert_eq!(n(&after.1), 3, "a reader waits for a writer, and reads what it wrote");
 
     // Past claim_wait: turned away, sending nothing.
     let quick = claims_state("[limits]\nclaim_wait_ms = 100");
@@ -9730,7 +12719,7 @@ fn a_database_held_for_whole_runs_runs_its_writers_one_at_a_time() {
     let a = deploy_text(&quick, &numbering_text(&host, "numbers", 18185), &host);
     let b = deploy_text(&quick, &numbering_text(&host, "numbers-2", 18186), &host);
     let before = hits_of(&hits, "/slow");
-    let (first, second) = two_at_once(&quick, (&a, "POST", "/next"), (&b, "POST", "/next"));
+    let (first, second) = second_while_first_is_out(&gate, || data_call(&quick, &a, "POST", "/next", ""), || data_call(&quick, &b, "POST", "/next", ""));
     assert_eq!((first.0, second.0), (200, 503), "{}", second.1);
     assert!(second.1.contains("the database \\\"shop\\\""), "it names the database: {}", second.1);
     assert_eq!(hits_of(&hits, "/slow"), before + 1, "the one turned away sent nothing");
@@ -9744,7 +12733,7 @@ fn a_database_held_for_whole_runs_runs_its_writers_one_at_a_time() {
 /// see it too.
 #[test]
 fn a_folder_held_for_whole_runs_runs_its_writers_one_at_a_time() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let dir = std::env::temp_dir().join(format!("holon-runlock-f-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -9756,9 +12745,10 @@ fn a_folder_held_for_whole_runs_runs_its_writers_one_at_a_time() {
     );
     let a = deploy_text(&state, &text, &host);
     let b = deploy_text(&state, &text.replace(r#"flow("tally""#, r#"flow("tally-2""#).replace("port: 18191", "port: 18192"), &host);
-    let (first, second) = two_at_once(&state, (&a, "POST", "/add"), (&b, "POST", "/add"));
+    // The second waits for the folder's lock while the first's call is out, so it ran after the
+    // first, whole.
+    let (first, second) = second_waits_for_first(&state, &gate, || data_call(&state, &a, "POST", "/add", ""), || data_call(&state, &b, "POST", "/add", ""));
     assert_eq!((first.0, second.0), (200, 200), "{} / {}", first.1, second.1);
-    assert!(second.2 > Duration::from_millis(700), "it ran after the first, whole: {:?}", second.2);
     assert!(!overtaken_in(&state, &b), "{:#?}", log_entries(&state, &b));
     assert_eq!(hits_of(&hits, "/slow"), 2);
     assert_eq!(std::fs::read_to_string(dir.join("lines.txt")).unwrap(), "slow\nslow\n");
@@ -9786,14 +12776,10 @@ fn a_database_held_for_whole_runs_holds_across_servers() {
             assert_eq!(status, 200, "{engine}: {}", String::from_utf8_lossy(&body_bytes(r)));
         }
         let writers = [deploy_text(&servers[0], &numbering_text(&host, "numbers", 18181), &host), deploy_text(&servers[1], &numbering_text(&host, "numbers", 18181), &host)];
-        let (first, second) = std::thread::scope(|s| {
-            let a = s.spawn(|| data_call(&servers[0], &writers[0], "POST", "/next", ""));
-            std::thread::sleep(Duration::from_millis(60));
-            let b = s.spawn(|| data_call(&servers[1], &writers[1], "POST", "/next", ""));
-            (a.join().unwrap(), b.join().unwrap())
-        });
+        // The second server's writer waits for the database's run lock while the first's call is
+        // out, so it ran after the other server's, whole.
+        let (first, second) = second_waits_for_first(&servers[1], &gate, || data_call(&servers[0], &writers[0], "POST", "/next", ""), || data_call(&servers[1], &writers[1], "POST", "/next", ""));
         assert_eq!((first.0, second.0), (200, 200), "{engine}: {} / {}", first.1, second.1);
-        assert!(second.2 > Duration::from_millis(700), "{engine}: it ran after the other server's, whole: {:?}", second.2);
         assert!(!overtaken_in(&servers[1], &writers[1]), "{engine}: {:#?}", log_entries(&servers[1], &writers[1]));
         assert_eq!(serde_json::from_str::<serde_json::Value>(&second.1).unwrap()["n"], 2, "{engine}");
         let readers = [deploy_text(&servers[0], &peeking_text(&host, "peek", 18183), &host), deploy_text(&servers[1], &peeking_text(&host, "peek", 18183), &host)];
@@ -9818,12 +12804,7 @@ allow_private_addresses = true
 [limits]
 claim_wait_ms = 100").unwrap());
         let quick = deploy_text(&servers[1], &numbering_text(&host, "numbers-quick", 18185), &host);
-        let (first, second) = std::thread::scope(|s| {
-            let a = s.spawn(|| data_call(&servers[0], &writers[0], "POST", "/next", ""));
-            std::thread::sleep(Duration::from_millis(60));
-            let b = s.spawn(|| data_call(&servers[1], &quick, "POST", "/next", ""));
-            (a.join().unwrap(), b.join().unwrap())
-        });
+        let (first, second) = second_while_first_is_out(&gate, || data_call(&servers[0], &writers[0], "POST", "/next", ""), || data_call(&servers[1], &quick, "POST", "/next", ""));
         assert_eq!((first.0, second.0), (200, 503), "{engine}: {}", second.1);
         assert_eq!(hits_of(&hits, "/slow"), 5, "{engine}: the one turned away sent nothing");
     }
@@ -10192,9 +13173,16 @@ fn a_run_shows_which_secret_value_it_had_and_still_checks_after_it_rotates() {
     assert_eq!(report.reruns, vec![(0, verify::Rerun::Matched), (1, verify::Rerun::Matched)], "{}", verify::describe(&report, None));
     assert!(report.ok(), "{}", verify::describe(&report, None));
 
-    // An entry from before: no versions in it, its marks bare. Rechained, it checks as it did.
+    // An entry from before: no versions in it, nor what each secret is held to, its marks bare.
+    // Rechained, it checks as it did. (With the commitment left in and the versions taken out
+    // it is a line no server writes, and differs: `verify::listed_secrets`.)
     let mut v: serde_json::Value = serde_json::from_str(&export.lines[0]).unwrap();
     v.as_object_mut().unwrap().remove("secrets");
+    let no_list = recorder::line_hash(&v.to_string());
+    let odd = verify::Export { lines: vec![v.to_string()], head: no_list.clone(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let report = verify::check(&odd, Some(&no_list), &BTreeMap::new());
+    assert!(matches!(&report.reruns[0].1, verify::Rerun::Differs(why) if why.contains("doesn't list which version")), "{}", verify::describe(&report, None));
+    v.as_object_mut().unwrap().remove("committed").expect("a run given a secret commits to it");
     let bare = v.to_string().replace(&format!(" {}›", given[0]), "›");
     assert!(bare.contains("‹secret:signing_key›") && !bare.contains(&given[0]), "{bare}");
     let head = recorder::line_hash(&bare);
@@ -11155,7 +14143,7 @@ fn a_resumed_run_whose_row_changed_runs_again_from_its_last_wait() {
     let mut engines: Vec<(&str, String)> = vec![("sqlite", file.display().to_string())];
     engines.extend(fresh.iter().map(|db| (db.engine, db.url.clone())));
     for (engine, url) in engines {
-        let (host, hits) = counting_server();
+        let (host, hits, gate) = gated_counting_server();
         let state = if engine == "sqlite" { claims_state("") } else { server_with_database(&url) };
         let bound = match engine {
             "sqlite" => {
@@ -11188,13 +14176,8 @@ fn a_resumed_run_whose_row_changed_runs_again_from_its_last_wait() {
         let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
         // While it waits the row changes: it is read as it is when the run resumes.
         outside("update counts set n = 10 where id = 1");
-        let paid = std::thread::scope(|s| {
-            let paid = s.spawn(|| data_call(&state, &slug, "GET", &format!("/paid/{token}"), ""));
-            // And again while its resumed part calls out: its commit finds it changed.
-            std::thread::sleep(Duration::from_millis(150));
-            outside("update counts set n = 100 where id = 1");
-            paid.join().unwrap()
-        });
+        // And again while its resumed part's call is out: its commit finds it changed.
+        let (paid, ()) = second_while_first_is_out(&gate, || data_call(&state, &slug, "GET", &format!("/paid/{token}"), ""), || outside("update counts set n = 100 where id = 1"));
         assert_eq!(paid.0, 200, "{engine}: {paid:?}");
         assert_eq!(n(), 101, "{engine}: it ran again on 100, not over it");
         assert_eq!((hits_of(&hits, "/fast"), hits_of(&hits, "/slow")), (1, 1), "{engine}: each request went out once");
@@ -11219,7 +14202,7 @@ fn a_resumed_run_whose_row_changed_runs_again_from_its_last_wait() {
 /// on the file as it now is, and loses no line.
 #[test]
 fn a_resumed_run_whose_file_changed_runs_again_from_its_last_wait() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = claims_state("");
     let dir = std::env::temp_dir().join(format!("holon-resumed-file-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -11233,12 +14216,7 @@ fn a_resumed_run_whose_file_changed_runs_again_from_its_last_wait() {
     let (status, held, _) = data_call(&state, &slug, "POST", "/hold", "");
     assert_eq!(status, 200, "{held}");
     let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
-    let paid = std::thread::scope(|s| {
-        let paid = s.spawn(|| data_call(&state, &slug, "GET", &format!("/paid/{token}"), ""));
-        std::thread::sleep(Duration::from_millis(150));
-        std::fs::write(dir.join("lines.txt"), "first\nsecond\n").unwrap();
-        paid.join().unwrap()
-    });
+    let (paid, ()) = second_while_first_is_out(&gate, || data_call(&state, &slug, "GET", &format!("/paid/{token}"), ""), || std::fs::write(dir.join("lines.txt"), "first\nsecond\n").unwrap());
     assert_eq!(paid.0, 200, "{paid:?}");
     assert_eq!(std::fs::read_to_string(dir.join("lines.txt")).unwrap(), "first\nsecond\nslow\n", "it ran again on the file as it now is");
     assert_eq!(hits_of(&hits, "/slow"), 1, "its request went out once");
@@ -11248,9 +14226,11 @@ fn a_resumed_run_whose_file_changed_runs_again_from_its_last_wait() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A resumed run whose commit landed, the server stopping before it could forget the run, is
-/// resumed again by the same event: it reads the row its own commit wrote, so its check finds
-/// nothing changed, and its database has it marked done, so its commit applies nothing again.
+/// A resumed run whose commit landed, given the same event again from the record it had before:
+/// it reads the row its own commit wrote, so its check finds nothing changed, and its database has
+/// it marked done, so its commit applies nothing again. The database's own guard: a server that
+/// stopped there doesn't give it the event again, as it was saved going on and is ended as the
+/// server starts (`a_waiting_run_a_crash_cuts_off_as_it_goes_on_is_ended_not_run_again`).
 #[test]
 fn a_resumed_run_resumed_again_after_its_commit_applies_once() {
     let (host, hits) = counting_server();
@@ -11266,7 +14246,7 @@ fn a_resumed_run_resumed_again_after_its_commit_applies_once() {
     let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
     let record = state.deployments.lock().unwrap()[&slug].parked.values().next().cloned().unwrap();
     assert_eq!(data_call(&state, &slug, "GET", &format!("/paid/{token}"), "").0, 200);
-    // As if the server stopped once it had committed: the run is still parked.
+    // Its record as it was before it went on, put back: the run is parked again.
     state.deployments.lock().unwrap().get_mut(&slug).unwrap().parked.insert(record.run_id.clone(), record);
     assert_eq!(data_call(&state, &slug, "GET", &format!("/paid/{token}"), "").0, 200);
     let n: i64 = rusqlite::Connection::open(&file).unwrap().query_row("select n from counts where id = 1", [], |r| r.get(0)).unwrap();
@@ -11274,21 +14254,21 @@ fn a_resumed_run_resumed_again_after_its_commit_applies_once() {
     let entries = log_entries(&state, &slug);
     let again = entries.iter().filter(|e| e["kind"] == "resume").nth(1).unwrap_or_else(|| panic!("{entries:#?}"));
     assert!(again["error"].is_null() && again["retries"].is_null(), "committed at once, nothing written again: {again}");
-    assert_eq!(hits_of(&hits, "/slow"), 2, "its record of the first resume was lost with the stop");
+    assert_eq!(hits_of(&hits, "/slow"), 2, "the record it ran from again doesn't hold the first resume's request");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The approved-payout sample: a deposit while the payout waits at its steps goes ahead (the
 /// waiting run holds nothing); an agent bound to classifier on the tag classifies it, with a note,
-/// a person bound to reviewer reviews it, and the account that set the server up, bound to
-/// approver, approves it through the run file (`holon decide` on its machine), each only in turn,
-/// and the run pays from the balance as it then is, with the classifier's note; a deposit while
+/// a person bound to reviewer reviews it, and another bound to approver approves it, each only in
+/// turn; the account that set the server up owns the agent, and so takes no step (one party, the
+/// audit's R18). The run pays from the balance as it then is, with the classifier's note; a deposit while
 /// the payout is in flight waits for the row the run holds, and runs again after it. The payout
 /// went out once; no deposit is written over; the resumed part's log entry holds each decision
 /// with the binding that let it. A second payout, declined by the reviewer, pays nothing.
 #[test]
 fn approved_payout_keeps_the_deposits_made_while_it_waited() {
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let mut state = claims_state("");
     let dir = std::env::temp_dir().join(format!("holon-payout-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -11298,15 +14278,16 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     let text = include_str!("../../holon-author/samples/approved-payout.holon.ts").replace("host:httpbin.org", &format!("host:{host}")).replace(r#""/anything/payouts""#, r#""/slow""#);
     let slug = deploy_text(&state, &text, &host);
     // From here on, people sign in, as the sample's comment sets them up: three roles, each bound on
-    // the tag, to an agent, a person and ada, who set the server up, whose run file approves.
+    // the tag, to an agent, ada's, and two people; ada, who set the server up, takes no step.
     let accounts = Arc::new(crate::accounts::Accounts::memory());
     let ada = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap().0;
     let local = accounts.new_local("bma");
     let bob = accounts.accept(&accounts.invite("bob", "viewer", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let cy = accounts.accept(&accounts.invite("cy", "viewer", None, "ada").unwrap(), "correct horse battery").unwrap().0;
     accounts.add("scout", crate::accounts::Kind::Agent, "agent", "ada", "ada").unwrap();
     let scout = accounts.create_token("scout", "Scout", "ada").unwrap().0;
     let payments = crate::bindings::Scope::Flows(crate::bindings::Selector::Tag("payments".into()));
-    for (role, kind, who) in [("classifier", crate::accounts::Kind::Agent, "scout"), ("reviewer", crate::accounts::Kind::Person, "bob"), ("approver", crate::accounts::Kind::Person, "ada")] {
+    for (role, kind, who) in [("classifier", crate::accounts::Kind::Agent, "scout"), ("reviewer", crate::accounts::Kind::Person, "bob"), ("approver", crate::accounts::Kind::Person, "cy")] {
         accounts.define_role(crate::bindings::RoleText { name: role.into(), about: None, allows: vec!["run.decide".into()], kinds: vec![kind] }, "ada", None).unwrap();
         accounts.bind(crate::bindings::Subject::Principal(who.into()), role, payments.clone(), None, "ada", None).unwrap();
     }
@@ -11333,8 +14314,9 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":50}"#).0, 200, "a deposit while it waits goes ahead");
     let run = waiting()[0]["run_id"].as_str().unwrap().to_string();
     // Only in turn, and only whoever is bound to the step's role: not the approver before the
-    // review, in a session or through the run file, not the reviewer before the classifier.
-    for (who, token) in [("ada", &ada), ("the run file", &local), ("bob", &bob)] {
+    // review, not the reviewer before the classifier, and not ada, in a session or through the run
+    // file, bound to none of them.
+    for (who, token) in [("ada", &ada), ("the run file", &local), ("bob", &bob), ("cy", &cy)] {
         let (code, said) = decide(token, &run, true, None);
         assert!(code >= 400, "{who}: {said}");
     }
@@ -11343,12 +14325,9 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     let (code, said) = decide(&bob, &run, true, None);
     assert_eq!((code, &said["outcome"]), (200, &serde_json::json!("waiting")), "{said}");
     assert_eq!(hits_of(&hits, "/slow"), 0, "two steps of three pay nothing");
-    let approved = std::thread::scope(|s| {
-        let approved = s.spawn(|| decide(&local, &run, true, Some("the invoice matches")));
-        std::thread::sleep(Duration::from_millis(150));
-        assert_eq!(data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":20}"#).0, 200, "and one while it pays");
-        approved.join().unwrap()
-    });
+    // And one while it pays: sent while the payout's call is out (it may wait for the payout).
+    let (approved, deposited) = second_meets_first(&state, &gate, || decide(&cy, &run, true, Some("the invoice matches")), || data_call(&state, &slug, "POST", "/deposit/1", r#"{"amount":20}"#).0);
+    assert_eq!(deposited, 200, "and one while it pays");
     assert_eq!((approved.0, &approved.1["outcome"]), (200, &serde_json::json!("approved")), "{approved:?}");
     assert!(approved.1["run_error"].is_null(), "{approved:?}");
     assert_eq!(balance(), 140, "100, and 50, and 20, less 30");
@@ -11359,8 +14338,8 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     let resumed = entries.iter().find(|e| e["kind"] == "resume").unwrap_or_else(|| panic!("{entries:#?}"));
     assert!(resumed["claims"].as_array().unwrap().iter().any(|c| c["key"] == "bank/accounts[1]"), "{resumed}");
     let outputs = resumed["outputs"].to_string();
-    assert!(outputs.contains(r#"{"type":"Text","value":"scout"},{"type":"Text","value":"bob"},{"type":"Text","value":"ada"}"#), "who approved it: {resumed}");
-    assert!(resumed.to_string().contains(r#"\"by\":[\"scout\",\"bob\",\"ada\"],\"class\":{\"confidence\":0.93,\"label\":\"invoice\"}"#), "the payout sent, with the classifier's note: {resumed}");
+    assert!(outputs.contains(r#"{"type":"Text","value":"scout"},{"type":"Text","value":"bob"},{"type":"Text","value":"cy"}"#), "who approved it: {resumed}");
+    assert!(resumed.to_string().contains(r#"\"by\":[\"scout\",\"bob\",\"cy\"],\"class\":{\"confidence\":0.93,\"label\":\"invoice\"}"#), "the payout sent, with the classifier's note: {resumed}");
     // Each decision as the run was given it, with the binding that let it and the access version.
     let events = resumed["events"]["payout"].to_string();
     assert_eq!((events.matches(r#""binding""#).count(), events.matches(r#""access""#).count()), (3, 3), "{events}");
@@ -11416,7 +14395,7 @@ fn unquoted(data: &str) -> String {
 }
 
 fn wait_for_mail(sink: &smtp::sink::Sink, n: usize) -> Vec<smtp::sink::Got> {
-    let until = std::time::Instant::now() + Duration::from_secs(10);
+    let until = std::time::Instant::now() + EVENTUALLY;
     loop {
         let got = sink.got.lock().unwrap().clone();
         if got.len() >= n {
@@ -11493,7 +14472,7 @@ fn approval_mail_mails_the_link_then_the_approval_through_its_binding() {
     let link: String = unquoted(&got[2].data).split("http://127.0.0.1:8186").nth(1).unwrap().chars().take_while(|c| !c.is_whitespace()).collect();
     assert_eq!(data_call(&state, &slug, "POST", &link, "").0, 200);
     let events = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
-    let until = std::time::Instant::now() + Duration::from_secs(10);
+    let until = std::time::Instant::now() + EVENTUALLY;
     while !events().contains("gave up mailing") {
         assert!(std::time::Instant::now() < until, "{}", events());
         std::thread::sleep(Duration::from_millis(20));
@@ -11539,6 +14518,104 @@ fn remittance(id: &str, from: &str, verdict_by: &str, lines: &str) -> Vec<u8> {
          invoice,amount\r\n{lines}\r\n--b1--\r\n"
     )
     .into_bytes()
+}
+
+// ── Secrets in what an integration says (R33) ──
+
+/// **Guards:** a secret given to an integration is in nothing it says when it fails, and goes
+/// nowhere a redirect points. A canary through each road: a flow's request whose header holds it
+/// with a line break (a header no request can carry); Vault's token, refused the same way, and
+/// sent a redirect; an SQS queue's session token; the witness's token; a Postgres password where
+/// TLS is required and the server refuses it; the command line's token, as `holon deploy`,
+/// `holon mcp` and every other command (`holon export` among them, through `local::request`) sign
+/// in with it. Each fails, saying why, and none says the canary; the host Vault redirects to is
+/// never asked.
+/// **Why:** ureq's message for a header it refuses is the header's whole line (`invalid header
+/// 'X-Vault-Token: …'`), and it went into the error as it was: a `VAULT_TOKEN` or an SQS session
+/// token with a stray `\r` reached the timeline, the live status and the console. And Vault's read
+/// followed a redirect, its token along.
+/// **If it fails:** the row named says the canary: a failure there is told some other way than
+/// `outbound::said` (or `transport_said`), or Vault follows a redirect again.
+#[test]
+fn a_secret_is_in_nothing_an_integration_says_when_it_fails() {
+    use std::io::{Read, Write};
+    use holon_host::{Limits, Performer};
+    use zeroize::Zeroizing;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const CANARY: &str = "cAnArY-5ecret";
+    let unsendable = format!("{CANARY}\r\nx");
+    let mut said: Vec<(&str, String)> = Vec::new();
+
+    // A flow's request, a header holding it.
+    let nowhere: BTreeSet<String> = ["127.0.0.1:9".to_string()].into();
+    let o = outbound::Outbound { allowed: nowhere.clone(), revoked: BTreeSet::new(), plain_http: nowhere, allow_private: true };
+    let request = Value::Record(BTreeMap::from([
+        ("method".to_string(), Value::Text("GET".into())),
+        ("url".to_string(), Value::Text("http://127.0.0.1:9/".into())),
+        ("headers".to_string(), Value::Record(BTreeMap::from([("x-api-key".to_string(), Value::Text(unsendable.clone()))]))),
+        ("body".to_string(), Value::Text(String::new())),
+    ]));
+    said.push(("a flow's request", format!("{:?}", o.perform(&request, &Limits::request_run()))));
+
+    // Vault's token, refused; and a Vault that sends the read elsewhere.
+    let vault = secret_sources::Reference::parse("vault:secret/payments#signing").unwrap();
+    let refused = secret_sources::Sources::of(&[("VAULT_ADDR", "http://127.0.0.1:9"), ("VAULT_TOKEN", &unsendable)]).fetch(&vault).map(|_| ());
+    said.push(("Vault's token", format!("{refused:?}")));
+    let asked_elsewhere = Arc::new(AtomicBool::new(false));
+    let elsewhere = rouille::Server::new("127.0.0.1:0", {
+        let asked = Arc::clone(&asked_elsewhere);
+        move |_| {
+            asked.store(true, Ordering::SeqCst);
+            rouille::Response::json(&serde_json::json!({ "data": { "data": { "signing": "x" } } }))
+        }
+    })
+    .unwrap();
+    let there = format!("http://{}", elsewhere.server_addr());
+    let (_elsewhere, stop_elsewhere) = elsewhere.stoppable();
+    let redirecting = rouille::Server::new("127.0.0.1:0", move |r| rouille::Response::redirect_307(format!("{there}{}", r.url()))).unwrap();
+    let addr = format!("http://{}", redirecting.server_addr());
+    let (_redirecting, stop_redirecting) = redirecting.stoppable();
+    let redirected = secret_sources::Sources::of(&[("VAULT_ADDR", &addr), ("VAULT_TOKEN", CANARY)]).fetch(&vault).map(|_| ());
+    assert!(redirected.as_ref().is_err_and(|e| e.contains("307") && e.contains("isn't followed")), "{redirected:?}");
+    assert!(!asked_elsewhere.load(Ordering::SeqCst), "the host Vault points to is never asked, the token along");
+    said.push(("Vault, redirecting", format!("{redirected:?}")));
+    let _ = (stop_elsewhere.send(()), stop_redirecting.send(()));
+
+    // An SQS queue's session token.
+    let queue = sqs::Queue::parse(&format!("http://AKID:s3cret@127.0.0.1:9/123/q?region=us-east-1&token={CANARY}%0D%0Ax")).unwrap();
+    said.push(("an SQS queue's session token", format!("{:?}", queue.attributes().map(|_| ()))));
+
+    // The witness's token.
+    let witness = heads::Exporter::new("http://127.0.0.1:9/heads", Some(unsendable.clone()), None).unwrap();
+    witness.note(heads::Head { deployment: "d".into(), kind: "run".into(), seq: 0, head: "h".into(), at_ms: 0 });
+    said.push(("the witness's token", format!("{:?}", witness.flush())));
+
+    // A Postgres password, TLS required and refused.
+    let refusing = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let pg = refusing.local_addr().unwrap();
+    std::thread::spawn(move || {
+        if let Ok((mut conn, _)) = refusing.accept() {
+            let mut ssl_request = [0u8; 8];
+            let _ = conn.read_exact(&mut ssl_request);
+            let _ = conn.write_all(b"N");
+        }
+    });
+    let opened = engines::Remote::open(Zeroizing::new(format!("postgres://shop:{CANARY}@{pg}/shop?sslmode=require"))).map(|_| ());
+    said.push(("a Postgres password, TLS refused", format!("{opened:?}")));
+
+    // The command line's token (`HOLON_TOKEN`, a session kept), as each road to a server signs in.
+    let signed_in = || local::Target { server: "http://127.0.0.1:9".into(), token: Some(unsendable.clone()), from: local::TokenFrom::Env };
+    let deploying = mcp::Api::send(&deploycmd::Person(signed_in()), "GET", "/deployments", None);
+    said.push(("holon deploy's token", format!("{deploying:?}")));
+    let agent = mcp::Api::send(&mcp::Http::new("http://127.0.0.1:9", Some(&unsendable)), "GET", "/deployments", None);
+    said.push(("holon mcp's token", format!("{agent:?}")));
+    let command = local::request(&signed_in(), "GET", "/deployments", None, std::time::Duration::from_secs(5)).map(|(status, _)| status);
+    said.push(("a command's token (holon export's among them)", format!("{command:?}")));
+
+    for (row, text) in &said {
+        assert!(text.contains("Err") || text.contains("error"), "{row} fails: {text}");
+        assert!(!text.contains(CANARY), "{row} says the secret: {text}");
+    }
 }
 
 // ── Mail received (host-capabilities 1.3b) ──
@@ -11641,6 +14718,118 @@ fn remittance_mail_settles_invoices_from_authenticated_mail_and_moves_each_messa
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **Guards:** a look at a mailbox holds no other, and a message that cuts its look off is read
+/// twice, not at every look. Two deployments listen to a mailbox each: one at a server that takes
+/// the connection and never answers, one at a server that does. A tick of the watcher returns at
+/// once; the second mailbox's message runs while the first's look still waits, and a tick after
+/// starts no second look at it. Then, on the second mailbox: a message whose look is cut off as it
+/// takes it up (as a crash would) is tried again at the next look; cut off twice, it is moved
+/// without a run and the timeline says so; cut off once, the next look runs it. Once the silent
+/// server lets go, its look's failure is noted at the next tick.
+/// **Why:** the looks were joined each tick, so one mailbox (a server that doesn't answer, 30 s a
+/// step; a message long to read) held every other's; and a message was noted only after it was
+/// read and run, so one that brought its look down (or the server) was read again at every look
+/// and after every restart.
+/// **If it fails:** the tick waits for a look again (the first assertion), starts a look at a
+/// mailbox one is at already, a look cut off leaves no note of the message it took up (or one
+/// that ended leaves its mailbox marked as looked at), or the tries are counted off by one.
+#[test]
+fn a_mailbox_holds_no_other_and_a_message_that_cuts_its_look_off_is_read_twice() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let imap = imap::stand_in::start("remit", "s3cret", true);
+    // A server that takes the connection and never says a word.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let silent_port = silent.local_addr().unwrap().port();
+    silent.set_nonblocking(true).unwrap();
+    let (held, stop) = (Arc::new(Mutex::new(Vec::new())), Arc::new(AtomicBool::new(false)));
+    let acceptor = std::thread::spawn({
+        let (held, stop) = (Arc::clone(&held), Arc::clone(&stop));
+        move || {
+            while !stop.load(Ordering::SeqCst) {
+                match silent.accept() {
+                    Ok((conn, _)) => held.lock().unwrap().push(conn),
+                    Err(_) => std::thread::sleep(Duration::from_millis(10)),
+                }
+            }
+        }
+    });
+    let dir = std::env::temp_dir().join(format!("holon-imap-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    // Both bound where a server answers (a binding logs in), the second then pointed at the silent one.
+    let sources = |silent: u16| format!("HOLON_SECRET_REMIT_IMAP=imap://remit:s3cret@127.0.0.1:{}\nHOLON_SECRET_SILENT_IMAP=imap://remit:s3cret@127.0.0.1:{silent}\n", imap.port);
+    std::fs::write(&env, sources(imap.port)).unwrap();
+    let mut state = claims_state("");
+    let mails = mails::Mails::memory().with_sources(secret_sources::Sources::new(Some(env.clone())).unwrap());
+    state.folders = Arc::new(folders::Folders::memory().with_mails(mails));
+    state.folders.mails.serve(Arc::clone(&state.deployments));
+    for (name, url) in [("remit", "env:HOLON_SECRET_REMIT_IMAP"), ("silent", "env:HOLON_SECRET_SILENT_IMAP")] {
+        let bind = serde_json::json!({ "name": name, "imap": url, "verdict_from": "mx.acme.com" });
+        assert_eq!(route(&state, &req("POST", "/admin/mails", serde_json::to_vec(&bind).unwrap())).status_code, 200);
+    }
+    std::fs::write(&env, sources(silent_port)).unwrap();
+    let text = include_str!("../../holon-author/samples/remittance-mail.holon.ts");
+    let remit = deploy_text(&state, text, "");
+    let mut looks = inbox::Looks::default();
+    let look = |looks: &mut inbox::Looks| inbox::run_mail(&state.store, &state.deployments, &state.deployments_path, looks);
+    look(&mut looks);
+    let runs = || log_entries(&state, &remit).iter().filter(|e| e["kind"] == "mail").count();
+    let events = |slug: &str| body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    let put = |id: &str| imap.folders.lock().unwrap().put("INBOX", &remittance(id, "billing@customer.example", "mx.acme.com", "INV-1,100.00"));
+    let held_by = |folder: &str| imap.folders.lock().unwrap().of(folder).len();
+
+    // A mailbox whose server doesn't answer holds no other.
+    put("r1");
+    let quiet = text.replace("import remit from \"mail:remit\"", "import silent from \"mail:silent\"").replace("on.mail(remit,", "on.mail(silent,").replace("flow(\"remittance-mail\", { port: 8188 })", "flow(\"remittance-silent\", { port: 8189 })");
+    let silent_slug = deploy_text(&state, &quiet, "");
+    let mut first = inbox::tick(&state.store, &state.deployments, &state.deployments_path, &mut looks, true);
+    let at = |slug: &str, mail: &str| (slug.to_string(), mail.to_string());
+    // The silent server holds its look until it is let go, below: the tick came back first.
+    assert!(first.iter().any(|(key, look)| *key == at(&silent_slug, "silent") && !look.is_finished()), "a tick waits for no look");
+    let answered = first.iter().position(|(key, _)| *key == at(&remit, "remit")).expect("a look at the mailbox that answers");
+    first.remove(answered).1.join().unwrap();
+    assert_eq!(runs(), 1, "its message ran while the other's look waits");
+    eventually("the silent server's look is connected", || !held.lock().unwrap().is_empty());
+    assert_eq!(held.lock().unwrap().len(), 1, "the silent server's look is connected");
+    assert!(inbox::going(&looks).contains(&at(&silent_slug, "silent")), "and still waits");
+    assert!(inbox::tick(&state.store, &state.deployments, &state.deployments_path, &mut looks, false).is_empty(), "no second look at a mailbox one is at, and the other isn't due");
+
+    // A message whose look is cut off as it takes it up: tried again; cut off twice, moved
+    // without a run.
+    let r2 = put("r2");
+    for _ in 0..inbox::TRIES {
+        inbox::cut_off_at(&looks, r2);
+        look(&mut looks);
+        assert_eq!((runs(), held_by("INBOX")), (1, 1), "cut off: no run, not moved");
+        assert!(!inbox::going(&looks).contains(&at(&remit, "remit")), "a look cut off leaves its mailbox free");
+    }
+    assert!(events(&remit).contains("couldn't read the mailbox of remit: a look at it was cut off"), "{}", events(&remit));
+    look(&mut looks);
+    assert_eq!((runs(), held_by("INBOX"), held_by("Processed")), (1, 0, 2), "moved without a run");
+    let said = events(&remit);
+    assert!(said.contains(&format!("moved a message to Processed without a run: the {} looks that took it up were cut off before its run was over", inbox::TRIES)), "{said}");
+    // Cut off once: the next look runs it.
+    let r3 = put("r3");
+    inbox::cut_off_at(&looks, r3);
+    look(&mut looks);
+    assert_eq!(runs(), 1, "cut off");
+    look(&mut looks);
+    assert_eq!((runs(), held_by("INBOX"), held_by("Processed")), (2, 0, 3), "tried again, it runs");
+
+    // The silent server lets go: its look's failure is noted at the next tick.
+    stop.store(true, Ordering::SeqCst);
+    acceptor.join().unwrap();
+    held.lock().unwrap().clear();
+    for (_, look) in first {
+        look.join().unwrap();
+    }
+    assert!(inbox::going(&looks).is_empty());
+    let _ = inbox::tick(&state.store, &state.deployments, &state.deployments_path, &mut looks, false);
+    let said = events(&silent_slug);
+    assert!(said.contains("couldn't read the mailbox of silent"), "{said}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ── Mailboxes that log in with OAuth (host-capabilities 1.3c) ──
 
 /// A request to a support mailbox: from `from`, its verdict written by `verdict_by`.
@@ -11725,13 +14914,11 @@ fn support_inbox_receives_and_answers_through_one_mail_logged_in_with_oauth() {
 
 // ── Feeds (host-capabilities 1.6a) ──
 
-/// Wait until `holds`, for 10 seconds at most.
-fn eventually(what: &str, mut holds: impl FnMut() -> bool) {
-    let until = std::time::Instant::now() + Duration::from_secs(10);
-    while !holds() {
-        assert!(std::time::Instant::now() < until, "never: {what}");
-        thread::sleep(Duration::from_millis(20));
-    }
+/// Wait until `holds`, [`EVENTUALLY`] at most ([`soon`]). It looks again within milliseconds, so
+/// what is read right after must be what was waited for, or follow from it without another thread
+/// having to act.
+fn eventually(what: &str, holds: impl FnMut() -> bool) {
+    assert!(soon(holds), "never: {what}");
 }
 
 /// The price-feed sample (host-capabilities L4 §5.9.2): refused until its feed is bound; bound to
@@ -11782,12 +14969,16 @@ fn price_feed_runs_on_each_event_and_opens_again_from_where_it_was() {
     eventually("three runs", || runs().len() == 3);
     let first = runs();
     assert!(first.iter().all(|r| r["route"] == "on feed prices" && r["error"].is_null()), "{first:#?}");
-    let sourced = first[1]["sourced"].to_string();
-    assert!(sourced.contains(r#"FeedEvent(\"prices\")"#) && sourced.contains("BOLT"), "logged whole: {sourced}");
+    let sourced = sourced_from(&first[1], "FeedEvent(\"prices\")");
+    assert!(sourced.contains("\"BOLT\""), "logged whole: {}", first[1]["sourced"]);
     let (_, prices, _) = data_call(&state, &slug, "GET", "/prices", "");
     let prices: serde_json::Value = serde_json::from_str(&prices).unwrap();
     assert_eq!((prices["ACME"]["price"].clone(), prices["BOLT"]["price"].clone()), (serde_json::json!(11), serde_json::json!(3)), "{prices}");
-    let live = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])));
+    // Where the feed is moves once a run's record is written, a moment after (subscriptions.rs):
+    // waited for as it is read.
+    let live = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])));
+    eventually("at 3", || live()["feeds"][0]["position"] == "3");
+    let live = live();
     assert_eq!((live["feeds"][0]["status"].as_str(), live["feeds"][0]["position"].as_str()), (Some("connected"), Some("3")), "{live}");
     assert_eq!(live["feeds"][0]["label"], "on feed prices", "{live}");
 
@@ -11962,8 +15153,9 @@ fn trading_bot_keeps_the_newest_price_and_places_each_order_once() {
     assert_eq!((placed[0]["client_oid"].as_str(), placed[0]["price"].as_str(), placed[0]["size"].as_str()), (Some(id.as_str()), Some("100"), Some("2")));
     let orders = call("GET", "/orders", "");
     assert_eq!((orders["placed"][&id]["exchange"].as_str(), orders["placed"][&id]["approved_by"].as_str()), (Some("ex-1"), Some("under the limit")), "{orders}");
-    // BTC's newest took the place of the one that waited, ahead of ETH's.
-    assert_eq!(live()["position"], "ETH-USD/1");
+    // BTC's newest took the place of the one that waited, ahead of ETH's. Where the feed is moves
+    // once a run's record is written, a moment after: waited for as it is read.
+    eventually("at ETH-USD/1", || live()["position"] == "ETH-USD/1");
 
     // The price under the level again: placed already, nothing sent.
     price("BTC-USD", "95", 5);
@@ -11995,7 +15187,7 @@ fn trading_bot_keeps_the_newest_price_and_places_each_order_once() {
     price("SOL-USD", "2999", 1);
     eventually("the second large order waits", || call("GET", "/orders", "")["waiting"][unasked["id"].as_str().unwrap()]["approve"].is_string());
     let asked_before = exchange.asked.lock().unwrap().len();
-    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
     let orders = call("GET", "/orders", "");
     assert_eq!(orders["waiting"], serde_json::json!({}), "it no longer waits: {orders}");
     assert!(orders["placed"][unasked["id"].as_str().unwrap()].is_null(), "nobody placed it: {orders}");
@@ -12071,7 +15263,14 @@ fn bluesky_mentions_opens_the_feed_again_from_its_cursor_and_runs_each_post_once
     assert!(jetstream.asked()[2].starts_with("/subscribe?collections=app.bsky.feed.post&key=s3cret&cursor=4\n"), "{:?}", jetstream.asked());
     eventually("five runs", || runs().len() == 5);
     eventually("at 6", || live()["position"] == "6");
-    let ran: Vec<u32> = runs().iter().map(|r| (1..=6).find(|n| r["sourced"].to_string().contains(&format!("3k{n}"))).unwrap_or(0)).collect();
+    // Which post each run was: the rkey ("3k4") of the event it read, a whole text of it.
+    let ran: Vec<u32> = runs()
+        .iter()
+        .map(|r| {
+            let event = sourced_from(r, "FeedEvent(\"posts\")");
+            (1..=6).find(|n| event.contains(&format!("\"3k{n}\""))).unwrap_or(0)
+        })
+        .collect();
     assert_eq!(ran, [1, 2, 4, 5, 6], "each post run once");
     let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
     assert!(events.contains("passed over an event of posts it ran already (4)"), "{events}");
@@ -12333,7 +15532,7 @@ fn site_serves_a_built_app_from_its_folder() {
     // And cut when it changes while it is sent: the caller gets less than its length, and the
     // timeline says so.
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     stream.write_all(b"GET /assets/big.txt HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").unwrap();
     let mut first = [0u8; 1024];
     let n = stream.read(&mut first).unwrap();
@@ -12430,8 +15629,8 @@ fn ledger_watch_listens_on_its_channel_and_reads_what_it_missed() {
         let b = balances();
         assert_eq!((b["acct_1"]["balance"].as_str(), b["acct_1"]["entries"].as_u64(), b["acct_1"]["last"].as_u64()), (Some("100.00"), Some(3), Some(3)), "{b}");
         assert_eq!((b["acct_2"]["balance"].as_str(), b["acct_2"]["entries"].as_u64(), b["acct_2"]["read"].as_u64()), (Some("6.00"), Some(2), Some(0)), "{b}");
-        let sourced = log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").map(|e| e["sourced"].to_string()).collect::<Vec<_>>().join("\n");
-        assert!(sourced.contains(r#"FeedEvent(\"entries\")"#) && sourced.contains("fee"), "logged whole: {sourced}");
+        let sourced = log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").map(|e| sourced_from(&e, "FeedEvent(\"entries\")")).collect::<Vec<_>>().join("\n");
+        assert!(sourced.contains("fee"), "logged whole: {sourced}");
 
         // Its session ended: entry 4 is written while nothing listens, so it is never sent; once it
         // listens again, entry 5's run reads it from the ledger.
@@ -12540,7 +15739,11 @@ fn payout_events_runs_each_message_once_and_sends_a_failed_payouts_retry_to_its_
     eventually("passed over", || events().contains(&format!("passed over a message of payout_events it ran already ({first})")));
     eventually("deleted again", || sqs.messages("payout-events").is_empty());
     assert_eq!(runs().len(), 4, "run once");
-    let shown = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/queues"), vec![])));
+    // The sender counts a send once the queue has answered it, a moment after the queue has it:
+    // waited for as it is read.
+    let shown = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/queues"), vec![])));
+    eventually("both retries counted sent", || shown()["sending"][0]["sent"] == 2);
+    let shown = shown();
     let (listening, sending) = (&shown["listening"][0], &shown["sending"][0]);
     assert_eq!((listening["queue"].as_str(), listening["status"].as_str(), listening["run"].as_u64(), listening["passed_over"].as_u64()), (Some("payout_events"), Some("receiving"), Some(4), Some(1)), "{shown}");
     assert_eq!((sending["queue"].as_str(), sending["sent"].as_u64(), sending["waiting"].as_u64()), (Some("payout_retries"), Some(2), Some(0)), "{shown}");
@@ -12708,7 +15911,7 @@ fn atlas_notes_keeps_notes_as_documents_on_mongodb() {
 #[test]
 fn a_document_that_changed_before_its_commit_runs_again() {
     let Some(db) = fresh_mongo("again") else { return };
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let state = server_with_database(&db.url);
     assert_eq!(bind_notes(&state).status_code, 200);
     db.notes().insert_one(mongodb::bson::doc! { "_id": "n1", "owner": "ada", "text": "first", "edits": 0 }).run().unwrap();
@@ -12716,11 +15919,8 @@ fn a_document_that_changed_before_its_commit_runs_again() {
         "import {{ flow, route }} from \"holon\"\nimport notes from \"database:notes\"\nimport host from \"host:{host}\"\n\nflow(\"stamp\", {{ port: 18171 }})\n\nroute.post(\"/stamp/:id\", async (req) => {{\n  const note = notes.find_one(\"notes\", {{ _id: req.params.id }})\n  const r = await host.get(\"/slow\")\n  notes.update(\n    \"notes\",\n    {{ _id: note._id }},\n    {{ \"$set\": {{ text: `${{note.text}} (${{r.body}})` }} }},\n    {{ expect: 1 }},\n  )\n  return {{ was: note.text }}\n}})\n"
     );
     let slug = deploy_text(&state, &text, &host);
-    let outside = std::thread::scope(|s| {
-        let run = s.spawn(|| data_call(&state, &slug, "POST", "/stamp/n1", ""));
-        std::thread::sleep(Duration::from_millis(150));
-        db.notes().update_one(mongodb::bson::doc! { "_id": "n1" }, mongodb::bson::doc! { "$set": { "text": "changed outside" } }).run().unwrap();
-        run.join().unwrap()
+    let (outside, _) = second_while_first_is_out(&gate, || data_call(&state, &slug, "POST", "/stamp/n1", ""), || {
+        db.notes().update_one(mongodb::bson::doc! { "_id": "n1" }, mongodb::bson::doc! { "$set": { "text": "changed outside" } }).run().unwrap()
     });
     assert_eq!((outside.0, outside.1.as_str()), (200, r#"{"was":"changed outside"}"#));
     assert_eq!(hits_of(&hits, "/slow"), 1, "the call out answered from its record, not sent again");
@@ -12739,7 +15939,7 @@ fn a_document_that_changed_before_its_commit_runs_again() {
 #[test]
 fn two_servers_hold_one_document_through_mongodb() {
     let Some(db) = fresh_mongo("claims") else { return };
-    let (host, hits) = counting_server();
+    let (host, hits, gate) = gated_counting_server();
     let servers = [server_with_database(&db.url), server_with_database(&db.url)];
     for s in &servers {
         assert_eq!(bind_notes(s).status_code, 200);
@@ -12749,15 +15949,8 @@ fn two_servers_hold_one_document_through_mongodb() {
         "import {{ flow, route }} from \"holon\"\nimport notes from \"database:notes\"\nimport host from \"host:{host}\"\n\nflow(\"pay-note\", {{ port: 18172 }})\n\nroute.post(\"/pay/:id\", async (req) => {{\n  const note = notes.find_one(\"notes\", {{ _id: req.params.id, paid: false }})\n  const r = await host.get(`/slow?note=${{note._id}}`)\n  notes.update(\"notes\", {{ _id: note._id }}, {{ \"$set\": {{ paid: true, by: r.body }} }}, {{ expect: 1 }})\n  return {{ paid: note._id }}\n}})\n"
     );
     let slugs = [deploy_text(&servers[0], &text, &host), deploy_text(&servers[1], &text, &host)];
-    let (first, second) = std::thread::scope(|s| {
-        let first = s.spawn(|| data_call(&servers[0], &slugs[0], "POST", "/pay/n1", ""));
-        std::thread::sleep(Duration::from_millis(60));
-        let second = s.spawn(|| data_call(&servers[1], &slugs[1], "POST", "/pay/n1", ""));
-        (first.join().unwrap(), second.join().unwrap())
-    });
-    let mut statuses = [first.0, second.0];
-    statuses.sort();
-    assert_eq!(statuses, [200, 404], "{} / {}", first.1, second.1);
+    let (first, second) = second_waits_for_first(&servers[1], &gate, || data_call(&servers[0], &slugs[0], "POST", "/pay/n1", ""), || data_call(&servers[1], &slugs[1], "POST", "/pay/n1", ""));
+    assert_eq!((first.0, second.0), (200, 404), "{} / {}", first.1, second.1);
     assert_eq!(hits_of(&hits, "/slow"), 1, "one payment for one note, across servers");
     let claims = db.db.collection::<mongodb::bson::Document>("holon_claims").count_documents(mongodb::bson::doc! { "h.0": { "$exists": true } }).run().unwrap();
     assert_eq!(claims, 0, "every claim let go once its run was done");
@@ -12848,7 +16041,7 @@ fn a_channel_streams_each_runs_packs_to_its_subscribers() {
     // A subscriber: the response's headers, then its events, a line at a time.
     let subscribe = |path: &str, last: Option<&str>| {
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
         let last = last.map(|id| format!("Last-Event-ID: {id}\r\n")).unwrap_or_default();
         stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{last}\r\n").as_bytes()).unwrap();
         let mut reader = BufReader::new(stream);
@@ -12961,7 +16154,7 @@ fn a_streamed_reply_forwards_the_upstream_as_it_arrives() {
         let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
         stream.write_all(format!("{head}{}", piece("data: a\n\n")).as_bytes()).unwrap();
         stream.flush().unwrap();
-        let _ = seen_rx.recv_timeout(Duration::from_secs(10));
+        let _ = seen_rx.recv_timeout(EVENTUALLY);
         stream.write_all(format!("{}0\r\n\r\n", piece("data: b\n\n")).as_bytes()).unwrap();
     });
     let mut state = test_state();
@@ -12975,7 +16168,7 @@ fn a_streamed_reply_forwards_the_upstream_as_it_arrives() {
     sync_listeners(&state);
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     stream.write_all(b"POST /ask HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
     let mut reader = BufReader::new(stream);
     let mut head = String::new();
@@ -13024,7 +16217,7 @@ fn a_streamed_reply_whose_call_fails_answers_with_its_status() {
     sync_listeners(&state);
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     stream.write_all(b"POST /ask HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
     let mut answer = String::new();
     let _ = stream.read_to_string(&mut answer);
@@ -13049,7 +16242,7 @@ fn a_piped_call_sends_its_answer_to_the_channel_as_it_arrives() {
         let head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
         stream.write_all(format!("{head}{}", piece("Rivers run")).as_bytes()).unwrap();
         stream.flush().unwrap();
-        let _ = seen_rx.recv_timeout(Duration::from_secs(10));
+        let _ = seen_rx.recv_timeout(EVENTUALLY);
         stream.write_all(format!("{}0\r\n\r\n", piece(" to the sea.")).as_bytes()).unwrap();
     });
     let mut state = test_state();
@@ -13063,7 +16256,7 @@ fn a_piped_call_sends_its_answer_to_the_channel_as_it_arrives() {
     sync_listeners(&state);
 
     let mut live = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    live.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    live.set_read_timeout(Some(EVENTUALLY)).unwrap();
     live.write_all(b"GET /live HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
     let mut live = BufReader::new(live);
     let mut head = String::new();
@@ -13449,7 +16642,7 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
         let events = &mut table.get_mut(&slug).unwrap().events;
         events.take_dirty().inspect(|_| events.still_dirty()).is_none()
     };
-    let action = |name: &str| run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(Value::Record(BTreeMap::new())), None, None, &[]).status;
+    let action = |name: &str| run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(Value::Record(BTreeMap::new())), None, None, None, &[]).status;
 
     // Strict: a read, and a write.
     assert_eq!(call("GET", "/health", ""), 200);
@@ -13523,7 +16716,7 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     assert_eq!((tally("GET /health").runs, tally("GET /health").failed), (3, 0));
     assert!(state.deployments.lock().unwrap()[&slug].tallies_changed, "for the periodic sync to write");
     assert!(tally("GET /health").last_at_ms > 0);
-    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "report", Ok(Value::Record(BTreeMap::new())), None, None, &[]);
+    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "report", Ok(Value::Record(BTreeMap::new())), None, None, None, &[]);
     assert_eq!((ran.status, ran.seq), (200, None), "an unrecorded action answers, with no entry");
     assert_eq!(tally("action report").runs, 1);
 
@@ -13605,7 +16798,7 @@ fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
     // (missing), which isn't a failure.
     let failing = deploy_plain_text(&state, "import { action, flow } from \"holon\"\n\nflow(\"failing\", { port: 8173 })\n\nexport const check = action((input) => input.nowhere, { log: \"unrecorded\" })\n");
     let log = Arc::clone(&state.deployments.lock().unwrap()[&failing].log);
-    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &failing, "check", Ok(Value::Record(BTreeMap::new())), None, None, &[]);
+    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &failing, "check", Ok(Value::Record(BTreeMap::new())), None, None, None, &[]);
     assert_eq!((ran.status, ran.seq), (404, None), "no answer: missing, with no entry: {:?}", ran.error);
     assert_eq!(log.next_seq(), 0, "nothing logged");
     let tally = state.deployments.lock().unwrap()[&failing].tallies["action check"].clone();
@@ -13698,7 +16891,7 @@ route.get("/paid/:token", () => "thanks", {{ resumes: "paid" }})
     };
     for (level, port) in [("strict", 18206), ("lazy", 18207), ("unrecorded", 18208)] {
         let slug = deploy_plain_text(&state, &text(level, port));
-        let hold = || run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "hold", Ok(Value::Record(BTreeMap::new())), None, None, &[]);
+        let hold = || run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "hold", Ok(Value::Record(BTreeMap::new())), None, None, None, &[]);
         let held = hold();
         assert_eq!((held.status, held.waiting, held.error.as_deref()), (202, true, None), "{level}: {}", held.reply);
         let refused = hold();
@@ -15142,7 +18335,7 @@ fn the_server_records_what_its_golden_record_holds() {
             for name in &actions {
                 for body in &bodies {
                     let input = holon_core::parse_json(if body.is_empty() { "{}" } else { body }).unwrap_or(Value::Record(BTreeMap::new()));
-                    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(input), None, None, &[]);
+                    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(input), None, None, None, &[]);
                     wrote(&mut out, format!("== {slug} · action {name} · body {} → {} {}", body.len(), ran.status, ran.reply));
                 }
             }
@@ -15242,30 +18435,172 @@ fn a_flows_port_answers_only_an_address_localhost_or_a_name_it_was_given() {
     assert_eq!(route(&state, &req("POST", "/deployments/todo/stop", vec![])).status_code, 200);
 }
 
-/// Past `MAX_IN_FLIGHT` requests being answered at once, the control plane admits no more until
-/// one ends.
+/// The control plane's places at once, against a model: past `most` requests being answered at
+/// once, or `from_one` from one client, one more isn't admitted, and it is told which; one that
+/// ends gives its place back, to its client and in all, and a client holding none is forgotten.
 #[test]
-fn the_control_plane_admits_so_many_requests_at_once() {
-    let in_flight = std::sync::atomic::AtomicUsize::new(0);
-    let held: Vec<_> = (0..3).map(|_| crate::Admitted::take(&in_flight, 3).expect("room")).collect();
-    assert!(crate::Admitted::take(&in_flight, 3).is_none(), "a fourth isn't admitted");
-    drop(held);
-    assert_eq!(in_flight.load(std::sync::atomic::Ordering::Acquire), 0);
-    assert!(crate::Admitted::take(&in_flight, 3).is_some(), "admitted again once they end");
+fn the_control_plane_admits_so_many_requests_at_once_and_so_many_from_one_client() {
+    let (most, from_one) = (7, 3);
+    let slots = crate::Slots::new(most, from_one);
+    let clients = ["a", "b", "c", "d", "e"];
+    let mut held: Vec<(&str, crate::Admitted)> = vec![];
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut next = |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n as u64) as usize
+    };
+    let (mut refused_all, mut refused_one) = (0, 0);
+    for step in 0..4000 {
+        if next(5) < 3 {
+            let client = clients[next(clients.len())];
+            let mine = held.iter().filter(|(c, _)| *c == client).count();
+            let expected = if mine >= from_one {
+                Err(crate::TOO_MANY_FROM_ONE)
+            } else if held.len() >= most {
+                Err(crate::TOO_MANY)
+            } else {
+                Ok(())
+            };
+            match crate::Admitted::take(&slots, client) {
+                Ok(admitted) => {
+                    assert_eq!(expected, Ok(()), "step {step}: {client} admitted holding {mine}, {} in all", held.len());
+                    held.push((client, admitted));
+                }
+                Err(told) => {
+                    assert_eq!(expected, Err(told), "step {step}: {client} refused holding {mine}, {} in all", held.len());
+                    if told == crate::TOO_MANY { refused_all += 1 } else { refused_one += 1 }
+                }
+            }
+        } else if !held.is_empty() {
+            let at = next(held.len());
+            held.swap_remove(at);
+        }
+        assert_eq!(slots.taken(), held.len(), "step {step}");
+    }
+    assert!(refused_all > 0 && refused_one > 0, "both refusals were reached: {refused_all} in all, {refused_one} from one");
+    held.clear();
+    assert_eq!(slots.taken(), 0);
+    assert!(slots.places.lock().unwrap().from.is_empty(), "a client holding no place is forgotten");
+}
+
+/// Whom the control plane counts a request as (its places at once, its sign-in tries): the
+/// address it connected from, or, from a proxy it trusts, the one that proxy forwarded for, read
+/// from the end of `X-Forwarded-For`, past the proxies it trusts, so what a client wrote there
+/// itself is never read.
+#[test]
+fn a_client_is_whom_a_trusted_proxy_forwarded_for_and_otherwise_its_address() {
+    let trusted = access::Access::default().trusting(vec!["127.0.0.1".parse().unwrap(), "10.0.0.2".parse().unwrap(), "::1".parse().unwrap()]);
+    let none = access::Access::default();
+    let xff = |v: &str| ("X-Forwarded-For".to_string(), v.to_string());
+    type Row<'a> = (&'a access::Access, &'a str, Vec<(String, String)>, &'a str);
+    #[rustfmt::skip]
+    let rows: Vec<Row> = vec![
+        // Not from a proxy it trusts: the address it connected from, whatever it says.
+        (&none, "203.0.113.9:5000", vec![], "203.0.113.9"),
+        (&none, "127.0.0.1:5000", vec![xff("198.51.100.7")], "127.0.0.1"),
+        (&trusted, "203.0.113.9:5000", vec![xff("198.51.100.7")], "203.0.113.9"),
+        (&trusted, "[2001:db8:1:2:3:4:5:6]:5000", vec![xff("198.51.100.7")], "2001:db8:1:2::/64"),
+        // From a proxy it trusts: the address it forwarded for...
+        (&trusted, "127.0.0.1:5000", vec![xff("198.51.100.7")], "198.51.100.7"),
+        (&trusted, "127.0.0.1:5000", vec![("x-forwarded-for".into(), "198.51.100.7".into())], "198.51.100.7"),
+        (&trusted, "[::ffff:127.0.0.1]:5000", vec![xff("198.51.100.7")], "198.51.100.7"),
+        (&trusted, "[::1]:5000", vec![xff("198.51.100.7")], "198.51.100.7"),
+        (&trusted, "127.0.0.1:5000", vec![xff("198.51.100.7:4711")], "198.51.100.7"),
+        (&trusted, "127.0.0.1:5000", vec![xff("2001:db8:9:8:7:6:5:4")], "2001:db8:9:8::/64"),
+        (&trusted, "127.0.0.1:5000", vec![xff("[2001:db8:9:8::1]:4711")], "2001:db8:9:8::/64"),
+        // ...the last, never what the client wrote before it, on one line or another...
+        (&trusted, "127.0.0.1:5000", vec![xff("6.6.6.6, 198.51.100.7")], "198.51.100.7"),
+        (&trusted, "127.0.0.1:5000", vec![xff("6.6.6.6"), xff("198.51.100.7")], "198.51.100.7"),
+        (&trusted, "127.0.0.1:5000", vec![xff("10.0.0.2, 198.51.100.7")], "198.51.100.7"),
+        // ...past the proxies it trusts, in a chain of them...
+        (&trusted, "127.0.0.1:5000", vec![xff("6.6.6.6, 198.51.100.7, 10.0.0.2")], "198.51.100.7"),
+        (&trusted, "127.0.0.1:5000", vec![xff("10.0.0.2")], "10.0.0.2"),
+        // ...and the proxy itself when it forwarded for no one it can read.
+        (&trusted, "127.0.0.1:5000", vec![], "127.0.0.1"),
+        (&trusted, "127.0.0.1:5000", vec![xff("unknown")], "127.0.0.1"),
+        (&trusted, "127.0.0.1:5000", vec![xff("")], "127.0.0.1"),
+        (&trusted, "127.0.0.1:5000", vec![xff("198.51.100.7, unknown")], "127.0.0.1"),
+    ];
+    for (access, from, headers, expected) in rows {
+        let request = Request::fake_http_from(from.parse().unwrap(), "POST", "/auth/sign-in", [vec![host_header()], headers.clone()].concat(), b"{}".to_vec());
+        assert_eq!(access.client(&request), expected, "from {from} with {headers:?}, trusting {:?}", access.proxies);
+    }
+}
+
+/// Behind a proxy the server trusts, each client it forwards for is counted as itself: its
+/// places at once (one client's bodies that stop part way hold its share, and another's request
+/// is still answered) and its sign-in tries (five wrong lock the name from that client, not from
+/// another). Behind one it doesn't trust, every client is the proxy and shares both.
+#[test]
+fn behind_a_trusted_proxy_each_client_has_its_own_places_and_tries() {
+    use std::io::Write as _;
+    use std::net::TcpStream;
+    let pw = "correct horse battery";
+    for trust in [true, false] {
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        accounts.setup(&accounts.setup_code().unwrap(), "ada", pw).unwrap();
+        let mut state = test_state();
+        state.access = access::Access::new(accounts, vec![], vec![]).trusting(if trust { vec!["127.0.0.1".parse().unwrap()] } else { vec![] });
+        let slots: &'static crate::Slots = Box::leak(Box::new(crate::Slots::new(8, 2)));
+        let state: &'static AppState = Box::leak(Box::new(state));
+        let server = rouille::Server::new("127.0.0.1:0", move |request| admitted(state, request, slots)).unwrap();
+        let at = server.server_addr();
+        let (_, stop) = server.stoppable();
+        let send = |client: &str, path: &str, body: &[u8], length: usize| {
+            let mut s = TcpStream::connect(at).unwrap();
+            s.set_read_timeout(Some(EVENTUALLY)).unwrap();
+            write!(s, "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{TEST_PORT}\r\nX-Forwarded-For: {client}\r\nContent-Type: application/json\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n").unwrap();
+            s.write_all(body).unwrap();
+            s
+        };
+        let answer = |s: &mut TcpStream| {
+            let mut all = String::new();
+            let _ = s.read_to_string(&mut all);
+            all
+        };
+        // A's bodies that stop part way hold A's share (a body of 1 KiB or less tiny_http reads
+        // itself before handing the request on, holding no place: these say they are longer)...
+        let stopped: Vec<TcpStream> = (0..2).map(|_| send("198.51.100.7", "/auth/sign-in", b"{\"a\"", 100_000)).collect();
+        assert!(soon(|| slots.taken() == 2), "A's bodies are being read");
+        let a_again = answer(&mut send("198.51.100.7", "/auth/sign-in", b"{}", 2));
+        assert!(a_again.starts_with("HTTP/1.1 503") && a_again.contains(crate::TOO_MANY_FROM_ONE), "trust {trust}: a third from A: {a_again}");
+        // ...and B, another client of the proxy, is answered only when it is counted as itself.
+        let b = answer(&mut send("203.0.113.9", "/auth/sign-in", b"{}", 2));
+        assert_eq!(!b.starts_with("HTTP/1.1 503"), trust, "trust {trust}: B while A holds its share: {b}");
+        drop(stopped);
+        assert!(soon(|| slots.taken() == 0), "A's places are given back");
+
+        // Five wrong passwords from A lock ada from A; from B she signs in only if B is itself.
+        let sign_in = |client: &str, password: &str| {
+            let body = serde_json::to_vec(&serde_json::json!({ "name": "ada", "password": password })).unwrap();
+            answer(&mut send(client, "/auth/sign-in", &body, body.len()))
+        };
+        for _ in 0..5 {
+            assert!(sign_in("198.51.100.7", "not her password").starts_with("HTTP/1.1 401"));
+        }
+        let a_locked = sign_in("198.51.100.7", pw);
+        assert!(a_locked.starts_with("HTTP/1.1 401") && a_locked.contains("too many wrong"), "trust {trust}: A after five wrong: {a_locked}");
+        let b = sign_in("203.0.113.9", pw);
+        assert_eq!(b.starts_with("HTTP/1.1 200"), trust, "trust {trust}: B after A's five wrong: {b}");
+        let _ = stop.send(());
+    }
 }
 
 /// Guards: a change to a deployment that a person or an agent asked for (a deploy, a removal, a
-/// grant or a revoke, a pause, a stop, a run, its settings, the policy reloaded, its state put
-/// back, a decision) is never answered as done when the deployments file doesn't take it: a 500
-/// saying it is in effect and won't hold past a restart; with the file written, each answers as
-/// before. And every call that writes the file is one of these, reading its result, or one listed
-/// here that answers no one for a change, whose failure is said and goes on.
+/// grant or a revoke, a pause, a stop, a run, its settings, its state put back, a decision) is
+/// never answered as done when the deployments file doesn't take it: a 500 saying it won't hold
+/// past a restart; with the file written, each answers as before. And every call that writes the
+/// file is one of these, reading its result, or one listed here that answers no one for a change,
+/// whose failure is said and goes on. (`what_isnt_saved_isnt_answered_as_kept` holds the words of
+/// each answer, R20; this holds that no caller is left out.)
 /// Why: the file is what a restart reads. A revoke or a pause it didn't take is undone then, a
 /// removal comes back, and whoever made it was told it was done (release audit R59, the class of
 /// R28's: a write that fails taken as done).
 /// If it fails: a new caller of `persist_deployments` either answers for a change (read its
-/// result; answer `persist::not_saved` when it fails) or answers no one (`let _ =`, listed in
-/// QUIET with why).
+/// result; answer 500 when it fails, saying what was done and that a restart won't keep it) or
+/// answers no one (`let _ =`, listed in QUIET with why).
 #[test]
 fn a_change_the_deployments_file_didnt_take_is_never_answered_as_done() {
     // Every caller, as "file function": those that answer for a change, reading the result...
@@ -15274,22 +18609,24 @@ fn a_change_the_deployments_file_didnt_take_is_never_answered_as_done() {
         "deploy.rs handle_delete_deployment",
         "deploy.rs handle_lifecycle",
         "deploy.rs handle_post_restore",
+        "deploy.rs run_action",
         "durable.rs handle_post_decide",
         "durable.rs handle_post_decide",
+        "durable.rs resume_parked",
+        "durable.rs resume_parked",
         "grants.rs change_grant",
-        "grants.rs handle_post_permissions_reload",
+        "listeners.rs serve_flow",
+        "main.rs sync_to_disk",
         "proposals.rs handle_post_settings",
     ];
     // ...and those that don't, each with why.
     const QUIET: &[(&str, &str)] = &[
         ("arrivals.rs fire_one_arrival", "a file's arrival parked a run: no one asked"),
-        ("deploy.rs run_action", "a run that parks, answered for the run, whose effects went out, not for a change"),
         ("dequeue.rs fire_one_queue", "a queue's message parked a run: no one asked"),
         ("durable.rs end_unresumable", "a run past its deadline ended: no one asked"),
-        ("durable.rs resume_parked", "a run resumed: an expiry or a request answers no one for it, a decision reads the file's result itself"),
+        ("grants.rs handle_post_permissions_reload", "nothing is lost: a restart reads the policy again and holds each deployment to it"),
         ("inbox.rs fire_one_mail", "a mail parked a run: no one asked"),
-        ("listeners.rs serve_flow", "a request's run that parks: the flow's answer, after its effects went out"),
-        ("main.rs sync_to_disk", "the tallies, every second"),
+        ("main.rs serve", "the server starting, its runs a crash cut off ended: a start that doesn't save ends them again"),
         ("scheduler.rs fire_one_clock_tick", "a tick parked a run: no one asked"),
         ("storage.rs act", "the host's room: runs kept as granted again"),
         ("subscriptions.rs fire_one_feed", "a feed's event parked a run: no one asked"),
@@ -15342,7 +18679,7 @@ fn a_change_the_deployments_file_didnt_take_is_never_answered_as_done() {
         crate::faults::heal();
         let (status, said) = (r.status_code, String::from_utf8_lossy(&body_bytes(r)).into_owned());
         if fails {
-            assert!(status == 500 && said.contains("is in effect now, but not saved") && said.contains("won't hold past a restart"), "{what}, the file failing: {status} {said}");
+            assert!(status == 500 && said.contains("after a restart"), "{what}, the file failing: {status} {said}");
         } else {
             assert!((200..300).contains(&status), "{what}, the file written: {status} {said}");
         }
@@ -15367,8 +18704,11 @@ fn a_change_the_deployments_file_didnt_take_is_never_answered_as_done() {
     change("a grant", false, || change_grant(&state, "w", serde_json::json!({ "grant": ["StateWrite(\"k\")"] })));
     change("its settings", true, || post(&state, "/deployments/w/settings", serde_json::json!({ "agents_propose": false })));
     change("its settings", false, || post(&state, "/deployments/w/settings", serde_json::json!({ "agents_propose": true })));
-    change("the policy reloaded", true, || post(&state, "/permissions/reload", serde_json::json!({})));
-    change("the policy reloaded", false, || post(&state, "/permissions/reload", serde_json::json!({})));
+    // The policy reloaded isn't one: a restart reads it again. With the file failing, it answers as it is.
+    crate::faults::fail("the deployments file", false);
+    let reloaded = post(&state, "/permissions/reload", serde_json::json!({}));
+    crate::faults::heal();
+    assert_eq!(reloaded.status_code, 200, "the policy reloaded, the file failing");
     change("its state put back", true, || post(&state, "/deployments/w/restore", serde_json::json!({ "run": 1, "state": true })));
     change("its state put back", false, || post(&state, "/deployments/w/restore", serde_json::json!({ "run": 0, "state": true })));
     change("a pause", true, || post(&state, "/deployments/w/pause", serde_json::json!({})));

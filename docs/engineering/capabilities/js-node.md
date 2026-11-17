@@ -107,7 +107,8 @@ on one pool of it (`Limits::max_fuel`, held by the round's `Budgeted` with its s
 run 2G a second and a `js()` loop 1G; chess's first move of a game burns 0.93G).
 Each call runs on its own budget or what is left, the less (`Observer::take_fuel`), and the pool
 is charged what it burned, answered or not (`Engine::run_metered`); a call that runs out on the
-pool's fuel, not its own, fails the round (`RunError::FuelBudget`), and the run performs nothing.
+pool's fuel, not its own, fails the round (`RunError::FuelBudget`), and the run performs no
+effect; the requests of the rounds before it are already sent (`run_rounds`).
 A call's memory is its own (`module_memory`), freed as it answers, and isn't the round's
 `max_memory`: `run_metered` runs it in `holon_core::memory::uncounted`, which leaves off the
 round's count what the call held and what the engine keeps of it (the module compiled, each

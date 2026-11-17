@@ -53,7 +53,7 @@ accounts) stops the start (`refuse_to_start`: "refusing to start rather than ove
 | Control plane edge | http.rs, access.rs, can.rs, auth.rs, accounts.rs, oidc.rs, local.rs, activity.rs, editor.rs | `route` dispatches every request after `reject_untrusted` (Host, Origin, Content-Type, `MAX_BODY_BYTES`) and `Access::admit` (who, and whether `can` lets them take the route: can.rs's `ROUTES`, deny by default); `/auth/…` and `/admin/…` are auth.rs's; `with_cors` adds CORS to every answer; the built-in editor is served at `/` before the gate |
 | Deployments | deploy.rs, persist.rs, lifecycle.rs, permissions.rs, grants.rs, restore.rs, history.rs, events.rs, flows.rs, wire.rs | deploy, delete, `/trigger`, run, pause, stop; the deployments and flows files; manifests, the policy, grants and permits; versions and restores; each deployment's events |
 | Run path | firing.rs, units.rs, claims.rs, locks.rs, taint.rs, secrets.rs | `fire_with_state` and what it is held to; the flow and value caches; key claims and commit locks; redaction |
-| Data plane | dataplane.rs, listeners.rs, data.rs, channels.rs, websockets.rs | the listeners and their limits; routing a request to its endpoint (`serve_data`); subscriptions as server-sent events; inbound WebSocket connections, a run for each block's event (`websockets::open`, hooked before routing) |
+| Data plane | dataplane.rs, listeners.rs, data.rs, channels.rs, websockets.rs, bounds.rs | the listeners and their limits; routing a request to its endpoint (`serve_data`); subscriptions as server-sent events; inbound WebSocket connections, a run for each block's event (`websockets::open`, hooked before routing); what the whole server is held to, read from the machine (`--max-memory`'s default, the connections its open-file limit leaves room for) |
 | Triggers | scheduler.rs, arrivals.rs, durable.rs, calls.rs | clocks, files arriving, runs that wait for an event, flows calling flows |
 | Resources | folders.rs, blobs.rs, ranges.rs, databases.rs, engines.rs, mongo.rs, collections.rs, outbound.rs, secret_sources.rs, sealing.rs | what a flow touches outside its run, each bound or granted by the host |
 | The record | recorder.rs, heads.rs, verify.rs, changes.rs, touches.rs | the hash-chained run logs, the witness, export and `holon verify`, what a dry run shows |
@@ -62,7 +62,7 @@ accounts) stops the start (`refuse_to_start`: "refusing to start rather than ove
 
 Every module does `use crate::*`, and main.rs brings most modules' items into the crate root
 (`use deploy::*` and the rest), so handlers call each other by bare name, as when this was one
-file. tests.rs (9,000 lines) holds the in-process server
+file. tests.rs holds the in-process server
 tests; fixtures.rs the small units they deploy.
 
 ### 2.3 `AppState`, `Deployment` and `SharedStore`
@@ -96,7 +96,7 @@ up to `VALUE_CACHE_LARGEST`. Both count memory, not encoded bytes
 |---|---|---|
 | a thread per control-plane request | `rouille::Server::new` (rouille 3.6's default executor, `Executor::Threaded`) | the control plane |
 | `holon-data` runtime, and its blocking pool | `dataplane::runtime`, with the first listener | the data plane: each request read on a worker and run on `spawn_blocking`, however short (nothing computes on a worker: [G2](../themes/resilience.md#g2-a-deployment-cant-slow-another)) |
-| the clock | `spawn_clock_scheduler` | every second, `run_due_clock_ticks` (the deployments due, fanned out on `thread::scope`), then `durable::expire_waiting` |
+| the clock | `spawn_clock_scheduler` | two threads, every second: one starts the clocks due (`start_due_clock_ticks`, a thread per tick, one per clock at most, not waited for); the other `durable::expire_waiting` |
 | the file watcher | `arrivals::spawn_watcher` | every `POLL` (1 s), new files in watched folders start runs |
 | the syncer | `serve` | every `SYNC_EVERY` (1 s): writes the deployments file when tallies changed, then `recorder::sync_logs` (syncs each log, makes the cut-backs runs asked for) |
 | the secrets refresh | `serve` | every `secret_sources::REFRESH` (60 s), `SecretStore::refresh` reads references again |

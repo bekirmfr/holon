@@ -54,7 +54,11 @@ the two relate. The language and compiler it calls are [holon-author](holon-auth
   versions and events as `holon history` does.
 - **The API client.** `server.ts`, typed against the server's JSON. Its `BASE` is
   `VITE_HOLON_SERVER` when set; else, built, the origin it was served from; in development
-  `http://127.0.0.1:7420`. The session is kept in `localStorage` under `holon.session`.
+  `http://127.0.0.1:7420`. The session is kept in `localStorage` under `holon.session`, and
+  sent as a bearer, never a cookie: a cookie would go with the requests of every page of the
+  same site, and SameSite doesn't count ports, so a page a deployed flow serves on this host
+  could act as the person. The page's policy (`PAGE_POLICY`, editor.rs) keeps script other than
+  the editor's from running to read the bearer (`server.ts` says why at `SESSION_KEY`).
   `AuthGate.tsx` and `signin.ts` sign in (a password, or the server's identity provider).
 - **`storage.ts`** is not browser storage: it is how the admin page words the server's own sweeps
   and holdings (the server's `storage.rs`).
@@ -138,6 +142,49 @@ edits, checks and formats files.
   ([text-graph-link L4](../../L4s/text-graph-link-L4.md), decisions 1 and 2).
 - **In-page dialogs** (`Dialog.tsx`): an embedded browser suppresses `window.confirm`, which then
   answers "cancel" at once, so deletes and first saves did nothing there.
+- **A question waits before it takes an answer** (`Dialog.tsx`'s `ARM_MS`, 500 ms, Chrome's
+  guard on its own prompts): a deploy's consent opened a moment after Ctrl+D, which sits beside
+  Ctrl+S, and the next Enter or `y` typed for the page approved it unread. A key pressed while it
+  waits starts the wait again, its answers look disabled till then (to a screen reader, described
+  by why, and an answer too soon is said not taken), no is taken at once, and a held key never
+  answers. End-to-end tests answer with `enter(page)` (`e2e/helpers.ts`), which
+  waits as a click does by itself (R43).
+- **What can't be taken back, or changes what someone may do, is asked first**: a removal, an
+  unbinding, a token revoked, a person disabled, a role or an owner picked from a list.
+  `askedFirst.test.ts` reads every such call of the console and finds a question awaited before
+  it, or a line saying where it is asked (R43).
+- **A list not read is never shown as empty** (`ui/Unread.tsx`): a failed read of the runs
+  waiting, the access changes or a flow's secrets showed "No run is waiting." or "not set" to
+  whoever was to decide them. It says it couldn't read the list, and why; Approvals' tab counts
+  say "?". `unread.test.tsx` reads every handler of a failed read and finds none that sets a list
+  to none, save where none is the truth (R44).
+- **A part that throws says so in its place** (`ui/Boundary.tsx`): each page and the canvas are
+  held by a boundary, the rest of the console by the root's. A page that threw blanked the whole
+  editor and the open flows' unsaved changes with it; now it says its error, with **Try again**,
+  and is tried again once another page opens (R44).
+- **A tab acts as whom it signed in as, and an ended sign-in keeps the editor**
+  (`server.ts`'s `tabSession`, `signin.ts`'s `tabSignedIn`, `AuthGate.tsx`'s `SignInAgain`):
+  the session is read from the browser's storage once, as the page loads, so another tab signing
+  in as someone else no longer changes whom this one acts as. A 401 to what the tab is signed in
+  with, or to none once its provider's ID token expired, ends the sign-in without unmounting the
+  editor: a sign-in covers it, and the same person goes on with their unsaved flows; someone else
+  gets an editor of their own. The provider is signed in through again in a pop-up, which hands
+  the tab its token. Signing out asks first while flows aren't saved (`useTabs.ts`'s
+  `unsavedFlows`). `session.test.tsx` holds each (R44).
+- **What the address says is quoted, never the console's words** (`fromUrl.tsx`): anyone can
+  make a link to the console, so text read from it is shown in quotes, on one line, at most 80
+  characters, and never as markup. That covers a manual page's name, a person's or a group's, a
+  hash that names nothing, and a sign-in return's error. A return from the identity provider
+  says what it carries only when it answers a sign-in this browser started. Before, `#docs.<page>`
+  put the name into markdown, where a backtick broke out to a heading and a link, and any
+  `?state=…&error_description=…` showed its text on the sign-in page as the console's own
+  sentence. `fromUrl.test.tsx` holds every place that shows such text, with markup, a sentence
+  in the console's voice, a quote mark of its own, unseen characters and a long one (EN:E4).
+- **A secret typed in is never shown** (`Dialog.tsx`'s `secret`): a question for a password or a
+  key is a password field, filled by a password manager as its `autoComplete` says, and answered
+  as typed. Changing a password asks the new one twice, as setting up and an invite do. Before,
+  change-password and the marketplace's publish key were plain lines of text on the screen.
+  `Dialog.test.tsx` sweeps the sources: no `prompt` asks for a password or a key.
 - **Served by the server.** One process and one port: on a machine without a screen, start the
   server and open it from any browser (`editor.rs`).
 - **End-to-end clicks are dispatched** (`dispatchEvent("click")`): a forced click lands on
@@ -170,6 +217,16 @@ edits, checks and formats files.
 - **One worker.** The end-to-end suite runs one test at a time (`workers: 1`) against one
   server, its deployments shared between tests; `CLOCK_SLUGS` names the clock samples to stop by
   hand, so a new clock sample keeps ticking unless added.
+- **A page's first load waits on its own.** On CI's slow runner a new browser context took 15 to
+  25 s to load the editor (its core's wasm 4 to 13.5 s to fetch, then compiled), past the 15 s an
+  `expect` waits. The page says it is loading (`aria-busy` on AuthGate's "connecting" and on the
+  editor's body until the catalog is in), and `fixtures.ts` waits for that to end, up to two
+  minutes, after every page's `goto` and `reload` (`settled`; the accounts tests, on a context
+  of their own, call `editorLoaded` after each sign-in). A new test that loads the editor some
+  other way waits the same.
+- **Every read of the server is past the HTTP cache** (`ask` in `server.ts`, `cache: "no-store"`):
+  through it, Chrome let one request for an address go at a time, and a held read of `/auth/me`
+  held the access version a page follows past what a test waits.
 - **A drag in an overlay waits for its view to stop moving.** An overlay fits its view again
   240 ms after it opens, animated over 200 ms (`CompositeOverlay.tsx`), and at its zoom a handle
   is a few pixels wide: a test's `dragTo` begun meanwhile aims where the handle was, and misses.
@@ -210,16 +267,22 @@ tests when run at `f5f3b39`. Most run against the real wasm core, loaded from `e
 missing asset) and `the_built_in_editor_is_served`.
 
 **End to end** (`npm run e2e`, Playwright; CI's `e2e.yml` on main, nightly, and a pull request
-labelled `e2e` or a release's: two shards, `--fully-parallel`, traces kept on failure). Sixteen
-files, 90 tests counted by their `test(` calls; the sweep skips `atlas-notes` and `ledger-watch`
-without `HOLON_TEST_MONGODB` and `HOLON_TEST_POSTGRES`
+labelled `e2e` or a release's: two shards, `--fully-parallel`, traces kept on failure). Eighteen
+files, 131 tests as `npx playwright test --list` counts them on 2026-11-16, 23 of them the
+sweep's; the sweep skips `atlas-notes` and `ledger-watch` without `HOLON_TEST_MONGODB` and
+`HOLON_TEST_POSTGRES`
 ([Resilience §4](../themes/resilience.md), [Testing](../themes/testing.md)).
 
 - `sweep.e2e.ts`: every sample `samples.rs` lists, with no browser: its text deployed with
   `holon deploy` (which builds the unit the editor's Deploy builds), its port moved, a request
-  sent to it and found in its log, then removed. One test, a step a sample, about a minute; its
-  failures are listed together, each by its sample's name (as one test, it weighs as one in the
-  shards' split by count).
+  sent to it and found in its log, then removed. A test for every four samples, each sample a
+  step with a limit of its own (120 s), the test's limit theirs together, so the sweep's bound
+  grows with the samples and a slow runner fails the sample that is slow; a test's failures are
+  listed together, each by its sample's name. Four to a test because the shards cut the tests,
+  in file order, into halves by count, and four samples take about one editor test's time on
+  CI (3.6 s a sample, 16 s an editor test, main on 2026-11-16): the shards' halves then come
+  out about even. The first test compares the samples the tests hold with the ones
+  `holon new --help` lists from `samples.rs`'s compiled list, so a sample without a test fails.
 - `samples.e2e.ts`: "the library lists every sample" (the titles read from `samples.rs`, so none
   is left out); then a test per feature only the editor shows, opened from the flows page and
   deployed through the consent screen, most replaying a run exactly in view mode.
@@ -230,8 +293,7 @@ without `HOLON_TEST_MONGODB` and `HOLON_TEST_POSTGRES`
 - `accounts.e2e.ts`, `home.e2e.ts`, `docs.e2e.ts`: sign-in and roles, the home tab's panes, the
   manual.
 
-**The terminal editor**: `crates/holon/src/workbench/tests.rs`, 22 tests (counted by `#[test]`),
-among them `deploying_shows_what_it_may_do_and_deploys_on_enter` and
+**The terminal editor**: `crates/holon/src/workbench/tests.rs`, among them `deploying_shows_what_it_may_do_and_deploys_on_enter` and
 `a_saved_flow_waits_for_a_person_who_approves_it_from_the_approvals_page`.
 
 Gaps: components drawn only in a browser; the built editor not driven end

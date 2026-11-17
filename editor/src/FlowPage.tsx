@@ -10,7 +10,6 @@ import { findRoutes } from "./derive";
 import { useDialog } from "./Dialog";
 import { StateChips } from "./FlowCells";
 import { HistoryTab } from "./HistoryPane";
-import { describeItem } from "./holon";
 import { LogsPane } from "./LogsPane";
 import { StateTab } from "./FlowState";
 import { StatusTab } from "./FlowStatus";
@@ -20,11 +19,12 @@ import { firstComment, runNowOptions, startsSaid, wentOut } from "./flowFacts";
 import type { CodeText } from "./timeline";
 import { outside, runLabel, runOutcome, type Outcome } from "./runs";
 import { follow, format, type FlowTab, type Route } from "./routes";
-import { downloadRuns, getDeployedDocument, getFlow, getLog, runAction, tickNow, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
+import { downloadRuns, getDeployedDocument, getFlow, getLogHeads, runAction, tickNow, tickSaid, type DeploymentEntry, type FlowDocument, type LogEntry, type RunHead } from "./server";
 import { gateOf, useCan, type Answer, type Can } from "./can";
 import { tallyRows } from "./tallies";
 import { useFlowLog } from "./useFlowLog";
 import { useKeys, useListKeys } from "./ui/Keys";
+import { Said } from "./SecretSaid";
 
 /** The tabs a flow's page has, in order, and what each is called. */
 const TABS: [FlowTab, string][] = [
@@ -210,7 +210,7 @@ function useRunNow(slug: string, entry: DeploymentEntry | undefined, can: Can, o
     try {
       if (o.kind === "clock") {
         const t = await tickNow(slug, o.name);
-        onSaid(`${o.name}: ticked, ${t.performed.length} effect${t.performed.length === 1 ? "" : "s"} performed`);
+        onSaid(tickSaid(o.name, t));
       } else {
         const r = await runAction(slug, o.name, "");
         onSaid(`${o.name}: run #${r.seq}${r.waiting ? ", waiting" : ""}`);
@@ -251,7 +251,7 @@ function Draft({ slug, manifestOf, deployTo, onEdit, navigate, mayDeploy }: { sl
         <ul className="hl-flow__may">
           {may.items.map((item) => (
             <li key={item} title={item} className="hl-flow__what">
-              {describeItem(item)}
+              <Said item={item} />
             </li>
           ))}
         </ul>
@@ -266,6 +266,53 @@ function Draft({ slug, manifestOf, deployTo, onEdit, navigate, mayDeploy }: { sl
   );
 }
 
+/** The list of runs, for whoever may see them and not read their steps (run.steps, R55): when each
+ *  ran, what started it, its status, how long, who sent it; none opens, and the server's refusal
+ *  says who gives the rest. */
+function HeadsList({ heads, steps }: { heads: RunHead[]; steps: string }) {
+  const newest = heads.slice().reverse();
+  return (
+    <>
+      <p className="hl-flow__note" role="note" aria-label="steps">
+        {steps}
+      </p>
+      {newest.length === 0 ? (
+        <p className="hl-flow__none">no runs yet</p>
+      ) : (
+        <table className="hl-table hl-flow__runlist" aria-label="the list of runs">
+          <thead>
+            <tr>
+              <th>Run</th>
+              <th>When</th>
+              <th>What came in</th>
+              <th>Status</th>
+              <th>Took</th>
+              <th>Sent by</th>
+            </tr>
+          </thead>
+          <tbody>
+            {newest.map((h) => {
+              const o = h.failed || (h.status ?? 0) >= 500 ? "failed" : h.parked.length > 0 ? "waiting" : "ok";
+              return (
+                <tr key={h.seq} className={`hl-table__row hl-table__row--${o}`}>
+                  <td>#{h.seq}</td>
+                  <td className="hl-table__dim">{new Date(h.at_ms).toLocaleTimeString()}</td>
+                  <td className="hl-flow__what">{h.route ?? h.kind}</td>
+                  <td className={o === "ok" ? "" : `hl-flow__${o}`}>
+                    {h.status ?? ""} {OUTCOME_SAID[o]}
+                  </td>
+                  <td className="hl-table__dim">{h.duration_ms < 1 ? "<1 ms" : `${Math.round(h.duration_ms)} ms`}</td>
+                  <td className="hl-table__dim">{h.by ?? ""}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </>
+  );
+}
+
 type Show = "all" | "failed" | "waiting";
 const OUTCOME_SAID: Record<Outcome, string> = { ok: "", failed: "failed", waiting: "waiting" };
 
@@ -274,7 +321,7 @@ const OUTCOME_SAID: Record<Outcome, string> = { ok: "", failed: "failed", waitin
  *  the chain the log is (each run names the hash of the one before it), checked on asking in a
  *  dialog, and the runs exported for `holon verify`. */
 function RunsTab({ slug, navigate, mayExport = true }: { slug: string; navigate: (r: Route) => void; mayExport?: Answer }) {
-  const { entries, tallies, error } = useFlowLog(slug);
+  const { entries, heads, steps, tallies, error } = useFlowLog(slug);
   const dialog = useDialog();
   const [show, setShow] = useState<Show>("all");
   const [said, setSaid] = useState<ReactNode>("");
@@ -290,7 +337,8 @@ function RunsTab({ slug, navigate, mayExport = true }: { slug: string; navigate:
   const check = async () => {
     let body: ReactNode;
     try {
-      const { entries: all, head, breaks } = await getLog(slug);
+      // The chain needs no run's steps: the list of runs has its head and breaks (run.view's).
+      const { entries: all, head, breaks } = await getLogHeads(slug);
       body =
         breaks.length > 0 ? (
           <p className="hl-flow__bad">✗ The chain breaks at run {breaks.join(", ")}: the log was changed outside holon.</p>
@@ -353,7 +401,9 @@ function RunsTab({ slug, navigate, mayExport = true }: { slug: string; navigate:
           <span className="hl-flow__what">{t.label}</span> not recorded · {t.line}
         </div>
       ))}
-      {shown.length === 0 ? (
+      {steps ? (
+        <HeadsList heads={heads} steps={steps} />
+      ) : shown.length === 0 ? (
         <p className="hl-flow__none">{entries.length === 0 ? "no runs yet: send it a request" : `no ${show} runs`}</p>
       ) : (
         <table className="hl-table hl-flow__runlist">

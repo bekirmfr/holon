@@ -4,11 +4,19 @@
 // server has one, through its identity provider (signin.ts). Signed in, the editor shows, with
 // the account in its header: who is signed in and what they may decide, change password,
 // Getting started and sign out.
+//
+// A sign-in that ends while the editor is open (the server answers 401: signed out elsewhere,
+// expired, the person disabled; or the provider's ID token expired) keeps the editor as it is,
+// covered by a sign-in: the same person signing in again goes on with their open flows and what
+// isn't saved in them, through the provider in a pop-up so the page stays; someone else closes
+// them (the editor is drawn anew for whoever is signed in). Signing out here asks first while
+// open flows have changes not saved (R44).
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { acceptInvite, changePassword, getAuthState, getSession, inviteFor, mayI, setUp, signInWith, signOutHere, whoAmI, type Kind, type Role } from "./server";
-import { claimsOf, finishSignIn, signedIn, startSignIn, type AuthConfig } from "./signin";
+import { adoptSignIn, claimsOf, finishSignIn, signedIn, SIGNED_IN_KEY, SIGNED_IN_MESSAGE, startSignIn, type AuthConfig } from "./signin";
 import { useDialog } from "./Dialog";
+import { unsavedFlows } from "./useTabs";
 import { lettersOf } from "./keymap";
 import { Kbd } from "./ui/Kbd";
 import { keyOf } from "./ui/Keys";
@@ -84,7 +92,16 @@ const Field = ({ label, value, onChange, type = "text", autoComplete }: { label:
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-type Stage = { kind: "loading" } | { kind: "unreachable"; message: string } | { kind: "setup" } | { kind: "invite"; token: string; name: string } | { kind: "sign-in"; oidc: AuthConfig | null } | { kind: "in"; me: Me };
+/** `in`'s `ended`: their sign-in ended while the editor was open, which is kept under a sign-in.
+ *  `popup`: this page is the pop-up a tab opened to sign in again, done. */
+type Stage =
+  | { kind: "loading" }
+  | { kind: "unreachable"; message: string }
+  | { kind: "setup" }
+  | { kind: "invite"; token: string; name: string }
+  | { kind: "sign-in"; oidc: AuthConfig | null }
+  | { kind: "in"; me: Me; ended?: boolean }
+  | { kind: "popup" };
 
 /** The editor, once someone is signed in; the right screen before. */
 export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
@@ -94,11 +111,13 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
   const [password, setPassword] = useState("");
   const [again, setAgain] = useState("");
   const [code, setCode] = useState("");
+  const [oidc, setOidc] = useState<AuthConfig | null>(null);
 
-  const decide = useCallback(async () => {
+  const decideOnce = useCallback(async () => {
     setError("");
     try {
       const state = await getAuthState();
+      setOidc(state.oidc);
       if (state.setup) return setStage({ kind: "setup" });
       const invite = new URLSearchParams(location.search).get("invite");
       if (invite) {
@@ -112,6 +131,7 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
       // Back from the identity provider, or a session kept from before.
       const back = await finishSignIn();
       if (typeof back === "string") setError(back);
+      else if (back?.popup) return setStage({ kind: "popup" });
       if (getSession() || signedIn()) {
         const me = await whoAmI().catch((e: unknown) => {
           setError(messageOf(e));
@@ -124,14 +144,37 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
       setStage({ kind: "unreachable", message: messageOf(e) });
     }
   }, []);
+  // One decision at a time: one asked while another is being made is that one. StrictMode asks
+  // twice as the gate opens, and two at once raced: the first took the invite, or the provider's
+  // code, out of the address, and the second, read without it, showed the sign-in over what the
+  // first found when it answered last (the e2e's slow runner).
+  const deciding = useRef<Promise<void> | null>(null);
+  const decide = useCallback(
+    () =>
+      (deciding.current ??= decideOnce().finally(() => {
+        deciding.current = null;
+      })),
+    [decideOnce],
+  );
   useEffect(() => {
     decide();
-    // Signed out (here, or the server said the sign-in ended): back to signing in.
+    // Signed out here: back to signing in.
     const onSession = () => {
       if (!getSession() && !signedIn()) decide();
     };
+    // The sign-in ended without asking: the editor is kept, under a sign-in.
+    const onEnded = () =>
+      setStage((s) => {
+        if (s.kind === "in") return { ...s, ended: true };
+        void decide();
+        return s;
+      });
     window.addEventListener("holon:session", onSession);
-    return () => window.removeEventListener("holon:session", onSession);
+    window.addEventListener("holon:session-ended", onEnded);
+    return () => {
+      window.removeEventListener("holon:session", onSession);
+      window.removeEventListener("holon:session-ended", onEnded);
+    };
   }, [decide]);
 
   const matched = () => {
@@ -150,7 +193,11 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
 
   switch (stage.kind) {
     case "loading":
-      return <div style={{ padding: 24, color: "var(--muted)" }}>connecting…</div>;
+      return (
+        <div style={{ padding: 24, color: "var(--muted)" }} aria-busy="true">
+          connecting…
+        </div>
+      );
     case "unreachable":
       return (
         <div style={{ padding: 24, color: "var(--bad)", display: "grid", gap: 10, maxWidth: 520 }}>
@@ -213,8 +260,102 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
         </Screen>
       );
     case "in":
-      return <>{children(stage.me)}</>;
+      return (
+        <>
+          {/* Keyed by whom: someone else signing in over it gets an editor of their own. */}
+          <Fragment key={stage.me.name}>{children(stage.me)}</Fragment>
+          {stage.ended && <SignInAgain me={stage.me} oidc={oidc} onIn={(me) => setStage({ kind: "in", me })} />}
+        </>
+      );
+    case "popup":
+      return <div style={{ padding: 24, color: "var(--muted)" }}>Signed in: the editor that asked goes on. This window can be closed.</div>;
   }
+}
+
+/** Over an editor whose sign-in ended: sign in again, as on the sign-in screen, the editor kept
+ *  beneath, unseen and out of reach until then. Through the provider, in a pop-up. */
+function SignInAgain({ me, oidc, onIn }: { me: Me; oidc: AuthConfig | null; onIn: (me: Me) => void }) {
+  const [name, setName] = useState(me.name);
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const box = useRef<HTMLDivElement>(null);
+  useFocusTrap(box);
+  const back = useCallback(async () => {
+    const who = await whoAmI();
+    onIn({ name: who.name, kind: who.kind, role: who.role });
+  }, [onIn]);
+  // The pop-up this opened kept the provider's token: take it, told by the pop-up or, when the
+  // provider's page cut it from this one, seen in the browser's storage. Only once it is opened:
+  // another tab's sign-in is not this one's.
+  const popupOpen = useRef(false);
+  useEffect(() => {
+    const adopt = () => {
+      if (popupOpen.current && adoptSignIn()) back().catch((err: unknown) => setError(messageOf(err)));
+    };
+    const onMessage = (e: MessageEvent) => {
+      if (e.origin === location.origin && e.data === SIGNED_IN_MESSAGE) adopt();
+    };
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === SIGNED_IN_KEY && e.newValue) adopt();
+    };
+    window.addEventListener("message", onMessage);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [back]);
+  return (
+    <div ref={box} role="dialog" aria-modal="true" aria-label="sign in again" style={{ position: "fixed", inset: 0, zIndex: 10000, overflow: "auto", background: "var(--bg)" }}>
+      <Screen
+        title="sign in"
+        lead={
+          <>
+            Your sign-in ended: signed out elsewhere, or it expired. Sign in again to go on: your open flows, and what isn&apos;t saved in them, are kept. Signing in as
+            someone else closes them.
+          </>
+        }
+        error={error}
+        onSubmit={async () => {
+          try {
+            await signInWith(name, password);
+            setPassword("");
+            await back();
+          } catch (e) {
+            setError(messageOf(e));
+          }
+        }}
+      >
+        <Field label="name" value={name} onChange={setName} autoComplete="username" />
+        <Field label="password" value={password} onChange={setPassword} type="password" autoComplete="current-password" />
+        {oidc && (
+          <button
+            type="button"
+            style={quiet}
+            onClick={() =>
+              void startSignIn(oidc, { popup: true }).then((opened) => {
+                popupOpen.current ||= opened;
+                if (!opened) setError("The browser blocked the sign-in window: allow pop-ups from this page, and sign in through it again.");
+              })
+            }
+          >
+            sign in through {new URL(oidc.issuer).host}
+          </button>
+        )}
+      </Screen>
+    </div>
+  );
+}
+
+/** Sign out here, asked first while open flows have changes not saved: signing out closes them. */
+export function useSignOut(): () => Promise<void> {
+  const dialog = useDialog();
+  return useCallback(async () => {
+    const n = unsavedFlows();
+    const asked = `Sign out? ${n === 1 ? "An open flow has changes" : `${n} open flows have changes`} not saved: signing out closes ${n === 1 ? "it" : "them"}, and they are lost.`;
+    if (n > 0 && !(await dialog.confirm(asked, "Sign out"))) return;
+    await signOutHere();
+  }, [dialog]);
 }
 
 /** A name's initials, for the avatar: the first letters of its first two words, or a one-word
@@ -274,6 +415,7 @@ const hostOf = (url: string) => {
  *  their password changed, Getting started, or signing out. Each button has a letter. */
 export function AccountDialog({ me, onStart, onClose }: { me: Me; onStart: () => void; onClose: () => void }) {
   const dialog = useDialog();
+  const leave = useSignOut();
   const box = useRef<HTMLDivElement>(null);
   useFocusTrap(box);
   const [who, setWho] = useState<{ display?: string | null; email?: string | null; owner?: string | null; kind?: Kind } | null>(null);
@@ -295,10 +437,14 @@ export function AccountDialog({ me, onStart, onClose }: { me: Me; onStart: () =>
   const kind = who?.kind ?? me.kind;
   const change = async () => {
     onClose();
-    const current = await dialog.prompt("Your current password:");
+    const current = await dialog.secret("Your current password:", "current-password");
     if (!current) return;
-    const next = await dialog.prompt("A new password (at least 10 characters):");
+    // Typed unseen, so typed twice, as setting up and an invite ask it.
+    const next = await dialog.secret("A new password (at least 10 characters):", "new-password");
     if (!next) return;
+    const again = await dialog.secret("The new password again:", "new-password", "Change password");
+    if (again === null) return;
+    if (again !== next) return dialog.notice("Not changed: the two new passwords differ.");
     try {
       await changePassword(current, next);
       await dialog.notice("Your password is changed.");
@@ -316,7 +462,13 @@ export function AccountDialog({ me, onStart, onClose }: { me: Me; onStart: () =>
         onStart();
       },
     ],
-    ["Sign out", () => void signOutHere()],
+    [
+      "Sign out",
+      () => {
+        onClose();
+        void leave();
+      },
+    ],
   ];
   const letters = lettersOf(
     buttons.map(([label]) => label),

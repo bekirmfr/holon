@@ -467,6 +467,7 @@ fn fire_one_queue(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Depl
     println!("queue message [{slug}] {label}: {} effect(s) performed", run.performed.len());
     record_trigger(deployments, slug, false);
     if parked_any {
+        // Nobody waits on an answer: the server's output says so when it isn't saved.
         let _ = persist_deployments(deployments_path, deployments);
     }
     Some((held_for, failed))

@@ -17,7 +17,9 @@ use crate::secrets::SecretStore;
 
 /// The groups a dry run shows, in order: what starts it, what it is given, what it reaches
 /// outside, what it keeps, its limits, who may act on it.
-const GROUPS: [(&str, &str); 7] = [
+const GROUPS: [(&str, &str); 8] = [
+    // A deploy's handlers added, changed or removed (deploy.rs `code_rows`): no item of its own.
+    ("code", "Its handlers"),
     ("triggers", "What starts it"),
     ("resources", "Folders, databases and secrets"),
     ("outside", "What it reaches outside"),
@@ -126,11 +128,9 @@ pub(crate) struct Ask<'a> {
 /// What a secret's read does, with where the code sends it, as the approval says it: "read, and
 /// send it to https://hooks.slack.com; what is answered to it goes to https://api.example.com".
 fn read_sending(name: &str, sent: &BTreeMap<String, BTreeSet<String>>) -> String {
-    match sent.get(name).map(holon_author::describe::describe_sent_to) {
-        Some((Some(own), Some(answers))) => format!("read, and send it to {own}; what is answered to it goes to {answers}"),
-        Some((Some(own), None)) => format!("read, and send it to {own}"),
-        Some((None, Some(answers))) => format!("read; what is answered to it goes to {answers}"),
-        _ => "read".to_string(),
+    match sent.get(name) {
+        Some(to) => format!("read{}", holon_author::describe::describe_sent_to(to).said_after_read()),
+        None => "read".to_string(),
     }
 }
 
@@ -293,21 +293,48 @@ pub(crate) fn with_restore(touches: &mut Value, since: &[LogEntry], state: &Valu
     }
 }
 
+/// A deployment's settings, now and as a version would make them: each pair `[now, then]`.
+pub(crate) struct Settings<'a> {
+    /// The sites whose pages it answers.
+    pub(crate) browsers: [&'a [String]; 2],
+    /// The keys it keeps out of its records (`taint`), beside those every flow does.
+    pub(crate) taint: [&'a [String]; 2],
+    /// The port its routes answer on.
+    pub(crate) port: [Option<u16>; 2],
+    /// Each handler's log level, by its label, as its code says it.
+    pub(crate) logs: [&'a BTreeMap<String, holon_core::LogLevel>; 2],
+}
+
 /// The deploy settings that differ between the version deployed now and the one a dry run would
-/// deploy, each pair `[now, then]`: the sites whose pages it answers, and the keys it keeps out of
-/// its records (`taint`), beside those every flow does.
-pub(crate) fn settings(browsers: [&[String]; 2], taint: [&[String]; 2]) -> Value {
+/// deploy, each `{ name, now, then }`: the sites whose pages it answers, the keys it keeps out of
+/// its records, the port it answers on, and the log level of each handler both have (one added or
+/// removed is in its code). Its tags and limits are rows of what it touches.
+pub(crate) fn settings(s: Settings) -> Value {
     let said = |b: &[String], none: &str| if b.is_empty() { none.to_string() } else { b.join(" ") };
     let mut out = vec![];
-    if let [now, then] = browsers
+    if let [now, then] = s.browsers
         && now != then
     {
         out.push(json!({ "name": "answers pages from", "now": said(now, "none"), "then": said(then, "none") }));
     }
-    if let [now, then] = taint
+    if let [now, then] = s.taint
         && now != then
     {
         out.push(json!({ "name": "keeps out of its records", "now": said(now, "none of its own"), "then": said(then, "none of its own") }));
+    }
+    if let [now, then] = s.port
+        && now != then
+    {
+        let port = |p: Option<u16>| p.map_or("none".to_string(), |p| p.to_string());
+        out.push(json!({ "name": "port", "now": port(now), "then": port(then) }));
+    }
+    let [now, then] = s.logs;
+    for (label, was) in now {
+        if let Some(is) = then.get(label)
+            && is != was
+        {
+            out.push(json!({ "name": format!("{label} logs its runs"), "now": was.word(), "then": is.word() }));
+        }
     }
     Value::Array(out)
 }
@@ -558,7 +585,8 @@ mod tests {
         };
         let since = [ran(&["HttpRequest(\"b.example\")", "StateWrite(\"count\")"]), ran(&["HttpRequest(\"b.example\")"])];
         with_restore(&mut rows, &since, &json!({ "changed": ["count"], "added": [], "removed": [] }));
-        let said = text(&lines(&rows, &settings([&[], &["https://shop.example".to_string()]], [&[], &[]])));
+        let (browsers, none) = (["https://shop.example".to_string()], BTreeMap::new());
+        let said = text(&lines(&rows, &settings(Settings { browsers: [&[], &browsers], taint: [&[], &[]], port: [None, None], logs: [&none, &none] })));
         assert_eq!(
             said,
             [

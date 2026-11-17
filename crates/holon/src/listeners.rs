@@ -193,7 +193,7 @@ fn serve_flow(
             let inputs = [Some(req)];
             let mut run = fire_with_state(endpoint, &inputs, &resolver, store, state.as_ref(), sourced, &permit, false, &secrets, &mut waits, None);
             parked = durable::park_if_waiting(deployments, store, slug, &matched.endpoint, "request", Some(route.to_string()), level, &inputs, sourced, &run, &waits);
-            answer_derived = run.secret_fed.derives_output(0);
+            answer_derived = run.withholds_output(0);
             // An answer carrying a secret goes to the caller only where a person approved it
             // (`SecretAnswer("name")`): one the graph says may carry it, or one that holds its
             // value as it is (a far side echoing a header back, which the graph can't see), in a
@@ -342,8 +342,9 @@ fn serve_flow(
     }
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.
-    if parked_any {
-        let _ = persist_deployments(deployments_path, deployments);
+    // One that waits, not saved, isn't answered with its token: after a restart it isn't waiting.
+    if parked_any && let Err(e) = persist_deployments(deployments_path, deployments) {
+        answer = data::DataResponse::json_error(500, &format!("the request ran, and its run waits, but {e}: after a restart it isn't waiting"));
     }
     // The route's own handler has answered; now the waiting run continues.
     if let Some((claimed, name, event, _)) = resume {
@@ -426,28 +427,33 @@ pub(crate) fn served_status(status: u16, file: &data::Served, if_none_match: Opt
 /// on the next call.
 pub(crate) fn sync_listeners(state: &AppState) {
     let Some(listeners) = &state.listeners else { return };
-    let wanted: BTreeMap<String, u16> = state
+    // Each with its share's size as its grant says (`max_concurrent_runs`): a listener's share
+    // reads it again only when the table is free (dataplane::Share).
+    let wanted: BTreeMap<String, (u16, usize)> = state
         .deployments
         .lock()
         .unwrap()
         .iter()
         .filter(|(_, d)| d.life.status != Status::Stopped)
-        .filter_map(|(slug, d)| d.server.as_ref().and_then(|s| s.port).map(|port| (slug.clone(), port)))
+        .filter_map(|(slug, d)| {
+            let most = usize::try_from(d.permit.durable.max_concurrent_runs).unwrap_or(usize::MAX);
+            d.server.as_ref().and_then(|s| s.port).map(|port| (slug.clone(), (port, most)))
+        })
         .collect();
     let mut running = listeners.lock().unwrap();
     running.retain(|slug, (port, stop)| {
-        let keep = wanted.get(slug) == Some(port);
+        let keep = wanted.get(slug).map(|(wanted, _)| *wanted) == Some(*port);
         if !keep {
             let _ = stop.send(true);
         }
         keep
     });
     let mut failed = BTreeMap::new();
-    for (slug, port) in wanted {
+    for (slug, (port, most)) in wanted {
         if running.contains_key(&slug) {
             continue;
         }
-        match dataplane::start_listener(state, &slug, port) {
+        match dataplane::start_listener(state, &slug, port, most) {
             Ok(stop) => {
                 running.insert(slug, (port, stop));
             }

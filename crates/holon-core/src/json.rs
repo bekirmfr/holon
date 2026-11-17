@@ -55,6 +55,11 @@ impl Parser<'_> {
         if self.made > crate::MAX_ITEMS {
             return None;
         }
+        // A parse makes about 80 times its text in values, all in one step: it asks whether the
+        // round may make more as it goes, not only once it is done (audit R16).
+        if self.made.is_multiple_of(crate::memory::ASK_EVERY) && !crate::memory::room() {
+            return None;
+        }
         self.ws();
         match *self.s.get(self.i)? {
             b'{' => self.object(depth + 1),
@@ -466,7 +471,14 @@ fn write_string(s: &str, out: &mut String) {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            // Written in place: a `format!` for each was 100 ns a character, a text of them 20 times
+            // what its length is charged (a step for each 128 bytes, performance.md).
+            c if (c as u32) < 0x20 => {
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                out.push_str("\\u00");
+                out.push(char::from(HEX[c as usize >> 4]));
+                out.push(char::from(HEX[c as usize & 0xf]));
+            }
             c => out.push(c),
         }
     }

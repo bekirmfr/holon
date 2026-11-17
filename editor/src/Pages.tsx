@@ -2,7 +2,8 @@
 // activity (home's pane). The pages themselves are files of their own (FlowsPage, LibraryPage…).
 
 import { useEffect, useState } from "react";
-import { getActivity, type ActivityEntry } from "./server";
+import { getActivity, whyUnread, type ActivityEntry } from "./server";
+import { Unread } from "./ui/Unread";
 import { shortIds } from "./shortIds";
 import { flowAddressable, type Route } from "./routes";
 
@@ -97,11 +98,17 @@ export function shownAt(r: Route): Route | null {
 /** `bare`: without its own heading (inside a home pane, which has one). */
 export function ActivityList({ version, bare = false }: { version: string; bare?: boolean }) {
   const [entries, setEntries] = useState<ActivityEntry[] | null>(null);
+  const [unread, setUnread] = useState("");
   useEffect(() => {
-    getActivity()
-      .then(setEntries)
-      .catch(() => setEntries(null));
+    getActivity().then(
+      (e) => {
+        setEntries(e);
+        setUnread("");
+      },
+      (e: unknown) => setUnread(whyUnread(e)),
+    );
   }, [version]);
+  if (unread && !entries) return <Unread what="what was done on the server" why={unread} />;
   if (!entries || entries.length === 0) return bare ? <span style={{ color: "var(--faint)", fontSize: 11 }}>nothing yet</span> : null;
   return (
     <div style={{ marginTop: bare ? 0 : 20 }}>

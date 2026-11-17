@@ -39,9 +39,12 @@ arrives, `stream: true`, or piped to a channel, `updates.pipe(api.post(…))`) (
   metadata addresses (`is_private`: an IPv4 address inside IPv4-mapped, IPv4-compatible, 6to4 and NAT64 forms
   judged as itself, Teredo refused whole) are filtered from what DNS
   returned, in the client's resolver, so the connection uses only what passed (`blocked_address`).
+  `PrivateAddresses` lets the private ones through but never a cloud's metadata service
+  (`is_metadata`: 169.254.0.0/16, `100.100.100.200`, `fd00:ec2::254`, in the same IPv6 forms, and
+  the local-use NAT64 prefix and Teredo whole, as they may hide one).
 - **Redirects** are followed by hand, up to `max_redirects`, each hop checked again. To another
-  host only `CARRIED_ELSEWHERE` (`content-type`, `accept`, `accept-language`, `user-agent`) goes
-  along; a 303, or a 301/302 after a POST, becomes a GET without a body; one that would resend a
+  host none of the flow's headers go along (any may hold a secret: R33 found one put in
+  `user-agent` carried there); a 303, or a 301/302 after a POST, becomes a GET without a body; one that would resend a
   body to another host isn't followed (`blocked_redirect`).
 - **The answer** is `{status, headers, body}` within `max_header_bytes` and `max_response_bytes`;
   `body` is text. A file body is streamed from its folder, hashed as it goes, and must still match
@@ -81,8 +84,8 @@ arrives, `stream: true`, or piped to a channel, `updates.pipe(api.post(…))`) (
 - **HTTP(S) only**, request and answer within one run. Connections that outlive a run (a feed, a
   session, a socket) aren't covered ([host capabilities](../../L4s/host-capabilities-L4.md) §5.9).
 - **The body is text.** A response body is read as UTF-8 with invalid bytes replaced
-  (`String::from_utf8_lossy`): a binary answer is mangled. There is no bytes value (§1 there). A
-  binary file can be *sent*, by handle.
+  (`String::from_utf8_lossy`): a binary answer is mangled. A response body is never a bytes value,
+  though the language has one. A binary file can be *sent*, by handle.
 - **No connection reuse.** `send` builds a `ureq` agent per request, so each call connects (and
   shakes hands) afresh; a round runs a thread per request. Nothing measures what that costs.
 - **No retry.** A failed call is answered once; the flow, or the caller, tries again.

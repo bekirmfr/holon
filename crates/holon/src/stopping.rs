@@ -280,7 +280,8 @@ mod tests {
         let said = Arc::new(crate::sync::Mutex::new(vec![]));
         let heard = Arc::clone(&said);
         let drained = std::thread::spawn(move || drain(&DOOR, Duration::from_millis(20), |n| heard.lock().unwrap().push(n)));
-        std::thread::sleep(Duration::from_millis(200));
+        // Once it has said how many are left (not after a sleep it may not have run in).
+        assert!(crate::tests::soon(|| !said.lock().unwrap().is_empty()), "it says how many are left while it waits");
         assert!(!drained.is_finished());
         drop(running);
         drained.join().unwrap();

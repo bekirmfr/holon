@@ -10,12 +10,19 @@
 // a notice (something to read, with one button) takes its button's letter, Enter and Esc alike.
 // Tab and Shift+Tab go round the dialog's own controls: the focus stays in it while it is open
 // (useFocusTrap, as every modal's).
+//
+// A question takes no answer but no until it has been shown `ARM_MS` with no key pressed: one that
+// opens while you type (a deploy's consent, read a moment after Ctrl+D, which sits beside Ctrl+S)
+// can't be answered by the Enter or y meant for the page. A key or a click on an answer while it
+// waits is kept from it and starts the wait again; its answers look disabled until then. No (Esc,
+// n, Cancel, a click beside it) is taken at once, and a held key never answers (R43).
 
 import { Kbd } from "./ui/Kbd";
 import { keyOf, keysFor } from "./ui/Keys";
 import { useFocusTrap } from "./ui/focusTrap";
+import { SecretLines } from "./SecretSaid";
 import { lettersOf } from "./keymap";
-import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 /** What a prompt takes for its answer: by default a line, left empty answering null as Cancel
  *  does; `optional`, a line it may be answered without (a reason one may give); `required`, a line
@@ -23,9 +30,13 @@ import { createContext, useCallback, useContext, useEffect, useId, useRef, useSt
  *  is typed, and `required` says why under the field. */
 export type Answer = "optional" | { required: string };
 
+/** How a secret's field is filled by a password manager: the account's password, a new one, or
+ *  neither (a key). */
+export type Secret = "current-password" | "new-password" | "off";
+
 type Ask =
   | { kind: "confirm"; message: string; action: string; body?: ReactNode; resolve: (ok: boolean) => void }
-  | { kind: "prompt"; message: string; initial: string; action: string; answer?: Answer; resolve: (value: string | null) => void }
+  | { kind: "prompt"; message: string; initial: string; action: string; answer?: Answer; secret?: Secret; resolve: (value: string | null) => void }
   | { kind: "choose"; message: string; answers: string[]; resolve: (at: number | null) => void }
   | { kind: "notice"; message: string; action: string; body?: ReactNode; resolve: () => void };
 
@@ -37,6 +48,10 @@ type Dialogs = {
    *  (`answer` says otherwise: an optional reason, or one that is required). `action` labels the
    *  button that answers. */
   prompt: (message: string, initial?: string, action?: string, answer?: Answer) => Promise<string | null>;
+  /** Ask for a secret (a password, a key): typed into a field that hides it, which `autoComplete`
+   *  says how a password manager fills; resolves it as typed, or null if cancelled or left empty.
+   *  Every question for one is asked so, never with `prompt` (Dialog.test.tsx). */
+  secret: (message: string, autoComplete: Secret, action?: string) => Promise<string | null>;
   /** Ask a question with several answers, the last of them the highlighted one (Enter); resolves
    *  the answer's index, or null if cancelled (Esc, or a click beside it). */
   choose: (message: string, answers: string[]) => Promise<number | null>;
@@ -58,7 +73,21 @@ export function useOptionalDialog(): Dialogs | null {
   return useContext(DialogContext);
 }
 
-export function DialogProvider({ children }: { children: ReactNode }) {
+/** How long a question waits, once shown and after each key pressed while it waits, before it takes
+ *  an answer other than no: the double-click interval, as Chrome's guard on its own prompts has it
+ *  (InputEventActivationProtector). Long enough to be past the keys of a word being typed, short
+ *  enough not to be noticed by whoever reads the question first. */
+export const ARM_MS = 500;
+
+/** Why its answers are dimmed while a question waits, as a screen reader says it (each answer is
+ *  described by it then): what the dimming says to whoever sees it. */
+export const WAIT_SAID = "Not yet: it takes an answer a moment after it shows, and after the last key pressed.";
+/** Said aloud (a polite status) when an answer comes while it waits, and isn't taken. */
+export const TOO_SOON = "Too soon: not taken. Answer again in a moment.";
+
+/** `armMs`: how long a question waits before it takes an answer (`ARM_MS`); a test of something
+ *  else gives 0, and its questions take one at once. */
+export function DialogProvider({ children, armMs = ARM_MS }: { children: ReactNode; armMs?: number }) {
   const [ask, setAsk] = useState<Ask | null>(null);
   const [text, setText] = useState("");
   const box = useRef<HTMLDivElement>(null);
@@ -66,19 +95,63 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const cancel = useRef<HTMLButtonElement>(null);
   const ok = useRef<HTMLButtonElement>(null);
   const question = useId();
+  const waitNote = useId();
+  // Said to a screen reader when an answer comes too soon: what it saw dimmed, in words.
+  const [tooSoon, setTooSoon] = useState("");
+
+  // Whether the question takes an answer yet: `armed` for what it shows, `armedNow` for the key or
+  // click that comes before the render does.
+  const [armed, setArmed] = useState(true);
+  const armedNow = useRef(true);
+  const arming = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Wait `armMs` again before the question takes an answer. */
+  const wait = useCallback(() => {
+    if (arming.current !== null) clearTimeout(arming.current);
+    arming.current = null;
+    if (armMs <= 0) return;
+    armedNow.current = false;
+    setArmed(false);
+    arming.current = setTimeout(() => {
+      arming.current = null;
+      armedNow.current = true;
+      setArmed(true);
+    }, armMs);
+  }, [armMs]);
+  useEffect(() => () => {
+    if (arming.current !== null) clearTimeout(arming.current);
+  }, []);
+  /** Show a question, waiting before it takes an answer. */
+  const show = useCallback(
+    (a: Ask) => {
+      setAsk(a);
+      setTooSoon("");
+      wait();
+    },
+    [wait],
+  );
 
   const confirm = useCallback(
-    (message: string, action = "OK", body?: ReactNode) => new Promise<boolean>((resolve) => setAsk({ kind: "confirm", message, action, body, resolve })),
-    [],
+    (message: string, action = "OK", body?: ReactNode) => new Promise<boolean>((resolve) => show({ kind: "confirm", message, action, body, resolve })),
+    [show],
   );
-  const prompt = useCallback((message: string, initial = "", action = "OK", answer?: Answer) => {
-    setText(initial);
-    return new Promise<string | null>((resolve) => setAsk({ kind: "prompt", message, initial, action, answer, resolve }));
-  }, []);
-  const choose = useCallback((message: string, answers: string[]) => new Promise<number | null>((resolve) => setAsk({ kind: "choose", message, answers, resolve })), []);
+  const prompt = useCallback(
+    (message: string, initial = "", action = "OK", answer?: Answer) => {
+      setText(initial);
+      return new Promise<string | null>((resolve) => show({ kind: "prompt", message, initial, action, answer, resolve }));
+    },
+    [show],
+  );
+  const secret = useCallback(
+    (message: string, autoComplete: Secret, action = "OK") => {
+      setText("");
+      return new Promise<string | null>((resolve) => show({ kind: "prompt", message, initial: "", action, secret: autoComplete, resolve }));
+    },
+    [show],
+  );
+  const choose = useCallback((message: string, answers: string[]) => new Promise<number | null>((resolve) => show({ kind: "choose", message, answers, resolve })), [show]);
   const notice = useCallback(
-    (message: string, action = "OK", body?: ReactNode) => new Promise<void>((resolve) => setAsk({ kind: "notice", message, action, body, resolve })),
-    [],
+    (message: string, action = "OK", body?: ReactNode) => new Promise<void>((resolve) => show({ kind: "notice", message, action, body, resolve })),
+    [show],
   );
 
   // Why it can't be answered yet: a required line, still empty.
@@ -89,13 +162,24 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     (accepted: boolean | number) => {
       if (!ask) return;
       if (accepted !== false && blocked) return;
+      // Too soon: kept from it, and it waits again (a click on an answer, or Space on it, comes
+      // here as Enter and the letters do).
+      if (accepted !== false && !armedNow.current) {
+        setTooSoon((was) => (was === TOO_SOON ? `${TOO_SOON}\u00a0` : TOO_SOON));
+        return wait();
+      }
       if (ask.kind === "notice") ask.resolve();
       else if (ask.kind === "confirm") ask.resolve(accepted !== false);
       else if (ask.kind === "choose") ask.resolve(accepted === false ? null : accepted === true ? ask.answers.length - 1 : accepted);
-      else ask.resolve(accepted !== false && (ask.answer !== undefined || text.trim() !== "") ? text.trim() : null);
+      else {
+        // A secret as typed, its spaces its own; and not kept once answered.
+        const typed = ask.secret ? text : text.trim();
+        ask.resolve(accepted !== false && (ask.answer !== undefined || typed !== "") ? typed : null);
+        if (ask.secret) setText("");
+      }
       setAsk(null);
     },
-    [ask, text, blocked],
+    [ask, text, blocked, wait],
   );
 
   // A choice's answers each take a letter, as a notice's button does; a yes/no question takes y and n.
@@ -130,6 +214,8 @@ export function DialogProvider({ children }: { children: ReactNode }) {
       const act = letter >= 0 ? () => close(letter) : keys[k];
       if (!act) return;
       e.preventDefault();
+      // A key held down from before is not an answer; Esc's no still is.
+      if (e.repeat && e.key !== "Escape") return;
       act(e);
     };
     // Capturing, and kept from the page: a key that answers the question is not also one of the
@@ -138,6 +224,11 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     // answers. Tab is the focus trap's.
     const guard = (e: KeyboardEvent) => {
       if (e.key === "Tab") return;
+      // While it waits, a key pressed starts the wait again: someone still typing hasn't read it.
+      // Not the letters typed into the prompt's own field, which may be its answer's (an Enter
+      // there still waits).
+      const typing = e.target === input.current && e.key !== "Enter";
+      if (!armedNow.current && !typing && e.key !== "Escape") wait();
       if (e.target instanceof Element && e.target.closest("[data-own-keys]")) {
         if (e.key === "Escape") onKey(e);
         return;
@@ -147,7 +238,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     };
     window.addEventListener("keydown", guard, true);
     return () => window.removeEventListener("keydown", guard, true);
-  }, [ask, close]);
+  }, [ask, close, wait]);
 
   const button = {
     font: "inherit",
@@ -156,9 +247,15 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     borderRadius: 3,
     cursor: "pointer",
   } as const;
+  // An answer while the question waits: shown disabled, and kept from it (`close`). It keeps the
+  // focus it starts with, so Enter can answer once the wait is over.
+  // Described by why, for whoever hears it rather than sees it dimmed.
+  const waiting: { "aria-disabled"?: true; "aria-describedby"?: string; style?: CSSProperties } = armed
+    ? {}
+    : { "aria-disabled": true, "aria-describedby": waitNote, style: { opacity: 0.5, cursor: "default" } };
 
   return (
-    <DialogContext.Provider value={{ confirm, prompt, choose, notice }}>
+    <DialogContext.Provider value={{ confirm, prompt, secret, choose, notice }}>
       {children}
       {ask && (
         <div
@@ -194,11 +291,23 @@ export function DialogProvider({ children }: { children: ReactNode }) {
               gap: 12,
             }}
           >
-            <div id={question} style={{ whiteSpace: "pre-line", maxHeight: (ask.kind === "confirm" || ask.kind === "notice") && ask.body ? "30vh" : "60vh", overflowY: "auto", flexShrink: 0 }}>{ask.message}</div>
+            <div id={question} style={{ whiteSpace: "pre-line", maxHeight: (ask.kind === "confirm" || ask.kind === "notice") && ask.body ? "30vh" : "60vh", overflowY: "auto", flexShrink: 0 }}>
+              <SecretLines text={ask.message} />
+            </div>
+            {/* For a screen reader: why its answers are dimmed, and that one came too soon. */}
+            <span id={waitNote} hidden>
+              {WAIT_SAID}
+            </span>
+            <span role="status" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clipPath: "inset(50%)", whiteSpace: "nowrap" }}>
+              {tooSoon}
+            </span>
             {(ask.kind === "confirm" || ask.kind === "notice") && ask.body && <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>{ask.body}</div>}
             {ask.kind === "prompt" && (
               <input
                 ref={input}
+                type={ask.secret ? "password" : "text"}
+                autoComplete={ask.secret}
+                spellCheck={ask.secret ? false : undefined}
                 value={text}
                 onChange={(e) => setText(e.target.value)}
                 aria-required={required !== null}
@@ -224,7 +333,9 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                   ref={ok}
                   onClick={() => close(true)}
                   aria-keyshortcuts={[letters[0]?.toUpperCase(), "Enter", "Escape"].filter(Boolean).join(" ")}
-                  style={{ ...button, color: "var(--accent-ink)", background: "var(--accent)", border: "none" }}
+                  aria-disabled={waiting["aria-disabled"]}
+                  aria-describedby={waiting["aria-describedby"]}
+                  style={{ ...button, color: "var(--accent-ink)", background: "var(--accent)", border: "none", ...waiting.style }}
                 >
                   {letters[0] && <Kbd k={letters[0]} />}
                   {ask.action}
@@ -241,11 +352,14 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                       data-answer={i}
                       onClick={() => close(i)}
                       aria-keyshortcuts={[letters[i]?.toUpperCase(), last ? "Enter" : ""].filter(Boolean).join(" ") || undefined}
-                      style={
-                        last
+                      aria-disabled={waiting["aria-disabled"]}
+                      aria-describedby={waiting["aria-describedby"]}
+                      style={{
+                        ...(last
                           ? { ...button, color: "var(--accent-ink)", background: "var(--accent)", border: "none" }
-                          : { ...button, color: "var(--muted)", background: "transparent", border: "1px solid var(--border)" }
-                      }
+                          : { ...button, color: "var(--muted)", background: "transparent", border: "1px solid var(--border)" }),
+                        ...waiting.style,
+                      }}
                     >
                       {letters[i] && <Kbd k={letters[i]} />}
                       {answer}
@@ -270,7 +384,9 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                 disabled={blocked}
                 title={blocked ? (required ?? undefined) : undefined}
                 aria-keyshortcuts={ask.kind === "confirm" ? "Y Enter" : "Enter"}
-                style={{ ...button, color: "var(--accent-ink)", background: "var(--accent)", border: "none", ...(blocked ? { opacity: 0.5, cursor: "not-allowed" } : {}) }}
+                aria-disabled={blocked ? undefined : waiting["aria-disabled"]}
+                aria-describedby={blocked ? undefined : waiting["aria-describedby"]}
+                style={{ ...button, color: "var(--accent-ink)", background: "var(--accent)", border: "none", ...waiting.style, ...(blocked ? { opacity: 0.5, cursor: "not-allowed" } : {}) }}
               >
                 {ask.kind === "confirm" && <Kbd k="y" />}
                 {ask.action}

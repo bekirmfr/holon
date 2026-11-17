@@ -52,30 +52,108 @@ pub(crate) fn is_valid_slug(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// What the slug's deployment holds now, if it is deployed.
+/// The longest a new deployment's slug may be: it names its files (`<slug>.jsonl`,
+/// `<slug>.events.jsonl`, its state head, its backups' folder), and a path has a limit.
+pub(crate) const MAX_SLUG: usize = 64;
+
+/// Why a deployment can't be made under `slug`, which none in `deployed` has yet: nothing, or
+/// what to answer. A slug names files, and on Windows and on macOS as it comes two names that
+/// differ only by case are one file: `pay` and `Pay` shared a log and a state head, so after a
+/// restart one read the other's state, and removing one removed the other's log. On Windows a
+/// device's name (`nul`, `con`, `com1`) is no file at all. One already deployed is never refused
+/// here: its next version deploys under the name it has.
+pub(crate) fn new_slug_refusal<'a>(deployed: impl Iterator<Item = &'a String>, slug: &str) -> Option<(u16, String)> {
+    const DEVICES: &[&str] = &[
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6",
+        "lpt7", "lpt8", "lpt9",
+    ];
+    let mut alike = None;
+    for other in deployed {
+        if other == slug {
+            return None;
+        }
+        if other.eq_ignore_ascii_case(slug) {
+            alike = Some(other);
+        }
+    }
+    if let Some(other) = alike {
+        return Some((409, format!("deployment {other:?} is there already, and {slug:?} differs from it only by case: their files would be the same ones where a file's name doesn't tell case apart")));
+    }
+    if slug.len() > MAX_SLUG {
+        return Some((400, format!("a slug is at most {MAX_SLUG} characters: it names the deployment's files")));
+    }
+    if DEVICES.iter().any(|d| d.eq_ignore_ascii_case(slug)) {
+        return Some((400, format!("{slug:?} is a device's name on Windows, where no file can have it: a slug names the deployment's files")));
+    }
+    None
+}
+
+/// What the slug's deployment holds now, if it is deployed: what a deploy is worked out against,
+/// read before the lock that puts the version in, and asked again under it ([`Previous::still`]).
 #[derive(Default)]
 struct Previous {
     grant: Option<Grant>,
+    /// How many versions it has: a deploy or a restore adds one.
+    versions: usize,
+    /// Whether a person let an agent's versions deploy without them, and turned proposing off.
+    agents_deploy_at_once: bool,
+    agents_propose_off: bool,
     unit: Option<Hash>,
     browsers: Vec<String>,
     /// The keys its server taints.
     taint: Vec<String>,
     /// Its server's handlers, by label: each one's unit.
     handlers: BTreeMap<String, Hash>,
+    /// And each one's log level, as its code says it.
+    logs: BTreeMap<String, holon_core::LogLevel>,
+    /// The port its routes answer on.
+    port: Option<u16>,
 }
 
 fn previous_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Previous {
     match deployments.lock().unwrap().get(slug) {
         Some(d) => Previous {
             grant: Some(d.grant.clone()),
+            versions: d.versions.len(),
+            agents_deploy_at_once: d.agents_deploy_at_once,
+            agents_propose_off: d.agents_propose_off,
             unit: Some(d.unit),
             browsers: d.browsers.clone(),
             taint: d.server.as_ref().map(|s| s.taint.clone()).unwrap_or_default(),
             handlers: d.server.iter().flat_map(|s| s.handlers()).map(|(label, _, h)| (label, h)).collect(),
+            logs: d.server.iter().flat_map(|s| s.handlers()).map(|(label, log, _)| (label, log)).collect(),
+            port: d.server.as_ref().and_then(|s| s.port),
         },
         None => Previous::default(),
     }
 }
+
+impl Previous {
+    /// Whether `now`, the slug's deployment under the lock that puts a version in, is still the one
+    /// this was read from: its grant (a revoke, a limit lowered), its versions and its settings as
+    /// they were. A deploy worked out from a copy a person changed meanwhile would undo the change
+    /// with the grant it builds (R25): it is worked out again instead.
+    fn still(&self, now: Option<&Deployment>) -> bool {
+        match now {
+            None => self.unit.is_none(),
+            Some(d) => {
+                self.unit == Some(d.unit)
+                    && self.versions == d.versions.len()
+                    && self.grant.as_ref() == Some(&d.grant)
+                    && (self.agents_deploy_at_once, self.agents_propose_off) == (d.agents_deploy_at_once, d.agents_propose_off)
+            }
+        }
+    }
+}
+
+/// A held deploy's two ends: it says it is there, then waits to be let go.
+#[cfg(test)]
+pub(crate) type Hold = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+
+/// A test's hold on a deploy of a slug, between working out what it needs and putting it in
+/// (tests/meanwhile.rs).
+#[cfg(test)]
+pub(crate) static HELD: std::sync::LazyLock<Mutex<BTreeMap<String, Hold>>> = std::sync::LazyLock::new(Default::default);
 
 /// The origins `browsers` answers pages from that the slug's deployment doesn't yet, as items a
 /// person approves for an agent (`Browser("https://app.example")`): a page from there, in its
@@ -245,6 +323,11 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     if !is_valid_slug(&body.slug) {
         return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
     }
+    // A new slug's files are its own: said before the unit is read, and held again where it is
+    // inserted, under the lock.
+    if let Some((code, why)) = new_slug_refusal(deployments.lock().unwrap().keys(), &body.slug) {
+        return err(code, why);
+    }
     // The route asked about every flow at once; this is the flow, as it is deployed now, if it
     // is, and below, as this version would make it (D22). A restore was asked about it.
     let tagged_now = tags_now(deployments, &body.slug);
@@ -289,6 +372,9 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     let asks = if restored_from.is_some() { Action::FlowRestore } else { Action::FlowPropose };
     if let Err(refusal) = as_it_would_be(who, asks, &body.slug, tagged_now.as_deref(), &server.tags) {
         return refusal.response();
+    }
+    if let Some(gives) = state.access.accounts().and_then(|a| tag_gives(a, &body.slug, tagged_now.as_deref(), &server.tags)) {
+        return err(409, gives);
     }
     let approves = may_approve(who, &body.slug, tagged_now.is_some(), &server.tags);
     if !approves && !body.acknowledge.is_empty() {
@@ -354,6 +440,11 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     // without asking, and everything else must be acknowledged. A redeploy asks only for what
     // the previous grant didn't already cover.
     let manifest = Manifest::new(caps.iter(), body.requirements.clone().of_unit(root_unit, &resolver));
+    // Two waits named alike (a canvas can build them; the language refuses them): the second
+    // would take the first's decision, never asking what a review shows it asks.
+    if let Some(why) = holon_core::approval::named_apart(manifest.items().iter().map(String::as_str)) {
+        return err(400, why);
+    }
     let seen = Arc::new(folders::Scoped::new(Arc::clone(folders), &body.slug));
     if let Some(why) = policy
         .refuses(&manifest)
@@ -377,16 +468,28 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
         needed.extend(borrowed.into_iter().map(|(item, _)| item));
     }
     let missing: Vec<String> = needed.into_iter().filter(|item| !body.acknowledge.contains(item)).collect();
-    // An agent approves nothing: what needs a person waits for one, as a proposal, unless the
-    // host takes none.
-    if !approves && !missing.is_empty() {
+    // An agent approves nothing: each version it deploys waits for a person, as a proposal, what
+    // it asks for or not, unless the host takes none; so does a service's that doesn't approve.
+    // A person who may approve its deploys may let a deployed flow's take theirs at once (its
+    // settings, where the host lets them): then only what asks for more waits. A person who
+    // doesn't approve its deploys wrote what they deploy: what asks for more waits for someone
+    // who does, the rest deploys.
+    let proposed = !approves && (!missing.is_empty() || waits_for_a_person(who, policy, &previous));
+    // What a person reviews is the document: a proposal's must be what it deploys, and so must a
+    // program's, which the next review is read against.
+    if (proposed || matches!(who.kind, Some(crate::accounts::Kind::Agent | crate::accounts::Kind::Service)))
+        && let Err(refused) = document_is_the_unit(&body, unit_hash)
+    {
+        return refused;
+    }
+    if proposed {
         if !policy.agents_propose {
+            let needs = if missing.is_empty() { String::new() } else { format!(", and this one needs {}", missing.join(", ")) };
             return err(
                 403,
                 format!(
-                    "this host takes no proposals from agents (holon.toml: agents.propose = false), and this version of {:?} needs a person to approve: {}. A person deploys it",
-                    body.slug,
-                    missing.join(", ")
+                    "this host takes no proposals from agents (holon.toml: agents.propose = false): each version of {:?} an agent deploys waits for a person{needs}. A person deploys it",
+                    body.slug
                 ),
             );
         }
@@ -438,8 +541,29 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     let note = body.note.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(String::from);
     let version;
 
+    #[cfg(test)]
+    {
+        let held = HELD.lock().unwrap().remove(&body.slug);
+        if let Some((there, go)) = held {
+            let _ = there.send(());
+            let _ = go.recv_timeout(std::time::Duration::from_secs(10));
+        }
+    }
     {
         let mut deployments = deployments.lock().unwrap();
+        // What it needs, and whether it waits for a person, were worked out from the deployment
+        // as read before this lock: changed meanwhile (a revoke, a limit lowered, a setting turned,
+        // another version), the grant built from that copy would undo the change. Asked again.
+        if !previous.still(deployments.get(&body.slug)) {
+            return err(
+                409,
+                format!("{:?} changed while this deploy was worked out (its grant, its settings or another version): deploy again, and what it needs is asked anew", body.slug),
+            );
+        }
+        // Two deploys at once of slugs alike but for case both passed the look above.
+        if let Some((code, why)) = new_slug_refusal(deployments.keys(), &body.slug) {
+            return err(code, why);
+        }
         if let Some((other, _)) = deployments
             .iter()
             .find(|(other, d)| **other != body.slug && server.port.is_some() && d.server.as_ref().is_some_and(|o| o.port == server.port))
@@ -542,6 +666,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
         let parked = deployments.get(&body.slug).map(|old| old.parked.clone()).unwrap_or_default();
         // And whether agents may propose its versions is as a person left it.
         let agents_propose_off = deployments.get(&body.slug).is_some_and(|old| old.agents_propose_off);
+        let agents_deploy_at_once = deployments.get(&body.slug).is_some_and(|old| old.agents_deploy_at_once);
         let state = match carried {
             Some(arc) => Some(arc),
             None if is_state => Some(Arc::new(claims::StateCell::kept_at(State::new(), state_head_for(deployments_path, &body.slug)))),
@@ -581,6 +706,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
                 versions,
                 events,
                 agents_propose_off,
+                agents_deploy_at_once,
             },
         );
     }
@@ -594,9 +720,8 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     if approves {
         state.proposals.approved(&body.slug, &to_hex(&unit_hash), by);
     }
-
     if let Err(e) = saved {
-        return crate::persist::not_saved(&format!("the deploy of {:?}", body.slug), &e);
+        return err(500, format!("{:?} is deployed, but {e}: after a restart it is as it was before", body.slug));
     }
     Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, version })
 }
@@ -653,6 +778,58 @@ fn borrowed(deployments: &Mutex<BTreeMap<String, Deployment>>, items: &BTreeSet<
         .collect()
 }
 
+/// Whether `body`'s document, if it sends one, is what it deploys: its canvas builds the unit sent,
+/// and its `browsers` line is the sites sent. A person reviews a proposal's document (the text
+/// printed from it, its canvas), and the deployed one is what the next review is read against, so
+/// one that said something else than the unit would have them approve code they never read.
+fn document_is_the_unit(body: &DeployRequestBody, unit: Hash) -> Result<(), Response> {
+    let Some(document) = &body.document else { return Ok(()) };
+    let (built, browsers) = holon_author::agent::deploys_as(document).map_err(|e| err(400, format!("{e}: a person reads the document sent, so it must be the flow deployed")))?;
+    let sent = to_hex(&unit);
+    if built != sent {
+        return Err(err(
+            400,
+            format!("the document sent deploys as {}, not as the unit sent ({}): a person reads the document, so send the one the unit was built from", &built[..12], &sent[..12]),
+        ));
+    }
+    let (said, asked): (BTreeSet<&String>, BTreeSet<&String>) = (browsers.iter().collect(), body.browsers.iter().collect());
+    if said != asked {
+        let line = |set: &BTreeSet<&String>| if set.is_empty() { "none".to_string() } else { set.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ") };
+        return Err(err(400, format!("the document's browsers line ({}) isn't the browsers sent ({}): a person reads the document", line(&said), line(&asked))));
+    }
+    Ok(())
+}
+
+/// Its code beside the version deployed now, handler by handler, as dry-run rows in the group
+/// `code` (touches.rs): one added (`new`), one changed (its unit is another) and one removed
+/// (`gone`). None for a first deploy, all of whose code is new, nor for a handler as it is.
+fn code_rows(previous: &Previous, server: Option<&Server>) -> Vec<serde_json::Value> {
+    if previous.unit.is_none() {
+        return vec![];
+    }
+    let then: BTreeMap<String, Hash> = server.iter().flat_map(|s| s.handlers()).map(|(label, _, h)| (label, h)).collect();
+    let row = |name: &str, change: &str| serde_json::json!({ "group": "code", "kind": "handler", "name": name, "change": change, "uses": [], "ready": null, "has": null });
+    let mut rows = vec![];
+    for (label, h) in &then {
+        match previous.handlers.get(label) {
+            None => rows.push(row(label, "new")),
+            Some(was) if was != h => rows.push(row(label, "changed")),
+            Some(_) => {}
+        }
+    }
+    rows.extend(previous.handlers.keys().filter(|label| !then.contains_key(*label)).map(|label| row(label, "gone")));
+    rows
+}
+
+/// Whether a version of `slug` that `who`, who doesn't approve its deploys, deploys waits for a
+/// person even when it asks for nothing more: it does when a program (an agent, a service) deploys
+/// it, unless a person who may approve its deploys let the flow take theirs at once (its settings,
+/// proposals.rs) and the host lets them (`[agents] deploy_at_once`); never for a flow not deployed.
+fn waits_for_a_person(who: &Caller, policy: &Policy, previous: &Previous) -> bool {
+    let at_once = policy.agents_deploy_at_once && previous.agents_deploy_at_once;
+    who.kind != Some(crate::accounts::Kind::Person) && !at_once
+}
+
 /// Whether `who` approves what deploying a version of `slug` tagged `then` needs: on the flow as
 /// it is deployed now, if it is, and as the version would make it (D22).
 fn may_approve(who: &Caller, slug: &str, deployed: bool, then: &[String]) -> bool {
@@ -693,6 +870,7 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         listen_error: dep.listen_error.clone(),
         waiting: dep.parked.len(),
         agents_propose: !dep.agents_propose_off,
+        agents_deploy_at_once: dep.agents_deploy_at_once,
         version: dep.versions.last().map(|v| v.number),
         tags: dep.server.as_ref().map(|s| s.tags.clone()).unwrap_or_default(),
     }
@@ -761,6 +939,8 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
     let server = read_server(root_unit, &resolver).ok();
     let (mut needs, withheld) = approval_needed(policy, &manifest, &previous, server.as_ref(), &body.slug, unit_hash, &resolver, proposes);
     let taint: Vec<String> = server.as_ref().map(|s| s.taint.clone()).unwrap_or_default();
+    let (port, logs): (Option<u16>, BTreeMap<String, holon_core::LogLevel>) = (server.as_ref().and_then(|s| s.port), server.iter().flat_map(|s| s.handlers()).map(|(label, log, _)| (label, log)).collect());
+    let code = code_rows(&previous, server.as_ref());
     // What it runs of other flows that `who` may not run: refused to a person who approves,
     // waiting for someone who may when proposed.
     let borrowed = borrowed(deployments, &manifest.items(), &body.slug, who);
@@ -790,10 +970,7 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
     }
     let granted: Vec<&String> = items.iter().filter(|i| !needs.contains(*i) && !withheld.contains(*i)).collect();
     // What it touches, beside what it touches now, and the settings that change.
-    let (deployed, asked_now) = {
-        let table = deployments.lock().unwrap();
-        (table.keys().cloned().collect(), table.get(&body.slug).and_then(|d| d.versions.last()).and_then(|v| v.request.clone()))
-    };
+    let deployed = deployments.lock().unwrap().keys().cloned().collect();
     let now: Option<Vec<String>> = previous.grant.as_ref().map(|g| g.items.iter().cloned().collect());
     let optional: Vec<String> = manifest.requirements.optional.iter().cloned().collect();
     // Who each tag it joins or leaves lets act on it (D24).
@@ -803,9 +980,19 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
     let (then, needing, withholding) = (list(&items), list(&needs), list(&withheld));
     // Where each secret it reads is sent (secret → destinations).
     let sent = holon_core::sent_secrets(root_unit, &resolver);
-    let touches = touches::touches(&server, &touches::Ask { now: now.as_deref(), then: &then, needs: &needing, withheld: &withholding, optional: &optional, sent: &sent, unready: &unready, waits: &waits });
-    let settings = match &asked_now {
-        Some(a) => touches::settings([&a.browsers, &body.browsers], [&previous.taint, &taint]),
+    let mut touches = touches::touches(&server, &touches::Ask { now: now.as_deref(), then: &then, needs: &needing, withheld: &withholding, optional: &optional, sent: &sent, unready: &unready, waits: &waits });
+    // Its code, handler by handler, first.
+    if let Some(rows) = touches.as_array_mut() {
+        rows.splice(0..0, code);
+    }
+    // Beside the version deployed now: none for a first deploy, all of which is new.
+    let settings = match previous.unit {
+        Some(_) => touches::settings(touches::Settings {
+            browsers: [&previous.browsers, &body.browsers],
+            taint: [&previous.taint, &taint],
+            port: [previous.port, port],
+            logs: [&previous.logs, &logs],
+        }),
         None => serde_json::json!([]),
     };
     Ok(serde_json::json!({
@@ -816,6 +1003,13 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
         "manifest": to_hex(&manifest.hash()),
         "items": items,
         "needs_approval": needs,
+        // Whether `who` approves what it asks for, deploying it: if not (an agent, or one who may
+        // propose but not approve), their deploy sends no `acknowledge`, and is kept as a proposal
+        // where it waits for a person (`proposed`).
+        "approves": !proposes,
+        // Whether, deployed by `who`, it waits for a person as a proposal: an agent's version
+        // does, what it asks for or not, unless a person let the flow's take it at once (deploy).
+        "proposed": proposes && (!needs.is_empty() || waits_for_a_person(who, policy, &previous)),
         "already_granted": granted,
         // Where each secret it reads is sent (secret → hosts): said beside the secret's item.
         "sent": &sent,
@@ -823,7 +1017,7 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
         "granted_now": previous.grant.as_ref().map(|g| &g.items),
         // Secrets it can run without that an agent's deploy leaves out, for a person to grant back.
         "withheld": withheld,
-        "refused": policy.refuses(&manifest).or_else(|| {
+        "refused": holon_core::approval::named_apart(manifest.items().iter().map(String::as_str)).or_else(|| policy.refuses(&manifest)).or_else(|| {
             let permit = Permit::new(unit_hash, &Grant::for_manifest(&manifest, 0, "preview"), policy);
             durable::refuses_waits(root_unit, &resolver, &permit)
         }).or_else(|| folders::Scoped::new(Arc::clone(folders), &body.slug).refuses(&manifest))
@@ -842,28 +1036,38 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
 /// For each approval a version of `slug` waits at whose steps can't all be taken here, why (the
 /// access design's §9): a step takes a principal of its kind bound to its role where the approval
 /// is (none named: to a role that decides there), as the version's tags would make it, and not
-/// disabled; one principal a step, as many as the step's `people`. Whoever deploys it takes none
-/// on a host that keeps them out (`approvals.exclude_deployer`), nor whoever starts a run, which,
-/// for an approval in one of its actions, may be anyone who may run that action, but for a step
-/// that says `starter: true`, a person, where the host lets one (`approvals.starter`). None
-/// worked out on a server without accounts. With why, which of its runs would wait there undecided: `every
-/// run` (a step no one here may take, or too few), or `some runs` (those a principal starts who
-/// would then take no step of them: a run a route, a schedule or a file starts has no starter, and
-/// can be decided), which deploying in the editor doesn't ask about again.
+/// disabled; one principal a step, as many as the step's `people`, and one party a step
+/// (accounts.rs `Parties`: whoever is one party with another through an agent or a service counts
+/// as one with them here, so this may count fewer than there are). Whoever deploys it, and their
+/// party, take none on a host that keeps them out (`approvals.exclude_deployer`), nor whoever
+/// starts a run and their party, which, for an approval in one of its actions, may be anyone who
+/// may run that action, but for a step that says `starter: true`, where the host lets one
+/// (`approvals.starter`): those the starter's party fills, one principal each, and never an agent
+/// that started it. None worked out on a server without accounts. With why, which of its runs
+/// would wait there undecided: `every run` (a step no one here may take, or too few, whoever
+/// starts it), or `some runs` (those a principal starts who would then take no step of them, or,
+/// when a route, a schedule or a file starts runs too, which have no starter, those), which
+/// deploying in the editor doesn't ask about again.
 fn approvals_unready(state: &AppState, slug: &str, server: &Server, items: &BTreeSet<String>, resolver: &impl holon_core::Resolver, deployer: Option<&str>) -> BTreeMap<String, (String, &'static str)> {
     use crate::accounts::Kind;
     use holon_core::approval::{SlotKind, Steps};
     let Some(accounts) = state.access.accounts() else { return BTreeMap::new() };
     let settings = accounts.access_document().approvals.clone();
+    let parties = accounts.parties();
+    let kept_out = |name: &str| settings.exclude_deployer && deployer.is_some_and(|d| d == name || parties.joined(name, d).is_some());
     let callers: Vec<Caller> = accounts
         .principals()
         .into_iter()
-        .filter(|p| !p.disabled && p.kind != Kind::Service && !(settings.exclude_deployer && deployer == Some(p.name.as_str())))
+        .filter(|p| !p.disabled && p.kind != Kind::Service && !kept_out(&p.name))
         .map(|p| {
             let holds: Arc<[crate::bindings::Held]> = accounts.holding(&p.name).iter().map(|h| as_tagged(h, slug, &server.tags)).collect();
             Caller { name: Some(p.name), kind: Some(p.kind), holds: Some(holds), local: None }
         })
         .collect();
+    let named = |i: usize| callers[i].name.as_deref().unwrap_or_default();
+    let party = parties_of(callers.len(), |a, b| parties.joined(named(a), named(b)).is_some());
+    // Runs that no one starts: a route's, a schedule's, a file's.
+    let starterless = server.handlers().any(|(_, _, h)| !server.actions.iter().any(|a| a.handler == h));
     let mut unready = BTreeMap::new();
     for item in items {
         let Some((name, steps)) = item.strip_prefix("Approval(\"").and_then(|r| r.strip_suffix("\")")).and_then(|r| r.split_once('/')) else { continue };
@@ -883,28 +1087,66 @@ fn approvals_unready(state: &AppState, slug: &str, server: &Server, items: &BTre
                 Taking { slot, who }
             })
             .collect();
-        if let Some(why) = untaken(&takes) {
-            unready.insert(item.clone(), (why, "every run"));
-            continue;
-        }
-        // Whoever may start a run that waits there, set aside.
+        // A run no one started: one party a step.
+        let strict = untaken(&takes, |p, _| party[p]);
+        // Whoever may start a run that waits there, and their party, set aside from each step that
+        // doesn't take them; on one that does, each of their party takes a step of their own.
         let started = server.actions.iter().filter(|a| resolver.resolve(&a.handler).is_some_and(|h| holon_core::capabilities(h, resolver).iter().any(|c| holon_core::consent_name(&c) == *item)));
         let starters = started.flat_map(|a| {
             let agents_may = items.contains(&format!("AgentRuns({:?})", a.name));
             let callers = &callers;
             (0..callers.len()).filter(move |&i| can(&callers[i], Action::RunCall, &Resource::Action { slug, name: &a.name, agents_may }).is_ok())
         });
+        let takes_them = |slot: &holon_core::approval::Slot| slot.starter && settings.starter;
+        let (mut decided, mut undecided) = (false, None);
         for i in starters.collect::<BTreeSet<_>>() {
-            // Set aside from each step that doesn't take whoever started the run.
-            let takes_them = |slot: &holon_core::approval::Slot| slot.starter && settings.starter && callers[i].kind == Some(Kind::Person);
-            let theirs: Vec<Taking> = takes.iter().map(|t| Taking { slot: t.slot, who: t.who.iter().copied().filter(|&p| p != i || takes_them(t.slot)).collect() }).collect();
-            if let Some(why) = untaken(&theirs) {
-                unready.insert(item.clone(), (format!("a run {} starts can't be decided, as they take no step of it: {why}", callers[i].name.as_deref().unwrap_or_default()), "some runs"));
-                break;
+            let ours = |p: usize| p == i || parties.joined(named(p), named(i)).is_some();
+            let agent = callers[i].kind == Some(Kind::Agent);
+            let theirs: Vec<Taking> = takes.iter().map(|t| Taking { slot: t.slot, who: t.who.iter().copied().filter(|&p| if takes_them(t.slot) { !(p == i && agent) } else { !ours(p) }).collect() }).collect();
+            match untaken(&theirs, |p, slot| if takes_them(slot) && ours(p) { callers.len() + p } else { party[p] }) {
+                None => decided = true,
+                Some(why) => {
+                    let with: Vec<&str> = (0..callers.len()).filter(|&p| p != i && ours(p) && takes.iter().any(|t| t.who.contains(&p))).map(named).collect();
+                    undecided.get_or_insert((i, with, why));
+                }
             }
+        }
+        match (strict, undecided) {
+            (Some(why), _) if !decided => {
+                unready.insert(item.clone(), (why, "every run"));
+            }
+            (Some(why), _) if starterless => {
+                unready.insert(item.clone(), (format!("a run a route, a schedule or a file starts can't be decided: {why}"), "some runs"));
+            }
+            (_, Some((i, with, why))) => {
+                let who = if with.is_empty() { "they take".to_string() } else { format!("they and {} take", with.join(" and ")) };
+                unready.insert(item.clone(), (format!("a run {} starts can't be decided, as {who} no step of it: {why}", named(i)), "some runs"));
+            }
+            _ => {}
         }
     }
     unready
+}
+
+/// Each of `n` principals' party, by number (the least of its members): those `joined` says are
+/// one party, and on through each of them.
+fn parties_of(n: usize, joined: impl Fn(usize, usize) -> bool) -> Vec<usize> {
+    fn root(party: &[usize], mut p: usize) -> usize {
+        while party[p] != p {
+            p = party[p];
+        }
+        p
+    }
+    let mut party: Vec<usize> = (0..n).collect();
+    for a in 0..n {
+        for b in a + 1..n {
+            if joined(a, b) {
+                let (ra, rb) = (root(&party, a), root(&party, b));
+                party[ra.max(rb)] = ra.min(rb);
+            }
+        }
+    }
+    (0..n).map(|p| root(&party, p)).collect()
 }
 
 /// A step of an approval, and who may take it (by their place in a list).
@@ -915,8 +1157,9 @@ struct Taking<'a> {
 
 /// Why `takes` can't all be taken, one principal a step and as many as each needs: a step fewer
 /// may take than it needs ("approver: 1 person holds it here; it needs 2"), or fewer different
-/// principals than the steps need together.
-fn untaken(takes: &[Taking]) -> Option<String> {
+/// principals than the steps need together, each of another party: `party` of a principal on a
+/// step.
+fn untaken(takes: &[Taking], party: impl Fn(usize, &holon_core::approval::Slot) -> usize) -> Option<String> {
     use holon_core::approval::SlotKind;
     for Taking { slot, who } in takes {
         let n = who.len();
@@ -935,10 +1178,10 @@ fn untaken(takes: &[Taking]) -> Option<String> {
             None => format!("its step: {who} may decide it here{needs}"),
         });
     }
-    // One seat a person a step needs; each principal takes one seat at most (Kuhn's matching).
-    let seats: Vec<&Vec<usize>> = takes.iter().flat_map(|t| std::iter::repeat_n(&t.who, t.slot.people as usize)).collect();
-    fn seat(s: usize, seats: &[&Vec<usize>], seen: &mut BTreeSet<usize>, taken: &mut BTreeMap<usize, usize>) -> bool {
-        for &p in seats[s] {
+    // One seat a person a step needs; each principal, or party, takes one seat at most (Kuhn's
+    // matching).
+    fn seat(s: usize, seats: &[Vec<usize>], seen: &mut BTreeSet<usize>, taken: &mut BTreeMap<usize, usize>) -> bool {
+        for &p in &seats[s] {
             if !seen.insert(p) {
                 continue;
             }
@@ -950,9 +1193,24 @@ fn untaken(takes: &[Taking]) -> Option<String> {
         }
         false
     }
-    let mut taken = BTreeMap::new();
-    let all = (0..seats.len()).all(|s| seat(s, &seats, &mut BTreeSet::new(), &mut taken));
-    (!all).then(|| format!("its steps take {} different principals, one a step, and fewer can here", seats.len()))
+    let seated = |of: &dyn Fn(usize, &holon_core::approval::Slot) -> usize| {
+        let seats: Vec<Vec<usize>> = takes
+            .iter()
+            .flat_map(|t| {
+                let mut who: Vec<usize> = t.who.iter().map(|&p| of(p, t.slot)).collect();
+                who.sort_unstable();
+                who.dedup();
+                std::iter::repeat_n(who, t.slot.people as usize)
+            })
+            .collect();
+        let mut taken = BTreeMap::new();
+        (0..seats.len()).all(|s| seat(s, &seats, &mut BTreeSet::new(), &mut taken))
+    };
+    let n: usize = takes.iter().map(|t| t.slot.people as usize).sum();
+    if !seated(&|p, _| p) {
+        return Some(format!("its steps take {n} different principals, one a step, and fewer can here"));
+    }
+    (!seated(&party)).then(|| format!("its steps take {n} principals of different parties, one a step, and fewer can here (an agent or a service is one party with whoever owns it or made its token)"))
 }
 
 /// `held` as a version of `slug` tagged `tags` would make it (D22): a binding on a tag covers the
@@ -971,6 +1229,49 @@ fn as_tagged(held: &crate::bindings::Held, slug: &str, tags: &[String]) -> crate
         }
         _ => held.clone(),
     }
+}
+
+/// Why a version of `slug` tagged `then` (`now` deployed, if it is) isn't deployed, if it isn't:
+/// while this host has people approve what gives more (access_proposals.rs, `approvals.changes`),
+/// a tag it adds gives someone, through a binding on the tag, what that waits for on the flow
+/// (`run.decide`, or an admin's) and they don't hold on it now. A deploy's approval is one person's
+/// and an access change's is the settings' (D6, D13), so whom the tag gives is given it on the flow
+/// first, as an access change, which waits for them (the tag then gives them nothing new), or the
+/// version goes without the tag.
+fn tag_gives(accounts: &crate::accounts::Accounts, slug: &str, now: Option<&[String]>, then: &[String]) -> Option<String> {
+    let n = accounts.access_document().approvals.changes?;
+    let added: Vec<&String> = then.iter().filter(|t| !now.unwrap_or_default().contains(t)).collect();
+    if added.is_empty() {
+        return None;
+    }
+    let on = Resource::Flow(slug);
+    let mut gains: Vec<String> = Vec::new();
+    for p in accounts.principals() {
+        let holds = accounts.holding(&p.name);
+        let before = Caller { name: Some(p.name.clone()), kind: Some(p.kind), holds: Some(Arc::clone(&holds)), local: None };
+        let after = Caller { holds: Some(holds.iter().map(|h| as_tagged(h, slug, then)).collect()), ..before.clone() };
+        for h in holds.iter().filter(|h| h.role.kinds.contains(&p.kind)) {
+            let crate::bindings::Scope::Flows(crate::bindings::Selector::Tag(tag)) = &h.scope else { continue };
+            if !added.contains(&tag) {
+                continue;
+            }
+            for action in h.role.allows() {
+                let new = crate::access_proposals::governed(action) && on.takes(action) && can(&after, action, &on).is_ok() && can(&before, action, &on).is_err();
+                let said = format!("{} {} (by {tag})", p.name, action.name());
+                if new && !gains.contains(&said) {
+                    gains.push(said);
+                }
+            }
+        }
+    }
+    if gains.is_empty() {
+        return None;
+    }
+    let people = if n == 1 { "1 person".to_string() } else { format!("{n} people") };
+    Some(format!(
+        "this version gives {} on {slug:?}, through the tags it adds, which they don't hold on it now; giving that waits here for {people} as an access change, not a deploy's approval: give it to them on {slug:?} first, which waits for them, or deploy it without the tag",
+        gains.join(", ")
+    ))
 }
 
 /// For each of `tags`, who a binding on it lets act on a flow deployed with it now (D24).
@@ -1144,25 +1445,27 @@ pub(crate) fn permissions_view(policy: &Policy) -> serde_json::Value {
         "allow_private_addresses": policy.allow_private_addresses,
         "allow_unrecorded": policy.allow_unrecorded,
         "agents_propose": policy.agents_propose,
+        "agents_deploy_at_once": policy.agents_deploy_at_once,
         "storage": { "sweep_every": crate::permissions::every_text(policy.storage.sweep_every), "warn_at": crate::permissions::threshold_text(policy.storage.warn_at), "full_at": crate::permissions::threshold_text(policy.storage.full_at), "when_full": policy.storage.when_full.text(), "backup": policy.storage.backup.as_ref().map(|b| b.display().to_string()) },
         "text": policy.text,
     })
 }
 
 /// `GET /deployments/<slug>/manifest` — what it needs, re-derived from its unit; and
-/// `GET /deployments/<slug>/grant` — what the host granted it, with the grant's hash.
+/// `GET /deployments/<slug>/grant` — what the host granted it, with the grant's hash, as a change
+/// to it answers (grants.rs).
 pub(crate) fn handle_get_permission_view(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     slug: &str,
     which: &str,
 ) -> Response {
-    let (unit, grant, attention) = match deployments.lock().unwrap().get(slug) {
-        Some(d) => (d.unit, d.grant.clone(), d.attention.clone()),
+    let (unit, grant, view) = match deployments.lock().unwrap().get(slug) {
+        Some(d) => (d.unit, d.grant.clone(), crate::grants::grant_view(d)),
         None => return err(404, format!("no deployment {slug:?}")),
     };
     if which == "grant" {
-        return Response::json(&serde_json::json!({ "grant": grant, "hash": to_hex(&grant.hash()), "attention": attention }));
+        return Response::json(&view);
     }
     let resolver = match closure(store, unit) {
         Ok(r) => r,
@@ -1234,7 +1537,7 @@ pub(crate) fn handle_get_state(deployments: &Mutex<BTreeMap<String, Deployment>>
 
 /// `DELETE /deployments/<slug>` — closes the named gap from the clock-deploy L4's Fork 4: the
 /// only way to stop a `Clock`-triggered deployment used to be killing the whole server. Removing
-/// the slug from the table is sufficient — `run_due_clock_ticks` only ever acts on what's
+/// the slug from the table is sufficient — `start_due_clock_ticks` only ever acts on what's
 /// currently in the table, so there's no separate "cancel" signal to build; the deployment
 /// simply stops being something the scheduler can find. For an `Ingress`-triggered deployment,
 /// `POST /trigger/<slug>` starts 404ing immediately afterward, the same 404 it already gives a
@@ -1301,7 +1604,7 @@ pub(crate) fn handle_delete_deployment(
             dep.channels.close();
             dep.sockets.close_all(websockets::REMOVED);
             if let Err(e) = persist_deployments(deployments_path, deployments) {
-                return crate::persist::not_saved(&format!("the removal of {slug:?}"), &e);
+                return err(500, format!("{slug:?} is deleted, but {e}: after a restart it is deployed again"));
             }
             let mut answer = serde_json::to_value(deployment_entry(slug, &dep)).unwrap_or_default();
             answer["records"] = serde_json::json!(records.map(|p| p.display().to_string()));
@@ -1400,7 +1703,7 @@ pub(crate) fn handle_post_action(
             holon_core::parse_json(&text).ok_or_else(|| "what is sent to an action is JSON, and this isn't".to_string())
         }
     });
-    let ran = run_action(store, deployments, deployments_path, slug, name, input, by, Some(who), &[]);
+    let ran = run_action(store, deployments, deployments_path, slug, name, input, by, by, Some(who), &[]);
     if ran.status == 404 && ran.reply.is_null() {
         return Response::empty_404();
     }
@@ -1437,6 +1740,26 @@ impl ActionRan {
     }
 }
 
+/// An action's answer, from its run's first output: the respond's envelope's status and body, or
+/// (an action that only writes) an effect's 200 and nothing; anything else, a 200 and itself.
+/// What its line says (`response_body`, [`action_json`]), and what `holon verify` makes again.
+pub(crate) fn action_answer(first: Option<Value>) -> (u16, Option<Value>) {
+    match first {
+        Some(Value::Record(f)) if matches!(f.get("status"), Some(Value::Number(_))) => {
+            let Some(Value::Number(n)) = f.get("status") else { unreachable!() };
+            (*n as u16, f.get("body").cloned())
+        }
+        Some(Value::Effect { .. }) => (200, None),
+        Some(other) => (200, Some(other)),
+        None => (500, None),
+    }
+}
+
+/// An action's answer as JSON, `null` for none; none for one with no JSON form.
+pub(crate) fn action_json(answer: Option<&Value>) -> Option<String> {
+    answer.map_or(Some("null".to_string()), holon_core::stringify_json)
+}
+
 /// Run the deployment `slug`'s action `name` with `input` (or why that isn't one: a 400), as `by`,
 /// and say what came of it. `chain` is the flows whose calls led here, the first being the caller
 /// that started it (empty for a person's or an agent's run): the run carries it, so a flow called
@@ -1452,6 +1775,7 @@ pub(crate) fn run_action(
     name: &str,
     input: Result<Value, String>,
     by: Option<&str>,
+    started_by: Option<&str>,
     who: Option<&Caller>,
     chain: &[String],
 ) -> ActionRan {
@@ -1493,29 +1817,20 @@ pub(crate) fn run_action(
     let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64)), (Capability::Random, random_bytes())];
     let started = started_now();
     let inputs = [Some(input.clone())];
-    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), started_by: by.map(String::from), ..Default::default() };
+    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), started_by: started_by.map(String::from), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     // As a route's (listeners.rs): an unrecorded run keeps no timeline, and is never logged, failed
     // or not (resilience-audit-L4.md, §2.8).
     waits.unrecorded = permit.log_level(Some(&action.label), action.log) == holon_core::LogLevel::Unrecorded;
     let run = fire_with_state(handler, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &vault, &mut waits, None);
 
-    // Output 0 is the respond's envelope, or (an action that only writes) an effect.
-    let (status, answer) = match run.outputs.first().cloned().flatten() {
-        Some(Value::Record(f)) if matches!(f.get("status"), Some(Value::Number(_))) => {
-            let Some(Value::Number(n)) = f.get("status") else { unreachable!() };
-            (*n as u16, f.get("body").cloned())
-        }
-        Some(Value::Effect { .. }) => (200, None),
-        Some(other) => (200, Some(other)),
-        None => (500, None),
-    };
+    let (status, answer) = action_answer(run.outputs.first().cloned().flatten());
     let mut entry = run_entry("trigger", started, &sourced, &run);
     entry.route = Some(action.label.clone());
     entry.request = Some(SValue::from_core(&input));
     entry.by = by.map(String::from);
-    let answer_json = answer.as_ref().map_or(Some("null".to_string()), holon_core::stringify_json);
-    entry.response_body = Some(if run.secret_fed.derives_output(0) { crate::taint::WITHHELD.to_string() } else { answer_json.clone().unwrap_or_default() });
+    let answer_json = action_json(answer.as_ref());
+    entry.response_body = Some(if run.withholds_output(0) { crate::taint::WITHHELD.to_string() } else { answer_json.clone().unwrap_or_default() });
     match durable::park_if_waiting(deployments, store, slug, &action.handler, "trigger", Some(action.label.clone()), action.log, &inputs, &sourced, &run, &waits) {
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
@@ -1543,9 +1858,7 @@ pub(crate) fn run_action(
     let (seq, kept) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens).and(Redactor::handed(&calls::handed(&run.rounds))), action.log).map_or((None, Ok(())), |l| (l.seq, l.kept));
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.
-    if parked_any {
-        let _ = persist_deployments(deployments_path, deployments);
-    }
+    let saved = if parked_any { persist_deployments(deployments_path, deployments) } else { Ok(()) };
     let ran = |status: u16, reply: serde_json::Value, answer: Option<Value>, waiting: bool, error: Option<String>, why: Option<&'static str>| ActionRan { status, reply, answer, seq, waiting, waiting_at: if waiting { waiting_at.clone() } else { Vec::new() }, error, why };
     // A strict run whose record isn't on disk isn't answered as done: it may not be on record.
     if let Err(e) = kept {
@@ -1559,6 +1872,11 @@ pub(crate) fn run_action(
             Some(seq) => format!("the action failed: its run log says why (entry {seq})"),
             None => "the action failed; its runs aren't logged (it is unrecorded): its tally keeps the last failure".to_string(),
         };
+        return ran(500, serde_json::json!({ "error": message }), None, false, Some(message), Some("failed"));
+    }
+    // One that waits, not saved, isn't answered as waiting: after a restart it isn't.
+    if let Err(e) = saved {
+        let message = format!("the action's run waits, but {e}: after a restart it isn't waiting");
         return ran(500, serde_json::json!({ "error": message }), None, false, Some(message), Some("failed"));
     }
     if parked_any {
@@ -1591,8 +1909,21 @@ pub(crate) fn run_action(
 /// handlers, by label (`{runs, failed, total_ms, last_at_ms, last_failure}`): the log holds none of
 /// their runs, failed or not. `syncs` is how many times its file was synced to disk since the
 /// server started (one sync covers every run written before it: group commit). `limit=0` asks for
-/// the counts alone, without looking at the runs it keeps.
+/// the counts alone, without looking at the runs it keeps. Each run whole, its steps and values:
+/// run.steps' (can.rs; the audit register's R55).
 pub(crate) fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
+    log_page(deployments, slug, request, true)
+}
+
+/// `GET /deployments/<slug>/log/heads?after=<seq>&limit=<n>` — the list of runs, run.view's: as
+/// `…/log` pages them, each run as [`RunHead`](crate::recorder::RunHead) says it, never its values;
+/// and the counts of its unrecorded handlers' runs, their last failure without its error.
+pub(crate) fn handle_get_log_heads(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
+    log_page(deployments, slug, request, false)
+}
+
+/// A page of `slug`'s log: its runs `whole`, or as the list of runs says them.
+fn log_page(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request, whole: bool) -> Response {
     let after = request.get_param("after").and_then(|a| a.parse::<u64>().ok());
     let limit = request.get_param("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(200);
     // The table only to find the log (and the counts of its unrecorded handlers' runs, which
@@ -1604,8 +1935,16 @@ pub(crate) fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, 
     // from its file with the lock released (R8).
     let (wanted, next, head, breaks) =
         log.with(|log| ((limit > 0).then(|| log.plan(after, limit)), log.next_seq(), log.head().to_string(), log.breaks().to_vec()));
+    let entries = wanted.map(|w| w.read()).unwrap_or_default();
+    let (entries, tallies) = if whole {
+        (serde_json::to_value(entries).unwrap_or_default(), tallies)
+    } else {
+        let heads: Vec<crate::recorder::RunHead> = entries.iter().map(Into::into).collect();
+        let counts = tallies.into_iter().map(|(label, tally)| (label, Tally { last_failure: tally.last_failure.map(|f| Failure { error: None, ..f }), ..tally })).collect();
+        (serde_json::to_value(heads).unwrap_or_default(), counts)
+    };
     Response::json(&serde_json::json!({
-        "entries": wanted.map(|w| w.read()).unwrap_or_default(),
+        "entries": entries,
         "next": next,
         "head": head,
         "breaks": breaks,
@@ -1724,6 +2063,9 @@ pub(crate) fn handle_get_versions(deployments: &Mutex<BTreeMap<String, Deploymen
 /// An agent restores nothing: its restore (not a dry run) is saved for a person to approve, an
 /// `ask` event on the deployment's timeline naming the point and what of it, answered 202. The
 /// editor's history offers it as a restore, which a person makes (history-L4 §4).
+///
+/// A state, put back or its dry run, is read as the state is: whoever doesn't hold state.view on
+/// the flow is refused, naming it (R57).
 pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Request, by: Option<&str>, who: &Caller) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
@@ -1735,6 +2077,13 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
     };
     if !restore.code && !restore.state {
         return err(400, "say what to restore: \"code\": true, \"state\": true, or both");
+    }
+    // A state put back, or what putting it back would change, is the flow's state: state.view's,
+    // as reading it is (R57).
+    if restore.state
+        && let Err(refused) = can(who, Action::StateView, &Resource::Flow(slug))
+    {
+        return refused.response();
     }
     let point = match (restore.version, restore.run) {
         (Some(n), None) => Point::Version(n),
@@ -1809,7 +2158,7 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
         let saved = persist_deployments(&state.deployments_path, &state.deployments);
         state.activity.record("restored state", slug, by);
         if let Err(e) = saved {
-            return crate::persist::not_saved(&format!("the state {label} left, put back in {slug:?},"), &e);
+            return err(500, format!("the state {label} left is put back, in session {session}, but {e}: after a restart its sessions are as they were before"));
         }
         answer["state"] = serde_json::json!({ "from": label, "session": session });
     }
@@ -2203,8 +2552,9 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
         dep.grant.paused = false;
         deployment_entry(slug, dep)
     };
+    // Not saved, a pause or a stop doesn't hold past a restart: the caller is told.
     if let Err(e) = persist_deployments(&state.deployments_path, &state.deployments) {
-        return crate::persist::not_saved(&format!("the {action} of {slug:?}"), &e);
+        return err(500, format!("{slug:?} is {}, but {e}: after a restart it is as it was before", status_word(entry.status)));
     }
     Response::json(&entry)
 }
@@ -2247,3 +2597,47 @@ pub(crate) fn handle_get_sessions(
     Response::json(&reply)
 }
 
+
+#[cfg(test)]
+mod slug_tests {
+    use super::*;
+
+    /// Guards: a new deployment's slug is refused when it would share its files with another's
+    /// or name none: one that differs from a deployed slug only by case, a Windows device's name
+    /// in any case, one past [`MAX_SLUG`]; a slug deployed already is never refused, whatever it
+    /// is, so its next version deploys.
+    /// Why: a slug names the deployment's log, events and state head. `pay` and `Pay` deployed on
+    /// Windows kept one `Pay.jsonl` and one state head: after a restart `pay` read `Pay`'s state
+    /// (its counter went from 5 back to 2) and `holon verify` passed; removing either removed the
+    /// other's log. `nul` reads back as nothing, and the server then can't load its deployments.
+    /// If it fails: `new_slug_refusal` lets through a slug the file system can't tell from
+    /// another's, or the deploy no longer asks it (before the unit is read, and under the table's
+    /// lock where the deployment is inserted).
+    #[test]
+    fn a_new_slug_shares_no_file_with_another_and_names_one() {
+        let deployed: Vec<String> = ["pay", "Notes-API", "con"].map(String::from).to_vec();
+        let refusal = |slug: &str| new_slug_refusal(deployed.iter(), slug).map(|(code, _)| code);
+        // Deployed already, as it is spelled: its next version.
+        for slug in ["pay", "Notes-API", "con"] {
+            assert_eq!(refusal(slug), None, "{slug}");
+        }
+        // Another's files, by case.
+        for slug in ["Pay", "PAY", "pAy", "notes-api", "NOTES-API", "CON"] {
+            assert_eq!(refusal(slug), Some(409), "{slug}");
+        }
+        // No file at all on Windows, in any case.
+        for slug in ["nul", "NUL", "Nul", "prn", "aux", "com1", "COM9", "lpt1", "LPT9"] {
+            assert_eq!(refusal(slug), Some(400), "{slug}");
+        }
+        // A device's name inside a longer one is a file's.
+        for slug in ["null", "nul-1", "com10", "console", "payments", "pay-2", "pay_"] {
+            assert_eq!(refusal(slug), None, "{slug}");
+        }
+        assert_eq!(refusal(&"a".repeat(MAX_SLUG)), None);
+        assert_eq!(refusal(&"a".repeat(MAX_SLUG + 1)), Some(400));
+        // Every slug the samples deploy under is one a new deployment may have.
+        for sample in holon_author::samples::samples() {
+            assert!(is_valid_slug(sample.name) && new_slug_refusal(std::iter::empty(), sample.name).is_none(), "{}", sample.name);
+        }
+    }
+}

@@ -6,52 +6,80 @@ use holon_core::Clock;
 /// A clock due to tick: its deployment's slug, unit, state, permit and secrets, and the clock.
 type DueTick = (String, Hash, Option<DeploymentState>, Arc<Permit>, Vault, Clock);
 
-/// The tick-firing logic for one scheduler pass, callable directly with a controlled `now` —
-/// pulled out of `spawn_clock_scheduler`'s sleep loop specifically so it's testable without real
-/// sleeping (the same "extract the testable logic out of the untestable wrapper" move the
-/// editor's own `diagnostics.ts` extraction already used, for the identical reason). Every
-/// deployment **due** at `now` fires **concurrently** with every other deployment due at the
-/// same moment — see `fire_one_clock_tick` and the module doc for why, and for the honest limit
-/// of this approach (unbounded per-tick fan-out, not a worker pool).
+/// The clocks whose tick goes on now, by deployment and clock: one isn't fired again over its own
+/// tick, so a slow clock is one thread and holds nothing but itself.
+#[derive(Clone, Default)]
+pub(crate) struct Ticking(Arc<Mutex<BTreeSet<(String, String)>>>);
+
+/// A tick going on: its clock is free again when the tick ends, a panic included.
+struct InFlight {
+    ticking: Ticking,
+    clock: (String, String),
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.ticking.0.lock().unwrap().remove(&self.clock);
+    }
+}
+
+/// One pass of the clock loop at `now`, callable with a controlled `now` (the tests'): each clock
+/// due fires on a thread of its own, unless its last tick still goes on (`ticking`), and the pass
+/// doesn't wait for them: the handles are the caller's to join or let go. A tick that waits on a
+/// call holds its own clock, not another deployment's, not the next pass, not a waiting run's
+/// deadline (`spawn_clock_scheduler`). Threads are one per clock at most, the clock's own tick.
+pub(crate) fn start_due_clock_ticks(
+    store: &SharedStore,
+    deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>,
+    deployments_path: &Place,
+    now: SystemTime,
+    ticking: &Ticking,
+) -> Vec<thread::JoinHandle<()>> {
+    let mut started = Vec::new();
+    for (slug, unit_hash, state, permit, secrets, clock) in due_ticks(store, deployments, now) {
+        let key = (slug.clone(), clock.label.clone());
+        if !ticking.0.lock().unwrap().insert(key.clone()) {
+            continue;
+        }
+        let in_flight = InFlight { ticking: ticking.clone(), clock: key };
+        let (store, deployments, deployments_path) = (store.clone(), Arc::clone(deployments), deployments_path.clone());
+        started.push(thread::spawn(move || {
+            let _in_flight = in_flight;
+            fire_one_clock_tick(&store, &deployments, &deployments_path, slug, unit_hash, state, &permit, &secrets, &clock, now);
+        }));
+    }
+    started
+}
+
+/// A pass whose ticks have all ended when it returns, a tick's panic passed on: what a test
+/// drives the clocks with (the loop doesn't wait: [`start_due_clock_ticks`]).
+#[cfg(test)]
 pub(crate) fn run_due_clock_ticks(
     store: &SharedStore,
-    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>,
     deployments_path: &Place,
     now: SystemTime,
 ) {
-    let due: Vec<DueTick> = {
-        let deployments = deployments.lock().unwrap();
-        let mut due = Vec::new();
-        for (slug, dep) in deployments.iter().filter(|(_, d)| d.takes_runs(store)) {
-            let clocks = dep.server.as_ref().map(|s| s.clocks.as_slice()).unwrap_or_default();
-            for (clock, next_due) in clocks.iter().zip(&dep.clock_due) {
-                if now >= *next_due {
-                    due.push((slug.clone(), dep.unit, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), clock.clone()));
-                }
+    for tick in start_due_clock_ticks(store, deployments, deployments_path, now, &Ticking::default()) {
+        if let Err(panic) = tick.join() {
+            std::panic::resume_unwind(panic);
+        }
+    }
+}
+
+/// The clocks due at `now`, of the deployments that take runs.
+fn due_ticks(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, now: SystemTime) -> Vec<DueTick> {
+    let deployments = deployments.lock().unwrap();
+    let mut due = Vec::new();
+    for (slug, dep) in deployments.iter().filter(|(_, d)| d.takes_runs(store)) {
+        let clocks = dep.server.as_ref().map(|s| s.clocks.as_slice()).unwrap_or_default();
+        for (clock, next_due) in clocks.iter().zip(&dep.clock_due) {
+            if now >= *next_due {
+                due.push((slug.clone(), dep.unit, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), clock.clone()));
             }
         }
-        due
-    };
-
-    // `thread::scope` (stable since Rust 1.63): spawned threads may borrow `store`/
-    // `deployments` directly — no `Arc` clone needed per thread — and every thread is
-    // guaranteed joined before `scope()` returns, so this function is still synchronous from
-    // its caller's point of view (the existing tests, written before this change, still hold:
-    // by the time `run_due_clock_ticks` returns, every due tick from this call has completed).
-    // What changes is internal: two deployments due in the same tick no longer block each
-    // other — a slow flow only delays itself, not its neighbors.
-    //
-    // Deliberately NOT a bounded worker pool: a genuinely large number of simultaneously-due
-    // deployments spawns that many OS threads at once, unbounded. Fine, and simpler, at the
-    // scale this is actually for — a handful of local flows on one machine. Named honestly as
-    // a real, open limitation rather than solved here: if per-tick fan-out ever gets large
-    // enough to matter, the fix is a bounded worker pool (or a semaphore capping concurrent
-    // fires), not more threads. Left open on purpose.
-    thread::scope(|scope| {
-        for (slug, unit_hash, state, permit, secrets, clock) in due {
-            scope.spawn(move || fire_one_clock_tick(store, deployments, deployments_path, slug, unit_hash, state, &permit, &secrets, &clock, now));
-        }
-    });
+    }
+    due
 }
 
 /// `POST /deployments/<slug>/tick`'s body: which of its server's clocks ticks (`every 2s`).
@@ -60,9 +88,22 @@ pub(crate) struct TickNowBody {
     pub(crate) clock: String,
 }
 
+/// A tick as `POST /deployments/<slug>/tick` answers it to whoever doesn't read its flow's runs'
+/// steps (run.steps, R57): when it ticked and which clock, field by field. Its outputs and what it
+/// did are its run's values, left out; `left_out` says so, and what would give them.
+#[derive(Serialize)]
+struct TickHead<'a> {
+    at_epoch_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<&'a str>,
+    left_out: String,
+}
+
 /// `POST /deployments/<slug>/tick`: that clock ticks now, as the scheduler would tick it (its
 /// next tick a period from now), and the tick's history entry answers. The editor's "tick now".
-pub(crate) fn handle_post_tick(state: &AppState, slug: &str, request: &Request) -> Response {
+/// Ticking is flow.lifecycle's; the entry's outputs and what it did, a run's values, are
+/// run.steps': to a caller who doesn't hold it, a [`TickHead`] answers (R57).
+pub(crate) fn handle_post_tick(state: &AppState, slug: &str, request: &Request, caller: &crate::access::Caller) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
         Err(r) => return r,
@@ -86,15 +127,19 @@ pub(crate) fn handle_post_tick(state: &AppState, slug: &str, request: &Request) 
     fire_one_clock_tick(&state.store, &state.deployments, &state.deployments_path, slug.to_string(), unit, cell, &permit, &secrets, &clock, SystemTime::now());
     let deployments = state.deployments.lock().unwrap();
     let Some(dep) = deployments.get(slug) else { return Response::empty_404() };
-    let mut reply = serde_json::to_value(dep.history.last()).unwrap_or_default();
+    let Some(tick) = dep.history.last() else { return Response::json(&serde_json::Value::Null) };
+    if let Err(refused) = crate::can::can(caller, crate::can::Action::RunSteps, &crate::can::Resource::Flow(slug)) {
+        let left_out = format!("its outputs and what it did are its run's values, left out: {}", refused.0);
+        return Response::json(&TickHead { at_epoch_seconds: tick.at_epoch_seconds, label: tick.label.as_deref(), left_out });
+    }
+    let mut reply = serde_json::to_value(tick).unwrap_or_default();
     Redactor::of(&dep.secrets).json(&mut reply);
     Response::json(&reply)
 }
 
 /// One clock's single tick — its handler settled via `fire_sourced` with the real wall-clock time
 /// injected, the result logged under its label and appended to its deployment's bounded history. Runs on its own
-/// scoped thread when called from `run_due_clock_ticks`'s per-tick fan-out (see there), but has
-/// no threading concerns of its own: it only ever touches `store` (internally locked,
+/// thread when started by a pass (`start_due_clock_ticks`), but has no threading concerns of its own: it only ever touches `store` (internally locked,
 /// `Sync`-safe) and this one deployment's own map entry (via the shared `deployments` lock,
 /// held only briefly at the end to write the result back).
 #[allow(clippy::too_many_arguments)]
@@ -165,9 +210,14 @@ pub(crate) fn fire_one_clock_tick(
         performed: logged_performed(&run, |_, p| p.clone()),
     };
     // Redacted as its log entry is: the history is read by whoever may read the deployment.
-    redact_tick(&mut tick, &Redactor::of(secrets));
-    redact_tick(&mut tick, &Redactor::tokens(&waits.tokens).and(Redactor::handed(&calls::handed(&run.rounds))));
-    redact_tick(&mut tick, &Redactor::answers(&run.answered.0, secrets));
+    // Of everything at once, the longest value first: what the run computed from a secret may
+    // hold the secret, and marked for the secret first it would no longer be found.
+    let redactor = Redactor::of(secrets)
+        .and(Redactor::tokens(&waits.tokens))
+        .and(Redactor::handed(&calls::handed(&run.rounds)))
+        .and(Redactor::answers(&run.answered.0, secrets))
+        .and(Redactor::born(&run.born));
+    redact_tick(&mut tick, &redactor);
 
     {
         let mut deployments = deployments.lock().unwrap();
@@ -189,6 +239,7 @@ pub(crate) fn fire_one_clock_tick(
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.
     if parked_any {
+        // Nobody waits on an answer: the server's output says so when it isn't saved.
         let _ = persist_deployments(deployments_path, deployments);
     }
 }
@@ -203,23 +254,39 @@ fn redact_tick(tick: &mut TickEntry, redactor: &Redactor) {
     }
 }
 
-/// The clock scheduler — the one genuinely new runtime shape in this whole project: a thread
-/// that acts on its own, on a timer, with nobody asking. Spawned once at startup with its own
-/// `Arc` handle onto `deployments` (no async runtime needed for this workload; a plain sleep
-/// loop is enough). Every second, hands off to `run_due_clock_ticks`, which fires whatever's
-/// due — concurrently within that one pass, see there for why and for the honest limit.
+/// The clock scheduler: two threads that act on their own, every second, with nobody asking.
+/// One starts the clocks due (`start_due_clock_ticks`) and doesn't wait for them; the other
+/// expires the waiting runs past their deadlines, each resumed run set going in a thread of its
+/// own (`durable::expire_waiting`) and waited for by no pass. Apart, so neither waits on a call
+/// the other's run makes: a tick waiting 30 s on a call held every deployment's clocks and every
+/// deadline as long when one thread did both and waited for its ticks (R34). Each ends once the
+/// table it serves is gone (a test's; the server's lives on).
 pub(crate) fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: Place) {
+    let (clocks, at) = (Arc::downgrade(&deployments), deployments_path.clone());
+    let clock_store = store.clone();
+    thread::spawn(move || {
+        let ticking = Ticking::default();
+        loop {
+            thread::sleep(Duration::from_secs(1));
+            let Some(deployments) = clocks.upgrade() else { return };
+            drop(start_due_clock_ticks(&clock_store, &deployments, &at, SystemTime::now(), &ticking));
+        }
+    });
+    let deadlines = Arc::downgrade(&deployments);
+    drop(deployments);
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(1));
-        run_due_clock_ticks(&store, &deployments, &deployments_path, SystemTime::now());
-        expire_waiting(&store, &deployments, &deployments_path, epoch_now());
+        let Some(deployments) = deadlines.upgrade() else { return };
+        // Each expired run goes on in its own thread, waited for by no pass (R34).
+        drop(expire_waiting(&store, &deployments, &deployments_path, epoch_now()));
     });
 }
 
 /// The waiting runs past their deadlines go on, timed out (`durable::expire_waiting`), unless the
 /// server is stopping (stopping.rs): then they wait on, and time out once it is back.
-pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, now: u64) {
-    if !store.1.stopping() {
-        durable::expire_waiting(store, deployments, deployments_path, now);
+pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: &Place, now: u64) -> durable::Expiring {
+    if store.1.stopping() {
+        return durable::Expiring::none();
     }
+    durable::expire_waiting(store, deployments, deployments_path, now)
 }

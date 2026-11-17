@@ -485,7 +485,10 @@ fn agent_name_for(user: &str) -> String {
 
 /// This user's agent on a server they run, made by `admin` (signed in with the run file's token)
 /// if it isn't there yet, with a new token for this machine, kept in `file` under `agent:<URL>`:
-/// the agent's name and owner, and its token. `name` picks another than `<user>-agent`.
+/// the agent's name and owner, and its token. `name` picks another than `<user>-agent`. One there
+/// already is taken only when it is an agent of theirs, enabled: owned by whom the run file signs
+/// in as (`local:<user>`, or the account it is tied to). The run file is an admin, who could make
+/// any agent a token, but setting up `holon mcp` is no way to act as someone else's.
 pub(crate) fn local_agent(admin: &dyn Api, name: Option<&str>, file: &Path) -> Result<(String, String, String), String> {
     let server = admin.server();
     let me = crate::mcp::json_of(admin, "GET", "/auth/me", None)?;
@@ -493,11 +496,16 @@ pub(crate) fn local_agent(admin: &dyn Api, name: Option<&str>, file: &Path) -> R
         return Err(format!("{server} didn't take this machine's run file as its admin"));
     };
     let name = name.map_or_else(|| agent_name_for(user), str::to_string);
-    // Its owner, if it is there already and may be signed in as.
+    let mine = me.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+    // Its owner, if it is there already and may be signed in as: an agent of this user's.
     let found = || -> Result<Option<String>, String> {
         let people = crate::mcp::json_of(admin, "GET", "/people", None)?;
         match people.as_array().into_iter().flatten().find(|p| p["name"] == name.as_str()) {
             Some(p) if p["kind"] != "agent" => Err(format!("{name} on {server} is a {}, not an agent: holon mcp setup --agent NAME picks another name", p["kind"].as_str().unwrap_or("principal"))),
+            Some(p) if p["owner"].as_str() != Some(mine.as_str()) => Err(format!(
+                "{name} on {server} is {}'s agent, not {mine}'s: holon mcp setup --agent NAME picks another name, or its owner makes this machine a token on the People page",
+                p["owner"].as_str().unwrap_or("no one")
+            )),
             Some(p) if p["disabled"] == true => Err(format!("{name} on {server} is disabled: an admin enables it on the People page, or holon mcp setup --agent NAME picks another")),
             Some(p) => Ok(Some(p["owner"].as_str().unwrap_or(user).to_string())),
             None => Ok(None),
@@ -620,7 +628,8 @@ pub(crate) const SETUP_USAGE: &str = "usage: holon mcp setup [HOST…|--all] [op
   --server PORT|URL        reach that server; for one you don't run, holon asks for an agent's
                            token, checks it and keeps it (HOLON_TOKEN gives it)
   --agent NAME             on the server you run, sign in as the agent NAME (made if it isn't
-                           there) rather than <you>-agent: one per host, say
+                           there; one there already only if it is yours) rather than
+                           <you>-agent: one per host, say
   --project DIR            write the hosts' project files in DIR instead of yours (the entry
                            runs holon found on PATH, since the file is shared)
   --name NAME              the entry's name (default holon), e.g. for a second server
@@ -1092,6 +1101,72 @@ mod tests {
         let (name, owner, _) = local_agent(&admin, None, &file).unwrap();
         assert_eq!((name.as_str(), owner.as_str()), ("bma-agent", "ada"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `holon mcp setup` takes an agent there already only when it is this user's to sign in as:
+    /// an agent, enabled, owned by whom the run file signs in as (`local:<user>` untied, the
+    /// account once tied). Each row is who has the name, and whether it is taken (and the same
+    /// token count plus one) or refused with why, nothing made; none there, it is made, theirs.
+    #[test]
+    fn mcp_setup_takes_only_an_agent_of_this_users() {
+        use crate::accounts::Kind;
+        use crate::tests::Signed;
+        for tied in [false, true] {
+            let mut state = crate::tests::test_state();
+            let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+            state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+            let run = accounts.new_local("bma");
+            let me = if tied {
+                accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+                "ada"
+            } else {
+                "local:bma"
+            };
+            if tied {
+                accounts.invite("eve", "editor", None, "ada").map(|link| accounts.accept(&link, "correct horse battery").unwrap()).unwrap();
+            }
+            let other = if tied { "eve" } else { "local:bma" };
+            let dir = std::env::temp_dir().join(format!("holon-mcp-setup-{}-{tied}-{}", std::process::id(), rand::random::<u32>()));
+            let file = dir.join("tokens.json");
+            let admin = Signed { state: &state, token: &run };
+            // The name, who has it (its kind, its owner, disabled), and what setup does: taken, or
+            // refused saying so.
+            type Row<'a> = (&'a str, Option<(Kind, &'a str, bool)>, Result<&'a str, &'a str>);
+            let mut rows: Vec<Row> = vec![
+                ("mine", Some((Kind::Agent, me, false)), Ok(me)),
+                ("mine-off", Some((Kind::Agent, me, true)), Err("is disabled")),
+                ("a-service", Some((Kind::Service, me, false)), Err("is a service, not an agent")),
+                ("new-one", None, Ok(me)),
+            ];
+            if tied {
+                rows.push(("theirs", Some((Kind::Agent, other, false)), Err("is eve's agent, not ada's")));
+                rows.push(("theirs-off", Some((Kind::Agent, other, true)), Err("is eve's agent, not ada's")));
+                rows.push(("ada", Some((Kind::Person, me, false)), Err("is a person, not an agent")));
+            }
+            for (name, there, want) in rows {
+                if let Some((kind, owner, off)) = there
+                    && kind != Kind::Person
+                {
+                    let role = if kind == Kind::Agent { "agent" } else { "viewer" };
+                    accounts.add(name, kind, role, owner, "local:bma").unwrap();
+                    accounts.set_disabled(name, off).unwrap();
+                }
+                let before = accounts.tokens(name).len();
+                let got = local_agent(&admin, Some(name), &file).map(|(n, owner, _)| (n, owner));
+                match want {
+                    Ok(owner) => assert_eq!(got, Ok((name.to_string(), owner.to_string())), "tied {tied}: {name}"),
+                    Err(why) => {
+                        let e = got.unwrap_err();
+                        assert!(e.contains(why), "tied {tied}: {name}: {e}");
+                    }
+                }
+                assert_eq!(accounts.tokens(name).len(), before + usize::from(want.is_ok()), "tied {tied}: {name}: a token only when taken");
+                if want.is_ok() {
+                    assert_eq!(accounts.principal(name).and_then(|p| p.owner).as_deref(), Some(me), "tied {tied}: {name}: theirs");
+                }
+            }
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     /// holon mcp signs in as an agent only: never as a person (the run file among them, the account

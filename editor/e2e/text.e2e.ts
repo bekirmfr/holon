@@ -94,7 +94,16 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   // canvas is a sliver and its toolbar runs under the text pane: its buttons are pressed as such,
   // not at a point another element covers (a click there once waited out the test).
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).dispatchEvent("click");
-  await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
+  // The sample opened as a copy, a new flow: where another test has saved a hello-api on this
+  // server already, the save asks before it replaces that one.
+  const kept = page.getByRole("region", { name: "notices" }).getByText(/^saved \d/);
+  const ask = page.getByRole("dialog");
+  await expect(kept.or(ask).first()).toBeVisible();
+  if (await ask.isVisible()) {
+    await expect(ask).toContainText('A flow named "hello-api" is saved already');
+    await ask.getByRole("button", { name: "Replace" }).click();
+  }
+  await expect(kept).toBeVisible();
   const saved = await request.get(`${SERVER}/flows/hello-api`, { headers: { Authorization: `Bearer ${adminToken}` } });
   const doc = ((await saved.json()) as { document: { source?: string } }).document;
   expect(doc.source).toContain("// says hello, loudly");
@@ -142,7 +151,15 @@ test("the It may strip says what an edit adds to what the flow may do; Problems,
   );
   await expect(may.locator(".hl-may__chip--new")).not.toHaveCount(0);
   await expect(may.locator(".hl-may__chip--new").first()).toContainText("new");
-  await expect(may.locator(".hl-may__chip--new").first()).toHaveAttribute("title", /seen/);
+  // The pill stands for the item, and says it whole in a tip as soon as the pointer is on it.
+  const added = may.locator(".hl-may__chip--new").first();
+  await expect(added).toHaveAttribute("data-item", /seen/);
+  await added.hover();
+  const tip = page.locator(".hl-may__tip");
+  await expect(tip).toContainText('collection "seen"');
+  await expect(tip).toContainText("new: a person approves it when this is deployed");
+  await page.mouse.move(0, 0);
+  await expect(tip).toHaveCount(0);
 
   // A mistake is listed in the bottom pane's Problems as it is typed; check counts it, and a click
   // on it goes there.

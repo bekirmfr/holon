@@ -9,6 +9,7 @@
 // writes the address, and says what is above a place (Esc goes there).
 
 import type { MouseEvent } from "react";
+import { cut, quoted } from "./fromUrl";
 
 export const FLOW_TABS = ["status", "runs", "logs", "history", "state", "settings"] as const;
 export type FlowTab = (typeof FLOW_TABS)[number];
@@ -278,9 +279,10 @@ export function labelOf(r: Route): string {
       return r.tab === "databases" ? "Resources" : RESOURCES_LABELS[r.tab];
     case "people":
       return r.tab === "people" ? "People and access" : PEOPLE_LABELS[r.tab];
+    // Names from the address, which anyone can write: cut to a label's length, or quoted.
     case "principal":
     case "group":
-      return r.name;
+      return cut(r.name);
     case "access-version":
       return `version ${r.version}`;
     case "policy":
@@ -288,12 +290,17 @@ export function labelOf(r: Route): string {
     case "start":
       return "Getting started";
     case "docs":
-      return r.page === null ? "Docs" : (r.page.split("/").pop() ?? r.page).replace(/\.md$/, "");
+      return r.page === null ? "Docs" : cut((r.page.split("/").pop() ?? r.page).replace(/\.md$/, ""));
     case "signin":
       return "Sign in";
     case "notfound":
-      return `#${r.hash}`;
+      return quoted(`#${r.hash}`);
   }
+}
+
+/** What the console says of an address that names nothing here: the address quoted. */
+export function nothingAt(hash: string): string {
+  return `Nothing is at ${quoted(`#${hash}`)}.`;
 }
 
 /** The places above `r` and `r` itself, from the overview down: the top bar's crumbs. */
@@ -310,6 +317,14 @@ export const follow = (to: Route, navigate: (r: Route) => void) => (e: MouseEven
   e.preventDefault();
   navigate(to);
 };
+
+/** Why `#editor.<slug>` opens nothing: no flow of that name is saved here (nor deployed). Mostly a
+ *  tab never saved, its address kept over a reload: a sample's copy, say, which `sampleTitle`
+ *  names when `slug` is a sample's name. The slug is the address's, so it is quoted. */
+export function nothingToReopen(slug: string, sampleTitle?: string): string {
+  const why = `There is no flow named ${quoted(slug)} saved here: a tab never saved closes with the page.`;
+  return sampleTitle === undefined ? why : `${why} The sample ${sampleTitle} opens again from the Library.`;
+}
 
 /** Whether `name` can be a flow's own page address (it is not a page's name). */
 export function flowAddressable(name: string): boolean {

@@ -72,9 +72,23 @@ pub(crate) fn tokens_file() -> Option<PathBuf> {
 /// What `tokens.json` keeps: each key ([`tokens_file`]) to its token.
 pub(crate) type Kept = std::collections::BTreeMap<String, String>;
 
-/// Everything `file` keeps; nothing, if it can't be read.
+/// Everything `file` keeps; nothing, if it can't be read (`as_kept`).
 pub(crate) fn tokens_in(file: &Path) -> Kept {
-    std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    as_kept(std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default())
+}
+
+/// What `file` keeps, read as this version keeps it: an API token kept under a server's own URL
+/// (rc.35's `holon mcp setup --server` kept its agent's so) is that server's agent's
+/// (`agent:<URL>`), unless it has one, and never a person's session, which a person's command
+/// would sign in with as if it were them. Written so with the next token kept.
+fn as_kept(file: Kept) -> Kept {
+    let mut kept = Kept::new();
+    let (agents, rest): (Vec<_>, Vec<_>) = file.into_iter().partition(|(key, token)| !key.starts_with("agent:") && token.starts_with("ht_"));
+    kept.extend(rest);
+    for (server, token) in agents {
+        kept.entry(agent_key(&server)).or_insert(token);
+    }
+    kept
 }
 
 /// The servers this user signed in to with `holon login`: every key kept but the agents'.
@@ -340,28 +354,59 @@ impl Answer {
 /// ([`target`]), signed in as [`admin_call`] is: the answer, whatever its status; or, said on
 /// stderr, the exit code to end with when there was none.
 pub(crate) fn send(who: &str, server: Option<&str>, method: &str, path: &str, body: Option<(&str, Vec<u8>)>) -> Result<Answer, i32> {
-    let target = target(server).map_err(|e| {
+    let said = |e: String| {
         eprintln!("{who}: {e}");
         1
-    })?;
-    let Target { server, token, from } = target;
-    let mut request = ureq::request(method, &format!("{server}{path}")).timeout(Duration::from_secs(60));
-    if let Some(token) = &token {
-        request = request.set("Authorization", &format!("Bearer {token}"));
+    };
+    let target = target(server).map_err(said)?;
+    let (status, response) = request(&target, method, path, body.as_ref().map(|(t, b)| (*t, b.as_slice())), Duration::from_secs(60)).map_err(said)?;
+    let Target { server, from, .. } = target;
+    // An answer that can't be read whole is no answer: said, never taken as an empty one (which
+    // a command printed as `null`, and ended 0).
+    match read_answer(response.into_reader(), MAX_ANSWER) {
+        Ok(body) => Ok(Answer { server, status, body, from }),
+        Err(why) => {
+            eprintln!("{who}: {server} answered {status}, and its answer couldn't be read: {why}");
+            Err(1)
+        }
+    }
+}
+
+/// `method` `path` sent to `target`'s server, signed in with its token, given `timeout`: its
+/// status and the answer, whatever the status; or why there is none, told as
+/// [`crate::outbound::said`] tells a failed call, without the token a line break in it would
+/// echo (`HOLON_TOKEN`, a session kept). The one road a command takes to a server, but
+/// `holon deploy`'s and `holon mcp`'s own.
+pub(crate) fn request(target: &Target, method: &str, path: &str, body: Option<(&str, &[u8])>, timeout: Duration) -> Result<(u16, ureq::Response), String> {
+    let mut call = ureq::request(method, &format!("{}{path}", target.server)).timeout(timeout);
+    if let Some(token) = &target.token {
+        call = call.set("Authorization", &format!("Bearer {token}"));
     }
     let answered = match body {
-        Some((content_type, bytes)) => request.set("Content-Type", content_type).send_bytes(&bytes),
-        None => request.call(),
+        Some((content_type, bytes)) => call.set("Content-Type", content_type).send_bytes(bytes),
+        None => call.call(),
     };
-    let (status, response) = match answered {
-        Ok(r) => (r.status(), r),
-        Err(ureq::Error::Status(code, r)) => (code, r),
-        Err(e) => {
-            eprintln!("{who}: can't reach {server}: {e}");
-            return Err(1);
-        }
-    };
-    Ok(Answer { server, status, body: response.into_string().unwrap_or_default(), from })
+    match answered {
+        Ok(r) => Ok((r.status(), r)),
+        Err(ureq::Error::Status(code, r)) => Ok((code, r)),
+        Err(e) => Err(format!("can't reach {}: {}", target.server, crate::outbound::said(&e))),
+    }
+}
+
+/// The most of a server's answer a command reads: a deployment's runs, state or history as JSON,
+/// with the requests' bodies in it. Past it the command says so and fails.
+pub(crate) const MAX_ANSWER: u64 = 1 << 30;
+
+/// A server's answer read whole, as text: or why it couldn't be (it broke off, it isn't text, it
+/// is longer than `most` bytes).
+pub(crate) fn read_answer(from: impl std::io::Read, most: u64) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    from.take(most.saturating_add(1)).read_to_end(&mut bytes).map_err(|e| format!("it broke off ({e})"))?;
+    if bytes.len() as u64 > most {
+        return Err(format!("it is longer than the {} MiB a command reads", most >> 20));
+    }
+    String::from_utf8(bytes).map_err(|_| "it isn't text".to_string())
 }
 
 /// [`target`], given what it reads: testable without a server.
@@ -455,6 +500,41 @@ fn server_from(given: Option<&str>, files: Vec<(PathBuf, RunFile)>, answers: imp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guards: a server's answer is read whole, however long up to the most a command reads, or
+    /// the command is told why it couldn't be: it broke off, it isn't text, it is longer than
+    /// the most. Never an empty answer in its place.
+    /// Why: `send` read with ureq's `into_string`, which stops at 10 MB, and took its error as an
+    /// empty body. `holon runs <slug> --last 10 --json` then printed `null` and ended 0 once
+    /// runs carried large request bodies, as would every command that asks through `send` (runs,
+    /// logs, history, state): a script reading it saw success and nothing.
+    /// If it fails: `send` takes an answer it couldn't read as one, or stops short of `most`.
+    #[test]
+    fn an_answer_is_read_whole_or_said_not_to_be() {
+        /// A reader that gives `n` bytes of `a`, then fails.
+        struct BreaksOff(usize);
+        impl std::io::Read for BreaksOff {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0 == 0 {
+                    return Err(std::io::Error::other("reset"));
+                }
+                let n = self.0.min(buf.len());
+                buf[..n].fill(b'a');
+                self.0 -= n;
+                Ok(n)
+            }
+        }
+        // Past the 10 MB `into_string` stopped at: whole.
+        let long = vec![b'a'; 11 << 20];
+        assert_eq!(read_answer(&long[..], MAX_ANSWER).map(|s| s.len()), Ok(11 << 20));
+        // At the most, whole; a byte past it, said.
+        assert_eq!(read_answer(&b"abcd"[..], 4), Ok("abcd".to_string()));
+        assert!(read_answer(&b"abcde"[..], 4).is_err_and(|e| e.contains("longer than")));
+        assert_eq!(read_answer(&b""[..], 4), Ok(String::new()), "an empty answer is one");
+        // Cut short, or not text: said, and nothing of it taken.
+        assert!(read_answer(BreaksOff(1000), MAX_ANSWER).is_err_and(|e| e.contains("broke off")));
+        assert!(read_answer(&[0xff, 0xfe][..], MAX_ANSWER).is_err_and(|e| e.contains("isn't text")));
+    }
 
     fn file(port: u16) -> (PathBuf, RunFile) {
         let f = RunFile { server: format!("http://127.0.0.1:{port}"), token: format!("hl_{port}"), pid: 1 };
@@ -612,15 +692,42 @@ mod tests {
     fn a_token_is_kept_per_server_and_forgotten() {
         let dir = std::env::temp_dir().join(format!("holon-tokens-{}", std::process::id()));
         let file = dir.join("tokens.json");
-        assert!(!keep_token(&file, "https://a.example", Some("ht_a")).unwrap());
-        assert!(keep_token(&file, "https://a.example", Some("ht_a2")).unwrap(), "replaced");
-        keep_token(&file, "https://b.example", Some("ht_b")).unwrap();
+        assert!(!keep_token(&file, "https://a.example", Some("hs_a")).unwrap());
+        assert!(keep_token(&file, "https://a.example", Some("hs_a2")).unwrap(), "replaced");
+        keep_token(&file, "https://b.example", Some("hs_b")).unwrap();
         keep_token(&file, &agent_key("https://b.example"), Some("ht_agent")).unwrap();
-        assert_eq!(saved_token(&file, "https://a.example").as_deref(), Some("ht_a2"));
+        assert_eq!(saved_token(&file, "https://a.example").as_deref(), Some("hs_a2"));
         assert_eq!(logins(&tokens_in(&file)), ["https://a.example", "https://b.example"]);
         assert!(keep_token(&file, "https://a.example", None).unwrap());
         assert_eq!(saved_token(&file, "https://a.example"), None);
-        assert_eq!(saved_token(&file, "https://b.example").as_deref(), Some("ht_b"));
+        assert_eq!(saved_token(&file, "https://b.example").as_deref(), Some("hs_b"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An agent's API token that rc.35's `holon mcp setup --server` kept under the server's own
+    /// URL is read as that server's agent's, never as a person's session (R9): a person's command
+    /// doesn't sign in as the agent, `holon mcp` still does, and the file is so written with the
+    /// next token kept. One kept beside an agent's own is dropped.
+    #[test]
+    fn an_agent_token_kept_under_a_url_is_the_agents() {
+        let dir = std::env::temp_dir().join(format!("holon-tokens-rc35-{}", std::process::id()));
+        let path = dir.join("tokens.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = ("http://127.0.0.1:7400", "https://b.example");
+        let rc35 = serde_json::json!({ a: "ht_rc35", b: "ht_old", agent_key(b): "ht_new", "https://c.example": "hs_cy" });
+        std::fs::write(&path, serde_json::to_vec(&rc35).unwrap()).unwrap();
+        let kept = tokens_in(&path);
+        assert_eq!(logins(&kept), ["https://c.example"], "an agent's token is no one's sign-in");
+        assert_eq!((saved_token(&path, a), saved_token(&path, b)), (None, None));
+        assert_eq!(kept.get(&agent_key(a)).map(String::as_str), Some("ht_rc35"));
+        assert_eq!(kept.get(&agent_key(b)).map(String::as_str), Some("ht_new"), "the agent's own is kept");
+        let person = target_from(Some("7400"), None, vec![file(7400)], |_| None, &kept).unwrap();
+        assert_eq!(person.token.as_deref(), Some("hl_7400"), "the person's command signs in with the run file, not as the agent");
+        assert_eq!(agent_target_from(Some("7400"), None, vec![file(7400)], |_| None, &kept).unwrap().token.as_deref(), Some("ht_rc35"));
+        keep_token(&path, "https://c.example", Some("hs_cy2")).unwrap();
+        let written: Kept = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written.keys().collect::<Vec<_>>(), [&agent_key(a), &agent_key(b), &"https://c.example".to_string()]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

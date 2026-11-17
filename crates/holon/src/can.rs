@@ -47,7 +47,7 @@ use crate::accounts::{Accounts, Kind};
 use crate::bindings::Held;
 use crate::http::err;
 use Action::*;
-use Holds::{Do, Own};
+use Holds::{Do, For, Own};
 
 /// What may be done, to what (the design's §4). Fixed here: roles are made from it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -62,6 +62,7 @@ pub(crate) enum Action {
     FlowLifecycle,
     FlowDelete,
     RunView,
+    RunSteps,
     RunCall,
     RunDecide,
     RunExport,
@@ -88,9 +89,9 @@ pub(crate) enum Action {
 impl Action {
     /// The whole catalogue: what a binding of a role gives (bindings.rs), and what the tests hold
     /// to the design.
-    pub(crate) const ALL: [Action; 31] = [
+    pub(crate) const ALL: [Action; 32] = [
         FlowView, FlowEdit, FlowPropose, FlowDeploy, FlowApproveDeploy, FlowRestore, FlowRestoreDryRun, FlowLifecycle, FlowDelete,
-        RunView, RunCall, RunDecide, RunExport,
+        RunView, RunSteps, RunCall, RunDecide, RunExport,
         StateView, StateWrite,
         SecretList, SecretSet, SecretRollBack,
         ResourceView, ResourceBind, ResourceUnbind,
@@ -113,6 +114,7 @@ impl Action {
             FlowLifecycle => "flow.lifecycle",
             FlowDelete => "flow.delete",
             RunView => "run.view",
+            RunSteps => "run.steps",
             RunCall => "run.call",
             RunDecide => "run.decide",
             RunExport => "run.export",
@@ -198,6 +200,9 @@ enum Holds {
     Do(Action),
     /// An action only on what is its holder's own: a flow it saved, or one not saved yet.
     Own(Action),
+    /// An action only for these kinds of its holders: which kinds a role's run.steps reaches is
+    /// one line of the table (R55).
+    For(Action, &'static [Kind]),
 }
 
 /// A role, built-in or an admin's own: what it holds, and which kinds of principal may hold it.
@@ -228,6 +233,7 @@ impl RoleDef {
         self.holds.iter().any(|h| match *h {
             Holds::All => true,
             Do(a) => a == action,
+            For(a, kinds) => a == action && who.kind.is_some_and(|k| kinds.contains(&k)),
             Own(a) => {
                 a == action
                     && match on {
@@ -246,7 +252,18 @@ impl RoleDef {
 
     /// Whether it holds `action` on anything.
     pub(crate) fn holds_any(&self, action: Action) -> bool {
-        self.holds.iter().any(|h| matches!(*h, Holds::All) || matches!(*h, Do(a) | Own(a) if a == action))
+        self.holds.iter().any(|h| matches!(*h, Holds::All) || matches!(*h, Do(a) | Own(a) | For(a, _) if a == action))
+    }
+
+    /// Whether, bound to a principal of `kind` where a flow is, it holds `action` there.
+    pub(crate) fn holds_for(&self, action: Action, kind: Kind) -> bool {
+        self.kinds.contains(&kind)
+            && self.holds.iter().any(|h| match *h {
+                Holds::All => true,
+                Do(a) => a == action,
+                For(a, kinds) => a == action && kinds.contains(&kind),
+                Own(_) => false,
+            })
     }
 }
 
@@ -256,7 +273,10 @@ const ANYONE: &[Kind] = &[Kind::Person, Kind::Agent, Kind::Service];
 pub(crate) static BUILTIN: LazyLock<[Arc<RoleDef>; 4]> = LazyLock::new(|| {
     let def = |role: Role, holds: &[Holds], kinds: &[Kind]| Arc::new(RoleDef { name: role.name().into(), builtin: Some(role), holds: holds.to_vec(), kinds: kinds.to_vec() });
     [
-        def(Role::Viewer, &[Do(FlowView), Do(RunView), Do(RunExport), Do(StateView), Do(SecretList), Do(PolicyView)], ANYONE),
+        // A run's steps and values, to every kind the role is bound to: leaving a kind out here is
+        // what holding it like an agent would be (R55).
+        def(Role::Viewer, &[Do(FlowView), Do(RunView), For(RunSteps, ANYONE), Do(RunExport), Do(StateView), Do(SecretList), Do(PolicyView)], ANYONE),
+        // A viewer's but a run's steps, which a person gives it where they bind one that holds them.
         def(
             Role::Agent,
             &[
@@ -268,7 +288,7 @@ pub(crate) static BUILTIN: LazyLock<[Arc<RoleDef>; 4]> = LazyLock::new(|| {
         def(
             Role::Editor,
             &[
-                Do(FlowView), Do(RunView), Do(RunExport), Do(StateView), Do(SecretList), Do(PolicyView),
+                Do(FlowView), Do(RunView), For(RunSteps, ANYONE), Do(RunExport), Do(StateView), Do(SecretList), Do(PolicyView),
                 Do(FlowEdit), Do(FlowPropose), Do(FlowDeploy), Do(FlowApproveDeploy), Do(FlowRestore), Do(FlowRestoreDryRun), Do(FlowLifecycle), Do(FlowDelete),
                 Do(RunCall), Do(RunDecide), Do(StateWrite), Do(PolicyEdit), Do(HostCheck),
             ],
@@ -396,6 +416,9 @@ fn covering<'a>(held: &'a [Held], on: &'a Resource) -> impl Iterator<Item = &'a 
 /// role holds it.
 fn refused(who: &Caller, action: Action, on: &Resource) -> Refusal {
     let name = who.name.as_deref().unwrap_or_default();
+    if action == RunSteps {
+        return Refusal(steps_refused(who, on));
+    }
     let roles: Vec<&Arc<RoleDef>> = covering(who.holds.as_deref().unwrap_or_default(), on).collect();
     match on {
         Resource::Saved { name: flow, by } if roles.iter().any(|r| r.holds_own(action)) => {
@@ -431,6 +454,26 @@ fn refused(who: &Caller, action: Action, on: &Resource) -> Refusal {
     Refusal(format!("{name} may not do that: {what}"))
 }
 
+/// What a refusal of a run's steps and values says (R55): that no role the caller holds there holds
+/// run.steps, and what a person runs to give it them there, binding the built-in role that holds it
+/// for their kind (the table's: an admin defines one when none does). The agent loop reads it at
+/// `explain` and goes on from it.
+fn steps_refused(who: &Caller, on: &Resource) -> String {
+    let name = who.name.as_deref().unwrap_or_default();
+    let (whose, scope) = match on {
+        Resource::Flow(slug) => (format!("{slug:?}'s"), format!("--flow {slug}")),
+        Resource::Tag(tag) => (format!("the flows tagged {tag:?}"), format!("--tag {tag}")),
+        Resource::Flows => ("any flow's".to_string(), "--flow SLUG".to_string()),
+        _ => ("these".to_string(), "--flow SLUG".to_string()),
+    };
+    let role = who.kind.and_then(|kind| BUILTIN.iter().filter(|d| d.builtin != Some(Role::Admin)).find(|d| d.holds_for(RunSteps, kind)));
+    let give = match (role, who.kind) {
+        (Some(role), _) => format!("a person gives it with `holon bind {} --to {name} {scope} --why …`, or in the editor: People, then {name}, then bind a role", role.name),
+        (None, kind) => format!("no built-in role gives it to {}: an admin defines one that holds run.steps, and a person binds it to {name} there", kind.map_or("this caller", |k| k.said())),
+    };
+    format!("{name} may not read {whose} runs' steps and values (explain, a run's detail, export, replay): no role {name} holds there holds run.steps; {give}")
+}
+
 /// What a route asks of its caller.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Rule {
@@ -443,6 +486,9 @@ pub(crate) enum Rule {
     /// That `can` lets them do either action to what the path names: the handler answers each
     /// what it may see (the waiting runs, to whoever may decide one of their approvals).
     Either(Action, On, Action, On),
+    /// That `can` lets them do both actions to what the path names, the first asked first: a
+    /// run's evidence is its steps (R55).
+    Both(Action, Action, On),
 }
 
 /// What a route's path names: the resource its rule asks `can` about.
@@ -482,6 +528,10 @@ const fn asks(method: &'static str, path: &'static str, action: Action, on: On) 
 
 const fn asks_either(method: &'static str, path: &'static str, first: (Action, On), second: (Action, On)) -> Route {
     Route { method, path, rule: Rule::Either(first.0, first.1, second.0, second.1) }
+}
+
+const fn both(method: &'static str, path: &'static str, first: Action, second: Action, on: On) -> Route {
+    Route { method, path, rule: Rule::Both(first, second, on) }
 }
 
 /// Every route, in the order the routers read them (auth.rs's, then http.rs's): the first that
@@ -608,26 +658,34 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("GET", "/deployments/{slug}/queues", StateView, On::Slug),
     asks("GET", "/deployments/{slug}/channels", StateView, On::Slug),
     asks("POST", "/deployments/{slug}/runs/{id}/decide", RunDecide, On::Approvals),
-    asks("GET", "/deployments/{slug}/changes", FlowView, On::Slug),
-    asks("GET", "/deployments/{slug}/history", FlowView, On::Slug),
+    // A cell's values, before and after each run that changed it: the state's (R56).
+    asks("GET", "/deployments/{slug}/changes", StateView, On::Slug),
+    // The last clock ticks, each with its outputs and effects: runs' values (R56, as R55's log).
+    asks("GET", "/deployments/{slug}/history", RunSteps, On::Slug),
     asks("GET", "/deployments/{slug}/state", StateView, On::Slug),
-    asks("GET", "/deployments/{slug}/log", RunView, On::Slug),
-    asks("GET", "/deployments/{slug}/export", RunExport, On::Slug),
-    asks("GET", "/deployments/{slug}/replay", RunExport, On::Slug),
+    // A run's steps and values are run.steps' (R55): the whole log, and the evidence made of it.
+    // The list of runs, each without its values, is run.view's.
+    asks("GET", "/deployments/{slug}/log", RunSteps, On::Slug),
+    asks("GET", "/deployments/{slug}/log/heads", RunView, On::Slug),
+    both("GET", "/deployments/{slug}/export", RunSteps, RunExport, On::Slug),
+    both("GET", "/deployments/{slug}/replay", RunSteps, RunExport, On::Slug),
     asks("GET", "/deployments/{slug}/document", FlowView, On::Slug),
     asks("GET", "/deployments/{slug}/events", FlowView, On::Slug),
     asks("GET", "/deployments/{slug}/versions", FlowView, On::Slug),
     asks("GET", "/deployments/{slug}/holds", StateView, On::Slug),
+    // With "state": true, its handler asks state.view as well: a state's values (R57).
     asks("POST", "/deployments/{slug}/restore", FlowRestoreDryRun, On::Slug),
     asks("GET", "/deployments/{slug}/manifest", FlowView, On::Slug),
     asks("GET", "/deployments/{slug}/grant", FlowView, On::Slug),
     asks("POST", "/deployments/{slug}/grant", FlowApproveDeploy, On::Slug),
-    asks("GET", "/deployments/{slug}/sessions", RunView, On::Slug),
+    // Each session with the state it ended with (R56).
+    asks("GET", "/deployments/{slug}/sessions", StateView, On::Slug),
     asks("POST", "/deployments/{slug}/run", FlowLifecycle, On::Slug),
     asks("POST", "/deployments/{slug}/pause", FlowLifecycle, On::Slug),
     asks("POST", "/deployments/{slug}/stop", FlowLifecycle, On::Slug),
     asks("POST", "/deployments/{slug}/request", RunCall, On::Slug),
     asks("POST", "/deployments/{slug}/settings", FlowDeploy, On::Slug),
+    // Its outputs, a run's values, only to whoever holds run.steps: to anyone else, left out (R57).
     asks("POST", "/deployments/{slug}/tick", FlowLifecycle, On::Slug),
     asks("DELETE", "/deployments/{slug}", FlowDelete, On::Slug),
     // It answers how its actions are run: a deployer's question (the plan's D4).
@@ -673,6 +731,7 @@ pub(crate) fn may(who: &Caller, route: &Route, parts: &Parts, accounts: Option<&
     match route.rule {
         Rule::Can(action, on) => may_on(who, action, on, parts, accounts),
         Rule::Either(first, on, second, then) => may_on(who, first, on, parts, accounts).or_else(|refused| may_on(who, second, then, parts, accounts).map_err(|_| refused)),
+        Rule::Both(first, second, on) => may_on(who, first, on, parts, accounts).and_then(|()| may_on(who, second, on, parts, accounts)),
         Rule::Open | Rule::SignedIn => Ok(()),
     }
 }
@@ -691,7 +750,14 @@ fn may_on(who: &Caller, action: Action, on: On, parts: &Parts, accounts: Option<
             Resource::Principal { name, owner: owner.as_deref() }
         }
     };
-    can(who, action, &resource)
+    can(who, action, &resource).map_err(|Refusal(said)| {
+        // Giving a run's steps is an access change: say so where one waits for people (R55).
+        let waits = accounts.and_then(|a| a.access_document().approvals.changes).filter(|_| action == RunSteps);
+        Refusal(match waits {
+            Some(n) => format!("{said}. Here an access change that gives more waits for {n} person(s) besides its author, in Approvals, Access changes"),
+            None => said,
+        })
+    })
 }
 
 #[cfg(test)]
@@ -782,6 +848,9 @@ mod tests {
                     Holds::All => Action::ALL.iter().map(|a| a.name().to_string()).collect(),
                     Do(a) => vec![a.name().to_string()],
                     Own(a) => vec![format!("{} (its own)", a.name())],
+                    // To the role's every kind, as the design writes it; to fewer, it names them.
+                    For(a, kinds) if kinds == ANYONE => vec![a.name().to_string()],
+                    For(a, kinds) => vec![format!("{} ({})", a.name(), kinds.iter().map(|k| serde_json::to_value(k).unwrap().as_str().unwrap().to_string()).collect::<Vec<_>>().join(", "))],
                 })
                 .collect();
             let kinds: BTreeSet<String> = def.kinds.iter().map(|k| serde_json::to_value(k).unwrap().as_str().unwrap().to_string()).collect();
@@ -825,8 +894,11 @@ mod tests {
                 let may = |c: &Caller| can(c, action, r).is_ok();
                 assert_eq!(may(&both), may(&viewer) || may(&editor), "{} on {r:?}", action.name());
                 let said = can(&none, action, r).unwrap_err().0;
+                if action == RunSteps {
+                    assert_eq!(said, steps_refused(&none, r));
+                    assert!(said.starts_with("eve may not read ") && said.contains("holon bind viewer --to eve"), "{said}");
                 // A person is told whose tokens they are, as before.
-                if !matches!(r, Resource::Principal { .. }) {
+                } else if !matches!(r, Resource::Principal { .. }) {
                     assert!(said.starts_with("eve may not do that: no role eve holds ") && said.ends_with(action.name()), "{said}");
                 }
             }
@@ -915,7 +987,8 @@ mod tests {
                             assert_eq!(got.is_ok(), expected, "{}", case(&format!("{} on {on:?}", action.name())));
                             let told_whose = matches!(on, Resource::Principal { .. }) && kind == Kind::Person;
                             if covering.is_empty() && !expected && !owns(&who, action, on) && !told_whose {
-                                assert_eq!(got.unwrap_err().0, format!("eve may not do that: no role eve holds {place} holds {}", action.name()), "{}", case(""));
+                                let said = if action == RunSteps { steps_refused(&who, on) } else { format!("eve may not do that: no role eve holds {place} holds {}", action.name()) };
+                                assert_eq!(got.unwrap_err().0, said, "{}", case(""));
                             }
                         }
                         // An approval's step with a role takes someone bound to it by name where the
@@ -974,6 +1047,7 @@ mod tests {
             let asked = match route.rule {
                 Rule::Can(action, on) => vec![(action, on)],
                 Rule::Either(first, on, second, then) => vec![(first, on), (second, then)],
+                Rule::Both(first, second, on) => vec![(first, on), (second, on)],
                 Rule::Open | Rule::SignedIn => vec![],
             };
             for (action, on) in asked {

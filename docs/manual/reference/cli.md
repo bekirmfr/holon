@@ -116,7 +116,16 @@ it may:
 
 A websocket is listed under its server with the blocks it has, `WebSocket /room/:name: open,
 message, close`. A flow that touches nothing outside says `it only computes: it reads and changes
-nothing outside`. Each mistake goes to stderr as `file:line:col: message`, with the line and a caret
+nothing outside`. A flow that does something with a secret says what, under `with its secrets:`,
+each line with its handler and the line of the text: where the secret is sent (`POST /stripe, line
+11: sends the secret "slack_webhook_path" to https://hooks.slack.com`), a route that answers its
+caller with it, where what a call answered to it goes and where a hash or a signature made with it
+goes (`answers its caller with a hash or signature made with the secret "signing_key"`), and a
+write or a call the host will refuse when the run tries it (`would keep the
+secret "k" (write its state "kept"): the host refuses it`, `would hand the secret "k" to another
+flow (…): the host refuses it`). These are the lines the editor marks the canvas's nodes with, and
+an agent's `check` tool prints them too, so a refused write is known before the flow runs. They
+are cautious: a value that may hold the secret is marked, so the exit code stays 0. Each mistake goes to stderr as `file:line:col: message`, with the line and a caret
 under the place, and the exit code is 1.
 
 ### `holon show`
@@ -135,7 +144,9 @@ holon fmt <file>
 
 Lays the file out in the canonical form, as Prettier does, at 100 columns and without
 semicolons, keeping its comments and blank lines. It writes only a text that compiles to the same
-flow.
+flow, and one whose calls, templates and functions written in place nest 20 deep at most, a
+function counting twice ([the reference](../language/reference.md#files) says why): past it, it
+says where to name a part.
 
 ### `holon types`
 
@@ -168,11 +179,13 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--data-host IP` | where deployed flows' own servers listen (default `127.0.0.1`) |
 | `--allow-host HOST` | a host name it answers to besides localhost, on its own port and each flow's (one a proxy in front forwards); repeatable |
 | `--allow-origin ORIGIN` | an origin the editor may be served from, besides localhost's; repeatable |
+| `--trust-proxy IP` | a proxy in front, by the address it connects from (`127.0.0.1` for one on this machine), trusted to say whom it forwards for (`X-Forwarded-For`): each client's sign-in tries and requests at once are then counted by its own address, not the proxy's. Any program connecting from that address can say so too. Repeatable, for a chain of proxies |
 | `--keep-runs N` | runs each deployment's log keeps unless its deploy settings say (the `keep_runs` limit's default: 500 without it; or `HOLON_KEEP_RUNS`) |
 | `--log-stdout` | also print each line a flow writes with `console.log` as it is kept, one to a line, `11:48:03.678 traced-payout: LOG   run 0  payout asked p-1 250` (or `HOLON_LOG_STDOUT=1`): for a server run under systemd or in a container that collects what it prints |
 | `--log-size SIZE`, `--log-files N`, `--log-rate N` | how each deployment's log lines are kept: the size of each file (`64K` at least; default `2M`), how many files (1 to 10; default 3), and the most lines a second it writes (default 1000), the rest dropped and counted; or `HOLON_LOG_SIZE`, `HOLON_LOG_FILES`, `HOLON_LOG_RATE` ([`holon logs`](#holon-logs)) |
 | `--flow-cache SIZE` | memory kept for the flows runs have loaded, so a run doesn't read its flow from the store again: `64M`, `1G`, or `0` to keep none (default `256M`; or `HOLON_FLOW_CACHE`). What it counts is the memory a flow takes once loaded (measured within a few percent, rounded up so it keeps a little less, never more), each unit once, however many flows place it; past the size, the flows used least recently are let go and load again when next run. Beside it, the store keeps the values runs read from disk (a collection's items, state), up to `--value-cache` |
 | `--value-cache SIZE` | memory kept for the values runs read from the store's disk (a collection's items and trie, a file's text by hash), so a read doesn't open the file again: `64M`, `1G`, or `0` to keep none (default `64M`; or `HOLON_VALUE_CACHE`). What it counts is the memory a value takes in it. Past the size, the values used least recently are let go |
+| `--max-memory SIZE` | the memory the server holds in all, every run's together with its caches: `512M`, `4G` (at least `64M`; or `HOLON_MAX_MEMORY`). Past it a run fails, its error saying so (`holon verify` reads it as one not run to its end, as one stopped for time), and a request is answered `503` with `Retry-After: 1` until the runs let some go. Default: half the machine's memory, or three quarters of what its container may hold, whichever is less ([Limits a run has](server.md#limits-a-run-has)) |
 | `--export-heads URL` | send each run's head to a witness (or `HOLON_EXPORT_HEADS`); its token in `HOLON_EXPORT_HEADS_TOKEN` |
 | `--root-key os\|env:VAR\|file:PATH` | where the root key is kept, which opens what the server seals in its data folder (`keys.json`); never in the folder (default: the OS key store on Windows and macOS, `~/.holon/keys/<id>.key` elsewhere); back it up apart with `holon key export` |
 | `--new-root-key` | print a fresh key for `--root-key env:VAR`, and exit |
@@ -202,8 +215,13 @@ reached over https, and `http://` to another machine is refused while there is o
 A first deploy, and a version that asks for something its grant doesn't cover, needs a person's
 approval. Without `--approve`, deploy prints what it asks for and exits 1, deploying nothing:
 approve it in the editor, by deploying it from there. `--approve` approves it here, as you, and
-prints what it approved, in the deployment's timeline as yours. Agents' tools
-([`holon mcp`](#holon-mcp)) never approve: the server refuses an agent's deploy that would.
+prints what it approved, in the deployment's timeline as yours. Agents never approve: signed in
+with an agent's token, as through [`holon mcp`](#holon-mcp), each version is proposed for a person,
+whatever it asks for, unless a person let the flow take its agents' versions that ask for nothing
+more at once. It prints the proposal, what it asks for, and that a person approves it in the
+editor's Approvals; [`holon wait`](#holon-wait) ends when they decide. Signed in as someone who
+may propose versions but not approve them, a version that asks for something new is proposed the
+same way, and `--approve` gives nothing.
 
 ## `holon replay`
 
@@ -221,7 +239,11 @@ This version replayed on "price-rules"'s last 3 runs, offline (nothing sent or w
   run 0  POST /price  differs: its answer
 ```
 
-Nothing is deployed, sent or written; only the version's units are staged on the server. It exits 0
+A replay runs for 30 seconds at most: the runs it didn't reach by then are counted, `12 not reached
+in time`, and `--runs` with fewer reaches further back in time for each.
+
+Nothing is deployed, sent or written; only the version's units are staged on the server. It reads
+the runs' steps, so it takes `run.steps` on the deployment, which the agent role doesn't hold. It exits 0
 when no run differs, 1 when one does or it can't replay, 2 for a wrong argument, so a script can
 hold back a deploy that would answer differently. What "can't tell" means is under
 [Replayed on recent runs](../guides/deploying.md#replayed-on-recent-runs). It reaches the server as
@@ -260,7 +282,8 @@ shows its code, its code with the graph beside it (following the cursor), or the
 In the editor, keys type; `esc` leaves the text for the page keys and `i` comes back. `ctrl+t`
 (or `ctrl+n`, or the tab bar's `+`) opens a draft in a new tab from anywhere (`n` on the
 editor's page keys): its first save asks for a file. `ctrl+s` saves (to its file, else on the
-server, not deployed), `ctrl+d` deploys, showing what it may do and what you approve by
+server, not deployed, over the save it opened: one made since, in the editor or by an agent, is
+refused and kept), `ctrl+d` deploys, showing what it may do and what you approve by
 deploying it (`s` there saves it on the server instead, for whoever may approve it), `ctrl+r` shows a run over its text (what it played lit, the rest dimmed, each
 statement's value under it; `=` or the tab bar's Values hides the values for the code alone,
 and shows them again). Under it, as in the web editor, a panel: the runs on its left
@@ -403,7 +426,8 @@ holon tick <slug> <clock>
 ```
 
 Fires one of a flow's clocks now, by its label as `holon deployments` shows it (`"every 2s"`):
-what the run did, as a tick on its own would.
+what the run did, as a tick on its own would. What it produced and did are its run's values, which
+take `run.steps` on the flow: without it, it says they were left out, and what would give them.
 
 ### `holon state`
 
@@ -625,7 +649,9 @@ holon flows remove <name>
 The flows saved on the server, as the editor's flows page lists them: who saved each, when, and
 whether it is deployed (and whether what is deployed is its latest). `show` prints one's text.
 `save` compiles a file and saves it, not deployed, with its text as written, for someone to open
-in the editor; a flow someone else saved under that name is kept, unless `--replace`. `remove`
+in the editor; a flow someone else saved under that name is kept, unless `--replace`. It
+replaces the save it read, so one made in between, in the editor or by an agent, is kept and the
+save refused. `remove`
 deletes a saved flow; a deployment of it stays.
 
 ### `holon activity`
@@ -786,6 +812,7 @@ command that lets them.
 ```sh
 holon bind editor --to bob --flow payout --why "owns the payout flow"
 holon bind editor --to bob --tag payments --why "on the payments team"
+holon bind viewer --to claude --flow payout --why "reads its runs' steps"
 holon bind payout-approver --group payments --approval payout:ok --until 7d
 holon unbind 12 --why "back from leave"
 ```
@@ -813,20 +840,21 @@ an auditor.
 it, as a new version (holding `people.assign` on the host):
 
 ```
-exclude-deployer  on   whoever deployed the version a run is on decides none of its approvals
+exclude-deployer  on   whoever deployed the version a run is on, and their party, decide none of its approvals
 agents            on   agents take the steps written for them
-starter           on   a person who started a run may take a step of it that says so
+starter           on   whoever started a run, or one of their party, may take a step of it that says so
 changes           2    an access change that gives more waits until 2 people other than its author approve it
 (version 7)
 ```
 
-`--exclude-deployer on` keeps whoever deployed the version a run is on from deciding any of its
-approvals, whatever they hold (off by default). `--agents off` lets no agent decide one: a flow
+`--exclude-deployer on` keeps whoever deployed the version a run is on, and their party (an agent
+or a service they own or made a token of), from deciding any of its approvals, whatever they hold
+(off by default). `--agents off` lets no agent decide one: a flow
 whose approval has a step for an agent doesn't deploy, and an agent takes no step of a run
 already waiting (on by default). `--starter off` lets whoever started a run take no step of it:
 a flow whose approval has a step that lets them (`starter: true`) doesn't deploy, and a run
-already waiting goes by it at once (on by default: a person who started a run may take a step that
-says so). An agent never decides a run it started, whatever these say. `--changes N` (1 to 5, or
+already waiting goes by it at once (on by default: whoever started a run, or one of their party,
+may take a step that says so). An agent never decides a run it started, whatever these say. `--changes N` (1 to 5, or
 `off`, the default) has an access change that gives someone more wait until N people other than
 its author approve it ([People and access](../guides/people.md#access-changes-that-wait-for-people)):
 loosening any of these is such a change, but made here, through this machine's run file, where it
@@ -834,11 +862,17 @@ applies at once.
 
 `local` says who this machine's run file signs in as: the person who set the server up, so the
 commands run on its machine (`holon decide` among them) are theirs. `--as NAME` ties it to
-another person here who isn't disabled, as a new version (holding `people.assign` on the host):
+another person here who isn't disabled and holds no more than you, as a new version (holding
+`people.assign` on the host):
 
 ```
 this machine's run file signs in as bob (version 9)
 ```
+
+Whoever holds the machine then decides as that person, so while this server has people approve
+an access change that gives more, the tie waits as one (`proposals`), saying what that person
+holds; it isn't approved through the run file, nor by whom it signs in as now. Run on the machine
+itself, through its run file, it applies at once.
 
 Tied to no one (its person removed, or disabled), the run file is the OS user's admin,
 `local:<user>`, and decides no approval.
@@ -879,7 +913,7 @@ holon export <slug> [--server PORT|URL] [--to FOLDER] [--as NAME] [-o PATH]
 ```
 
 Writes a deployment's runs, and every unit they ran on, to `<slug>-runs.json`, for `holon
-verify`. From the server you run on this machine, signed in as you; with several running,
+verify`. It takes `run.export` and `run.steps` (a run's steps and values) on the deployment. From the server you run on this machine, signed in as you; with several running,
 `--server PORT` picks one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), signed in as you with [`holon login`](#holon-login-logout), or as an agent or a service with its token in `HOLON_TOKEN`.
 
 `--max-files-bytes N` (`64K`, `10M`, `2G`) ships at most that much of the file texts the runs
@@ -896,15 +930,17 @@ holon verify <export.json | export.json.gz> [--head HEX] [--files DIR] [--data D
 
 Checks exported runs, offline (an export, or a backup's gzipped one, [`[storage]
 backup`](server.md#the-policy)): the chain, each unit's hash, every run, run again, and that each
-run's state follows from the one before. `--head`
-checks that a head a witness holds is in the export. `--files` gives the files runs read whose
+run's state follows from the one before. `--head` checks that a head a witness holds is in the
+export, so no run in the export, from its oldest up to that head, was changed or removed (of runs
+a trimmed log no longer holds, it says nothing). `--files` gives the files runs read whose
 texts the export doesn't hold. An export `holon export` wrote is plain and needs no key; one the
 server keeps on disk (a backup's, a removed deployment's records) is sealed under its keys, and
 opens with the `keys.json` of the data folder it came from (`--data`, else this machine's
 server's) and its root key (`--root-key`: `os`, `env:VAR` or `file:PATH`, as the server's; the OS
 key store if not given); without them it says which it needs. Exits 0 when it all checks, every
-run run again; 1 when something doesn't check; 3 when nothing fails but some runs couldn't be run
-again (it says which, and why); 2 for a file it can't read.
+run run again and every run's state checked; 1 when something doesn't check; 3 when nothing fails
+but not everything was checked, some runs not run again or some states not checked (it says
+which, and why); 2 for a file it can't read.
 
 ## `holon history`
 
@@ -1172,7 +1208,7 @@ hosts Holon knows and keeps your own. See [Working with agents](../guides/agents
 | `HOST…` | the hosts to set up (`holon mcp hosts` lists them) |
 | `--all` | every host found on this machine |
 | `--server PORT\|URL` | a server you don't run: asks for an agent's token, checks it is one, and keeps it in `~/.holon/tokens.json` |
-| `--agent NAME` | on a server you run, sign in as the agent `NAME` (made if it isn't there) rather than `<your user>-agent` |
+| `--agent NAME` | on a server you run, sign in as the agent `NAME` (made if it isn't there; one there already only if it is yours) rather than `<your user>-agent` |
 | `--project DIR` | the hosts' project files in `DIR` |
 | `--name NAME` | the entry's name (default `holon`), for a second server |
 | `--print` | show the entry and where it goes; write nothing |
@@ -1208,6 +1244,7 @@ Code extension starts it.
 | `HOLON_KEEP_RUNS` | `holon serve --keep-runs` |
 | `HOLON_FLOW_CACHE` | `holon serve --flow-cache` |
 | `HOLON_VALUE_CACHE` | `holon serve --value-cache` |
+| `HOLON_MAX_MEMORY` | `holon serve --max-memory` |
 | `HOLON_SETUP_CODE` | the first admin's setup code |
 | `HOLON_EXPORT_HEADS`, `HOLON_EXPORT_HEADS_TOKEN` | the witness heads are sent to, and its token |
 | `HOLON_SECRET_<NAME>` | values for secrets whose source is env |

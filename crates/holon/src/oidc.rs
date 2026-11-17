@@ -224,7 +224,7 @@ fn fetch_keys(uri: &str) -> Result<JwkSet, String> {
 
 /// `url`'s JSON, read with a timeout.
 fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, String> {
-    let body = ureq::get(url).timeout(Duration::from_secs(10)).call().map_err(|e| e.to_string())?.into_string().map_err(|e| e.to_string())?;
+    let body = ureq::get(url).timeout(Duration::from_secs(10)).call().map_err(|e| crate::outbound::said(&e))?.into_string().map_err(|e| e.to_string())?;
     serde_json::from_str(&body).map_err(|e| e.to_string())
 }
 

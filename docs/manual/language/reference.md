@@ -60,7 +60,15 @@ the same flow.
 **How deep.** A text nests at most 128 levels: each bracket, operator and block inside another is
 one, and a flow written to be read nests a few dozen. A deeper one is refused where it passes the
 bound, before anything reads it, and so is a handler whose answer is chosen among more than 128
-returns: name a part of it, with a `const` or a function.
+returns: name a part of it, with a `const` or a function. Each `else` of an `if … else if …`
+chain is a level of the `if` before it. A `/` right after a `}`, an `of` or a `>` that may close
+a type's arguments is refused too, as TypeScript reads it as a division or as a regular
+expression by what the parser made of what came before: put the value it divides, or the
+regular expression, in parentheses. `holon fmt` has a closer bound of its
+own: its layout takes about twice as long for each call inside another call's arguments or a
+template's `${…}`, and more for a function written in place (`xs.map((x) => …)`), so it lays out
+these nested 20 deep at most, a function counting twice and a function's `{ … }` starting again;
+the samples nest 7 at most. Past it fmt says where, and leaves the text as it is: name a part.
 
 ## Imports and settings
 
@@ -559,8 +567,8 @@ Each of these is one building block, and each is one thing the flow may do.
 | `coll[k] = e`, `coll.put(k, e)` | put it when the run finishes |
 | `delete coll[k]`, `coll.delete(k)` | delete it when the run finishes |
 | `coll.list({ prefix: p, after: a, limit: n })` | a page of items, in key order |
-| `dir[name]`, `dir.get(name)` | a file's text, in a folder, as the run began (up to 1 MiB) |
-| `dir.bytes(name)` | a file's bytes, any file, as the run began (up to 1 MiB): a `Uint8Array`, its `.length` and `.slice(start, end)` read as JavaScript's |
+| `dir[name]`, `dir.get(name)` | a file's text, in a folder, as the run began (up to 1 MiB by default, the `inline_file_bytes` limit; a bigger file fails the run) |
+| `dir.bytes(name)` | a file's bytes, any file, as the run began (up to 1 MiB by default, as above): a `Uint8Array`, its `.length` and `.slice(start, end)` read as JavaScript's |
 | `dir[name] = text`, `dir.put(name, text)` | write the whole file when the run finishes: a text as its UTF-8, bytes as they are |
 | `delete dir[name]`, `dir.delete(name)` | delete the file when the run finishes |
 | `dir.list({ prefix: p, after: a, limit: n })` | a page of files: `{size, hash, modified}` by name |
@@ -569,7 +577,7 @@ Each of these is one building block, and each is one thing the flow may do.
 | `dir.lines(name, { from: i, limit: n })` | `n` lines from line `i` (from the end when negative) |
 | `dir.slice(name, { offset: o, length: n })` | `n` bytes from offset `o`, as text |
 | `dir[name] = handle`, `dir.copy(name, handle)` | copy a file by handle when the run finishes |
-| `dir.create(name, text)`, `dir.create_copy(name, handle)` | the same write (a text or bytes) or copy, only if there is no such file yet: else the run fails, and nothing it did lands |
+| `dir.create(name, text)`, `dir.create_copy(name, handle)` | the same write (a text or bytes) or copy, only if there is no such file yet: else the run fails, and none of its writes land (requests it made before then have gone out) |
 | `f` in `on.file.created(dir, (f) => …)` | the handle of the file that started the run: `{folder, name, size, hash, modified, event}` |
 | `m` in `on.mail(ops, (m) => …)` | the message that started the run: `{from, name, to, cc, subject, date, message_id, text, html, attachments, authenticated, verdict}`; `authenticated` is the mailbox's own server's word that the domain in `from` sent it |
 | `e` in `on.feed(prices, (e) => …)` | the event that started the run: `{data, event, id}`; `data` a value when it is JSON, else its text; `event` its name, `"message"` when it gives none; `id` only when it has one |
@@ -582,9 +590,9 @@ Each of these is one building block, and each is one thing the flow may do.
 | `await charge(x)` (`import { charge } from "flow:billing"`) | run the action `charge` of the deployed flow `billing` with `x`, a value (`{}` when none is written); the answer is `{answer, run}` when it ran, `{error, message}` when it didn't |
 | `payment(x)`, `charge(x)`, not awaited | start a run of this flow's action, or another flow's, with `x`; the answer is `{run, waiting}` once it waits, `waiting` the token for each point it waits at, `{answer, run}` if it finishes first, `{error, message}` when it didn't run |
 | `await event(name, { expires: d })` | park the run until the event `name` arrives (in an action, not a route); the answer is the request that brought it, or `{ expired: true }` when none came in time. The run goes on either way, so say what running out means before anything is done: `if (got.expired ?? false) return …` (an event that came has no `expired`, and an `if` on no value runs neither branch, nor what follows) |
-| `await approval(name, { expires: d, people: n })` | park the run until `n` different people (1 to 5, 1 when left out), signed in to Holon, approve it, or one declines; the answer is `{approved, by, decisions}`, `by` who approved and `decisions` every decision taken, a decline included (`{slot, who, kind, role, at, approved, reason, binding, access}`, `slot` 0 and no `role` for `people`; `binding` the id of the binding that let its decider, and `access` the access document's version it was read in), with `declined_by` and `reason` when declined, `expired: true` when no one decided in time (in an action, not a route); a decision may carry a `note`, any JSON, given to the run with it |
+| `await approval(name, { expires: d, people: n })` | park the run until `n` different people (1 to 5, 1 when left out), signed in to Holon, approve it, or one declines; the answer is `{approved, by, decisions}`, `by` who approved and `decisions` every decision taken, a decline included (`{slot, who, kind, role, at, approved, reason, binding, access, via}`, `slot` 0 and no `role` for `people`; `binding` the id of the binding that let its decider, `access` the access document's version it was read in, and `via` `local:<user>` when it came through the machine's run file), with `declined_by` and `reason` when declined, `expired: true` when no one decided in time (in an action, not a route); a decision may carry a `note`, any JSON, given to the run with it |
 | `await approval(name, { steps: [{ role: "reviewer" }, { role: "approver", people: 2 }] })` | the same, decided in steps: each step in turn (`order: "any"`: in any order; a list inside `steps`: a stage, its steps in any order), each taken by principals bound to its role where the approval is (no role: anyone holding `run.decide`, a person; `kind: "agent"` for an agent's step). Up to 5 steps. Each principal decides one step, once, and not of a run they started; one decline ends it |
-| `await approval(name, { people: 2, shows: { amount, payee } })` | the same, showing those who decide it what they approve: `shows` is any value the run has before it waits. Without it they see what the run was started with (an action's argument, a request without its headers, what a source delivered; nothing for a clock), each as the run's log keeps it: a field tainted by a secret's mark redacted, a value a secret may have made withheld, past 16 KiB its size |
+| `await approval(name, { people: 2, shows: { amount, payee } })` | the same, showing those who decide it what they approve: `shows` is any value the run has before it waits. Without it they see what the run was started with (an action's argument, a request without its headers, what a source delivered; nothing for a clock), each as the run's log keeps it: a field tainted by a secret's mark redacted, a value a secret may have made withheld, past 16 KiB cut down (each text to its first KiB, saying how much more) |
 | `ops.send({ to, cc, subject, text, html, attachments })` | mail a message when the run is over, from the binding's sender: `to` and `cc` an address or a list, `html` beside the text, `attachments` a record of a file name to its text or bytes. A message that isn't one (a field it doesn't know, no recipient, a subject on two lines) has no value, and nothing is sent |
 | `payouts.send({ data, group })` | send a message to the queue `payouts` once the run is over and its writes have landed: `data` text as it is, anything else as JSON; `group` a FIFO queue's message group. A message without `data` has no value, and nothing is sent |
 | `JSON.stringify(x)`, `JSON.parse(text)` | JSON out, JSON in (see [Records](#records) for a replacer, a reviver and an indent) |
@@ -750,19 +758,21 @@ route.get("/seen/:name", (req) => seen[req.params.name])
 - **`on.feed(prices, (e) => { … })`** runs for each event the feed an admin bound `prices` to
   sends (`holon feed add prices --url …`), one at a time, in the order they came; `e` is the
   event. One handler a feed; it answers nobody. The host keeps where the feed is: a connection
-  lost is opened again from the last event run on, and an event sent again is passed over
+  lost is opened again from the last event run on, and an event sent again, by an id among the
+  last 1,000 run on, is passed over
   ([Feeds](../guides/feeds.md)).
 - **`on.queue(payouts, (m) => { … })`** runs for each message the queue an admin bound `payouts`
   to holds (`holon queue add payouts --url …`), one at a time, in the order received; `m` is the
   message, `{data, id, attributes, sent, count, group}`, and it is deleted once its run's record
   is on disk. One handler a queue, one deployment listening to it; it answers nobody. A message
-  run already is passed over ([Queues](../guides/queues.md)).
+  among the last 1,000 run on is passed over ([Queues](../guides/queues.md)).
 - **`export const NAME = action((input) => { … })`** runs when someone runs it by its name,
   `input` what they sent (a JSON value; `{}` for nothing). It answers with what it returns, a
   value alone (no `status(…)` or `respond(…)`); one that only writes answers nothing. It is
   exported, as it is what reaches the flow from outside: an `action(…)` that isn't exported is
-  refused. The network never reaches it: a person runs it from the editor or a script, an agent
-  only one a person lets agents run, and another flow by importing it
+  refused. No route path reaches it: a person runs it from the editor or a script, an agent
+  only one a person lets agents run, another flow by importing it, and this flow's own handlers
+  by calling it
   ([Actions](../guides/actions.md)).
 
 A file starts a run once it stops changing: the server looks at the folder every second, and a
@@ -940,8 +950,8 @@ those fields (several).
 - **Budgets:** `fuel` is instructions per call (default 200M), `memory` the memory per call
   (default 16 MiB). The deploy asks for the budgets, and the server's policy caps them. A run's
   calls between two of its outbound calls run no more than `max_fuel` instructions in all (4G
-  unless the flow asks for more with `limits: { max_fuel }`); a run that wants more fails and
-  performs nothing. A call's own memory is its `memory`, freed as it answers; what it answers
+  unless the flow asks for more with `limits: { max_fuel }`); a run that wants more fails: its
+  writes and sends aren't performed, though the requests it made before that stretch are sent. A call's own memory is its `memory`, freed as it answers; what it answers
   counts toward the run's `max_memory`.
 - **Failures:** an exception, or a call that runs out of fuel, gives no value, and the run
   records why: `explain` shows it under the statement. A syntax error is found by `holon check`.
@@ -974,14 +984,16 @@ The syntax is TypeScript's, and these meanings are Holon's. Where a JavaScript r
 misled, the compiler refuses instead.
 
 - **Dataflow, not control flow.** A value is computed when what it needs has arrived. The order
-  of statements only matters for names (defined before use).
+  of statements matters for names (defined before use), for a `let` assigned again, and for what
+  a `return` or an `if` cuts off.
 - **Absence.** A value that doesn't arrive makes everything built from it absent: `a.b` on no
   value is no value, never an error. That is how a flow says "not found" (`?? status(404)`), "not
   allowed" (`ok ? x : undefined`) and "not verified". Absence isn't a value: it can't be stored or
   compared. `none()` is a value, and unrelated.
 - **Reads at the start, writes at the end.** `state.x`, `coll[k]` and `dir[name]` are the values as
   the run began. Writes are performed when the run finishes, and only if granted. A run never sees
-  its own writes. When two runs change the same item at once, one is run again, so none is lost;
+  its own writes. When two runs change the same item at once, one is run again, so none is lost (one that
+  would wait past its `claim_wait` for the other fails, busy, writing nothing);
   for now, except a run that waited at an `await`: its writes land over what was written while
   it waited.
 - **Calls out happen between rounds.** A request is made when the run gets to it; the run
@@ -1004,16 +1016,28 @@ misled, the compiler refuses instead.
   steps, `steps: [{ role: "reviewer" }, { role: "approver" }]`, names who takes each step by the
   role they hold, and its permission names the steps,
   `Approval("name/person:reviewer>person:approver")`; `people: n` is its short form. Each step
-  is taken in turn, by a principal of its kind bound to its role where the approval is, never
-  whoever started the run but on a step that says `starter: true` (`{ role: "editor", starter:
-  true }`, `^` in its permission: an output review, the one who asked checking what was made),
-  and then a person: an agent never decides a run it started. Each decision is kept with the
+  is taken in turn, by a principal of its kind bound to its role where the approval is, one
+  step a party (an agent or a service is one party with whoever owns it or made a token of it),
+  never whoever started the run nor their party but on a step that says `starter: true` (`{
+  role: "editor", starter: true }`, `^` in its permission: an output review, the one who asked
+  checking what their own agent made), which the starter's party fills, one principal each: an
+  agent never decides a run it started. Each decision is kept with the
   binding that let it (`binding`,
   `access`), in the run's log and its export. Those who decide it see what they approve:
   `shows: { amount, payee }`, or the run's input when it names nothing, redacted as the run's log
   is; one who may decide a flow's approvals but not view its runs sees only the runs waiting at
   an approval they may decide. The design is
   [`docs/L4s/access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8.
+- **A paused deployment's runs wait on.** Paused or stopped, a deployment takes no run, and a
+  run waiting in it goes on from neither a decision (refused, 409, and not kept), its deadline,
+  nor a request to its resume route. It waits on, and once the deployment runs again it is
+  decided, times out or is resumed as before; a run that went on before the pause goes on to
+  its end.
+- **A crash doesn't run a part twice.** A waiting run is saved as going on, with the decision or
+  event it was given, before the part that follows runs. If the server stops without finishing
+  (a crash, a power loss) while it runs, what it does may have been done, so the server, starting
+  again, ends the run rather than run the part again, and the deployment's timeline says so: a
+  payout isn't sent twice. Its log says how far it got; someone starts it again if it didn't.
 - **Sharing is explicit.** A binding is one value used many times. The same expression written
   twice is computed twice.
 - **Every run ends.** There are no loops and no recursion: `map`, `reduce` and a list's other
@@ -1035,11 +1059,12 @@ everything.
 ## Identity and canonical form
 
 - **A flow's identity is the hash of its graph** (`unit` in `holon check`). Names of bindings and
-  functions, comments, blank lines and the order of independent statements aren't in it: two
+  functions, comments, blank lines and the order of independent statements aren't in it (inside a
+  `js()` body they are: its text is its identity): two
   texts that build the same graph are the same unit. A function's parameter and output names are,
   as they are its ports.
-- **Any change to what the flow computes is a new version** with a new hash. Every run names the
-  version it ran.
+- **Any change to what the flow computes is a new version** with a new hash. Every run the log keeps
+  names the version it ran.
 - **`holon fmt`** lays the text out. Formatting twice changes nothing.
 
 ## Mistakes
@@ -1087,3 +1112,5 @@ broken.holon.ts:5:23: unknown name "nope"
 | two routes clash; not a method; not a route path | the route |
 | this isn't wired to the route's request (or the handler's trigger) | the statement |
 | nests more than 128 levels deep; more than 128 returns, or conditions, one after another | where it passes the bound |
+| this `/` reads two ways in TypeScript (after `}`, `of` or a type's `>`) | the `/` |
+| (fmt) calls, templates and functions written in place nest more than 20 in each other | where it passes fmt's bound |

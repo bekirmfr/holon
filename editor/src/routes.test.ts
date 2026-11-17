@@ -1,7 +1,7 @@
 // The address names every place, reads back as the same place, and says what is above it.
 
 import { describe, expect, it } from "vitest";
-import { crumbs, flowAddressable, format, labelOf, parentOf, parse, type Route } from "./routes";
+import { crumbs, flowAddressable, format, labelOf, nothingToReopen, parentOf, parse, type Route } from "./routes";
 
 /** Every place the console's design walks through, by its address. */
 const PLACES = [
@@ -136,5 +136,12 @@ describe("routes", () => {
     expect(flowAddressable("refunds")).toBe(true);
     expect(flowAddressable("flows")).toBe(false);
     expect(flowAddressable("a.b")).toBe(false);
+  });
+
+  it("says why a tab never saved doesn't open again after a reload, and where a sample's does", () => {
+    expect(nothingToReopen("tally")).toBe("There is no flow named “tally” saved here: a tab never saved closes with the page.");
+    expect(nothingToReopen("hello-api", "Hello API")).toBe(
+      "There is no flow named “hello-api” saved here: a tab never saved closes with the page. The sample Hello API opens again from the Library.",
+    );
   });
 });

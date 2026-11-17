@@ -7,13 +7,13 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ActionRows } from "./ActionRows";
 import type { Approval } from "./approvals";
 import { lastDay, sinceOf, type VersionItems } from "./statusFacts";
-import { describeItem } from "./holon";
 import { follow, format, type Route } from "./routes";
 import { runLabel, runOutcome } from "./runs";
 import { getDeployedDocument, getManifest, getSummary, getVersions, hostAddress, type DeploymentEntry, type FlowDocument, type VersionEntry } from "./server";
 import type { Answer } from "./can";
 import { useFlowLog } from "./useFlowLog";
 import { Spark } from "./ui/Spark";
+import { Said } from "./SecretSaid";
 
 /** How many versions back "since" looks. */
 const VERSIONS_READ = 20;
@@ -151,7 +151,9 @@ export function StatusTab({
                 const lacking = may.notGranted.includes(item);
                 return (
                   <li key={item} title={item}>
-                    <span className={lacking ? "hl-flow__bad" : "hl-flow__what"}>{describeItem(item)}</span>
+                    <span className={lacking ? "hl-flow__bad" : "hl-flow__what"}>
+                      <Said item={item} />
+                    </span>
                     {lacking && <span className="hl-flow__bad"> · not granted</span>}
                     {s && (
                       <span className="hl-table__dim">

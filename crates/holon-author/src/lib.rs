@@ -72,6 +72,7 @@ pub const LIMIT_NAMES: [&str; 40] = [
     "max_await_seconds",
     "max_waiting_runs",
     "max_waiting_bytes",
+    "max_concurrent_runs",
     "max_call_depth",
     "inline_file_bytes",
     "max_file_read_bytes",

@@ -351,6 +351,9 @@ struct Lowerer<'a> {
     ticks: Vec<Block>,
     /// Whether the block being lowered is a websocket's: it runs and is done, so it doesn't wait.
     socket: bool,
+    /// The flow's waits by name: an approval's steps, or none for an event. A run keeps one
+    /// decision a name, so a name is one wait across the flow (`approval::named_apart`).
+    waits: BTreeMap<String, Option<String>>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -414,6 +417,7 @@ impl<'a> Lowerer<'a> {
             routes: vec![],
             ticks: vec![],
             socket: false,
+            waits: BTreeMap::new(),
         }
     }
 
@@ -798,13 +802,44 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Whether node `id`'s `output` is known to be a number: its type says so, or it is `+` of
-    /// numbers (an `add` gives any value, as a text on either side joins).
+    /// numbers (an `add` gives any value, as a text on either side joins). Each sum below asked
+    /// once, without recursing: `a1 = a0 + a0`, `a2 = a1 + a1`… asked again at each use was
+    /// 2^k asks (twenty-two such lines took half a second to compile, audit R17), and a chain of
+    /// sums as long as a text may be is as deep.
     fn numeric(&self, id: &str, output: &str) -> bool {
-        let Some(d) = self.b.data(id) else { return false };
-        if d.outputs.iter().any(|p| p.name == output && p.ty == WType::Number) {
-            return true;
+        let mut known: HashMap<(&str, &str), bool> = HashMap::new();
+        let mut entered: HashSet<(&str, &str)> = HashSet::new();
+        // Each port, and whether its sources are asked already: it is known once they are.
+        let mut asking = vec![((id, output), false)];
+        while let Some((port, sources_asked)) = asking.pop() {
+            #[cfg(test)]
+            asks::count();
+            if known.contains_key(&port) {
+                continue;
+            }
+            let (id, output) = port;
+            let Some(d) = self.b.data(id) else {
+                known.insert(port, false);
+                continue;
+            };
+            if d.outputs.iter().any(|p| p.name == output && p.ty == WType::Number) {
+                known.insert(port, true);
+                continue;
+            }
+            let sources: Option<Vec<(&str, &str)>> = (d.name == "add").then(|| d.inputs.iter().map(|p| self.b.source(id, &p.name)).collect()).flatten();
+            let Some(sources) = sources else {
+                known.insert(port, false);
+                continue;
+            };
+            if sources_asked {
+                // A source still unknown is on a cycle back to this sum: not known to be a number.
+                known.insert(port, sources.iter().all(|s| known.get(s) == Some(&true)));
+            } else if entered.insert(port) {
+                asking.push((port, true));
+                asking.extend(sources.into_iter().filter(|s| !known.contains_key(s)).map(|s| (s, false)));
+            }
         }
-        d.name == "add" && d.inputs.iter().all(|p| self.b.source(id, &p.name).is_some_and(|(from, out)| self.numeric(from, out)))
+        known.get(&(id, output)) == Some(&true)
     }
 
     /// The type `v` is known to have: its node's output's, or an input's as the frame knows it.
@@ -2089,6 +2124,14 @@ impl<'a> Lowerer<'a> {
                 if matches!(self.cur().kind, FrameKind::Route { .. }) {
                     return err(e.span, ROUTE_WAITS);
                 }
+                let asks = approval.as_ref().map(|s| s.text());
+                match self.waits.get(&name.text) {
+                    Some(was) if *was != asks => return err(e.span, holon_core::approval::apart(&name.text, was.as_deref(), asks.as_deref())),
+                    Some(_) => {}
+                    None => {
+                        self.waits.insert(name.text.clone(), asks);
+                    }
+                }
                 let mut params = vec![("name".to_string(), name.text.clone())];
                 if let Some(x) = expires {
                     params.push(("expires".into(), self.literal_text(x)?));
@@ -3160,6 +3203,28 @@ fn literal_json(e: &Expr) -> Option<serde_json::Value> {
         ExprKind::Paren(inner) => return literal_json(inner),
         _ => return None,
     })
+}
+
+/// The ports [`Lowerer::numeric`] took up on this thread, each time it took one: for tests to hold
+/// that asking whether a sum is a number does no more work as the sums nest deeper, counted rather
+/// than timed (`nesting.rs`'s `no_entry_doubles_its_work_with_each_level_a_text_nests`).
+#[cfg(test)]
+pub(crate) mod asks {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ASKS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// One port taken up.
+    pub(crate) fn count() {
+        ASKS.with(|a| a.set(a.get() + 1));
+    }
+
+    /// The ports taken up on this thread so far.
+    pub(crate) fn so_far() -> usize {
+        ASKS.with(Cell::get)
+    }
 }
 
 #[cfg(test)]
@@ -4661,6 +4726,55 @@ route.post("/hook", async (req) => {
         assert!(server.errors.iter().any(|e| e.contains("is an approval, which people decide in Holon: it has no token")), "{:?}", server.errors);
     }
 
+    /// **Guards:** a name is one wait across a flow: a second `approval` named alike asking for
+    /// other steps, in the same handler or another, or an `approval` and an `event` named alike,
+    /// is refused where it is written, in one sentence naming both; the same approval twice (a
+    /// helper two handlers call), or two names, compiles.
+    /// **Why:** a run keeps one decision a name, so the second point was answered with the first's
+    /// decision: a review showed a CFO step the run never asked (R22).
+    #[test]
+    fn a_wait_s_name_is_one_wait_across_the_flow() {
+        let src = |pay: &str, refund: &str| {
+            format!("import {{ action, approval, event, flow }} from \"holon\"\n\nflow(\"f\")\n\nexport const pay = action(async (order) => {{\n{pay}\n  return true\n}})\n\nexport const refund = action(async (order) => {{\n{refund}\n  return true\n}})\n")
+        };
+        let (one, cfo, paid, other) = (
+            "  const a = await approval(\"payout\")",
+            "  const b = await approval(\"payout\", { steps: [{ role: \"cfo\" }] })",
+            "  const c = await event(\"payout\")",
+            "  const d = await approval(\"refund\", { steps: [{ role: \"cfo\" }] })",
+        );
+        let both = "an approval asking for a person and an approval asking for a person holding cfo are both named \"payout\": a run keeps one decision a name, so the second would be answered with the first's, and what it asks for never asked. Name them apart";
+        let event = "an approval asking for a person and an event are both named \"payout\": a run keeps one decision a name, so the second would be answered with the first's, and what it asks for never asked. Name them apart";
+        // Its decision used, as a handler that compiles uses it.
+        let used = |wait: &str, v: &str| format!("{wait}\n  if (!{v}.approved) {{\n    return false\n  }}");
+        let (a, d) = (used(one, "a"), used(other, "d"));
+        // (what, pay's body, refund's body, the refusal and the line it is on, or none).
+        type Row<'a> = (&'a str, String, &'a str, Option<(&'a str, u32)>);
+        let rows: [Row; 6] = [
+            ("two approvals named alike in one handler", format!("{one}\n{cfo}"), "", Some((both, 7))),
+            ("in two handlers", one.to_string(), cfo, Some((both, 11))),
+            ("an approval and an event", one.to_string(), paid, Some((event, 11))),
+            ("the same approval in two handlers", a.clone(), &a, None),
+            ("two names", a.clone(), &d, None),
+            ("one approval", a.clone(), "", None),
+        ];
+        for (what, pay, refund, refused) in rows {
+            let got = ts::compile(&src(&pay, refund));
+            match refused {
+                Some((said, line)) => {
+                    let e = got.err().unwrap_or_else(|| panic!("{what}: compiles"));
+                    assert_eq!((e.message.as_str(), e.span.start.line), (said, line), "{what}");
+                }
+                None => assert!(got.is_ok(), "{what}: {:?}", got.err().map(|e| e.message)),
+            }
+        }
+        // A unit built otherwise (a canvas) is refused by what it asks for, as a server reads it.
+        let asks = |items: &[&str]| holon_core::approval::named_apart(items.iter().copied());
+        assert_eq!(asks(&["Approval(\"payout/person\")", "Approval(\"payout/person:cfo\")"]).as_deref(), Some(both));
+        assert_eq!(asks(&["Approval(\"payout/person\")", "Await(\"payout\")"]).as_deref(), Some(event));
+        assert_eq!(asks(&["Approval(\"payout/person\")", "Approval(\"refund/person:cfo\")", "Await(\"went\")", "NetworkIngress"]), None);
+    }
+
     /// **Guards:** an approval's options make the steps the canonical text says, each way of
     /// writing them (`people`, a flat `steps`, `order: "any"`, stages); and every way that isn't
     /// steps is refused, in one sentence saying what to write.
@@ -4710,9 +4824,8 @@ route.post("/hook", async (req) => {
             ("{ steps: [{ role: \"a b\" }] }", "\"a b\" isn't a role's name: letters, digits, - and _, at most 64"),
             ("{ steps: [{ role: approver }] }", "a step's role is a name in quotes: { role: \"reviewer\" }"),
             ("{ steps: [{ role: \"a\", who: \"ada\" }] }", "a step's fields are role, kind, people and starter, not \"who\""),
-            ("{ steps: [{ role: \"a\", starter: false }] }", "starter: true lets whoever started the run take the step; left out, they may not: { role: \"editor\", starter: true }"),
-            ("{ steps: [{ role: \"a\", starter: \"yes\" }] }", "starter: true lets whoever started the run take the step; left out, they may not: { role: \"editor\", starter: true }"),
-            ("{ steps: [{ role: \"a\", kind: \"agent\", starter: true }] }", "an agent never decides a run it started: starter: true is a person's step's, { role: \"editor\", starter: true }"),
+            ("{ steps: [{ role: \"a\", starter: false }] }", "starter: true lets whoever started the run, or one acting for them, take the step; left out, they may not: { role: \"editor\", starter: true }"),
+            ("{ steps: [{ role: \"a\", starter: \"yes\" }] }", "starter: true lets whoever started the run, or one acting for them, take the step; left out, they may not: { role: \"editor\", starter: true }"),
             (six.as_str(), "an approval has at most 5 steps, not 6"),
             (long.as_str(), &format!("\"{}\" isn't a role's name: letters, digits, - and _, at most 64", "r".repeat(65))),
         ] {

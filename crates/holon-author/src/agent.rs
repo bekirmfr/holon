@@ -111,10 +111,38 @@ pub fn text_of(name: &str, document: &Value) -> Result<String, String> {
 /// Whether `source` compiles to the unit `doc`'s canvas deploys as.
 fn says_its_canvas(source: &str, doc: &FlowDocument) -> bool {
     let Ok(said) = plan(source) else { return false };
+    canvas_unit(doc).is_ok_and(|canvas| canvas == said.unit)
+}
+
+/// The unit `doc`'s canvas deploys as, in hex.
+fn canvas_unit(doc: &FlowDocument) -> Result<String, String> {
     let mut store = MapResolver::new();
     crate::text::restore(doc, &mut store, &Names::new());
     let port = doc.server.clone().unwrap_or_default().port;
-    flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings()).is_ok_and(|canvas| to_hex(&canvas) == said.unit)
+    flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings()).map(|canvas| to_hex(&canvas))
+}
+
+/// The units `document`'s canvas deploys as: the flow's, in hex, and each unit it is made of,
+/// encoded, as a client stages them (`POST /unit`) before deploying it.
+pub fn canvas_units(document: &Value) -> Result<(String, Vec<Vec<u8>>), String> {
+    let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
+    let mut store = MapResolver::new();
+    crate::text::restore(&doc, &mut store, &Names::new());
+    let port = doc.server.clone().unwrap_or_default().port;
+    let hash = flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings())?;
+    let units = closure_of(&[hash], &store).iter().filter_map(|h| store.resolve(h).and_then(|u| encode_preimage(u).ok())).collect();
+    Ok((to_hex(&hash), units))
+}
+
+/// What a flow's document deploys as: the unit its canvas builds, in hex, and the sites whose
+/// pages it answers (its `browsers` line, one by one). A server checks a document it is sent
+/// against the unit deployed with it: a person reviews the document (its text is printed from it,
+/// [`text_of`]), so one that said something else would have them approve what they never read.
+pub fn deploys_as(document: &Value) -> Result<(String, Vec<String>), String> {
+    let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
+    let unit = canvas_unit(&doc).map_err(|e| format!("the flow's document doesn't build: {e}"))?;
+    let browsers = doc.server.and_then(|s| s.browsers).unwrap_or_default().split(|c: char| c.is_whitespace() || c == ',').filter(|o| !o.is_empty()).map(String::from).collect();
+    Ok((unit, browsers))
 }
 
 /// A consent name as a person reads it (`StateWrite("beats")` → write its state "beats").
@@ -179,6 +207,8 @@ pub fn run_line(entry: &Value) -> String {
     let s = |k: &str| entry.get(k).and_then(Value::as_str);
     let seq = entry.get("seq").and_then(Value::as_u64).unwrap_or(0);
     let what = match s("kind") {
+        // As the list of runs says it: its route, not its URL, which says the request's values.
+        Some("request") if s("url").is_none() && s("route").is_some() => s("route").unwrap_or_default().to_string(),
         Some("request") => format!("{} {}", s("method").unwrap_or("?"), s("url").unwrap_or("?")),
         Some(kind) => kind.to_string(),
         None => "?".into(),
@@ -206,6 +236,8 @@ pub fn run_line(entry: &Value) -> String {
     }
     if let Some(e) = s("error") {
         line.push_str(&format!(" — failed: {e}"));
+    } else if entry.get("failed").and_then(Value::as_bool) == Some(true) {
+        line.push_str(" — failed");
     }
     line
 }
@@ -624,7 +656,8 @@ fn steps_of(document: &Value, entry: &Value, line_of: &HashMap<&str, u32>) -> Ve
 
 const GUIDE: &str = r#"Holon: flows written as text, in TypeScript's syntax. A flow is a small service (routes, clocks,
 actions), built from pure parts. Holon derives what it may do from the text itself, runs only what
-is granted, and keeps a record of its runs, each of which replays exactly.
+is granted, and keeps a record of its runs, each of which replays exactly but for its steps with a
+secret.
 
 A FILE (NAME.holon.ts: its imports, then flow(…), then its handlers)
   import { flow, route, status } from "holon"   the vocabulary (flow, route, every, on, action, js,

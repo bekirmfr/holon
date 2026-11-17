@@ -224,7 +224,7 @@ fn option(call: &str, key: &str) -> Option<&'static str> {
         ("approval", "shows") => "`shows: { amount: order.amount, payee }`: what those who decide it see, any value the run has before it waits; left out, what the run was started with. Kept as the run's log keeps it: a field the flow taints redacted, a value made from a secret withheld.",
         ("approval", "role") => "`{ role: \"reviewer\" }`: the role a step's principals hold where the approval is: on the flow, its tag or the approval point (`holon bind reviewer --to bob --approval payout:payout`). Left out, anyone holding run.decide there takes it, a person.",
         ("approval", "kind") => "`kind: \"agent\"`: an agent takes the step, holding its role; `\"person\"` when left out. A service never decides an approval.",
-        ("approval", "starter") => "`{ role: \"editor\", starter: true }`: whoever started the run may take this step, as when the one who asked checks what agents made; left out, they may not, as whoever asks for a payout never approves it. A person's step only: an agent never decides a run it started. A host may let no step take the starter (`holon access approvals --starter off`).",
+        ("approval", "starter") => "`{ role: \"editor\", starter: true }`: whoever started the run, or one acting for them (an agent they own, or whose token they made), may take this step, as when the one who asked checks what their agent drafted; left out, they may not, as whoever asks for a payout never approves it, nor does their agent. An agent that started the run never decides it. A host may let no step take the starter (`holon access approvals --starter off`).",
         ("js", "fuel") => "`fuel: 50_000_000`: the instructions a call may run (200M when not written); the deploy asks for it, and the server's policy caps it.",
         ("js", "memory") => "`memory: 16_777_216`: the memory a call may take (16 MiB when not written); the deploy asks for it, and the server's policy caps it.",
         ("js", "outputs") => "`outputs: [\"best\", \"distance\"]`: the function returns a record with those fields, each an output.",
@@ -1007,11 +1007,13 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
     // nowhere (or the text doesn't compile).
     let sent_to = |name: &str| -> String {
         let sent = commands::sent_of(source);
-        match sent.get(name).map(crate::describe::describe_sent_to) {
-            Some((Some(own), Some(answers))) => format!(" This flow sends it to {own}; what is answered to it goes to {answers}."),
-            Some((Some(own), None)) => format!(" This flow sends it to {own}."),
-            Some((None, Some(answers))) => format!(" What is answered to it goes to {answers}."),
-            _ => String::new(),
+        let Some(to) = sent.get(name).map(crate::describe::describe_sent_to) else { return String::new() };
+        let said: Vec<String> = to.own.iter().map(|own| format!("this flow sends it to {own}")).chain(to.clauses()).collect();
+        let said = said.join("; ");
+        let mut letters = said.chars();
+        match letters.next() {
+            Some(first) => format!(" {}{}.", first.to_uppercase(), letters.as_str()),
+            None => String::new(),
         }
     };
 
@@ -1603,7 +1605,7 @@ mod tests {
         assert!(says(STRIPE, "stripe.verify", 0).contains("a verified Stripe webhook"), "stripe");
         assert!(says(STRIPE, "JSON.stringify", 0).contains("JSON in and out"), "JSON");
         assert!(hover(STRIPE, at(STRIPE, "JSON.stringify", 0, 5)).unwrap().text.contains("json_stringify("), "its leaf");
-        assert!(says(LICENSE, "license_key)", 0).contains("This flow sends it to the database \"vendor\"."), "a query's parameter");
+        assert!(says(LICENSE, "license_key)", 0).contains("This flow sends it to the database \"vendor\"; what is answered to it goes to its callers."), "a query's parameter");
         assert!(says(LICENSE, "vendor.one", 0).contains("a database of this flow, `database:vendor`"), "a database");
         assert_eq!(hover(SLUGS, at(SLUGS, "\"-\"", 0, 1)), None, "inside a string");
         assert_eq!(hover(SLUGS, at(SLUGS, "published.receipt", 0, 10)), None, "a field of a value");

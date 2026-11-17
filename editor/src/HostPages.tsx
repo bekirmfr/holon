@@ -70,6 +70,7 @@ import { limitMeaning } from "./policyMeans";
 import { about, input, primary, quiet, row, small } from "./hostStyles";
 
 import { format, RESOURCES_LABELS, RESOURCES_TABS, type ResourcesTab } from "./routes";
+import { Said } from "./SecretSaid";
 
 /** What holding a resource for whole runs costs, said where it is set. */
 const RUN_LOCK_COST = "every run that writes it goes one at a time, for its whole length, across every deployment bound to it";
@@ -998,7 +999,7 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
               secretValue.current?.focus();
             }}
             onWhere={async (s) => {
-              const typed = await dialog.prompt(`Where may the server's secret "${s.name}" go? Hosts and db:NAME databases, separated by commas; empty: wherever its flows' approvals show.`, (s.to ?? []).join(", "));
+              const typed = await dialog.prompt(`Where may the server's secret "${s.name}" go? Hosts and db:NAME databases, separated by commas; empty: wherever its flows' approvals show.`, (s.to ?? []).join(", "), undefined, "optional");
               if (typed === null) return;
               const to = typed.split(",").map((d) => d.trim()).filter(Boolean);
               act(() => capServerSecret(s.name, to.length ? to : null));
@@ -1359,7 +1360,9 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
             .filter((o) => kind === "everything" || o.kind === kind)
             .map((o) => (
               <div key={o.item} style={{ ...row, flexWrap: "wrap" }} title={o.item}>
-                <span style={{ color: "var(--ink)", flex: 1, minWidth: 200 }}>{describeItem(o.item)}</span>
+                <span style={{ color: "var(--ink)", flex: 1, minWidth: 200 }}>
+                  <Said item={o.item} />
+                </span>
                 {o.holders.map((h) => (
                   <button key={h.slug} style={{ ...small, textDecoration: h.revoked ? "line-through" : "none" }} title={h.revoked ? `${h.slug}: revoked; open its card` : `open ${h.slug}'s card`} onClick={() => onOpenDeployment(h.slug)}>
                     {h.slug} →
@@ -1401,10 +1404,18 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
             agents{" "}
             {policy.agents_propose === false ? (
               <>
-                may not propose: a version of theirs that needs a person is refused <span style={quiet}>(agents.propose = false)</span>
+                may not propose: a version of theirs is refused <span style={quiet}>(agents.propose = false)</span>
               </>
             ) : (
-              "may propose: a version of theirs that needs a person waits in Approvals"
+              "may propose: each version of theirs waits in Approvals"
+            )}
+            {" · "}
+            {policy.agents_deploy_at_once === false ? (
+              <>
+                no flow takes their versions at once <span style={quiet}>(agents.deploy_at_once = false)</span>
+              </>
+            ) : (
+              "a flow's settings may take their versions that ask for nothing more at once"
             )}
           </div>
           <div className="hl-matrix-wrap">

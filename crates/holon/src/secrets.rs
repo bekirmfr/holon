@@ -54,6 +54,15 @@ pub(crate) struct Resolved {
     /// name → how the log tells its current value apart: the version it is of and its
     /// fingerprint (`v3 #a1b2c3d4`, [`mark`]).
     pub(crate) shown: BTreeMap<String, String>,
+    /// name → the salt of its current value: 32 random bytes, drawn when the value was first
+    /// seen and sealed in the store (`SecretStore::salt_of`). What a run's record will commit
+    /// its secrets with, and key the marks of what it computes from them
+    /// (docs/engineering/capabilities/secrets.md, "A salt for each value"). Not there for a value whose
+    /// kept salt doesn't open.
+    pub(crate) salts: BTreeMap<String, Zeroizing<[u8; 32]>>,
+    /// name → what a run given its current value records of it (`recorder::Committed`): where
+    /// it is kept, and the commitment to it under its salt. There where its salt is.
+    pub(crate) committed: BTreeMap<String, crate::recorder::Committed>,
     /// name → why its current version has no value, or why the value it has may be stale.
     pub(crate) problems: BTreeMap<String, String>,
     /// The names whose current value is the server's ([`SERVER`]: the deployment has none of its
@@ -99,7 +108,27 @@ struct SecretsFile {
     /// and databases (`db:shop`). One not listed may go wherever its flows' approvals show.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     caps: BTreeMap<String, BTreeSet<String>>,
+    /// The salt of each value a secret has had, by deployment ([`SaltOf`]). A section of its
+    /// own, and not a field of a version: a reference's value changes under one version, and a
+    /// salt outlives the version it was drawn for. A file from before it has none, and each is
+    /// drawn as its value is next read.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    salts: BTreeMap<String, Vec<SaltOf>>,
 }
+
+/// One value's salt, as the file keeps it: whose it is (the secret's name and version, and the
+/// value's fingerprint, since a reference has more than one value under a version), and the 32
+/// bytes sealed under the keyring's `secrets` scope for [`salt_context`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SaltOf {
+    name: String,
+    version: u32,
+    print: String,
+    sealed: String,
+}
+
+/// A salt in the store: the deployment, the secret's name and version, the value's fingerprint.
+type SaltKey = (String, String, u32, String);
 
 /// Where the server's own secrets are kept in the store, beside each deployment's: one bound for
 /// every deployment that reads it (`holon secret bind stripe_key`), as a folder or a database is,
@@ -111,6 +140,202 @@ const FORMAT: u32 = 4;
 /// What a sealed value is bound to: a value sealed for one place doesn't open in another.
 fn context(slug: &str, name: &str, version: u32) -> String {
     format!("holon-secret/v3\0{slug}\0{name}\0{version}")
+}
+
+/// The commitment to `value`, version `version` of `owner`'s secret `name`, under its `salt`:
+/// SHA-256, in hex, of a domain, the owner (a deployment's slug, or [`SERVER`]), the name, the
+/// version, the salt and the value, each with its length before it, so no two fields read as
+/// one. Whoever holds the value and the salt computes it again and knows the value is the one a
+/// run recorded; without the salt (32 random bytes) it says nothing of the value, however weak.
+pub(crate) fn commitment(owner: &str, name: &str, version: u32, salt: &[u8; 32], value: &str) -> String {
+    hashed("sha256", vec![fields(&[b"holon-secret-commitment/v1", owner.as_bytes(), name.as_bytes(), &version.to_le_bytes(), salt.as_slice(), value.as_bytes()])])
+}
+
+/// `of`, each field with its length before it, so no two fields read as one.
+fn fields(of: &[&[u8]]) -> Zeroizing<Vec<u8>> {
+    let mut out = Zeroizing::new(Vec::new());
+    for field in of {
+        out.extend_from_slice(&(field.len() as u64).to_le_bytes());
+        out.extend_from_slice(field);
+    }
+    out
+}
+
+/// Core's `leaf` (`sha256` of one input, `hmac_sha256` of a key and a message), in hex. Core's
+/// leaves take values: the bytes are moved into them, and wiped once hashed.
+fn hashed(leaf: &str, inputs: Vec<Zeroizing<Vec<u8>>>) -> String {
+    let mut given: Vec<holon_core::Value> = inputs.into_iter().map(|mut bytes| holon_core::Value::Bytes(std::mem::take(&mut *bytes))).collect();
+    let hashed = holon_core::primitives::compute(leaf, &given.iter().collect::<Vec<_>>(), &[holon_core::Param::frozen("encoding", "hex")]);
+    for value in &mut given {
+        if let holon_core::Value::Bytes(bytes) = value {
+            zeroize::Zeroize::zeroize(bytes);
+        }
+    }
+    match hashed {
+        Some(holon_core::Value::Text(hex)) => hex,
+        _ => unreachable!("a hash of bytes, in hex, is a text"),
+    }
+}
+
+/// How the mark of a value a run computed from a secret begins: `‹derived #7c1e9a02›`.
+pub(crate) const DERIVED_MARK: &str = "‹derived #";
+
+/// The key a run's marks for what it computed from its secrets are made under
+/// ([`derived_hash`]): SHA-256 of a domain and, in name order, the name and the salt of each
+/// secret it was given. None for a run given none with a salt: it marks nothing.
+pub(crate) fn derived_key<'a>(salts: impl IntoIterator<Item = (&'a str, &'a [u8; 32])>) -> Option<Zeroizing<Vec<u8>>> {
+    let mut of: Vec<&[u8]> = vec![b"holon-derived-key/v1"];
+    for (name, salt) in salts {
+        of.push(name.as_bytes());
+        of.push(salt.as_slice());
+    }
+    if of.len() == 1 {
+        return None;
+    }
+    let hex = Zeroizing::new(hashed("sha256", vec![fields(&of)]));
+    holon_core::text_bytes(&hex, "hex").map(Zeroizing::new)
+}
+
+/// The hash of `value`, a text the run `run` (its id) computed from a secret: HMAC-SHA-256, in
+/// hex, under the run's key ([`derived_key`]), of a domain, the run's id, the value's kind and
+/// the value, each with its length before it. Its first eight digits are the value's mark. Keyed,
+/// so a weak value can't be guessed from it; bound to the run, so one value has one mark through
+/// a run and another in the next.
+pub(crate) fn derived_hash(key: &[u8], run: &str, value: &str) -> String {
+    hashed("hmac_sha256", vec![Zeroizing::new(key.to_vec()), fields(&[b"holon-derived/v1", run.as_bytes(), b"text", value.as_bytes()])])
+}
+
+/// What the run `run` computed from its secrets, as its record marks it: each text of
+/// [`MIN_SECRET_LEN`] characters or more that a leaf computing something of its own from a
+/// secret gave (`SecretFed::computes`, read off `timeline`, its steps as the record keeps
+/// them), with its hash under `key`.
+///
+/// And whether that is all of it (`whole`): every node that may compute from a secret was
+/// followed and observed (`kept`: the run kept a timeline; none deeper than it records, none
+/// inside a function or a module), and each such leaf gave a text a mark can stand for. One
+/// that gave a true or false, a number, bytes, a list, a short text or nothing leaves the run
+/// not whole: no mark stands for those, and what is computed from a secret is then withheld
+/// whole, as it is for a run with no key.
+pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint::SecretFed, key: Option<&[u8]>, run: &str, kept: bool) -> crate::recorder::Born {
+    let Some(key) = key.filter(|_| !fed.is_empty()) else { return Default::default() };
+    let mut whole = kept && fed.followed_to(crate::recorder::Timer::DEPTH);
+    let mut made: BTreeSet<&str> = BTreeSet::new();
+    for node in timeline.iter().filter(|n| fed.computes(&n.path)) {
+        let Some(outputs) = &node.outputs else {
+            whole = false;
+            continue;
+        };
+        for (port, output) in outputs.iter().enumerate() {
+            if !fed.output(&node.path, port).is_derived() {
+                continue;
+            }
+            let Some(SValue::Text(text)) = output else {
+                whole = false;
+                continue;
+            };
+            if text.chars().count() >= MIN_SECRET_LEN {
+                made.insert(text);
+                // Found by its value, and as JSON text writes it once: one that JSON escapes (a
+                // quote, a backslash, a control character) reads another way again written out
+                // twice, where nothing would find it.
+                whole &= serde_json::to_string(text.as_str()).is_ok_and(|quoted| quoted.len() == text.len() + 2);
+            } else {
+                whole = false;
+            }
+        }
+    }
+    let mut values: Vec<(String, String)> = made.into_iter().map(|value| (derived_hash(key, run, value), value.to_string())).collect();
+    values.sort();
+    // Two values under one mark would read as one.
+    whole &= values.windows(2).all(|pair| pair[0].0[..8] != pair[1].0[..8]);
+    // And each step `holon verify` takes from the record rather than computing it again on a
+    // mark (`SecretFed::taken`: each leaf a secret reaches, as it is or computed from it, but a
+    // call and one that only moves what it is handed) kept its outputs, in `timeline` as the
+    // record keeps it: one too large to keep as its record writes it ([`Measured`]: each such
+    // value as its mark, whatever the secret), or one carrying a file the log keeps by its hash
+    // (`firing::without_kept_files`), would read, in a record marked whole, as one taken out,
+    // which verify refuses (R61), asking the same of each step. One that only moves such a
+    // value may be left out: verify computes it again on its marks (R66). A call gives what the
+    // host answered, kept whole in the record's rounds.
+    whole &= timeline.iter().filter(|n| fed.taken(&n.path)).all(|n| n.outputs.is_some());
+    crate::recorder::Born { values, whole }
+}
+
+/// Each step of a run that may hold a secret's value, or a text computed from one
+/// (`SecretFed::holds`), measured as its record writes it, for the run's timer to keep the step
+/// when it fits so (`recorder::Measure`, R63). As the run had it, such a step is longer by as
+/// much as its secret is: kept for a short one and left out for a long one, its record would
+/// say which it had, by the step's outputs, and, for a step `holon verify` takes from the
+/// record, by withholding for the one and not the other ([`born`]'s last clause).
+/// As written, each such value is its mark, as long for one secret as for another: the
+/// deployment's secrets as [`Redactor::of`] marks them, and each text the run computed from
+/// them so far as [`Redactor::born`] does, noted from the steps [`born`] notes them from, as
+/// each gives it (none for a run with no key, whose record marks none); and a look-alike of a
+/// mark in the run's own text escaped, as written. Not the marks only its whole entry makes
+/// known (its tokens, the credentials its calls answered, its tainted values): those write a
+/// step it keeps longer, never take it out, so whether a step is kept for its size is decided
+/// here, once.
+pub(crate) struct Measured {
+    fed: crate::taint::SecretFed,
+    key: Option<Zeroizing<Vec<u8>>>,
+    run: String,
+    marks: Redactor,
+}
+
+impl Measured {
+    /// For the run `run` (its id), its secrets' values written as `marks` ([`Redactor::of`]),
+    /// its marks for what it computes from them made under `key` ([`derived_key`]).
+    pub(crate) fn new(fed: crate::taint::SecretFed, key: Option<Zeroizing<Vec<u8>>>, run: String, marks: Redactor) -> Measured {
+        Measured { fed, key, run, marks }
+    }
+}
+
+impl crate::recorder::Measure for Measured {
+    fn fits(&mut self, path: &[u32], outputs: &[Option<SValue>]) -> Option<bool> {
+        if let Some(key) = &self.key
+            && self.fed.computes(path)
+        {
+            let marks = &self.marks;
+            let values: Vec<(String, String)> = outputs
+                .iter()
+                .enumerate()
+                .filter(|(port, _)| self.fed.output(path, *port).is_derived())
+                .filter_map(|(_, output)| match output {
+                    Some(SValue::Text(text)) if text.chars().count() >= MIN_SECRET_LEN && !marks.pairs.iter().any(|(value, _)| value == text) => {
+                        Some((derived_hash(key, &self.run, text), text.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !values.is_empty() {
+                let marks = std::mem::replace(&mut self.marks, Redactor { pairs: Vec::new(), whole: Vec::new() });
+                self.marks = marks.and(Redactor::born(&crate::recorder::Born { values, whole: true }));
+            }
+        }
+        if !self.fed.holds(path) {
+            return None;
+        }
+        let mut written = outputs.to_vec();
+        for v in written.iter_mut().flatten() {
+            self.marks.logged_svalue(v);
+        }
+        Some(crate::recorder::fits(&written))
+    }
+}
+
+/// What a run given `value`, the version `v` of `owner`'s secret `name`, records of it.
+fn committed(owner: &str, name: &str, v: &Stored, salt: &[u8; 32], value: &str) -> crate::recorder::Committed {
+    crate::recorder::Committed {
+        kind: if v.source == "local" { "local" } else { "reference" }.into(),
+        commitment: commitment(owner, name, v.version, salt, value),
+        server: owner == SERVER,
+    }
+}
+
+/// What a sealed salt is bound to: the value it is of, by its fingerprint, beside what the value
+/// is bound to. A salt moved to another value's place doesn't open.
+fn salt_context(slug: &str, name: &str, version: u32, print: &str) -> String {
+    format!("holon-secret-salt/v1\0{slug}\0{name}\0{version}\0{print}")
 }
 
 #[derive(Default)]
@@ -223,6 +448,12 @@ pub(crate) struct SecretStore {
     slugs: Mutex<BTreeMap<String, Slug>>,
     /// Where each of the server's secrets may go ([`SecretsFile::caps`]). Locked after `slugs`.
     caps: Mutex<BTreeMap<String, BTreeSet<String>>>,
+    /// Each value's salt, sealed ([`SecretsFile::salts`]). Locked after `slugs` and `caps`.
+    salts: Mutex<BTreeMap<SaltKey, String>>,
+    /// Whether a salt was drawn that the file doesn't hold yet: one is drawn where a value is
+    /// read (`resolve`), under `slugs`, and the file is written once that is let go
+    /// (`keep_salts`).
+    unsaved: std::sync::atomic::AtomicBool,
 }
 
 /// Whether `d` is where a secret may be said to go: a host, with a port if it isn't 443
@@ -254,6 +485,8 @@ impl SecretStore {
             audit: Audit { path: None, kept: Mutex::new(Vec::new()) },
             slugs: Mutex::new(BTreeMap::new()),
             caps: Mutex::new(BTreeMap::new()),
+            salts: Mutex::new(BTreeMap::new()),
+            unsaved: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -278,17 +511,27 @@ impl SecretStore {
         }
         let seal = at_rest::LineSeal::with(Arc::clone(&keys), at_rest::SECRETS, at_rest::role::SECRETS_AUDIT);
         let audit = Audit { path: Some((Path::new(path).with_extension("audit.jsonl"), seal)), kept: Mutex::new(Vec::new()) };
-        let store = |caps| SecretStore { path: path.into(), keys: Arc::clone(&keys), sources, audit, slugs: Mutex::new(BTreeMap::new()), caps: Mutex::new(caps) };
+        let store = |caps, salts| SecretStore {
+            path: path.into(),
+            keys: Arc::clone(&keys),
+            sources,
+            audit,
+            slugs: Mutex::new(BTreeMap::new()),
+            caps: Mutex::new(caps),
+            salts: Mutex::new(salts),
+            unsaved: std::sync::atomic::AtomicBool::new(false),
+        };
         // Sealed whole under the server's keys (which secrets each deployment has, their sources),
         // each local value in it under the secrets scope.
-        let Some(bytes) = at_rest::read(&keys, Path::new(path), at_rest::role::SECRETS)? else { return Ok(store(BTreeMap::new())) };
+        let Some(bytes) = at_rest::read(&keys, Path::new(path), at_rest::role::SECRETS)? else { return Ok(store(BTreeMap::new(), BTreeMap::new())) };
         let parsed: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("{path:?} is not a valid secrets file: {e}"))?;
         let format = parsed.get("format").and_then(serde_json::Value::as_u64);
         if format != Some(u64::from(FORMAT)) {
             return Err(format!("{path:?} is secrets format {}, this server reads {FORMAT}", format.map_or("(none)".into(), |f| f.to_string())));
         }
         let file: SecretsFile = serde_json::from_value(parsed).map_err(|e| format!("{path:?} is not a valid secrets file: {e}"))?;
-        let store = store(file.caps);
+        let salts = file.salts.into_iter().flat_map(|(slug, salts)| salts.into_iter().map(move |s| ((slug.clone(), s.name, s.version, s.print), s.sealed))).collect();
+        let store = store(file.caps, salts);
         {
             let mut slugs = store.slugs.lock().unwrap();
             for (slug, secrets) in file.deployments {
@@ -296,6 +539,9 @@ impl SecretStore {
             }
             store.resolve_all(&slugs);
         }
+        // A value read for the first time (a file from before salts, a reference's new value)
+        // had its salt drawn: it is kept before a run is given it.
+        store.keep_salts();
         Ok(store)
     }
 
@@ -310,6 +556,7 @@ impl SecretStore {
             }
             Arc::clone(&slugs[slug].vault)
         };
+        self.keep_salts();
         {
             let mut v = vault.lock().unwrap();
             v.keys.get_or_insert_with(|| Arc::clone(&self.keys));
@@ -393,9 +640,9 @@ impl SecretStore {
                 continue;
             }
             let Some(cap) = caps.get(name) else { continue };
-            let outside: BTreeSet<String> = to.iter().filter(|d| !d.starts_with(holon_core::ANSWER) && !cap.contains(*d)).cloned().collect();
+            let outside: BTreeSet<String> = to.iter().filter(|d| holon_core::is_own_destination(d) && !cap.contains(*d)).cloned().collect();
             if !outside.is_empty() {
-                let (may, sends) = (holon_author::describe::describe_sent_to(cap).0, holon_author::describe::describe_sent_to(&outside).0);
+                let (may, sends) = (holon_author::describe::describe_sent_to(cap).own, holon_author::describe::describe_sent_to(&outside).own);
                 return Some(format!(
                     "the server's secret {name:?} may go only to {}, and this flow sends it to {} (set {slug:?}'s own {name}, or ask an admin to let the server's go there)",
                     may.unwrap_or_else(|| "nowhere".into()),
@@ -516,6 +763,9 @@ impl SecretStore {
                 self.resolve(slug, entry, server.filter(|_| slug != SERVER));
             }
         }
+        drop(slugs);
+        // A reference whose value changed where it is kept has a salt of its own.
+        self.keep_salts();
     }
 
     /// Recompute the vaults a change to `slug`'s secrets reaches: its own, and for the server's
@@ -575,6 +825,9 @@ impl SecretStore {
     /// Forget all of `slug`'s secrets: its deployment was deleted.
     pub(crate) fn forget(&self, slug: &str, by: Option<&str>) -> Result<(), String> {
         let removed = self.slugs.lock().unwrap().remove(slug);
+        // Its salts with it: nothing of a deleted deployment is kept. (A secret removed, or a
+        // version let go of, keeps its salt: a run that named it is still held to its value.)
+        self.salts.lock().unwrap().retain(|(of, ..), _| of != slug);
         if let Some(s) = removed {
             *s.vault.lock().unwrap() = Resolved::default();
             self.persist()?;
@@ -616,6 +869,10 @@ impl SecretStore {
             match self.value_of(owner, name, current) {
                 Ok(value) if value.chars().count() >= MIN_SECRET_LEN => {
                     resolved.shown.insert(name.clone(), self.shown(current.version, &value));
+                    if let Some(salt) = self.salt_of(owner, name, current.version, &value) {
+                        resolved.committed.insert(name.clone(), committed(owner, name, current, &salt, &value));
+                        resolved.salts.insert(name.clone(), salt);
+                    }
                     resolved.current.insert(name.clone(), value);
                     resolved.fetched.insert(name.clone(), (current.version, now));
                 }
@@ -627,6 +884,10 @@ impl SecretStore {
                         let ago = now.duration_since(at).as_secs();
                         resolved.problems.insert(name.clone(), format!("{e}; using the value read {ago}s ago"));
                         resolved.shown.insert(name.clone(), self.shown(version, &value));
+                        if let Some(salt) = self.salt_of(owner, name, version, &value) {
+                            resolved.committed.insert(name.clone(), committed(owner, name, current, &salt, &value));
+                            resolved.salts.insert(name.clone(), salt);
+                        }
                         resolved.current.insert(name.clone(), value);
                         resolved.fetched.insert(name.clone(), (version, at));
                     }
@@ -659,6 +920,44 @@ impl SecretStore {
         *entry.vault.lock().unwrap() = resolved;
     }
 
+    /// The salt of `value`, version `version` of `owner`'s secret `name`: drawn the first time
+    /// the value is read, and sealed in the store from then on, so it is the same after a
+    /// restart, and for a reference's value that comes back after another. A reference's value
+    /// changes under one version, so a salt is a value's, told by its fingerprint. None when the
+    /// one kept doesn't open (a damaged file, another keyring): another is never drawn in its
+    /// place, which would give one value two salts.
+    fn salt_of(&self, owner: &str, name: &str, version: u32, value: &str) -> Option<Zeroizing<[u8; 32]>> {
+        let print = self.keys.fingerprint(value);
+        let role = salt_context(owner, name, version, &print);
+        let mut salts = self.salts.lock().unwrap();
+        let mut salt = Zeroizing::new([0u8; 32]);
+        match salts.entry((owner.to_string(), name.to_string(), version, print)) {
+            std::collections::btree_map::Entry::Occupied(kept) => {
+                let plain = self.keys.open_line(at_rest::SECRETS, &role, kept.get()).ok()?;
+                if plain.len() != salt.len() {
+                    return None;
+                }
+                salt.copy_from_slice(&plain);
+            }
+            std::collections::btree_map::Entry::Vacant(new) => {
+                getrandom::fill(salt.as_mut_slice()).expect("the OS random source failed");
+                new.insert(self.keys.seal_line(at_rest::SECRETS, &role, salt.as_slice()).ok()?);
+                self.unsaved.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        Some(salt)
+    }
+
+    /// Write the file if a salt was drawn that it doesn't hold. Called with `slugs` let go.
+    fn keep_salts(&self) {
+        if self.unsaved.load(std::sync::atomic::Ordering::SeqCst)
+            && let Err(e) = self.persist()
+        {
+            eprintln!("holon: a secret's salt isn't kept yet: {e}");
+            self.unsaved.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
     /// How the log tells `value`, version `version` of a secret, apart: `v3 #a1b2c3d4`.
     fn shown(&self, version: u32, value: &str) -> String {
         format!("v{version} #{}", self.keys.fingerprint(value))
@@ -668,6 +967,10 @@ impl SecretStore {
         if self.path == ":memory:" {
             return Ok(());
         }
+        // Whatever was drawn is in what is written now; one drawn while it is written is said
+        // again.
+        self.unsaved.store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut salts: BTreeMap<String, Vec<SaltOf>> = BTreeMap::new();
         let file = SecretsFile {
             format: FORMAT,
             deployments: self
@@ -679,6 +982,12 @@ impl SecretStore {
                 .map(|(slug, s)| (slug.clone(), s.secrets.clone()))
                 .collect(),
             caps: self.caps.lock().unwrap().clone(),
+            salts: {
+                for ((slug, name, version, print), sealed) in self.salts.lock().unwrap().iter() {
+                    salts.entry(slug.clone()).or_default().push(SaltOf { name: name.clone(), version: *version, print: print.clone(), sealed: sealed.clone() });
+                }
+                salts
+            },
         };
         let bytes = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
         at_rest::write_private(&self.keys, Path::new(&self.path), at_rest::SERVER, at_rest::role::SECRETS, &bytes).map_err(|e| format!("could not write {:?}: {e}", self.path))
@@ -693,16 +1002,129 @@ pub(crate) fn secret_in(v: &holon_core::Value, vault: &Vault) -> Option<String> 
 }
 
 /// The names of every secret in `vault` whose value, current or retired, occurs in `v`, in the
-/// order [`secret_in`] finds the first.
+/// order [`secret_in`] finds the first. In any spelling JSON gives it ([`holds_spelled`]): a
+/// secret with a quote in it, written out with `json_stringify`, is still the secret.
 pub(crate) fn secrets_in(v: &holon_core::Value, vault: &Vault) -> Vec<String> {
     let vault = vault.lock().unwrap();
     let mut found: Vec<String> = vec![];
     for (name, value) in vault.current.iter().chain(vault.retired.iter().map(|(name, _, value)| (name, value))) {
-        if !found.contains(name) && value_holds(v, &|s: &str| s.contains(value.as_str())) {
+        if !found.contains(name) && value_holds(v, &|s: &str| holds_spelled(s, value.as_str())) {
             found.push(name.clone());
         }
     }
     found
+}
+
+/// How long a spelling of a value is looked for: each time a value with something JSON escapes
+/// is written out, its backslashes double, so a spelling this long is some fifteen deep, and
+/// longer than any one text a flow builds that way. Not a depth: how deep a mark is put in place
+/// must not depend on what the secret holds, or a record's shape would say so. Past it, and for
+/// any other writer's spelling, a text that still holds the value is found by undoing its escapes
+/// ([`holds_spelled`]), and the record withholds it whole ([`RESPELLED`]).
+const SPELLED_LONG: usize = 64 * 1024;
+
+/// `value` as it is, then as it reads written out as JSON text once, twice and so on: a quote, a
+/// backslash, a newline or another control character in it is escaped each time, and the value
+/// as it was no longer appears (a stringified payload inside a JSON body is two deep). A value
+/// with none of those has one spelling. What finds a value by its text looks for each of these:
+/// the record ([`Redactor`]) to write its mark there, in place.
+pub(crate) fn spellings(value: &str) -> Vec<String> {
+    let mut out = vec![value.to_string()];
+    // (Each one is longer than the last, so it ends; the count is a guard, never reached.)
+    while out.len() < 64 {
+        let last = out.last().expect("it begins with one");
+        let Ok(quoted) = serde_json::to_string(last.as_str()) else { break };
+        let next = &quoted[1..quoted.len() - 1];
+        if next == last || next.len() > SPELLED_LONG {
+            break;
+        }
+        out.push(next.to_string());
+    }
+    out
+}
+
+/// `s` with one level of JSON's escapes undone wherever one stands (`\"`, `\\`, `\/`, `\n` and
+/// the other letters, `\u0022`, a pair of surrogates), if it has any: what a text held before it
+/// was last written out as JSON, whoever wrote it and however (`\u0022` for a quote is as good
+/// as `\"`). Not a parse: the text needn't be JSON, and an escape is undone inside or outside
+/// a string.
+fn unspelled(s: &str) -> Option<String> {
+    if !s.contains('\\') {
+        return None;
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let hex4 = |at: usize| -> Option<u32> {
+        let digits: String = chars.get(at..at + 4)?.iter().collect();
+        u32::from_str_radix(&digits, 16).ok().filter(|_| digits.chars().all(|c| c.is_ascii_hexdigit()))
+    };
+    let mut out = String::with_capacity(s.len());
+    let (mut i, mut changed) = (0, false);
+    while i < chars.len() {
+        if chars[i] != '\\' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let plain = match chars.get(i + 1) {
+            Some(c @ ('"' | '\\' | '/')) => Some((*c, 2)),
+            Some('n') => Some(('\n', 2)),
+            Some('r') => Some(('\r', 2)),
+            Some('t') => Some(('\t', 2)),
+            Some('b') => Some(('\u{8}', 2)),
+            Some('f') => Some(('\u{c}', 2)),
+            Some('u') => match hex4(i + 2) {
+                // A pair of surrogates is one character.
+                Some(high @ 0xD800..=0xDBFF) if chars.get(i + 6) == Some(&'\\') && chars.get(i + 7) == Some(&'u') => hex4(i + 8)
+                    .filter(|low| (0xDC00..=0xDFFF).contains(low))
+                    .and_then(|low| char::from_u32(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)))
+                    .map(|c| (c, 12)),
+                Some(code) => char::from_u32(code).map(|c| (c, 6)),
+                None => None,
+            },
+            _ => None,
+        };
+        match plain {
+            Some((c, took)) => {
+                out.push(c);
+                i += took;
+                changed = true;
+            }
+            None => {
+                out.push('\\');
+                i += 1;
+            }
+        }
+    }
+    changed.then_some(out)
+}
+
+/// Whether `s` satisfies `found`, as it is or with its JSON escapes undone, once, again, and so on
+/// until none is left ([`unspelled`]): each time a text is written out as JSON it gains a level,
+/// and undone that many times it is the text it was. A text with no backslash is looked at once.
+pub(crate) fn spelled_any(s: &str, found: &dyn Fn(&str) -> bool) -> bool {
+    if found(s) {
+        return true;
+    }
+    let mut text = match unspelled(s) {
+        Some(text) => text,
+        None => return false,
+    };
+    // Each time undoes at least one escape, so it ends; a text of nothing but backslashes halves.
+    loop {
+        if found(&text) {
+            return true;
+        }
+        match unspelled(&text) {
+            Some(next) => text = next,
+            None => return false,
+        }
+    }
+}
+
+/// Whether `s` holds `value` in any spelling JSON gives it, however deep ([`spelled_any`]): what
+/// a guard asks before a value is written or sent, where a secret must not go in any spelling.
+pub(crate) fn holds_spelled(s: &str, value: &str) -> bool {
+    !value.is_empty() && spelled_any(s, &|text: &str| text.contains(value))
 }
 
 /// Whether any text in `v`, a record's keys included, satisfies `found`.
@@ -792,8 +1214,33 @@ pub(crate) fn mark(name: &str, shown: Option<&str>) -> String {
 
 /// Replaces each secret value with its mark ([`mark`]).
 pub(crate) struct Redactor {
-    /// (value, mark), longest value first, so a value containing another is replaced whole.
+    /// (value, mark), longest value first, so a value containing another is replaced whole. A
+    /// value is here in each spelling JSON gives it ([`spellings`]).
     pairs: Vec<(String, String)>,
+    /// (value, what a text is written as that still holds it): a value as it is, for the texts
+    /// that hold it in a spelling no pair has (deeper than [`spellings`] goes, or another
+    /// writer's: `\u0022` for a quote). Such a text is withheld whole ([`RESPELLED`]).
+    whole: Vec<(String, String)>,
+}
+
+/// How a text is written that holds a value the record never keeps in a spelling no mark could
+/// be put in place of: `‹respelled:secret:name›`, the whole text. A mark of its own kind, so a caller
+/// who sends the same reads as a look-alike, and `holon verify` takes a step fed one from the
+/// log, as it does one fed any value the log doesn't hold.
+pub(crate) const RESPELLED: &str = "‹respelled:";
+
+/// The pairs for `value` written as `mark`: one for each of its spellings.
+fn spelled(value: &str, mark: &str) -> impl Iterator<Item = (String, String)> + use<> {
+    let mark = mark.to_string();
+    spellings(value).into_iter().map(move |spelling| (spelling, mark.clone()))
+}
+
+/// What a text that still holds `value` is written as, if `value` is one a text could hold
+/// unmarked: long enough to be told from chance ([`MIN_SECRET_LEN`]), or one JSON spells another
+/// way. `kind`, `name`: what the record calls it, as its mark does (`secret:k`,
+/// `token:answer access_token`, `taint:authorization`).
+fn held_whole(value: &str, kind: &str, name: &str) -> Option<(String, String)> {
+    (value.chars().count() >= MIN_SECRET_LEN || spellings(value).len() > 1).then(|| (value.to_string(), format!("{RESPELLED}{kind}:{name}›")))
 }
 
 /// Each run makes one, a copy of every secret's value: wiped when it goes, as the vault's are
@@ -817,16 +1264,20 @@ impl Redactor {
             .iter()
             .map(|(name, value)| (mark(name, vault.shown.get(name).map(String::as_str)), value))
             .chain(vault.retired.iter().map(|(name, shown, value)| (mark(name, Some(shown)), value)))
-            .flat_map(|(mark, value)| {
-                // As it is, and as it reads inside JSON text (a request's body, a value written
-                // out with `json_stringify`), where a quote, a backslash or a newline in it is
-                // escaped and the value as it is no longer appears.
-                let escaped = serde_json::to_string(value.as_str()).ok().map(|q| q[1..q.len() - 1].to_string()).filter(|e| e != value.as_str());
-                std::iter::once((value.to_string(), mark.clone())).chain(escaped.map(|e| (e, mark)))
-            })
+            // As it is, and as it reads inside JSON text however deep (a request's body, a value
+            // written out with `json_stringify`, a stringified payload inside one), where a
+            // quote, a backslash or a newline in it is escaped and the value as it is no longer
+            // appears.
+            .flat_map(|(mark, value)| spelled(value.as_str(), &mark))
             .collect();
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        let whole = vault
+            .current
+            .iter()
+            .chain(vault.retired.iter().map(|(name, _, value)| (name, value)))
+            .filter_map(|(name, value)| held_whole(value.as_str(), "secret", name))
+            .collect();
+        Redactor { pairs, whole }
     }
 
     /// The credentials a run's calls answered ([`answered_tokens`]), as `‹token:answer field #a1b2c3d4›`:
@@ -839,19 +1290,35 @@ impl Redactor {
                 Some(prints) => format!("‹token:{name} #{}›", prints.fingerprint(value)),
                 None => format!("‹token:{name}›"),
             };
-            let escaped = serde_json::to_string(value.as_str()).ok().map(|q| q[1..q.len() - 1].to_string()).filter(|e| e != value.as_str());
-            pairs.extend(std::iter::once((value.clone(), mark.clone())).chain(escaped.map(|e| (e, mark))));
+            pairs.extend(spelled(value, &mark));
         }
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        let whole = tokens.iter().filter_map(|(name, value)| held_whole(value, "token", name)).collect();
+        Redactor { pairs, whole }
+    }
+
+    /// What a run computed from its secrets ([`born`]), each as `‹derived #7c1e9a02›`, the start
+    /// of its hash: found by its value wherever the run's record holds it, as a secret is, and
+    /// as it reads inside JSON text.
+    pub(crate) fn born(born: &crate::recorder::Born) -> Redactor {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for (hash, value) in &born.values {
+            let mark = format!("{DERIVED_MARK}{}›", &hash[..8]);
+            pairs.extend(spelled(value, &mark));
+        }
+        pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+        // A value that JSON spells another way leaves its run's record withholding ([`born`]), so
+        // none of these is held whole.
+        Redactor { pairs, whole: Vec::new() }
     }
 
     /// A run's tokens, as `‹token:name›`: a token is a bearer credential for its waiting point.
     pub(crate) fn tokens(tokens: &BTreeMap<String, String>) -> Redactor {
         let mut pairs: Vec<(String, String)> =
-            tokens.iter().map(|(name, token)| (token.clone(), format!("‹token:{name}›"))).collect();
+            tokens.iter().flat_map(|(name, token)| spelled(token, &format!("‹token:{name}›"))).collect();
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        let whole = tokens.iter().filter_map(|(name, token)| held_whole(token, "token", name)).collect();
+        Redactor { pairs, whole }
     }
 
     /// A run's tainted values (`data::tainted`), each as `‹taint:key›`, the key it was found at;
@@ -861,19 +1328,20 @@ impl Redactor {
         let mut pairs: Vec<(String, String)> = Vec::new();
         for (key, value) in values {
             let mark = format!("{TAINT_MARK}{key}›");
-            let escaped = serde_json::to_string(value.as_str()).ok().map(|q| q[1..q.len() - 1].to_string()).filter(|e| e != value);
-            pairs.extend(std::iter::once((value.clone(), mark.clone())).chain(escaped.map(|e| (e, mark))));
+            pairs.extend(spelled(value, &mark));
         }
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        let whole = values.iter().filter_map(|(key, value)| held_whole(value, "taint", key)).collect();
+        Redactor { pairs, whole }
     }
 
     /// The tokens a run's starts were handed (`calls::handed`), each as `‹token:name›`, as the
     /// run's own are: the same name may come from several starts.
     pub(crate) fn handed(handed: &[(String, String)]) -> Redactor {
-        let mut pairs: Vec<(String, String)> = handed.iter().map(|(name, token)| (token.clone(), format!("‹token:{name}›"))).collect();
+        let mut pairs: Vec<(String, String)> = handed.iter().flat_map(|(name, token)| spelled(token, &format!("‹token:{name}›"))).collect();
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        Redactor { pairs }
+        let whole = handed.iter().filter_map(|(name, token)| held_whole(token, "token", name)).collect();
+        Redactor { pairs, whole }
     }
 
     /// This and `other` together: an entry is redacted once, so a mark one of them writes is
@@ -881,7 +1349,24 @@ impl Redactor {
     pub(crate) fn and(mut self, mut other: Redactor) -> Redactor {
         self.pairs.extend(std::mem::take(&mut other.pairs));
         self.pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+        self.whole.extend(other.whole);
         self
+    }
+
+    /// What `written`, a text with every spelling a pair has already marked, is written as if it
+    /// still holds a value once its escapes are undone: that value's [`RESPELLED`], the whole
+    /// text. None: it holds none, and stays as written.
+    fn respelled(&self, written: &str) -> Option<&str> {
+        if !written.contains('\\') {
+            return None;
+        }
+        // The first it holds, by the order the values came in: a secret before a token.
+        let held: std::cell::Cell<Option<&str>> = std::cell::Cell::new(None);
+        spelled_any(written, &|text: &str| {
+            held.set(self.whole.iter().find(|(value, _)| text.contains(value.as_str())).map(|(_, mark)| mark.as_str()));
+            held.get().is_some()
+        });
+        held.get()
     }
 
     /// Whether it has nothing to replace.
@@ -891,7 +1376,7 @@ impl Redactor {
 
     /// Whether `s` holds any of its values.
     pub(crate) fn holds(&self, s: &str) -> bool {
-        self.pairs.iter().any(|(value, _)| !value.is_empty() && s.contains(value.as_str()))
+        self.pairs.iter().any(|(value, _)| !value.is_empty() && s.contains(value.as_str())) || self.respelled(s).is_some()
     }
 
     pub(crate) fn text(&self, s: &str) -> String {
@@ -901,7 +1386,10 @@ impl Redactor {
                 out = out.replace(value.as_str(), mark);
             }
         }
-        out
+        match self.respelled(&out) {
+            Some(whole) => whole.to_string(),
+            None => out,
+        }
     }
 
     pub(crate) fn svalue(&self, v: &mut SValue) {
@@ -944,7 +1432,8 @@ impl Redactor {
         // Nothing to mark and nothing that reads as a mark: the text stays as it is, uncopied
         // (interpreter-path-L4.md, step 2).
         if !s.contains('‹') && self.pairs.iter().all(|(value, _)| value.is_empty() || !s.contains(value.as_str())) {
-            return None;
+            // Unless it holds one in a spelling no pair has: then it is withheld whole.
+            return self.respelled(s).map(|whole| write_marked(&[(whole, true)]));
         }
         // JSON holding a tainted number as a number (a body's `"number": 4111…`): its mark, a
         // text, goes where the number was, and the text stays JSON, so what reads it reads the rest.
@@ -973,6 +1462,10 @@ impl Redactor {
             at = p + self.pairs[k].0.len();
         }
         pieces.push((&s[at..], false));
+        // What is left between the marks may still hold a value, spelled as no pair has it.
+        if let Some(whole) = pieces.iter().filter(|(_, mark)| !mark).find_map(|(text, _)| self.respelled(text)) {
+            return Some(write_marked(&[(whole, true)]));
+        }
         Some(write_marked(&pieces))
     }
 
@@ -1103,13 +1596,44 @@ pub(crate) fn texts_mut(v: &mut SValue, f: &mut impl FnMut(&mut String)) {
 }
 
 /// What follows a mark's `‹`: the kinds of value the log writes a mark in place of.
-const MARKED: [&str; 3] = ["secret:", "token:", "taint:"];
+const MARKED: [&str; 5] = ["secret:", "token:", "taint:", "derived #", "respelled:"];
 
 /// How a tainted value's mark begins: `‹taint:number›`.
 const TAINT_MARK: &str = "‹taint:";
 
+/// The longest answer a line keeps, as the line writes it, the `…` that says it was cut included.
+pub(crate) const ANSWER_KEPT: usize = 64 * 1024;
+
+/// `written`, an answer as a line writes it (each value its mark, a look-alike escaped), cut to
+/// what a line keeps ([`ANSWER_KEPT`]) with `…` after it; whether it was. After the marks are in
+/// place, never before: a value lying across the cut would leave its first part in the line, the
+/// whole of it no longer there to find, and a text read by its shape (JSON, for a key whose value
+/// is never kept) would no longer be one. And never inside a mark: one cut short would read as
+/// the run's own text. `holon verify` cuts what a run answers again the same way.
+pub(crate) fn cut_written(written: &mut String) -> bool {
+    if written.len() <= ANSWER_KEPT {
+        return false;
+    }
+    let mut at = ANSWER_KEPT - '…'.len_utf8();
+    while !written.is_char_boundary(at) {
+        at -= 1;
+    }
+    // A mark still open at the cut goes whole: back to where it, or the look-alike of one, begins.
+    if let Some(open) = written[..at].rfind('‹')
+        && !written[open..at].contains('›')
+    {
+        let begins = written[..open].trim_end_matches('‹').len();
+        if reads_as_mark(&written[begins..]) {
+            at = begins;
+        }
+    }
+    written.truncate(at);
+    written.push('…');
+    true
+}
+
 /// Whether `s` starts with what reads as a mark the log writes: a run of `‹` before `secret:`,
-/// `token:` or `taint:`.
+/// `token:`, `taint:` or `derived #`.
 fn reads_as_mark(s: &str) -> bool {
     let rest = s.trim_start_matches('‹');
     rest.len() < s.len() && MARKED.iter().any(|kind| rest.starts_with(kind))
@@ -1271,6 +1795,150 @@ mod tests {
         assert!(SecretStore::open(&path, Arc::clone(&key), Sources::none()).unwrap().names("api").is_empty());
         std::fs::write(&path, "{not json").unwrap();
         assert!(SecretStore::open(&path, Arc::clone(&key), Sources::none()).err().unwrap().contains("not sealed"));
+    }
+
+    /// Guards: each value of a secret has one salt, for as long as the store is kept. Drawn when
+    /// the value is first read, the same after a restart, another for another version (a
+    /// roll-back's too: it is a new version), and for a reference one for each value it has had,
+    /// the first again when that value comes back. Sealed in the file, gone with a deleted
+    /// deployment, kept when a secret is removed.
+    /// Why: a run's record will commit its secrets with it and key the marks of what it computes
+    /// from them. A salt drawn again for a value it already had would make two records of one
+    /// value read as two values, and one kept in the clear lets a weak value be guessed.
+    /// If it fails: the case named says which of those no longer holds.
+    #[test]
+    fn a_value_has_one_salt_drawn_once_sealed_and_kept_across_restarts() {
+        let salt = |store: &SecretStore, slug: &str, name: &str| store.vault(slug).lock().unwrap().salts.get(name).map(|s| s.to_vec());
+        let hex = |salt: &[u8]| salt.iter().map(|b| format!("{b:02x}")).collect::<String>();
+
+        // A value set here.
+        let (path, key) = temp("salts");
+        let open = |sources: Sources| SecretStore::open(&path, Arc::clone(&key), sources).unwrap();
+        let store = open(Sources::none());
+        store.set("api", "k", "the-first-value", None).unwrap();
+        let first = salt(&store, "api", "k").expect("a value set has a salt");
+        assert_eq!(first.len(), 32);
+        assert_ne!(first, vec![0u8; 32], "drawn, not left empty");
+        assert_eq!(salt(&store, "api", "k"), Some(first.clone()), "read again, the same");
+        let text = opened(&key, &path);
+        assert!(text.contains("\"salts\"") && !text.contains(&hex(&first)), "kept in the file, sealed: {text}");
+        assert_eq!(salt(&open(Sources::none()), "api", "k"), Some(first.clone()), "after a restart, the same");
+
+        // Another version has another; a roll-back is a new version of the old value.
+        store.set("api", "k", "the-second-value", None).unwrap();
+        let second = salt(&store, "api", "k").unwrap();
+        assert_ne!(second, first);
+        store.rollback("api", "k", 1, None).unwrap();
+        let back = salt(&store, "api", "k").unwrap();
+        assert!(back != first && back != second, "version 3 holds version 1's value, and is version 3");
+        // Removed, its salts are kept (a run that named it is still held to its value); the
+        // deployment deleted, they are gone.
+        assert!(store.remove("api", "k", None).unwrap());
+        assert!(opened(&key, &path).contains("\"salts\""));
+        store.set("api", "k", "the-first-value", None).unwrap();
+        assert_eq!(salt(&store, "api", "k"), Some(first.clone()), "the same name, version and value: the salt it had");
+        store.forget("api", None).unwrap();
+        assert!(!opened(&key, &path).contains("\"salts\""), "{}", opened(&key, &path));
+
+        // A reference: its value changes where it is kept, under one version.
+        let env = |value: &str| Sources::of(&[("HOLON_SECRET_K", value)]);
+        let store = open(env("value-one-from-env"));
+        assert_eq!(store.set_from("web", "k", "env:HOLON_SECRET_K", None).unwrap(), 1);
+        let one = salt(&store, "web", "k").unwrap();
+        let store = open(env("value-two-from-env"));
+        let two = salt(&store, "web", "k").unwrap();
+        assert_ne!(two, one, "another value, another salt, under the same version");
+        assert_eq!(salt(&open(env("value-two-from-env")), "web", "k"), Some(two), "kept as it was drawn, at the open that read it");
+        assert_eq!(salt(&open(env("value-one-from-env")), "web", "k"), Some(one), "the first value back: its first salt");
+
+        // The server's secret, read by a deployment with none of its own: one salt, the server's.
+        let store = open(Sources::none());
+        store.set(SERVER, "shared", "the-servers-value", None).unwrap();
+        assert_eq!(salt(&store, "one", "shared"), salt(&store, "two", "shared"));
+        assert!(salt(&store, "one", "shared").is_some());
+
+        // A file from before salts opens, and each value gets one as it is read.
+        let (old_path, old_key) = temp("salts-before");
+        let old = SecretStore::open(&old_path, Arc::clone(&old_key), Sources::none()).unwrap();
+        old.set("api", "k", "a-value-from-before", None).unwrap();
+        let mut file: serde_json::Value = serde_json::from_str(&opened(&old_key, &old_path)).unwrap();
+        file.as_object_mut().unwrap().remove("salts").expect("it had the section");
+        seal(&old_key, &old_path, &serde_json::to_vec(&file).unwrap());
+        let again = SecretStore::open(&old_path, Arc::clone(&old_key), Sources::none()).unwrap();
+        let drawn = salt(&again, "api", "k").expect("drawn at the open that first reads it");
+        assert!(opened(&old_key, &old_path).contains("\"salts\""), "and written then");
+        assert_eq!(salt(&SecretStore::open(&old_path, Arc::clone(&old_key), Sources::none()).unwrap(), "api", "k"), Some(drawn.clone()));
+
+        // One that doesn't open (sealed for somewhere else) is never drawn again: the value has
+        // no salt, at this open and the next, and what the file holds is left as it is.
+        let mut file: serde_json::Value = serde_json::from_str(&opened(&old_key, &old_path)).unwrap();
+        let elsewhere = old_key.seal_line(at_rest::SECRETS, "sealed for somewhere else", &[7u8; 32]).unwrap();
+        file["salts"]["api"][0]["sealed"] = serde_json::json!(elsewhere);
+        seal(&old_key, &old_path, &serde_json::to_vec(&file).unwrap());
+        for _ in 0..2 {
+            let damaged = SecretStore::open(&old_path, Arc::clone(&old_key), Sources::none()).unwrap();
+            assert_eq!(salt(&damaged, "api", "k"), None, "never another in its place");
+            assert_eq!(*damaged.vault("api").lock().unwrap().current["k"], "a-value-from-before", "the value itself still reads");
+            assert!(opened(&old_key, &old_path).contains(&elsewhere));
+        }
+        // One filed under another value's fingerprint isn't this value's: this one gets its own.
+        file["salts"]["api"][0]["print"] = serde_json::json!("00000000");
+        seal(&old_key, &old_path, &serde_json::to_vec(&file).unwrap());
+        let moved = SecretStore::open(&old_path, Arc::clone(&old_key), Sources::none()).unwrap();
+        assert!(salt(&moved, "api", "k").is_some_and(|s| s != drawn));
+        assert!(opened(&old_key, &old_path).contains(&elsewhere), "and the other is left as it was");
+    }
+
+    /// Guards: what a run records of a secret it is given (`Resolved::committed`): where the
+    /// value is kept, and a commitment that whoever holds the value and its salt computes again
+    /// (`commitment`), and that is another for another value, version, owner or salt.
+    /// Why: it is what later holds the server to the value a run had. One that left a field out
+    /// would be the same for two values; one made without the salt could be guessed from.
+    /// If it fails: the case named is a commitment that no longer tells two things apart, or a
+    /// kind that says the wrong place.
+    #[test]
+    fn what_a_run_records_of_a_secret_is_where_it_is_kept_and_a_commitment_under_its_salt() {
+        let (path, key) = temp("committed");
+        let store = SecretStore::open(&path, Arc::clone(&key), Sources::of(&[("HOLON_SECRET_K", "kept-in-the-environment")])).unwrap();
+        store.set("api", "here", "kept-in-the-store", None).unwrap();
+        store.set_from("api", "there", "env:HOLON_SECRET_K", None).unwrap();
+        store.set(SERVER, "shared", "the-servers-value", None).unwrap();
+        let vault = store.vault("api");
+        let v = vault.lock().unwrap();
+        let of = |name: &str| (v.committed[name].clone(), *v.salts[name].clone());
+        for (name, kind, server, owner, value) in [("here", "local", false, "api", "kept-in-the-store"), ("there", "reference", false, "api", "kept-in-the-environment"), ("shared", "local", true, SERVER, "the-servers-value")] {
+            let (said, salt) = of(name);
+            assert_eq!((said.kind.as_str(), said.server), (kind, server), "{name}");
+            assert_eq!(said.commitment, commitment(owner, name, 1, &salt, value), "{name}: computed again from the value and its salt");
+            assert_eq!(said.commitment.len(), 64);
+            // Another for anything else: a value, a version, a name, an owner, a salt.
+            let mut other_salt = salt;
+            other_salt[0] ^= 1;
+            for (what, another) in [
+                ("another value", commitment(owner, name, 1, &salt, "kept-somewhere-else")),
+                ("another version", commitment(owner, name, 2, &salt, value)),
+                ("another name", commitment(owner, "other", 1, &salt, value)),
+                ("another owner", commitment("web", name, 1, &salt, value)),
+                ("another salt", commitment(owner, name, 1, &other_salt, value)),
+            ] {
+                assert_ne!(said.commitment, another, "{name}: {what}");
+            }
+        }
+        // No field reads as part of the next: the lengths are in it.
+        let salt = [7u8; 32];
+        assert_ne!(commitment("ab", "c", 1, &salt, "value-1"), commitment("a", "bc", 1, &salt, "value-1"));
+        // The same value under two names, or in two deployments, isn't one commitment. (The
+        // vault is let go first: setting a secret takes it.)
+        drop(v);
+        store.set("api", "twin", "kept-in-the-store", None).unwrap();
+        store.set("web", "here", "kept-in-the-store", None).unwrap();
+        let (api, web) = (store.vault("api"), store.vault("web"));
+        let here = api.lock().unwrap().committed["here"].commitment.clone();
+        assert_ne!(here, api.lock().unwrap().committed["twin"].commitment);
+        assert_ne!(here, web.lock().unwrap().committed["here"].commitment);
+        // And it is the same after a restart, as its salt is.
+        let again = SecretStore::open(&path, Arc::clone(&key), Sources::of(&[("HOLON_SECRET_K", "kept-in-the-environment")])).unwrap();
+        assert_eq!(again.vault("api").lock().unwrap().committed["here"].commitment, here);
     }
 
     /// The server's secret is read by a deployment with none of its own, overridden by one it
@@ -1571,6 +2239,54 @@ mod tests {
         assert!(!e.escaped, "nothing to escape: the line is as it was");
     }
 
+    /// Guards: the hash a run's record keeps of a value it computed from a secret
+    /// ([`derived_hash`]) is one value's in one run under one set of salts, and nobody else's;
+    /// and the redactor made of such values ([`Redactor::born`]) writes each as the start of its
+    /// hash wherever it is, a secret's own mark first where a value is both.
+    /// Why: `holon verify` follows a value through a run by its mark, and reads two marks as two
+    /// values; and a hash that didn't take the salts, or the run, could be guessed from, or
+    /// matched across runs.
+    /// If it fails: the row named says which: a mark that moves between runs of one value in
+    /// one run, a key made of no salt, or a derived value that hides a secret's mark.
+    #[test]
+    fn a_value_computed_from_a_secret_has_one_mark_in_a_run_keyed_by_the_runs_salts() {
+        let (a, b) = ([7u8; 32], [9u8; 32]);
+        let key = |salts: &[(&str, &[u8; 32])]| derived_key(salts.iter().copied());
+        assert!(key(&[]).is_none(), "no salt, no key: nothing is marked");
+        let one = key(&[("k", &a)]).unwrap();
+        assert_eq!(one.len(), 32);
+        assert_eq!(*one, *key(&[("k", &a)]).unwrap(), "the same salts, the same key");
+        for (what, other) in [("another salt", key(&[("k", &b)])), ("another name", key(&[("j", &a)])), ("one more secret", key(&[("k", &a), ("m", &b)]))] {
+            assert_ne!(*one, *other.unwrap(), "{what}");
+        }
+        // A name and a salt don't read as another name and salt: each has its length before it.
+        assert_ne!(*key(&[("ab", &a)]).unwrap(), *key(&[("a", &a)]).unwrap());
+
+        let hash = derived_hash(&one, "run-1", "QmFzaWMgdmFsdWU=");
+        assert!(hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()), "{hash}");
+        assert_eq!(hash, derived_hash(&one, "run-1", "QmFzaWMgdmFsdWU="), "one value, one run: one hash");
+        assert_ne!(hash, derived_hash(&one, "run-2", "QmFzaWMgdmFsdWU="), "another run");
+        assert_ne!(hash, derived_hash(&one, "run-1", "QmFzaWMgdmFsdWU"), "another value");
+        assert_ne!(hash, derived_hash(&key(&[("k", &b)]).unwrap(), "run-1", "QmFzaWMgdmFsdWU="), "another key");
+
+        // Marked by its value, wherever it is; and where it is a secret's own value, as the secret.
+        let secret = "sk_live_both_ways";
+        let vault: Vault = Arc::new(Mutex::new(Resolved { current: BTreeMap::from([("k".to_string(), Zeroizing::new(secret.to_string()))]), ..Resolved::default() }));
+        let born = crate::recorder::Born {
+            values: vec![(hash.clone(), "QmFzaWMgdmFsdWU=".to_string()), (derived_hash(&one, "run-1", secret), secret.to_string())],
+            whole: true,
+        };
+        let redactor = Redactor::of(&vault).and(Redactor::born(&born));
+        let mark = format!("{DERIVED_MARK}{}›", &hash[..8]);
+        assert_eq!(redactor.text("Basic QmFzaWMgdmFsdWU= and QmFzaWMgdmFsdWU="), format!("Basic {mark} and {mark}"));
+        assert_eq!(redactor.text(secret), "‹secret:k›", "a secret's value reads as the secret, though a step gave it too");
+        let mut e = LogEntry { request: Some(SValue::Text(format!("{mark} QmFzaWMgdmFsdWU="))), ..LogEntry::default() };
+        redactor.entry(&mut e);
+        assert_eq!(e.request, Some(SValue::Text(format!("‹{mark} {mark}"))), "a look-alike the run wrote itself is escaped, as a secret's is");
+        assert!(e.escaped);
+        assert_eq!(read_marked(&format!("‹{mark} {mark}"), true), vec![(format!("{mark} "), false), (mark.clone(), true), (String::new(), false)]);
+    }
+
     /// Guards: every text a log entry holds goes through the redactor ([`Redactor::entry`]), or is
     /// named below as one that holds no run data: an id or a hash the host makes, a word it
     /// writes, a name the flow's text gives.
@@ -1625,6 +2341,8 @@ mod tests {
                     proof: vec![t()],
                 }),
             }),
+            // A flag the host sets: no run data.
+            withheld: false,
         };
         let mut e = LogEntry {
             seq: 1,
@@ -1662,10 +2380,15 @@ mod tests {
             claims: vec![LoggedClaim { key: t(), waited_ms: 1.0, overtaken: false, held_ms: Some(1.0) }],
             by: Some(t()),
             secrets: BTreeMap::from([(t(), t())]),
+            committed: BTreeMap::from([(t(), crate::recorder::Committed { kind: t(), commitment: t(), server: true })]),
             escaped: false,
             // Never written with the line: each goes its own way, redacted there (firing.rs's
             // `push_run`, mails.rs, queues.rs).
             answered: AnswerTokens(vec![(t(), t())]),
+            born: crate::recorder::Born { values: vec![(t(), t())], whole: true },
+            derived: vec![t()],
+            // A flag: no run data.
+            withheld: true,
             mails: vec![(t(), holon_core::Value::Text(t()))],
             queued: vec![(t(), holon_core::Value::Text(t()))],
             lines: vec![(t(), holon_core::Value::Text(t()))],
@@ -1711,8 +2434,11 @@ mod tests {
             // the flow names it, each capability, waiting point and state.
             ".kind", ".route", ".sourced[][]", ".performed[].capability", ".progress[].capability", ".parked[]", ".state_before.{}", ".events.{}",
             // Who sent it (a principal's name), and the secrets it was given, by name, version and
-            // fingerprint.
-            ".by", ".secrets.{}",
+            // fingerprint; and what each is held to, a word for where it is kept and a hash the
+            // host makes of it under a salt.
+            ".by", ".secrets.{}", ".committed.{}", ".committed.{}.kind", ".committed.{}.commitment",
+            // What it computed from a secret, each by a keyed hash the host makes of it.
+            ".derived[]",
             // A file read's hashes: the file's, its text's in the blob store, the proof's.
             ".reads[].file.hash", ".reads[].file.blob", ".reads[].file.range.proof[]",
             // A request body kept by hash: its hash, and its text's in the blob store.

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { APIRequestContext } from "@playwright/test";
 import { expect, HOLON, SAMPLE_SHIFT, SAMPLES, SERVER, test } from "./fixtures";
-import { gotoPage, navLink, nodesLevel, openSample, statementsLevel } from "./helpers";
+import { answer, gotoPage, navLink, nodesLevel, openSample, statementsLevel } from "./helpers";
 
 /** Wait until the server holds what was just changed (the editor saves as it changes), so a
  *  reload reads it back rather than racing the last save. */
@@ -19,12 +19,25 @@ async function saved(request: APIRequestContext, token: string, holds: (prefs: s
   await expect.poll(async () => holds(await (await request.get(`${SERVER}/auth/prefs`, { headers })).text())).toBe(true);
 }
 
-/** Something deployed on the server: hello-api, deployed from its text by `holon deploy`, when
- *  nothing is yet. */
-async function deployedOnce(request: APIRequestContext, token: string) {
+/** The slugs deployed on the server. */
+async function deployedSlugs(request: APIRequestContext, token: string): Promise<string[]> {
   const headers = { Authorization: `Bearer ${token}` };
-  const { deployments } = (await (await request.get(`${SERVER}/deployments`, { headers })).json()) as { deployments: unknown[] };
-  if (deployments.length > 0) return;
+  const { deployments } = (await (await request.get(`${SERVER}/deployments`, { headers })).json()) as { deployments: { slug: string }[] };
+  return deployments.map((d) => d.slug);
+}
+
+/** Something deployed on the server: hello-api, when nothing is yet. */
+async function deployedOnce(request: APIRequestContext, token: string) {
+  if ((await deployedSlugs(request, token)).length === 0) deployHelloApi(token);
+}
+
+/** hello-api deployed, whatever the tests before did with it. */
+async function helloApiDeployed(request: APIRequestContext, token: string) {
+  if (!(await deployedSlugs(request, token)).includes("hello-api")) deployHelloApi(token);
+}
+
+/** hello-api deployed from its text by `holon deploy`, its port moved (SAMPLE_SHIFT). */
+function deployHelloApi(token: string) {
   const text = readFileSync(join(SAMPLES, "hello-api.holon.ts"), "utf8").replace(/(port: )8101\b/, `$1${8101 + SAMPLE_SHIFT}`);
   const copy = join(mkdtempSync(join(tmpdir(), "holon-e2e-welcome-")), "hello-api.holon.ts");
   writeFileSync(copy, text);
@@ -167,9 +180,18 @@ test("the panes: c and x in the bar show or hide the canvas and the text, i fold
   await expect(page.getByRole("region", { name: "Text" })).toBeVisible();
   await expect(page.locator(".hl-canvas__flow")).toBeHidden();
   await saved(request, adminToken, (p) => p.includes('"hidden":["inspector","canvas"]'));
-  // Kept over a reload, as the account's.
+  // Kept over a reload, as the account's. The tab, never saved, reopens as what the server holds
+  // under its name: hello-api deployed (as whichever test ran before may have left it or not), its
+  // deployment's view; the sample opened again replaces it, asked first.
+  await helloApiDeployed(request, adminToken);
   await page.reload();
-  await openSample(page, "Hello API", false);
+  await expect(page).toHaveURL(/#editor\.hello-api\.view$/);
+  await gotoPage(page, "library");
+  await page.getByRole("region", { name: "samples" }).getByRole("button", { name: "open Hello API", exact: true }).click();
+  const replace = page.getByRole("dialog");
+  await expect(replace).toContainText('"hello-api" is open in a tab. Replace it with the sample?');
+  await replace.getByRole("button", { name: "Replace", exact: true }).click();
+  await expect(page).toHaveURL(/#editor\.hello-api$/);
   await expect(page.getByRole("complementary", { name: "Inspector" })).toHaveCount(0);
   // Closing the text brings the canvas back: one of them always shows.
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
@@ -206,7 +228,7 @@ test("closing a changed tab asks: Save and close saves it, then closes it", asyn
   await expect(dialog).toContainText('"hello-api" has unsaved changes.');
   await expect(dialog.getByRole("button")).toHaveText(["kKeep it open", "dDiscard", "sSave and close"]);
   // Keep it open (k): nothing changes.
-  await page.keyboard.press("k");
+  await answer(page, "k");
   await expect(dialog).toHaveCount(0);
   await expect(tabs.getByRole("tab")).toHaveText([/^Home/, /^hello-api/]);
   // Save and close: saved on the server with the change, closed, and reopened as saved.

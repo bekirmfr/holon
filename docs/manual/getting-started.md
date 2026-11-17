@@ -199,9 +199,11 @@ many more). Restart the agent, and ask it for something:
 The agent reads the language, checks its flow until it compiles, and deploys it. It can't
 approve what the flow may do, so the first deploy stops there: the flow appears on your **flows**
 page, saved by the agent. Open it, read what it asks for, and press **deploy** and **Approve and
-deploy** if you agree. After that, a version that asks for nothing more deploys from the agent at
-once, and the agent can send it requests and explain its runs. See
-[Working with agents](guides/agents.md).
+deploy** if you agree. Each version it deploys after that waits for you the same way, with what
+it changes, and once one is deployed the agent can send it requests. To explain its runs it
+needs a grant of yours too, since a run's steps hold every value it read: when it asks, run the
+command it gives you (`holon bind viewer --to <agent> --flow <slug>`). See
+[Working with agents](guides/agents.md#reading-a-runs-steps).
 
 ## Next
 

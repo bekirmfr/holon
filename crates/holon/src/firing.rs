@@ -111,8 +111,14 @@ pub(crate) struct FiredRun {
     pub(crate) secret_fed: taint::SecretFed,
     /// The secrets it was given, by name: the version and fingerprint of each (`v3 #a1b2c3d4`).
     pub(crate) secrets: BTreeMap<String, String>,
+    /// What each of those is held to: where it is kept, and a commitment to its value
+    /// (`recorder::Committed`).
+    pub(crate) committed: BTreeMap<String, recorder::Committed>,
     /// The credentials its calls answered to requests that held a secret (`secrets::answered_tokens`).
     pub(crate) answered: recorder::AnswerTokens,
+    /// What it computed from its secrets, as its record marks it (`secrets::born`), and whether
+    /// that is all of it.
+    pub(crate) born: recorder::Born,
     /// The state it left, once committed: a snapshot's hash (`restore::save_snapshot`).
     pub(crate) state_after: Option<String>,
     /// The commit to its state it began after, and its own once it lands (`recorder::Commit`).
@@ -415,10 +421,12 @@ impl RunLocked {
         }
         let mut held = RunLocked { _guards: f.all.locks.take(wanted, deadline)?, remote: Vec::new(), holder };
         for (database, exclusive, label) in remote {
+            let mut waiting = None;
             while !database.hold_run(&held.holder, exclusive) {
                 if std::time::Instant::now() + claims::POLL >= deadline {
                     return Err(label);
                 }
+                waiting.get_or_insert_with(|| f.all.locks.waiters.enter());
                 std::thread::sleep(claims::POLL);
             }
             held.remote.push((database, exclusive));
@@ -583,7 +591,9 @@ fn count_commit(cell: &claims::StateCell, run: &mut FiredRun) {
 /// in commit order and a run that changed nothing writes nothing (a read costs no fsync). A run
 /// whose change wasn't kept fails, as one whose file didn't land does: its state is in place, but
 /// the server starts again from the one before. One that changed nothing loses only a snapshot
-/// to restore to, and says so.
+/// to restore to, and says so. Either way its line names the state it left, by the hash its
+/// snapshot would have: every commit counted names one (`holon verify` holds it to that, audit
+/// R26), and a restore to it says its snapshot isn't in the store.
 fn keep_state(cell: &claims::StateCell, run: &mut FiredRun, live: &State, store: &SharedStore) {
     let changed = run.start_state.as_ref().is_some_and(|start| changed_from(start, live));
     match cell.save(live, store) {
@@ -593,8 +603,13 @@ fn keep_state(cell: &claims::StateCell, run: &mut FiredRun, live: &State, store:
             }
             run.state_after = Some(hex);
         }
-        Err(e) if changed => not_all_written(run, vec![format!("the state it left wasn't kept: {e}")]),
-        Err(e) => eprintln!("holon: run {}: the state it left wasn't kept: {e}", run.run_id),
+        Err(e) => {
+            match changed {
+                true => not_all_written(run, vec![format!("the state it left wasn't kept: {e}")]),
+                false => eprintln!("holon: run {}: the state it left wasn't kept: {e}", run.run_id),
+            }
+            run.state_after = crate::restore::snapshot_hash(live).ok();
+        }
     }
 }
 
@@ -668,12 +683,14 @@ fn run_attempt(
     });
     // Its folders, for the reads it was granted: read as it finds them.
     waits.failed = None;
+    waits.failed_at = None;
     waits.files = waits.folders.as_ref().map(|f| folders::Readable::new(Arc::clone(f), permit));
     waits.databases = waits.folders.as_ref().map(|f| databases::Readable::new(Arc::clone(f), permit));
 
     // The secrets it was granted. Not part of the run's input record (nor its id): a log never
     // holds them, and a replay stands a placeholder in.
     let mut given = BTreeMap::new();
+    let mut committed = BTreeMap::new();
     let mut granted = Vec::new();
     let vault = secrets.lock().unwrap();
     for (name, value) in vault.current.iter() {
@@ -681,8 +698,11 @@ fn run_attempt(
         if permit.allows(&cap) {
             granted.push((cap, Value::Text(value.to_string())));
             given.extend(vault.shown.get(name).map(|shown| (name.clone(), shown.clone())));
+            committed.extend(vault.committed.get(name).map(|c| (name.clone(), c.clone())));
         }
     }
+    // What its marks for the values it computes from them are made under: their salts.
+    let born_key = secrets::derived_key(vault.salts.iter().filter(|(name, _)| committed.contains_key(*name)).map(|(name, salt)| (name.as_str(), &**salt)));
     drop(vault);
     // Only the state keys the deployment was granted are read, each lent as the state holds it.
     let sourced: Vec<(Capability, &Value)> = start
@@ -700,10 +720,16 @@ fn run_attempt(
         taint::SecretFed::default()
     };
     // And where each may be sent: a request holding one's value goes only there.
-    let secret_sends = (!secret_fed.is_empty()).then(|| folders::SecretSends { vault: secrets, sent: holon_core::sent_secrets(root_unit, resolver) });
+    let secret_sends = (!secret_fed.is_empty()).then(|| folders::SecretSends { vault: secrets, sent: holon_core::sent_itself(root_unit, resolver) });
 
     let mut host = RecordingHost::new();
     let mut timer = if waits.unrecorded { recorder::Timer::off() } else { recorder::Timer::new() };
+    // A step that may hold a secret's value, or what is computed from one, kept when it fits as
+    // its record writes it, each such value as its mark: whether it is kept, and so whether the
+    // record withholds, doesn't say how long the secret is (R63).
+    if !secret_fed.is_empty() && !waits.unrecorded {
+        timer = timer.measured(Box::new(secrets::Measured::new(secret_fed.clone(), born_key.clone(), run_hex.clone(), Redactor::of(secrets))));
+    }
     // Outbound requests go only where the grant allows, within its limits.
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
     // What this attempt will hold before it sends anything: the keys it reads that it may write,
@@ -727,12 +753,26 @@ fn run_attempt(
             run_hex.clone(),
             limits.claim_wait,
             records,
+            (!secret_fed.is_empty()).then(|| secret_fed.clone()),
         )
     });
     // A file as a request's body is sent from a folder the deployment reads.
     let forward = waits.forward.clone();
     let (slug, run, chain) = (waits.slug.clone().unwrap_or_default(), waits.run_id.clone().unwrap_or_default(), waits.chain.clone());
-    let caller = calls::Caller { store, fed: &secret_fed, permit, vault: secrets, slug: &slug, run: &run, chain: &chain, unrecorded: waits.unrecorded, #[cfg(test)] fixed: fixed::peek() };
+    let started_by = waits.started_by.clone();
+    let caller = calls::Caller {
+        store,
+        fed: &secret_fed,
+        permit,
+        vault: secrets,
+        slug: &slug,
+        run: &run,
+        chain: &chain,
+        unrecorded: waits.unrecorded,
+        started_by: started_by.as_deref(),
+        #[cfg(test)]
+        fixed: fixed::peek(),
+    };
     let sender = folders::Sender {
         outbound: &permit.outbound,
         folders: waits.folders.clone(),
@@ -746,15 +786,25 @@ fn run_attempt(
     let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &sender, limits, &mut timer, waits, &prior);
     let overtaken = outcome.error == Some(holon_host::RunError::Overtaken);
     // A read that failed (a file too big, or not text; a folder not bound) fails the run: it
-    // performs nothing.
-    let failed_read = waits.failed.take();
+    // performs nothing. Why names what it asked for (a file's name, a key, a parameter): where a
+    // secret reached that, why is withheld, as what it asked by is in its log entry
+    // (`taint::withhold_read`). A secret's choice that fails a read is never one a mark stands
+    // for, so this is whatever the run's record marks.
+    let failed_at = waits.failed_at.take();
+    let failed_read = waits.failed.take().map(|why| match failed_at {
+        Some(at) if secret_fed.fed(&at) > taint::Taint::Clean => {
+            let read_failed = [folders::READ_FAILED, databases::READ_FAILED].into_iter().find(|p| why.starts_with(p)).unwrap_or_default();
+            format!("{read_failed}{}", taint::WITHHELD)
+        }
+        _ => why,
+    });
     if failed_read.is_some() {
         host.performed.clear();
     }
     // The credentials the calls that sent a secret were answered with: kept out of the log by
     // their value, and out of what is written, as the secret is.
     let answered = secrets::answered_tokens(&outcome.rounds, secrets, &secret_fed);
-    let holds_answered = |payload: &Value| answered.iter().find(|(_, v)| secrets::value_holds(payload, &|s: &str| s.contains(v.as_str()))).map(|(name, _)| name.clone());
+    let holds_answered = |payload: &Value| answered.iter().find(|(_, v)| secrets::value_holds(payload, &|s: &str| secrets::holds_spelled(s, v.as_str()))).map(|(name, _)| name.clone());
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
     // carrying a secret's value, or something computed from one (taint.rs), which would put it on
     // disk and in every later snapshot, and a copy from a folder the deployment doesn't read (a
@@ -826,11 +876,18 @@ fn run_attempt(
         progress.clear();
     }
 
+    // Its steps as its record keeps them: one that carries a file the log keeps by its hash left
+    // out. And what it computed from its secrets, for its record to mark each by its value, read
+    // off them: a step `holon verify` takes from the record (`SecretFed::taken`) left out there
+    // makes its record withhold, as one too large to keep does (`secrets::born`, R66).
+    let reads = std::mem::take(&mut waits.reads);
+    let timeline = without_kept_files(timer.timeline, &reads, &host.performed);
+    let born = secrets::born(&timeline, &secret_fed, born_key.as_ref().map(|k| k.as_slice()), &run_hex, !waits.unrecorded);
     let run = FiredRun {
         outputs: outcome.outputs,
         performed: host.performed,
         lines: host.logs,
-        timeline: timer.timeline,
+        timeline,
         rounds: outcome.rounds,
         error: failed_read
             .or(past_limit.map(|e| format!("{}{e}", folders::WRITE_FAILED)))
@@ -845,12 +902,14 @@ fn run_attempt(
         waiting: outcome.waiting,
         progress,
         start_state: start.clone(),
-        reads: std::mem::take(&mut waits.reads),
+        reads,
         retries: 0,
         claims: waits.claiming.as_ref().map(|c| c.records.clone()).unwrap_or_default(),
         secret_fed,
         secrets: given,
+        committed,
         answered: recorder::AnswerTokens(answered),
+        born,
         state_after: None,
         commit: None,
         running: None,
@@ -1070,11 +1129,12 @@ pub(crate) fn redaction_of(deployments: &Mutex<BTreeMap<String, Deployment>>, sl
 }
 
 /// What `entry` is logged redacted of: the run's own values (`tokens`), the deployment's secrets,
-/// the credentials its calls answered, and the values of the keys its flow taints (`taint`, and
-/// those every run does) wherever it or its `lines` hold them (`data::tainted`), each as its
-/// mark. One taken for a secret or a token stays marked as that.
+/// the credentials its calls answered, what it computed from its secrets, and the values of the
+/// keys its flow taints (`taint`, and those every run does) wherever it or its `lines` hold them
+/// (`data::tainted`), each as its mark. One taken for a secret or a token stays marked as that:
+/// of two marks for one value, the one named first here is written.
 pub(crate) fn redactor_of(entry: &mut LogEntry, lines: &[(String, Value)], tokens: Redactor, secrets: &Arc<Mutex<secrets::Resolved>>, taint: &[String]) -> Redactor {
-    let marked = tokens.and(Redactor::of(secrets)).and(Redactor::answers(&entry.answered.0, secrets));
+    let marked = tokens.and(Redactor::of(secrets)).and(Redactor::answers(&entry.answered.0, secrets)).and(Redactor::born(&entry.born));
     let found = data::tainted(taint, entry, lines, &marked);
     marked.and(Redactor::tainted(&found))
 }
@@ -1224,6 +1284,7 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
         folders.all.mails.drop_spooled(slug, std::mem::take(&mut spooled), "a message its run sends couldn't be spooled");
     }
     entry.answered = Default::default();
+    entry.born = Default::default();
     entry.session = session;
     keep_body_by_hash(&mut entry, &redactor, &folders.all.blobs);
     // Its line made before the lock is taken, so runs of one deployment don't wait while another
@@ -1293,16 +1354,26 @@ fn redacted_line(redactor: &Redactor, entry: &mut LogEntry) -> recorder::Made {
                 assert_eq!(made.line(1, ""), recorder::Made::of(&walked).line(1, ""), "the shortcut's line isn't the redacted one");
                 assert_eq!(serde_json::to_value(&walked).ok(), serde_json::to_value(&*entry).ok(), "the shortcut's entry isn't the redacted one");
             }
-            return made;
+            // Nothing in it to mark: it is as written already, and cut as such.
+            return if cut_answer(entry) { recorder::Made::of(entry) } else { made };
         }
     }
     redactor.entry(entry);
+    cut_answer(entry);
     recorder::Made::of(entry)
+}
+
+/// What a line keeps of the answer to a request or to a WebSocket's block, cut as the line
+/// writes it (`secrets::cut_written`): here, after the entry is redacted, and nowhere before.
+/// Whether it was cut.
+fn cut_answer(entry: &mut LogEntry) -> bool {
+    matches!(entry.kind.as_str(), "request" | "websocket") && entry.response_body.as_mut().is_some_and(secrets::cut_written)
 }
 
 /// The timeline, with the outputs of each node that carries the text or bytes of a file the log
 /// keeps by hash (read, or written past the inline size) left out: they aren't in the log by
-/// another way.
+/// another way. What a run computed from its secrets is read off the steps left so
+/// (`secrets::born`, R66).
 fn without_kept_files(mut timeline: Vec<recorder::NodeTiming>, reads: &[collections::Read], performed: &[(Capability, Value)]) -> Vec<recorder::NodeTiming> {
     let read = reads.iter().filter(|r| r.file.as_ref().is_some_and(|f| !f.inline)).filter_map(|r| match &r.answer {
         Some(Value::Text(t)) => Some(t.as_str()),
@@ -1342,14 +1413,20 @@ fn without_kept_files(mut timeline: Vec<recorder::NodeTiming>, reads: &[collecti
     timeline
 }
 
-/// The timeline, with the outputs of each node that may produce something computed from a secret
-/// left out, and why it gave nothing (a thrown message, a module's error: as much the node's as
-/// its outputs) withheld: redaction finds a secret's value, not what is computed from it
-/// (taint.rs).
-fn without_secret_derived(mut timeline: Vec<recorder::NodeTiming>, fed: &taint::SecretFed) -> Vec<recorder::NodeTiming> {
+/// The timeline, with why each node that may produce something computed from a secret gave
+/// nothing (a thrown message, a module's error) withheld; and, unless the run's record marks
+/// every value it computed from one (`marked`, `recorder::Born::whole`), with those nodes'
+/// outputs left out: redaction finds a secret's value, and what is computed from it only where
+/// the run kept each such value (taint.rs, `secrets::born`). Its steps are all kept, those a
+/// choice decided by a secret took too (`SecretFed::chosen`): a run's steps show which way a
+/// choice went, a secret's included, as the owner decided; whoever approves the flow reads what
+/// it chooses by, and reading a run's steps is a grant of its own.
+fn without_secret_derived(mut timeline: Vec<recorder::NodeTiming>, fed: &taint::SecretFed, marked: bool) -> Vec<recorder::NodeTiming> {
     if !fed.is_empty() {
         for node in timeline.iter_mut().filter(|n| fed.derives(&n.path)) {
-            node.outputs = None;
+            if !marked {
+                node.outputs = None;
+            }
             if node.reason.is_some() {
                 node.reason = Some(taint::WITHHELD.into());
             }
@@ -1369,23 +1446,25 @@ fn withheld_or_shown(derived: bool, shown: impl FnOnce() -> Value) -> SValue {
 }
 
 /// A run's outputs as its log entry and history keep them (`shown`: how each looks there), each
-/// that may be computed from a secret withheld.
+/// that may be computed from a secret withheld (`FiredRun::withholds_output`). Whoever shows
+/// them redacts them of what the run computed from its secrets too (`Redactor::born`).
 pub(crate) fn logged_outputs(run: &FiredRun, shown: impl Fn(&Value) -> Value) -> Vec<Option<SValue>> {
-    run.outputs.iter().enumerate().map(|(port, o)| o.as_ref().map(|v| withheld_or_shown(run.secret_fed.derives_output(port), || shown(v)))).collect()
+    run.outputs.iter().enumerate().map(|(port, o)| o.as_ref().map(|v| withheld_or_shown(run.withholds_output(port), || shown(v)))).collect()
 }
 
 /// What a run performed as its log entry and history keep it (`shown`: how each payload looks
-/// there), each payload that may be computed from a secret withheld.
+/// there), each payload that may be computed from a secret withheld, as its outputs are.
 pub(crate) fn logged_performed(run: &FiredRun, shown: impl Fn(&Capability, &Value) -> Value) -> Vec<PerformedEntry> {
     run.performed
         .iter()
-        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or_shown(run.secret_fed.derives_effect(c), || shown(c, p)) })
+        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or_shown(run.withholds_effect(c), || shown(c, p)) })
         .collect()
 }
 
-/// A round as the log keeps it: each request's parts computed from a secret withheld.
-fn logged_round(round: &Round, fed: &taint::SecretFed) -> recorder::LoggedRound {
-    if fed.is_empty() {
+/// A round as the log keeps it: each request's parts computed from a secret withheld, unless
+/// the run's record marks every value it computed from one (`marked`).
+fn logged_round(round: &Round, fed: &taint::SecretFed, marked: bool) -> recorder::LoggedRound {
+    if fed.is_empty() || marked {
         return recorder::LoggedRound::from_host(round);
     }
     let mut round = round.clone();
@@ -1447,8 +1526,8 @@ fn entry_with(
         performed: logged_performed(run, folders::loggable),
         response_body: None,
         error: run.error.clone(),
-        timeline: without_secret_derived(without_kept_files(timeline, &run.reads, &run.performed), &run.secret_fed),
-        rounds: run.rounds.iter().map(|r| logged_round(r, &run.secret_fed)).collect(),
+        timeline: without_secret_derived(without_kept_files(timeline, &run.reads, &run.performed), &run.secret_fed, run.born.whole),
+        rounds: run.rounds.iter().map(|r| logged_round(r, &run.secret_fed, run.born.whole)).collect(),
         run_id: run.run_id.clone(),
         unit: run.unit.clone(),
         nonce: run.nonce.clone(),
@@ -1457,7 +1536,7 @@ fn entry_with(
         progress: run
             .progress
             .iter()
-            .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or(run.secret_fed.derives_effect(c), p) })
+            .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or(run.withholds_effect(c), p) })
             .collect(),
         events: BTreeMap::new(),
         retries: run.retries,
@@ -1465,7 +1544,7 @@ fn entry_with(
             .claims
             .iter()
             .map(|c| recorder::LoggedClaim {
-                key: c.key.to_string(),
+                key: c.shown(),
                 waited_ms: c.waited.as_secs_f64() * 1000.0,
                 overtaken: c.overtaken,
                 held_ms: c.held.map(|d| d.as_secs_f64() * 1000.0),
@@ -1473,44 +1552,93 @@ fn entry_with(
             .collect(),
         by: None,
         secrets: run.secrets.clone(),
+        committed: run.committed.clone(),
+        derived: run.born.values.iter().map(|(hash, _)| hash.clone()).collect(),
+        // As `without_secret_derived` withholds: what may be computed from a secret, where the
+        // run computed with one and couldn't mark every value it made.
+        withheld: !run.secret_fed.is_empty() && !run.born.whole,
         answered: run.answered.clone(),
+        born: run.born.clone(),
         mails: mails::of(&run.performed),
         // A line computed from a secret is withheld, as an effect's payload is in `performed`.
         lines: run
             .lines
             .iter()
-            .map(|(level, v)| (level.clone(), if run.secret_fed.derives_effect(&Capability::Log(level.clone())) { Value::Text(taint::WITHHELD.into()) } else { v.clone() }))
+            .map(|(level, v)| (level.clone(), if run.withholds_effect(&Capability::Log(level.clone())) { Value::Text(taint::WITHHELD.into()) } else { v.clone() }))
             .collect(),
         queued: queues::of(&run.performed),
         escaped: false,
         reads: run
             .reads
             .iter()
-            .map(|r| recorder::LoggedRead {
-                path: r.path.clone(),
-                request: SValue::from_core(&r.request),
-                // A file's text past the inline size is kept by its hash, not in the entry; a range's
-                // answer is its text (or the lines of it), kept with the range.
-                answer: r.answer.as_ref().filter(|_| r.file.as_ref().is_none_or(|f| f.inline && f.range.is_none())).map(SValue::from_core),
-                file: r.file.as_ref().map(|f| recorder::LoggedFile {
-                    hash: f.hash.clone(),
-                    size: f.size,
-                    blob: f.blob.clone(),
-                    range: f.range.as_ref().map(|g| recorder::LoggedRange {
-                        start: g.start,
-                        end: g.end,
-                        text: g.text.clone(),
-                        before: ranges::hex(&g.before),
-                        after: ranges::hex(&g.after),
-                        proof: g.proof.iter().map(|cv| ranges::hex(cv)).collect(),
+            .map(|r| match run.withholds_read(&r.path) {
+                // What it asked by may be computed from a secret: that, and what it found (but a
+                // database's rows, which are the database's), withheld.
+                true => {
+                    let mut request = r.request.clone();
+                    taint::withhold_read(&mut request);
+                    let database = matches!(&r.request, Value::Record(q) if q.contains_key("database"));
+                    recorder::LoggedRead {
+                        path: r.path.clone(),
+                        request: SValue::from_core(&request),
+                        answer: r.answer.as_ref().filter(|_| database).map(SValue::from_core),
+                        file: None,
+                        withheld: true,
+                    }
+                }
+                false => recorder::LoggedRead {
+                    path: r.path.clone(),
+                    request: SValue::from_core(&r.request),
+                    // A file's text past the inline size is kept by its hash, not in the entry; a range's
+                    // answer is its text (or the lines of it), kept with the range.
+                    answer: r.answer.as_ref().filter(|_| r.file.as_ref().is_none_or(|f| f.inline && f.range.is_none())).map(SValue::from_core),
+                    file: r.file.as_ref().map(|f| recorder::LoggedFile {
+                        hash: f.hash.clone(),
+                        size: f.size,
+                        blob: f.blob.clone(),
+                        range: f.range.as_ref().map(|g| recorder::LoggedRange {
+                            start: g.start,
+                            end: g.end,
+                            text: g.text.clone(),
+                            before: ranges::hex(&g.before),
+                            after: ranges::hex(&g.after),
+                            proof: g.proof.iter().map(|cv| ranges::hex(cv)).collect(),
+                        }),
                     }),
-                }),
+                    withheld: false,
+                },
             })
             .collect(),
     }
 }
 
 impl FiredRun {
+    /// Whether its record withholds its output `port` whole: it may be computed from a secret,
+    /// and the record doesn't mark every value the run computed from one (`recorder::Born`).
+    /// Where it does, the output is kept, and redacted of those values as of a secret's
+    /// (`Redactor::born`).
+    pub(crate) fn withholds_output(&self, port: usize) -> bool {
+        !self.born.whole && self.secret_fed.derives_output(port)
+    }
+
+    /// [`FiredRun::withholds_output`], for what an effect with `capability` carries.
+    pub(crate) fn withholds_effect(&self, capability: &Capability) -> bool {
+        !self.born.whole && self.secret_fed.derives_effect(capability)
+    }
+
+    /// Whether its record withholds what the read at `path` asked by and found: a secret may
+    /// reach what it asks by (a key, a file's name, a range, a query's parameters), and the
+    /// record doesn't mark every value the run computed from one. Where it does, the read is
+    /// kept, redacted of those values.
+    pub(crate) fn withholds_read(&self, path: &[u32]) -> bool {
+        !self.born.whole && self.secret_fed.fed(path) > taint::Taint::Clean
+    }
+
+    /// [`FiredRun::withholds_output`], for what input `port` of the node at `path` was handed.
+    pub(crate) fn withholds_input(&self, path: &[u32], port: usize) -> bool {
+        !self.born.whole && self.secret_fed.input(path, port).is_derived()
+    }
+
     /// No run at all: an unrouted request.
     pub(crate) fn nothing() -> FiredRun {
         FiredRun {
@@ -1532,7 +1660,9 @@ impl FiredRun {
             claims: vec![],
             secret_fed: taint::SecretFed::default(),
             secrets: BTreeMap::new(),
+            committed: BTreeMap::new(),
             answered: recorder::AnswerTokens::default(),
+            born: recorder::Born::default(),
             state_after: None,
             commit: None,
             running: None,
@@ -1550,6 +1680,19 @@ pub(crate) fn started_now() -> (u64, std::time::Instant) {
 #[cfg(test)]
 mod commit_checks {
     use super::*;
+
+    /// Guards: the databases guide counts a contended run's tries as this code does:
+    /// `OPTIMISTIC_ATTEMPTS`, then once more holding the lock.
+    /// Why: the guide said the run runs again "four times", one try more than the code makes
+    /// (audit R49).
+    #[test]
+    fn the_databases_guide_counts_a_runs_tries() {
+        const WORDS: [&str; 11] = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/manual/guides/databases.md");
+        let guide = std::fs::read_to_string(path).unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+        let said = format!("({} tries in all, then once more holding the database", WORDS[OPTIMISTIC_ATTEMPTS as usize]);
+        assert!(guide.contains(&said), "docs/manual/guides/databases.md should say \"{said}\"");
+    }
 
     fn state_of(pairs: &[(&str, f64)]) -> State {
         State::from_values(pairs.iter().map(|(k, v)| (k.to_string(), Value::Number(*v))).collect()).unwrap()

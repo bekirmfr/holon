@@ -14,7 +14,7 @@ import { secretUses, witnessed, type Witness } from "./flowFacts";
 import { executionOrder, nodeTimings } from "./replay";
 import type { Route } from "./routes";
 import { field, outside, runLabel, runOutcome, startedBy, text } from "./runs";
-import { downloadRuns, getDeployedDocument, getLog, getSummary, type FlowDocument, type LogEntry } from "./server";
+import { downloadRuns, getDeployedDocument, getLog, getSummary, ServerError, type FlowDocument, type LogEntry } from "./server";
 import { useKeys } from "./ui/Keys";
 
 const show = (v: WValue | null | undefined) => (v === null || v === undefined ? "—" : formatValue(v));
@@ -25,12 +25,15 @@ const us = (t: number) => (t >= 1000 ? `${(t / 1000).toFixed(2)} ms` : `${t.toFi
  *  the runs kept just before and after it (`,` and `.` go there). */
 function useRun(slug: string, seq: number) {
   const [run, setRun] = useState<LogEntry | null | undefined>(undefined);
+  // Why it can't be read, when its steps are refused (run.steps, R55): the server's words.
+  const [refused, setRefused] = useState("");
   const [head, setHead] = useState("");
   const [doc, setDoc] = useState<FlowDocument | null>(null);
   const [beside, setBeside] = useState<{ before: number | null; after: number | null }>({ before: null, after: null });
   useEffect(() => {
     let stale = false;
     setRun(undefined);
+    setRefused("");
     setBeside({ before: null, after: null });
     // From the run before it on: the log answers the runs after the seq it is given.
     getLog(slug, seq > 1 ? seq - 2 : undefined)
@@ -42,12 +45,16 @@ function useRun(slug: string, seq: number) {
         setBeside({ before: entries.filter((e) => e.seq < seq).pop()?.seq ?? null, after: entries.find((e) => e.seq > seq)?.seq ?? null });
         if (found?.unit) getDeployedDocument(slug, found.unit).then((d) => !stale && setDoc(d), () => undefined);
       })
-      .catch(() => !stale && setRun(null));
+      .catch((e: unknown) => {
+        if (stale) return;
+        setRefused(e instanceof ServerError && e.status === 403 ? e.message : "");
+        setRun(null);
+      });
     return () => {
       stale = true;
     };
   }, [slug, seq]);
-  return { run, head, doc, beside };
+  return { run, head, doc, beside, refused };
 }
 
 /** The witness the host's heads go to, read once (`/summary`'s `witness`); undefined until read. */
@@ -67,7 +74,7 @@ function useWitness(): Witness | undefined {
 }
 
 export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; navigate: (r: Route) => void }) {
-  const { run, head, doc, beside } = useRun(slug, seq);
+  const { run, head, doc, beside, refused } = useRun(slug, seq);
   const witness = useWitness();
   const dialog = useDialog();
   const go = (to: number | null) => (to === null ? false : navigate({ kind: "run", slug, seq: to }));
@@ -81,6 +88,12 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
     return (run.timeline ?? []).map((t) => ({ label: `step ${t.path.join(".")}`, start_us: t.start_us, end_us: t.end_us }));
   }, [run, doc]);
   if (run === undefined) return <p className="hl-flow__none">reading run #{seq}…</p>;
+  if (run === null && refused)
+    return (
+      <p className="hl-flow__note" role="note" aria-label="steps">
+        {refused}
+      </p>
+    );
   if (run === null) return <p className="hl-flow__none">The log here holds no run #{seq}.</p>;
 
   const o = runOutcome(run);

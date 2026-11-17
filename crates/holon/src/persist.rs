@@ -7,11 +7,13 @@ use crate::*;
 /// router in `route()` unambiguous (no `/` inside a slug could be confused with a path
 /// separator) and avoids any path-traversal-shaped weirdness reaching `strip_prefix`.
 /// Write the whole current deployments table to `path` as a JSON array of `DeploymentRecord`
-/// (write-through — called after every change to a deployment, not batched or scheduled).
-/// A no-op for a table kept nowhere. A write that fails is said and returned, not fatal: the
-/// server keeps working on what it holds, which won't survive a restart until a write goes
-/// through. A change a person or an agent asked for answers so ([`not_saved`]), never as done
-/// (release audit R59); a caller that answers no one (a tick, an arrival, an expiry) goes on.
+/// (write-through — called after every successful deploy/delete, not batched or scheduled).
+/// A no-op for a table kept nowhere. A failure is said in the server's output and returned, not
+/// fatal: the server keeps working, and what wasn't saved won't survive a restart until a save
+/// succeeds again. What answers someone tells them so (a waiting run's token, a decision, a
+/// restore, a deploy), and a waiting run isn't given its event unless it was saved as going on
+/// (`durable::resume_parked`). Each caller is listed as answering for a change or as answering no
+/// one by `a_change_the_deployments_file_didnt_take_is_never_answered_as_done` (release audit R59).
 ///
 /// Takes the table's mutex rather than a locked table: the table lock is held only long enough
 /// to copy each deployment's fields and clone its state `Arc`. Each state map is then locked on
@@ -40,6 +42,7 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
                 uses: dep.uses.clone(),
                 browsers: dep.browsers.clone(),
                 agents_propose_off: dep.agents_propose_off,
+                agents_deploy_at_once: dep.agents_deploy_at_once,
                 trigger_count: dep.trigger_count,
                 error_count: dep.error_count,
                 tallies: dep.tallies.clone(),
@@ -89,28 +92,21 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
             }
         })
         .collect();
-    let written = serde_json::to_vec_pretty(&records).map_err(|e| format!("they don't serialize: {e}")).and_then(|bytes| {
-        if crate::faults::failing("the deployments file").is_some() {
-            return Err(crate::faults::error("the deployments file").to_string());
+    let saved = match serde_json::to_vec_pretty(&records) {
+        // Sealed under the server's keys, owner-only: it holds the flows' documents, grants and
+        // what their waiting runs need. A test makes it fail where the disk would
+        // (`crate::faults`).
+        Ok(bytes) => match crate::faults::failing("the deployments file") {
+            Some(_) => Err(crate::faults::error("the deployments file")),
+            None => crate::at_rest::write_table(path, crate::at_rest::role::DEPLOYMENTS, &bytes),
         }
-        // Sealed under the server's keys, owner-only: it holds the flows' documents, grants
-        // and what their waiting runs need.
-        crate::at_rest::write_table(path, crate::at_rest::role::DEPLOYMENTS, &bytes).map_err(|e| e.to_string())
-    });
-    if let Err(e) = &written {
-        eprintln!("warning: failed to persist deployments to {path:?}: {e}");
+        .map_err(|e| format!("the deployments file couldn't be written to {path:?}: {e}")),
+        Err(e) => Err(format!("the deployments couldn't be serialized: {e}")),
+    };
+    if let Err(e) = &saved {
+        eprintln!("warning: {e}");
     }
-    written
-}
-
-/// The answer to `change` (`the pause of "shop"`), which a person or an agent made and which is
-/// in effect, when the deployments file didn't take it (`e`): a 500 saying so, never a 200
-/// (release audit R59). It isn't taken back: undoing a revoke, a pause or a removal would open
-/// again what its maker closed, and undoing the rest would mean undoing what each set going (a
-/// deploy's runs, a resume's listeners); in effect and said not to hold past a restart, the
-/// maker can do it again once the disk takes it.
-pub(crate) fn not_saved(change: &str, e: &str) -> Response {
-    err(500, format!("{change} is in effect now, but not saved: the deployments file couldn't be written ({e}), so it won't hold past a restart until that file can be written"))
+    saved
 }
 
 /// A waiting run's part that may hold a secret (its inputs, sourced values, requests, tokens,
@@ -410,6 +406,7 @@ pub(crate) fn load_deployments(
                 tallies_changed: false,
                 deployed_at,
                 agents_propose_off: record.agents_propose_off,
+                agents_deploy_at_once: record.agents_deploy_at_once,
             },
         );
     }
@@ -445,18 +442,17 @@ pub(crate) fn note_cut_off_runs(path: &Place, deployments: &mut BTreeMap<String,
 
 /// Persist the flows table — same write-through discipline and opt-out (kept nowhere) as
 /// `persist_deployments`, but simpler: a `FlowRecord` is already its own on-disk shape (no
-/// store cross-references, no re-derivation needed on the way back in).
-pub(crate) fn persist_flows(path: &Place, flows: &BTreeMap<String, FlowRecord>) {
-    let Some(path) = path.at() else { return };
+/// store cross-references, no re-derivation needed on the way back in). Why it isn't written, if
+/// it isn't: the save that changed it is then put back and refused (flows.rs), never answered as
+/// kept.
+pub(crate) fn persist_flows(path: &Place, flows: &BTreeMap<String, FlowRecord>) -> Result<(), String> {
+    let Some(path) = path.at() else { return Ok(()) };
     let records: Vec<&FlowRecord> = flows.values().collect();
-    match serde_json::to_vec_pretty(&records) {
-        Ok(bytes) => {
-            if let Err(e) = crate::at_rest::write_table(path, crate::at_rest::role::FLOWS, &bytes) {
-                eprintln!("warning: failed to persist flows to {path:?}: {e}");
-            }
-        }
-        Err(e) => eprintln!("warning: failed to serialize flows: {e}"),
-    }
+    let bytes = serde_json::to_vec_pretty(&records).map_err(|e| format!("the flows don't serialize: {e}"))?;
+    crate::at_rest::write_table(path, crate::at_rest::role::FLOWS, &bytes).map_err(|e| {
+        eprintln!("warning: failed to persist flows to {path:?}: {e}");
+        format!("the flows file isn't written: {e}")
+    })
 }
 
 /// Load flows at startup — the inverse of `persist_flows`. A missing file (first run) or

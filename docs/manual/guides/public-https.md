@@ -21,10 +21,12 @@ There are two things you might expose, and they are separate:
   itself: a verified signature (`stripe.verify`), or a token compared with `secure_equals` (the
   `guarded-api` sample). Everything else is answered as the flow says.
 - **Limits on a flow's port**: a body of at most 10 MiB (413 past that), 10 seconds to send the
-  headers and 30 for the body, and 1024 connections at once. There is no rate limit: put one in
-  the proxy if you need it.
+  headers and 30 for the body, 30 seconds for a caller to take each part of an answer (a caller
+  that stops reading is disconnected), 1024 connections at once, and `max_concurrent_runs` runs
+  at once (64 by default; 503 with `Retry-After` past it). There is no rate limit: put one in the
+  proxy if you need it.
 - **Forwarded headers** (`X-Forwarded-For` and the like) reach the flow as ordinary headers,
-  `req.headers["x-forwarded-for"]`. Holon itself doesn't read them.
+  `req.headers["x-forwarded-for"]`. A flow's port doesn't read them itself.
 
 ## A reverse proxy: Caddy
 
@@ -106,7 +108,7 @@ holon.example.com {
 and tell the server the name it is reached by, and the origin the editor's pages come from:
 
 ```sh
-holon serve --allow-host holon.example.com --allow-origin https://holon.example.com
+holon serve --allow-host holon.example.com --allow-origin https://holon.example.com --trust-proxy 127.0.0.1
 ```
 
 - `--allow-host`: the server answers only requests whose `Host` is localhost or a name it was
@@ -115,6 +117,14 @@ holon serve --allow-host holon.example.com --allow-origin https://holon.example.
   passes on (and `name:port` if the public port differs from the one it listens on).
 - `--allow-origin`: the editor's own requests carry their page's origin, which must be one the
   server knows.
+- `--trust-proxy`: the address the proxy connects from (here this machine's). The server counts
+  wrong passwords, and requests at once, by the address they come from; through a proxy every
+  request comes from the proxy, so without it five wrong passwords for a name from anywhere lock
+  that name for everyone, and one client's slow requests hold everyone's share. With it, the
+  server reads whom the proxy forwarded for (`X-Forwarded-For`, which Caddy sends; nginx needs
+  `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`). Trust only your proxy's
+  address: any program that connects from it can write a forwarded address of its choosing. The
+  server says so, once, when a proxy it doesn't trust forwards a request.
 
 Everyone still signs in. Use long passwords, or an identity provider (the admin page), and
 give agents and services the narrowest role that works.
@@ -131,8 +141,10 @@ An agent or a service uses its own token instead (`HOLON_TOKEN`, or `holon mcp s
 https://holon.example.com` for an agent's host). The command line sends a password or a token
 over https only, never plain http to another machine.
 
-To reach the server from your network without a proxy, `--at 0.0.0.0:7420` listens on every
-interface, still unencrypted (the server warns so): only on a network you trust. The command line
+To reach the server from your network without a proxy, `--at 0.0.0.0:7420 --allow-host NAME`
+listens on every interface and answers to the name others use for it (without `--allow-host`, a
+request naming the machine's address is answered 403: the server answers only to localhost and
+the names it is given), still unencrypted (the server warns so): only on a network you trust. The command line
 on another machine then reaches it through an SSH tunnel (`ssh -L 7420:localhost:7420 HOST`, then
 `--server 7420`), since it sends no password or token over plain http.
 

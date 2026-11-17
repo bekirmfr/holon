@@ -12,7 +12,7 @@ named as it is in the code; search for the name.
 | wasm parity | `wasm-pack test --node crates/holon-wasm` | job `wasm-parity` | 23 under wasm, 15 native |
 | Editor | `npx tsc --noEmit -p .`, `npx vitest run` (`npm test` in `editor/`) | job `editor`, against a freshly built wasm | 357 at `905e9fc`, every sample built in `samples.test.ts` |
 | Embedded editor | `cargo test -p holon --features embed-editor editor` | job `editor` | |
-| End to end | `npm run e2e` in `editor/` (Playwright, the real editor and server) | `e2e.yml`, jobs `e2e (1)` and `e2e (2)`: on main, nightly, and a pull request labelled `e2e` or a release's (`release-…`) | 90 tests, one of them every sample deployed from its text (`sweep.e2e.ts`, about a minute); it skips `atlas-notes` and `ledger-watch` without `HOLON_TEST_MONGODB` and `HOLON_TEST_POSTGRES` |
+| End to end | `npm run e2e` in `editor/` (Playwright, the real editor and server) | `e2e.yml`, jobs `e2e (1)` and `e2e (2)`: on main, nightly, and a pull request labelled `e2e` or a release's (`release-…`) | 131 tests on 2026-11-16, 23 of them every sample deployed from its text, four to a test (`sweep.e2e.ts`, about five minutes on CI); it skips `atlas-notes` and `ledger-watch` without `HOLON_TEST_MONGODB` and `HOLON_TEST_POSTGRES` |
 | VS Code extension | `xvfb-run -a npm run test:vscode` (in `editors/vscode`: `holon lsp` in a real VS Code) | job `vscode` | |
 | Golden records | inside `cargo test`; `HOLON_GOLDEN=update` rewrites them | yes | `crates/holon-author/tests/golden/eval.txt` (379 cases), `crates/holon/tests/golden/server.txt` (342 runs) |
 
@@ -145,8 +145,8 @@ A slower path that is still right would pass every test above; these fail instea
   deadline), a panic asked for in the run and in the request's handler before it. Calm, faulted,
   calm again: the run fails, its caller is told 500, it is logged as failed, the deployment beside
   it runs, and what drives runs goes on. It replaced the test of the two request rows alone.
-- `one_deployments_log_doesnt_hold_up_another`: another deployment answers in under 400 ms while a
-  busy log is written and cut back.
+- `one_deployments_log_doesnt_hold_up_another`: another deployment answers while a busy
+  deployment's log lock is held (it waits on the lock's release, not on a time).
 - `a_fire_in_progress_does_not_stall_the_table`: a regression (a persist held the table's lock
   waiting on a state lock). The other of its kind, a panic under a state lock that poisoned it for
   every later request (an effect written to state), is a row of
@@ -272,7 +272,9 @@ Every sample is a test ([`CLAUDE.md`](../../../CLAUDE.md)):
   for the secrets and optional permissions its entry names, and its `flow(…)`'s `keep` and
   `limits` are the limits the deploy asks for.
 - `editor/e2e/sweep.e2e.ts`: each deploys from its text with `holon deploy` to the real server,
-  its port moved, and a request sent to it is found in its log; then it is removed.
+  its port moved, and a request sent to it is found in its log; then it is removed. Four samples
+  to a test, each with a limit of its own; a sample `samples.rs` lists with no test fails the
+  sweep's first test, which reads the list from `holon new --help`.
 - `editor/e2e/samples.e2e.ts`: the flows page lists every sample; a sample is opened and deployed
   through the editor, its consent screen included, only for what the editor alone shows.
 

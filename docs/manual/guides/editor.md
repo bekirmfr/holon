@@ -13,7 +13,14 @@ up. An admin adds people from **People and access**, and each gets a one-time li
 password.
 
 Your initials are at the right of the top bar. Their menu has **Welcome and docs**, **Change
-password** and **Sign out**; the theme (**Auto**, **Light** or **Dark**) is beside them.
+password** and **Sign out** (asked first while an open flow has changes not saved); the theme
+(**Auto**, **Light** or **Dark**) is beside them.
+
+Each browser tab acts as whoever signed in there: signing in as someone else in another tab
+leaves it alone. When your sign-in ends while the editor is open (signed out elsewhere, or it
+expired), a sign-in covers the editor and keeps it as it was: sign in again as yourself and go
+on with your open flows, unsaved changes and all. Through an identity provider, it opens in a
+pop-up so the page stays. Signing in as someone else closes them.
 
 ## Pages and tabs
 
@@ -39,14 +46,18 @@ each request.
 
 **new flow** opens an untitled canvas in the editor at once; the flow is named when you first save
 or deploy it. A name another saved flow or a deployment already has asks before that one is
-replaced. The editor keeps each flow open in a tab of its own, after its **Home** tab; every tab
+replaced. A save replaces the save the flow was opened from: when someone saved it since (a
+colleague, or an agent through `holon mcp`), or removed it, saving asks before theirs is replaced,
+and says whose it is and when. The same goes for a group or a role on the People pages: one
+changed since the page read it is refused, and the page reads it again. The editor keeps each flow open in a tab of its own, after its **Home** tab; every tab
 closes with its ×.
 
 - **Overview** is where the console opens: what needs a person, four tiles (runs in the last 24
   hours, the share that failed, the flows live, the run log), every deployed flow with its runs
   hour by hour (red where one failed), the newest runs across every flow, and the run log, which
   **Check now** reads again line by line. It is read from the server's `GET /summary`.
-- **Approvals** is what waits for a person: **Deploys**, the versions to review and deploy (an
+- **Approvals** is what waits for a person (a list the server didn't answer says *Couldn't read*
+  and why, its count **?**, never that nothing waits): **Deploys**, the versions to review and deploy (an
   agent's proposal with its why and note, and **Decline with a reason…**), **Runs waiting**, and
   **Access changes**: while the host has people approve an access change, each change to who may
   do what that gives someone more, with what it gives, who proposed it and why, who could act as
@@ -125,9 +136,29 @@ A flow tab is a canvas of nodes and wires.
 - **Secrets.** Every node a secret's value reaches where it leaves the computation is marked 🔑,
   with what it does with it: a request it is sent in ("sends the secret "slack_webhook_path" to
   https://hooks.slack.com"), a database read it is a value of, a write or a call the host
-  refuses, the route's answer; and where what a call answers to it goes ("sends what is answered
-  to the secret "client_secret" to https://httpbin.dev"). A placed holon is marked for what its
-  insides do. A node that only computes with it (an HMAC, Stripe's verify) isn't.
+  refuses, the route's answer; where what a call answers to it goes ("sends what is answered
+  to the secret "client_secret" to https://httpbin.dev", "answers its caller with what is
+  answered to the secret "client_secret""); and where a hash or a signature made with it goes
+  ("answers its caller with a hash or signature made with the secret "signing_key""). A placed
+  holon is marked for what its insides do. A node that only computes with it (an HMAC whose
+  result is only compared, Stripe's verify) isn't. Wherever what a flow may do is listed (the
+  **It may** strip above the canvas, the deploy question, a flow's status and settings, the
+  Inspector, the Library, the host's holdings), a line of a secret has the same 🔑 before it and
+  is in the secret's colour, so it is the first thing read; in the strip and the deploy question
+  it says where the secret goes and where what is made with it goes, as the approval does.
+- **The It may strip.** Above the canvas, what the draft may do, each thing a short pill: an icon
+  for what it reaches (a call out ↗, requests coming in, a state's cell, a collection's rows, a
+  folder, a database, a channel, a mail, a queue, a key for a secret, a clock…), a small second
+  one for what is done to it (a pencil: written; two arrows: read and written; an arrow out:
+  sent on or answered with; a bolt: a run on each one that comes), and its name
+  (`api.example.com`, `orders`, `stripe_key`). Point at a pill, or reach it with **Tab**, and a
+  tip shows the whole sentence at once, as the approval says it, a line for each part: "read the
+  secret "stripe_key", and send it to https://api.stripe.com", then where what is answered to it
+  or made with it goes; under it, what its mark means and the item as the manifest writes it.
+  **Esc** puts the tip away.
+  A new item is framed and marked **new**, one the deployed version had and the draft doesn't is
+  struck through, and a secret's pill is in the secret's colour, with the arrow when the secret,
+  or something made with it, goes anywhere.
 
 ### Holons on the canvas
 
@@ -366,7 +397,7 @@ formatting. The VS Code extension (`holon-vscode.vsix`, on each release) starts 
 | j k, ← → | step through a run, a node at a time (viewing runs) |
 | , . | the run before, or after |
 | [ ] | the version waiting before, or after (a review) |
-| y, Enter / n, Esc | a dialog's yes, or no |
+| y, Enter / n, Esc | a dialog's yes, or no; its yes once it has been shown half a second with no key pressed, so a key you were typing can't answer it |
 | Ctrl+Z / Ctrl+Y, Ctrl+Shift+Z | undo / redo |
 | Delete, Backspace | remove the selection |
 | Shift+Alt+F | format the text |

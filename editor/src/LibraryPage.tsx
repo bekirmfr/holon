@@ -11,6 +11,7 @@ import { useDialog } from "./Dialog";
 import { follow, format, type LibraryTab, type Route } from "./routes";
 import type { Sample } from "./samples";
 import { tutorials } from "./tutorials";
+import { Said } from "./SecretSaid";
 
 const TABS: [LibraryTab, string][] = [
   ["tutorials", "Tutorials"],
@@ -172,7 +173,16 @@ function Samples({
           </div>
           <div>
             <dt>it may</dt>
-            <dd>{may ? may.map(describeItem).join(" · ") : "?"}</dd>
+            <dd>
+              {may
+                ? may.map((item, i) => (
+                    <span key={item}>
+                      {i > 0 && " · "}
+                      <Said item={item} />
+                    </span>
+                  ))
+                : "?"}
+            </dd>
           </div>
           {s.secrets && s.secrets.length > 0 && (
             <div>
@@ -273,7 +283,7 @@ function Marketplace({
         <button
           className="hl-flow__button"
           onClick={async () => {
-            const next = await dialog.prompt("The marketplace's address (a Marketplace deployment, e.g. http://127.0.0.1:8120); empty for none:", url);
+            const next = await dialog.prompt("The marketplace's address (a Marketplace deployment, e.g. http://127.0.0.1:8120); empty for none:", url, undefined, "optional");
             if (next === null) return;
             setMarketplaceUrl(next);
             onChange();

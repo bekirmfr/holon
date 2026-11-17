@@ -567,6 +567,7 @@ impl Sweeps {
             }
         }
         if changed {
+            // Nobody waits on an answer: the server's output says so when it isn't saved.
             let _ = crate::persist_deployments(&state.deployments_path, &state.deployments);
             crate::sync_listeners(state);
         }

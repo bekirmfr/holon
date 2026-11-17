@@ -109,10 +109,17 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    /// Counts `more` values made: nothing past [`MAX_ITEMS`](crate::MAX_ITEMS).
+    /// Counts `more` values made: nothing past [`MAX_ITEMS`](crate::MAX_ITEMS), or once the round
+    /// may make no more ([`memory::room`](crate::memory::room), asked every
+    /// [`ASK_EVERY`](crate::memory::ASK_EVERY) values).
     fn made(&mut self, more: usize) -> Option<()> {
+        let every = crate::memory::ASK_EVERY;
+        let before = self.made / every;
         self.made += more;
-        (self.made <= crate::MAX_ITEMS).then_some(())
+        if self.made > crate::MAX_ITEMS || (self.made / every != before && !crate::memory::room()) {
+            return None;
+        }
+        Some(())
     }
 
     fn rest(&self) -> &'a str {

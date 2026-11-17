@@ -176,7 +176,13 @@ impl Client {
         let path = format!("/deployments/{}", seg(slug));
         let entry = self.deployment(slug).cloned().ok_or_else(|| format!("nothing named \"{slug}\" is deployed on {}", self.server()))?;
         let manifest = self.get(&format!("{path}/manifest"))?;
-        let log = self.get(&format!("{path}/log?limit={RUNS}"))?;
+        // A run's steps and values are run.steps' (R55). To whoever holds run.view alone, the list
+        // of runs as /log/heads says it, so the page opens and shows what they hold: the runs,
+        // the log lines, the history; a run's own tabs then say what it can't show.
+        let log = match self.get(&format!("{path}/log?limit={RUNS}")) {
+            Err(e) if e.contains("run.steps") => self.get(&format!("{path}/log/heads?limit={RUNS}"))?,
+            log => log?,
+        };
         let runs = list(&log, "entries");
         let head = log["head"].as_str().unwrap_or_default().to_string();
         let breaks = log["breaks"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
@@ -201,11 +207,13 @@ impl Client {
     }
 
     /// The text of a saved flow: as written when that is its canvas's code, else its canvas
-    /// printed (`agent::text_of`, as every reading of a document's text is).
-    pub(crate) fn saved_text(&self, name: &str) -> Result<String, String> {
+    /// printed (`agent::text_of`, as every reading of a document's text is); and the stamp of the
+    /// save it is.
+    pub(crate) fn saved_text(&self, name: &str) -> Result<(String, Option<u64>), String> {
         let saved = self.get(&format!("/flows/{}", seg(name)))?;
+        let at = saved["saved_at_epoch_seconds"].as_u64();
         let document = saved.get("document").cloned().unwrap_or(saved);
-        agent::text_of(name, &document)
+        agent::text_of(name, &document).map(|text| (text, at))
     }
 
     /// What a run did, laid over the text of the version it ran on.
@@ -237,9 +245,15 @@ impl Client {
         deploycmd::commit(self.api.as_ref(), plan, staged, crate::mcp::saved_document(plan, text))
     }
 
-    /// Save a flow without deploying it, as the flows page lists it.
-    pub(crate) fn save(&self, name: &str, plan: &agent::Plan, text: &str) -> Result<(), String> {
-        self.post("/flows", json!({ "name": name, "document": crate::mcp::saved_document(plan, text) })).map(|_| ())
+    /// Save a flow without deploying it, as the flows page lists it, over `base` when said (the save
+    /// it replaces, flows.rs `save`): the save's stamp.
+    pub(crate) fn save(&self, name: &str, plan: &agent::Plan, text: &str, base: Option<Option<u64>>) -> Result<u64, String> {
+        let mut body = json!({ "name": name, "document": crate::mcp::saved_document(plan, text) });
+        if let Some(base) = base {
+            body["base"] = json!(base);
+        }
+        let saved = self.post("/flows", body)?;
+        saved["saved_at_epoch_seconds"].as_u64().ok_or_else(|| "the server didn't say when it saved it".to_string())
     }
 
     /// A restore: a dry run first, then (`acknowledge` set) the real one.

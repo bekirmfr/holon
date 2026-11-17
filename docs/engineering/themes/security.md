@@ -32,7 +32,13 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
 - **Passwords**: at least `MIN_PASSWORD` (10) characters, kept as argon2id hashes. `MAX_FAILURES`
   (5) wrong in a row lock the name, for the address they came from (`sign_in_from`: the name and
   the client's address), for `LOCKED_FOR` (a minute); sign-ins in flight count toward it, so
-  sending them at once doesn't buy more tries. Tries older than a minute are forgotten once more
+  sending them at once doesn't buy more tries. A name has a ceiling from every address together
+  too: past `NAME_MAX_WRONG` (20) wrong in `NAME_WINDOW` (a quarter of an hour; in flight
+  counting), it is refused from each address it hasn't signed in from (`NameTries`, the latest
+  `KNOWN_KEPT` (8) kept in memory) until the window ends, so guesses spread over many addresses
+  are capped (about two thousand a name a day) and its owner still signs in where they did
+  before. Setup codes have none: no address set the server up before, so one would let anyone
+  keep it from being set up. Tries older than a minute are forgotten once more
   than `TRIES_KEPT` (4,096) are kept (`forget_old_tries`). A name with no account is checked
   against `stand_in_hash`, so a refusal takes as long either way. No more than `CHECKS_AT_ONCE`
   (4) passwords are hashed or checked at once, on as many threads kept for it (`checking`,
@@ -41,12 +47,15 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   than refusing them (2 s turned some away on a loaded two-core CI runner). At most
   `CHECKS_WAITING` (64) wait, and one more is answered busy at once (`Slots`), so sign-ins under
   ever new names hold no more than 68 of the requests answered at once and the rest of the control
-  plane answers on; one address (an IPv6 one by its /64: `auth::address`) has at most
+  plane answers on; one client (`Access::client`: its address, an IPv6 one by its /64, or
+  behind a proxy the server trusts, `--trust-proxy`, the one it forwarded for) has at most
   `CHECKS_FROM_ONE` (8) checked or waiting, under any names (`counted`), so it can't take the
   line. An invite link is checked before its password is hashed (`accept`): what a cheap check
   refuses (a link made up or used, a wrong setup code, a locked name) waits for no check.
-- **Requests at once**: the control plane admits `MAX_IN_FLIGHT` (512) being answered at once
-  (`Admitted`); one more is answered 503 with `Retry-After: 1`, before any work. A body is read
+- **Requests at once**: the control plane admits `MAX_IN_FLIGHT` (512) being answered at once,
+  and `MAX_FROM_ONE` (64) from one client (`Slots`, `Admitted`); one more is answered 503 with
+  `Retry-After: 1`, before any work, saying which. One client's bodies that stop or trickle hold
+  its share, not every place. A body is read
   by `BODY_DEADLINE` (30 s, as the data plane's `body_timeout`): `read_body`, the only reader
   (a test says so), reads on a thread of its own and answers 408 at the deadline, so a body that
   trickles or stops gives its place back. Rouille hides the socket, so the reader is left to the
@@ -66,7 +75,9 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   email, only when the provider says it verified it (`email_verified` true); a token that doesn't
   say signs no one in, and is told why. An email set later, or one the provider gives another
   subject, isn't a way in: another subject with a matched person's email is refused, until an
-  admin sets that email again (`set_email` clears the match). Setting the provider takes holding
+  admin sets that email again (`set_email` clears the match). A refusal names no account here:
+  it says the account with that email signs in as someone else, or that none has it, never whose
+  it is, since a name is half of a password guess. Setting the provider takes holding
   what each person holds (`POST /admin/oidc`, auth.rs), since it says who each of them is. An ID
   token is good wherever it is shown until it expires, so signing out with one keeps its hash
   refused until then (`Book::ended`, `end_provider_sign_in`; forgotten past its expiry).
@@ -124,9 +135,13 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   its runs lists only the runs waiting at one they may decide, those points alone (the runs
   route's `Rule::Either`; `durable::waiting_runs`, which `GET /runs/waiting` lists across flows
   through as well, to anyone signed in), each with what it shows, kept at park as the log
-  keeps it: redacted by the log's redactor, withheld when a secret may have made it, sized past
-  16 KiB, sealed with the run (`durable::shown_of`, the launch review's H6); a person manages the
-  tokens of an agent or a service they own.
+  keeps it: redacted by the log's redactor, marked or withheld when a secret may have made it, past
+  16 KiB cut down once redacted (a text to its first KiB, a list or record to its first 64 items, each
+  saying how much more; past it still, its size: `durable::bounded`), sealed with the run
+  (`durable::shown_of`, the launch review's H6). The console shows it a field a row, each text
+  quoted and each row cut at 120 characters (`decisions.ts` `shownSaid`), and the question that
+  decides it names the run and repeats it: a value its starter sends can't pass for another field
+  or push one out of sight (R42). A person manages the tokens of an agent or a service they own.
 
 ### 2.2 The request gate (http.rs)
 
@@ -208,6 +223,12 @@ exceptions are ever granted. At deploy (deploy.rs):
    flow of their own.
 3. The `Grant` is kept with the deployment; the **`Permit`** applies it to the policy in force
    (a ceiling lowered since wins; an exception holds only while the policy still allows it).
+   What a deploy needs, and whether it waits for a person, is worked out from the deployment as
+   read before the lock that puts the version in (`deploy::Previous`); under that lock it must
+   still be the same (`Previous::still`: its grant, its versions, its agents' settings), or the
+   deploy answers 409 and is sent again. Before, a grant built from that copy undid a revoke, a
+   lowered limit or "deploy at once" turned off made meanwhile, so an agent redeploying in a loop
+   took back what a person had just taken away (R25).
 
 At perform time the permit is the rule, whatever the graph says: `run_attempt` drops every
 effect `Permit::allows` doesn't cover ("refused … not granted to this deployment"), and an answer
@@ -234,8 +255,9 @@ loopback, RFC 1918, link-local and metadata, CGNAT, NAT64 (and its local-use pre
 an IPv4 address inside IPv4-mapped, IPv4-compatible or 6to4 forms judged as itself, Teredo whole,
 and the rest it lists),
 checked on the addresses DNS returned, in the connection's own resolver, so rebinding can't swap one in.
+A cloud's metadata service is never reached, private addresses granted or not (`is_metadata`).
 The host sets `Host`, length and framing headers itself (`refused_header`). A redirect to another
-host carries only `CARRIED_ELSEWHERE` headers and is refused if it would resend a body
+host carries none of the flow's headers and is refused if it would resend a body
 (`blocked_redirect`). A request carrying a secret's value to a host its approval doesn't show it
 going to isn't sent (`folders::SecretSends`: `blocked_secret`).
 
@@ -261,7 +283,9 @@ going to isn't sent (`folders::SecretSends`: `blocked_secret`).
 - **Redacted**: `Redactor::entry` replaces every literal occurrence in a log entry, current and
   retired values, JSON-escaped forms too, with `‹secret:name v3 #fingerprint›` (a keyed BLAKE3 of
   the value, so which value a run had is told without holding it); what is computed from a secret
-  is withheld (`taint::WITHHELD`); a run's own look-alike of a mark is escaped. Control-plane
+  reads `‹derived #…›` where every such value of the run is a text a mark stands for
+  (`secrets::born`, a keyed hash of each in the entry's `derived`), and is withheld otherwise
+  (`taint::WITHHELD`); a run's own look-alike of a mark is escaped. Control-plane
   replies about a deployment are redacted the same way (`Redactor::json`). A waiting run's
   request is sealed under the same key on disk (`sealed_for_disk`): the vault carries the sealer
   however it is rebuilt (`SecretStore::vault`, `resolve`), and an in-memory store seals under a key
@@ -393,12 +417,14 @@ What is not defended, or only partly:
   run file (an admin token), the logs and the store, and rewrite them (local.rs says so: it
   "trusts no more than the machine already does"). An `env:` or `os` key moves that to the
   environment or the key store, not out of reach of the same user.
-- **Other users on the machine**: every file the server writes is owner-only, and the folders it
-  makes are (§2.8). A data folder made before, or by someone else, open to others is said at start
-  and not changed; its older files (a store's values, never written again) keep their mode until
+- **Other users on the machine**: every file the server writes is owner-only, and on Unix the
+  folders it makes are (§2.8; on Windows a folder it makes inherits its parent's ACL). A data
+  folder made before, or by someone else, open to others is said at start on Unix (`open_to_others`
+  reads modes; Windows isn't checked) and not changed; its older files (a store's values, never
+  written again) keep their mode until
   the admin restricts the folder. Folders inside the data folder (the logs', the state heads') are
-  made with the umask, behind the data folder's own `0o700`. On Windows, `write_atomically`'s files
-  take the folder's inherited ACL, not `restrict_to_owner`'s.
+  made with the umask, behind the data folder's own `0o700`. On Windows, `write_atomically` gives
+  each file `restrict_to_owner`'s protected DACL before writing it.
 - **A log rewritten whole**: the chain is an unkeyed hash, so whoever can write the file can write
   a consistent new one; lines before the chain (no `prev`) check only once one with a `prev` is seen.
   Only a witness holding a later head shows it, and only up to the last head sent.
@@ -413,9 +439,29 @@ What is not defended, or only partly:
 - **What a secret chooses is derived from it**: a true or false computed from it (`startsWith`,
   `===`, `has`), and what a leaf gives when a secret is its condition, position or key (`c ? a :
   b`, `list[i]`, `rec[k]`), is withheld in the log, answered or sent only where approved, and
-  never written, as the secret is (taint.rs: `selects`). Only the one-way leaves (`sha256`,
-  `hmac_sha256`, `secure_equals`, `jwt_verify`'s key and clock) and a call's answer give out what
-  they compute from it as clean. What a run's timing says isn't covered: a flow that does more
+  never written, as the secret is (taint.rs: `selects`); which way it chooses what runs shows in
+  the run's steps, as any choice's does: whoever approves the flow reads what it chooses by
+  (`SecretFed::deciders`), and reading a run's steps is a grant of its own; and a route that
+  reads its flow's own data by it asks `SecretAnswer`. Only the one-way leaves (`sha256`,
+  `hmac_sha256`, `secure_equals`, `jwt_verify`'s key and clock), fed the secret whole, and a
+  call's answer give out what they compute from it as clean. Whole is the secret as it is, or
+  spelled another way with nothing chosen out of it (taint.rs: `RECODES`, `Taint::Recoded`: its
+  base64 or hex, its bytes, the JSON it is), so a key kept as base64 signs as the key does and
+  its signature is logged and checked. Fed a part of it (a slice, a
+  character), a one-way leaf's answer is derived: a hash of one character names it, and a
+  comparison of a prefix says how the secret begins. So is where `sort` or `unique` places it.
+  What is clean is still followed where it was made with a secret: a hash or a signature
+  (taint.rs: `MAKES`, `SecretFed::made_of`) and what a host answered a request that carried one
+  (`SecretFed::answers_of`), each to every way out, a route's own callers among them
+  (`sent_secrets`: `made:`, `answer:`, `@callers`), and the approval says where it goes beside
+  the secret's read. Neither is withheld or refused: a route answering `hmac_sha256(k,
+  req.query.msg)` signs what its caller chooses, a route answering a token exchange's answer
+  hands out a live token, and both are a person's to read and approve. A Boolean ends a
+  signature's trail (a flow comparing one a part at a time with what its caller sent would give
+  it away slowly, and nothing says so), and a response's `status` isn't what was answered. One
+  test holds the class (`what_is_made_with_a_secret_and_clean_is_followed_to_every_way_out`):
+  every leaf that gives something clean of a secret is followed or named, and every leaf that
+  does something outside the run is a sink of what is followed. What a run's timing says isn't covered: a flow that does more
   work when a secret's first character is `a` answers later.
 - **A value at the bound leaves a debug build's run thread under twice the room it takes**: a
   route walks a list about 6,000 levels deep end to end on 2 MiB in release, 23 times the bound,
@@ -429,8 +475,16 @@ What is not defended, or only partly:
   A proxy that forwards the name it was reached by needs that name given (`--allow-host`).
 - **The control plane's limits under load**: each request still has a thread of its own (rouille's
   default), and a stream's answer, once its handler returns, isn't among the `MAX_IN_FLIGHT`; a
-  sign-in's lock is per address, so many addresses each get their tries (5 a minute a name each),
-  and behind a proxy it is the name's for everyone, as setting up is the proxy's; many addresses
+  sign-in's lock is per client, so many addresses each get their tries (5 a minute a name each,
+  20 a quarter of an hour a name from all of them, `NAME_MAX_WRONG`), and so do their places at
+  once (64 each): many addresses together still fill them. Past a name's ceiling, someone signing
+  in from an address it never signed in from (since the server started) waits out the quarter. Behind a
+  proxy the server trusts (`--trust-proxy`), each client it forwards for is its own; behind one
+  it doesn't, they are all the proxy, the lock is the name's for everyone and the places are the
+  proxy's 64, as setting up is (the server says so once, at the first request forwarded). A
+  trusted proxy's address chooses whom it is counted as: any program connecting from it (any
+  local one, for `127.0.0.1`) can write a new address each time, and so has the tries and places
+  of as many clients. Many addresses
   sending sign-ins under ever new names fill the line of checks, and sign-ins are told busy while
   they do (the rest of the control plane answers on).
 - **Approval is one editor's**: any editor or admin may acknowledge anything the policy allows.
@@ -474,6 +528,8 @@ What is not defended, or only partly:
   any case), `every_way_in_that_takes_a_secret_counts_its_wrong_guesses` (each from an address,
   and in from another),
   `wrong_passwords_lock_a_name_for_their_address_only_and_old_tries_are_forgotten`,
+  `a_ways_in_guesses_have_a_ceiling_however_they_are_spread` (spread over addresses, and sent at
+  once; in where it signed in before),
   `passwords_are_checked_a_few_at_once_and_the_rest_wait_or_are_told_busy` (and told at once
   while the line is full), `one_address_has_a_few_checked_at_once_under_any_names`,
   `what_a_cheap_check_refuses_waits_for_no_password_check`,
@@ -488,6 +544,8 @@ What is not defended, or only partly:
   `a_token_the_provider_signed_for_this_client_says_who` and
   `signed_in_through_a_provider_is_matched_by_email_then_by_subject` (an email not said to be
   verified signs no one in; another subject with a matched email is no one),
+  `a_refused_provider_sign_in_names_no_account` (each way a provider's sign-in is refused, none
+  naming an account in the book),
   `a_provider_sign_in_is_the_subject_its_email_first_matched`, `no_one_gives_or_changes_more_than_they_hold`
   and `every_route_that_changes_a_principal_holds_its_caller_to_what_they_hold` (a sweep of the
   route table: every route that changes a principal or what it holds has a case, or says why not).
@@ -516,8 +574,10 @@ What is not defended, or only partly:
   `a_value_opens_only_under_its_keys_and_for_its_place` (another slug, name, version or keyring
   fails), `what_is_sealed_opens_only_where_it_was_sealed`,
   `an_approval_shows_its_deciders_what_the_run_names_or_its_input_as_the_log_keeps_it` (a
-  tainted field redacted, a value made from a secret withheld, past 16 KiB its size, sealed on
-  disk and listed again after a reload),
+  tainted field redacted, a number made from a secret withheld, past 16 KiB cut down, and past it
+  still its size, sealed on disk and listed again after a reload),
+  `padding_hides_nothing_beside_it_of_what_an_approval_shows` (a field padded past the bound shows
+  its head, the field beside it whole; a secret a cut would run through redacted first),
   `whoever_decides_an_approval_sees_what_it_shows_and_nothing_else_of_the_flows_runs`.
 - **Tainted values**: `a_tainted_keys_values_never_reach_what_the_host_keeps_wherever_a_run_has_them`
   (a request's every part, a call's request and answer and the cookie it sets, a WebSocket's

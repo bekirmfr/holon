@@ -6,26 +6,18 @@
 //! own, as owner_only.rs.
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
+mod common;
+use common::{answering, free_port, raw_http, status, EVENTUALLY};
+
+/// A kind of file the test means to look at: what it is, and how its path (with `/`) is known.
+type Kind = (&'static str, fn(&str) -> bool);
+
 const HOLON: &str = env!("CARGO_BIN_EXE_holon");
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-}
-
-/// `request` sent to `port` and the whole answer read, or nothing if no connection is taken.
-fn raw_http(port: u16, request: &[u8]) -> String {
-    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
-    stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
-    let _ = stream.write_all(request);
-    let mut out = Vec::new();
-    let _ = stream.read_to_end(&mut out);
-    String::from_utf8_lossy(&out).into_owned()
-}
 
 fn post(port: u16, path: &str, body: &str) -> String {
     raw_http(port, format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
@@ -33,11 +25,6 @@ fn post(port: u16, path: &str, body: &str) -> String {
 
 fn get(port: u16, path: &str) -> String {
     raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes())
-}
-
-/// An answer's status, 0 when there is none.
-fn status(answered: &str) -> u16 {
-    answered.get(9..12).and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
 /// Every file under `dir`, folders walked into.
@@ -53,9 +40,9 @@ fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Wait up to `secs` for `done`, saying `what` if it never is.
+/// Wait up to `secs` for `done` ([`EVENTUALLY`] at least), saying `what` if it never is.
 fn until(what: &str, secs: u64, mut done: impl FnMut() -> bool) {
-    let by = Instant::now() + Duration::from_secs(secs);
+    let by = Instant::now() + Duration::from_secs(secs).max(EVENTUALLY);
     while !done() {
         assert!(Instant::now() < by, "{what}");
         std::thread::sleep(Duration::from_millis(200));
@@ -200,6 +187,7 @@ fn putting_off_sqs() -> u16 {
             // Closed gently: what the client still sends is read to its end, so the close is no
             // reset that loses the answer.
             let _ = stream.shutdown(std::net::Shutdown::Write);
+            // not a bound: past it the stand-in stops reading what the client still sends
             let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
             while stream.read(&mut buf).is_ok_and(|n| n > 0) {}
         }
@@ -243,6 +231,7 @@ impl Server {
         #[cfg(unix)]
         {
             let _ = Command::new("kill").args(["-TERM", &self.child.id().to_string()]).status();
+            // not a bound: past it the server is killed, which leaves what a crash leaves, as this stop may
             let by = Instant::now() + Duration::from_secs(30);
             while self.child.try_wait().unwrap().is_none() && Instant::now() < by {
                 std::thread::sleep(Duration::from_millis(100));
@@ -280,6 +269,7 @@ fn no_file_the_server_writes_holds_run_data_in_clear() {
     // Mail and a queue bound to servers that take the binding's check and put off every send:
     // what a run sends waits in its spool, tried again later.
     let (smtp, sqs) = (putting_off_smtp(), putting_off_sqs());
+    let said = base.join("console.err");
     let child = Command::new(HOLON)
         .args(["serve", "--at", &format!("127.0.0.1:{port}"), "--root-key", &format!("file:{}", base.join("root.key").display())])
         .env("HOLON_HOME", &home)
@@ -290,12 +280,12 @@ fn no_file_the_server_writes_holds_run_data_in_clear() {
         // What it says on its console too, which a collector (journald, docker logs) keeps in
         // clear: nothing a run was given belongs there.
         .stdout(std::fs::File::create(base.join("console.out")).unwrap())
-        .stderr(std::fs::File::create(base.join("console.err")).unwrap())
+        .stderr(std::fs::File::create(&said).unwrap())
         .spawn()
         .expect("holon serve starts");
     let mut server = Server { child, dirs: vec![base.clone()], port, home: home.clone() };
     let console = || ["console.out", "console.err"].map(|f| std::fs::read(base.join(f)).unwrap_or_default()).concat();
-    until("holon serve answers", 60, || TcpStream::connect(("127.0.0.1", port)).is_ok());
+    answering(&mut server.child, port, &said);
 
     server.holon(&["policy", "--backup", &backup.display().to_string(), "--sweep-every", "1m"]);
     server.holon(&["folder", "add", "box", &folder.display().to_string(), "--read-only"]);
@@ -385,9 +375,9 @@ route.post("/keep", (req) => {{
         server.holon(&["deploy", &file.display().to_string(), "--approve"]);
     }
     let body = format!(r#"{{"text":"{canary}"}}"#);
-    until("kept answers", 30, || status(&post(kept_port, "/bump", &body)) == 200);
-    until("gone answers", 30, || status(&post(gone_port, "/keep", &body)) == 200);
-    until("rolled answers", 30, || status(&post(rolled_port, "/keep", &body)) == 200);
+    until("kept answers", 60, || status(&post(kept_port, "/bump", &body)) == 200);
+    until("gone answers", 60, || status(&post(gone_port, "/keep", &body)) == 200);
+    until("rolled answers", 60, || status(&post(rolled_port, "/keep", &body)) == 200);
     for _ in 0..100 {
         assert_eq!(status(&post(rolled_port, "/keep", &body)), 200);
     }
@@ -423,8 +413,43 @@ route.post("/keep", (req) => {{
     };
     until("a pack written", 150, || has(&values, &|f| f.ends_with(".pack")));
     until("a backup archive made", 60, || has(&backup, &|f| f.ends_with(".json.gz")));
-    // Console lines are written about once a second, on a thread of their own (logs.rs).
-    std::thread::sleep(Duration::from_millis(2500));
+    // The control: every kind of file this means to look at, each looked for until it is there,
+    // not slept for, and again once the server has stopped. Some are written on their own time:
+    // console lines about once a second on a thread of their own (logs.rs), a sealed segment once
+    // a cut seals the older runs (recorder.rs).
+    let kinds: [Kind; 16] = [
+        ("the run log", |f| f.ends_with("deployments.logs/kept.jsonl")),
+        ("a sealed segment", |f| f.contains("deployments.logs/kept.sealed/") && f.ends_with(".jsonl.gz")),
+        ("console lines", |f| f.ends_with("deployments.logs/kept.console.jsonl")),
+        ("events", |f| f.ends_with("deployments.logs/kept.events.jsonl")),
+        ("the deployments", |f| f.ends_with("data/deployments.json")),
+        ("the activity", |f| f.ends_with("data/deployments.activity.jsonl")),
+        ("the state head", |f| f.ends_with("deployments.state/kept")),
+        ("the store's units", |f| f.contains("data/store/") && !f.contains("/values/") && !f.contains("/blobs/")),
+        ("the store's values", |f| f.contains("data/store/values/") && !f.ends_with(".pack")),
+        ("a pack", |f| f.contains("data/store/values/packs/") && f.ends_with(".pack")),
+        ("a file's text kept", |f| f.contains("data/store/blobs/chunks/")),
+        ("mail on its way", |f| f.contains("/mail-spool/")),
+        ("a queue message on its way", |f| f.contains("/queue-spool/")),
+        ("a removed deployment's records", |f| f.contains("deployments.logs/removed/gone-runs-")),
+        ("a backup's archive", |f| f.contains("/backup/") && f.contains("/holon-archive-") && f.ends_with(".json.gz")),
+        ("the policy", |f| f.ends_with("holon.toml")),
+    ];
+    let listed = || {
+        let mut files = Vec::new();
+        files_under(&home, &mut files);
+        files_under(&backup, &mut files);
+        files
+    };
+    let missing = |files: &[PathBuf]| -> Vec<&str> {
+        let seen: Vec<String> = files.iter().map(|f| f.to_string_lossy().replace('\\', "/")).collect();
+        kinds.iter().filter(|(_, is)| !seen.iter().any(|f| is(f))).map(|(what, _)| *what).collect()
+    };
+    let by = Instant::now() + EVENTUALLY;
+    while !missing(&listed()).is_empty() {
+        assert!(Instant::now() < by, "{:?} not among the files looked at", missing(&listed()));
+        std::thread::sleep(Duration::from_millis(200));
+    }
 
     // The control: the canary reached the record, so its absence below means something.
     let export = base.join("export");
@@ -436,31 +461,10 @@ route.post("/keep", (req) => {{
     assert!(exported.iter().any(|f| found_in(&std::fs::read(f).unwrap(), &forms).is_some()), "the export holds the canary: {exported:#?}");
     server.stop();
 
-    let mut files = Vec::new();
-    files_under(&home, &mut files);
-    files_under(&backup, &mut files);
-    let named = |pred: &dyn Fn(&str) -> bool| files.iter().any(|f| pred(&f.to_string_lossy().replace('\\', "/")));
-    // The control again: every kind of file this means to look at is there.
-    for (what, found) in [
-        ("the run log", named(&|f| f.ends_with("deployments.logs/kept.jsonl"))),
-        ("a sealed segment", named(&|f| f.contains("deployments.logs/kept.sealed/") && f.ends_with(".jsonl.gz"))),
-        ("console lines", named(&|f| f.ends_with("deployments.logs/kept.console.jsonl"))),
-        ("events", named(&|f| f.ends_with("deployments.logs/kept.events.jsonl"))),
-        ("the deployments", named(&|f| f.ends_with("data/deployments.json"))),
-        ("the activity", named(&|f| f.ends_with("data/deployments.activity.jsonl"))),
-        ("the state head", named(&|f| f.ends_with("deployments.state/kept"))),
-        ("the store's units", named(&|f| f.contains("data/store/") && !f.contains("/values/") && !f.contains("/blobs/"))),
-        ("the store's values", named(&|f| f.contains("data/store/values/") && !f.ends_with(".pack"))),
-        ("a pack", named(&|f| f.contains("data/store/values/packs/") && f.ends_with(".pack"))),
-        ("a file's text kept", named(&|f| f.contains("data/store/blobs/chunks/"))),
-        ("mail on its way", named(&|f| f.contains("/mail-spool/"))),
-        ("a queue message on its way", named(&|f| f.contains("/queue-spool/"))),
-        ("a removed deployment's records", named(&|f| f.contains("deployments.logs/removed/gone-runs-"))),
-        ("a backup's archive", named(&|f| f.contains("/backup/") && f.contains("/holon-archive-") && f.ends_with(".json.gz"))),
-        ("the policy", named(&|f| f.ends_with("holon.toml"))),
-    ] {
-        assert!(found, "{what} is among the files looked at: {files:#?}");
-    }
+    // The control again, on what the stopped server left.
+    let files = listed();
+    let gone = missing(&files);
+    assert!(gone.is_empty(), "{gone:?} not among the files looked at: {files:#?}");
     let clear: Vec<String> = files.iter().filter_map(|f| found_in(&std::fs::read(f).unwrap(), &forms).map(|how| format!("{}: {how}", f.display()))).collect();
     assert!(clear.is_empty(), "the canary {canary} in clear, of {} files: {clear:#?}", files.len());
     let said = console();
@@ -532,8 +536,9 @@ fn keys_are_rotated_and_forgotten_on_the_real_server() {
     let root_file = base.join("root.key");
     let root = format!("file:{}", root_file.display());
     let port = free_port();
-    let mut server = Server { child: serve(&home, &root, port, Stdio::null()), dirs: vec![base.clone()], port, home: home.clone() };
-    until("holon serve answers", 60, || TcpStream::connect(("127.0.0.1", port)).is_ok());
+    let said = base.join("serve.err");
+    let mut server = Server { child: serve(&home, &root, port, std::fs::File::create(&said).unwrap().into()), dirs: vec![base.clone()], port, home: home.clone() };
+    answering(&mut server.child, port, &said);
     let shop_port = free_port();
     let file = texts.join("shop.holon.ts");
     std::fs::write(
@@ -553,7 +558,7 @@ route.post("/bump", () => {{
     )
     .unwrap();
     server.holon(&["deploy", &file.display().to_string(), "--approve"]);
-    until("shop answers", 30, || status(&post(shop_port, "/bump", "{}")) == 200);
+    until("shop answers", 60, || status(&post(shop_port, "/bump", "{}")) == 200);
     for _ in 0..3 {
         assert_eq!(status(&post(shop_port, "/bump", "{}")), 200);
     }
@@ -583,7 +588,7 @@ route.post("/bump", () => {{
     // A second server on the same folder refuses to start, rather than write keys.json over this
     // one's; and the root isn't rotated under a running server.
     let mut second = serve(&home, &root, free_port(), Stdio::piped());
-    let by = Instant::now() + Duration::from_secs(30);
+    let by = Instant::now() + EVENTUALLY;
     while second.try_wait().unwrap().is_none() {
         if Instant::now() > by {
             let _ = second.kill();
@@ -626,8 +631,9 @@ route.post("/bump", () => {{
     assert!(went && said.contains("the old root key is gone"), "{said}");
     assert!(!root_file.exists(), "the old root removed from its file");
     let port = free_port();
-    let mut again = Server { child: serve(&home, &new_root, port, Stdio::null()), dirs: Vec::new(), port, home: home.clone() };
-    until("holon serve answers under the new root", 60, || TcpStream::connect(("127.0.0.1", port)).is_ok());
+    let said = base.join("serve-again.err");
+    let mut again = Server { child: serve(&home, &new_root, port, std::fs::File::create(&said).unwrap().into()), dirs: Vec::new(), port, home: home.clone() };
+    answering(&mut again.child, port, &said);
     let shown = again.holon(&["key", "status"]);
     assert!(shown.contains("new.key") && shown.contains("d:shop: forgotten"), "{shown}");
     // A root that can't be read any more (a key file on a mount gone): a new deployment is
