@@ -336,6 +336,13 @@ mark can be put into (another writer's: `\u0022` for a quote) is kept out whole,
 named in the report, as a step fed any value the log doesn't hold. A write or a send that the server refuses for a secret, it
 refuses in any of these spellings.
 
+The log keeps sizes as they came. It keeps the size line of a reply (`content-length`) as the
+other service sent it, and a file's size beside its text. So where another service sends a
+secret back, or a file holds one, the log shows how long the secret is, to people allowed to
+read that run's details: the secret itself is marked, and the size is still the whole text's.
+Nothing of the secret but its length shows. If that matters for one of yours, keep it out of
+what the other service echoes, or limit who may read that flow's runs.
+
 A credential a call answers with is kept out the same way when the request held a secret (an
 OAuth token exchange): a value under `access_token`, `refresh_token`, `id_token`, `session_token`,
 `token`, `client_secret`, `api_key`, `secret` or `password` in a JSON answer reads
