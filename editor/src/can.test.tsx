@@ -12,7 +12,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import fixture from "./can.fixture.json";
-import { ACTIONS, AGAIN_EVERY_MS, BUTTONS, canOf, canOn, checkVersion, Gated, gateOf, hostPagesOf, resetCan, useCan, useHostPages, type Answers, type Button, type Can, type HostPages } from "./can";
+import { ACTIONS, AGAIN_EVERY_MS, ASKING, BUTTONS, canOf, canOn, checkVersion, Gated, gateOf, hostPagesOf, resetCan, useCan, useHostPages, type Answers, type Button, type Can, type HostPages } from "./can";
 import { mayHaveChanged } from "./server";
 import { hostEntries } from "./ui/Shell";
 
@@ -121,11 +121,10 @@ describe("each caller's buttons, as the server answers them", () => {
     expect(gateOf(true, { disabled: true })).toEqual({ disabled: true, title: undefined });
   });
 
-  it("before the server has answered, nothing is disabled that wasn't already, and nothing is shown only to whoever holds it", () => {
+  it("before the server has answered, every button is disabled, saying it is asking, and nothing is shown only to whoever holds it", () => {
     const asking = canOf(null);
     expect(asking.known).toBe(false);
-    expect(asking.gate("pause", { title: "stop answering" })).toEqual({ disabled: false, title: "stop answering" });
-    expect(asking.gate("deploy", { disabled: true })).toEqual({ disabled: true, title: undefined });
+    for (const button of Object.keys(BUTTONS) as Button[]) expect(asking.gate(button, { title: "its own" }), button).toEqual({ disabled: true, title: ASKING });
     expect(asking.holds("resources")).toBe(false);
   });
 });
