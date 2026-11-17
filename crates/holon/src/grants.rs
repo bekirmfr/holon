@@ -138,14 +138,14 @@ pub(crate) fn change_grant(state: &AppState, slug: &str, change: &ChangeRequest,
 /// lowered ceiling or a withdrawn exception applies at once. A file that doesn't parse changes
 /// nothing. Answers with the policy and each deployment's attention.
 pub(crate) fn handle_post_permissions_reload(state: &AppState) -> Response {
-    let file = state.policy_file.lock().unwrap();
+    let file = state.hold_policy_file();
     reload_policy(state, &file)
 }
 
-/// A reload, with the policy file held (`AppState::policy_file`) by whoever asked for it: no
+/// A reload, with the policy file held (`AppState::hold_policy_file`) by whoever asked for it: no
 /// setting is written into the file between this reading it and putting it in force, so a reload
 /// that read it before a write never puts the policy before that write back after it (R75).
-pub(crate) fn reload_policy(state: &AppState, _file: &std::sync::MutexGuard<'_, ()>) -> Response {
+pub(crate) fn reload_policy(state: &AppState, _file: &crate::policy_file::Held<'_>) -> Response {
     let policy = match Policy::load(&state.policy_path) {
         Ok(p) => Arc::new(p),
         Err(e) => return err(400, format!("the policy wasn't reloaded: {e}")),
