@@ -724,6 +724,12 @@ fn run_attempt(
 
     let mut host = RecordingHost::new();
     let mut timer = if waits.unrecorded { recorder::Timer::off() } else { recorder::Timer::new() };
+    // A step that may hold a secret's value, or what is computed from one, kept when it fits as
+    // its record writes it, each such value as its mark: whether it is kept, and so whether the
+    // record withholds, doesn't say how long the secret is (R63).
+    if !secret_fed.is_empty() && !waits.unrecorded {
+        timer = timer.measured(Box::new(secrets::Measured::new(secret_fed.clone(), born_key.clone(), run_hex.clone(), Redactor::of(secrets))));
+    }
     // Outbound requests go only where the grant allows, within its limits.
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
     // What this attempt will hold before it sends anything: the keys it reads that it may write,
@@ -753,7 +759,20 @@ fn run_attempt(
     // A file as a request's body is sent from a folder the deployment reads.
     let forward = waits.forward.clone();
     let (slug, run, chain) = (waits.slug.clone().unwrap_or_default(), waits.run_id.clone().unwrap_or_default(), waits.chain.clone());
-    let caller = calls::Caller { store, fed: &secret_fed, permit, vault: secrets, slug: &slug, run: &run, chain: &chain, unrecorded: waits.unrecorded, #[cfg(test)] fixed: fixed::peek() };
+    let started_by = waits.started_by.clone();
+    let caller = calls::Caller {
+        store,
+        fed: &secret_fed,
+        permit,
+        vault: secrets,
+        slug: &slug,
+        run: &run,
+        chain: &chain,
+        unrecorded: waits.unrecorded,
+        started_by: started_by.as_deref(),
+        #[cfg(test)]
+        fixed: fixed::peek(),
+    };
     let sender = folders::Sender {
         outbound: &permit.outbound,
         folders: waits.folders.clone(),
@@ -785,9 +804,7 @@ fn run_attempt(
     // The credentials the calls that sent a secret were answered with: kept out of the log by
     // their value, and out of what is written, as the secret is.
     let answered = secrets::answered_tokens(&outcome.rounds, secrets, &secret_fed);
-    // What it computed from its secrets, for its record to mark each by its value.
-    let born = secrets::born(&timer.timeline, &secret_fed, born_key.as_ref().map(|k| k.as_slice()), &run_hex, !waits.unrecorded, &permit.never_keep);
-    let holds_answered = |payload: &Value| answered.iter().find(|(_, v)| secrets::value_holds(payload, &|s: &str| s.contains(v.as_str()))).map(|(name, _)| name.clone());
+    let holds_answered = |payload: &Value| answered.iter().find(|(_, v)| secrets::value_holds(payload, &|s: &str| secrets::holds_spelled(s, v.as_str()))).map(|(name, _)| name.clone());
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
     // carrying a secret's value, or something computed from one (taint.rs), which would put it on
     // disk and in every later snapshot, and a copy from a folder the deployment doesn't read (a
@@ -865,6 +882,13 @@ fn run_attempt(
         progress.clear();
     }
 
+    // Its steps as its record keeps them: one that carries a file the log keeps by its hash left
+    // out. And what it computed from its secrets, for its record to mark each by its value, read
+    // off them: a step `holon verify` takes from the record (`SecretFed::taken`) left out there
+    // makes its record withhold, as one too large to keep does (`secrets::born`, R66).
+    let reads = std::mem::take(&mut waits.reads);
+    let timeline = without_kept_files(timer.timeline, &reads, &host.performed);
+    let born = secrets::born(&timeline, &secret_fed, born_key.as_ref().map(|k| k.as_slice()), &run_hex, !waits.unrecorded, &permit.never_keep);
     let run = FiredRun {
         outputs: outcome.outputs,
         performed: host.performed,
@@ -880,7 +904,7 @@ fn run_attempt(
                 None => true,
             })
             .collect(),
-        timeline: timer.timeline,
+        timeline,
         rounds: outcome.rounds,
         error: failed_read
             .or(past_limit.map(|e| format!("{}{e}", folders::WRITE_FAILED)))
@@ -895,7 +919,7 @@ fn run_attempt(
         waiting: outcome.waiting,
         progress,
         start_state: start.clone(),
-        reads: std::mem::take(&mut waits.reads),
+        reads,
         retries: 0,
         claims: waits.claiming.as_ref().map(|c| c.records.clone()).unwrap_or_default(),
         secret_fed,
@@ -1309,16 +1333,26 @@ fn redacted_line(redactor: &Redactor, entry: &mut LogEntry) -> recorder::Made {
                 assert_eq!(made.line(1, ""), recorder::Made::of(&walked).line(1, ""), "the shortcut's line isn't the redacted one");
                 assert_eq!(serde_json::to_value(&walked).ok(), serde_json::to_value(&*entry).ok(), "the shortcut's entry isn't the redacted one");
             }
-            return made;
+            // Nothing in it to mark: it is as written already, and cut as such.
+            return if cut_answer(entry) { recorder::Made::of(entry) } else { made };
         }
     }
     redactor.entry(entry);
+    cut_answer(entry);
     recorder::Made::of(entry)
+}
+
+/// What a line keeps of the answer to a request or to a WebSocket's block, cut as the line
+/// writes it (`secrets::cut_written`): here, after the entry is redacted, and nowhere before.
+/// Whether it was cut.
+fn cut_answer(entry: &mut LogEntry) -> bool {
+    matches!(entry.kind.as_str(), "request" | "websocket") && entry.response_body.as_mut().is_some_and(secrets::cut_written)
 }
 
 /// The timeline, with the outputs of each node that carries the text or bytes of a file the log
 /// keeps by hash (read, or written past the inline size) left out: they aren't in the log by
-/// another way.
+/// another way. What a run computed from its secrets is read off the steps left so
+/// (`secrets::born`, R66).
 fn without_kept_files(mut timeline: Vec<recorder::NodeTiming>, reads: &[collections::Read], performed: &[(Capability, Value)]) -> Vec<recorder::NodeTiming> {
     let read = reads.iter().filter(|r| r.file.as_ref().is_some_and(|f| !f.inline)).filter_map(|r| match &r.answer {
         Some(Value::Text(t)) => Some(t.as_str()),
@@ -1624,6 +1658,19 @@ pub(crate) fn started_now() -> (u64, std::time::Instant) {
 #[cfg(test)]
 mod commit_checks {
     use super::*;
+
+    /// Guards: the databases guide counts a contended run's tries as this code does:
+    /// `OPTIMISTIC_ATTEMPTS`, then once more holding the lock.
+    /// Why: the guide said the run runs again "four times", one try more than the code makes
+    /// (audit R49).
+    #[test]
+    fn the_databases_guide_counts_a_runs_tries() {
+        const WORDS: [&str; 11] = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/manual/guides/databases.md");
+        let guide = std::fs::read_to_string(path).unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+        let said = format!("({} tries in all, then once more holding the database", WORDS[OPTIMISTIC_ATTEMPTS as usize]);
+        assert!(guide.contains(&said), "docs/manual/guides/databases.md should say \"{said}\"");
+    }
 
     fn state_of(pairs: &[(&str, f64)]) -> State {
         State::from_values(pairs.iter().map(|(k, v)| (k.to_string(), Value::Number(*v))).collect()).unwrap()

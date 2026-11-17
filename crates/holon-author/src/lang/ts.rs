@@ -3949,16 +3949,13 @@ impl<'s, 't> Reader<'s, 't> {
                 }
                 "starter" => match self.unwrap(value) {
                     js::Expression::BooleanLiteral(b) if b.value => slot.starter = true,
-                    _ => return fail(self.span(value.span()), "starter: true lets whoever started the run take the step; left out, they may not: { role: \"editor\", starter: true }"),
+                    _ => return fail(self.span(value.span()), "starter: true lets whoever started the run, or one acting for them, take the step; left out, they may not: { role: \"editor\", starter: true }"),
                 },
                 other => return fail(at, format!("a step's fields are role, kind, people and starter, not \"{other}\"")),
             }
         }
         if slot.kind == approval::SlotKind::Agent && slot.role.is_none() {
             return fail(self.span(o.span), "an agent's step names the role it decides by: { role: \"classifier\", kind: \"agent\" }");
-        }
-        if slot.kind == approval::SlotKind::Agent && slot.starter {
-            return fail(self.span(o.span), "an agent never decides a run it started: starter: true is a person's step's, { role: \"editor\", starter: true }");
         }
         Ok(slot)
     }

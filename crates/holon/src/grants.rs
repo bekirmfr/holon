@@ -48,14 +48,16 @@ pub(crate) fn recheck(dep: &mut Deployment, caps: &Capabilities, policy: &Policy
     dep.log.with(|log| log.retain(keep, age));
 }
 
-/// What the grant view says about a deployment: its grant, the grant's hash, and why it can't
-/// run, if it can't.
-fn grant_view(dep: &Deployment) -> serde_json::Value {
+/// What the grant view says about a deployment: its grant, the grant's hash, why it can't run, if
+/// it can't, and whether an agent's version of it that asks for nothing more deploys without a
+/// person (deploy.rs), which a person granted it.
+pub(crate) fn grant_view(dep: &Deployment) -> serde_json::Value {
     serde_json::json!({
         "grant": dep.grant,
         "hash": to_hex(&dep.grant.hash()),
         "attention": dep.attention,
         "status": dep.life.status,
+        "agents_deploy_at_once": dep.agents_deploy_at_once,
     })
 }
 
@@ -126,8 +128,9 @@ pub(crate) fn change_grant(state: &AppState, slug: &str, change: &ChangeRequest,
         recheck(dep, &caps, &policy, now);
         grant_view(dep)
     };
-    persist_deployments(&state.deployments_path, &state.deployments);
+    let saved = persist_deployments(&state.deployments_path, &state.deployments);
     sync_listeners(state);
+    saved.map_err(|e| err(500, format!("{slug:?}'s grant is changed, but {e}: after a restart it is as it was before")))?;
     Ok(reply)
 }
 
@@ -167,7 +170,8 @@ pub(crate) fn handle_post_permissions_reload(state: &AppState) -> Response {
             .collect()
     };
     eprintln!("holon: policy reloaded from {:?}", state.policy_path);
-    persist_deployments(&state.deployments_path, &state.deployments);
+    // Not saved, nothing is lost: a restart reads the policy again and holds each deployment to it.
+    let _ = persist_deployments(&state.deployments_path, &state.deployments);
     sync_listeners(state);
     let mut reply = permissions_view(&policy);
     reply["attention"] = serde_json::to_value(attention).unwrap_or_default();

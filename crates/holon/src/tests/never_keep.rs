@@ -185,7 +185,8 @@ route.get(\"/x\", () => 1)
     assert_eq!(by_scout(", taint: [\"number\"], never_keep: [\"cvc\", \"pin\"]"), ["KeepAgain(\"number\")"]);
     assert_eq!(holon_author::describe::describe_item("KeepAgain(\"cvc\")"), "keep the values of \"cvc\" again, which it never keeps now");
     assert_eq!(touches::part("KeepAgain(\"cvc\")"), ("other", "key never kept", "cvc".to_string(), "kept again".to_string()));
-    let said = touches::settings([&[], &[]], [&[], &[]], [&["cvc".to_string()], &[]]);
+    let none = BTreeMap::new();
+    let said = touches::settings(touches::Settings { browsers: [&[], &[]], taint: [&[], &[]], never_keep: [&["cvc".to_string()], &[]], port: [None, None], logs: [&none, &none] });
     assert_eq!(said, serde_json::json!([{ "name": "never keeps", "now": "cvc", "then": "none" }]));
 }
 

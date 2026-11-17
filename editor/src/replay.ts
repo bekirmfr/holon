@@ -53,7 +53,7 @@ export type NodeTrace = {
  *  token's, that of a value the run computed from a secret (`‹derived #7c1e9a02›`), a file's kept
  *  by hash, and a value under a key its flow never keeps (`‹never_keep:cvc›`, by place, as the
  *  server's `secrets::MARKED`). */
-export const PLACEHOLDER_KINDS = ["‹secret:", "‹token:", "‹derived #", "‹file:", "‹never_keep:"] as const;
+export const PLACEHOLDER_KINDS = ["‹secret:", "‹token:", "‹derived #", "‹respelled:", "‹file:", "‹never_keep:"] as const;
 
 /** Whether `v` carries a placeholder anywhere (the log's redaction): one of `PLACEHOLDER_KINDS`. */
 export function hasPlaceholder(v: WValue | null): boolean {

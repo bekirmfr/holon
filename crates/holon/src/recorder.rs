@@ -233,6 +233,60 @@ pub struct LogEntry {
     pub lines: Vec<(String, holon_core::Value)>,
 }
 
+/// A run as the list of runs says it (`GET …/log/heads`, run.view's; the audit register's R55):
+/// when it ran, what started it, its status, how long, who by, where it waits, whether it left a
+/// state to restore to. Never its values: its URL (its query is the request's), its request and
+/// answer, its steps, what it read, sent or failed with are run.steps', in the whole entry. Made
+/// field by field, so a field added to [`LogEntry`] stays out of the list until it is named here
+/// (`the_list_of_runs_says_what_it_names`).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct RunHead {
+    pub seq: u64,
+    pub session: u32,
+    pub at_ms: u64,
+    pub duration_ms: f64,
+    pub kind: String,
+    /// The matched route's pattern, `"GET /todos/:id"`, not the URL.
+    pub route: Option<String>,
+    pub method: Option<String>,
+    pub status: Option<u16>,
+    /// Whether it failed before it could settle: not why, which may say a value.
+    pub failed: bool,
+    /// Whether it left a state a restore can put back (its `state_after`): not the state, nor its
+    /// hash, which would let a guess at the state be checked (state.view's, R56).
+    pub left_state: bool,
+    pub by: Option<String>,
+    pub run_id: String,
+    pub unit: String,
+    /// The waiting points it settled waiting at, by name.
+    pub parked: Vec<String>,
+    pub retries: u32,
+    pub lost_since: Option<u64>,
+}
+
+impl From<&LogEntry> for RunHead {
+    fn from(e: &LogEntry) -> RunHead {
+        RunHead {
+            seq: e.seq,
+            session: e.session,
+            at_ms: e.at_ms,
+            duration_ms: e.duration_ms,
+            kind: e.kind.clone(),
+            route: e.route.clone(),
+            method: e.method.clone(),
+            status: e.status,
+            failed: e.error.is_some(),
+            left_state: e.state_after.is_some(),
+            by: e.by.clone(),
+            run_id: e.run_id.clone(),
+            unit: e.unit.clone(),
+            parked: e.parked.clone(),
+            retries: e.retries,
+            lost_since: e.lost_since,
+        }
+    }
+}
+
 /// Where a run stands among the commits to its deployment's state (firing.rs). Each run of a
 /// stateful deployment commits under the state's lock, a run that only read too, and each commit
 /// is counted there; its line is numbered after, outside that lock, so two runs committing close
@@ -462,7 +516,8 @@ pub struct NodeTiming {
     pub round: u32,
     /// Its outputs, as the run produced them: what a replay shows for a node it can't recompute
     /// (one fed a secret, which is never logged). Redacted like the rest of the entry; left out
-    /// when any of them is larger than [`Timer::MAX_RECORDED_BYTES`].
+    /// when their JSON is larger than [`Timer::MAX_RECORDED_BYTES`]: for a step that may hold a
+    /// secret's value, or a text computed from one, as the record writes it ([`Measure`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outputs: Option<Vec<Option<SValue>>>,
     /// Why a module at this node gave nothing (the engine's words: out of fuel, a trap, a js
@@ -489,6 +544,20 @@ pub struct Timer {
     /// Whether it keeps anything: off for a run that won't be logged (an unrecorded handler's,
     /// docs/L4s/request-path-L4.md §4.5 a), which then times and copies nothing.
     on: bool,
+    /// What measures a step whose record writes it another way than the run had it
+    /// (`secrets::Measured`): none for a run given no secret, each step counted as it is.
+    measure: Option<Box<dyn Measure>>,
+}
+
+/// Whether a step's outputs fit as its run's record writes them, for a step it writes another
+/// way than the run had it: one that may hold a secret's value, or a text computed from one,
+/// each written as its mark (`secrets::Measured`). Whether such a step is kept, and so whether
+/// its record withholds (`secrets::born`), then reads the same whatever the secret: a mark is
+/// as long for a long value as for a short one (R63).
+pub(crate) trait Measure {
+    /// Whether `outputs`, which the node at `path` gave, fit as the record writes them; none for
+    /// a step it writes as the run had it, counted as it is.
+    fn fits(&mut self, path: &[u32], outputs: &[Option<SValue>]) -> Option<bool>;
 }
 
 impl Timer {
@@ -498,12 +567,17 @@ impl Timer {
     pub const MAX_RECORDED_BYTES: usize = 16 * 1024;
 
     pub fn new() -> Timer {
-        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new(), reason: None, on: true }
+        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new(), reason: None, on: true, measure: None }
     }
 
     /// One that keeps nothing: its timeline stays empty.
     pub fn off() -> Timer {
         Timer { on: false, ..Timer::new() }
+    }
+
+    /// This one, keeping each step `measure` measures when it says the step fits (R63).
+    pub(crate) fn measured(self, measure: Box<dyn Measure>) -> Timer {
+        Timer { measure: Some(measure), ..self }
     }
 
     fn now_us(&self) -> f64 {
@@ -577,6 +651,12 @@ impl std::io::Write for Counted {
     }
 }
 
+/// Whether `outputs`' JSON is at most [`Timer::MAX_RECORDED_BYTES`]: counted as it is written,
+/// nowhere.
+pub(crate) fn fits(outputs: &[Option<SValue>]) -> bool {
+    serde_json::to_writer(Counted { n: 0, most: Timer::MAX_RECORDED_BYTES }, outputs).is_ok()
+}
+
 impl holon_core::Observer for Timer {
     fn enter(&mut self, path: &[u32]) {
         if self.on && path.len() <= Self::DEPTH {
@@ -592,8 +672,13 @@ impl holon_core::Observer for Timer {
             // JSON written nowhere (interpreter-path-L4.md, step 2).
             let surely = outputs_bound(outputs).is_some_and(|n| n <= Self::MAX_RECORDED_BYTES);
             let outputs: Vec<Option<SValue>> = outputs.iter().map(|o| o.value().map(SValue::from_core)).collect();
-            let fits = surely || serde_json::to_writer(Counted { n: 0, most: Self::MAX_RECORDED_BYTES }, &outputs).is_ok();
-            self.produced = fits.then_some(outputs);
+            // One that may hold a secret's value, or a text computed from one, as the record
+            // writes it: by its marks, not by how long the secret is (R63).
+            let kept = match self.measure.as_mut().and_then(|m| m.fits(path, &outputs)) {
+                Some(kept) => kept,
+                None => surely || fits(&outputs),
+            };
+            self.produced = kept.then_some(outputs);
         }
     }
     fn leave(&mut self, path: &[u32]) {
@@ -2329,14 +2414,11 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
-/// A response body as log text: lossy UTF-8, cut at 64 KiB.
+/// A response body as log text: lossy UTF-8, whole. What a line keeps of it is cut where the
+/// line is made, once each value in it is its mark (`secrets::cut_written`): cut before, a value
+/// lying across the cut would leave its first part in the line, no longer whole to be found.
 pub fn body_text(body: &[u8]) -> String {
-    const MAX: usize = 64 * 1024;
-    let mut s = String::from_utf8_lossy(&body[..body.len().min(MAX)]).into_owned();
-    if body.len() > MAX {
-        s.push('…');
-    }
-    s
+    String::from_utf8_lossy(body).into_owned()
 }
 
 #[cfg(test)]
@@ -2818,7 +2900,8 @@ mod tests {
     fn body_text_is_lossy_and_bounded() {
         assert_eq!(body_text(b"ok"), "ok");
         assert_eq!(body_text(&[0xff]), "\u{fffd}");
-        assert!(body_text(&vec![b'a'; 70_000]).ends_with('…'));
+        // Whole: it is cut as the line writes it, where the line is made.
+        assert_eq!(body_text(&vec![b'a'; 70_000]).len(), 70_000);
     }
 
     /// What a cut-back wrote before it kept an index (step 4 of docs/L4s/request-path-plan.md):

@@ -11,14 +11,15 @@ import { useEffect, useState, type ReactNode } from "react";
 import { routeOf, said, type Approval, type Reviewable } from "./approvals";
 import { isApproval } from "./decisions";
 import { describeItem } from "./holon";
-import { checkChains, getWarnings, type DeploymentEntry, type HostWarning } from "./server";
+import { checkChains, getWarnings, whyUnread, type DeploymentEntry, type HostWarning } from "./server";
 import { chainSaid, failedShare, greeting, hostLine, liveOf, tookSaid } from "./overview";
 import { MayCount, StateChips, startsOn, SummaryCells, time, useSummary, versionWaiting } from "./FlowCells";
 import { follow, format, type Route } from "./routes";
 import { ActivityList } from "./Pages";
 import { useToast, type Notify } from "./ui/Toast";
 import { useCan } from "./can";
-import type { WaitingRunOf } from "./useApprovals";
+import type { Unread as Unreads, WaitingRunOf } from "./useApprovals";
+import { Unread } from "./ui/Unread";
 import { isSecretItem, saidAsText } from "./SecretSaid";
 
 const short = (hash: string) => (hash ? `${hash.slice(0, 4)}…${hash.slice(-4)}` : "–");
@@ -47,6 +48,7 @@ export function OverviewPage({
   deployments,
   approvals,
   runs,
+  unread,
   navigate,
   onNew,
 }: {
@@ -59,21 +61,28 @@ export function OverviewPage({
   approvals: Approval[];
   /** The runs waiting (useApprovals), null until read: those at an approval wait for a person. */
   runs: WaitingRunOf[] | null;
+  /** The lists whose last read failed, why (useApprovals): never counted as none. */
+  unread: Unreads;
   navigate: (r: Route) => void;
   onNew: () => void;
 }) {
   const notify = useToast();
   const { summary, failed, read } = useSummary(deployments.length);
   const [warnings, setWarnings] = useState<HostWarning[]>([]);
+  const [warningsUnread, setWarningsUnread] = useState("");
   const [checking, setChecking] = useState(false);
   // Checking the run logs again (`POST /summary/check`) is host.check's.
   const can = useCan();
 
   useEffect(() => {
     if (!admin) return;
-    getWarnings()
-      .then(setWarnings)
-      .catch(() => setWarnings([]));
+    getWarnings().then(
+      (w) => {
+        setWarnings(w);
+        setWarningsUnread("");
+      },
+      (e: unknown) => setWarningsUnread(whyUnread(e)),
+    );
   }, [admin, deployments]);
 
   const check = async () => {
@@ -87,10 +96,13 @@ export function OverviewPage({
   // What waits for a person: each change, and each run waiting at an approval.
   const atApproval = (runs ?? []).filter(({ run }) => run.waiting.some(isApproval)).length;
   const forPerson = approvals.length + atApproval;
+  // What waits, or what's on the host, couldn't be read: no count of it is said.
+  const unknown = unread.deploys || unread.runs;
   const chain = summary && chainSaid(summary.chain, time);
   const toWaiting: Route = { kind: "approvals", tab: "runs" };
   return (
     <div className="hl-flow hl-overview" aria-label="Overview">
+      {warningsUnread && <Unread what="what the host warns of" why={warningsUnread} polled />}
       {warnings.length > 0 && (
         <div role="alert" aria-label="what the host warns of" className="hl-flow__banner">
           {warnings.map((w) => (
@@ -106,7 +118,7 @@ export function OverviewPage({
           <h1 className="hl-flow__name">
             {greeting(new Date().getHours())}, {name}
           </h1>
-          <p className="hl-flow__status">{hostLine(deployments.length, approvals.length, waiting)}</p>
+          {unknown ? <Unread what="what's on this host and what waits" why={unknown} polled /> : <p className="hl-flow__status">{hostLine(deployments.length, approvals.length, waiting)}</p>}
         </div>
         <button className="hl-flow__button hl-flow__button--go" onClick={onNew}>
           New flow
@@ -150,7 +162,7 @@ export function OverviewPage({
         <Tile value={summary ? liveOf(summary.totals) : "…"} label={summary && summary.totals.running === 1 ? "flow live" : "flows live"} />
         <Tile value={summary ? summary.totals.runs.toLocaleString() : "…"} label="runs in the last 24 h" />
         <Tile value={summary ? failedShare(summary.totals.runs, summary.totals.failed) : "…"} label="of them failed" bad={(summary?.totals.failed ?? 0) > 0} />
-        <Tile value={String(forPerson)} label="waiting for a person" warn={forPerson > 0} />
+        <Tile value={unknown ? "?" : String(forPerson)} label="waiting for a person" warn={forPerson > 0} />
       </section>
 
       <div className="hl-overview__cols">
@@ -163,7 +175,7 @@ export function OverviewPage({
               </a>
             </h2>
             {deployments.length === 0 ? (
-              <p className="hl-flow__none">Nothing deployed yet: start a new flow, or open a sample from the Library.</p>
+              !unread.deploys && <p className="hl-flow__none">Nothing deployed yet: start a new flow, or open a sample from the Library.</p>
             ) : (
               <table className="hl-table">
                 <thead>

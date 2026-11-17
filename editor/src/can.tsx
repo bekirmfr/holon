@@ -31,6 +31,7 @@ export const ACTIONS = [
   "flow.lifecycle",
   "flow.delete",
   "run.view",
+  "run.steps",
   "run.call",
   "run.decide",
   "run.export",
@@ -61,8 +62,8 @@ export type Answers = Partial<Record<Action, Answer>>;
 
 /** Each button that changes something, and each page whoever may view it is shown: the route it
  *  sends (or the routes, one for each kind it is shown for) and the action that route asks (can.rs's
- *  ROUTES: can.test.tsx holds each to it). `inside`: what the route's handler asks beyond the
- *  route's own action. */
+ *  ROUTES: can.test.tsx holds each to it), and `also`, the second a route asking both asks.
+ *  `inside`: what the route's handler asks beyond the route's own action. */
 export const BUTTONS = {
   // ── a flow, in the editor ──
   /** Save it. */
@@ -94,8 +95,9 @@ export const BUTTONS = {
   settings: { route: "POST /deployments/{slug}/settings", action: "flow.deploy" },
   /** Go back to a point in its history: the route asks for a dry run, its handler for going back. */
   restore: { route: "POST /deployments/{slug}/restore", action: "flow.restore", inside: true },
-  /** Save its runs and the units they ran, for `holon verify`. */
-  export: { route: "GET /deployments/{slug}/export", action: "run.export" },
+  /** Save its runs and the units they ran, for `holon verify`: their steps and values, and the
+   *  evidence made of them (R55). */
+  export: { route: "GET /deployments/{slug}/export", action: "run.steps", also: "run.export" },
   setSecret: { route: "POST /deployments/{slug}/secrets/{name}", action: "secret.set" },
   removeSecret: { route: "DELETE /deployments/{slug}/secrets/{name}", action: "secret.set" },
   rollBackSecret: { route: "POST /deployments/{slug}/secrets/{name}/rollback", action: "secret.roll-back" },
@@ -125,6 +127,25 @@ export const BUTTONS = {
   forgetKeys: { route: "POST /admin/keys/forget", action: "host.operate" },
   /** Read holon.toml again (Policy). */
   reloadPolicy: { route: "POST /permissions/reload", action: "policy.edit" },
+  // ── people (People and access) ──
+  /** Add a person (an invite) or an agent or a service. */
+  addPrincipal: { route: "POST /people", action: "people.manage" },
+  /** Give a role on the host, adding someone or changing theirs: binding it asks people.assign
+   *  in the handler (auth.rs's `may_give`). */
+  giveRole: { route: ["POST /people", "PATCH /people/{name}"], action: "people.assign", inside: true },
+  /** Change someone: their email, disabled, an agent's owner (a role, `giveRole` too). */
+  changePrincipal: { route: "PATCH /people/{name}", action: "people.manage" },
+  resetPerson: { route: "POST /people/{name}/reset", action: "people.manage" },
+  removePrincipal: { route: "DELETE /people/{name}", action: "people.manage" },
+  /** Make or revoke an agent's or a service's tokens: its owner may too (can.rs's `owns`), which
+   *  the host's answer can't say (`mayTokens` in PeoplePages). */
+  tokens: { route: ["POST /people/{name}/tokens", "DELETE /people/{name}/tokens/{id}"], action: "people.manage" },
+  /** The identity provider people sign in through. */
+  oidc: { route: "POST /admin/oidc", action: "people.manage" },
+  /** Make, change or remove a group (its members too). */
+  groups: { route: ["PUT /groups/{name}", "DELETE /groups/{name}"], action: "people.assign" },
+  /** Define, change or remove a role. */
+  roles: { route: ["PUT /roles/{name}", "DELETE /roles/{name}"], action: "role.define" },
   /** Bind a role (People and access's form). */
   bind: { route: "POST /bindings", action: "people.assign" },
   unbind: { route: "DELETE /bindings/{id}", action: "people.assign" },
@@ -138,7 +159,7 @@ export const BUTTONS = {
   policy: { route: "GET /permissions", action: "policy.view" },
   /** The host's own state: the overview's admin parts. */
   host: { route: "GET /admin/host", action: "host.view" },
-} as const satisfies Record<string, { route: string | readonly string[]; action: Action; inside?: true }>;
+} as const satisfies Record<string, { route: string | readonly string[]; action: Action; also?: Action; inside?: true }>;
 export type Button = keyof typeof BUTTONS;
 
 /** A control's own reasons to be disabled, and its own title. */
@@ -166,8 +187,13 @@ export type Can = {
 
 /** A `Can` from the server's answers (null while it hasn't answered). */
 export function canOf(answers: Answers | null): Can {
-  const may = (button: Button): Answer => answers?.[BUTTONS[button].action] ?? true;
-  return { may, holds: (button) => answers?.[BUTTONS[button].action] === true, gate: (button, own) => gateOf(may(button), own), known: answers !== null };
+  // Each action the button's route asks, the first refused saying why.
+  const asked = (button: Button): Action[] => {
+    const b: { action: Action; also?: Action } = BUTTONS[button];
+    return b.also ? [b.action, b.also] : [b.action];
+  };
+  const may = (button: Button): Answer => asked(button).map((a) => answers?.[a] ?? true).find((said) => said !== true) ?? true;
+  return { may, holds: (button) => asked(button).every((a) => answers?.[a] === true), gate: (button, own) => gateOf(may(button), own), known: answers !== null };
 }
 
 /** A form, or a group of controls, that needs `may`: every control in it disabled, with the

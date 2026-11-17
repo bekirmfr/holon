@@ -13,7 +13,14 @@ up. An admin adds people from **People and access**, and each gets a one-time li
 password.
 
 Your initials are at the right of the top bar. Their menu has **Welcome and docs**, **Change
-password** and **Sign out**; the theme (**Auto**, **Light** or **Dark**) is beside them.
+password** and **Sign out** (asked first while an open flow has changes not saved); the theme
+(**Auto**, **Light** or **Dark**) is beside them.
+
+Each browser tab acts as whoever signed in there: signing in as someone else in another tab
+leaves it alone. When your sign-in ends while the editor is open (signed out elsewhere, or it
+expired), a sign-in covers the editor and keeps it as it was: sign in again as yourself and go
+on with your open flows, unsaved changes and all. Through an identity provider, it opens in a
+pop-up so the page stays. Signing in as someone else closes them.
 
 ## Pages and tabs
 
@@ -39,14 +46,18 @@ each request.
 
 **new flow** opens an untitled canvas in the editor at once; the flow is named when you first save
 or deploy it. A name another saved flow or a deployment already has asks before that one is
-replaced. The editor keeps each flow open in a tab of its own, after its **Home** tab; every tab
+replaced. A save replaces the save the flow was opened from: when someone saved it since (a
+colleague, or an agent through `holon mcp`), or removed it, saving asks before theirs is replaced,
+and says whose it is and when. The same goes for a group or a role on the People pages: one
+changed since the page read it is refused, and the page reads it again. The editor keeps each flow open in a tab of its own, after its **Home** tab; every tab
 closes with its ×.
 
 - **Overview** is where the console opens: what needs a person, four tiles (runs in the last 24
   hours, the share that failed, the flows live, the run log), every deployed flow with its runs
   hour by hour (red where one failed), the newest runs across every flow, and the run log, which
   **Check now** reads again line by line. It is read from the server's `GET /summary`.
-- **Approvals** is what waits for a person: **Deploys**, the versions to review and deploy (an
+- **Approvals** is what waits for a person (a list the server didn't answer says *Couldn't read*
+  and why, its count **?**, never that nothing waits): **Deploys**, the versions to review and deploy (an
   agent's proposal with its why and note, and **Decline with a reason…**), **Runs waiting**, and
   **Access changes**: while the host has people approve an access change, each change to who may
   do what that gives someone more, with what it gives, who proposed it and why, who could act as
@@ -386,7 +397,7 @@ formatting. The VS Code extension (`holon-vscode.vsix`, on each release) starts 
 | j k, ← → | step through a run, a node at a time (viewing runs) |
 | , . | the run before, or after |
 | [ ] | the version waiting before, or after (a review) |
-| y, Enter / n, Esc | a dialog's yes, or no |
+| y, Enter / n, Esc | a dialog's yes, or no; its yes once it has been shown half a second with no key pressed, so a key you were typing can't answer it |
 | Ctrl+Z / Ctrl+Y, Ctrl+Shift+Z | undo / redo |
 | Delete, Backspace | remove the selection |
 | Shift+Alt+F | format the text |

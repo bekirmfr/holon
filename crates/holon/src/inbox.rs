@@ -394,7 +394,8 @@ fn fire_one_mail(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deplo
     println!("new mail [{slug}] {label}: {} effect(s) performed", run.performed.len());
     record_trigger(deployments, slug, false);
     if parked_any {
-        persist_deployments(deployments_path, deployments);
+        // Nobody waits on an answer: the server's output says so when it isn't saved.
+        let _ = persist_deployments(deployments_path, deployments);
     }
 }
 

@@ -73,6 +73,9 @@ pub(crate) const NOT_HELD: &[(&str, &str)] = &[
     ("commit/cell", "which load of the state it committed to"),
     ("commit/n", "its commit's number"),
     ("retries", "how many times it ran again before its commit landed (its tries)"),
+    // What other runs did: which of the keys it read another held, how long it waited, and
+    // whether one overtook it, sending it round again (`retries`).
+    ("claims", "which keys it claimed before calling out, how long each waited and was held, and whether another run overtook it"),
     ("by", "who called it (the server's account of its caller)"),
     ("grant", "the grant it ran under (by its hash)"),
     ("rounds/*/exchanges/*/start_us", "when each call began"),
@@ -84,33 +87,44 @@ pub(crate) const NOT_HELD: &[(&str, &str)] = &[
 ];
 
 /// What a mark stands for, as a reason for a run not run again ends: said once, here.
-pub(crate) const MARK_STANDS_FOR: &str = "only a text of 6 characters or more is carried through a replay";
+pub(crate) const MARK_STANDS_FOR: &str = "only a text of 6 characters or more, in a step the log keeps, is carried through a replay";
 
 /// Why a run that came out other than its entry says isn't said to differ, if the log left out
 /// what it would take to run it again: the outputs of a node that may compute from a secret,
 /// which the run ran ([`withheld_why`]), or of a node this check asked for (`unrecorded`) that
-/// was too large or too deep to keep. None: the log kept all it keeps, and the run differs.
-fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry, unrecorded: &BTreeSet<Vec<u32>>, never_keep: &[String]) -> Option<String> {
+/// was too large or too deep to keep; or where it computed a step the log left out on a record
+/// keyed by a mark (`keyed`, [`Asserting`]). None: the log kept all it keeps, and the run
+/// differs.
+fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry, unrecorded: &BTreeSet<Vec<u32>>, keyed: bool, never_keep: &[String]) -> Option<String> {
     let fed = taint::SecretFed::of(root, resolver);
     let derived_missing = entry.timeline.iter().any(|t| t.outputs.is_none() && fed.derives(&t.path)) || unrecorded.iter().any(|p| fed.derives(p));
     if entry.withheld && derived_missing {
         return Some(withheld_why(root, resolver, &fed, entry, never_keep));
     }
-    // A line that says it marked every value the run computed from a secret kept each step that
-    // made one (`secrets::born`): one without is taken out, and the run differs.
-    if derived_missing {
+    // A line that says it marked every value the run computed from a secret kept each step this
+    // check takes from it (`secrets::born`, `SecretFed::taken`), as deep as the log follows a
+    // run's steps: one without is taken out, and the run differs.
+    let deep = |p: &Vec<u32>| p.len() > recorder::Timer::DEPTH;
+    let taken_missing = entry.timeline.iter().any(|t| t.outputs.is_none() && fed.taken(&t.path)) || unrecorded.iter().any(|p| fed.taken(p) && !deep(p));
+    if !entry.withheld && taken_missing {
         return None;
+    }
+    if keyed {
+        return Some("it computed a step the log leaves out (too large) on a record keyed by a mark, which orders and finds by the mark, not by the value it stands for".into());
     }
     (!unrecorded.is_empty()).then(|| "it computed with a secret or a resume token at a node the log keeps no outputs for (too large, or too deep)".into())
 }
 
 /// Why the log withheld what `entry`'s run computed from a secret, so that it isn't run again:
 /// which leaf, from which secret, and why no mark stands for what it gave. The leaf is one that
-/// makes something of a secret (`SecretFed::makes`) and ran; one whose output is declared as
-/// something a mark can't be (a number, a true or false, a list) is named before one that gives
-/// a text. A run that computed where the log follows no steps says that. Of a flow that never
-/// keeps some keys, a text may be withheld for holding one's value under its key, of which the
-/// record keeps no hash (`secrets::born`): said too, as the log can't tell which.
+/// computes something of its own from a secret (`SecretFed::computes`) and ran; one whose output
+/// is declared as something a mark can't be (a number, a true or false, a list) is named before
+/// one that gives a text, which may have been too short, or given by a step the log doesn't
+/// keep (too large even with its marks, `secrets::Measured`, or carrying a file it keeps by
+/// its hash): the line doesn't say which. A run that computed where the log follows no steps
+/// says that. Of a flow that never keeps some keys, a text may be withheld for holding one's
+/// value under its key, of which the record keeps no hash (`secrets::born`): said too, as the
+/// log can't tell which.
 fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::SecretFed, entry: &LogEntry, never_keep: &[String]) -> String {
     if !fed.followed_to(recorder::Timer::DEPTH) {
         return "it computed with a secret inside a function applied to each item, inside a module, or deeper than the log records a run's steps: the values made there can't each be marked, so the log withholds them, and only the secret could compute them again".into();
@@ -131,7 +145,7 @@ fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::
             _ => None,
         })
     };
-    let ran: Vec<(&[u32], &holon_core::Unit)> = fed.makers().filter(|path| entry.timeline.iter().any(|t| t.path == *path)).filter_map(|path| Some((path, unit_at(path)?))).collect();
+    let ran: Vec<(&[u32], &holon_core::Unit)> = fed.computing().filter(|path| entry.timeline.iter().any(|t| t.path == *path)).filter_map(|path| Some((path, unit_at(path)?))).collect();
     let Some((path, unit, what)) = ran.iter().find_map(|(path, unit)| Some((*path, *unit, Some(gives(unit, path)?)))).or(ran.first().map(|(path, unit)| (*path, *unit, None))) else {
         return WITHHELD_NODE.into();
     };
@@ -147,9 +161,9 @@ fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::
     };
     match what {
         Some(what) => format!("{leaf} computed {what} from {from}: {MARK_STANDS_FOR}"),
-        None if never_keep.is_empty() => format!("{leaf} computed from {from} a value no mark stands for (too short, or not a text): {MARK_STANDS_FOR}"),
+        None if never_keep.is_empty() => format!("{leaf} computed from {from} a value no mark stands for (too short, or not a text), or one a step the log doesn't keep gave (too large even marked, or carrying a file it keeps by its hash): {MARK_STANDS_FOR}"),
         None => format!(
-            "{leaf} computed from {from} a value no mark stands for (too short, not a text, or a text holding a value under a key its flow never keeps, {}, of which the record keeps no hash): {MARK_STANDS_FOR}",
+            "{leaf} computed from {from} a value no mark stands for (too short, not a text, or a text holding a value under a key its flow never keeps, {}, of which the record keeps no hash), or one a step the log doesn't keep gave (too large even marked, or carrying a file it keeps by its hash): {MARK_STANDS_FOR}",
             never_keep.join(", ")
         ),
     }
@@ -629,6 +643,9 @@ pub(crate) struct Stood {
     /// Whether its inputs held a value the run computed from a secret (`‹derived #7c1e9a02›`).
     /// Not which: such a mark is a run's own, and the same step in two runs reads as one here.
     pub(crate) derived: bool,
+    /// Whether its inputs held a text the record withheld whole, for holding a secret spelled as
+    /// no mark could stand for (`‹respelled:secret:name›`), or its own record is one.
+    pub(crate) respelled: bool,
 }
 
 impl Stood {
@@ -645,6 +662,7 @@ impl Stood {
             some("the request's", "the request's", &self.tainted).map(|t| t + ", which the log never keeps"),
             some("the request's", "the request's", &self.never_kept).map(|t| t + ", which its flow never keeps"),
             self.derived.then(|| "a value computed from a secret".to_string()),
+            self.respelled.then(|| "a text that held a secret spelled another way, withheld whole".to_string()),
         ]
         .into_iter()
         .flatten()
@@ -1069,6 +1087,20 @@ fn check_states(
             },
             // The run whose commit it began after left the state it began from.
             Some(h) if began_after(entries, b).is_some_and(|p| p.state_after.as_ref() == Some(h)) => states.began.push(b.seq),
+            // And from no other: the commit it began after is read with the state it began from,
+            // under the state's lock (firing.rs), so where that commit's run is here, it left the
+            // state this one began from, unless a deploy, a restore, a stop or a load put one in
+            // place between them, or a line between them is lost. Not a state a run beside it by
+            // the clock left or began from: a run begun within a millisecond of the one before it
+            // is beside it, and a line's start is the chain's say-so (R62).
+            Some(_)
+                if let Some(p) = began_after(entries, b)
+                    && p.state_after.is_some()
+                    && !events.iter().any(|ev| (moves_state(ev) || ev.loaded.is_some()) && p.seq < ev.run_seq && ev.run_seq <= b.seq)
+                    && !lost.iter().any(|(from, to)| p.seq < *to && *from < b.seq) =>
+            {
+                states.breaks.push((b.seq, format!("it began after run {}'s commit, from a state other than the one that run left", p.seq)));
+            }
             Some(h) => {
                 // The run before it that committed: one that failed did only if it left a state.
                 match entries[..i].iter().rposition(|(e, _)| ran(e) && (e.error.is_none() || e.state_after.is_some())) {
@@ -1353,6 +1385,12 @@ struct Texts<'a> {
     files: &'a BTreeMap<String, PathBuf>,
 }
 
+/// Whether a read asks for a whole file (`{folder, read}`), as text or as bytes: not a part of
+/// one, a listing or a handle.
+fn reads_a_file(request: &SValue) -> bool {
+    matches!(request.clone().into_core(), Value::Record(r) if r.contains_key("folder") && r.contains_key("read"))
+}
+
 /// Whether a logged read asked for its file's bytes (`folders::reads_bytes`).
 fn reads_bytes(request: &SValue) -> bool {
     matches!(request, SValue::Record(pairs) if pairs.iter().any(|(k, v)| k == "bytes" && *v == SValue::Boolean(true)))
@@ -1363,19 +1401,37 @@ impl Texts<'_> {
     /// `Err`: none here (what the run read), or a blob that isn't the file it says.
     /// `marks`, `escaped`: an answer the entry holds is read as the run had it (`Marks::read`).
     fn answer(&self, read: &recorder::LoggedRead, marks: &Marks, escaped: bool) -> Result<Option<Value>, Rerun> {
-        let Some(file) = &read.file else { return Ok(read.answer.as_ref().map(|a| marks.read(a, escaped))) };
+        let Some(file) = &read.file else {
+            // The server keeps the hash and size of every whole file a run read (folders.rs).
+            if read.answer.is_some() && reads_a_file(&read.request) {
+                return Err(Rerun::Differs(format!("its line keeps no hash or size for {}, which it read", what(read))));
+            }
+            return Ok(read.answer.as_ref().map(|a| marks.read(a, escaped)));
+        };
         if let Some(range) = &file.range {
             return self.range(read, file, range);
         }
         if let Some(answer) = &read.answer {
-            return Ok(Some(marks.read(answer, escaped)));
+            let answer = marks.read(answer, escaped);
+            // Kept in the line as the run had it (no mark in it): it is the file the line names.
+            let bytes = match &answer {
+                Value::Text(t) => Some(t.as_bytes()),
+                Value::Bytes(b) => Some(b.as_slice()),
+                _ => None,
+            };
+            if let Some(bytes) = bytes.filter(|_| !marks.carried(&answer))
+                && (blake3::hash(bytes).to_hex().as_str() != file.hash || bytes.len() as u64 != file.size)
+            {
+                return Err(Rerun::Differs(format!("the text its line keeps for {} isn't the file it names (its hash and size)", what(read))));
+            }
+            return Ok(Some(answer));
         }
         let what = || what(read);
         if reads_bytes(&read.request) {
             return self.bytes(file, &what());
         }
         if let Some(text) = file.blob.as_ref().and_then(|b| self.blobs.get(b)) {
-            if blake3::hash(text.as_bytes()).to_hex().as_str() != file.hash {
+            if blake3::hash(text.as_bytes()).to_hex().as_str() != file.hash || text.len() as u64 != file.size {
                 return Err(Rerun::Differs(format!("the text kept for {} isn't the file it read", what())));
             }
             return Ok(Some(Value::Text(text.clone())));
@@ -1397,7 +1453,7 @@ impl Texts<'_> {
     fn bytes(&self, file: &recorder::LoggedFile, what: &str) -> Result<Option<Value>, Rerun> {
         if let Some(kept) = file.blob.as_ref().and_then(|b| self.blob_bytes.get(b)) {
             let bytes = holon_core::text_bytes(kept, "base64").ok_or_else(|| Rerun::Differs(format!("the bytes kept for {what} aren't base64")))?;
-            if blake3::hash(&bytes).to_hex().as_str() != file.hash {
+            if blake3::hash(&bytes).to_hex().as_str() != file.hash || bytes.len() as u64 != file.size {
                 return Err(Rerun::Differs(format!("the bytes kept for {what} aren't the file it read")));
             }
             return Ok(Some(Value::Bytes(bytes)));
@@ -1629,13 +1685,20 @@ fn rerun(
     }
     let mut waits = Logged {
         reads,
+        asked: vec![false; entry.reads.len()],
         events: entry.events.iter().map(|(k, v)| (k.clone(), marks.read(v, entry.escaped))).collect(),
         reached: BTreeMap::new(),
         marks: marks.clone(),
     };
     let limits = rerun_limits();
     let mut host = RecordingHost::new();
-    let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped);
+    // What may be computed from a secret it was given, by the walk the server withholds and
+    // marks it by (`firing::without_secret_derived`, `FiredRun::withholds_output`,
+    // `secrets::born`), of the same unit: which steps the check takes from the log, and which
+    // it computes again on its marks (`SecretFed::taken`).
+    let given_one = entry.secrets.keys().any(|name| caps.iter().any(|c| matches!(c, Capability::SecretRead(s) if s == *name)));
+    let fed = if given_one { taint::SecretFed::of(root, resolver) } else { taint::SecretFed::default() };
+    let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped, fed.clone());
     let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &network, &limits, &mut observer, &mut waits, &prior);
     // A node computed on its placeholders gives what the run gave, written with them; the log
     // recording other for it is a record that isn't the run's.
@@ -1649,6 +1712,10 @@ fn rerun(
     // Each call its line records was made: by the node at its path, with that very request.
     if network.unasked() {
         differs.push("a call its line records that no node makes run again");
+    }
+    // And each read: the server records one once, however often the run asks it (`RunWaits`).
+    if waits.unasked() {
+        differs.push("a read its line records that no node makes run again");
     }
     given.taken = observer.taken.values().cloned().collect();
     // Each node stood in for, its secrets as the run's entry shows them (their version and
@@ -1690,24 +1757,45 @@ fn rerun(
     if json(&performed) != json(&entry.performed) {
         differs.push("the effects it performed");
     }
-    // What may be computed from a secret it was given is withheld as the server withholds it
-    // (`firing::without_secret_derived`, `FiredRun::withholds_output`), from the same walk of
-    // the same unit.
-    let given_one = entry.secrets.keys().any(|name| caps.iter().any(|c| matches!(c, Capability::SecretRead(s) if s == *name)));
-    let fed = if given_one { taint::SecretFed::of(root, resolver) } else { taint::SecretFed::default() };
     // A line that says its record withholds keeps nothing that may be computed from a secret,
-    // and is one that computed with one: else it says other than the server writes.
-    if entry.withheld && (fed.is_empty() || entry.timeline.iter().any(|t| t.outputs.is_some() && fed.derives(&t.path))) {
-        return Rerun::Differs("its line says it withholds what the run computed from a secret, and keeps a step that may hold it, or computed with none".into());
+    // and is one that computed with one: else it says other than the server writes. Nor is it
+    // one where nothing made the record withhold (`secrets::born`): given a secret it had a
+    // key for (it commits to one), each step that may compute from one followed and none of
+    // them run, and each step the check takes from it kept (`SecretFed::taken`, R66).
+    let nothing_withheld = given_one
+        && !entry.committed.is_empty()
+        && !entry.timeline.is_empty()
+        && fed.followed_to(recorder::Timer::DEPTH)
+        && !entry.timeline.iter().any(|t| fed.derives(&t.path))
+        && entry.timeline.iter().filter(|t| fed.taken(&t.path)).all(|t| t.outputs.is_some());
+    if entry.withheld && (fed.is_empty() || nothing_withheld || entry.timeline.iter().any(|t| t.outputs.is_some() && fed.derives(&t.path))) {
+        return Rerun::Differs("its line says it withholds what the run computed from a secret, and keeps a step that may hold it, computed with none, or did nothing that makes it withhold".into());
+    }
+    // And one that says it withholds nothing had a key to mark what it computed with: the
+    // server has one just where the entry commits to a secret (its salt), and withholds
+    // without one.
+    if !entry.withheld && given_one && !fed.is_empty() && entry.committed.is_empty() {
+        return Rerun::Differs("its line says it withholds nothing the run computed from a secret, and commits to no secret: the server has no key to mark such values without one".into());
     }
     // The steps it took, as the log keeps them.
     kept.extend(folders::written_texts(&host.performed).into_iter().filter_map(|t| carried_text(&Value::Text(t.to_string()))));
     kept.extend(folders::written_bytes(&host.performed).into_iter().filter_map(|b| carried_text(&Value::Bytes(b.to_vec()))));
     let again = std::mem::take(&mut observer.timer.timeline);
     // Where the line says the run marked every value computed from a secret, the steps it kept
-    // whole for it (`secrets::born`, by the same walk).
+    // for it (`secrets::born`, by the same walk: those the check takes from it), and those it
+    // kept unless too large as it writes them (one that only moves such a value).
     let whole = given_one && !entry.withheld;
-    let steps = steps_of(&entry.timeline, &again, &|path| entry.withheld && fed.derives(path), &|path| whole && fed.holds(path), &kept, !observer.unrecorded.is_empty(), marks, entry.escaped);
+    let steps = steps_of(
+        &entry.timeline,
+        &again,
+        &|path| entry.withheld && fed.derives(path),
+        &|path| whole && fed.taken(path),
+        &|path| whole && fed.holds(path) && !fed.taken(path),
+        &kept,
+        !observer.unrecorded.is_empty(),
+        marks,
+        entry.escaped,
+    );
     if !steps.whole {
         differs.push("the steps it took (its timeline)");
     }
@@ -1818,7 +1906,7 @@ fn rerun(
         // it was, whether or not a node here asked for what the log left out (one that reads a
         // secret inside a function applied to each item is asked for nothing). For other nodes,
         // the outputs were too large or too deep to keep. Each is a different thing to be told.
-        false if let Some(why) = left_out(root, resolver, entry, &observer.unrecorded, &never_keep) => Rerun::Skipped(why),
+        false if let Some(why) = left_out(root, resolver, entry, &observer.unrecorded, observer.keyed, &never_keep) => Rerun::Skipped(why),
         // Stopped by a limit verify isn't held to (its budget, the clock), or one past which the
         // server dropped what it did (a file's, a queue's size): run again, it goes further. So
         // its entry may say less than the run again does, never other: the same run, each output
@@ -1947,9 +2035,10 @@ fn ill_formed(entry: &LogEntry, marks: &Marks) -> Option<String> {
 /// body, or the file it answered with; an action's answer as JSON; a WebSocket block's reply, its
 /// open block's answer, a close block's none. Withheld where it may be computed from a secret
 /// (`derived`), the run marking none of it (`FiredRun::withholds_output`). A kind that answers
-/// nothing keeps none. A body past what the line keeps (64 KiB), cut at a length a mark's value
-/// isn't known at, is compared up to its first mark.
+/// nothing keeps none. A body past what the line keeps (64 KiB) is cut as the server cuts it, as
+/// written, once its values are their marks (`secrets::cut_written`), and compared whole.
 fn answered_as_said(entry: &LogEntry, first: Option<&Value>, derived: bool, marks: &Marks) -> bool {
+    // Whole: cut below as the server cuts it, once its values are their marks.
     let kept = |body: &[u8]| recorder::body_text(body);
     let made = match entry.kind.as_str() {
         "request" => {
@@ -1970,11 +2059,20 @@ fn answered_as_said(entry: &LogEntry, first: Option<&Value>, derived: bool, mark
     if derived && said == taint::WITHHELD {
         return true;
     }
-    let SValue::Text(made) = marks.write(SValue::Text(made)) else { unreachable!("a text writes as a text") };
-    match made.ends_with('…') && made.contains('‹') {
-        true => made.split('‹').next() == said.split('‹').next(),
-        false => made == *said,
+    // An answer the line withheld whole, for holding a value in a spelling no mark stands for
+    // (`secrets::RESPELLED`), where the run again answers a text made of one so withheld: the
+    // host wrote the answer out itself, no step did, so there is none to take as recorded. What
+    // the line says stands, as a step's record does.
+    let respelled = &secrets::RESPELLED['‹'.len_utf8()..];
+    if said.starts_with(secrets::RESPELLED) && said.matches('›').count() == 1 && said.ends_with('›') && made.contains(&format!("{}{respelled}", marks.start)) {
+        return true;
     }
+    let SValue::Text(mut made) = marks.write(SValue::Text(made)) else { unreachable!("a text writes as a text") };
+    // Cut as the server cuts it: as written, after its marks (`secrets::cut_written`).
+    if matches!(entry.kind.as_str(), "request" | "websocket") {
+        secrets::cut_written(&mut made);
+    }
+    made == *said
 }
 
 /// Whether `entry`'s kind keeps no answer: a WebSocket's close block, and every kind but a
@@ -2035,6 +2133,7 @@ fn steps_of(
     again: &[recorder::NodeTiming],
     withheld: &dyn Fn(&[u32]) -> bool,
     kept_whole: &dyn Fn(&[u32]) -> bool,
+    moved: &dyn Fn(&[u32]) -> bool,
     kept: &[String],
     short: bool,
     marks: &Marks,
@@ -2053,13 +2152,29 @@ fn steps_of(
         let outputs = match (&l.outputs, &a.outputs) {
             (Some(l), Some(a)) => json(l) == json(&a.iter().map(|o| o.clone().map(|v| marks.write(v))).collect::<Vec<_>>()),
             (None, None) => true,
+            // A step the line says the run kept whole (`kept_whole`: it marked every value
+            // computed from a secret, and this is a step the check takes from the record,
+            // `SecretFed::taken`; `secrets::born` asks the same, of the steps as the record keeps
+            // them): one without is taken out, whatever it carries (R61, R66).
+            (None, Some(_)) if kept_whole(&l.path) => false,
             (None, Some(a)) if held || carries_kept(a) => true,
+            // One that only moves such a value, where the line says the same (`moved`): kept
+            // unless too large as the record writes it, each value as its mark
+            // (`secrets::Measured`), or written longer by a mark the measure doesn't know (a
+            // token's, a tainted value's: only the whole entry makes those known). The check
+            // computes it again on its marks.
+            (None, Some(a)) if moved(&l.path) => {
+                let written: Vec<Option<SValue>> = a.iter().map(|o| o.clone().map(|v| marks.write(v))).collect();
+                let unknown = |v: &SValue| {
+                    let v = v.clone().into_core();
+                    !marks.tokens_in(&v).is_empty() || !marks.tainted_in(&v).is_empty()
+                };
+                !recorder::fits(&written) || a.iter().flatten().any(unknown)
+            }
             // A step holding a mark: too large to keep as the run had it (the mark is shorter
-            // than the value). Not a step the line says the run kept whole (`kept_whole`: it
-            // marked every value computed from a secret, and the walk says this step may give
-            // one; `secrets::born` asks the same): one without is taken out. Where the walk says
-            // clean, a mark is a copy a caller sent or a host echoed, and explains it.
-            (None, Some(a)) => !kept_whole(&l.path) && a.iter().flatten().any(|v| marks.carried(&v.clone().into_core())),
+            // than the value). Where the walk says clean, a mark is a copy a caller sent or a
+            // host echoed, and explains it.
+            (None, Some(a)) => a.iter().flatten().any(|v| marks.carried(&v.clone().into_core())),
             (Some(l), None) => l.iter().flatten().any(|v| marks.carried(&marks.read(v, escaped))),
         };
         let reason = match (&l.reason, &a.reason) {
@@ -2119,7 +2234,12 @@ fn round_of(round: &recorder::LoggedRound, marks: &Marks, escaped: bool) -> Roun
 /// Answers a run's waiting points, collection reads and file reads from its log entries (a file's
 /// text from the export or `--files`); its tokens as their placeholder (`Marks`).
 struct Logged {
+    /// The run's own reads first, then an earlier part's (a resumed part reads again only what it
+    /// shares).
     reads: Vec<(Vec<u32>, Value, Option<Value>)>,
+    /// Which of its own reads a node asked for, the first that matches: one asked by none, a
+    /// read put in twice among them, is one the run, run again, doesn't make.
+    asked: Vec<bool>,
     events: BTreeMap<String, Value>,
     /// Each point it reached waiting that it was delivered an event at, by name: an approval's
     /// steps, none for an event's.
@@ -2127,9 +2247,20 @@ struct Logged {
     marks: Marks,
 }
 
+impl Logged {
+    /// Whether a read of its own went unasked.
+    fn unasked(&self) -> bool {
+        self.asked.contains(&false)
+    }
+}
+
 impl Waits for Logged {
     fn read(&mut self, path: &[u32], request: &Value) -> Option<Value> {
-        self.reads.iter().find(|(p, r, _)| p == path && r == request).and_then(|(_, _, a)| a.clone())
+        let at = self.reads.iter().position(|(p, r, _)| p == path && r == request)?;
+        if let Some(asked) = self.asked.get_mut(at) {
+            *asked = true;
+        }
+        self.reads[at].2.clone()
     }
     fn event(&self, name: &str) -> Option<Value> {
         self.events.get(name).cloned()
@@ -2160,6 +2291,13 @@ impl Waits for Logged {
 /// held to what they give: a record that says other differs (`belied`). Unless a node before it
 /// in the run couldn't be computed nor stood in for (`unrecorded`): what this run again computes
 /// after that one isn't the run's, so the record is taken, as for any other leaf.
+///
+/// Where the log keeps no outputs for a leaf, one that only moves what it is handed by the walk
+/// the record is kept by (`SecretFed::holds` and not `SecretFed::taken`, and acting on nothing)
+/// is computed on its marks too: a record that marks every value computed from a secret may
+/// leave it out, too large as it writes it (`secrets::born`, R66). Only a leaf the check takes
+/// from the record is `unrecorded`. A mark that is a record's key in what such a leaf is fed
+/// orders and finds by the mark (`keyed`): a run that then comes out other isn't run again.
 struct Asserting {
     timer: recorder::Timer,
     /// Each node's outputs, by path and by the round the log recorded them in.
@@ -2181,17 +2319,45 @@ struct Asserting {
     /// The nodes that needed standing in for and that the log keeps no outputs for (computed from
     /// a secret, larger than the log keeps, or deeper than it records).
     unrecorded: BTreeSet<Vec<u32>>,
+    /// Whether a leaf computed on its marks where the log keeps no outputs for it was fed a mark
+    /// as a record's key.
+    keyed: bool,
+    /// What a secret the run was given reaches: which leaves the check takes from the log.
+    fed: taint::SecretFed,
     marks: Marks,
 }
 
 impl Asserting {
-    fn from_timeline(timeline: &[recorder::NodeTiming], marks: &Marks, escaped: bool) -> Asserting {
+    fn from_timeline(timeline: &[recorder::NodeTiming], marks: &Marks, escaped: bool, fed: taint::SecretFed) -> Asserting {
         let mut recorded: BTreeMap<Vec<u32>, BTreeMap<u32, Vec<Option<Value>>>> = BTreeMap::new();
         for t in timeline {
             let Some(outputs) = &t.outputs else { continue };
             recorded.entry(t.path.clone()).or_default().insert(t.round, outputs.iter().map(|o| o.as_ref().map(|v| marks.read(v, escaped))).collect());
         }
-        Asserting { timer: recorder::Timer::new(), recorded, round: 0, belied: false, taken: BTreeMap::new(), misshapen: false, stood_in: BTreeMap::new(), unrecorded: BTreeSet::new(), marks: marks.clone() }
+        Asserting {
+            timer: recorder::Timer::new(),
+            recorded,
+            round: 0,
+            belied: false,
+            taken: BTreeMap::new(),
+            misshapen: false,
+            stood_in: BTreeMap::new(),
+            unrecorded: BTreeSet::new(),
+            keyed: false,
+            fed,
+            marks: marks.clone(),
+        }
+    }
+
+    /// Whether the leaf `unit` at `path` only moves what it is handed, by the walk the record is
+    /// kept by (`SecretFed::holds`, not `SecretFed::taken`), and acts on nothing: computed on its
+    /// marks where the log keeps no outputs for it.
+    fn moved(&self, path: &[u32], unit: &holon_core::Unit) -> bool {
+        let holon_core::UnitBody::Primitive { name } = &unit.body else { return false };
+        self.fed.holds(path)
+            && !self.fed.taken(path)
+            && !holon_core::taint::is_answered(name)
+            && holon_core::capabilities_of(name, &unit.params).is_some_and(|c| c.is_pure())
     }
 
     /// What the log recorded for the node at `path` in this round, as it ran: in a round it
@@ -2311,8 +2477,14 @@ impl Observer for Asserting {
                 }
                 holon_core::taint::OnAMark::Compares => self.compared(name, unit, inputs),
             };
+            // A text the record withheld whole (`secrets::RESPELLED`) isn't one a mark was put
+            // into: it held a value in a spelling no mark stands for, which only the value
+            // tells. Computed on the marks, the step gives the text with a mark in place, and
+            // can't give the record's; so such a record is taken, and named, as a step's that
+            // computes with the value is.
+            let whole = |recorded: &[Option<Value>]| recorded.iter().flatten().any(|v| !self.marks.rest_of(&secrets::RESPELLED['‹'.len_utf8()..], v).is_empty());
             match self.at(path).ok().flatten() {
-                Some(recorded) if *recorded != gave && self.unrecorded.is_empty() => {
+                Some(recorded) if *recorded != gave && self.unrecorded.is_empty() && !whole(recorded) => {
                     self.belied = true;
                     return Some(gave);
                 }
@@ -2354,8 +2526,16 @@ impl Observer for Asserting {
                         self.taken.insert(path.to_vec(), Taken { of, leaf: leaf.clone(), outputs });
                     }
                 }
-                self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2), never_kept: list(fed.3), derived });
+                let respelled = inputs.iter().flatten().copied().chain(outputs.iter().flatten()).any(|v| !self.marks.rest_of(&secrets::RESPELLED['‹'.len_utf8()..], v).is_empty());
+                self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2), never_kept: list(fed.3), derived, respelled });
                 Some(outputs)
+            }
+            // None kept, for a leaf that only moves what it is handed: computed on its marks,
+            // as one that moves a value is above (R66), noting a mark in a record's key.
+            None if self.moved(path, unit) => {
+                self.keyed |= inputs.iter().flatten().any(|v| self.marks.in_a_key(v));
+                let inputs: Vec<Option<Value>> = inputs.iter().map(|v| v.cloned()).collect();
+                Some(holon_core::eval(unit, &inputs, &holon_core::MapResolver::new()).into_vec())
             }
             None => {
                 self.unrecorded.insert(path.to_vec());
@@ -2489,7 +2669,13 @@ impl Marks {
         // A credential a call answered to a request that held a secret (`secrets::answered_tokens`)
         // is refused a write as the secret is.
         // So is what the run computed from a secret.
-        let secret = |t: &str| t.contains(&format!("{}secret:", self.start)) || t.contains(&format!("{}token:answer ", self.start)) || t.contains(&format!("{}{}", self.start, Marks::DERIVED));
+        // And a text that held one spelled as no mark could stand for (`secrets::RESPELLED`).
+        let secret = |t: &str| {
+            t.contains(&format!("{}secret:", self.start))
+                || t.contains(&format!("{}token:answer ", self.start))
+                || t.contains(&format!("{}{}", self.start, Marks::DERIVED))
+                || t.contains(&format!("{}{}", self.start, &secrets::RESPELLED['‹'.len_utf8()..]))
+        };
         match v {
             Value::Text(t) => secret(t),
             Value::List(items) => items.iter().any(|v| self.carries_secret(v)),
@@ -2683,7 +2869,7 @@ pub(crate) fn keys_for(data: Option<&str>, root_key: Option<&str>) -> Result<std
 /// `holon verify <export.json> [--head <hex>] [--files DIR] [--data DIR] [--root-key SOURCE]`:
 /// check an export, say what was found, and exit 0 only if it checks, every run in it run again
 /// and every run's state checked; 3 if nothing in it fails, but some runs couldn't be run again or
-/// some states checked; 1 if anything doesn't check.
+/// some states couldn't be checked; 1 if anything doesn't check.
 pub(crate) fn run(args: &[String]) -> i32 {
     let mut file = None;
     let mut head = None;
@@ -2746,10 +2932,11 @@ const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR
   unbroken, that every unit is what its hash says, and that every run, run again from its log
   entry, produces what the log says it did. Exits 0 when it all checks, 1 when anything doesn't,
   3 when nothing fails but not everything was checked: some runs couldn't be run again, or some
-  runs' states checked (it says which, and why), 2 when it can't read the export.
+  runs' states couldn't be checked (it says which, and why), 2 when it can't read the export.
 
-  --head HEX               a head a witness holds: check it is in the export, so no run up to
-                           it was changed or removed
+  --head HEX               a head a witness holds: check it is in the export, so no run in the
+                           export, from its oldest up to that head, was changed or removed
+                           (of runs a trimmed log no longer holds, it says nothing)
   --files DIR              where the files the runs read are, for those whose log keeps only
                            their hashes: each is found by its hash, wherever it is under DIR
   --data DIR               for an export the server keeps sealed (a backup's archive, a removed
@@ -3205,6 +3392,21 @@ examples:
 mod tests {
     use super::*;
 
+    /// Guards: the command line reference says what `holon verify --help` says a witnessed head
+    /// proves, and what it doesn't.
+    /// Why: the two were written apart; the reference said only that the head is in the export,
+    /// and the usage was corrected without it (audit R49).
+    #[test]
+    fn the_references_head_proves_what_the_usage_says() {
+        let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let usage = words(USAGE);
+        let head = usage.split("--head HEX a head a witness holds: check it is in the export, ").nth(1).expect("the usage's --head");
+        let proves = head[..head.find("--files").expect("--files after --head")].trim_end();
+        let cli = words(&std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/manual/reference/cli.md")).unwrap());
+        let said = format!("`--head` checks that a head a witness holds is in the export, {proves}.");
+        assert!(cli.contains(&said), "docs/manual/reference/cli.md's holon verify should say: {said}");
+    }
+
     /// Guards: what an entry says of its secrets holds together (`listed_secrets`). Its list is a
     /// kind and a commitment for a version it names; a mark of the version a run was given of a
     /// secret kept here reads the fingerprint its list has; two marks of one version read one
@@ -3323,7 +3525,7 @@ mod tests {
                 },
             }
         };
-        let asserting = Asserting::from_timeline(&[], &marks, false);
+        let asserting = Asserting::from_timeline(&[], &marks, false, taint::SecretFed::default());
         let resolver = holon_core::MapResolver::new();
         let mut computed: BTreeMap<&str, usize> = BTreeMap::new();
         for name in holon_core::GENESIS.iter().copied().filter(|n| holon_core::taint::on_a_mark(n).is_some()) {

@@ -31,7 +31,7 @@ handler's label), the `request`, the `sourced` values (`Clock`, `Random`, `Netwo
 `state_before`, `state_after` (a snapshot's hash in the content store), `commit` (the commit to
 the state it began after and its own, counted under the state's lock: `recorder::Commit`),
 `outputs`, `performed`,
-`response_body` (cut at 64 KiB), `error`, the `timeline` of each step, the outbound `rounds`, the
+`response_body` (cut at 64 KiB as the line writes it, once its values are their marks), `error`, the `timeline` of each step, the outbound `rounds`, the
 `run_id` and its `nonce`, the `unit` (version) it ran on, the `grant` (hash) it was held to, the
 collection `reads`, `claims`, `retries`, `by` (who sent it over the control plane), the `secrets`
 it was given by version and fingerprint, and for a durable run's part `parked`, `progress` and

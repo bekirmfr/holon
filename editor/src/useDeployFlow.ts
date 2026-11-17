@@ -46,6 +46,7 @@ export function useDeployFlow({
   refreshDeployments,
   setError,
   onDeployed,
+  onProposedSave,
 }: {
   flowName: string | null;
   setFlowName: (name: string) => void;
@@ -66,6 +67,9 @@ export function useDeployFlow({
   refreshDeployments: () => void;
   setError: (msg: string) => void;
   onDeployed?: (name: string) => void;
+  /** A proposal saves the flow as its author's (proposals.rs): the stamp of that save, which the
+   *  tab's next save replaces (tabs.ts `FlowMeta.savedAt`). */
+  onProposedSave?: (savedAt: number) => void;
 }) {
   const [deployBusy, setDeployBusy] = useState(false);
   const toast = useToast();
@@ -148,7 +152,7 @@ export function useDeployFlow({
     let proposes = false;
     try {
       await stageClosure(ev, hash, new Set());
-      const preview = await previewDeploy(name, hash, requirements);
+      const preview = await previewDeploy(name, hash, requirements, browsersOf(settings));
       if (preview.refused) {
         setError(`this host can't grant that: ${preview.refused}`);
         return;
@@ -211,14 +215,16 @@ export function useDeployFlow({
       const done = await deployUnit(name, hash, proposes ? [] : ask, document, requirements);
       refreshDeployments();
       // Proposed (as the dialog said, or as the server decided): nothing deployed yet.
-      if (done.proposal) toast(`Proposed version ${done.proposal.version ?? "?"} of "${name}": it waits in Approvals for someone who may approve it.`, "info");
-      else onDeployed?.(name);
+      if (done.proposal) {
+        if (done.proposal.saved_at !== undefined) onProposedSave?.(done.proposal.saved_at);
+        toast(`Proposed version ${done.proposal.version ?? "?"} of "${name}": it waits in Approvals for someone who may approve it.`, "info");
+      } else onDeployed?.(name);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setDeployBusy(false);
     }
-  }, [flowName, setFlowName, dialog, derived, settings, source, live, ev, deployments, refreshDeployments, getViewport, setError, onDeployed, toast]);
+  }, [flowName, setFlowName, dialog, derived, settings, source, live, ev, deployments, refreshDeployments, getViewport, setError, onDeployed, onProposedSave, toast]);
 
   /** The code's hunk: the flow's text beside the deployed version's (none on a first deploy);
    *  null when either can't be written as text. */

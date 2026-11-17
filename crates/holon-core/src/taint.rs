@@ -107,8 +107,9 @@ const ONE_WAY: &[&str] = &["sha256", "hmac_sha256", "secure_equals"];
 const MAKES: &[&str] = &["sha256", "hmac_sha256"];
 
 /// Leaves whose output holds their inputs as they are, or a part of them unchanged: a secret in
-/// an input is in the output literally, where redaction finds it. (`json_stringify` escapes, but
-/// redaction matches a secret's JSON-escaped form too.) The list leaves that rearrange a list's
+/// an input is in the output literally, where redaction finds it. (`json_stringify` escapes, and
+/// so does a second one over it; the host finds a secret in every spelling that gives, and
+/// withholds whole a text that holds it in any other: `secrets::spellings` in holon.) The list leaves that rearrange a list's
 /// items by their places are here; those that take a text too (`at`, `slice`) are not, since a
 /// part of a text isn't the secret, nor those that place items by what they hold (`sort`,
 /// `unique`): where a secret lands among the others, or whether it is left out as another's
@@ -300,11 +301,14 @@ pub struct SecretFed {
     /// starts.
     asked: BTreeSet<Vec<u32>>,
     /// The leaves that compute something of their own from a secret: each one whose output is
-    /// derived and isn't only what it was handed, moved ([`SecretFed::makes`]). The record marks
+    /// derived and isn't only what it was handed, moved ([`SecretFed::computes`]). The record marks
     /// what they give. Not [`SecretFed::made`], which is the other class: clean.
-    makers: BTreeSet<Vec<u32>>,
+    computing: BTreeSet<Vec<u32>>,
+    /// The leaves a secret reaches whose outputs a check running the run again on marks takes
+    /// from its record ([`SecretFed::taken`]).
+    taken: BTreeSet<Vec<u32>>,
     /// The nodes that make a hash or a signature of a secret whole ([`MAKES`]): clean, and where
-    /// [`SecretFed::made_of`] starts. Not [`SecretFed::makers`], whose outputs are derived and
+    /// [`SecretFed::made_of`] starts. Not [`SecretFed::computing`], whose outputs are derived and
     /// marked in the record.
     made: BTreeSet<Vec<u32>>,
     /// The nodes a run takes only when a choice decided by a secret takes them ([`SecretFed::chosen`]).
@@ -434,9 +438,9 @@ impl SecretFed {
     }
 
     /// Whether the node at `path` may give a secret on any of its outputs, as it is or computed
-    /// from it, or is where the walk follows no steps. A run's record that marks every value
-    /// computed from a secret keeps each such step's outputs (`secrets::born` in holon), and
-    /// `holon verify` refuses a line that says so and keeps none for one.
+    /// from it, or is where the walk follows no steps. A run's record measures each such step
+    /// as it writes it, each such value as its mark (`secrets::Measured` in holon), so that
+    /// whether it is kept says nothing of the secret.
     pub fn holds(&self, path: &[u32]) -> bool {
         self.under_opaque(path) || self.opaque.iter().any(|o| o == path) || self.nodes.get(path).is_some_and(|(_, outs)| outs.iter().any(|t| *t > Taint::Clean))
     }
@@ -447,26 +451,44 @@ impl SecretFed {
         self.under_opaque(path) || self.opaque.iter().any(|o| o == path) || self.nodes.get(path).is_some_and(|(_, outs)| outs.iter().any(|t| t.is_derived()))
     }
 
-    /// Whether the leaf at `path` makes something of a secret: its output may be computed from
-    /// one, and is a value of its own, not only what it was handed, moved. A leaf that passes its
-    /// inputs on as they are (a record built, a text joined, a field read: [`PASSES_LITERALLY`])
-    /// makes nothing, unless a secret reaches an input that only chooses, or it orders what it is
-    /// handed (`sort`, `unique`): then what comes out says something no input does. Every value
-    /// computed from a secret in a run is what such a leaf gave, or holds it, moved there; so a
-    /// log that marks each of those by its value marks every one ([`SecretFed::followed_to`]).
-    pub fn makes(&self, path: &[u32]) -> bool {
-        self.makers.contains(path)
+    /// Whether the leaf at `path` computes something of its own from a secret: its output may be
+    /// computed from one, and is a value of its own, not only what it was handed, moved. A leaf
+    /// that passes its inputs on as they are (a record built, a text joined, a field read:
+    /// [`PASSES_LITERALLY`]) computes nothing, unless a secret reaches an input that only chooses,
+    /// or it orders what it is handed (`sort`, `unique`): then what comes out says something no
+    /// input does. (Not [`MAKES`], the hashes and signatures of a secret whole: those are clean.)
+    /// Every value computed from a secret in a run is what such a leaf gave, or holds it, moved
+    /// there; so a log that marks each of those by its value marks every one
+    /// ([`SecretFed::followed_to`]).
+    pub fn computes(&self, path: &[u32]) -> bool {
+        self.computing.contains(path)
     }
 
-    /// The leaves that make something of a secret ([`SecretFed::makes`]), by path.
-    pub fn makers(&self) -> impl Iterator<Item = &[u32]> {
-        self.makers.iter().map(Vec::as_slice)
+    /// Whether `holon verify`, running a run again with a mark where its record never holds the
+    /// value, takes what the node at `path` gave from the record rather than computing it: a
+    /// leaf a secret reaches, as it is or computed from it, but a call (asked again on its
+    /// marks, [`is_answered`]) and one that only moves what it is handed by this walk's rule
+    /// (it passes its inputs on as they are, orders nothing, and no input that only chooses is
+    /// reached), which verify computes again; `as_text` is taken, as it writes anything but a
+    /// text as JSON, where a mark is escaped as its value wouldn't be. And where the walk
+    /// follows no steps. Wider than [`SecretFed::computes`]: a hash of a secret whole is clean,
+    /// and taken. A run's record that marks every value computed from a secret keeps each such
+    /// step's outputs (`secrets::born` in holon), and verify refuses a line that says so and
+    /// keeps none for one. Verify's rule: what may hold a secret is [`SecretFed::holds`].
+    pub fn taken(&self, path: &[u32]) -> bool {
+        self.under_opaque(path) || self.opaque.iter().any(|o| o == path) || self.taken.contains(path)
+    }
+
+    /// The leaves that compute something of their own from a secret ([`SecretFed::computes`]),
+    /// by path.
+    pub fn computing(&self) -> impl Iterator<Item = &[u32]> {
+        self.computing.iter().map(Vec::as_slice)
     }
 
     /// Whether every node that may produce something computed from a secret was followed by
     /// this walk and is no deeper than `depth`: none under a node whose insides aren't followed
     /// (a function applied by `map` or `fold`, a module), and none past the depth a host
-    /// observes a run to. Then a host that keeps what each [maker](SecretFed::makes) gave has
+    /// observes a run to. Then a host that keeps what each [such leaf](SecretFed::computes) gave has
     /// every value the run computed from a secret.
     pub fn followed_to(&self, depth: usize) -> bool {
         self.opaque.is_empty() && self.nodes.iter().all(|(path, (_, outs))| path.len() <= depth || !outs.iter().any(|t| t.is_derived()))
@@ -682,7 +704,12 @@ impl<R: Resolver> Walk<'_, R> {
                     // longer the text redaction finds. Only the walk of the secret itself keeps
                     // these: one that follows an answer or a hash marks nothing.)
                     if self.from.is_none() && outputs.iter().any(|t| t.is_derived()) && !moves {
-                        fed.makers.insert(path.clone());
+                        fed.computing.insert(path.clone());
+                    }
+                    // What a check running the run again on marks takes from its record: all a
+                    // secret reaches but a call and a leaf that only moves it ([`SecretFed::taken`]).
+                    if self.from.is_none() && most > Taint::Clean && !ANSWERED.contains(&name.as_str()) && (!moves || name == "as_text") {
+                        fed.taken.insert(path.clone());
                     }
                     outputs
                 }
@@ -1079,18 +1106,23 @@ mod tests {
         assert!(fed.derives(&[]), "the root's first output is derived");
     }
 
-    /// Guards: which leaves make something of a secret ([`SecretFed::makes`]), and when every
-    /// node that may compute from one is followed ([`SecretFed::followed_to`]). A leaf that
-    /// encodes, measures or reads a secret as a number makes a value of its own; one that joins
-    /// a made value into a text or a list only moves it; one that orders made values, or picks
-    /// by one, makes something again. A function applied by `map` isn't followed.
+    /// Guards: which leaves compute something of their own from a secret
+    /// ([`SecretFed::computes`]), and when every node that may compute from one is followed
+    /// ([`SecretFed::followed_to`]). A leaf that encodes, measures or reads a secret as a number
+    /// computes a value of its own; one that joins such a value into a text or a list only moves
+    /// it; one that orders such values, or picks by one, computes something again. A function
+    /// applied by `map` isn't followed. And which a check running the run again on marks takes
+    /// from its record ([`SecretFed::taken`]): each that computes, and a hash of the secret
+    /// whole, clean as it is; not one that only moves.
     /// Why: a host marks what a run computed from a secret by keeping what each such leaf gave
     /// and finding those values in the run's record. A leaf left off (taken as only moving)
-    /// gives a value nothing marks, written to the log as it is.
+    /// gives a value nothing marks, written to the log as it is. And a record that says it
+    /// marked every such value keeps each step the check takes from it (R66).
     /// If it fails: the node named is the leaf whose output the log would no longer mark, or
-    /// would mark though it holds nothing of its own (then a check takes it from the record).
+    /// would mark though it holds nothing of its own (then a check takes it from the record);
+    /// or one the check takes from a record that may leave it out, or computes though it can't.
     #[test]
-    fn a_leaf_makes_something_of_a_secret_unless_it_only_moves_what_it_was_handed() {
+    fn a_leaf_computes_from_a_secret_unless_it_only_moves_what_it_was_handed() {
         let mut r = MapResolver::new();
         let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
         let b64 = leaf(&mut r, "base64", vec![]);
@@ -1125,22 +1157,24 @@ mod tests {
             outputs: ["sorted", "picked", "sig"].map(|n| Port { name: n.into(), ty: Type::Any }).to_vec(),
         };
         let fed = SecretFed::of(&root(children.clone(), edges.clone()), &r);
-        // (the node, whether it makes something of the secret, why)
+        // (the node, whether it computes something of its own from the secret, whether a check
+        // takes it from the record, why)
         let rows = [
-            (0, false, "the secret itself: its value, found as it is"),
-            (1, true, "base64 of it is a value of its own"),
-            (2, false, "a constant isn't reached"),
-            (3, false, "a text joined with the encoded value only holds it"),
-            (4, false, "a list of it only holds it"),
-            (5, true, "sorted, the order says which made value comes first"),
-            (6, true, "read as a number"),
-            (7, true, "an item picked by a number computed from it"),
-            (8, false, "an hmac cuts it: nothing computed from the secret comes out"),
+            (0, false, false, "the secret itself: its value, found as it is, its mark given"),
+            (1, true, true, "base64 of it is a value of its own"),
+            (2, false, false, "a constant isn't reached"),
+            (3, false, false, "a text joined with the encoded value only holds it"),
+            (4, false, false, "a list of it only holds it"),
+            (5, true, true, "sorted, the order says which made value comes first"),
+            (6, true, true, "read as a number"),
+            (7, true, true, "an item picked by a number computed from it"),
+            (8, false, true, "an hmac cuts it: nothing computed from the secret comes out, and nothing computes it on a mark"),
         ];
-        for (node, makes, why) in rows {
-            assert_eq!(fed.makes(&[node]), makes, "node {node}: {why}");
+        for (node, computes, taken, why) in rows {
+            assert_eq!(fed.computes(&[node]), computes, "node {node}: {why}");
+            assert_eq!(fed.taken(&[node]), taken, "node {node}, taken: {why}");
         }
-        assert_eq!(fed.makers().map(<[u32]>::to_vec).collect::<Vec<_>>(), [vec![1], vec![5], vec![6], vec![7]]);
+        assert_eq!(fed.computing().map(<[u32]>::to_vec).collect::<Vec<_>>(), [vec![1], vec![5], vec![6], vec![7]]);
         assert!(fed.followed_to(1), "every node that derives is one of the root's own");
         assert!(!fed.followed_to(0), "they are one level down");
         // A function applied to each item isn't followed: what it makes inside isn't known.
@@ -1179,7 +1213,7 @@ mod tests {
             let fed = SecretFed::of(&root, &r);
             assert_eq!(fed.output(&[2], 0), Taint::Literal, "{name}: a list holding the secret holds it as it is");
             assert_eq!(fed.output(&[3], 0), Taint::Derived, "{name}: what it gives says where the secret came");
-            assert!(fed.makes(&[3]) && fed.derives(&[]), "{name}");
+            assert!(fed.computes(&[3]) && fed.derives(&[]), "{name}");
         }
     }
 

@@ -72,9 +72,23 @@ pub(crate) fn tokens_file() -> Option<PathBuf> {
 /// What `tokens.json` keeps: each key ([`tokens_file`]) to its token.
 pub(crate) type Kept = std::collections::BTreeMap<String, String>;
 
-/// Everything `file` keeps; nothing, if it can't be read.
+/// Everything `file` keeps; nothing, if it can't be read (`as_kept`).
 pub(crate) fn tokens_in(file: &Path) -> Kept {
-    std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    as_kept(std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default())
+}
+
+/// What `file` keeps, read as this version keeps it: an API token kept under a server's own URL
+/// (rc.35's `holon mcp setup --server` kept its agent's so) is that server's agent's
+/// (`agent:<URL>`), unless it has one, and never a person's session, which a person's command
+/// would sign in with as if it were them. Written so with the next token kept.
+fn as_kept(file: Kept) -> Kept {
+    let mut kept = Kept::new();
+    let (agents, rest): (Vec<_>, Vec<_>) = file.into_iter().partition(|(key, token)| !key.starts_with("agent:") && token.starts_with("ht_"));
+    kept.extend(rest);
+    for (server, token) in agents {
+        kept.entry(agent_key(&server)).or_insert(token);
+    }
+    kept
 }
 
 /// The servers this user signed in to with `holon login`: every key kept but the agents'.
@@ -678,15 +692,42 @@ mod tests {
     fn a_token_is_kept_per_server_and_forgotten() {
         let dir = std::env::temp_dir().join(format!("holon-tokens-{}", std::process::id()));
         let file = dir.join("tokens.json");
-        assert!(!keep_token(&file, "https://a.example", Some("ht_a")).unwrap());
-        assert!(keep_token(&file, "https://a.example", Some("ht_a2")).unwrap(), "replaced");
-        keep_token(&file, "https://b.example", Some("ht_b")).unwrap();
+        assert!(!keep_token(&file, "https://a.example", Some("hs_a")).unwrap());
+        assert!(keep_token(&file, "https://a.example", Some("hs_a2")).unwrap(), "replaced");
+        keep_token(&file, "https://b.example", Some("hs_b")).unwrap();
         keep_token(&file, &agent_key("https://b.example"), Some("ht_agent")).unwrap();
-        assert_eq!(saved_token(&file, "https://a.example").as_deref(), Some("ht_a2"));
+        assert_eq!(saved_token(&file, "https://a.example").as_deref(), Some("hs_a2"));
         assert_eq!(logins(&tokens_in(&file)), ["https://a.example", "https://b.example"]);
         assert!(keep_token(&file, "https://a.example", None).unwrap());
         assert_eq!(saved_token(&file, "https://a.example"), None);
-        assert_eq!(saved_token(&file, "https://b.example").as_deref(), Some("ht_b"));
+        assert_eq!(saved_token(&file, "https://b.example").as_deref(), Some("hs_b"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An agent's API token that rc.35's `holon mcp setup --server` kept under the server's own
+    /// URL is read as that server's agent's, never as a person's session (R9): a person's command
+    /// doesn't sign in as the agent, `holon mcp` still does, and the file is so written with the
+    /// next token kept. One kept beside an agent's own is dropped.
+    #[test]
+    fn an_agent_token_kept_under_a_url_is_the_agents() {
+        let dir = std::env::temp_dir().join(format!("holon-tokens-rc35-{}", std::process::id()));
+        let path = dir.join("tokens.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = ("http://127.0.0.1:7400", "https://b.example");
+        let rc35 = serde_json::json!({ a: "ht_rc35", b: "ht_old", agent_key(b): "ht_new", "https://c.example": "hs_cy" });
+        std::fs::write(&path, serde_json::to_vec(&rc35).unwrap()).unwrap();
+        let kept = tokens_in(&path);
+        assert_eq!(logins(&kept), ["https://c.example"], "an agent's token is no one's sign-in");
+        assert_eq!((saved_token(&path, a), saved_token(&path, b)), (None, None));
+        assert_eq!(kept.get(&agent_key(a)).map(String::as_str), Some("ht_rc35"));
+        assert_eq!(kept.get(&agent_key(b)).map(String::as_str), Some("ht_new"), "the agent's own is kept");
+        let person = target_from(Some("7400"), None, vec![file(7400)], |_| None, &kept).unwrap();
+        assert_eq!(person.token.as_deref(), Some("hl_7400"), "the person's command signs in with the run file, not as the agent");
+        assert_eq!(agent_target_from(Some("7400"), None, vec![file(7400)], |_| None, &kept).unwrap().token.as_deref(), Some("ht_rc35"));
+        keep_token(&path, "https://c.example", Some("hs_cy2")).unwrap();
+        let written: Kept = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written.keys().collect::<Vec<_>>(), [&agent_key(a), &agent_key(b), &"https://c.example".to_string()]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

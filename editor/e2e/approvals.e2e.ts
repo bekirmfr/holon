@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser } from "@playwright/test";
 import { expect, HOLON, PORTS, SERVER, test } from "./fixtures";
-import { newFlow } from "./helpers";
+import { enter, newFlow } from "./helpers";
 
 test("a flow saved and never deployed waits under Deploys; reviewed, ticked and approved, it is deployed", async ({ page }) => {
   const name = `review-${Date.now().toString(36)}`;
@@ -24,7 +24,7 @@ test("a flow saved and never deployed waits under Deploys; reviewed, ticked and 
   await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node", { hasText: "uppercase" })).toHaveCount(1, { timeout: 15_000 });
   await canvas.getByRole("button", { name: "save", exact: true }).dispatchEvent("click");
   await page.locator('[aria-modal="true"] input').fill(name);
-  await page.keyboard.press("Enter");
+  await enter(page);
   await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
 
   // Approvals lists it, and the nav counts what waits.
@@ -105,18 +105,20 @@ export const pay = action(async (order) => {
   execFileSync(HOLON, ["deploy", file, "--server", SERVER, "--slug", slug, "--approve"], { env: { ...process.env, HOLON_TOKEN: adminToken }, stdio: "pipe" });
 
   // scout, an agent with a token, classifies on the flow; dee, joined by an invite, holds nothing
-  // on the host and approves at the approval point alone; vic is a viewer on the host.
-  const scout = `e2e-scout-${n}`;
-  await sure(control(adminToken, "/people", { name: scout, kind: "agent", role: "agent" }));
-  const scoutToken = ((await (await sure(control(adminToken, `/people/${scout}/tokens`, { label: "e2e" }))).json()) as { token: string }).token;
-  await sure(control(adminToken, "/bindings", { who: { principal: scout }, role: "e2e-classifier", scope: { flows: { slug } } }));
+  // on the host and approves at the approval point alone; vic is a viewer on the host. scout is
+  // kim's, who makes its token: the admin starts the run, and an agent is one party with whoever
+  // owns it or made its token, so the admin's own agent would take no step of it.
   const joined = async (name: string) => {
     const { invite } = (await (await sure(control(adminToken, "/people", { name, kind: "person", role: "viewer" }))).json()) as { invite: string };
     const accepted = await sure(fetch(`${SERVER}/auth/invite`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: invite, password: "e2e-second-password-0123" }) }));
     return ((await accepted.json()) as { token: string }).token;
   };
-  const [dee, vic] = [`e2e-dee-${n}`, `e2e-vic-${n}`];
-  const [deeToken, vicToken] = [await joined(dee), await joined(vic)];
+  const [dee, vic, kim] = [`e2e-dee-${n}`, `e2e-vic-${n}`, `e2e-kim-${n}`];
+  const [deeToken, vicToken, kimToken] = [await joined(dee), await joined(vic), await joined(kim)];
+  const scout = `e2e-scout-${n}`;
+  await sure(control(adminToken, "/people", { name: scout, kind: "agent", role: "agent", owner: kim }));
+  const scoutToken = ((await (await sure(control(kimToken, `/people/${scout}/tokens`, { label: "e2e" }))).json()) as { token: string }).token;
+  await sure(control(adminToken, "/bindings", { who: { principal: scout }, role: "e2e-classifier", scope: { flows: { slug } } }));
   await sure(control(adminToken, "/bindings", { who: { principal: dee }, role: "e2e-approver", scope: { approval: { flow: { slug }, name: "payout" } } }));
   const held = ((await (await sure(control(adminToken, `/bindings?who=${dee}`))).json()) as { bindings: { id: number; scope: unknown }[] }).bindings;
   for (const b of held.filter((b) => b.scope === "host")) await sure(control(adminToken, `/bindings/${b.id}?why=e2e`, undefined, "DELETE"));

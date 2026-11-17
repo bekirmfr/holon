@@ -5,53 +5,17 @@
 //! (step 2), every line log (step 3) and the content store (step 4). A test binary of its own, as
 //! data_plane.rs.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Longer than this, what a test waits for is taken never to come: a guard so a hang fails the
-/// test, never a measure of how long anything took (on a loaded machine anything takes longer).
-const EVENTUALLY: Duration = Duration::from_secs(60);
+mod common;
+use common::{answering, free_port, raw_http, status, EVENTUALLY};
 
 /// A kind of file the test means to look at: what it is, and how its path (with `/`) is known.
 type Kind = (&'static str, fn(&str) -> bool);
 
 const HOLON: &str = env!("CARGO_BIN_EXE_holon");
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-}
-
-/// Waits [`EVENTUALLY`] for `holon serve` (`child`) to answer on `port`: an answer, not a
-/// connection taken. It takes connections once it has its port, before it has written the run
-/// file its user's commands sign in with (local.rs), and answers them after (main.rs: the run
-/// file published, then the server run), so a command sent once a connection is taken can find
-/// no run file, and is told the server isn't set up. If it ends first, fails at once with how it
-/// ended and what it said (its stderr, kept in `said`), rather than waiting out the guard with
-/// nothing to say.
-fn answering(child: &mut Child, port: u16, said: &std::path::Path) {
-    let by = Instant::now() + EVENTUALLY;
-    let words = || std::fs::read_to_string(said).unwrap_or_default();
-    while status(&raw_http(port, b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")) == 0 {
-        if let Some(status) = child.try_wait().unwrap() {
-            panic!("holon serve ended before it answered on {port} ({status}): {}", words());
-        }
-        assert!(Instant::now() < by, "holon serve answers on {port}: {}", words());
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// `request` sent to `port` and the whole answer read, or nothing if no connection is taken.
-fn raw_http(port: u16, request: &[u8]) -> String {
-    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
-    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
-    let _ = stream.write_all(request);
-    let mut out = Vec::new();
-    let _ = stream.read_to_end(&mut out);
-    String::from_utf8_lossy(&out).into_owned()
-}
 
 fn post(port: u16, path: &str, body: &str) -> String {
     raw_http(port, format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes())
@@ -59,11 +23,6 @@ fn post(port: u16, path: &str, body: &str) -> String {
 
 fn get(port: u16, path: &str) -> String {
     raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes())
-}
-
-/// An answer's status, 0 when there is none.
-fn status(answered: &str) -> u16 {
-    answered.get(9..12).and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
 /// Every file under `dir`, folders walked into.

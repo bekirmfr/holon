@@ -150,6 +150,6 @@ test("the command palette finds a page and a sample, and takes : commands", asyn
 
 test("an address that names nothing says so, and shows the overview", async ({ page }) => {
   await page.goto("/#no.such.place");
-  await expect(notices(page)).toContainText("Nothing is at #no.such.place");
+  await expect(notices(page)).toContainText("Nothing is at “#no.such.place”.");
   await expect(page).toHaveURL(/#overview$/);
 });

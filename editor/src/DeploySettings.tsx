@@ -6,6 +6,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { alwaysTainted, manifestTrigger, neverKeepKeyProblem, taintKeyProblem } from "./holon";
 import { useDryRun, type DryRunReport } from "./DryRun";
+import { useDialog } from "./Dialog";
 import { useCan } from "./can";
 import {
   deleteSecret,
@@ -21,6 +22,7 @@ import {
   type SecretHistory,
   type SecretInfo,
   type SecretRollbackPreview,
+  whyUnread,
 } from "./server";
 import { Said } from "./SecretSaid";
 
@@ -165,7 +167,24 @@ export function secretRollbackReport(slug: string | null, name: string, p: Secre
  * history, from which an older version can be rolled back to. Setting, removing and rolling back
  * follow what the server would answer (can.tsx): refused, they are disabled, saying why.
  */
-export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = false }: { slug: string | null; name: string; info?: SecretInfo; envNames: string[]; onChanged: () => void; readOnly?: boolean }) {
+export function SecretRow({
+  slug,
+  name,
+  info,
+  unread = "",
+  envNames,
+  onChanged,
+  readOnly = false,
+}: {
+  slug: string | null;
+  name: string;
+  info?: SecretInfo;
+  /** Why the secrets couldn't be read, when they couldn't: not read is not "not set". */
+  unread?: string;
+  envNames: string[];
+  onChanged: () => void;
+  readOnly?: boolean;
+}) {
   const kindOf = (source?: string): Kind => (source?.startsWith("env:") ? "env" : source?.startsWith("vault:") ? "vault" : "value");
   const [kind, setKind] = useState<Kind>(kindOf(info?.source));
   const [text, setText] = useState("");
@@ -175,6 +194,7 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
   const picking = kind === "env" && envNames.length > 0 && !typing;
   const [history, setHistory] = useState<SecretHistory | null>(null);
   const dryRun = useDryRun();
+  const dialog = useDialog();
   const can = useCan(slug);
   const setting = can.may("setSecret");
   // The row follows where the secret comes from once that's known (the list loads after it).
@@ -199,11 +219,15 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
       })
       .catch(fail);
   };
-  const remove = () =>
-    slug &&
+  // Every version goes, none left to roll back to: asked first (R43).
+  const remove = async () => {
+    if (!slug) return;
+    const asked = `Remove ${slug}'s secret "${name}"? Every version of it is forgotten: none can be rolled back to. From its next run it reads the server's "${name}" if the server has one, and nothing otherwise.`;
+    if (!(await dialog.confirm(asked, "Remove"))) return;
     deleteSecret(slug, name)
       .then(() => changed("removed"))
       .catch(fail);
+  };
   // A dry run first, its result shown; rolled back once approved.
   const rollback = async (to: number) => {
     if (!slug) return;
@@ -226,9 +250,9 @@ export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = fa
         <span>{name}</span>
         <span
           style={{ color: status, fontSize: 10 }}
-          title={info?.problem ?? (theirs ? `the server's, set ${when(theirs.set_at)}${theirs.to ? `; it ${mayGo(theirs.to)}` : ""}; set one here to use this deployment's own` : info ? `set ${when(info.set_at)}` : undefined)}
+          title={info?.problem ?? (theirs ? `the server's, set ${when(theirs.set_at)}${theirs.to ? `; it ${mayGo(theirs.to)}` : ""}; set one here to use this deployment's own` : info ? `set ${when(info.set_at)}` : unread ? `couldn't read the secrets: ${unread}` : undefined)}
         >
-          {theirs ? `the server's${theirs.to ? ` · ${mayGo(theirs.to)}` : ""}${theirs.problem ? " · can't be read" : ""}` : info ? `v${info.version} · ${sourceLabel(info.source)}${info.problem ? " · can't be read" : ""}` : "not set"}
+          {theirs ? `the server's${theirs.to ? ` · ${mayGo(theirs.to)}` : ""}${theirs.problem ? " · can't be read" : ""}` : info ? `v${info.version} · ${sourceLabel(info.source)}${info.problem ? " · can't be read" : ""}` : unread ? "couldn't be read" : "not set"}
         </span>
       </span>
       {!readOnly && <span style={{ display: "inline-flex", gap: 4 }}>
@@ -606,9 +630,17 @@ export function DeploySettings({
 }) {
   const [policy, setPolicy] = useState<HostPolicy | null>(null);
   const [secrets, setSecrets] = useState<SecretInfo[]>([]);
+  const [secretsUnread, setSecretsUnread] = useState("");
   const [envNames, setEnvNames] = useState<string[]>([]);
   const reloadSecrets = () => {
-    if (slug) listSecrets(slug).then(setSecrets).catch(() => setSecrets([]));
+    if (slug)
+      listSecrets(slug).then(
+        (s) => {
+          setSecrets(s);
+          setSecretsUnread("");
+        },
+        (e: unknown) => setSecretsUnread(whyUnread(e)),
+      );
   };
   useEffect(() => {
     if (open && !policy) getPermissions().then(setPolicy).catch(() => {});
@@ -758,7 +790,7 @@ export function DeploySettings({
                   <span style={{ gridColumn: "1 / -1", color: "var(--faint)", fontStyle: "italic" }}>name the flow first</span>
                 )}
                 {secretNames.map((name) => (
-                  <SecretRow key={name} slug={slug} name={name} info={secrets.find((x) => x.name === name)} envNames={envNames} onChanged={reloadSecrets} readOnly={readOnly} />
+                  <SecretRow key={name} slug={slug} name={name} info={secrets.find((x) => x.name === name)} unread={secretsUnread} envNames={envNames} onChanged={reloadSecrets} readOnly={readOnly} />
                 ))}
               </>
             )}

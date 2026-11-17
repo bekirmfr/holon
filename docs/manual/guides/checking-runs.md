@@ -74,7 +74,7 @@ notes-api: 42 runs, runs 1 to 42
   chain: unbroken
   head: 3f9c2a7be01d is the newest run's
   events: 3, chain unbroken from the first
-  held by the chain alone, not by running each run again (a witnessed head holds it too): when it began, how long it took, when each step began, when each step ended, its run session, which load of the state it committed to, its commit's number, how many times it ran again before its commit landed (its tries), who called it (the server's account of its caller), the grant it ran under (by its hash), when each call began, when each call ended, the rest of each hash of a value computed from a secret, past what its mark shows (only the secret makes the value again), the commitments to its secrets (only a secret and its salt make one again)
+  held by the chain alone, not by running each run again (a witnessed head holds it too): when it began, how long it took, when each step began, when each step ended, its run session, which load of the state it committed to, its commit's number, how many times it ran again before its commit landed (its tries), which keys it claimed before calling out, how long each waited and was held, and whether another run overtook it, who called it (the server's account of its caller), the grant it ran under (by its hash), when each call began, when each call ended, the rest of each hash of a value computed from a secret, past what its mark shows (only the secret makes the value again), the commitments to its secrets (only a secret and its salt make one again)
   re-ran 42 runs: each produced what its log entry says, 3 of them given what the log kept for a step (named below)
   3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret, a token or a tainted value (not computed again):
     hmac_sha256 fed the secret stripe_key v3 #a1b2c3d4: 3 nodes in 3 runs: 4, 17, 30, as recorded
@@ -104,7 +104,11 @@ ok
    same steps in the same rounds (its timeline: what each step gave, or why it gave nothing), and
    the same points it waits at. Outbound calls are answered from the log, so nothing is sent:
    what each was answered is the log's say-so, which no run again makes, held by the chain alone
-   (and a witnessed head), and the report says so of the runs that called out, `ok` or not. A
+   (and a witnessed head), and the report says so of the runs that called out, `ok` or not.
+   Reads are answered from the log too, and each read the log records is one the run makes
+   again: the server records a read once, however often a run asks it, so one put in twice, or
+   one no step asks for, differs. A whole file it read is the file its line names, by its hash
+   and size, whether the line keeps its text or the export does. A
    run that failed is run again too: what it computed is checked, what its writes made of its
    state, and its status, unless that is its failure's. What a resumed run was delivered is held
    to what it waited for: an approval's decisions, taken in the order they came, are ones its
@@ -164,6 +168,7 @@ chain the lines after them again: without a witnessed head that passes, and with
 | `session` | the run session it ran in | the deployment's own count of each time it was started or restored, which no run sees | the chain, and so a witness |
 | `commit`'s `cell` and `n` | which load of the state it committed to, and its commit's number | they number commits as they landed beside other runs; they say which run's state it began after, so changed, `verify` may check less of its state, and says which runs it didn't | the chain, and so a witness |
 | `retries` | how many times it ran again before its commit landed | a try that was overtaken leaves nothing but the answers it got, which the last try is given | the chain, and so a witness |
+| `claims` | which keys it claimed before calling out, how long each waited and was held, and whether another run overtook it | they are what other runs did beside it, which no run again has | the chain, and so a witness |
 | `by` | who called it | the caller is the server's account: nothing in a run makes it | the chain, and so a witness; an approval's decisions are held to it (below) |
 | `grant` | the grant it ran under, by its hash | the export holds the units the runs ran, not the grants | the chain, and so a witness |
 
@@ -219,8 +224,10 @@ are checked in what it left. The report counts those.
 A run's line is numbered once it has committed, so two runs that commit close together can be
 numbered the other way round. Each entry also says which commit to the state its run began after,
 and its own (`commit`): the run before a run is the one whose commit it began after, wherever its
-line is, and a run no other commit landed beside is checked whole, however close its times. A log
-written before entries said so is taken by each line's place and times.
+line is. It began from the state that run left and from no other, unless a deploy, a restore or a
+stop put one in place between them (the events say which), however close their times: a line's
+times are its say-so. A run no other commit landed beside is checked whole. A log written before
+entries said so is taken by each line's place and times.
 
 A node fed a secret, a resume token or a tainted value (a caller's API key:
 [tainted keys](../language/reference.md#imports-and-settings)) gets a placeholder where the value
@@ -287,16 +294,24 @@ nodes that may compute from a secret; an outbound request built from one is logg
 parts reading `‹withheld: computed from a secret›`, and so are the run's own outputs, its
 response body and any other effect built from one. `verify` doesn't run such a run again, and
 says which step and which secret: "`text_contains` computed a true or false from the secret
-api_password: only a text of 6 characters or more is carried through a replay". To keep a run
-checked, keep facts like that out of the secret (a setting of its own beside it), and compare a
-secret whole with `secure_equals`.
+api_password: only a text of 6 characters or more, in a step the log keeps, is carried through a
+replay". To keep a run checked, keep facts like that out of the secret (a setting of its own
+beside it), and compare a secret whole with `secure_equals`.
 
-A step that gives a secret, or a value computed from one, larger than the log keeps of a step
-(16 KiB) makes a run like that too: on its mark the step is shorter, and the record can't show
-it as the run had it. Each entry says whether its record withholds (`withheld`), and `verify`
-holds the line to that both ways: one that says it marked every such value fails where a step
-that gives a secret's value, or one computed from it, has no outputs; one that says it withholds
-fails where it keeps a step that may compute from a secret, or where the run had none.
+A step that gives a secret, or a value computed from one, is kept when it fits what the log keeps
+of a step (16 KiB) as the record writes it, each such value as its mark: whether it is kept says
+nothing of how long the secret is. One larger than that even so makes a run like that too, the
+same for any secret, and so does one that carries a file the log keeps by its hash (past 4 KiB):
+the log doesn't keep the file twice. A step that only moves such a value (into a record, a list,
+a longer text, or JSON) is the exception: `verify` builds it again on the marks, so leaving it out
+costs nothing. Each entry says whether its record withholds (`withheld`), and `verify` holds the
+line to that both ways: one that says it marked every such value fails where a step `verify`
+can't build again on the marks (one that computes with a secret, or with a value computed from
+one) has no outputs, where a step that only moves one has none though it fits, or where it
+commits to no secret (without a commitment's salt there is no key to mark one with); one that
+says it withholds fails where it keeps a step that may compute from a secret, where the run had
+none, or where nothing in it made its record withhold (no step computed from a secret, and each
+that `verify` can't build again kept).
 
 A run's steps show which way a choice went, a choice by a secret included:
 `key.startsWith("live_") ? a : b` lists the steps of the branch it took. That is by design:
@@ -316,6 +331,21 @@ A part of a file a run read that holds a secret isn't kept in the log, and a fil
 one isn't shipped in the export: verify asks for the file, as it does for a folder that keeps
 hashes. Given it, such a run differs, since the log holds the secret's placeholder where the file
 holds its value.
+
+A secret is found in every spelling JSON gives it: one with a quote, a backslash or a newline in
+it (a password, a PEM block) reads another way each time it is written out as JSON, and its mark
+stands in place at each depth, the rest of the text kept. A text that holds it in a spelling no
+mark can be put into (another writer's: `\u0022` for a quote) is kept out whole, as
+`‹respelled:secret:name›`; a step fed one, or whose own record is one, is taken as recorded and
+named in the report, as a step fed any value the log doesn't hold. A write or a send that the server refuses for a secret, it
+refuses in any of these spellings.
+
+The log keeps sizes as they came. It keeps the size line of a reply (`content-length`) as the
+other service sent it, and a file's size beside its text. So where another service sends a
+secret back, or a file holds one, the log shows how long the secret is, to people allowed to
+read that run's details: the secret itself is marked, and the size is still the whole text's.
+Nothing of the secret but its length shows. If that matters for one of yours, keep it out of
+what the other service echoes, or limit who may read that flow's runs.
 
 A credential a call answers with is kept out the same way when the request held a secret (an
 OAuth token exchange): a value under `access_token`, `refresh_token`, `id_token`, `session_token`,
@@ -357,8 +387,9 @@ Each file is found by its hash, wherever it is under that folder.
 
 The chain shows a run changed after the fact, unless whoever changed it also rewrote every entry
 after it. Someone who holds the server's data can do that. A **witness** stops it: another server
-that is sent each new head as it is made, and keeps them. A head the witness holds can't be
-rewritten.
+that is sent the new heads every few seconds, and keeps them. A head the witness holds can't be
+rewritten; a run newer than the last head it took, or one queued while it can't be reached, isn't
+pinned yet.
 
 Start the server with a witness to send heads to:
 

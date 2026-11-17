@@ -3,15 +3,12 @@
 //! after the unit tests rather than beside them: it keeps every core busy a while on purpose, and
 //! the unit tests' control plane gives a request's body 0.6 s to arrive.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Longer than this, what a test waits for is taken never to come: a guard so a hang fails the
-/// test, never a measure of how long anything took (on a loaded machine anything takes longer).
-const EVENTUALLY: Duration = Duration::from_secs(60);
+mod common;
+use common::{answering, free_port, raw_http, raw_http_then, status, EVENTUALLY};
 
 const HOLON: &str = env!("CARGO_BIN_EXE_holon");
 
@@ -75,53 +72,6 @@ impl Drop for Server {
         let _ = std::fs::remove_dir_all(&self.home);
         let _ = std::fs::remove_file(self.home.with_extension("err"));
     }
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-}
-
-/// Waits [`EVENTUALLY`] for `holon serve` (`child`) to answer on `port`: an answer, not a
-/// connection taken. It takes connections once it has its port, before it has written the run
-/// file its user's commands sign in with (local.rs), and answers them after (main.rs: the run
-/// file published, then the server run), so a command sent once a connection is taken can find
-/// no run file, and is told the server isn't set up. If it ends first, fails at once with how it
-/// ended and what it said (its stderr, kept in `said`), rather than waiting out the guard with
-/// nothing to say.
-fn answering(child: &mut Child, port: u16, said: &std::path::Path) {
-    let by = Instant::now() + EVENTUALLY;
-    let words = || std::fs::read_to_string(said).unwrap_or_default();
-    while status(&raw_http(port, b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")) == 0 {
-        if let Some(status) = child.try_wait().unwrap() {
-            panic!("holon serve ended before it answered on {port} ({status}): {}", words());
-        }
-        assert!(Instant::now() < by, "holon serve answers on {port}: {}", words());
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// `request` sent to `port` and the whole answer read, or nothing if no connection is taken.
-fn raw_http(port: u16, request: &[u8]) -> String {
-    raw_http_then(port, request, || {})
-}
-
-/// [`raw_http`], calling `sent` once the request is written.
-fn raw_http_then(port: u16, request: &[u8], sent: impl FnOnce()) -> String {
-    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
-        sent();
-        return String::new();
-    };
-    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
-    let _ = stream.write_all(request);
-    sent();
-    let mut out = Vec::new();
-    let _ = stream.read_to_end(&mut out);
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// An answer's status, 0 when there is none.
-fn status(answered: &str) -> u16 {
-    answered.get(9..12).and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
 /// Guards: nothing a run computes holds up the data plane: with one request to a route that
@@ -252,16 +202,26 @@ route.get("/hi", () => "hi", {{ log: "unrecorded" }})
     const RECORDS: usize = 100_000;
     let body = format!("[{}]", vec![r#"{"a":0}"#; RECORDS].join(","));
     let parse = move |body: &str| raw_http(port, format!("POST /parse HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
-    // What its runs' log says, the last of them.
+    // What its runs' log says, the last of them, and each that failed whole: why a run failed is
+    // its steps', which the list of runs leaves out (run.steps, R55).
     let log = || {
-        let runs = Command::new(HOLON)
-            .args(["runs", "hold", "--last", "3", "--json", "--server", &server.port.to_string()])
-            .env("HOLON_HOME", &server.home)
-            .env_remove("HOLON_DATA")
-            .env_remove("HOLON_RUN_DIR")
-            .output()
-            .expect("holon runs runs");
-        format!("{}{}", String::from_utf8_lossy(&runs.stdout), String::from_utf8_lossy(&runs.stderr))
+        let holon = |args: &[&str]| {
+            let runs = Command::new(HOLON)
+                .args(args)
+                .args(["--server", &server.port.to_string()])
+                .env("HOLON_HOME", &server.home)
+                .env_remove("HOLON_DATA")
+                .env_remove("HOLON_RUN_DIR")
+                .output()
+                .expect("holon runs runs");
+            format!("{}{}", String::from_utf8_lossy(&runs.stdout), String::from_utf8_lossy(&runs.stderr))
+        };
+        let mut said = holon(&["runs", "hold", "--last", "3", "--json"]);
+        let heads: serde_json::Value = serde_json::from_str(&said).unwrap_or_default();
+        for entry in heads["entries"].as_array().into_iter().flatten().filter(|e| e["failed"] == true) {
+            said.push_str(&holon(&["runs", "hold", "--run", &entry["seq"].to_string()]));
+        }
+        said
     };
     let answered = parse(&body);
     assert!(status(&answered) == 200 && answered.ends_with(&RECORDS.to_string()), "alone, within the server's memory: {answered:.300} {:.2000}", log());

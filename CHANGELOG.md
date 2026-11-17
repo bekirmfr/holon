@@ -17,6 +17,26 @@
   computed from a secret that holds such a value under its key gets no hash in the run's record
   (a CVC's would be a thousand tries from it): the record withholds what the run computed from a
   secret, and `holon verify` says why it doesn't run it again. The **card-check** sample shows it.
+- **A long answer is cut after its secrets are marked.** A run's line keeps 64 KiB of what a
+  route answered. It was cut there as the run had it, and marked afterwards: a secret lying
+  across the cut left its first part in the line, since the whole value was no longer there to
+  find. That took an answer of more than 64 KiB with a secret at exactly that place (a route
+  that echoes what it is sent, to a caller who sends the secret). Now the answer is marked whole
+  and cut as the line writes it, never inside a mark, and `holon verify` cuts what a run answers
+  again the same way and compares the two whole. A line written before, whose answer was cut,
+  reads as changed to this verify: its last characters may differ.
+- **A secret with a quote, a backslash or a newline in it is kept out in every spelling JSON
+  gives it.** Written out as JSON, such a value is spelled another way, and again another the
+  next time. A run's record found a secret as it is and written out once; the guards that refuse
+  a write of a secret, or a send to a host its approval doesn't show, found it only as it is. So
+  a password with a quote in it, put into a JSON text and written to a collection, reached the
+  store; put into a stringified payload inside a JSON body, it stood in the run's record in the
+  clear, and in the record of every later run that read it back. Now the record marks a secret
+  at each depth it is written out, the guards find it however deep and however spelled
+  (`\u0022` for a quote too), and a text that holds one where no mark can be put is kept out
+  whole, as `‹respelled:secret:name›`. A secret with none of those characters, as most tokens and keys
+  are, was never affected. If a secret of yours has one and your flow wrote it into JSON, treat
+  it as stored where the flow wrote it, and rotate it.
 - **A run that computed with a secret is checked offline, and its record marks what it computed.**
   Everything a run computed from a secret was left out of its record whole, by the graph alone
   (the step's outputs, the header it was sent in, the answer), and `holon verify` never ran such a

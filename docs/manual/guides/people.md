@@ -23,7 +23,10 @@ Each is a **principal** of one of three kinds, each name unique across them:
 A **viewer** reads; an **editor** also saves, deploys and approves, runs, pauses, stops and
 deletes; an **admin** also sets secrets, binds resources and manages people. An agent's role,
 **agent**, reads, proposes flows and calls them, and never approves, starts, stops or deletes
-([what each may do](../reference/server.md#accounts-and-roles)). That is a role on the whole
+([what each may do](../reference/server.md#accounts-and-roles)). Nor does it read a run's steps
+and values (`run.steps`: a run's timeline, request and answer, what it read and sent), only the
+list of runs: a person gives it that on a flow by binding the agent viewer there
+([Reading a run's steps](agents.md#reading-a-runs-steps)). That is a role on the whole
 host; a role can also hold on one flow only, and an admin can define roles of their own
 ([below](#a-role-on-one-flow-and-roles-of-your-own)).
 
@@ -40,8 +43,8 @@ holon: no accounts yet. Open the editor and set up the first admin with this cod
 ```
 
 Open the editor, enter the code, your name and a password: you are its admin. Until a person
-does, nobody signs in, and the code can't be guessed: five wrong in a row refuse setting up for a
-minute.
+does, nobody signs in, and the code can't be guessed at speed: five wrong in a row from one address
+refuse setting up from there for a minute.
 
 Commands you run on the server's machine (`holon deploy`, `holon people`, `holon decide`…) need
 no sign-in: they reach it through its run file, while that server runs, as you, the person who set
@@ -50,9 +53,12 @@ you sign in: a step bound to you, you take with `holon decide` or in the editor,
 start, or a version you deploy, from either is yours. The activity log says which entries came
 through the run file (`via: local:<your user>`). Before anyone sets the server up they act as
 `local:<your user>`, an admin. Someone else running the machine now? `holon access local --as
-NAME` ties the run file to them, as a new version of the access document; removing your account
+NAME` ties the run file to them, as a new version of the access document (waiting for people
+where an access change that gives more does, unless you run it through the run file); removing your account
 unties it, and while it is disabled, or tied to no one, the run file is the machine's admin and
-decides no approval.
+decides no approval. Whoever can read the run file is that admin, whatever the grants say: [What
+reaches a server](../reference/surfaces.md) lists it first, with every command and agent tool and
+what guards each.
 
 ## A teammate
 
@@ -66,7 +72,8 @@ holon people add ana --person --role editor
 
 which prints the link. Later, on the same page (or with `holon people set` and `reset`): change
 their role, **reset** their password (a new link; their sign-ins end), **disable** them (they are
-signed out, and can't sign in until enabled), or remove them. The server never lets the last
+signed out, and can't sign in until enabled; the tokens of the agents and services they own are
+refused until then too), or remove them. The server never lets the last
 admin go. While access changes wait for people, someone who decides runs or holds what is an
 admin's is reset as [No one takes over someone](#no-one-takes-over-someone) says.
 
@@ -159,7 +166,11 @@ Who may act on a flow is part of what its deploy approves: a version that adds a
 the host's policy never grants one by itself. Bob deploys a new flow tagged `payments`, and a new
 version of one, but neither tags a flow he holds nothing on (taking it over) nor takes the tag
 off one (taking it out of his own reach, and his team's): a host admin does those. An agent's
-version that adds a tag waits as a proposal, as any change it can't approve does.
+version that adds a tag waits as a proposal, as any change it can't approve does. While access
+changes wait for people (`--changes`, [below](#access-changes-that-wait-for-people)), a version
+whose new tag would let someone decide the flow's runs, or do an admin's part on it, that they
+can't now isn't deployed: the server names them, and they are given it on the flow first, which
+waits for those people, not for whoever approves the deploy.
 
 A role bound to a **group** holds for each member whose kind it allows. **People and access**
 offers roles of your own where it offers a role, and lists beside each principal what else holds
@@ -173,11 +184,12 @@ No one gives more than they hold: you define a role, bind it, or add someone to 
 only holding all it allows there yourself. Nor do you take more than you hold: you change or
 unbind a role, or take someone out of a group bound it, only holding what it allows there. And
 you change someone (their email, role, owner, password, tokens, whether they are enabled or
-there) only holding all they hold, since you could then act as them: a role that manages people
-doesn't make its holder an admin. Setting the identity provider says who everyone is, so it takes
-holding what each person holds: an admin sets it. Whatever an agent is bound, it never approves, starts,
-stops, deletes or restores, sets a secret, decides a person's step of an approval, or manages
-people; a service never decides an approval. A binding's **unbind**, which asks why, or `holon
+there) only holding all they hold, since you could then act as them, and all that each agent or
+service they own holds, whose tokens they make: a role that manages people doesn't make its
+holder an admin, nor take over a stronger agent through its owner. Setting the identity provider
+says who everyone is, so it takes holding what each person holds: an admin sets it. Whatever an
+agent is bound, it never approves, starts, stops, deletes or restores, sets a secret, decides a
+person's step of an approval, or manages people; a service never decides an approval. A binding's **unbind**, which asks why, or `holon
 unbind ID` takes it away, and an expired one holds nothing. A binding, a role or a group change
 refused says why in the server's words, in the editor as on the command line.
 
@@ -190,10 +202,13 @@ holds what reaches the pages of those it changes within seconds, without signing
 ## Who decides an approval
 
 An approval's steps say which role takes each (`steps: [{ role: "reviewer" }, { role: "approver"
-}]`), and each principal takes one step, once, never of a run they started but a step that says
-`starter: true` (`{ role: "editor", starter: true }`: whoever asked for a draft approves it as it
-reads), and an agent never of one it started. The host says four things more, for every flow,
-kept with the roles and bindings:
+}]`), and each principal takes one step, once, and each party one step: an agent or a service is
+one party with whoever owns it or made a token of it, so whoever owns the agent that classifies a
+payout doesn't also approve it. Neither whoever started a run nor their party takes a step of it
+but one that says `starter: true` (`{ role: "editor", starter: true }`: whoever asked for a draft
+approves it as it reads, and their own agent may draft it), which the starter's party fills, one
+principal each; an agent never takes a step of a run it started. The host says four things more,
+for every flow, kept with the roles and bindings:
 
 ```sh
 holon access approvals --exclude-deployer on --why "who ships a payout doesn't sign it off"
@@ -202,16 +217,19 @@ holon access approvals --starter off --why "whoever asks for something never sig
 holon access approvals --changes 2 --why "two more sign off whoever is given more"
 ```
 
-- `--exclude-deployer on`: whoever deployed the version a run is on decides none of its
-  approvals, whatever they hold. Off by default.
+- `--exclude-deployer on`: whoever deployed the version a run is on, and their party, decide
+  none of its approvals, whatever they hold. Off by default.
 - `--agents off`: no agent decides an approval. A flow whose approval has a step for an agent
   doesn't deploy, and an agent takes no step of a run already waiting. On by default.
-- `--starter off`: whoever started a run takes no step of it, whatever the step says. A flow whose
-  approval has a step that lets them (`starter: true`) doesn't deploy, and a run already waiting
-  goes by it at once. On by default: a person who started a run may take a step that says so.
+- `--starter off`: whoever started a run, and their party, take no step of it, whatever the step
+  says. A flow whose approval has a step that lets them (`starter: true`) doesn't deploy, and a run
+  already waiting goes by it at once. On by default: whoever started a run, or one of their party, may take a
+  step that says so.
 - `--changes N`: an access change that gives someone more waits until N people other than its
   author approve it, 1 to 5 ([below](#access-changes-that-wait-for-people)). Off by default: a
-  change applies at once.
+  change applies at once. It is raised only while N people besides you hold `people.assign` on the
+  host: give it to them first, or no change could be approved, loosening it again among them, but
+  through this machine's run file.
 
 Each change is a version, with who made it and why; `holon access approvals` alone shows them.
 
@@ -223,7 +241,9 @@ more when it lets someone do what they couldn't, of `run.decide` or of what is a
 adding someone to a group bound to one, changing a role so that it holds it, setting someone's
 role on the host to one; and when it loosens these settings (`--exclude-deployer off`,
 `--agents on`, `--starter on`, `--changes` lower or off). A binding that lasts longer than the
-one it outlives gives more too.
+one it outlives gives more too. Whatever waits or not, no one gives what they hold for less long:
+an admin `--until 7d` binds no one, gives no role and adds no one to a group past those seven
+days.
 
 The server answers such a change 202 with the proposal: what its version will say, what it gives
 and to whom, and how many must approve it. N people other than its author approve it, each a
@@ -231,7 +251,8 @@ person holding `people.assign` on the host and what the change gives, where it g
 hold less don't give more together. The last approval makes it, as its author asked it, by them,
 its why saying who approved it; it is read again first, and one that no longer applies (its role
 removed since, the last admin) is stale, saying why, and its author proposes it again. Anyone who
-may approve it declines it with a reason, and its author withdraws it so. Proposals are kept
+may approve it declines it with a reason (someone who may not approve it may not decline it
+either), and its author withdraws it so. Proposals are kept
 beside the access document (`access.proposals.json`), never as versions of it: a proposal changes
 no one's access. The routes are the server's ([The server](../reference/server.md#accounts-and-roles)).
 
@@ -262,10 +283,10 @@ as a viewer and then give them the role, which waits.
 ## No one takes over someone
 
 While `--changes` is on, no one makes a way in to someone else who decides runs or holds anything
-of an admin's (an editor, an admin, or a role of yours that does): their password **reset**, their
-**email** set (a provider matches people by it), a **token** made of their agent or service by
-anyone but its owner, another **owner** given to it, or the **identity provider** set, which says
-who everyone is. Whoever did it could sign in as them, and count as a second person wherever
+of an admin's (an editor, an admin, or a role of yours that does), or owns an agent or a service
+that does, whose tokens they make: their password **reset**, their **email** set (a provider
+matches people by it), a **token** made of their agent or service by anyone but its owner,
+another **owner** given to it, or the **identity provider** set, which says who everyone is. Whoever did it could sign in as them, and count as a second person wherever
 people are counted. The server refuses it (403), saying so; with the setting off, an admin does
 it as before.
 
@@ -284,8 +305,9 @@ holon people set bob --role admin      # waits for another admin to approve it
 
 A proposal says whom it gives more and who could act as them: "ada made bob's reset link".
 Whoever made someone's way in (their invite or reset link, their email; an agent's or a
-service's owner, or one who made a token of it) doesn't approve giving them more, whoever
-proposed it, and a way in made to one of them while it waits makes it stale. The People page
+service's owner, whoever made its owner's way in, or one who made a token of it) doesn't approve
+giving them more, whoever proposed it, and a way in made to one of them while it waits makes it
+stale. The People page
 says, for each person, who made their way in.
 
 Each decision is kept with what let it: the binding its principal took the step through, by its

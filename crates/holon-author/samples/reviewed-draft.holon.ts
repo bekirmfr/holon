@@ -1,14 +1,16 @@
-// Reviewed draft: an agent drafts what you ask for, and you approve it as it reads.
+// Reviewed draft: your agent drafts what you ask for, and you approve it as it reads.
 //
 // You ask for a piece of writing by running the draft action yourself (the editor's run, or holon
 // action), with its title and a brief. The run waits at an approval in two steps, a day at most:
 // an agent bound to drafter takes the first, its draft the note the run is given, then a person
-// bound to proofreader approves it as it reads. That step says starter: true, so you, who started
-// the run, may take it: an output review, where the one who asked checks what was made. Left out,
-// as in a payout, whoever started a run takes no step of it, and an agent that started one takes
-// none whatever a step says. Each step is a different principal; one decline, with a reason,
-// ends it. Approved, the run writes the draft to the folder drafts as <title>.md; declined, or
-// undecided in time, nothing is written.
+// bound to proofreader approves it as it reads. Both steps say starter: true, so whoever started
+// the run, or one acting for them, may take them: an output review, where the one who asked checks
+// what their own agent made. You own quill and make its token, so you and quill are one party,
+// and a party takes one step of an approval but for steps like these, which the starter's party
+// fills, one principal each. Left out, as in a payout, whoever started a run takes no step of it,
+// nor does their agent; an agent that started one takes none whatever a step says. One decline,
+// with a reason, ends it. Approved, the run writes the draft to the folder drafts as <title>.md;
+// declined, or undecided in time, nothing is written.
 //
 // A host may let no step take whoever started a run (holon access approvals --starter off): this
 // flow then doesn't deploy, saying why, and a run already waiting goes by it at once.
@@ -22,8 +24,9 @@
 //   holon people token quill                                          its token, printed once
 //   holon bind drafter --to quill --flow reviewed-draft
 //   holon bind proofreader --to <you> --flow reviewed-draft
-// Its review then says who decides it: an agent holding drafter, then a person holding
-// proofreader, who may be whoever started the run.
+// Its review then says who decides it: an agent holding drafter, who may be whoever started the
+// run, or acting for them, then a person holding proofreader, who may be whoever started the run,
+// or acting for them.
 //
 // Try it: deploy it, then
 //   holon action reviewed-draft draft --input '{"title":"launch","brief":"two lines on Monday"}'
@@ -31,21 +34,24 @@
 // quill drafts it, with its token in HOLON_TOKEN, the draft as its note:
 //   holon decide reviewed-draft <run> shape --approve --note '{"text":"We launch on Monday."}'
 // then you read the draft (the editor's Approvals: ✓ drafter (quill) → ◻ proofreader (whoever
-// started it may take it), quill's note beside it) and approve it, with HOLON_TOKEN unset:
+// started it, or one acting for them, may take it), quill's note beside it) and approve it, with
+// HOLON_TOKEN unset:
 //   holon decide reviewed-draft <run> shape --approve
 // ~/holon-drafts/launch.md then holds the draft. Started by quill instead (holon action with its
-// token), the run waits for someone else: an agent never decides a run it started.
+// token), it waits for another drafter: an agent never decides a run it started. Started by
+// someone else, quill may draft it, and they, or a proofreader of another party than yours, read
+// it: you and quill take one step of a run another party started.
 import { action, approval, flow } from "holon"
 import drafts from "folder:drafts"
 
 flow("reviewed-draft")
 
-// Asks for a draft: the run waits for the drafter's draft, then for a proofreader, who may be
-// whoever asked for it.
+// Asks for a draft: the run waits for the drafter's draft, then for a proofreader; each may be
+// whoever asked for it, or acting for them, as their own agent.
 export const draft = action(async (asked) => {
   const decision = await approval("shape", {
     steps: [
-      { role: "drafter", kind: "agent" },
+      { role: "drafter", kind: "agent", starter: true },
       { role: "proofreader", starter: true },
     ],
     expires: "1d",

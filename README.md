@@ -307,7 +307,7 @@ where there's no OS key store, `run/` a file per running server, `tokens.json` a
 | `--data-host IP` | where deployed flows' own servers listen (default `127.0.0.1`) |
 | `--allow-host HOST` | a host name it answers to besides localhost, to reach it from other machines |
 | `--keep-runs N` | runs each deployment's log keeps (default 500) |
-| `--export-heads URL` | send each run's head to a witness (only hashes leave the server) |
+| `--export-heads URL` | send each run's head to a witness (no run data leaves the server: each head goes with its deployment's name, run number and time) |
 | `--policy PATH` | the policy: what may be granted, and what needs a person |
 
 The server leaves TLS to what stands in front of it: to reach it from other machines, your ingress

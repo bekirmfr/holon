@@ -99,7 +99,7 @@ function versionOptions(v) {
 function runOptions(run, currentUnit) {
   return {
     code: !run.unit ? "the code it ran on isn't recorded" : run.unit === currentUnit ? "it ran on the code deployed now" : null,
-    state: run.state_after ? null : "it left no state to restore: it didn't commit, or it ran before Holon kept the state runs leave",
+    state: run.left_state ? null : "it left no state to restore: it didn't commit, or it ran before Holon kept the state runs leave",
   };
 }
 
@@ -146,7 +146,7 @@ function restoredState(event) {
 function stateBefore(before) {
   for (const x of before) {
     if (x.kind === "run") {
-      if (x.run.state_after) return { point: { run: x.run.seq }, why: null };
+      if (x.run.left_state) return { point: { run: x.run.seq }, why: null };
       continue;
     }
     if (x.kind !== "event") continue;

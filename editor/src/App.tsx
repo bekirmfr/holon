@@ -39,7 +39,7 @@ import {
 } from "./holon";
 import { changesToDecide } from "./access";
 import { toDecide, yourSteps } from "./decisions";
-import { changeDeployment, deleteDeployment, forgetKeys, type Forgotten, getDeployedDocument, getFlow, getManifest, getPrefs, replayVersion, setPrefs, signOutHere, type FlowDocument, type FlowRecord } from "./server";
+import { changeDeployment, deleteDeployment, forgetKeys, type Forgotten, getDeployedDocument, getFlow, getManifest, getPrefs, replayVersion, setPrefs, type FlowDocument, type FlowRecord } from "./server";
 import { mayDiff } from "./mayItems";
 import type { MayHere } from "./mayHere";
 import { MayStrip } from "./MayStrip";
@@ -93,7 +93,8 @@ import { ReviewPage } from "./ReviewPage";
 import { useApprovals } from "./useApprovals";
 import { useCan, useHostPages, type Answer } from "./can";
 import { LibraryPage } from "./LibraryPage";
-import { format, nothingToReopen, parentOf, same, type Route } from "./routes";
+import { format, nothingAt, nothingToReopen, parentOf, same, type Route } from "./routes";
+import { PageBoundary } from "./ui/Boundary";
 import { reopening } from "./reopen";
 import { KeysDialog, pick, useKeys } from "./ui/Keys";
 import { usePaletteRuns } from "./usePaletteRuns";
@@ -106,7 +107,7 @@ import { useDeployments } from "./useDeployments";
 import { buildSample, samples, type Sample } from "./samples";
 import { blankTab, freshTab, metaSetter, savedKeyOf, sourceToSave, syncKeyOf, tabFromDocument as tabFromDoc, tabKind, type FlowMeta, type Mode, type TabState } from "./tabs";
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
-import { AuthGate, type Me } from "./AuthGate";
+import { AuthGate, useSignOut, type Me } from "./AuthGate";
 import { Shell, type Waiting } from "./ui/Shell";
 import { PolicyPage, ResourcesPage } from "./HostPages";
 import { OwnedPage, PeoplePage } from "./PeoplePages";
@@ -141,6 +142,7 @@ function Canvas({
   page,
   setPage,
   route,
+  routeFromReplace,
   navigate,
   pendingNew,
   docs,
@@ -172,11 +174,15 @@ function Canvas({
   setPage: (p: AppPage) => void;
   /** Where the address says the editor is (routes.ts), and going somewhere. */
   route: Route;
+  /** Whether a replace wrote `route` (useHashRoute.ts): the editor saying where it was, not a
+   *  place asked for. */
+  routeFromReplace: boolean;
   navigate: Navigate;
   pendingNew: { nonce: number } | null;
   docs: Map<string, string>;
 }) {
   const dialog = useDialog();
+  const leave = useSignOut();
   const toast = useToast();
   const dark = useDark();
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
@@ -256,6 +262,7 @@ function Canvas({
   const { name: flowName, settings, savedKey, notice, viewing } = flow;
   const setFlowName = useMemo(() => metaSetter(setFlow, "name"), []);
   const setSavedOnServer = useMemo(() => metaSetter(setFlow, "saved"), []);
+  const setSavedAt = useMemo(() => metaSetter(setFlow, "savedAt"), []);
   const setSettings = useMemo(() => metaSetter(setFlow, "settings"), []);
   const setSavedKey = useMemo(() => metaSetter(setFlow, "savedKey"), []);
   const setNotice = useMemo(() => metaSetter(setFlow, "notice"), []);
@@ -349,7 +356,7 @@ function Canvas({
     choose: dialog.choose,
     save: () => saveNow.current(),
   });
-  const tabFromDocument = useCallback((name: string | null, doc: FlowDocument, saved: boolean) => tabFromDoc(name, doc, saved, ev), [ev]);
+  const tabFromDocument = useCallback((name: string | null, doc: FlowDocument, saved: boolean, savedAt: number | null = null) => tabFromDoc(name, doc, saved, ev, savedAt), [ev]);
   // What the work area shows: the page asked for; in the editor, its Home tab when asked for or
   // with no flow open.
   const shown: AppPage = page === "canvas" && (route.kind === "editor-home" || tabIds.length === 0) ? "editor-home" : page;
@@ -376,7 +383,7 @@ function Canvas({
       if (current?.dirty && !(await dialog.confirm(`Discard your unsaved changes to "${rec.name}" and reload the saved copy?`, "Reload saved"))) {
         return false;
       }
-      showTab(open, tabFromDocument(rec.name, rec.document, true));
+      showTab(open, tabFromDocument(rec.name, rec.document, true, rec.saved_at_epoch_seconds));
       return true;
     },
     [tabOf, switchTab, activeId, captureTab, dialog, showTab, tabFromDocument],
@@ -423,6 +430,8 @@ function Canvas({
     setEdges,
     setSavedKey,
     setSavedOnServer,
+    savedAt: flow.savedAt,
+    setSavedAt,
     notify: toast,
     setError: setDeployError,
   });
@@ -658,7 +667,7 @@ function Canvas({
   // in-browser wasm workspace. Deploying talks to holon-server, over plain HTTP, localhost-only.
   const { deployments, listError, refresh: refreshDeployments } = useDeployments(page);
   // What waits for a person (approvals.ts): Approvals lists it, the nav counts it.
-  const approvals = useApprovals(deployments, { shown: page === "approvals" || page === "home" || page === "flow", asks: page === "approvals" });
+  const approvals = useApprovals(deployments, { shown: page === "approvals" || page === "home" || page === "flow", asks: page === "approvals", listError });
   const { onWaiting } = start;
   // With the approvals among the runs waiting that are this person's to decide (decisions.ts).
   // And the access changes waiting for people that are theirs to decide (access.ts), when they
@@ -693,6 +702,10 @@ function Canvas({
       // Deployed, it is tried next.
       bottom.open("try");
       toast(`Deployed ${name}.`, "ok", { label: "Open the flow", to: { kind: "flow", slug: name, tab: "status" } });
+    },
+    onProposedSave: (at) => {
+      setSavedOnServer(true);
+      setSavedAt(at);
     },
   });
   // What the editor's buttons need (can.tsx): saving and deploying, of any flow as their routes
@@ -755,7 +768,9 @@ function Canvas({
   // link, Back, a reload), the editor goes there: to its tab, else its saved copy, else its
   // deployment. Changed here (a tab picked, view mode, a run), the address follows, replaced
   // rather than added to, so Back leaves the editor rather than stepping through its clicks.
-  // While a place asked for is being reached, the address waits for it.
+  // While a place asked for is being reached, the address waits for it. An address written so is
+  // never gone to (useHashRoute.ts): `here` may have moved on before it rendered (back in edit
+  // while it said a run of view mode), and going there would undo that.
   const here = useMemo<Extract<Route, { kind: "editor" }>>(
     () => ({ kind: "editor", slug: flow.viewing ?? flow.name, view: flow.viewing !== null, seq: flow.viewing !== null ? (flow.selectedRun?.seq ?? null) : null }),
     [flow.viewing, flow.name, flow.selectedRun],
@@ -766,7 +781,7 @@ function Canvas({
   const [reached, setReached] = useState(0);
   const routeKey = format(route);
   useEffect(() => {
-    if (route.kind !== "editor" || route.slug === null || same(route, hereNow.current)) return;
+    if (route.kind !== "editor" || route.slug === null || routeFromReplace || same(route, hereNow.current)) return;
     const want = route;
     const slug = want.slug!;
     const at = hereNow.current;
@@ -958,7 +973,7 @@ function Canvas({
     out.push({ label: "Interface: Terminal", kind: "look", run: () => start.onPrefs({ ...start.prefs, ui: "terminal" }) });
     out.push({ label: "Keys", kind: "help", run: start.showKeys });
     out.push({ label: "Check the run log", kind: "action", run: () => void checkRunLog(toast) });
-    out.push({ label: "Sign out", kind: "action", run: () => void signOutHere() });
+    out.push({ label: "Sign out", kind: "action", run: () => void leave() });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finding, editing, flowName, deployments, savedFlows, me.role, me.kind, start.prefs, approvals.queue, paletteRuns, pages]);
@@ -1402,6 +1417,7 @@ function Canvas({
         </span>
       </div>
       <div className={atStatements ? "hl-canvas__flow hl-canvas__flow--statements" : "hl-canvas__flow"}>
+        <PageBoundary what="The canvas" resetKey={String(activeId)}>
         <CanvasHead
           level={canvasLevel.level}
           onLevel={canvasLevel.setLevel}
@@ -1491,8 +1507,9 @@ function Canvas({
           </div>
         )}
         {compositeOverlay.render(flowName ?? "untitled")}
+        </PageBoundary>
       </div>
-      {textPane.open && <TextPane key={activeId} {...textPane.pane} onInspect={setWord} onCaret={canvasLevel.setCaret} />}
+      {textPane.open &&<TextPane key={activeId} {...textPane.pane} onInspect={setWord} onCaret={canvasLevel.setCaret} />}
       <Inspector
         node={inspected && secretMarks[inspected.id] ? { ...inspected, data: { ...inspected.data, secretSinks: secretMarks[inspected.id] } } : inspected}
         unit={inspectedUnit}
@@ -1602,6 +1619,7 @@ function Canvas({
           bottom-left panel on the canvas itself; it moved here wholesale — one home, not two. */}
       {shown !== "canvas" && (
         <div className="hl-pagebox">
+        <PageBoundary what="This page" resetKey={format(route)}>
           {shown === "editor-home" && (
             <EditorHome
               flows={homeFlows}
@@ -1640,6 +1658,7 @@ function Canvas({
               deployments={deployments}
               runs={approvals.runs}
               access={approvals.access}
+              unread={approvals.unread}
               me={me}
               navigate={navigate}
               textOf={(slug, doc) => documentText(slug, doc)}
@@ -1717,7 +1736,7 @@ function Canvas({
               onNotes={(notes) => start.onPrefs({ ...start.prefs, notes })}
             />
           )}
-          {shown === "home" && <OverviewPage name={me.name} admin={pages.host} deployments={deployments} approvals={approvals.approvals} runs={approvals.runs} navigate={navigate} onNew={start.onNew} />}
+          {shown === "home" && <OverviewPage name={me.name} admin={pages.host} deployments={deployments} approvals={approvals.approvals} runs={approvals.runs} unread={approvals.unread} navigate={navigate} onNew={start.onNew} />}
           {shown === "flow" && (route.kind === "flow" || route.kind === "run") && (
             <FlowPage
               slug={route.slug}
@@ -1754,6 +1773,7 @@ function Canvas({
               }}
             />
           )}
+        </PageBoundary>
         </div>
       )}
     </div>
@@ -1768,7 +1788,7 @@ function Canvas({
 function Editor({ me }: { me: Me }) {
   // What the work area shows: a page, or the canvas (the active flow's tab), as the address
   // says (routes.ts). A place shown by another page's is written as that page's.
-  const { route, navigate, arrivedAt } = useHashRoute();
+  const { route, navigate, arrivedAt, fromReplace } = useHashRoute();
   const page = pageOf(route);
   const setPage = useCallback((p: AppPage) => navigate(routeOfPage(p)), [navigate]);
   const toast = useToast();
@@ -1779,7 +1799,7 @@ function Editor({ me }: { me: Me }) {
   useEffect(() => {
     const as = shownAt(route);
     if (as === null) return;
-    if (route.kind === "notfound") toast(`Nothing is at #${route.hash}.`, "bad");
+    if (route.kind === "notfound") toast(nothingAt(route.hash), "bad");
     navigate(as, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeKey]);
@@ -1915,6 +1935,7 @@ function Editor({ me }: { me: Me }) {
                 page={page}
                 setPage={setPage}
                 route={route}
+                routeFromReplace={fromReplace}
                 navigate={navigate}
                 pendingNew={pendingNew}
                 docs={docs}

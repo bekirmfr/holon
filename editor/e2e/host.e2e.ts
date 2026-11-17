@@ -63,7 +63,8 @@ test("people and access says how an agent connects; policy says what it holds of
   await gotoPage(page, "policy");
   await expect(page.getByRole("heading", { level: 1, name: "Policy" })).toBeVisible();
   await expect(page.getByLabel("limits")).toBeVisible();
-  await expect(page.getByText("agents may propose: a version of theirs that needs a person waits in Approvals")).toBeVisible();
+  await expect(page.getByText("agents may propose: each version of theirs waits in Approvals")).toBeVisible();
+  await expect(page.getByText("a flow's settings may take their versions that ask for nothing more at once")).toBeVisible();
   await expect(page.locator('[data-section="held-off"]')).toBeVisible();
   // What each limit means, beside it; and the file as the server read it (server.mjs writes one).
   await expect(page.getByLabel("limits")).toContainText("The calls out one run may make.");

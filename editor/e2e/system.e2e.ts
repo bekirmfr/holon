@@ -83,10 +83,13 @@ test("approved-payout waits for its steps holding nothing, an agent's token clas
       .filter((e) => e.kind === "resume" && e.run_id === run && e.events?.payout !== undefined)
       .map((e) => plain(e.events!.payout));
 
-  // Who takes each step, as the sample's comment sets it up: its three roles, an agent of this
-  // run's own with a token, a person the admin invites, who joins by the link's token, and the
-  // admin, who set the server up; each bound to one role on the tag payments, which the sample is
-  // deployed with (the admin once: a retry finds it bound).
+  // Who takes each step: its three roles, an agent of this run's own with a token, a person the
+  // admin invites, who joins by the link's token, and the admin, who set the server up; each bound
+  // to one role on the tag payments, which the sample is deployed with (the admin once: a retry
+  // finds it bound). The agent is another person's, who makes its token: an agent is one party
+  // with whoever owns it or made its token, and a party takes one step of an approval, so the
+  // admin, approving here through the run file, doesn't own it (the sample's comment has a third
+  // person approve, as the admin there owns the agent).
   for (const [role, kind] of [["classifier", "agent"], ["reviewer", "person"], ["approver", "person"]]) {
     const defined = await control(adminToken, `/roles/${role}`, { allows: ["run.decide"], kinds: [kind], why: "e2e: approved-payout" }, "PUT");
     expect(defined.ok, await defined.clone().text()).toBe(true);
@@ -97,11 +100,6 @@ test("approved-payout waits for its steps holding nothing, an agent's token clas
     expect(bound.ok, await bound.clone().text()).toBe(true);
     return ((await bound.json()) as { binding: { id: number } }).binding.id;
   };
-  const scout = `e2e-scout-${n}`;
-  expect((await control(adminToken, "/people", { name: scout, kind: "agent", role: "agent" })).ok).toBe(true);
-  const made = await control(adminToken, `/people/${scout}/tokens`, { label: "e2e" });
-  expect(made.ok, await made.clone().text()).toBe(true);
-  const scoutToken = ((await made.json()) as { token: string }).token;
   const person = async (name: string) => {
     const invited = await control(adminToken, "/people", { name, kind: "person", role: "viewer" });
     expect(invited.ok, await invited.clone().text()).toBe(true);
@@ -114,8 +112,14 @@ test("approved-payout waits for its steps holding nothing, an agent's token clas
     expect(joined.ok).toBe(true);
     return ((await joined.json()) as { token: string }).token;
   };
-  const [reviewer, approver] = [`e2e-reviewer-${n}`, ADMIN.name];
+  const [reviewer, approver, keeper] = [`e2e-reviewer-${n}`, ADMIN.name, `e2e-keeper-${n}`];
   const reviewerToken = await person(reviewer);
+  const keeperToken = await person(keeper);
+  const scout = `e2e-scout-${n}`;
+  expect((await control(adminToken, "/people", { name: scout, kind: "agent", role: "agent", owner: keeper })).ok).toBe(true);
+  const made = await control(keeperToken, `/people/${scout}/tokens`, { label: "e2e" });
+  expect(made.ok, await made.clone().text()).toBe(true);
+  const scoutToken = ((await made.json()) as { token: string }).token;
   const bound = ((await (await control(adminToken, `/bindings?who=${approver}&role=approver`)).json()) as { bindings: { id: number }[] }).bindings;
   const through = { [scout]: await bind(scout, "classifier"), [reviewer]: await bind(reviewer, "reviewer"), [approver]: bound[0]?.id ?? (await bind(approver, "approver")) };
 
