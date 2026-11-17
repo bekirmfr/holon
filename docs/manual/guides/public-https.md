@@ -141,8 +141,10 @@ An agent or a service uses its own token instead (`HOLON_TOKEN`, or `holon mcp s
 https://holon.example.com` for an agent's host). The command line sends a password or a token
 over https only, never plain http to another machine.
 
-To reach the server from your network without a proxy, `--at 0.0.0.0:7420` listens on every
-interface, still unencrypted (the server warns so): only on a network you trust. The command line
+To reach the server from your network without a proxy, `--at 0.0.0.0:7420 --allow-host NAME`
+listens on every interface and answers to the name others use for it (without `--allow-host`, a
+request naming the machine's address is answered 403: the server answers only to localhost and
+the names it is given), still unencrypted (the server warns so): only on a network you trust. The command line
 on another machine then reaches it through an SSH tunnel (`ssh -L 7420:localhost:7420 HOST`, then
 `--server 7420`), since it sends no password or token over plain http.
 

@@ -206,8 +206,8 @@ pub(crate) fn derived_hash(key: &[u8], run: &str, value: &str) -> String {
 }
 
 /// What the run `run` computed from its secrets, as its record marks it: each text of
-/// [`MIN_SECRET_LEN`] characters or more that a leaf making something of a secret gave
-/// (`SecretFed::makes`, read off `timeline`), with its hash under `key`.
+/// [`MIN_SECRET_LEN`] characters or more that a leaf computing something of its own from a
+/// secret gave (`SecretFed::computes`, read off `timeline`), with its hash under `key`.
 ///
 /// And whether that is all of it (`whole`): every node that may compute from a secret was
 /// followed and observed (`kept`: the run kept a timeline; none deeper than it records, none
@@ -219,7 +219,7 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
     let Some(key) = key.filter(|_| !fed.is_empty()) else { return Default::default() };
     let mut whole = kept && fed.followed_to(crate::recorder::Timer::DEPTH);
     let mut made: BTreeSet<&str> = BTreeSet::new();
-    for node in timeline.iter().filter(|n| fed.makes(&n.path)) {
+    for node in timeline.iter().filter(|n| fed.computes(&n.path)) {
         let Some(outputs) = &node.outputs else {
             whole = false;
             continue;

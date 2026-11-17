@@ -3601,6 +3601,25 @@ mod tests {
         }
     }
 
+    /// Guards: the counts docs/engineering/components/holon-core.md gives of the catalog are this
+    /// code's: the genesis primitives, those `compute` has an opcode for, and those that build a
+    /// request the host answers.
+    /// Why: the page counted them by hand and the counts went stale as leaves were added (audit
+    /// R49); a leaf added now fails here until the page says it.
+    #[test]
+    fn the_catalogs_counts_in_the_engineering_doc_are_the_codes() {
+        let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let doc = words(include_str!("../../../docs/engineering/components/holon-core.md"));
+        let requests = crate::GENESIS.iter().filter(|n| Request::of(n).is_some()).count();
+        for said in [
+            format!("`GENESIS` names the {} primitives", crate::GENESIS.len()),
+            format!("`compute` covers {} of them", Op::ALL.len()),
+            format!("{requests} build a request the host answers"),
+        ] {
+            assert!(doc.contains(&said), "docs/engineering/components/holon-core.md should say \"{said}\"");
+        }
+    }
+
     #[test]
     fn eval_primitive_add() {
         let r = MapResolver::new();

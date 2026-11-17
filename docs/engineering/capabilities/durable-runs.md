@@ -13,16 +13,17 @@ calling it without `await`, `const started = payment(req.json)`, and answers wit
 handed back, `started.waiting.paid` (a route answers and is done, so it never waits itself). A
 route with the option `{ resumes: "paid" }` continues the run:
 `route.get("/paid/:token", () => …, { resumes: "paid" })`. A run that settles still waiting at an
-`await` performs nothing, its starter gets the tokens of the points it waits at, and the host
-keeps a parked run: what it needs to run again, with the event, from where it began. A resumed
-part's log entry keeps its tokens as `‹token:NAME›`, as the starter's does.
+`await` performs no effect (the requests of its rounds before have gone out), its starter gets
+the tokens of the points it waits at, and the host keeps a parked run: what it needs to run
+again, with the event, from where it began. A resumed part's log entry keeps its tokens as
+`‹token:NAME›`, as the starter's does.
 
 In the code:
 
 - `crates/holon-core/src/catalog.rs`: the `await` leaf (params `name`, `expires`, default 604,800
   s) and `resume_token`; `primitives.rs`: `MAX_AWAIT_SECONDS` (90 days).
 - `crates/holon-host/src/rounds.rs`: the round loop's `Waits` and `Asking`; a run still waiting is
-  `RunOutcome::waiting` and performs nothing.
+  `RunOutcome::waiting` and performs no effect.
 - `crates/holon/src/durable.rs`: parking (`park_if_waiting`, `ParkedRun`), tokens (`token_for`,
   `load_host_key`), claiming (`claim_by_token`, `Claimed`), resuming (`resume_parked`), expiring
   (`expire_waiting`), `GET /deployments/<slug>/runs` (`handle_get_runs`) and `GET /runs/waiting`
@@ -181,9 +182,10 @@ the nav the approvals with a step still theirs.
 
 - **The run continues; the author doesn't hand-roll state** (insert the context under an id, look
   it up in the callback): minted ids, pinned versions, expiry, visibility (`PLATFORM_LAYOUT.md` §4.3).
-- **Performs nothing while waiting.** A run's effects are decided when it finishes, once; a waiting
-  run that wrote would be a half-run. Progress packs are the one exception, because a parked run's
-  end may be days away ([channels §9](../../L4s/channels-L4.md)).
+- **Performs no effect while waiting.** A run's effects are decided when it finishes, once; a
+  waiting run that wrote would be a half-run. What it asked of the network before it parked has
+  been sent, as any round's requests are. Progress packs are the one exception among effects,
+  because a parked run's end may be days away ([channels §9](../../L4s/channels-L4.md)).
 - **Replays from its record.** Evaluation is pure, so the inputs, nonce, state read and the answers
   it already had are enough to run it again to where it waited; the record is also what `holon
   verify` checks.

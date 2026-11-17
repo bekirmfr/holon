@@ -81,8 +81,8 @@ from the leaves, never from the imports.
   (`load_deployments`); no head is an empty state. (`heads.rs` is another thing: the run logs'
   heads sent to a witness.)
 - **The deployments file** (`persist_deployments`) holds definitions only: a run rewrites it
-  only when it parked (`listeners.rs`); a run's counts stay in memory until the next definition
-  change writes them.
+  only when it parked (`listeners.rs`); an unrecorded run's counts (its handler's tally) are
+  written within a second of changing, by the syncer (`tallies_changed`).
 - **Seen.** `GET /deployments/<slug>/state` (`handle_get_state`), `…/collections/<name>`
   (`handle_get_collection`: by key, or a page of up to 1,000; `?root=` only for a root the log
   shows, `LogCell::shows`), `…/changes` (`handle_get_changes`: the runs that changed a cell, a

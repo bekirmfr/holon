@@ -43,8 +43,8 @@ holon: no accounts yet. Open the editor and set up the first admin with this cod
 ```
 
 Open the editor, enter the code, your name and a password: you are its admin. Until a person
-does, nobody signs in, and the code can't be guessed: five wrong in a row refuse setting up for a
-minute.
+does, nobody signs in, and the code can't be guessed at speed: five wrong in a row from one address
+refuse setting up from there for a minute.
 
 Commands you run on the server's machine (`holon deploy`, `holon people`, `holon decide`…) need
 no sign-in: they reach it through its run file, while that server runs, as you, the person who set
