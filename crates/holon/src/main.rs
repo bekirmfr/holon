@@ -305,6 +305,10 @@ struct AppState {
     policy: crate::sync::RwLock<Arc<Policy>>,
     /// Where the policy is read from: nowhere, the defaults (the tests).
     policy_path: Place,
+    /// Held from reading the policy file to putting what it says in force, so a setting written
+    /// into it (storage.rs's `set_storage`) and a reload go one at a time (R75): two admins'
+    /// settings each kept, and what is in force what the file says.
+    policy_file: Mutex<()>,
     /// Every deployment's secrets (`--secrets`, secrets.rs): written over the control plane,
     /// never returned.
     secrets: Arc<SecretStore>,
@@ -1265,6 +1269,7 @@ fn serve(args: Vec<String>) {
         data_limits,
         policy: crate::sync::RwLock::new(policy),
         policy_path: policy_at,
+        policy_file: Mutex::new(()),
         secrets,
         folders,
         activity,
