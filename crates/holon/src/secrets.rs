@@ -1349,7 +1349,7 @@ impl Redactor {
     pub(crate) fn and(mut self, mut other: Redactor) -> Redactor {
         self.pairs.extend(std::mem::take(&mut other.pairs));
         self.pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        self.whole.extend(other.whole);
+        self.whole.extend(std::mem::take(&mut other.whole));
         self
     }
 

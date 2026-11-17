@@ -738,7 +738,7 @@ mod tests {
                 }
                 let _ = done.send(());
             });
-            assert!(noted.recv_timeout(Duration::from_secs(10)).is_ok(), "a run waited on the queue file being written");
+            assert!(noted.recv_timeout(crate::tests::EVENTUALLY).is_ok(), "a run waited on the queue file being written");
         }
         assert_eq!(on_disk(), 0, "nothing written as heads are queued");
         assert_eq!(exporter.sync(), Ok(()));

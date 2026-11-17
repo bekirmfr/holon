@@ -2652,7 +2652,14 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     // A run parked before tokens were derived kept the random one it was handed: still accepted.
     call("POST", "/orders");
     let legacy = "rt_0123456789abcdef0123456789abcdef".to_string();
-    state.deployments.lock().unwrap().get_mut("shop").unwrap().parked.values_mut().next().unwrap().tokens.insert("paid".into(), legacy.clone());
+    {
+        // Changed as a run's sealed part is, through keep_waiting: a save checks it was.
+        let mut table = state.deployments.lock().unwrap();
+        let dep = table.get_mut("shop").unwrap();
+        let mut run = dep.parked.values().next().unwrap().clone();
+        run.tokens.insert("paid".into(), legacy.clone());
+        crate::persist::keep_waiting("shop", dep, run).unwrap();
+    }
     assert_eq!(call("GET", &format!("/paid/{legacy}")).0, 200);
     assert!(runs().is_empty());
 
@@ -4551,11 +4558,11 @@ fn no_data_plane_worker_waits_on_the_deployments_table() {
     let table = state.deployments.lock().unwrap();
     let callers: Vec<_> = (0..waiting).map(|_| std::thread::spawn(move || raw_http(port, b"GET /ok HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://page.example\r\nConnection: close\r\n\r\n"))).collect();
     std::thread::sleep(Duration::from_millis(300));
-    // Answered on a worker, with no run: a name the server doesn't answer to.
-    let t0 = std::time::Instant::now();
+    // Answered on a worker, with no run: a name the server doesn't answer to. Answered at all
+    // while the table is held is what holds: a worker that waited on it would answer nothing
+    // until it is let go, below.
     let refused = raw_http(port, b"GET /ok HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n");
     assert!(refused.starts_with("HTTP/1.1 421"), "the server took no connection while the table was held: {refused:?}");
-    assert!(t0.elapsed() < Duration::from_secs(5), "answered at once: {:?}", t0.elapsed());
     drop(table);
     for caller in callers {
         let answer = caller.join().unwrap();
@@ -4626,7 +4633,7 @@ export const later = action(async () => {
 })
 "#;
     assert_eq!(deploy_plain_text(&state, text), "stuck");
-    let deadline = || durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000);
+    let deadline = || durable::expire_waiting(&state.store, &state.deployments, &state.deployments_path, epoch_now() + 4000).wait();
     let entries = || body_json(route(&state, &req("GET", "/deployments/stuck/log", vec![])))["entries"].as_array().unwrap().clone();
     let waiting = || state.deployments.lock().unwrap()["stuck"].parked.len();
     // Each way a resume fails for good, done to a run waiting: what its log then says.
@@ -16944,7 +16951,7 @@ route.post("/b/:token", () => "ok", { resumes: "b" })
     let slug = deploy_plain_text(&state, text);
     let hold = |pad: usize| {
         let input = Value::Record(BTreeMap::from([("pad".to_string(), Value::Text("p".repeat(pad)))]));
-        run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "hold", Ok(input), None, None, &[])
+        run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "hold", Ok(input), None, None, None, &[])
     };
     let waiting = || state.deployments.lock().unwrap()[&slug].parked.clone();
     let part = |run_id: &str| waiting()[run_id].sealed_part.clone().expect("sealed as it parked");

@@ -523,8 +523,8 @@ const USAGE: &str = "usage: holon <command>
   feed add|list|remove               bind a name flows listen to to a feed of server-sent events (admin)
   queue add|list|remove              bind a name flows send to and listen to to an SQS queue (admin)
   store sweep [--dry-run]            clear the stored states no kept run, version or state names
-  key status|rotate|forget           the keys the server seals its data under: where the root is,
-                                     a new data key, the root rotated (admin)
+  key status|rotate|forget|export    the keys the server seals its data under: where the root is,
+                                     a new data key, the root rotated, a copy of it (admin)
   host                               what the host holds: memory, its disks, what it keeps (admin)
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
                                      call and explain flows; it never approves what they may do

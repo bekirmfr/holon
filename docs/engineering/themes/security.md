@@ -539,7 +539,7 @@ What is not defended, or only partly:
   person named as the OS user owns nothing it made),
   `a_binding_at_a_flow_lets_its_holder_act_there_and_nowhere_else` (a unit only another flow
   places is answered 404),
-  `the_control_plane_admits_so_many_requests_at_once`,
+  `the_control_plane_admits_so_many_requests_at_once_and_so_many_from_one_client`,
   `which_id_tokens_are_taken` (another audience, party, issuer, expiry, signature or key),
   `a_token_the_provider_signed_for_this_client_says_who` and
   `signed_in_through_a_provider_is_matched_by_email_then_by_subject` (an email not said to be
