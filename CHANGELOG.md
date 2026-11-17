@@ -236,6 +236,15 @@
   waiting 30 s on a call held every deployment's clocks, and every deadline, as long. Each tick now
   goes on by itself (a clock isn't fired again over its own tick), and the deadlines have a thread
   of their own.
+- **`holon fmt` formats the texts it refused.** An ordinary text was refused as "a mistake in fmt":
+  `((1 + 1) + 1)`, whose parentheses Prettier takes out, where in a flow they break a chain (two
+  `add` nodes, where `1 + 1 + 1` is one); `a && (b && c)` and `a ?? (b ?? c)`, which Prettier
+  nests the other way; and `0.10`, `1.50`, `.5` or `1E3`, which Prettier rewrites, where a number
+  lowered as it was written. fmt now keeps the parentheses around a side that holds the same
+  operator (not in a `js()` body, JavaScript, which it lays out as Prettier does), and a number is
+  its value however it is spelled: `0.10` and `0.1` are one unit, `1e3`, `1_000` and `0x3e8`
+  another, and `({ 1e3: "a" })[1000]` is `"a"`, as in JavaScript. A flow that spelled a number
+  otherwise than JavaScript does (`1e3`, `0.50`, `1_000`) deploys as a new version.
 - **Access changes that wait for people are decided in the editor and from the command line.**
   The editor's Approvals has **Access changes**: each that waits, what it changes and gives, who
   proposed it and why, who could act as whom it gives more, and who approved it so far, with

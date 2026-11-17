@@ -54,8 +54,9 @@ or a quotient is never `undefined`. In Holon a record with a field that has no v
 so does a division by zero, so that `??` is reached; no setting tells TypeScript so.
 
 `holon fmt` lays a file out as Prettier does, at 100 columns and without semicolons, keeping its
-comments and blank lines, `js()` bodies included. It writes a text only once that text compiles to
-the same flow.
+comments and blank lines, `js()` bodies included. It keeps the parentheses Prettier would take out
+of `(a + b) + c`: in a flow they make two `add` nodes, where `a + b + c` is one. It writes a text
+only once that text compiles to the same flow.
 
 **How deep.** A text nests at most 128 levels: each bracket, operator and block inside another is
 one, and a flow written to be read nests a few dozen. A deeper one is refused where it passes the
@@ -177,7 +178,7 @@ and `Infinity` aren't values: where JavaScript gives one, a leaf gives no value.
 
 | Literal | Examples | Notes |
 |---|---|---|
-| Number | `0`, `86400`, `-1`, `2.5`, `1e3`, `1_000_000` | finite decimals; no infinity or NaN |
+| Number | `0`, `86400`, `-1`, `2.5`, `1e3`, `1_000_000` | finite decimals; no infinity or NaN. A number is its value however it is spelled: `1e3`, `1_000` and `1000` are one, and `0.10` is `0.1` |
 | Text | `"hello"`, `'line\n'`, `` `Hello, ${name}` `` | `${expr}` puts a value in |
 | Duration | `"10s"`, `"5m"`, `"2h"`, `"1d"` | a text, where one is asked for: `every("10s", …)`, `expires: "1d"`, a `_ms` limit |
 | Boolean | `true`, `false` | |

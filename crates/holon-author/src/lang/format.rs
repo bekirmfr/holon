@@ -5,7 +5,9 @@
 //! and a blank line where the text had one. A `js()` body is laid out like the rest. Before it, fmt
 //! rewrites `var` to `const` (or `let` where it is assigned again) and `==` to `===`, outside a
 //! `js()` body, where JavaScript gives them meanings of their own. An object's key keeps its
-//! quotes as written.
+//! quotes as written, and parentheses around a side that holds the same operator stay, `(a + b) +
+//! c` or `a && (b && c)`: in a flow they make two nodes and not one (docs/LANGUAGE.md §5.6), where
+//! Prettier would take them out or nest the side the other way.
 //!
 //! The text must compile, and what fmt writes is the same: the same program but for its layout,
 //! the same flow but for its `js()` bodies' text, and every comment. It checks each before it
@@ -43,7 +45,7 @@ fn formatted(src: &str) -> Result<String, LowerError> {
     let before = ts::compile(src)?;
     laid_out_in_time(src)?;
     let rewritten = rewrite(src)?;
-    let out = laid_out(&rewritten)?;
+    let out = laid_out_keeping_groups(&rewritten)?;
     // Laid out, a text can nest a level or two deeper than it was written: fmt puts parentheses
     // around what it breaks over lines (`return (…)`), after a `**`, around a sign after a sign.
     if nesting::check(&out).is_err() {
@@ -171,6 +173,127 @@ fn laid_out(src: &str) -> Result<String, LowerError> {
     };
     let laid = oxc_formatter::format(&allocator, src, SourceType::ts(), options).map_err(|e| mistake(e.message.to_string()))?;
     laid.print().map(|p| p.into_code()).map_err(|e| mistake(format!("fmt can't lay this text out ({e:?}): a mistake in fmt")))
+}
+
+/// An operator whose operands a flow reads as written nested: `+`, `*`, `&&` and `||`, whose chain
+/// is one variadic node (`a + b + c` one `add`, lower.rs), and `??`, a `fallback` on each.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Op {
+    Add,
+    Mul,
+    And,
+    Or,
+    Coalesce,
+}
+
+fn op_of(e: &js::Expression) -> Option<Op> {
+    match e {
+        js::Expression::BinaryExpression(b) => match b.operator {
+            js::BinaryOperator::Addition => Some(Op::Add),
+            js::BinaryOperator::Multiplication => Some(Op::Mul),
+            _ => None,
+        },
+        js::Expression::LogicalExpression(l) => Some(match l.operator {
+            js::LogicalOperator::And => Op::And,
+            js::LogicalOperator::Or => Op::Or,
+            js::LogicalOperator::Coalesce => Op::Coalesce,
+        }),
+        _ => None,
+    }
+}
+
+/// A side of an [`Op`] in parentheses that hold the same operator, `(a + b)` of `(a + b) + c`:
+/// where its parentheses close, and where the `!` after them is, if one is (`(a + b)! + c`).
+#[derive(Debug)]
+struct Grouped {
+    closes: usize,
+    bang: Option<usize>,
+}
+
+/// `src`'s grouped sides in order, outside its `js()` bodies.
+fn grouped(src: &str) -> Vec<Grouped> {
+    #[derive(Default)]
+    struct Found(Vec<Grouped>);
+    impl Found {
+        fn side(&mut self, e: &js::Expression, op: Option<Op>) {
+            let Some(op) = op else { return };
+            let (paren, bang) = match e {
+                js::Expression::TSNonNullExpression(n) => (&n.expression, Some(n.span.end as usize - 1)),
+                e => (e, None),
+            };
+            let js::Expression::ParenthesizedExpression(p) = paren else { return };
+            let mut inner = &p.expression;
+            while let js::Expression::ParenthesizedExpression(q) = inner {
+                inner = &q.expression;
+            }
+            if op_of(inner) == Some(op) {
+                self.0.push(Grouped { closes: p.span.end as usize, bang });
+            }
+        }
+    }
+    impl<'a> Visit<'a> for Found {
+        fn visit_expression(&mut self, e: &js::Expression<'a>) {
+            match e {
+                js::Expression::BinaryExpression(b) => {
+                    self.side(&b.left, op_of(e));
+                    self.side(&b.right, op_of(e));
+                }
+                js::Expression::LogicalExpression(l) => {
+                    self.side(&l.left, op_of(e));
+                    self.side(&l.right, op_of(e));
+                }
+                _ => {}
+            }
+            walk::walk_expression(self, e);
+        }
+        fn visit_call_expression(&mut self, c: &js::CallExpression<'a>) {
+            match js_function(c) {
+                Some(_) => c.arguments.iter().skip(1).for_each(|a| self.visit_argument(a)),
+                None => walk::walk_call_expression(self, c),
+            }
+        }
+    }
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, src, SourceType::ts()).parse();
+    let mut found = Found::default();
+    found.visit_program(&parsed.program);
+    found.0
+}
+
+/// `src` laid out as Prettier does, but for the parentheses around a side that holds the same
+/// operator: `(a + b) + c` and `a && (b && c)` are two `add`s and two `and`s in a flow, where
+/// `a + b + c` is one with three inputs, the author saying "two" (docs/LANGUAGE.md §5.6), and
+/// `a ?? (b ?? c)` is another graph than `a ?? b ?? c`. Prettier, for whom each pair is one
+/// JavaScript, takes the first's out and writes the others as `a && b && c`. So each is laid out
+/// with a `!` after it, which keeps it, and the `!` is taken out after; a `!` the text wrote
+/// stays. Where the two layouts' sides don't pair up, the plain layout, which fmt's checks then
+/// refuse. Not in a `js()` body, laid out as Prettier lays JavaScript out.
+fn laid_out_keeping_groups(src: &str) -> Result<String, LowerError> {
+    let sides = grouped(src);
+    if sides.iter().all(|s| s.bang.is_some()) {
+        return laid_out(src);
+    }
+    let mut marked = src.to_string();
+    // From the end of the text, so each place is where it was (an outer side comes first in
+    // order but closes after the sides inside it); a space after, so `!` and a `=` next to it
+    // don't make `!=`.
+    let mut closes: Vec<usize> = sides.iter().filter(|s| s.bang.is_none()).map(|s| s.closes).collect();
+    closes.sort_unstable();
+    for at in closes.into_iter().rev() {
+        marked.insert_str(at, "! ");
+    }
+    let laid = laid_out(&marked)?;
+    let after = grouped(&laid);
+    let bangs: Option<Vec<usize>> = (after.len() == sides.len()).then(|| sides.iter().zip(&after).filter(|(s, _)| s.bang.is_none()).map(|(_, a)| a.bang).collect()).flatten();
+    let Some(mut bangs) = bangs.filter(|b| b.iter().all(|&at| laid.as_bytes().get(at) == Some(&b'!'))) else {
+        return laid_out(src);
+    };
+    bangs.sort_unstable();
+    let mut out = laid;
+    for at in bangs.into_iter().rev() {
+        out.remove(at);
+    }
+    Ok(out)
 }
 
 /// `src` with its `var`s and `==`s rewritten, outside its `js()` bodies.
@@ -400,6 +523,76 @@ mod tests {
     const HEAD: &str = "import { flow, js, respond, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\", { port: 8000 })\n";
 
     const PAGE: &str = "\nconst page = js(function html(count) {\n  return `<p>${count}</p>`\n})\n\n";
+
+    /// **Guards:** fmt formats every text that compiles: three operands under two operators, in
+    /// each way parentheses group them (a group inside a group too), as a value and as a
+    /// condition, with numbers spelled as fmt
+    /// rewrites them (`0.10`, `1E3`, `.5`, `5.`). What it writes is the same flow, which fmt checks
+    /// before it answers, and fmt keeps it as it is.
+    /// **Why:** an ordinary text was refused as "a mistake in fmt": Prettier takes out the
+    /// parentheses of `((1 + 1) + 1)`, which in a flow break a chain, and rewrites `0.10` as
+    /// `0.1`, which lowered as written (audit R54, R48).
+    /// **If it fails:** the text named is one fmt can't write as the same flow, or one it writes
+    /// differently a second time.
+    #[test]
+    fn fmt_formats_every_text_that_compiles() {
+        let ops = ["+", "*", "-", "&&", "||", "??", "<", "==="];
+        let values = ["req.json.a", "0.10", "req.json.b", "1E3", ".5", "1_000", "5.", "req.json.c", "1.50e+2", "0x10"];
+        let mut value = values.iter().cycle();
+        let mut compiled = 0;
+        for (i, a) in ops.iter().enumerate() {
+            for (j, b) in ops.iter().enumerate() {
+                for shape in 0..7 {
+                    let (x, y, z) = (value.next().unwrap(), value.next().unwrap(), value.next().unwrap());
+                    let e = match shape {
+                        0 => format!("{x} {a} {y} {b} {z}"),
+                        1 => format!("({x} {a} {y}) {b} {z}"),
+                        2 => format!("{x} {a} ({y} {b} {z})"),
+                        3 => format!("(({x} {a} {y}) {b} {z})"),
+                        4 => format!("({x} {a} (({y}) {b} {z}))"),
+                        // A side in parentheses inside another.
+                        5 => format!("(({x} {a} {y}) {a} {z}) {b} {x}"),
+                        _ => format!("{x} {b} ({y} {a} ({z} {a} {x}))"),
+                    };
+                    let body = if (i + j) % 2 == 0 { format!("  const n = {e}\n  return n") } else { format!("  if ({e}) {{\n    state.count = 1\n  }}\n  return \"ok\"") };
+                    let src = format!("{HEAD}\nroute.post(\"/c\", (req) => {{\n{body}\n}})\n");
+                    if ts::compile(&src).is_err() {
+                        continue;
+                    }
+                    compiled += 1;
+                    let out = format(&src).unwrap_or_else(|e| panic!("{e}\n{src}"));
+                    assert_eq!(format(&out).unwrap_or_else(|e| panic!("fmt again: {e}\n{out}")), out, "fmt is not idempotent on its own output");
+                }
+            }
+        }
+        assert!(compiled > 150, "only {compiled} of the texts compiled: the sweep reads too few");
+    }
+
+    /// **Guards:** fmt keeps the parentheses that break a chain, `(a + b) + c`, two `add`s in a
+    /// flow where `a + b + c` is one with three inputs, which Prettier would take out; in a `js()`
+    /// body, JavaScript, it takes them out as Prettier does.
+    /// **Why:** without them the text lowered to other units, and fmt refused it (audit R54).
+    /// **If it fails:** fmt took out parentheses the author wrote to say "two", put them where
+    /// none were, or kept them in a `js()` body.
+    #[test]
+    fn parentheses_that_break_a_chain_stay() {
+        let route = |body: &str| format!("{HEAD}\nroute.post(\"/c\", (req) => {{\n{body}\n}})\n");
+        kept(&route("  const n = (req.json.a + 1) + 2\n  return n"));
+        kept(&route("  return ((req.json.a * 2) * 3) * 4"));
+        kept(&route("  return req.json.a + (req.json.b + 1)"));
+        kept(&route("  return req.json.a && (req.json.b && req.json.c)"));
+        kept(&route("  return req.json.a ?? (req.json.b ?? 0)"));
+        kept(&route("  return (req.json.a + 1)! + 2"));
+        kept(&route("  return ((req.json.a + 1)! + 2) + 3"));
+        kept(&route("  if ((req.json.a && req.json.b) && req.json.c) {\n    state.count = 1\n  }\n  return (req.json.a || req.json.b) || req.json.c"));
+        becomes(&route("  const n = ((1 + 1) + 1)\n  return n"), &route("  const n = (1 + 1) + 1\n  return n"));
+        becomes(&route("  return (req.json.a * 2) + 1"), &route("  return req.json.a * 2 + 1"));
+        becomes(&route("  return req.json.a+(req.json.b+1)===2"), &route("  return req.json.a + (req.json.b + 1) === 2"));
+        becomes(
+            &format!("{HEAD}\nconst total = js(function sum(a, b, c) {{\n  return (a + b) + c\n}})\n\nroute.post(\"/c\", (req) => total((req.json.a + 1) + 2, 2, 3))\n"),
+            &format!("{HEAD}\nconst total = js(function sum(a, b, c) {{\n  return a + b + c\n}})\n\nroute.post(\"/c\", (req) => total((req.json.a + 1) + 2, 2, 3))\n"),
+        );
+    }
 
     #[test]
     fn a_text_as_fmt_writes_it_is_kept() {

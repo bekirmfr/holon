@@ -6224,7 +6224,7 @@ route.post("/t", (req) => {
         assert_eq!(switch("    case `${x}`:\n      return 1"), (8, 10, literal.into()));
         assert_eq!(switch("    case [1]:\n      return 1"), (8, 10, literal.into()));
         assert_eq!(switch("    case \"add\":\n      return 1\n    case \"add\":\n      return 2"), (10, 10, "\"add\" is a case twice; the second could never be chosen".into()));
-        assert_eq!(switch("    case 1:\n    case 2:\n      return 1\n    case 1.0:\n      return 2"), (11, 10, "1.0 is a case twice; the second could never be chosen".into()));
+        assert_eq!(switch("    case 1:\n    case 2:\n      return 1\n    case 1.0:\n      return 2"), (11, 10, "1 is a case twice; the second could never be chosen".into()), "named by its value, which 1.0 is");
     }
 
     /// A streamed reply answers with its call's status: the respond's status input, wired from
