@@ -800,7 +800,7 @@ fn run_attempt(
     let answered = secrets::answered_tokens(&outcome.rounds, secrets, &secret_fed);
     // What it computed from its secrets, for its record to mark each by its value.
     let born = secrets::born(&timer.timeline, &secret_fed, born_key.as_ref().map(|k| k.as_slice()), &run_hex, !waits.unrecorded);
-    let holds_answered = |payload: &Value| answered.iter().find(|(_, v)| secrets::value_holds(payload, &|s: &str| s.contains(v.as_str()))).map(|(name, _)| name.clone());
+    let holds_answered = |payload: &Value| answered.iter().find(|(_, v)| secrets::value_holds(payload, &|s: &str| secrets::holds_spelled(s, v.as_str()))).map(|(name, _)| name.clone());
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
     // carrying a secret's value, or something computed from one (taint.rs), which would put it on
     // disk and in every later snapshot, and a copy from a folder the deployment doesn't read (a
