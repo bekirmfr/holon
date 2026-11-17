@@ -937,45 +937,80 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
 /// `holon mail add NAME [--smtp SOURCE --from SENDER --to LIST] [--imap SOURCE …] [--for SLUG] |
 /// list | remove NAME`: bind, show and unbind the mail resources of the server this user runs here
 /// (or `--server`), as an admin.
-pub(crate) fn cli(args: &[String]) -> i32 {
-    let mut server = None;
-    let mut for_deployment: Option<String> = None;
-    let mut asked = serde_json::Map::new();
-    let mut words = Vec::new();
+/// `holon mail`'s words and flags, read: what the command and the editor's Mail part share.
+pub(crate) fn read_args(args: &[String]) -> Result<crate::cmdline::BindArgs, String> {
+    let mut read = crate::cmdline::BindArgs::default();
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--server" => server = args.next().cloned(),
-            "--for" => for_deployment = args.next().cloned(),
+            "--server" => read.server = args.next().cloned(),
+            "--for" => read.for_deployment = args.next().cloned(),
             "--smtp" | "--from" | "--to" | "--imap" | "--folder" | "--done" | "--verdict-from" | "--every" | "--oauth" => {
-                let Some(v) = args.next() else {
-                    eprintln!("holon mail: {a} takes a value\n\n{MAIL_USAGE}");
-                    return 2;
-                };
-                asked.insert(a[2..].replace('-', "_"), serde_json::Value::String(v.clone()));
+                let Some(v) = args.next() else { return Err(format!("{a} takes a value")) };
+                read.asked.insert(a[2..].replace('-', "_"), serde_json::Value::String(v.clone()));
             }
-            "--help" | "-h" => {
-                println!("{MAIL_USAGE}");
-                return 0;
-            }
-            _ if !a.starts_with('-') => words.push(a.as_str()),
-            _ => {
-                eprintln!("holon mail: no option {a:?}\n\n{MAIL_USAGE}");
-                return 2;
-            }
+            "--help" | "-h" => read.help = true,
+            _ if !a.starts_with('-') => read.words.push(a.clone()),
+            _ => return Err(format!("no option {a:?}")),
         }
     }
+    Ok(read)
+}
+
+/// The body of `POST /admin/mails` binding `name` as `read` asks.
+pub(crate) fn add_body(name: &str, read: &crate::cmdline::BindArgs) -> Result<serde_json::Value, String> {
+    if !read.asked.contains_key("smtp") && !read.asked.contains_key("imap") {
+        return Err("it takes --smtp SOURCE (with --from SENDER and --to LIST) to send, --imap SOURCE to receive, or both".into());
+    }
+    let mut body = read.asked.clone();
+    body.insert("name".into(), serde_json::Value::String(name.to_string()));
+    body.insert("deployment".into(), serde_json::json!(read.for_deployment));
+    Ok(serde_json::Value::Object(body))
+}
+
+/// A mail binding as `holon mail list` prints it: where it sends and from where it receives.
+pub(crate) fn line(m: &serde_json::Value) -> String {
+    let only = m["deployment"].as_str().map_or(String::new(), |s| format!(", for {s} only"));
+    let to: Vec<&str> = m["to"].as_array().into_iter().flatten().filter_map(|t| t.as_str()).collect();
+    let mut said = vec![m["name"].as_str().unwrap_or("").to_string()];
+    if m["smtp"].as_str().is_some_and(|s| !s.is_empty()) {
+        said.push(format!("sends through {} (from {})  as {}  to {}", m["address"].as_str().unwrap_or(""), m["smtp"].as_str().unwrap_or(""), m["from"].as_str().unwrap_or(""), to.join(", ")));
+    }
+    let b = &m["mailbox"];
+    if let Some(imap) = b["imap"].as_str() {
+        let verdict = b["verdict_from"].as_str().map_or("nobody's verdict".to_string(), |v| format!("{v}'s verdict"));
+        let every = folders::span_text(b["every"].as_u64().unwrap_or(60));
+        said.push(format!("receives in {} {} (from {imap}), moved to {}  {verdict}  every {every}", b["address"].as_str().unwrap_or(""), b["folder"].as_str().unwrap_or(""), b["done"].as_str().unwrap_or("")));
+    }
+    if let Some(source) = m["oauth"]["source"].as_str() {
+        said.push(format!("logs in with OAuth ({} from {source})", m["oauth"]["address"].as_str().unwrap_or("")));
+    }
+    format!("{}{only}", said.join("  "))
+}
+
+pub(crate) fn cli(args: &[String]) -> i32 {
+    let read = match read_args(args) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("holon mail: {e}\n\n{MAIL_USAGE}");
+            return 2;
+        }
+    };
+    if read.help {
+        println!("{MAIL_USAGE}");
+        return 0;
+    }
+    let (server, for_deployment) = (read.server.clone(), read.for_deployment.clone());
+    let words: Vec<&str> = read.words.iter().map(String::as_str).collect();
     let (method, path, body) = match words.as_slice() {
         ["list"] => ("GET", "/admin/mails".to_string(), None),
-        ["add", name] => {
-            if !asked.contains_key("smtp") && !asked.contains_key("imap") {
-                eprintln!("holon mail add: it takes --smtp SOURCE (with --from SENDER and --to LIST) to send, --imap SOURCE to receive, or both\n\n{MAIL_USAGE}");
+        ["add", name] => match add_body(name, &read) {
+            Ok(body) => ("POST", "/admin/mails".to_string(), Some(body)),
+            Err(e) => {
+                eprintln!("holon mail add: {e}\n\n{MAIL_USAGE}");
                 return 2;
             }
-            asked.insert("name".into(), serde_json::Value::String(name.to_string()));
-            asked.insert("deployment".into(), serde_json::json!(for_deployment));
-            ("POST", "/admin/mails".to_string(), Some(serde_json::Value::Object(asked)))
-        }
+        },
         ["remove", name] => {
             let only = for_deployment.as_ref().map_or(String::new(), |d| format!("?deployment={}", crate::mcp::seg(d)));
             ("DELETE", format!("/admin/mails/{}{only}", crate::mcp::seg(name)), None)
@@ -988,24 +1023,6 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     let (server, answer) = match local::admin_call("holon mail", server.as_deref(), method, &path, body.as_ref()) {
         Ok(a) => a,
         Err(code) => return code,
-    };
-    let line = |m: &serde_json::Value| {
-        let only = m["deployment"].as_str().map_or(String::new(), |s| format!(", for {s} only"));
-        let to: Vec<&str> = m["to"].as_array().into_iter().flatten().filter_map(|t| t.as_str()).collect();
-        let mut said = vec![m["name"].as_str().unwrap_or("").to_string()];
-        if m["smtp"].as_str().is_some_and(|s| !s.is_empty()) {
-            said.push(format!("sends through {} (from {})  as {}  to {}", m["address"].as_str().unwrap_or(""), m["smtp"].as_str().unwrap_or(""), m["from"].as_str().unwrap_or(""), to.join(", ")));
-        }
-        let b = &m["mailbox"];
-        if let Some(imap) = b["imap"].as_str() {
-            let verdict = b["verdict_from"].as_str().map_or("nobody's verdict".to_string(), |v| format!("{v}'s verdict"));
-            let every = folders::span_text(b["every"].as_u64().unwrap_or(60));
-            said.push(format!("receives in {} {} (from {imap}), moved to {}  {verdict}  every {every}", b["address"].as_str().unwrap_or(""), b["folder"].as_str().unwrap_or(""), b["done"].as_str().unwrap_or("")));
-        }
-        if let Some(source) = m["oauth"]["source"].as_str() {
-            said.push(format!("logs in with OAuth ({} from {source})", m["oauth"]["address"].as_str().unwrap_or("")));
-        }
-        format!("{}{only}", said.join("  "))
     };
     match words[0] {
         "list" => {

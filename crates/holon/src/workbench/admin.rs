@@ -7,7 +7,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use serde_json::{json, Value};
 
 use super::app::{App, Ask, List, Modal, Page, Said, Then, Tone};
-use super::flow::{Row, Section};
+use super::flow::Row;
+use super::host::Res;
 use crate::mcp::seg;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -24,11 +25,17 @@ pub(crate) enum Part {
     Keys,
     Folders,
     Databases,
+    Mail,
+    Feeds,
+    Queues,
+    /// The server's own secrets, and what its environment holds.
     Secrets,
+    Storage,
+    Policy,
     Server,
 }
 
-pub(crate) const PARTS: [(Part, &str); 11] = [
+pub(crate) const PARTS: [(Part, &str); 16] = [
     (Part::People, "People"),
     (Part::Groups, "Groups"),
     (Part::Roles, "Roles"),
@@ -38,12 +45,17 @@ pub(crate) const PARTS: [(Part, &str); 11] = [
     (Part::Keys, "API keys"),
     (Part::Folders, "Folders"),
     (Part::Databases, "Databases"),
+    (Part::Mail, "Mail"),
+    (Part::Feeds, "Feeds"),
+    (Part::Queues, "Queues"),
     (Part::Secrets, "Secrets"),
+    (Part::Storage, "Storage"),
+    (Part::Policy, "Policy"),
     (Part::Server, "Server"),
 ];
 
 /// The server section's rows.
-pub(crate) const SERVER_ROWS: [&str; 6] = ["Permissions (holon.toml)", "Grants held", "Sign-in provider", "Store", "Folder texts", "Host: memory and disks"];
+pub(crate) const SERVER_ROWS: [&str; 5] = ["Grants held", "Sign-in provider", "Store", "Folder texts", "Host: memory and disks"];
 
 #[derive(Default)]
 pub(crate) struct AdminView {
@@ -72,6 +84,19 @@ pub(crate) struct AdminView {
     pub(crate) tokens: Vec<Value>,
     pub(crate) folders: Vec<Value>,
     pub(crate) databases: Vec<Value>,
+    pub(crate) mails: Vec<Value>,
+    pub(crate) feeds: Vec<Value>,
+    pub(crate) queues: Vec<Value>,
+    /// The server's own secrets (`GET /admin/secrets`).
+    pub(crate) secrets: Value,
+    /// Each deployment's grant (`GET /admin/grants`), for who uses what; or why it isn't read.
+    pub(crate) held: Vec<Value>,
+    pub(crate) held_refused: Option<String>,
+    /// What the host holds (`GET /admin/host`), and its policy (`GET /permissions`).
+    pub(crate) host: Value,
+    pub(crate) policy: Value,
+    /// A folder on the server's machine, walked to bind (`GET /admin/folders/browse`).
+    pub(crate) browse: Option<Value>,
     /// Why a part's list can't be read, by part: the caller may not see it (the server's
     /// refusal, as `may` says it ahead), or the read failed.
     pub(crate) refused: [Option<String>; PARTS.len()],
@@ -96,9 +121,8 @@ fn takes(p: Part, k: KeyCode, row: usize) -> &'static [&'static str] {
         (Part::Folders | Part::Databases, KeyCode::Char('n')) => &["resource.bind"],
         (Part::Folders | Part::Databases, KeyCode::Char('D') | KeyCode::Delete) => &["resource.unbind"],
         (Part::Server, KeyCode::Enter) => match row {
-            0 => &["policy.edit"],
-            2 => &["people.manage"],
-            3 | 4 => &["host.operate"],
+            1 => &["people.manage"],
+            2 | 3 => &["host.operate"],
             _ => &[],
         },
         _ => &[],
@@ -108,8 +132,7 @@ fn takes(p: Part, k: KeyCode, row: usize) -> &'static [&'static str] {
 /// What reading each of the server part's rows takes.
 fn row_sees(row: usize) -> &'static str {
     match row {
-        0 => "policy.view",
-        2 => "people.view",
+        1 => "people.view",
         _ => "host.view",
     }
 }
@@ -127,6 +150,8 @@ pub(crate) enum AdminAsk {
     Oidc,
     /// A dialog of the access parts (access.rs).
     Access(super::access::AccessAsk),
+    /// A dialog of the host parts (host.rs).
+    Host(super::host::HostAsk),
 }
 
 /// What a confirmed dialog on this page does.
@@ -136,12 +161,14 @@ pub(crate) enum AdminDo {
     RemoveUser(String),
     /// A principal's token: its principal, its id.
     Revoke(String, String),
-    Unbind { database: bool, name: String, deployment: Option<String> },
+    Unbind { res: Res, name: String, deployment: Option<String> },
     ReloadPolicy,
     /// A dry run first: what it would remove, then the sweep, confirmed.
     SweepStore,
     SweepStoreNow,
     SweepFolders,
+    /// A confirmed dialog of the host parts (host.rs).
+    Host(super::host::HostDo),
 }
 
 fn field(k: &str, v: impl Into<String>) -> Row {
@@ -208,24 +235,36 @@ fn held(u: &Value) -> Vec<Row> {
     rows
 }
 
+/// A folder listing's rows, as the walk lists them: its parent (`..`), its folders, then the
+/// machine's drives or roots; each with the path it opens.
+pub(crate) fn browse_rows(b: &Value) -> Vec<(String, String)> {
+    let mut rows = vec![];
+    if let Some(parent) = b["parent"].as_str() {
+        rows.push(("..".to_string(), parent.to_string()));
+    }
+    for (k, mark) in [("folders", ""), ("roots", "⌂ ")] {
+        rows.extend(b[k].as_array().into_iter().flatten().filter(|f| k == "folders" || f["path"] != b["path"]).map(|f| (format!("{mark}{}", s(&f["name"])), s(&f["path"]))));
+    }
+    rows
+}
+
 fn only(v: &Value) -> String {
     v["deployment"].as_str().map(|d| format!("?deployment={}", seg(d))).unwrap_or_default()
 }
 
 impl App {
-    fn deployments(&self) -> Vec<String> {
-        self.client.as_ref().map(|c| c.deployments.iter().filter_map(|d| d["slug"].as_str().map(str::to_string)).collect()).unwrap_or_default()
-    }
-
     pub(crate) fn admin_rows(&self) -> usize {
         let a = &self.admin;
         match a.part {
             Part::People => a.users.len(),
             Part::Keys => a.tokens.len(),
-            Part::Folders => a.folders.len(),
+            Part::Folders => match &a.browse {
+                Some(b) => browse_rows(b).len(),
+                None => a.folders.len(),
+            },
             Part::Databases => a.databases.len(),
-            Part::Secrets => 1 + self.deployments().len(),
             Part::Server => SERVER_ROWS.len(),
+            p @ (Part::Mail | Part::Feeds | Part::Queues | Part::Secrets | Part::Storage | Part::Policy) => self.host_part_rows(p),
             p => self.access_part_rows(p),
         }
     }
@@ -246,12 +285,12 @@ impl App {
                 refused[*p as usize] = read.cloned();
             }
         }
-        refused[Part::Secrets as usize] = c.may("resource.view", None).err();
         let users = people.unwrap_or_default();
         self.admin.tokens = users.iter().flat_map(|p| p["tokens"].as_array().cloned().unwrap_or_default()).collect();
         (self.admin.users, self.admin.folders, self.admin.databases) = (users, folders.unwrap_or_default(), databases.unwrap_or_default());
         self.admin.refused = refused;
         self.access_part_load();
+        self.host_part_load();
         let n = self.admin_rows();
         let p = self.admin.part as usize;
         self.admin.sel[p] = self.admin.sel[p].min(n.saturating_sub(1));
@@ -268,7 +307,7 @@ impl App {
         let Some(c) = self.client.as_ref() else { return };
         let a = &self.admin;
         let i = a.sel();
-        let key = format!("{:?} {i}", a.part);
+        let key = format!("{:?} {i}{}", a.part, a.browse.as_ref().map(|b| format!(" {}", b["path"])).unwrap_or_default());
         if a.pane.as_ref().is_some_and(|(k, _)| *k == key) {
             return;
         }
@@ -320,8 +359,17 @@ impl App {
                 ],
                 None => vec![text(Tone::Dim, "n makes an API key for an agent or a service.")],
             },
+            Part::Folders if a.browse.is_some() => {
+                let b = a.browse.as_ref().unwrap_or(&Value::Null);
+                let mut rows = vec![text(Tone::Head, s(&b["path"])), text(Tone::Plain, "A folder on the server's machine, to bind.")];
+                if b["more"] == true {
+                    rows.push(text(Tone::Dim, "It holds more folders than are listed."));
+                }
+                rows.push(text(Tone::Dim, "enter: open the folder picked · ←: its parent · n: bind the folder shown · esc: stop browsing"));
+                rows
+            }
             Part::Folders => match a.folders.get(i) {
-                Some(f) => vec![
+                Some(f) => [vec![
                     text(Tone::Head, s(&f["name"])),
                     field("Path", s(&f["path"])),
                     field("Access", s(&f["access"])),
@@ -329,10 +377,12 @@ impl App {
                     field("Keeps in runs", s(&f["keep"])),
                     field("Holds at most", f["cap"].as_u64().map(crate::folders::size_text).unwrap_or_else(|| "no cap".into())),
                     field("Shared", if f["shared"] == true { "with other servers: a commit locks a file in it" } else { "no" }),
-                    field("Lock", if f["lock"] == "run" { "for each run's whole length" } else { "at commit" }),
-                    text(Tone::Dim, "del: unbind it (its files stay where they are)"),
-                ],
-                None => vec![text(Tone::Dim, "n binds a folder: a name flows use, a real folder here.")],
+                    field("Lock", if f["lock"] == "run" { "for each run's whole length" } else { "at commit" })],
+                    self.used_by(Res::Folder, f),
+                    vec![text(Tone::Dim, "del: unbind it (its files stay where they are)")],
+                ]
+                .concat(),
+                None => vec![text(Tone::Dim, "n binds a folder: a name flows use, a real folder here; b browses the server's folders for one.")],
             },
             Part::Databases => match a.databases.get(i) {
                 Some(d) => {
@@ -343,36 +393,19 @@ impl App {
                         }
                     }
                     rows.extend([field("Access", s(&d["access"])), field("For", scope(d)), field("Lock", if d["lock"] == "run" { "for each run's whole length" } else { "at commit" })]);
+                    rows.extend(self.used_by(Res::Database, d));
                     rows.push(text(Tone::Dim, "enter: its tables · del: unbind it (the database stays where it is)"));
                     rows
                 }
                 None => vec![text(Tone::Dim, "n binds a database: a name flows use (database shop), a file or a connection here.")],
             },
-            Part::Secrets if i == 0 => {
-                let mut rows = vec![text(Tone::Head, "Read from the environment"), text(Tone::Dim, "A secret set as env:HOLON_SECRET_… reads one of these. Names only, never values.")];
-                rows.extend(lines(c.get("/admin/secrets/env"), crate::secretcmd::env_lines));
-                rows
-            }
-            Part::Secrets => {
-                let slug = self.deployments().get(i - 1).cloned().unwrap_or_default();
-                let mut rows = vec![text(Tone::Head, slug.clone())];
-                rows.extend(lines(c.get(&format!("/deployments/{}/secrets", seg(&slug))), crate::secretcmd::list_lines));
-                rows.push(text(Tone::Dim, "enter: set or change them, on its Access section"));
-                rows
-            }
             Part::Server => match i {
                 0 => {
-                    let mut rows = vec![text(Tone::Head, "What flows get without asking, and the most they may ask for")];
-                    rows.extend(lines(c.get("/permissions"), crate::grantcmd::policy_lines));
-                    rows.push(text(Tone::Dim, "enter: read holon.toml again and hold every deployment to it"));
-                    rows
-                }
-                1 => {
                     let mut rows = vec![text(Tone::Head, "What each deployment holds")];
                     rows.extend(lines(c.get("/admin/grants"), crate::grantcmd::held_lines));
                     rows
                 }
-                2 => {
+                1 => {
                     let mut rows = vec![text(Tone::Head, "Signing in through an identity provider (OIDC)")];
                     match c.get("/admin/oidc") {
                         Ok(v) if v["settings"].is_object() => rows.extend([field("Issuer", s(&v["settings"]["issuer"])), field("Client id", s(&v["settings"]["client_id"]))]),
@@ -382,13 +415,13 @@ impl App {
                     rows.push(text(Tone::Dim, "enter: set it, or clear it"));
                     rows
                 }
-                3 => {
+                2 => {
                     let mut rows = vec![text(Tone::Head, "The store"), text(Tone::Plain, "Values nothing kept names any more: no run, version or state.")];
                     rows.extend(lines(c.get("/admin/host"), |v| crate::storage::sweep_lines(&v["sweeps"], "store", "values")));
                     rows.push(text(Tone::Dim, "enter: count what a sweep would remove, then ask; holon policy --sweep-every sets how often"));
                     rows
                 }
-                5 => {
+                4 => {
                     let mut rows = vec![text(Tone::Head, "What the host holds: memory, its disks, and what it keeps on them")];
                     rows.extend(lines(c.get("/admin/host"), crate::storage::host_lines));
                     rows.push(text(Tone::Dim, "enter: count again; holon host says the same"));
@@ -401,6 +434,7 @@ impl App {
                     rows
                 }
             },
+            p @ (Part::Mail | Part::Feeds | Part::Queues | Part::Secrets | Part::Storage | Part::Policy) => self.host_part_pane(p, i),
             p => self.access_part_pane(p, i),
         };
         self.admin.pane = Some((key, rows));
@@ -412,7 +446,80 @@ impl App {
     pub(crate) fn admin_may(&self, k: KeyCode) -> bool {
         let (part, i) = (self.admin.part, self.admin.sel());
         let Some(c) = self.client.as_ref() else { return false };
-        self.admin.refused[part as usize].is_none() && takes(part, k, i).iter().chain(super::access::takes(part, k, i)).all(|a| c.may(a, None).is_ok())
+        // A key for one secret, on the row that is none (the environment's), does nothing.
+        let secrets = self.admin.secrets["secrets"].as_array().map_or(0, Vec::len);
+        if part == Part::Secrets && i >= secrets && matches!(k, KeyCode::Enter | KeyCode::Char('t' | 'R') | KeyCode::Delete) {
+            return false;
+        }
+        self.admin.refused[part as usize].is_none() && self.takes_all(part, k, i).all(|a| c.may(a, None).is_ok())
+    }
+
+    /// What key `k` on row `row` of part `p` takes, across the admin page's parts.
+    fn takes_all(&self, p: Part, k: KeyCode, row: usize) -> impl Iterator<Item = &'static str> {
+        let secrets = self.admin.secrets["secrets"].as_array().map_or(0, Vec::len);
+        // Browsing, a folder's keys are the walk's: n binds, as the part's n does.
+        let k = if p == Part::Folders && self.admin.browse.is_some() && k != KeyCode::Char('n') { KeyCode::Null } else { k };
+        takes(p, k, row).iter().chain(super::access::takes(p, k, row)).chain(super::host::takes(p, k, row, secrets)).copied()
+    }
+
+    /// The folder dialog, as holon folder add takes it, `value` already in it.
+    fn ask_folder(&mut self, value: String) {
+        self.ask(
+            "Bind a folder",
+            &["As holon folder add takes it: a name flows use, the folder's path, then any of", "--read-only  --for SLUG  --keep hash|30d  --cap SIZE  --shared  --lock run", "inbox ~/holon-inbox --read-only"],
+            value,
+            AdminAsk::Folder,
+        );
+    }
+
+    /// Walk to folder `path` on the server's machine (none: its home folder), to bind one.
+    fn browse(&mut self, path: Option<&str>) {
+        let Some(c) = self.client.as_ref() else { return };
+        let at = path.map(|p| format!("?path={}", seg(p))).unwrap_or_default();
+        match c.get(&format!("/admin/folders/browse{at}")) {
+            Ok(v) => {
+                self.admin.browse = Some(v);
+                self.admin.sel[Part::Folders as usize] = 0;
+                self.admin.pane = None;
+                self.admin_pane();
+            }
+            Err(e) => self.fail(e),
+        }
+    }
+
+    /// A key while browsing: whether it was the walk's.
+    fn browse_key(&mut self, k: KeyCode, i: usize) -> bool {
+        let Some(b) = self.admin.browse.clone() else { return false };
+        match k {
+            KeyCode::Enter | KeyCode::Right => {
+                if let Some((_, path)) = browse_rows(&b).into_iter().nth(i) {
+                    self.browse(Some(&path));
+                }
+            }
+            KeyCode::Left | KeyCode::Backspace => {
+                if let Some(parent) = b["parent"].as_str() {
+                    self.browse(Some(parent));
+                }
+            }
+            KeyCode::Char('n') => {
+                if self.client.as_ref().is_some_and(|c| c.may("resource.bind", None).is_ok()) {
+                    let path = s(&b["path"]);
+                    let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_lowercase().replace(' ', "-")).unwrap_or_default();
+                    self.admin.browse = None;
+                    self.admin.pane = None;
+                    self.admin_pane();
+                    self.ask_folder(format!("{name} {path}"));
+                }
+            }
+            KeyCode::Esc => {
+                self.admin.browse = None;
+                self.admin.sel[Part::Folders as usize] = 0;
+                self.admin.pane = None;
+                self.admin_pane();
+            }
+            _ => return false,
+        }
+        true
     }
 
     pub(crate) fn admin_part(&mut self, p: Part) {
@@ -449,7 +556,7 @@ impl App {
         self.modal = Some(Modal::input(title.into(), lines.iter().map(|l| l.to_string()).collect(), value.into(), false, Ask::Admin(then)));
     }
 
-    fn sure(&mut self, title: impl Into<String>, lines: &[&str], then: AdminDo) {
+    pub(super) fn sure(&mut self, title: impl Into<String>, lines: &[&str], then: AdminDo) {
         self.modal = Some(Modal::Confirm { title: title.into(), lines: lines.iter().map(|l| l.to_string()).collect(), then: Then::Admin(then) });
     }
 
@@ -470,6 +577,9 @@ impl App {
             return;
         }
         let i = self.admin.sel();
+        if self.admin.part == Part::Folders && self.admin.browse.is_some() && self.browse_key(k.code, i) {
+            return;
+        }
         match k.code {
             KeyCode::Tab => return self.admin_part(next(1)),
             KeyCode::BackTab => return self.admin_part(next(PARTS.len() - 1)),
@@ -485,12 +595,15 @@ impl App {
         }
         // A key the caller may not use says the server's refusal, and sends nothing.
         let part = self.admin.part;
-        let refusal = self.client.as_ref().and_then(|c| takes(part, k.code, i).iter().chain(super::access::takes(part, k.code, i)).find_map(|a| c.may(a, None).err()));
+        let refusal = self.client.as_ref().and_then(|c| self.takes_all(part, k.code, i).find_map(|a| c.may(a, None).err()));
         if let Some(why) = refusal {
             return self.fail(why);
         }
         if matches!(part, Part::Groups | Part::Roles | Part::Bindings | Part::History | Part::Yours) {
             return self.access_part_key(part, k.code, i);
+        }
+        if matches!(part, Part::Mail | Part::Feeds | Part::Queues | Part::Secrets | Part::Storage | Part::Policy) {
+            return self.host_part_key(part, k.code, i);
         }
         let user = self.admin.users.get(i).map(|u| (s(&u["name"]), u.clone()));
         match (self.admin.part, k.code) {
@@ -505,12 +618,8 @@ impl App {
                 self.ask("Add an agent or a service", &[first.as_str(), "refunds-bot agent agent ana", "It signs in with its own API keys: make one under API keys."], "", AdminAsk::Add);
             }
             (Part::Keys, KeyCode::Char('n')) => self.ask("A new API key", &["The agent or service it is for, then what it is for:", "ci nightly report", "The key is shown once, and copied to your clipboard."], "", AdminAsk::Token),
-            (Part::Folders, KeyCode::Char('n')) => self.ask(
-                "Bind a folder",
-                &["As holon folder add takes it: a name flows use, the folder's path, then any of", "--read-only  --for SLUG  --keep hash|30d  --cap SIZE  --shared  --lock run", "inbox ~/holon-inbox --read-only"],
-                "",
-                AdminAsk::Folder,
-            ),
+            (Part::Folders, KeyCode::Char('n')) => self.ask_folder(String::new()),
+            (Part::Folders, KeyCode::Char('b')) => self.browse(None),
             (Part::Databases, KeyCode::Char('n')) => self.ask(
                 "Bind a database",
                 &["As holon database add takes it: a name flows use, a SQLite file's path or where its URL is kept (env:…, vault:…), then any of", "--read-only  --for SLUG  --lock run  --schema SQL (last)", "shop ~/shop.db --schema create table if not exists items (id integer primary key)"],
@@ -565,11 +674,12 @@ impl App {
             }
             (Part::Folders | Part::Databases, KeyCode::Delete | KeyCode::Char('D')) => {
                 let database = self.admin.part == Part::Databases;
+                let res = if database { Res::Database } else { Res::Folder };
                 let list = if database { &self.admin.databases } else { &self.admin.folders };
                 if let Some(v) = list.get(i) {
                     let (name, deployment) = (s(&v["name"]), v["deployment"].as_str().map(str::to_string));
                     let line = if database { "Flows that use it can't reach it until it is bound again; the database stays where it is." } else { "Flows that use it can't reach it until it is bound again; its files stay where they are." };
-                    self.sure(format!("Unbind {name}?"), &[line], AdminDo::Unbind { database, name, deployment });
+                    self.sure(format!("Unbind {name}?"), &[line], AdminDo::Unbind { res, name, deployment });
                 }
             }
             (Part::Databases, KeyCode::Enter | KeyCode::Char('t')) => {
@@ -585,24 +695,15 @@ impl App {
                 };
                 self.modal = Some(Modal::Lines { title: format!("{name}'s tables"), lines, scroll: 0 });
             }
-            (Part::Secrets, KeyCode::Enter) if i > 0 => {
-                if let Some(slug) = self.deployments().get(i - 1).cloned() {
-                    self.open_flow(&slug);
-                    if self.page == Page::Flow {
-                        self.flow_section(Section::Access);
-                    }
-                }
-            }
             (Part::Server, KeyCode::Enter) => match i {
-                0 => self.sure("Read holon.toml again?", &["Every deployment is held to it as it is now: one that asks for more than it allows now pauses."], AdminDo::ReloadPolicy),
-                2 => {
+                1 => {
                     let Some(c) = self.client.as_ref() else { return };
                     let now = c.get("/admin/oidc").ok().filter(|v| v["settings"].is_object()).map(|v| format!("{} {}", s(&v["settings"]["issuer"]), s(&v["settings"]["client_id"]))).unwrap_or_default();
                     self.ask("Sign-in provider", &["The issuer's URL and this server's client id there (empty: none, a password only):", "https://login.example.com my-holon"], now, AdminAsk::Oidc);
                 }
-                3 => self.admin_do(AdminDo::SweepStore),
-                4 => self.sure("Remove the folder texts nothing names?", &["Texts a live run, a kept run or a folder still names stay."], AdminDo::SweepFolders),
-                5 => self.admin_pane(),
+                2 => self.admin_do(AdminDo::SweepStore),
+                3 => self.sure("Remove the folder texts nothing names?", &["Texts a live run, a kept run or a folder still names stay."], AdminDo::SweepFolders),
+                4 => self.admin_pane(),
                 _ => {}
             },
             _ => {}
@@ -651,9 +752,9 @@ impl App {
                 let r = c.delete(&format!("/people/{}/tokens/{}", seg(&of), seg(&id)));
                 self.admin_done(r, |_| format!("revoked {of}'s {id}"));
             }
-            AdminDo::Unbind { database, name, deployment } => {
+            AdminDo::Unbind { res, name, deployment } => {
                 let only = deployment.map(|d| format!("?deployment={}", seg(&d))).unwrap_or_default();
-                let r = c.delete(&format!("/admin/{}/{}{only}", if database { "databases" } else { "folders" }, seg(&name)));
+                let r = c.delete(&format!("/admin/{}/{}{only}", res.path(), seg(&name)));
                 self.admin_done(r, |_| format!("unbound {name}"));
             }
             AdminDo::ReloadPolicy => {
@@ -680,6 +781,7 @@ impl App {
                 let r = c.post("/admin/folders/sweep", json!({}));
                 self.admin_done(r, |v| format!("removed {} file texts ({})", v["texts"].as_u64().unwrap_or(0), crate::folders::size_text(v["bytes"].as_u64().unwrap_or(0))));
             }
+            AdminDo::Host(d) => self.host_part_do(d),
         }
     }
 
@@ -802,6 +904,7 @@ impl App {
                 self.admin_done(r, |_| if cleared { "no sign-in provider: a password only".into() } else { "the sign-in provider is set".into() });
             }
             AdminAsk::Access(ask) => self.access_part_answer(ask, value),
+            AdminAsk::Host(ask) => self.host_part_answer(ask, value),
         }
     }
 }

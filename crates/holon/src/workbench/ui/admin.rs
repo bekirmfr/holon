@@ -26,7 +26,6 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn counts(app: &App) -> [Option<usize>; PARTS.len()] {
     let a = &app.admin;
-    let deployed = app.client.as_ref().map_or(0, |c| c.deployments.len());
     // A part not shown to the caller counts nothing.
     PARTS.map(|(p, _)| if a.refused[p as usize].is_some() { None } else { match p {
         Part::People => Some(a.users.len()),
@@ -38,8 +37,11 @@ fn counts(app: &App) -> [Option<usize>; PARTS.len()] {
         Part::Keys => Some(a.tokens.len()),
         Part::Folders => Some(a.folders.len()),
         Part::Databases => Some(a.databases.len()),
-        Part::Secrets => Some(deployed),
-        Part::Server => None,
+        Part::Mail => Some(a.mails.len()),
+        Part::Feeds => Some(a.feeds.len()),
+        Part::Queues => Some(a.queues.len()),
+        Part::Secrets => Some(a.secrets["secrets"].as_array().map_or(0, Vec::len)),
+        Part::Storage | Part::Policy | Part::Server => None,
     } })
 }
 
@@ -106,9 +108,15 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         Part::History => format!("{name}: who approves what, then each version ({})", a.versions.len()),
         Part::Yours => format!("{name} and services, owned by you ({})", a.owned.len()),
         Part::Keys => format!("{name}: the agents' and services' ({})", a.tokens.len()),
+        Part::Folders if a.browse.is_some() => "A folder on the server's machine, to bind".to_string(),
         Part::Folders => format!("{name} flows read and write ({})", a.folders.len()),
         Part::Databases => format!("{name} flows query ({})", a.databases.len()),
-        Part::Secrets => format!("{name}: names only, never values"),
+        Part::Mail => format!("{name} flows send and receive ({})", a.mails.len()),
+        Part::Feeds => format!("{name} whose events start runs ({})", a.feeds.len()),
+        Part::Queues => format!("{name} flows take messages from and send to ({})", a.queues.len()),
+        Part::Secrets => format!("{name}: the server's own, never their values"),
+        Part::Storage => format!("{name}: holon.toml's [storage]"),
+        Part::Policy => format!("{name}: what flows may get"),
         Part::Server => "The server".to_string(),
     };
     let focused = !a.right;
@@ -132,11 +140,13 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
             Part::Roles => "No roles: n defines one.",
             Part::Bindings => "Nothing bound: n binds a role.",
             Part::Yours => "No agent or service of yours: an admin adds one, owned by you.",
+            Part::Mail => "No mail bound: n binds one.",
+            Part::Feeds => "No feeds bound: n binds one.",
+            Part::Queues => "No queues bound: n binds one.",
             _ => "No databases bound: n binds one.",
         };
         return f.render_widget(Paragraph::new(dim(format!(" {empty}"))), inner);
     }
-    let slugs: Vec<String> = app.client.as_ref().map(|c| c.deployments.iter().filter_map(|d| d["slug"].as_str().map(str::to_string)).collect()).unwrap_or_default();
     list(f, app, inner, List::Admin, n, Some(a.sel()), focused, |i, w| match a.part {
         Part::People => {
             let u = &a.users[i];
@@ -152,10 +162,35 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
             let t = &a.tokens[i];
             Line::from(vec![bold(pad(s(&t["label"]), 24)), Span::raw(pad(s(&t["principal"]), 16)), dim(fit(s(&t["id"]), w.saturating_sub(40)))])
         }
-        Part::Folders => binding(&a.folders[i], s(&a.folders[i]["access"]), w),
         Part::Databases => binding(&a.databases[i], s(&a.databases[i]["engine"]), w),
-        Part::Secrets if i == 0 => Line::from(dim("the server's environment")),
-        Part::Secrets => Line::from(Span::raw(slugs.get(i - 1).cloned().unwrap_or_default())),
+        Part::Folders if a.browse.is_some() => {
+            let (name, _) = crate::workbench::admin::browse_rows(a.browse.as_ref().unwrap_or(&Value::Null)).into_iter().nth(i).unwrap_or_default();
+            Line::from(if name == ".." { dim("..  its parent") } else { Span::raw(fit(&name, w)) })
+        }
+        Part::Folders => binding(&a.folders[i], s(&a.folders[i]["access"]), w),
+        Part::Mail | Part::Feeds | Part::Queues => {
+            let res = crate::workbench::host::Res::of(a.part).unwrap_or(crate::workbench::host::Res::Queue);
+            let b = &app.bindings_of(res)[i];
+            let line = match res {
+                crate::workbench::host::Res::Mail => crate::mails::line(b),
+                crate::workbench::host::Res::Feed => crate::feeds::line(b),
+                _ => crate::queues::line(b),
+            };
+            let rest = line.split_once("  ").map_or(String::new(), |(_, r)| r.to_string());
+            Line::from(vec![bold(pad(s(&b["name"]), 18)), dim(fit(&rest, w.saturating_sub(18)))])
+        }
+        Part::Secrets => match a.secrets["secrets"].as_array().and_then(|all| all.get(i)) {
+            Some(secret) => {
+                let problem = if secret["problem"].is_string() { coloured("  can't be read", BAD) } else { Span::raw("") };
+                Line::from(vec![bold(pad(s(&secret["name"]), 20)), Span::raw(pad(&format!("v{}", secret["version"]), 6)), dim(fit(s(&secret["source"]), w.saturating_sub(40))), problem])
+            }
+            None => Line::from(dim("what the server's environment holds")),
+        },
+        Part::Storage => {
+            let (key, label, ..) = crate::workbench::host::STORAGE[i];
+            Line::from(vec![Span::raw(pad(label, 16)), bold(fit(&app.storage_value(key), w.saturating_sub(16)))])
+        }
+        Part::Policy => Line::from(Span::raw(crate::workbench::host::POLICY_ROWS[i])),
         Part::Server => Line::from(Span::raw(SERVER_ROWS[i])),
         Part::Groups => {
             let g = &a.groups[i];

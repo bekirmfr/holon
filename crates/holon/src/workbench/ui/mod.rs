@@ -686,9 +686,13 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
                     Part::History => vec![("enter", "approval settings", Enter, NONE)],
                     Part::Yours => vec![("n", "new key", Char('n'), NONE), ("del", "revoke a key", Delete, NONE)],
                     Part::Keys => vec![("n", "new key", Char('n'), NONE), ("del", "revoke", Delete, NONE)],
-                    Part::Folders => vec![("n", "bind a folder", Char('n'), NONE), ("del", "unbind", Delete, NONE)],
+                    Part::Folders if app.admin.browse.is_some() => vec![("enter", "open", Enter, NONE), ("←", "parent", Left, NONE), ("n", "bind this folder", Char('n'), NONE), ("esc", "stop browsing", Esc, NONE)],
+                    Part::Folders => vec![("n", "bind a folder", Char('n'), NONE), ("b", "browse", Char('b'), NONE), ("del", "unbind", Delete, NONE)],
                     Part::Databases => vec![("n", "bind a database", Char('n'), NONE), ("enter", "tables", Enter, NONE), ("del", "unbind", Delete, NONE)],
-                    Part::Secrets => vec![("enter", "set them", Enter, NONE)],
+                    Part::Mail | Part::Feeds | Part::Queues => vec![("n", "bind", Char('n'), NONE), ("del", "unbind", Delete, NONE)],
+                    Part::Secrets => vec![("n", "new secret", Char('n'), NONE), ("enter", "set again", Enter, NONE), ("t", "where it goes", Char('t'), NONE), ("R", "roll back", Char('R'), NONE), ("del", "remove", Delete, NONE)],
+                    Part::Storage => vec![("enter", "change", Enter, NONE)],
+                    Part::Policy => vec![("enter", "read it again", Enter, NONE)],
                     Part::Server => vec![("enter", "do it", Enter, NONE)],
                 }
                 .into_iter()

@@ -1291,10 +1291,13 @@ fn the_admin_page_invites_people_makes_keys_and_binds_folders_and_databases() {
     let mut app = admin_app();
     press(&mut app, KeyCode::Char('7'));
     assert_eq!(app.page, Page::Admin);
-    let shown = screen(&mut app, 200, 40);
-    for part in ["People", "Groups", "Roles", "Bindings", "Access history", "Your agents", "API keys", "Folders", "Databases", "Secrets", "Server"] {
-        assert!(shown.contains(part), "{part}: {shown}");
+    // Each part's tab shows when it is picked, the bar scrolled to it if need be.
+    for (part, name) in super::admin::PARTS {
+        app.admin_part(part);
+        let shown = screen(&mut app, 140, 40);
+        assert!(shown.lines().nth(1).is_some_and(|bar| bar.contains(name)), "{name}: {shown}");
     }
+    app.admin_part(Part::People);
 
     // People: invite, then change the role; the link is shown once, and copied.
     press(&mut app, KeyCode::Char('n'));
@@ -1360,7 +1363,6 @@ fn the_admin_page_invites_people_makes_keys_and_binds_folders_and_databases() {
     let shown = screen(&mut app, 140, 40);
     assert!(shown.contains("Read from the environment"), "{shown}");
     app.admin_part(Part::Server);
-    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Down);
     let shown = screen(&mut app, 140, 40);
     assert!(shown.contains("Signing in through an identity provider"), "{shown}");
@@ -2503,7 +2505,11 @@ fn live_settings() {
 /// A server with accounts, set up by ada (an admin), and `people` invited, each `(name, role)`:
 /// the server, its accounts, and each one's sign-in by name.
 fn people_server(people: &[(&str, &str)]) -> (&'static AppState, std::sync::Arc<crate::accounts::Accounts>, std::collections::HashMap<String, String>) {
-    let mut state = test_state();
+    people_server_on(test_state(), people)
+}
+
+/// As `people_server`, on `state`.
+fn people_server_on(mut state: AppState, people: &[(&str, &str)]) -> (&'static AppState, std::sync::Arc<crate::accounts::Accounts>, std::collections::HashMap<String, String>) {
     let book = std::sync::Arc::new(crate::accounts::Accounts::memory());
     let pw = "correct horse battery";
     let (ada, _) = book.setup(&book.setup_code().unwrap(), "ada", pw).unwrap();
@@ -2684,6 +2690,210 @@ fn an_agents_owner_makes_and_revokes_its_keys() {
     assert_eq!(app.admin.owned[0]["tokens"].as_array().map(Vec::len), Some(0), "{}", note(&app));
 }
 
+
+/// A server whose policy allows plain http to private addresses (for stand-ins on this machine),
+/// set up by ada, with `people` invited: as `people_server` makes it, from `state`.
+fn host_server(state: AppState, people: &[(&str, &str)]) -> (&'static AppState, std::sync::Arc<crate::accounts::Accounts>, std::collections::HashMap<String, String>) {
+    let policy = "[grants]\nallow_plain_http = true\nallow_private_addresses = true\n";
+    // As a policy read from its file keeps its text.
+    let parsed = crate::permissions::Policy::parse(policy).unwrap();
+    *state.policy.write().unwrap() = std::sync::Arc::new(crate::permissions::Policy { text: Some(policy.into()), ..parsed });
+    people_server_on(state, people)
+}
+
+/// A queue bound for one deployment only, with holon queue add's flags, read back as holon
+/// queue list says it, then unbound.
+#[test]
+fn a_queue_is_bound_for_one_deployment_and_unbound() {
+    let sqs = crate::sqs::stand_in::StandIn::start();
+    sqs.make("jobs");
+    let mut state = test_state();
+    let url = sqs.url("jobs");
+    let queues = crate::queues::Queues::memory().with_sources(crate::secret_sources::Sources::of(&[("HOLON_SECRET_JOBS_URL", url.as_str())]));
+    state.folders = std::sync::Arc::new(crate::folders::Folders::memory().with_queues(queues));
+    crate::tests::stage_text(&state, BUMP);
+    let (state, _, tokens) = host_server(state, &[]);
+    let (mut app, _) = admin_page_as(state, &tokens["ada"]);
+    app.go(Page::Editor);
+    tab_with(&mut app, BUMP);
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Enter);
+    assert!(app.client.as_ref().unwrap().deployment("bump").is_some(), "{}", note(&app));
+    press(&mut app, KeyCode::Esc);
+    app.go(Page::Admin);
+    app.admin_part(Part::Queues);
+    assert!(screen(&mut app, 140, 40).contains("No queues bound"));
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "jobs --url env:HOLON_SECRET_JOBS_URL --visibility 2m --keep-failed --for bump");
+    let q = app.admin.queues.first().unwrap_or_else(|| panic!("not bound: {}", note(&app)));
+    assert_eq!((&q["name"], &q["deployment"], &q["keep_failed"]), (&serde_json::json!("jobs"), &serde_json::json!("bump"), &serde_json::json!(true)));
+    assert!(note(&app).starts_with("bound jobs") && note(&app).ends_with("for bump only"), "{}", note(&app));
+    assert!(!format!("{:?}", app.admin.queues).contains(&url), "the URL itself is never shown");
+    let shown = detail(&app);
+    assert!(shown.contains("For: bump only") && shown.contains("a failed run's message kept") && shown.contains("no deployment uses it"), "{shown}");
+    // A line its command wouldn't take is refused as the command refuses it.
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "other --nope");
+    assert!(note(&app).contains("no option \"--nope\""), "{}", note(&app));
+    press(&mut app, KeyCode::Delete);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.admin.queues.is_empty(), "{}", note(&app));
+}
+
+/// The server's own secret, set from a name the server reads with where it may go, set again,
+/// its history listed, then rolled back after saying what that would do; never a value shown.
+#[test]
+fn a_server_secret_is_set_from_the_environment_and_rolled_back() {
+    let mut state = test_state();
+    let sources = crate::secret_sources::Sources::of(&[("HOLON_SECRET_API_KEY", "first-api-value"), ("HOLON_SECRET_API_KEY_NEXT", "second-api-value")]);
+    state.secrets = std::sync::Arc::new(crate::secrets::SecretStore::memory().with_sources(sources));
+    let (state, _, tokens) = host_server(state, &[]);
+    let (mut app, _) = admin_page_as(state, &tokens["ada"]);
+    app.admin_part(Part::Secrets);
+    assert!(detail(&app).contains("Read from the environment"), "with none of its own, what the environment holds: {}", detail(&app));
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "api_key --from env:HOLON_SECRET_API_KEY --to api.stripe.com");
+    assert!(note(&app).starts_with("api_key: version 1 set for the server"), "{}", note(&app));
+    let shown = detail(&app);
+    assert!(shown.contains("Source: env:HOLON_SECRET_API_KEY") && shown.contains("May go: only to https://api.stripe.com"), "{shown}");
+    press(&mut app, KeyCode::Enter);
+    answer(&mut app, "--from env:HOLON_SECRET_API_KEY_NEXT");
+    assert!(note(&app).starts_with("api_key: version 2"), "{}", note(&app));
+    let shown = detail(&app);
+    assert!(shown.contains("v1") && shown.contains("v2") && shown.contains("(current)"), "its history: {shown}");
+    press(&mut app, KeyCode::Char('R'));
+    answer(&mut app, "1");
+    let Some(Modal::Confirm { lines, .. }) = &app.modal else { panic!("no preview: {}", note(&app)) };
+    assert!(lines.join(" ").contains("would make v1") && !lines.join(" ").contains("--dry-run"), "{lines:?}");
+    press(&mut app, KeyCode::Enter);
+    assert!(note(&app).contains("version 1 is current again, as version 3"), "{}", note(&app));
+    // Where it may go, widened to anywhere.
+    press(&mut app, KeyCode::Char('t'));
+    answer(&mut app, "anywhere");
+    assert!(note(&app).contains("wherever its flows' approvals show"), "{}", note(&app));
+    let everything = format!("{:?} {:?}", app.admin.secrets, app.admin.pane);
+    assert!(!everything.contains("first-api-value") && !everything.contains("second-api-value"), "never a value");
+}
+
+/// Who uses a folder: the deployment that reads it, and in amber the version an agent proposed
+/// that would read it too, waiting for a person.
+#[test]
+fn a_resource_says_who_uses_it_and_what_a_waiting_version_would_add() {
+    let reader = |flow: &str| format!("import {{ action, flow }} from \"holon\"\nimport inbox from \"folder:inbox\"\n\nflow(\"{flow}\")\n\nexport const peek = action(async (name) => inbox[name])\n");
+    let mut state = test_state();
+    for flow in ["reader", "later"] {
+        crate::tests::stage_text(&state, &reader(flow));
+    }
+    let dir = std::env::temp_dir().join(format!("holon-used-by-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    state.folders = std::sync::Arc::new(crate::folders::Folders::memory());
+    let (state, book, tokens) = host_server(state, &[]);
+    book.add("claude", crate::accounts::Kind::Agent, "agent", "ada", "ada").unwrap();
+    let claude = book.create_token("claude", "the test", "ada").unwrap().0;
+    let (mut app, _) = admin_page_as(state, &tokens["ada"]);
+    app.admin_part(Part::Folders);
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, &format!("inbox {}", dir.display()));
+    assert_eq!(app.admin.folders.len(), 1, "{}", note(&app));
+    app.go(Page::Editor);
+    tab_with(&mut app, &reader("reader"));
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Enter);
+    assert!(app.client.as_ref().unwrap().deployment("reader").is_some(), "{}", note(&app));
+    let agent = Client::new(Box::new(InProcess(state, Some(claude))));
+    let plan = holon_author::agent::plan(&reader("later")).unwrap();
+    let said = agent.post("/deploy", serde_json::json!({ "slug": "later", "unit": plan.unit, "document": plan.document, "why": "it reads the inbox too" }));
+    assert!(said.as_ref().is_ok_and(|s| s["proposal"]["id"].is_u64()), "a proposal: {said:?}");
+    app.refresh();
+    app.go(Page::Admin);
+    app.admin_part(Part::Folders);
+    let rows = app.admin.pane.as_ref().map(|(_, r)| r.clone()).unwrap_or_default();
+    assert!(rows.iter().any(|r| matches!(r, Row::Text(Tone::Plain, t) if t == "  reader: reads")), "{rows:?}");
+    assert!(rows.iter().any(|r| matches!(r, Row::Text(Tone::Warn, t) if t.contains("later") && t.contains("waiting for a person, would add: reads"))), "amber: {rows:?}");
+    screen(&mut app, 80, 24);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The policy part shows holon.toml's text, a line each, and what flows get; storage can't be
+/// written into a policy file the server doesn't read from, and says so.
+#[test]
+fn the_policy_part_shows_its_text() {
+    let (state, _, tokens) = host_server(test_state(), &[]);
+    let (mut app, _) = admin_page_as(state, &tokens["ada"]);
+    app.admin_part(Part::Policy);
+    let rows = app.admin.pane.as_ref().map(|(_, r)| r.clone()).unwrap_or_default();
+    assert!(rows.iter().any(|r| matches!(r, Row::Code { n: 2, text, .. } if text == "allow_plain_http = true")), "{rows:?}");
+    assert!(screen(&mut app, 140, 40).contains("allow_plain_http = true"));
+    press(&mut app, KeyCode::Down);
+    assert!(detail(&app).contains("plain http         allowed"), "{}", detail(&app));
+    press(&mut app, KeyCode::Down);
+    assert!(detail(&app).contains("covers every deployment"), "{}", detail(&app));
+    app.admin_part(Part::Storage);
+    press(&mut app, KeyCode::Enter);
+    answer(&mut app, "90%");
+    assert!(app.note.as_ref().is_some_and(|n| n.error) && note(&app).contains("no file"), "{}", note(&app));
+}
+
+/// Someone whose role holds resource.view alone sees the resources and the server's secrets,
+/// and none of the keys that bind or unbind them; the storage and the policy say why not.
+#[test]
+fn someone_holding_resource_view_only_sees_the_resources_and_no_bind_keys() {
+    let (state, book, _) = people_server(&[]);
+    book.define_role(crate::bindings::RoleText { name: "looker".into(), about: None, allows: vec!["resource.view".into()], kinds: vec![crate::accounts::Kind::Person] }, "ada", None).unwrap();
+    let lou = book.accept(&book.invite("lou", "looker", None, "ada").unwrap(), "correct horse battery").unwrap().0;
+    let (mut app, calls) = admin_page_as(state, &lou);
+    for part in [Part::Folders, Part::Databases, Part::Mail, Part::Feeds, Part::Queues, Part::Secrets] {
+        app.admin_part(part);
+        let shown = screen(&mut app, 140, 40);
+        assert!(!shown.contains("It can't be shown here"), "{part:?}: {shown}");
+        for key in ["bind", "unbind", "new secret", "roll back", "browse"] {
+            assert!(!shown.contains(&format!("  {key}")), "{part:?}: no {key:?} key: {shown}");
+        }
+    }
+    let before = calls.lock().unwrap().len();
+    app.admin_part(Part::Queues);
+    press(&mut app, KeyCode::Char('n'));
+    assert!(app.modal.is_none() && note(&app).contains("resource.bind"), "{}", note(&app));
+    assert_eq!(calls.lock().unwrap().len(), before, "sends nothing");
+    for (part, takes) in [(Part::Storage, "host.view"), (Part::Policy, "policy.view")] {
+        app.admin_part(part);
+        let shown = screen(&mut app, 140, 40);
+        assert!(shown.contains("It can't be shown here") && shown.contains(takes), "{part:?}: {shown}");
+    }
+}
+
+/// b walks the server's folders: enter opens one, ← goes back to its parent, and n binds the
+/// folder shown, its path in the dialog.
+#[test]
+fn a_folder_to_bind_is_found_by_walking_the_servers_folders() {
+    let dir = std::env::temp_dir().join(format!("holon-walk-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("Inbox Two")).unwrap();
+    let (state, _, tokens) = people_server(&[]);
+    let (mut app, _) = admin_page_as(state, &tokens["ada"]);
+    app.admin_part(Part::Folders);
+    press(&mut app, KeyCode::Char('b'));
+    assert!(app.admin.browse.is_some(), "{}", note(&app));
+    // Straight to the test's folder, as enter on each folder on the way would.
+    app.admin.browse = Some(app.client.as_ref().unwrap().get(&format!("/admin/folders/browse?path={}", crate::mcp::seg(&dir.display().to_string()))).unwrap());
+    app.admin.sel[Part::Folders as usize] = 0;
+    let rows = super::admin::browse_rows(app.admin.browse.as_ref().unwrap());
+    let at = rows.iter().position(|(name, _)| name == "Inbox Two").unwrap_or_else(|| panic!("{rows:?}"));
+    app.admin_pick(List::Admin, at, false);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.admin.browse.as_ref().is_some_and(|b| b["path"].as_str().is_some_and(|p| p.ends_with("Inbox Two"))), "{:?}", app.admin.browse);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Inbox Two") && shown.contains("bind this folder"), "{shown}");
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.admin.browse.as_ref().and_then(|b| b["path"].as_str()).map(|p| p.trim_end_matches(['/', '\\']).ends_with(&format!("holon-walk-{}", std::process::id()))), Some(true));
+    app.admin_pick(List::Admin, at, false);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Char('n'));
+    let Some(Modal::Input { value, .. }) = &app.modal else { panic!("no dialog: {}", note(&app)) };
+    assert!(value.starts_with("inbox-two ") && value.ends_with("Inbox Two"), "{value}");
+    assert!(app.admin.browse.is_none(), "the walk is over");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Step 6 against a live server: ada makes a group and a role, binds the role to the group on one
 /// flow and to ana at one approval point from her page, then asks for one person's approval of
 /// what gives more, and a binding waits for bob in Approvals › Access changes; ana, no admin,
@@ -2785,4 +2995,104 @@ fn live_access() {
     assert_eq!(app.admin.owned[0]["tokens"].as_array().map(Vec::len), Some(1));
     app.admin_part(Part::Roles);
     keep("ana: Roles, as an editor sees them", &mut app);
+}
+
+/// Step 7 against a live server: ada walks to a folder and binds it, deploys a flow that reads it,
+/// and an agent's version that would read it too waits, shown in amber under the folder; a server
+/// secret is typed in, typed again, and rolled back after the dry run says what it would do; a
+/// queue's line is sent as holon queue add takes it; the policy and storage say what they can.
+/// Each page it passes is written to `HOLON_SCREENS`.
+#[test]
+#[ignore = "drives a live server: HOLON_LIVE=http://127.0.0.1:7591 HOLON_SCREENS=pages.txt"]
+fn live_host() {
+    let server = std::env::var("HOLON_LIVE").expect("HOLON_LIVE: the server's address");
+    let out = std::env::var("HOLON_SCREENS").expect("HOLON_SCREENS: where to write the pages");
+    let open = |token: Option<&str>| Client::new(Box::new(crate::mcp::Http::new(&server, token)));
+    let ok = |said: Result<serde_json::Value, String>, what: &str| said.unwrap_or_else(|e| panic!("{what}: {e}"));
+    let ada = ok(open(None).post("/auth/setup", serde_json::json!({ "code": "HOLON-LIVE", "name": "ada", "password": "correct horse battery" })), "setup")["token"].as_str().unwrap().to_string();
+    let as_ada = open(Some(&ada));
+    ok(as_ada.post("/people", serde_json::json!({ "name": "claude", "kind": "agent", "role": "agent", "owner": "ada" })), "claude");
+    let claude = ok(as_ada.post("/people/claude/tokens", serde_json::json!({ "label": "the live run" })), "claude's key")["token"].as_str().unwrap().to_string();
+    let mut pages = String::new();
+    let mut keep = |name: &str, app: &mut App| {
+        pages += &format!("\n===== {name} =====\n{}\nnote: {}\n", screen(app, 140, 40), note(app));
+        std::fs::write(&out, &pages).unwrap();
+    };
+    let mut app = App::new(None);
+    app.attach(open(Some(&ada)));
+    app.refresh();
+    press(&mut app, KeyCode::Char('7'));
+
+    // A folder, found by walking the server's folders.
+    let root = std::env::temp_dir().join(format!("holon-live-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("inbox")).unwrap();
+    app.admin_part(Part::Folders);
+    press(&mut app, KeyCode::Char('b'));
+    keep("Folders: the walk starts", &mut app);
+    // Straight to the run's folder, as enter on each folder on the way would.
+    app.admin.browse = Some(ok(as_ada.get(&format!("/admin/folders/browse?path={}", crate::mcp::seg(&root.display().to_string()))), "browse"));
+    let at = super::admin::browse_rows(app.admin.browse.as_ref().unwrap()).iter().position(|(name, _)| name == "inbox").expect("inbox");
+    app.admin_pick(List::Admin, at, false);
+    press(&mut app, KeyCode::Enter);
+    keep("Folders: inside inbox", &mut app);
+    press(&mut app, KeyCode::Char('n'));
+    keep("Folders: the bind dialog, its path in it", &mut app);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.admin.folders.len(), 1, "{}", note(&app));
+
+    // A flow that reads it, deployed; an agent's version that would read it too, waiting.
+    let reader = |flow: &str| format!("import {{ action, flow }} from \"holon\"\nimport inbox from \"folder:inbox\"\n\nflow(\"{flow}\")\n\nexport const peek = action(async (name) => inbox[name])\n");
+    app.go(Page::Editor);
+    tab_with(&mut app, &reader("reader"));
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Enter);
+    assert!(app.client.as_ref().unwrap().deployment("reader").is_some(), "{}", note(&app));
+    let plan = holon_author::agent::plan(&reader("later")).unwrap();
+    let said = open(Some(&claude)).post("/deploy", serde_json::json!({ "slug": "later", "unit": plan.unit, "document": plan.document, "why": "it reads the inbox too" }));
+    assert!(said.as_ref().is_ok_and(|s| s["proposal"]["id"].is_u64()), "a proposal: {said:?}");
+    app.refresh();
+    app.go(Page::Admin);
+    app.admin_part(Part::Folders);
+    keep("Folders: inbox, used by reader, and later waiting", &mut app);
+    let rows = app.admin.pane.as_ref().map(|(_, r)| r.clone()).unwrap_or_default();
+    assert!(rows.iter().any(|r| matches!(r, Row::Text(Tone::Warn, t) if t.contains("later"))), "amber: {rows:?}");
+
+    // The server's own secret, typed in twice, then rolled back.
+    app.admin_part(Part::Secrets);
+    keep("Secrets: none of its own yet", &mut app);
+    press(&mut app, KeyCode::Char('n'));
+    answer(&mut app, "api_key --to api.stripe.com");
+    keep("Secrets: its value asked, masked", &mut app);
+    answer(&mut app, "first-live-value");
+    assert!(note(&app).starts_with("api_key: version 1"), "{}", note(&app));
+    press(&mut app, KeyCode::Enter);
+    answer(&mut app, "");
+    answer(&mut app, "second-live-value");
+    assert!(note(&app).starts_with("api_key: version 2"), "{}", note(&app));
+    keep("Secrets: api_key, version 2", &mut app);
+    press(&mut app, KeyCode::Char('R'));
+    answer(&mut app, "1");
+    keep("Secrets: what rolling back would do", &mut app);
+    press(&mut app, KeyCode::Enter);
+    keep("Secrets: rolled back", &mut app);
+    assert!(note(&app).contains("version 1 is current again"), "{}", note(&app));
+    let written = std::fs::read_to_string(&out).unwrap();
+    assert!(!written.contains("first-live-value") && !written.contains("second-live-value"), "never a value");
+
+    // A queue, as holon queue add takes it: what the live server says to it.
+    app.admin_part(Part::Queues);
+    press(&mut app, KeyCode::Char('n'));
+    keep("Queues: the bind dialog", &mut app);
+    answer(&mut app, "jobs --url env:HOLON_SECRET_JOBS_URL --for reader");
+    keep("Queues: what the server says", &mut app);
+
+    for (part, name) in [(Part::Mail, "Mail"), (Part::Feeds, "Feeds"), (Part::Storage, "Storage"), (Part::Policy, "Policy")] {
+        app.admin_part(part);
+        keep(name, &mut app);
+    }
+    press(&mut app, KeyCode::Down);
+    keep("Policy: what flows get", &mut app);
+    press(&mut app, KeyCode::Down);
+    keep("Policy: held off", &mut app);
+    let _ = std::fs::remove_dir_all(&root);
 }

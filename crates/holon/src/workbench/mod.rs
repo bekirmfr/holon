@@ -11,6 +11,7 @@ mod client;
 mod diff;
 mod flow;
 mod graph;
+mod host;
 mod palette;
 mod policy;
 mod review;
