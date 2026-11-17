@@ -320,6 +320,14 @@ one isn't shipped in the export: verify asks for the file, as it does for a fold
 hashes. Given it, such a run differs, since the log holds the secret's placeholder where the file
 holds its value.
 
+A secret is found in every spelling JSON gives it: one with a quote, a backslash or a newline in
+it (a password, a PEM block) reads another way each time it is written out as JSON, and its mark
+stands in place at each depth, the rest of the text kept. A text that holds it in a spelling no
+mark can be put into (another writer's: `\u0022` for a quote) is kept out whole, as
+`‹respelled:secret:name›`; a step fed one, or whose own record is one, is taken as recorded and
+named in the report, as a step fed any value the log doesn't hold. A write or a send that the server refuses for a secret, it
+refuses in any of these spellings.
+
 A credential a call answers with is kept out the same way when the request held a secret (an
 OAuth token exchange): a value under `access_token`, `refresh_token`, `id_token`, `session_token`,
 `token`, `client_secret`, `api_key`, `secret` or `password` in a JSON answer reads
