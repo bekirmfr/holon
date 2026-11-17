@@ -106,7 +106,16 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   those): a mark of its own kind, which a caller can't forge (`MARKED`) and which `holon verify`
   treats as any value the log doesn't hold. A step computed on its marks whose record is such a
   text is taken as recorded and named, not compared: computed on the marks it gives the text
-  with a mark in place, never the record's. A value with none of those characters has one spelling, and costs nothing more.
+  with a mark in place, never the record's. So is what a route answered, where the line withheld
+  it whole and the run again answers a text made of one so withheld: the host writes an answer
+  out itself, so no step's record stands for it (`answered_as_said`). A value with none of those characters has one spelling, and costs nothing more.
+- **Cut after it is marked.** A line keeps 64 KiB of what a route answered
+  (`secrets::ANSWER_KEPT`). The answer comes to the entry whole (`recorder::body_text`) and is
+  cut where the line is made, after the redactor has gone over it (`firing::cut_answer` in
+  `redacted_line`, `secrets::cut_written`): as the line writes it, and never inside a mark. Cut
+  before, a value lying across the cut left its first part in the line, the whole no longer
+  there to find, and a text read by its shape was no longer one. `holon verify` cuts what a run
+  answers again with the same function, and compares the two whole.
 - **Followed.** Core's taint walk follows a secret's value through the graph as literal or
   derived, cut by a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`), a Boolean or a call's
   answer. A state, collection, file, database or channel write of a secret or of what is derived
@@ -229,7 +238,8 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
 
 - holon-core taint.rs: `a_leaf_computes_from_a_secret_unless_it_only_moves_what_it_was_handed`.
 - tests.rs: `a_secret_is_found_in_every_spelling_json_gives_it` (each kind of character, each
-  depth, each of the record, a write and a send).
+  depth, each of the record, a write and a send); `an_answer_is_cut_after_its_values_are_marked`
+  (a secret before the cut, across it at each place, after it).
 - secrets.rs: `a_value_computed_from_a_secret_has_one_mark_in_a_run_keyed_by_the_runs_salts`,
   `a_value_has_one_salt_drawn_once_sealed_and_kept_across_restarts`,
   `what_a_run_records_of_a_secret_is_where_it_is_kept_and_a_commitment_under_its_salt`,

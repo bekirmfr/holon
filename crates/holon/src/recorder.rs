@@ -2414,14 +2414,11 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
-/// A response body as log text: lossy UTF-8, cut at 64 KiB.
+/// A response body as log text: lossy UTF-8, whole. What a line keeps of it is cut where the
+/// line is made, once each value in it is its mark (`secrets::cut_written`): cut before, a value
+/// lying across the cut would leave its first part in the line, no longer whole to be found.
 pub fn body_text(body: &[u8]) -> String {
-    const MAX: usize = 64 * 1024;
-    let mut s = String::from_utf8_lossy(&body[..body.len().min(MAX)]).into_owned();
-    if body.len() > MAX {
-        s.push('…');
-    }
-    s
+    String::from_utf8_lossy(body).into_owned()
 }
 
 #[cfg(test)]
@@ -2903,7 +2900,8 @@ mod tests {
     fn body_text_is_lossy_and_bounded() {
         assert_eq!(body_text(b"ok"), "ok");
         assert_eq!(body_text(&[0xff]), "\u{fffd}");
-        assert!(body_text(&vec![b'a'; 70_000]).ends_with('…'));
+        // Whole: it is cut as the line writes it, where the line is made.
+        assert_eq!(body_text(&vec![b'a'; 70_000]).len(), 70_000);
     }
 
     /// What a cut-back wrote before it kept an index (step 4 of docs/L4s/request-path-plan.md):

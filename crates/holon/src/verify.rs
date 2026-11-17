@@ -2021,9 +2021,10 @@ fn ill_formed(entry: &LogEntry, marks: &Marks) -> Option<String> {
 /// body, or the file it answered with; an action's answer as JSON; a WebSocket block's reply, its
 /// open block's answer, a close block's none. Withheld where it may be computed from a secret
 /// (`derived`), the run marking none of it (`FiredRun::withholds_output`). A kind that answers
-/// nothing keeps none. A body past what the line keeps (64 KiB), cut at a length a mark's value
-/// isn't known at, is compared up to its first mark.
+/// nothing keeps none. A body past what the line keeps (64 KiB) is cut as the server cuts it, as
+/// written, once its values are their marks (`secrets::cut_written`), and compared whole.
 fn answered_as_said(entry: &LogEntry, first: Option<&Value>, derived: bool, marks: &Marks) -> bool {
+    // Whole: cut below as the server cuts it, once its values are their marks.
     let kept = |body: &[u8]| recorder::body_text(body);
     let made = match entry.kind.as_str() {
         "request" => {
@@ -2044,11 +2045,20 @@ fn answered_as_said(entry: &LogEntry, first: Option<&Value>, derived: bool, mark
     if derived && said == taint::WITHHELD {
         return true;
     }
-    let SValue::Text(made) = marks.write(SValue::Text(made)) else { unreachable!("a text writes as a text") };
-    match made.ends_with('…') && made.contains('‹') {
-        true => made.split('‹').next() == said.split('‹').next(),
-        false => made == *said,
+    // An answer the line withheld whole, for holding a value in a spelling no mark stands for
+    // (`secrets::RESPELLED`), where the run again answers a text made of one so withheld: the
+    // host wrote the answer out itself, no step did, so there is none to take as recorded. What
+    // the line says stands, as a step's record does.
+    let respelled = &secrets::RESPELLED['‹'.len_utf8()..];
+    if said.starts_with(secrets::RESPELLED) && said.matches('›').count() == 1 && said.ends_with('›') && made.contains(&format!("{}{respelled}", marks.start)) {
+        return true;
     }
+    let SValue::Text(mut made) = marks.write(SValue::Text(made)) else { unreachable!("a text writes as a text") };
+    // Cut as the server cuts it: as written, after its marks (`secrets::cut_written`).
+    if matches!(entry.kind.as_str(), "request" | "websocket") {
+        secrets::cut_written(&mut made);
+    }
+    made == *said
 }
 
 /// Whether `entry`'s kind keeps no answer: a WebSocket's close block, and every kind but a

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A long answer is cut after its secrets are marked.** A run's line keeps 64 KiB of what a
+  route answered. It was cut there as the run had it, and marked afterwards: a secret lying
+  across the cut left its first part in the line, since the whole value was no longer there to
+  find. That took an answer of more than 64 KiB with a secret at exactly that place (a route
+  that echoes what it is sent, to a caller who sends the secret). Now the answer is marked whole
+  and cut as the line writes it, never inside a mark, and `holon verify` cuts what a run answers
+  again the same way and compares the two whole. A line written before, whose answer was cut,
+  reads as changed to this verify: its last characters may differ.
 - **A secret with a quote, a backslash or a newline in it is kept out in every spelling JSON
   gives it.** Written out as JSON, such a value is spelled another way, and again another the
   next time. A run's record found a secret as it is and written out once; the guards that refuse

@@ -7936,7 +7936,7 @@ fn a_secret_is_found_in_every_spelling_json_gives_it() {
         // caller sent, joined into one: a step computed on a text the record may withhold whole.
         let seven = (0..7).fold("k".to_string(), |inner, _| format!("JSON.stringify({{ p: {inner} }})"));
         let routes = format!(
-            "{routes}route.post(\"/deep\", async (req) => {{\n  const got = await shown.post(\"/a\", {{ body: `deep ${{{seven}}}` }})\n  return {{ status: got.status }}\n}})\n\nroute.post(\"/join\", async (req) => {{\n  const got = await shown.post(\"/a\", {{ body: `said ${{req.body}}` }})\n  return {{ status: got.status }}\n}})\n\n"
+            "{routes}route.post(\"/deep\", async (req) => {{\n  const got = await shown.post(\"/a\", {{ body: `deep ${{{seven}}}` }})\n  return {{ status: got.status }}\n}})\n\nroute.post(\"/join\", async (req) => {{\n  const got = await shown.post(\"/a\", {{ body: `said ${{req.body}}` }})\n  return {{ status: got.status }}\n}})\n\nroute.post(\"/echo\", (req) => ({{ got: req.body }}))\n\n"
         );
         let text = format!(
             "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport shown from \"host:{shown}\"\nimport other from \"host:{other}\"\nimport seen from \"collection:seen\"\n\nflow(\"spelled-{name}\", {{ port: {port} }})\n\n{routes}route.post(\"/pass\", async (req) => {{\n  const authed = await shown.post(\"/a\", {{ body: k }})\n  const got = await other.post(\"/b\", {{ body: req.body }})\n  return {{ authed: authed.status, passed: got.error ?? got.status }}\n}})\n\nroute.get(\"/read\", () => seen.list())\n"
@@ -7983,6 +7983,12 @@ fn a_secret_is_found_in_every_spelling_json_gives_it() {
                 wrong.push(format!("{name}, joined with its first character escaped: answered {status} {body}"));
             }
             runs.push("joined with its first character escaped".into());
+            // And answered: the host writes the answer out itself, a text no step made.
+            let (status, _, _) = data_call(&state, &slug, "POST", "/echo", &escaped);
+            if status != 200 {
+                wrong.push(format!("{name}, answered with its first character escaped: answered {status}"));
+            }
+            runs.push("answered with its first character escaped".into());
         }
         for (what, body) in &sent {
             let (status, answer, _) = data_call(&state, &slug, "POST", "/pass", body);
@@ -8037,6 +8043,97 @@ fn a_secret_is_found_in_every_spelling_json_gives_it() {
         }
     }
     assert_eq!(other_hits.lock().unwrap().get("/b").copied().unwrap_or(0), 0, "the host no approval shows was sent something");
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// **Guards:** what a line keeps of an answer is cut after its values are marked, never before. A
+/// route answers what a caller sent, as a text and inside JSON; a caller sends more than a line
+/// keeps (64 KiB) with the deployment's secret in it, placed well before where the line cuts,
+/// at each place across it, just after it, and at the end. For a plain token and for a secret
+/// JSON spells another way: the line holds no part of the secret, its answer is no longer than a
+/// line keeps and ends where no mark is cut short, and `holon verify`, which cuts what the run
+/// answers again the same way, runs each run again and finds it the same.
+///
+/// **Why:** the answer was cut at 64 KiB as the run had it, and marked afterwards (audit R68): a
+/// secret lying across the cut left its first part in the line, the whole of it no longer there
+/// to find. And a text read by its shape (JSON, for a key whose value is never kept) was no
+/// longer one once cut.
+///
+/// **If it fails:** an answer is cut somewhere before its entry is redacted (`recorder::body_text`
+/// is whole; `firing::cut_answer` cuts, in `redacted_line`), or verify cuts otherwise than the
+/// server (`secrets::cut_written`, one function for both).
+#[test]
+fn an_answer_is_cut_after_its_values_are_marked() {
+    let state = claims_state("");
+    let kept = secrets::ANSWER_KEPT;
+    let mut wrong: Vec<String> = Vec::new();
+    for (name, secret, port) in [("plain", "plain-token-value-123456", 18395u16), ("quoted", "pa\"ss\\word-123456", 18396)] {
+        let text = format!(
+            "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\n\nflow(\"cut-{name}\", {{ port: {port} }})\n\nroute.post(\"/text\", (req) => req.body)\n\nroute.post(\"/json\", (req) => ({{ got: req.body }}))\n\nroute.get(\"/has\", () => ({{ set: k.length > 0 }}))\n"
+        );
+        let slug = deploy_text_to(&state, &text, &[]);
+        let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+        // Where the secret begins in what is sent: well before the cut; each place that puts
+        // it across the cut as the run has it (the first character before, the last after, and
+        // between); just after; and at the end of a body twice as long.
+        let len = secret.len();
+        let mut begins: Vec<(String, usize, usize)> = vec![("well before the cut".into(), 1000, kept + 4096)];
+        for across in [1, len / 2, len - 1] {
+            begins.push((format!("across the cut, {across} of it before"), kept - across, kept + 4096));
+        }
+        // And across it as the line writes it: a mark is not as long as its value, so the cut
+        // falls elsewhere once the value is its mark.
+        for back in [8, 24, 40] {
+            begins.push((format!("{back} before the cut"), kept - back - len, kept + 4096));
+        }
+        begins.push(("just after the cut".into(), kept + 1, kept + 4096));
+        begins.push(("at the end".into(), 2 * kept, 2 * kept + len));
+        let mut runs: Vec<String> = Vec::new();
+        for path in ["/text", "/json"] {
+            for (what, at, total) in &begins {
+                let mut body = "x".repeat(*at);
+                body.push_str(secret);
+                body.push_str(&"y".repeat(total.saturating_sub(body.len())));
+                let (status, _, _) = data_call(&state, &slug, "POST", path, &body);
+                if status != 200 {
+                    wrong.push(format!("{name}, {path}, {what}: answered {status}"));
+                }
+                runs.push(format!("{path}, {what}"));
+            }
+        }
+        let entries = log_entries(&state, &slug);
+        assert_eq!(entries.len(), runs.len(), "{name}");
+        // No part of it: no six characters of it in a row, as it is or as JSON writes it.
+        let once = serde_json::to_string(secret).unwrap();
+        let parts: Vec<String> = [secret, &once[1..once.len() - 1]].iter().flat_map(|s| s.as_bytes().windows(6).filter_map(|w| std::str::from_utf8(w).ok().map(str::to_string)).collect::<Vec<_>>()).collect();
+        for (entry, what) in entries.iter().zip(&runs) {
+            let said = entry["response_body"].as_str().unwrap_or_default();
+            if let Some(part) = parts.iter().find(|part| said.contains(part.as_str())) {
+                wrong.push(format!("{name}, {what}: its answer holds {} characters of the secret", part.chars().count()));
+            }
+            if said.len() > kept || !said.ends_with('…') {
+                wrong.push(format!("{name}, {what}: its answer is {} bytes, ending {:?}", said.len(), said.chars().last()));
+            }
+            // No mark cut short: the last one it opens, it closes.
+            if said.rfind('‹').is_some_and(|open| !said[open..].contains('›')) {
+                wrong.push(format!("{name}, {what}: its answer ends inside a mark"));
+            }
+            if !entry.to_string().contains("‹secret:k") {
+                wrong.push(format!("{name}, {what}: its record marks no secret"));
+            }
+        }
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let report = verify::check(&export, None, &BTreeMap::new());
+        for (seq, rerun) in &report.reruns {
+            if *rerun != verify::Rerun::Matched {
+                wrong.push(format!("{name}, {}: holon verify: {rerun:?}", runs[*seq as usize]));
+            }
+        }
+        if !report.ok() {
+            wrong.push(format!("{name}: {}", verify::describe(&report, None)));
+        }
+    }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
