@@ -119,6 +119,7 @@ import { useTextPane } from "./useTextPane";
 import { WelcomePage } from "./WelcomePage";
 import type { ManualAt } from "./ManualPage";
 import { readPrefs, withPane, type EditorPane, type Prefs } from "./home";
+import { Coverable } from "./covered";
 import { inspectorRun, useViewMode, ViewModePanes } from "./useViewMode";
 import { useCompositeOverlay } from "./useCompositeOverlay";
 import { useSavedFlows } from "./useSavedFlows";
@@ -1543,6 +1544,9 @@ function Canvas({
           ) : undefined
         }
       />
+      {/* The bottom panes do no work while a page covers them (covered.tsx): view mode's log,
+          left open under a flow's page, read the server and drew its runs again all the while. */}
+      <Coverable covered={shown !== "canvas"}>
       {bottomShown && <ViewModePanes view={{ ...view, showNode: (id) => { view.showNode(id); textPane.revealNode(id); } }} flow={flow} nodes={nodes} onRestored={refreshDeployments} keys={shown === "canvas"} onClose={() => onBottomShown(false)} />}
       {/* Hidden, the bottom pane folds to a strip along the bottom, as the Inspector does along
           its side: a click opens it again. */}
@@ -1613,6 +1617,7 @@ function Canvas({
           }}
         />
       )}
+      </Coverable>
       {/* The pages are overlays ON TOP of the always-mounted canvas — React
           Flow's own state (nodes mid-edit, viewport) lives in it and must survive navigation,
           so the canvas is covered, never unmounted. The deployments list used to live in a

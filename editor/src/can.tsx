@@ -13,11 +13,20 @@
 // - a request was refused (what was kept is out of date), or something was changed from here (a
 //   binding, a deploy that tags a flow): server.ts's `mayHaveChanged` says which;
 // - a minute went by: what the version doesn't move with, a flow tagged by someone else's deploy;
-// - someone else signed in: then none of it is theirs.
-// While it is read again, what was kept stays shown; before it is first read, nothing is disabled.
+// - someone else signed in: then none of it is theirs. Each answer is kept with whom it was read
+//   for (the bearer this tab sent, server.ts's `bearer`), and shown only while the tab acts as
+//   them: however they came to be signed in (a join, a sign-in, back from the provider, signed in
+//   again in its pop-up), told or not, the buttons never follow the one before.
+// While it is read again, what was kept stays shown. Before it is first read, every button it gates
+// is disabled, saying it is asking (ASKING): it fails closed. It used to fail open (nothing
+// disabled until the server answered, so a button didn't flicker for those who may), and on a
+// slow machine a viewer was shown Save enabled for the 15 s the e2e waited (accounts.e2e.ts): a
+// button said she may do what she may not. Now those who may see it enabled a moment later.
+// A read that gets no answer is asked again shortly, not a round later: a minute of buttons
+// waiting on an answer is too long.
 
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
-import { listOwned, mayI, whoAmI, type Kind } from "./server";
+import { bearer, listOwned, mayI, whoAmI, type Kind } from "./server";
 
 /** The catalogue (can.rs's `Action::ALL`), in its order; can.test.tsx holds it to the server's. */
 export const ACTIONS = [
@@ -173,9 +182,7 @@ export function gateOf(answer: Answer, own: Own = {}): { disabled: boolean; titl
 
 /** What whoever is signed in may do, for the buttons to follow. */
 export type Can = {
-  /** True, or the words the server would refuse `button` in. True until it has answered (or when
-   *  it couldn't): the server still refuses what it refuses, and a button doesn't flicker for
-   *  those who may. */
+  /** True, or the words the server would refuse `button` in; ASKING until it has answered. */
   may: (button: Button) => Answer;
   /** Whether the server said `button` is theirs: for what is shown only to whoever holds it. */
   holds: (button: Button) => boolean;
@@ -185,6 +192,10 @@ export type Can = {
   known: boolean;
 };
 
+/** What a button says while the server hasn't answered what whoever is signed in may do: it is
+ *  disabled until it has (fails closed; the file's head says why). */
+export const ASKING = "a moment: asking the server what you may do";
+
 /** A `Can` from the server's answers (null while it hasn't answered). */
 export function canOf(answers: Answers | null): Can {
   // Each action the button's route asks, the first refused saying why.
@@ -192,7 +203,8 @@ export function canOf(answers: Answers | null): Can {
     const b: { action: Action; also?: Action } = BUTTONS[button];
     return b.also ? [b.action, b.also] : [b.action];
   };
-  const may = (button: Button): Answer => asked(button).map((a) => answers?.[a] ?? true).find((said) => said !== true) ?? true;
+  const may = (button: Button): Answer =>
+    answers === null ? ASKING : (asked(button).map((a) => answers[a] ?? true).find((said) => said !== true) ?? true);
   return { may, holds: (button) => asked(button).every((a) => answers?.[a] === true), gate: (button, own) => gateOf(may(button), own), known: answers !== null };
 }
 
@@ -208,8 +220,14 @@ export function Gated({ may, children }: { may: Answer; children: ReactNode }) {
 }
 
 // ── what is kept ─────────────────────────────────────────────────────────────────────────────
-/** Each flow's answers ("" for none), with the round they were read in and when they were asked. */
-const kept = new Map<string, { answers: Answers; round: number; asked: number }>();
+/** Each flow's answers ("" for none), with whom they were read for (`bearer`), the round they
+ *  were read in and when they were asked. */
+const kept = new Map<string, { answers: Answers; as: string; round: number; asked: number }>();
+/** What was kept for `flow`, when it was read for whom this tab acts as now. */
+function keptNow(flow: string) {
+  const k = kept.get(flow);
+  return k && k.as === bearer() ? k : undefined;
+}
 /** The flows being read, by round. */
 const asking = new Set<string>();
 /** Moves on each time what was kept may be out of date. */
@@ -230,9 +248,16 @@ export function forgetCan(wholly = false): void {
   tell();
 }
 
+/** How long after a read that got no answer it is asked again: twice as long each time after,
+ *  up to how often the access version is read. */
+export const RETRY_MS = 1_000;
+/** Each flow's wait before it is read again, while its reads get no answer. */
+const retries = new Map<string, number>();
+
 function read(flow: string): void {
-  const now = kept.get(flow);
-  const tag = `${round}:${flow}`;
+  const as = bearer();
+  const now = keptNow(flow);
+  const tag = `${round}:${as}:${flow}`;
   if ((now && now.round === round) || asking.has(tag)) return;
   asking.add(tag);
   const at = round;
@@ -240,12 +265,21 @@ function read(flow: string): void {
   mayI([...ACTIONS], flow ? { flow } : {})
     .then(
       (answers) => {
-        if (at !== round) return;
-        kept.set(flow, { answers: answers as Answers, round: at, asked });
+        retries.delete(flow);
+        // Read for a round since passed, or for whom the tab no longer acts as: dropped.
+        if (at !== round || as !== bearer()) return;
+        kept.set(flow, { answers: answers as Answers, as, round: at, asked });
         tell();
       },
-      // Not read: kept as it was (nothing disabled before a first answer), asked again next round.
-      () => undefined,
+      // Not read: kept as it was (asking, before a first answer), and asked again shortly while
+      // a button follows it and nothing has read it since.
+      () => {
+        const wait = retries.get(flow) ?? RETRY_MS;
+        retries.set(flow, Math.min(wait * 2, VERSION_EVERY_MS));
+        setTimeout(() => {
+          if (listeners.size > 0 && at === round && as === bearer()) read(flow);
+        }, wait);
+      },
     )
     .finally(() => asking.delete(tag));
 }
@@ -267,9 +301,10 @@ let timers: ReturnType<typeof setInterval>[] = [];
  *  answering). Reads asked at once at the start ask the version first, and keep what follows. */
 export async function checkVersion(): Promise<void> {
   const asked = ++sent;
+  const as = bearer();
   try {
     const v = (await whoAmI()).access_version;
-    if (v === undefined || asked < versionAsked) return;
+    if (v === undefined || asked < versionAsked || as !== bearer()) return;
     const moved = accessVersion === null ? [...kept.values()].some((k) => k.asked < asked) : v !== accessVersion;
     accessVersion = v;
     versionAsked = asked;
@@ -309,8 +344,9 @@ function subscribe(listener: () => void): () => void {
  *  many buttons follow it. */
 export function useCan(flow?: string | null): Can {
   const key = flow ?? "";
-  const at = useSyncExternalStore(subscribe, () => round);
-  const answers = useSyncExternalStore(subscribe, () => kept.get(key)?.answers ?? null);
+  // The round, and whom the tab acts as: either moved, it is read again.
+  const at = useSyncExternalStore(subscribe, () => `${round}:${bearer()}`);
+  const answers = useSyncExternalStore(subscribe, () => keptNow(key)?.answers ?? null);
   useEffect(() => read(key), [key, at]);
   return useMemo(() => canOf(answers), [answers]);
 }
@@ -319,19 +355,21 @@ export function useCan(flow?: string | null): Can {
  *  typed, a key pressed): what was kept this round, else read and kept. When it can't be read,
  *  everything may: the server decides. */
 export async function canOn(flow: string): Promise<Can> {
-  const now = kept.get(flow);
+  const now = keptNow(flow);
   if (now && now.round === round) return canOf(now.answers);
   const at = round;
+  const as = bearer();
   const asked = ++sent;
   try {
     const answers = (await mayI([...ACTIONS], flow ? { flow } : {})) as Answers;
-    if (at === round) {
-      kept.set(flow, { answers, round: at, asked });
+    if (at === round && as === bearer()) {
+      kept.set(flow, { answers, as, round: at, asked });
       tell();
     }
     return canOf(answers);
   } catch {
-    return canOf(null);
+    // A click already made: the server decides, and says why when it refuses.
+    return canOf({});
   }
 }
 
@@ -339,6 +377,7 @@ export async function canOn(flow: string): Promise<Can> {
 export function resetCan(): void {
   kept.clear();
   asking.clear();
+  retries.clear();
   round = 0;
   sent = 0;
   accessVersion = null;
