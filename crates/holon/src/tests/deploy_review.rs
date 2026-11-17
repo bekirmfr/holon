@@ -261,7 +261,7 @@ fn every_agent_version_waits_for_a_person_unless_one_lets_the_flow_take_it() {
 
 const SHOWN: &str = r#"import { flow, route } from "holon"
 
-flow("shown", { port: 18447, browsers: ["https://a.example"], taint: ["card"], tags: ["t1"] })
+flow("shown", { port: 18447, browsers: ["https://a.example"], taint: ["card"], never_keep: ["cvc"], tags: ["t1"] })
 
 route.get("/a", () => "a")
 
@@ -273,7 +273,8 @@ route.get("/hi", () => "hi")
 /// R25, R24: a version's review shows all it changes beside the version deployed now, to whoever
 /// reads it (a person who approves it, the agent that proposes it): its code, handler by handler
 /// (one changed, one added, one removed), and its settings (the sites whose pages it answers, the
-/// keys it keeps out of its records, its port, a handler's log level), its tags among what it
+/// keys it keeps out of its records and those it never keeps, its port, a handler's log level),
+/// an agent's asking to record or keep a key again among what it needs approved, its tags among what it
 /// touches. A first deploy has nothing to set beside, and the same version again changes none of
 /// it. And what a person reads is what deploys: a proposal whose document builds another unit,
 /// whose browsers line isn't the browsers sent, or that doesn't read, is refused and nothing
@@ -296,7 +297,7 @@ fn a_review_shows_all_a_version_changes_and_what_it_shows_deploys() {
         &state,
         &ada,
         &SHOWN
-            .replace(r#"port: 18447, browsers: ["https://a.example"], taint: ["card"], tags: ["t1"]"#, r#"port: 18448, browsers: ["https://a.example", "https://b.example"], tags: ["t2"]"#)
+            .replace(r#"port: 18447, browsers: ["https://a.example"], taint: ["card"], never_keep: ["cvc"], tags: ["t1"]"#, r#"port: 18448, browsers: ["https://a.example", "https://b.example"], tags: ["t2"]"#)
             .replace(r#"() => "a")"#, r#"() => "A")"#)
             .replace(r#"route.get("/b", () => "b")"#, r#"route.get("/c", () => "c")"#)
             .replace(r#"route.get("/hi", () => "hi")"#, r#"route.get("/hi", () => "hi", { log: "lazy" })"#),
@@ -324,12 +325,20 @@ fn a_review_shows_all_a_version_changes_and_what_it_shows_deploys() {
             "Its settings",
             "  ~ answers pages from: https://a.example → https://a.example https://b.example",
             "  ~ keeps out of its records: card → none of its own",
+            "  ~ never keeps: cvc → none",
             "  ~ port: 18447 → 18448",
             "  ~ GET /hi logs its runs: strict → lazy",
         ] {
             assert!(lines.iter().any(|l| l == want), "{who}: {want:?} in {lines:#?}");
         }
         assert!(lines.iter().any(|l| l.contains("joins t2")) && lines.iter().any(|l| l.contains("leaves t1")), "{who}: {lines:#?}");
+    }
+    // An agent's version that keeps a key again asks a person for it, as one that records a
+    // tainted key again does: an item it needs approved, said in words, beside its settings' line.
+    let asked = preview(&scout, &next, &both);
+    for (item, said) in [("KeepAgain(\"cvc\")", "keep the values of \"cvc\" again, which it never keeps now"), ("Untaint(\"card\")", "record the values of \"card\" again, which it keeps out of its records now")] {
+        assert!(asked["needs_approval"].as_array().unwrap().contains(&json!(item)), "{item}: {asked}");
+        assert_eq!(holon_author::describe::describe_item(item), said);
     }
     let same = lines(&preview(&ada, &base, &one));
     assert!(!beside(&same), "the same version: {same:#?}");
