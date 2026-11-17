@@ -9620,8 +9620,10 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         ("hashed", "const got = await host.get(\"/a\", { headers: { \"x-h\": sha256(k.slice(0, 12)) } })\n  return { status: got.status }", nothing, true),
         // A part that is the whole of the first secret and not of the second: a value computed
         // from a secret that is the secret itself is written with the secret's mark, so the
-        // record tells a secret of 20 characters or fewer from a longer one (R65, the owner's to
-        // weigh). The records differ in that mark's kind and nothing else.
+        // record tells a secret of 20 characters or fewer from a longer one. A known limit, kept
+        // by the owner's choice (R65, 2026-11-17: the log stays as it is, the docs say so, and
+        // who may read a run's details is what is controlled). The records differ in that mark's
+        // kind and nothing else.
         ("whole", "const got = await host.get(\"/a\", { headers: { \"x-h\": sha256(k.slice(0, 20)) } })\n  return { status: got.status }", nothing, true),
         // Whether a part of it is what the caller sent, one way or not: a true or false. (The
         // caller sends what is no part of either: a text that is one is marked where it came in,
@@ -9705,12 +9707,13 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
             }
             at.retain(|d| !d.starts_with(".timeline"));
         }
-        // R65: the step that gave the whole of the first secret is written with its mark, where
-        // the second's part is a computed value's. Once that is fixed, this is a plain row.
+        // R65, a known limit the owner chose to keep: the step that gave the whole of the first
+        // secret is written with its mark, where the second's part is a computed value's. Where
+        // that no longer shows, the limit is gone: this is a plain row, and the docs say so.
         if *path == "whole" {
             let one_mark = |d: &String| d.starts_with(".timeline[") && d.ends_with(r#".value: "‹secret:k›" | "‹derived›""#);
             if !at.iter().any(one_mark) {
-                wrong.push(format!("{path}: the whole secret is no longer written with its mark: R65 is fixed, make this a plain row"));
+                wrong.push(format!("{path}: the whole secret is no longer written with its mark: R65's limit is gone, make this a plain row and take it out of the docs"));
             }
             at.retain(|d| !one_mark(d));
         }
@@ -9757,21 +9760,23 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
 /// secret). Two secrets the same but for one letter: their records differ in the answer's text,
 /// and in the answer's `content-length`, and nothing else; `holon verify` runs both again.
 ///
-/// The `content-length` is a leak of its own, found here: the record keeps the far side's
-/// headers as they came, and an answer that echoes a secret says, in its length, how long the
-/// secret is as the far side spelled it (here 27 and 32: the escaped letter is six characters).
-/// It isn't R67's: two ASCII secrets of other lengths, echoed, differ in it too. The class test's
-/// far sides answer the same whatever they are sent, so it doesn't show there.
+/// The `content-length` is a known limit, found here and kept by the owner's choice (R69,
+/// 2026-11-17: the log stays as it is, the docs say so, and who may read a run's details is
+/// what is controlled). The record keeps a far side's headers as they came, so an answer that
+/// echoes a secret says, in its length, how long the secret is as the far side spelled it (here
+/// 27 and 32: the escaped letter is six characters). It isn't R67's: two ASCII secrets of other
+/// lengths, echoed, differ in it too. The class test's far sides answer the same whatever they
+/// are sent, so it doesn't show there.
 ///
 /// **Why:** `a_runs_record_reads_the_same_whatever_its_secret` holds a record to reading the same
 /// whatever its secret, with two ASCII secrets. This is the difference R67 leaves (secrets.rs,
-/// `held_whole`), and the length an echo tells, kept in sight, as R65's is there, until each is
-/// closed.
+/// `held_whole`), kept in sight until it is closed, and the length an echo tells, kept as the
+/// record of a limit the owner chose, as R65's is there.
 ///
 /// **If it fails:** where the second record keeps its mark in place, the residual is closed;
-/// where the two lengths no longer show, the length is: take each out of what is excused, and
-/// when both are, make this a plain equality. Anything else the two records differ in is a leak
-/// of its own.
+/// where the two lengths no longer show, the limit is gone (take it out of the docs too): take
+/// each out of what is excused, and when both are, make this a plain equality. Anything else the
+/// two records differ in is a leak of its own.
 #[test]
 fn a_far_sides_spelling_says_whether_a_secret_has_a_letter_past_ascii() {
     let (host, _) = counting_server();
@@ -9802,7 +9807,7 @@ fn a_far_sides_spelling_says_whether_a_secret_has_a_letter_past_ascii() {
     let length = |d: &String| d.ends_with(&lengths);
     assert!(
         at.iter().any(|d| d.starts_with(".rounds[0].exchanges[0].response.") && length(d)),
-        "the answer's length no longer tells the secret's: take it out of what is excused:\n  {}",
+        "the answer's length no longer tells the secret's: R69's limit is gone, take it out of what is excused and of the docs:\n  {}",
         at.join("\n  ")
     );
     at.retain(|d| !length(d));
