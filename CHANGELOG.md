@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`holon serve --emit-test-unit` is gone.** An undocumented flag from the server's first days,
+  for checking `POST /unit` by hand: it wrote a fixed test unit to whatever path it was given, from
+  the binary that ships. Nothing used it.
 - **A long answer is cut after its secrets are marked.** A run's line keeps 64 KiB of what a
   route answered. It was cut there as the run had it, and marked afterwards: a secret lying
   across the cut left its first part in the line, since the whole value was no longer there to

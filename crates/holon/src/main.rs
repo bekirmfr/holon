@@ -81,6 +81,8 @@ mod events;
 mod failing;
 mod mongo;
 mod firing;
+// The test unit the tests stage.
+#[cfg(test)]
 mod fixtures;
 mod grantcmd;
 mod grants;
@@ -165,6 +167,7 @@ use serde::{Deserialize, Serialize};
 // one file (each module does `use crate::*` for the same reason).
 use deploy::*;
 use firing::*;
+#[cfg(test)]
 use fixtures::*;
 use flows::*;
 use http::*;
@@ -716,11 +719,6 @@ fn serve(args: Vec<String>) {
     // `--deployments <path>` for where the deployments table is persisted (write-through, on
     // every deploy/delete); `--deployments :memory:` opts out entirely, same convention as
     // `--store`. Defaults to `deployments.json` in the data folder.
-    //
-    // `--emit-test-unit <path>` is a dev-only escape hatch, not a server flag: it writes a
-    // trivial unit's canonical preimage bytes to `path` and exits *without* starting the
-    // server, so the `/unit` round trip can be checked with plain `curl` + a file diff — no
-    // HTTP client dependency needed just to generate a valid test payload.
     let mut args = args.into_iter();
     let mut store_arg = ".holon-store".to_string();
     let mut deployments_arg = ".holon-deployments.json".to_string();
@@ -920,15 +918,6 @@ fn serve(args: Vec<String>) {
             if let Some(v) = args.next() {
                 flows_arg = v;
             }
-        } else if a == "--emit-test-unit" {
-            let Some(path) = args.next() else {
-                eprintln!("--emit-test-unit needs a path");
-                std::process::exit(1);
-            };
-            let bytes = encode_preimage(&test_unit()).expect("test_unit() is a fixed, valid unit");
-            std::fs::write(&path, &bytes).unwrap_or_else(|e| panic!("write {path}: {e}"));
-            println!("wrote {} bytes to {path}", bytes.len());
-            return;
         } else {
             eprintln!("holon serve: no option {a:?}
 

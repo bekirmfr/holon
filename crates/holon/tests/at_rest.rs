@@ -686,7 +686,6 @@ const WRITERS: &[(&str, usize, &str)] = &[
     ("local.rs", 2, "the command line's own files: where a server is, its sign-in"),
     ("locks.rs", 1, "a lock file: empty"),
     ("logs.rs", 1, "console lines, sealed by its LineSeal before they are appended"),
-    ("main.rs", 1, "holon serve --emit-test-unit: a fixed test unit, written where a person asked"),
     ("mcphosts.rs", 1, "an MCP client's config file, written where a person asked"),
     ("migrate.rs", 1, "holon migrate: a server's files moved byte for byte, as they are"),
     ("recorder.rs", 7, "the run log: its lines and segments sealed (LineSeal) before any of these writes them"),

@@ -1,4 +1,4 @@
-//! The test unit the CLI's fixture flag emits and the tests stage.
+//! The test unit the tests stage.
 
 use crate::*;
 
