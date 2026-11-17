@@ -152,9 +152,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use holon_core::{
     capabilities, child_refs, decode_preimage, encode_preimage, hash_unit, hash_value, parse_hash, run_id,
     state_root,
-    read_server, Capability, Server, Hash, MapResolver, Param, Port, Resolver, Type, Unit, UnitBody,
+    read_server, Capability, Server, Hash, MapResolver, Param, Resolver, Unit, UnitBody,
     Value,
 };
+// The tests' units (fixtures.rs, tests.rs), through `use crate::*`.
+#[cfg(test)]
+use holon_core::{Port, Type};
 use holon_host::{
     is_storable, FileStore, Host, InsertError, MemStore,
     run_rounds, Waiting, Round, State, Store, StoreError,
