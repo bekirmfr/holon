@@ -6866,10 +6866,10 @@ fn verify_checks_that_each_runs_state_follows_from_the_one_before() {
     assert!(!report.ok());
     let breaks = vec![
         (1, "the state it left isn't the one it began with, its writes applied".to_string()),
-        (2, "it began from a state the run before it (run 1) didn't leave, nor a run beside it".to_string()),
+        (2, "it began after run 1's commit, from a state other than the one that run left".to_string()),
     ];
     assert_eq!(states(&forged).3, breaks);
-    assert!(verify::describe(&report, None).contains("run 2's state DOESN'T FOLLOW: it began from a state the run before it (run 1) didn't leave"));
+    assert!(verify::describe(&report, None).contains("run 2's state DOESN'T FOLLOW: it began after run 1's commit, from a state other than the one that run left"));
 
     // Run 2 began from the state run 1 began with, as it would have beside it: it follows, and
     // what it left (beside another) is checked in no later run's state. Its line is without the
@@ -9083,13 +9083,14 @@ fn runs_beside_each_other_numbered_the_other_way_round_follow() {
     let (s, _) = swapped_states(&swapped(&|_, v| drop(v.as_object_mut().unwrap().remove("commit"))));
     assert_eq!(s.breaks, vec![(2, "it began from a state the run before it (run 1) didn't leave, nor a run beside it".to_string())]);
 
-    // Run 0 says it left another state: run 2 began after it, from a state it didn't leave.
+    // Run 0 says it left another state: run 2 began after its commit, from a state it didn't
+    // leave, whatever run beside it began from that state (R62).
     let (s, text) = swapped_states(&swapped(&|i, v| {
         if i == 0 {
             v["state_after"] = serde_json::json!("00".repeat(32));
         }
     }));
-    assert_eq!(s.breaks, vec![(2, "it began from a state the run before it (run 1) didn't leave, nor a run beside it".to_string())], "{text}");
+    assert_eq!(s.breaks, vec![(2, "it began after run 0's commit, from a state other than the one that run left".to_string())], "{text}");
     assert!(text.contains("run 2's state DOESN'T FOLLOW"), "{text}");
 }
 
@@ -9524,6 +9525,20 @@ fn no_line_changed_and_chained_again_passes_as_checked() {
         free_port()
     );
     let large = deploy_text(&state, &text, &host);
+    // And one that reads: an item of a collection it writes (so it claims it before it calls
+    // out), a folder's file, a database's row. Each read is answered from the line (R62).
+    let files = std::env::temp_dir().join(format!("holon-sweep-reads-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&files).unwrap();
+    std::fs::write(files.join("a.txt"), "a note").unwrap();
+    let folder = serde_json::json!({ "name": "notes", "path": files.display().to_string(), "keep": "bytes" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&folder).unwrap())).status_code, 200);
+    let keys = serde_json::json!({ "name": "keys", "path": files.join("keys.db").display().to_string(), "schema": "create table tokens (k text not null)" });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&keys).unwrap())).status_code, 200);
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport box from \"collection:box\"\nimport notes from \"folder:notes\"\nimport keys from \"database:keys\"\nimport host from \"host:{host}\"\n\nflow(\"reads\", {{ port: {} }})\n\nroute.put(\"/keep\", (req) => {{\n  box[\"a\"] = {{ n: req.body }}\n  return {{ kept: true }}\n}})\n\nroute.post(\"/read\", async (req) => {{\n  const prior = box[\"a\"] ?? \"none\"\n  const text = notes[\"a.txt\"]\n  const row = keys.one(\"select count(*) as n from tokens where k = $1\", req.body)\n  const got = await host.get(\"/a\", {{ headers: {{ \"x-n\": req.body }} }})\n  return {{ prior, text, n: row.n, status: got.status }}\n}})\n",
+        free_port()
+    );
+    let reads = deploy_text(&state, &text, &host);
     let big = format!("live_{}", "q".repeat(recorder::Timer::MAX_RECORDED_BYTES));
     for (slug, value) in [(&signed, "live_alpha-secret-value-1"), (&counted, "live_alpha-secret-value-1"), (&large, big.as_str())] {
         let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
@@ -9538,6 +9553,13 @@ fn no_line_changed_and_chained_again_passes_as_checked() {
         assert_eq!(status, 200, "{body}");
         let (status, body, _) = data_call(&state, &large, "POST", "/big", n);
         assert_eq!(status, 200, "{body}");
+    }
+    let (status, body, _) = data_call(&state, &reads, "PUT", "/keep", "1");
+    assert_eq!(status, 200, "{body}");
+    for n in ["a", "b"] {
+        let (status, body, _) = data_call(&state, &reads, "POST", "/read", n);
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("a note") && body.contains("\"prior\":{\"n\":\"1\"}"), "it read what it was given: {body}");
     }
     // An approval's, two people deciding it.
     let text = r#"import { action, approval, flow } from "holon"
@@ -9582,7 +9604,7 @@ export const pay = action(async (order) => {
     // run not re-run, a call's answer changed.
     let mut per_flow: BTreeMap<String, [usize; 7]> = BTreeMap::new();
     let (mut unrun, mut answered, mut flips) = (0, 0, Vec::new());
-    for slug in ["c", "seen", calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), "payouts"] {
+    for slug in ["c", "seen", calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), reads.as_str(), "payouts"] {
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req_as(&ada, "GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
         let honest = verify::check(&export, None, &BTreeMap::new());
         // The flow whose record withholds isn't run again: each of its runs says so.
@@ -9594,7 +9616,11 @@ export const pay = action(async (order) => {
         // Each run that called out is said so, an `ok` with it: what a call was answered is the
         // line's say-so (R61). And the flow whose secret is too large to keep says it withholds.
         let said = verify::describe(&honest, None);
-        let called = [calls.as_str(), signed.as_str(), counted.as_str(), large.as_str()].contains(&slug);
+        let called = [calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), reads.as_str()].contains(&slug);
+        // The reading flow's line holds what it read, and what it claimed before it called out.
+        if slug == reads {
+            assert!(export.lines.iter().any(|l| l.contains("\"reads\":") && l.contains("\"claims\":")), "{slug}: its lines hold reads and claims");
+        }
         assert_eq!(said.contains("called out: what their calls were answered is the log's say-so"), called, "{slug}:\n{said}");
         if slug == large {
             assert!(export.lines.iter().all(|l| l.contains("\"withheld\":true")), "{slug}: a line says it keeps each step that gives its secret");
@@ -9661,6 +9687,16 @@ export const pay = action(async (order) => {
                     counts[5] += 1;
                     continue;
                 }
+                // So does one whose line no longer keeps the text of a file it read: it asks for
+                // the file (`--files`), as an export that left the texts out does. Its line can't
+                // say its folder kept the text (that say is taken out with it), so it reads as a
+                // folder that keeps hashes (R62).
+                let needs_file = |r: &verify::Rerun| matches!(r, verify::Rerun::Skipped(why) if why.ends_with("give it with --files"));
+                if report.reruns.iter().any(|(s, r)| *s == seq && needs_file(r)) && at.starts_with("reads/") {
+                    unrun += 1;
+                    counts[5] += 1;
+                    continue;
+                }
                 // What a call was answered is the line's say-so, for every call: the report says
                 // so of each run that called out, and only the chain holds it.
                 let parts: Vec<&str> = at.split('/').collect();
@@ -9681,6 +9717,36 @@ export const pay = action(async (order) => {
                     }
                 }
             }
+        }
+        // Where each run began is held by its commit's numbers, whatever the clock says: every
+        // line's start set to the first's (each run beside every other, as a line without the
+        // head may say), the export still checks, and the state each run left, changed, doesn't
+        // pass as checked. One a run after it began from breaks; the newest's is a break or said
+        // unchecked (R62).
+        let first_ms = values[0]["at_ms"].clone();
+        let chained = |values: &[serde_json::Value]| {
+            let mut lines: Vec<String> = Vec::new();
+            for v in values {
+                let mut v = v.clone();
+                v["at_ms"] = first_ms.clone();
+                if let Some(before) = lines.last() {
+                    v["prev"] = recorder::line_hash(before).into();
+                }
+                lines.push(serde_json::to_string(&v).unwrap());
+            }
+            let head = recorder::line_hash(lines.last().unwrap());
+            verify::Export { lines, head, ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() }
+        };
+        let at_once = verify::check(&chained(&values), None, &BTreeMap::new());
+        assert!(at_once.ok() && account(&at_once) == account(&honest), "{slug}, every run begun at once:\n{}", verify::describe(&at_once, None));
+        let newest = values.len() - 1;
+        for (i, line) in values.iter().enumerate() {
+            let Some(left) = line["state_after"].as_str() else { continue };
+            let mut forged = values.clone();
+            forged[i]["state_after"] = format!("{}{}", &left[..left.len() - 1], if left.ends_with('0') { '1' } else { '0' }).into();
+            let report = verify::check(&chained(&forged), None, &BTreeMap::new());
+            let seq = line["seq"].as_u64().unwrap();
+            assert!(!report.ok() || (i == newest && !report.complete()), "{slug} run {seq}, every run begun at once: the state it left, changed, passes:\n{}", verify::describe(&report, None));
         }
         // Decisions forged whole, each place the line says them (what was delivered, the steps
         // that took it): one person deciding twice, a step there isn't, an agent on a person's
@@ -9744,6 +9810,7 @@ export const pay = action(async (order) => {
     assert!(ends_0.is_empty(), "{} of {tried} changes check less of a state and end 0:\n{}", ends_0.len(), ends_0.join("\n"));
     assert!(marks >= 2, "the signed flow's records hold a mark where each value computed from its secret was: {marks}");
     assert!(less_state.iter().any(|at| at.contains(": commit/")), "a commit's cell or number changed checks less of a state: {less_state:?}");
+    let _ = std::fs::remove_dir_all(&files);
 }
 
 /// `v` with every value in it that is `from` (a whole JSON value: a string, a record's field as
