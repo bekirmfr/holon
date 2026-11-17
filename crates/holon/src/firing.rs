@@ -1267,11 +1267,20 @@ fn redacted_line(redactor: &Redactor, entry: &mut LogEntry) -> recorder::Made {
                 assert_eq!(made.line(1, ""), recorder::Made::of(&walked).line(1, ""), "the shortcut's line isn't the redacted one");
                 assert_eq!(serde_json::to_value(&walked).ok(), serde_json::to_value(&*entry).ok(), "the shortcut's entry isn't the redacted one");
             }
-            return made;
+            // Nothing in it to mark: it is as written already, and cut as such.
+            return if cut_answer(entry) { recorder::Made::of(entry) } else { made };
         }
     }
     redactor.entry(entry);
+    cut_answer(entry);
     recorder::Made::of(entry)
+}
+
+/// What a line keeps of the answer to a request or to a WebSocket's block, cut as the line
+/// writes it (`secrets::cut_written`): here, after the entry is redacted, and nowhere before.
+/// Whether it was cut.
+fn cut_answer(entry: &mut LogEntry) -> bool {
+    matches!(entry.kind.as_str(), "request" | "websocket") && entry.response_body.as_mut().is_some_and(secrets::cut_written)
 }
 
 /// The timeline, with the outputs of each node that carries the text or bytes of a file the log

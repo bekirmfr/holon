@@ -1515,6 +1515,37 @@ const MARKED: [&str; 5] = ["secret:", "token:", "taint:", "derived #", "respelle
 /// How a tainted value's mark begins: `‹taint:number›`.
 const TAINT_MARK: &str = "‹taint:";
 
+/// The longest answer a line keeps, as the line writes it, the `…` that says it was cut included.
+pub(crate) const ANSWER_KEPT: usize = 64 * 1024;
+
+/// `written`, an answer as a line writes it (each value its mark, a look-alike escaped), cut to
+/// what a line keeps ([`ANSWER_KEPT`]) with `…` after it; whether it was. After the marks are in
+/// place, never before: a value lying across the cut would leave its first part in the line, the
+/// whole of it no longer there to find, and a text read by its shape (JSON, for a key whose value
+/// is never kept) would no longer be one. And never inside a mark: one cut short would read as
+/// the run's own text. `holon verify` cuts what a run answers again the same way.
+pub(crate) fn cut_written(written: &mut String) -> bool {
+    if written.len() <= ANSWER_KEPT {
+        return false;
+    }
+    let mut at = ANSWER_KEPT - '…'.len_utf8();
+    while !written.is_char_boundary(at) {
+        at -= 1;
+    }
+    // A mark still open at the cut goes whole: back to where it, or the look-alike of one, begins.
+    if let Some(open) = written[..at].rfind('‹')
+        && !written[open..at].contains('›')
+    {
+        let begins = written[..open].trim_end_matches('‹').len();
+        if reads_as_mark(&written[begins..]) {
+            at = begins;
+        }
+    }
+    written.truncate(at);
+    written.push('…');
+    true
+}
+
 /// Whether `s` starts with what reads as a mark the log writes: a run of `‹` before `secret:`,
 /// `token:`, `taint:` or `derived #`.
 fn reads_as_mark(s: &str) -> bool {
