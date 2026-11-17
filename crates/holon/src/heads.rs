@@ -103,24 +103,6 @@ pub fn failing() -> Option<(Witness, String)> {
     EXPORTER.get()?.failing()
 }
 
-/// A witness this thread's summaries say is set, for a test: the exporter is the process's, and
-/// one a test started would be sent every other test's heads.
-#[cfg(test)]
-pub(crate) mod in_test {
-    use super::Witness;
-    use std::cell::RefCell;
-
-    thread_local!(static SET: RefCell<Option<Witness>> = const { RefCell::new(None) });
-
-    pub(crate) fn set(witness: Option<Witness>) {
-        SET.with(|s| *s.borrow_mut() = witness);
-    }
-
-    pub(super) fn get() -> Option<Witness> {
-        SET.with(|s| s.borrow().clone())
-    }
-}
-
 /// A URL's scheme, host and port: what's before its path, without a login.
 fn address_of(url: &str) -> String {
     let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
@@ -674,5 +656,23 @@ mod tests {
         for bad in ["http://witness.example/heads", "http://localhost.evil.example/", "ftp://x", "witness"] {
             assert!(Exporter::new(bad, None, None).is_err(), "{bad}");
         }
+    }
+}
+
+/// A witness this thread's summaries say is set, for a test: the exporter is the process's, and
+/// one a test started would be sent every other test's heads.
+#[cfg(test)]
+pub(crate) mod in_test {
+    use super::Witness;
+    use std::cell::RefCell;
+
+    thread_local!(static SET: RefCell<Option<Witness>> = const { RefCell::new(None) });
+
+    pub(crate) fn set(witness: Option<Witness>) {
+        SET.with(|s| *s.borrow_mut() = witness);
+    }
+
+    pub(super) fn get() -> Option<Witness> {
+        SET.with(|s| s.borrow().clone())
     }
 }

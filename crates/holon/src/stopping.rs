@@ -336,13 +336,14 @@ mod tests {
         let running = DOOR.enter(true).unwrap();
         let started = Instant::now();
         let draining = std::thread::spawn(|| drain(&DOOR, Duration::from_millis(20), Duration::from_millis(300), |_| {}));
-        while !draining.is_finished() && started.elapsed() < Duration::from_secs(5) {
+        while !draining.is_finished() && started.elapsed() < crate::tests::EVENTUALLY {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(draining.is_finished(), "it gave up waiting");
         assert!(!draining.join().unwrap(), "a run goes on past the wait");
         let waited = started.elapsed();
-        assert!(waited >= Duration::from_millis(300) && waited < Duration::from_secs(5), "{waited:?}");
+        // It gave up while the run still held the door (above): what a bound from above held.
+        assert!(waited >= Duration::from_millis(300), "it waited what it was given: {waited:?}");
         assert!(DOOR.enter(true).is_some(), "the door is left open: nothing was closed on the run");
         drop(running);
         assert!(drain(&DOOR, Duration::from_millis(20), Duration::ZERO, |_| {}), "nothing holds it: closed at once");

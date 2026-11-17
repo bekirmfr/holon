@@ -33,7 +33,7 @@ route.websocket("/ws", {
 fn head_of(port: u16, request: &[u8]) -> String {
     use std::io::Write;
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
     stream.write_all(request).unwrap();
     let (mut got, mut buf) = (Vec::new(), [0u8; 4096]);
     while !got.windows(4).any(|w| w == b"\r\n\r\n") {

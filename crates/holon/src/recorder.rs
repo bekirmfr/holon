@@ -3489,7 +3489,7 @@ mod tests {
                 let told = sync(cell, fail, &|cell| cell.sync_through(seq));
                 // A sync of its own unless one since it was written went through; then its line.
                 let synced = model.synced > seq || model.sync(cell.next_seq(), fail);
-                let want = if !synced { Some("could not sync") } else if failed { Some("couldn't be written") } else { None };
+                let want = if !synced { Some(UNSYNCED) } else if failed { Some("couldn't be written") } else { None };
                 match (&told, want) {
                     (Ok(()), None) => {
                         kept.insert(seq);
