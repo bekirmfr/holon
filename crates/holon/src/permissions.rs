@@ -1126,6 +1126,9 @@ pub(crate) struct Permit {
     /// or a send that holds one under its key is refused. Not the grant's: its server's, set by
     /// whoever makes the permit of a deployment ([`Permit::never_keeping`]).
     pub(crate) never_keep: Vec<String>,
+    /// The keys its flow taints (`holon_core::Server::taint`), set with `never_keep`: what a run's
+    /// id hashes as its record marks it (`data::start_marks`).
+    pub(crate) taint: Vec<String>,
 }
 
 impl Permit {
@@ -1188,12 +1191,14 @@ impl Permit {
                 names.entry(kind.to_string()).or_default().insert(name.to_string());
             }
         }
-        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, sockets, log, outbound, grant: to_hex(&grant.hash()), unrecorded, names, never_keep: Vec::new() }
+        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, sockets, log, outbound, grant: to_hex(&grant.hash()), unrecorded, names, never_keep: Vec::new(), taint: Vec::new() }
     }
 
-    /// This permit, for a deployment whose flow never keeps `server`'s keys (none: no server).
+    /// This permit, for a deployment whose flow never keeps `server`'s keys and taints its tainted
+    /// ones (none: no server).
     pub(crate) fn never_keeping(mut self, server: Option<&holon_core::Server>) -> Permit {
         self.never_keep = server.map(|s| s.never_keep.clone()).unwrap_or_default();
+        self.taint = server.map(|s| s.taint.clone()).unwrap_or_default();
         self
     }
 

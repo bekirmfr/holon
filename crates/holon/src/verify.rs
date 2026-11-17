@@ -1647,19 +1647,31 @@ fn rerun(
 
     let mut differs = Vec::new();
     let nonce = bytes_of(&entry.nonce).and_then(|b| <[u8; 16]>::try_from(b).ok());
-    // A run that received a secret or a token (a resume route's in its path, a bearer token equal
-    // to a secret) was given its id from the value, which the log never holds: it can't be made
-    // again, and the log's stands, as what the log kept stands in for a node fed one. Only a mark
-    // the log wrote counts: a look-alike a caller sent is computed with. A value its flow never
-    // keeps, under its key, is hashed as its mark (`firing::run_id_of`): the id is made again
-    // with the mark there, and only another mark makes it the log's.
+    // A run's id hashes what started it as its record writes it (`firing::run_id_of`, R80), so
+    // it is made again from the record's own values as they are, marks and all. A run whose
+    // record marks in what started it a value found only as it went (a token, what a call
+    // answered, a value computed from a secret: `data::start_marks`) hashed that value as it
+    // was, which the log never holds: its id can't be made again, and the log's stands, as what
+    // the log kept stands in for a node fed one. Only a mark the log wrote counts: a look-alike a
+    // caller sent is computed with, and an id that isn't made again from a record without one is
+    // not the run's.
     let never_keep = read_server(deployed, resolver).map(|s| s.never_keep).unwrap_or_default();
-    let unmarked = |v: &Value| !marks.carried(&crate::never_keep::marked(v, &never_keep));
-    given.id = !inputs.iter().flatten().chain(state.iter().map(|(_, v)| v)).chain(extra.iter().map(|(_, v)| v)).all(unmarked);
-    let id_matches = given.id || nonce.is_some_and(|nonce| {
-        let id = |state: Option<&State>| to_hex(&run_id_of(deployment, &inputs, state, &extra, &nonce, &never_keep));
-        id(Some(&state)) == entry.run_id || (state.is_empty() && id(None) == entry.run_id)
+    let written = |v: &crate::wire::SValue| v.clone().into_core();
+    let id_inputs: Vec<Option<Value>> = inputs.iter().map(|_| entry.request.as_ref().map(written)).collect();
+    let id_extra: Vec<(Capability, Value)> = entry.sourced.iter().zip(&extra).map(|((_, v), (cap, _))| (cap.clone(), written(v))).collect();
+    let id_state = State::from_values(entry.state_before.iter().map(|(k, v)| (k.clone(), written(v))).collect()).ok();
+    let made = nonce.is_some_and(|nonce| {
+        let id = |state: Option<&State>| to_hex(&run_id_of(deployment, &id_inputs, state, &id_extra, &nonce, None));
+        id_state.as_ref().is_some_and(|s| id(Some(s)) == entry.run_id) || (state.is_empty() && id(None) == entry.run_id)
     });
+    // Only a mark of a value the start couldn't know lets the log's id stand: a token's (as its
+    // text, or respelled) or a value computed from a secret's. A secret, a tainted or a never-kept
+    // value is marked at the start as the record marks it, so a record that carries only those
+    // makes its id again, or the id isn't the run's. (A guarded value the start met first outside
+    // its key, a rare case, then reads as a changed id: stricter, never looser.)
+    let found_later = |v: &Value| ["token:", "respelled:token:", Marks::DERIVED].iter().any(|kind| !marks.rest_of(kind, v).is_empty());
+    given.id = !made && inputs.iter().flatten().chain(state.iter().map(|(_, v)| v)).chain(extra.iter().map(|(_, v)| v)).any(found_later);
+    let id_matches = made || given.id;
     if !id_matches {
         differs.push("its run id");
     }
@@ -3139,7 +3151,7 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
     }
     if !r.ids_given.is_empty() {
         out += &format!(
-            "  {} checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)\n",
+            "  {} checked given the run id the log kept (made from what the run received that it found only as it went, a resume token; not computed again)\n",
             count_of(&r.ids_given)
         );
     }

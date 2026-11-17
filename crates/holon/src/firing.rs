@@ -187,7 +187,7 @@ pub(crate) fn fire_with_state(
     // A resumed run keeps the nonce it started with: it is the same run.
     let nonce = resumed.as_ref().map_or_else(new_nonce, |r| r.nonce);
     let fired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fire_run(root_unit, inputs, resolver, store, state, extra_sourced, permit, clock, secrets, waits, resumed, nonce)));
-    let mut run = fired.unwrap_or_else(|_| panicked(permit, inputs, extra_sourced, &nonce));
+    let mut run = fired.unwrap_or_else(|_| panicked(permit, secrets, inputs, extra_sourced, &nonce));
     run.running = Some(running);
     run
 }
@@ -219,7 +219,7 @@ fn fire_run(
     // commits, fails or waits); one held by others' runs past its claim_wait turns it away.
     let _run_locked = match RunLocked::take(waits.folders.as_deref(), permit, format!("run:{}", hex_bytes(&nonce)), std::time::Instant::now() + limits.claim_wait) {
         Ok(held) => held,
-        Err(resource) => return turned_away(permit, inputs, extra_sourced, &nonce, &resource),
+        Err(resource) => return turned_away(permit, secrets, inputs, extra_sourced, &nonce, &resource),
     };
     // A resumed run is the same run it started as: pinned to the state it first read (its own
     // deployment's cells and collections), its writes landing on the live state when it finishes,
@@ -446,9 +446,9 @@ impl Drop for RunLocked {
 /// A run turned away before it started: `resource`, which an admin set to `run`, was held by other
 /// runs past its `claim_wait`. It did nothing, and says so as a busy claim does: a request answers
 /// 503, a clock tick is skipped, both logged.
-fn turned_away(permit: &Permit, inputs: &[Option<Value>], extra_sourced: &[(Capability, Value)], nonce: &[u8; 16], resource: &str) -> FiredRun {
+fn turned_away(permit: &Permit, secrets: &Vault, inputs: &[Option<Value>], extra_sourced: &[(Capability, Value)], nonce: &[u8; 16], resource: &str) -> FiredRun {
     let mut run = FiredRun::nothing();
-    run.run_id = to_hex(&run_id_of(permit.deployment, inputs, None, extra_sourced, nonce, &permit.never_keep));
+    run.run_id = to_hex(&run_id_of(permit.deployment, inputs, None, extra_sourced, nonce, Some(&id_marks(permit, secrets, inputs, None, extra_sourced))));
     run.unit = to_hex(&permit.deployment);
     run.nonce = hex_bytes(nonce);
     run.grant = permit.grant.clone();
@@ -460,9 +460,9 @@ fn turned_away(permit: &Permit, inputs: &[Option<Value>], extra_sourced: &[(Capa
 /// A run that panicked: nothing of what it computed is kept, and its record says that what it
 /// had sent or written by then isn't in it (a panic past its first round, or in its commit, is
 /// past things done). The panic itself is on the server's console, with where.
-fn panicked(permit: &Permit, inputs: &[Option<Value>], extra_sourced: &[(Capability, Value)], nonce: &[u8; 16]) -> FiredRun {
+fn panicked(permit: &Permit, secrets: &Vault, inputs: &[Option<Value>], extra_sourced: &[(Capability, Value)], nonce: &[u8; 16]) -> FiredRun {
     let mut run = FiredRun::nothing();
-    run.run_id = to_hex(&run_id_of(permit.deployment, inputs, None, extra_sourced, nonce, &permit.never_keep));
+    run.run_id = to_hex(&run_id_of(permit.deployment, inputs, None, extra_sourced, nonce, Some(&id_marks(permit, secrets, inputs, None, extra_sourced))));
     run.unit = to_hex(&permit.deployment);
     run.nonce = hex_bytes(nonce);
     run.grant = permit.grant.clone();
@@ -669,7 +669,7 @@ fn run_attempt(
     prior: Vec<Round>,
     claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>, bool)>,
 ) -> Attempt {
-    let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, nonce, &permit.never_keep);
+    let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, nonce, Some(&id_marks(permit, secrets, inputs, start.as_ref(), extra_sourced)));
     // Its resume tokens are derived from its id (durable.rs).
     // Hex once: its resume tokens, its claims and its entry all name it so.
     let run_hex = to_hex(&run_id);
@@ -731,8 +731,8 @@ fn run_attempt(
     // what started the run, by its text, in each step that holds one, with a secret or not:
     // whether a step is kept doesn't say how long it was.
     if (!secret_fed.is_empty() || !permit.never_keep.is_empty()) && !waits.unrecorded {
-        let never = data::never_kept_in(&permit.never_keep, inputs);
-        let marks = Redactor::of(secrets).and(Redactor::never_kept(crate::never_keep::Places::new(&permit.never_keep), &never));
+        // What its record is known to mark before it takes a step, as its id is made.
+        let marks = id_marks(permit, secrets, inputs, start.as_ref(), extra_sourced);
         timer = timer.measured(Box::new(secrets::Measured::new(secret_fed.clone(), born_key.clone(), run_hex.clone(), marks)));
     }
     // Outbound requests go only where the grant allows, within its limits.
@@ -1004,20 +1004,31 @@ fn hex_bytes(bytes: &[u8]) -> String {
 }
 
 /// A run's id (§4.4): its deployment, and the Merkle root of what it started from: the host
-/// nonce, each input, the state (by its root), and each sourced value, each by its hash. A value
-/// under a key its flow never keeps (`never_keep`) is hashed as its mark, where it stands: the id
-/// is in the run's record beside its nonce and the rest of what it hashes, so an id of the value
-/// itself would be a CVC a thousand tries from it (as a hash of a text holding one would be,
-/// `secrets::born`). So marked, `holon verify` makes the id again from the record.
+/// nonce, each input, the state (by its root), and each sourced value, each by its hash. Each as
+/// the run's record writes it (`marks`, [`Redactor::logged_value`]), never as a value the record
+/// leaves out: the id is in the record beside its nonce and the rest of what it hashes, so an id
+/// of a guarded value itself would be that value a few guesses away (a CVC a thousand, a weak
+/// password under `authorization`, a card's number whose first six are a bank's and last four
+/// answered, a secret a caller sent), as a hash of a text holding one would be (`secrets::born`,
+/// audit R80). One rule for every level: a secret by its text, a tainted key (those every run
+/// taints included) and a credential's parts, a key its flow never keeps. A short tainted value
+/// the record still keeps in clear is hashed as kept. `marks` is what is known of the record
+/// before the run takes a step (`data::start_marks`). None: the values are the record's own,
+/// written so already (`holon verify` makes the id again from them as they are: writing them
+/// again would escape their marks as look-alikes).
 pub(crate) fn run_id_of(
     deployment: Hash,
     inputs: &[Option<Value>],
     state: Option<&State>,
     sourced: &[(Capability, Value)],
     nonce: &[u8; 16],
-    never_keep: &[String],
+    marks: Option<&Redactor>,
 ) -> Hash {
-    let h = |v: &Value| hash_value(&crate::never_keep::marked(v, never_keep)).unwrap_or([0xff; 32]);
+    let h =|v: &Value| match marks {
+        Some(marks) => hash_value(&marks.logged_value(v)),
+        None => hash_value(v),
+    }
+    .unwrap_or([0xff; 32]);
     let mut entries: BTreeMap<String, Hash> = BTreeMap::new();
     entries.insert("nonce".into(), h(&Value::Text(hex_bytes(nonce))));
     for (i, input) in inputs.iter().enumerate() {
@@ -1026,13 +1037,30 @@ pub(crate) fn run_id_of(
         }
     }
     if let Some(state) = state {
-        entries.insert("state".into(), state.root());
+        // Its root as it is where the record writes each cell as it is (the root its snapshot
+        // has); else the root of the cells as the record writes them.
+        let logged: Vec<(&String, std::borrow::Cow<Value>)> = match marks {
+            Some(marks) => state.iter().map(|(k, v)| (k, marks.logged_value(v))).collect(),
+            None => Vec::new(),
+        };
+        let root = match logged.iter().all(|(_, v)| matches!(v, std::borrow::Cow::Borrowed(_))) {
+            true => state.root(),
+            false => State::from_values(logged.into_iter().map(|(k, v)| (k.clone(), v.into_owned())).collect()).map_or([0xff; 32], |s| s.root()),
+        };
+        entries.insert("state".into(), root);
     }
     for (cap, v) in sourced {
         entries.insert(format!("sourced:{cap:?}"), h(v));
     }
     let root = state_root(entries.iter().map(|(k, v)| (k.as_str(), v))).unwrap_or([0xff; 32]);
     run_id(&deployment, &root)
+}
+
+/// What a run's record is known to mark of what started it before it takes a step
+/// (`data::start_marks`): of its inputs, its sourced values and its state.
+fn id_marks(permit: &Permit, secrets: &Vault, inputs: &[Option<Value>], state: Option<&State>, sourced: &[(Capability, Value)]) -> Redactor {
+    let started: Vec<&Value> = inputs.iter().flatten().chain(sourced.iter().map(|(_, v)| v)).chain(state.into_iter().flat_map(|s| s.iter().map(|(_, v)| v))).collect();
+    data::start_marks(secrets, &permit.taint, &permit.never_keep, started.iter().copied())
 }
 
 /// Add a run to `slug`'s flow log, in its current session: redacted of its secrets and of

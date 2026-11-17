@@ -20,6 +20,17 @@
   its mark, so that the id beside its nonce isn't a CVC a thousand tries away either, and verify
   makes it again from the record; a step is kept or left out, for its size, as the record writes
   it, the value as its mark. The **card-check** sample shows it.
+- **A run's id says nothing its record leaves out.** The id is in a run's record beside its nonce
+  and everything else it hashes, and it hashed what started the run as it was: a value the record
+  marks could be found from the record by guessing until the id came out the same. A weak password
+  in an `authorization` header, a tainted card number whose first six digits are a bank's and
+  whose last four the flow answers (about 100,000 guesses), a secret a caller sent. Now the id
+  hashes each input, sourced value and state cell as the record writes it: a secret by its text, a
+  tainted key's value (those of the four credential headers every flow taints included, and a
+  credential's parts) and a value never kept, each as its mark. A short tainted value the record
+  keeps in clear is hashed as kept. `holon verify` makes the id again from the record, so a run
+  that received a secret (a bearer token equal to one) is now checked rather than taken as the
+  record says; one that received a token the run finds only as it goes (a resume link's) still is.
 - **A long answer is cut after its secrets are marked.** A run's line keeps 64 KiB of what a
   route answered. It was cut there as the run had it, and marked afterwards: a secret lying
   across the cut left its first part in the line, since the whole value was no longer there to

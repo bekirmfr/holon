@@ -1613,6 +1613,46 @@ impl Redactor {
         }
         e.escaped |= escaped;
     }
+
+    /// `v` as a run's record writes it: what [`Redactor::entry`] makes of each value an entry
+    /// holds (a request, a sourced value, a state cell), here for one value. Each value under a
+    /// key its flow never keeps stood in for where it stands, then each value marked by its text
+    /// and each tainted number by its key, and the run's own look-alikes of a mark escaped. What a
+    /// run's id hashes (`firing::run_id_of`, audit R80): the id is in its record beside its nonce,
+    /// so it hashes nothing the record leaves out. `v` as it is where none of that touches it.
+    pub(crate) fn logged_value<'v>(&self, v: &'v holon_core::Value) -> std::borrow::Cow<'v, holon_core::Value> {
+        if self.places.is_none() && self.leaves_alone(v) {
+            return std::borrow::Cow::Borrowed(v);
+        }
+        let mut s = SValue::from_core(v);
+        if let Some(places) = &self.places {
+            places.svalue(&mut s);
+        }
+        self.logged_svalue(&mut s);
+        std::borrow::Cow::Owned(s.into_core())
+    }
+
+    /// Whether writing `v` as the record does ([`Redactor::logged_value`]) leaves it as it is: no
+    /// text that holds a value or reads as a mark, no number that is a tainted value as written,
+    /// no bytes (whose texts are looked into). Looked at, not copied.
+    fn leaves_alone(&self, v: &holon_core::Value) -> bool {
+        use holon_core::Value;
+        let text = |s: &str| !s.contains('‹') && !self.holds(s);
+        match v {
+            Value::Text(s) => text(s),
+            Value::Number(n) => {
+                // As `tainted_numbers` writes it.
+                let written = format!("{n}");
+                !self.pairs.iter().any(|(value, mark)| is_keyed(mark) && *value == written)
+            }
+            Value::Boolean(_) => true,
+            Value::Bytes(_) => false,
+            Value::List(xs) => xs.iter().all(|x| self.leaves_alone(x)),
+            Value::Record(fields) => fields.iter().all(|(k, x)| text(k) && self.leaves_alone(x)),
+            Value::Effect { sink, payload } => text(sink) && self.leaves_alone(payload),
+            Value::Sum { payload, .. } => self.leaves_alone(payload),
+        }
+    }
 }
 
 /// Each text in `v`, in place, a record's keys included (a secret can be a key: a map from API

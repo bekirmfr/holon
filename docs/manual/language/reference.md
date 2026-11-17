@@ -154,8 +154,9 @@ listed so: its hash would be the CVC a thousand tries away. (One that holds it i
 encoding, base64 of such a text, isn't told yet: that is the next stage's.) The run's record withholds what it computed from
 a secret instead, as it does for a value no mark stands for, and `holon verify` says why it
 doesn't run that run again. For the same reason a run's id, a hash of what started it beside
-the nonce its record keeps, hashes such a value as its mark, and `holon verify` makes the id
-again from the record. And whether a step is kept in the record, for its size, is decided with
+the nonce its record keeps, hashes what started it as the record keeps it: such a value, a
+tainted one and a secret a caller sent as their marks. `holon verify` makes the id again from
+the record. And whether a step is kept in the record, for its size, is decided with
 the value as its mark: a CVC of four digits and one of three leave the same record.
 
 What this doesn't do yet: a flow that never keeps a key can't wait (`await event`, `await

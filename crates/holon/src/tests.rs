@@ -2216,8 +2216,108 @@ fn a_run_id_is_recomputable_from_its_log_entry() {
     let nonce: [u8; 16] = (0..16).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect::<Vec<_>>().try_into().unwrap();
     assert_eq!(hex.len(), 32, "128 bits");
     // An action's run has one input: what it was sent.
-    let recomputed = run_id_of(writer, &[Some(sv(&e["request"]))], Some(&state_before), &sourced, &nonce, &[]);
+    let recomputed = run_id_of(writer, &[Some(sv(&e["request"]))], Some(&state_before), &sourced, &nonce, None);
     assert_eq!(e["run_id"], to_hex(&recomputed));
+}
+
+/// **Guards:** a run's id hashes what started it as the run's record keeps it, never a value the
+/// record leaves out (audit R80). One row a level, each a request to one flow that holds a guarded
+/// value: a secret's value a caller sent (marked by its text), a key the flow taints, each of the
+/// four headers every flow taints (a Basic password, a bearer token, a cookie, a set cookie), and
+/// a key the flow never keeps. Each is sent twice with the same nonce (and so the same clock and
+/// random bytes), the guarded value all that differs: the two records read the same, and so do
+/// the two ids. And for each, the id isn't the one the value as it was makes, with the rest of the
+/// record as it is (a secret's mark names which value it was, so two runs sending two values read
+/// differently; this is its row's check), and `holon verify` makes every id again from the record,
+/// none taken as given.
+///
+/// **Why:** the id was a hash of the inputs as the run had them, and the record keeps it beside
+/// its nonce and everything else it hashes: a value it leaves out was a few guesses away (a CVC a
+/// thousand, a card's number whose first six are a bank's and last four answered about 10^5, a
+/// weak password under `authorization`, a secret a caller sent).
+///
+/// **If it fails:** `firing::run_id_of` hashes a value otherwise than `Redactor::logged_value`
+/// writes it, or `data::start_marks` leaves out a level the record marks (a level the id hashes
+/// raw shows as its row's ids differing).
+#[test]
+fn a_runs_id_hashes_what_its_record_keeps() {
+    let state = claims_state("");
+    let text = "import { flow, route } from \"holon\"\nimport k from \"secret:k\"\n\nflow(\"ids\", { port: 18631, taint: [\"card\"], never_keep: [\"cvc\"] })\n\nroute.post(\"/p\", () => \"ok\")\n\nroute.get(\"/has\", () => ({ set: k.length > 0 }))\n";
+    let slug = deploy_text_to(&state, text, &[]);
+    let secret = "sk_live_alpha-0123456789";
+    let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let basic = |user_pw: &str| format!("Basic {}", holon_core::bytes_text(user_pw.as_bytes(), "base64").unwrap());
+    // (the row, its header, or none for the body; what it sends one time and the other; the mark
+    // its record writes in its place)
+    let rows: Vec<(&str, Option<&str>, [String; 2], &str)> = vec![
+        ("a secret by its text", None, [secret.to_string(), secret.to_string()], "‹secret:k"),
+        ("a key the flow taints", None, ["4111111111111111".into(), "4000056655665556".into()], "‹taint:card›"),
+        ("authorization, a Basic password", Some("authorization"), [basic("ada:pw1234-weak"), basic("ada:other-pw999")], "‹taint:authorization›"),
+        ("proxy-authorization, a bearer token", Some("proxy-authorization"), ["Bearer tok_alpha_123456".into(), "Bearer tok_bravo_654321".into()], "‹taint:proxy-authorization›"),
+        ("cookie", Some("cookie"), ["session=abcdef123456".into(), "session=zyxwvu987654".into()], "‹taint:cookie›"),
+        ("set-cookie", Some("set-cookie"), ["id=abcdef123456; Path=/".into(), "id=zyxwvu987654; Path=/".into()], "‹taint:set-cookie›"),
+        ("a key the flow never keeps", None, ["737".into(), "123".into()], "‹never_keep:cvc›"),
+    ];
+    let field = |row: &str| match row {
+        "a key the flow taints" => "card",
+        "a key the flow never keeps" => "cvc",
+        _ => "note",
+    };
+    let mut wrong: Vec<String> = Vec::new();
+    for (i, (row, header, values, mark)) in rows.iter().enumerate() {
+        let mut ids = Vec::new();
+        for value in values {
+            let (headers, body) = match header {
+                Some(h) => (vec![(h.to_string(), value.clone())], "{}".to_string()),
+                None => (vec![], serde_json::json!({ field(row): value }).to_string()),
+            };
+            firing::fixed::from(Some(1000 * (i as u64 + 1)));
+            let request = data::DataRequest { headers, ..fake_data("POST", "/p", body.into_bytes()) };
+            let answer = serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &request);
+            firing::fixed::from(None);
+            assert_eq!(answer.status, 200, "{row}");
+            ids.push(log_entries(&state, &slug).last().unwrap().clone());
+        }
+        let [a, b] = [&ids[0], &ids[1]];
+        let started = |e: &serde_json::Value| (e["request"].to_string(), e["sourced"].to_string(), e["state_before"].to_string());
+        if !a["request"].to_string().contains(mark) {
+            wrong.push(format!("{row}: its record doesn't mark it ({mark})"));
+        }
+        if started(a) == started(b) && a["run_id"] != b["run_id"] {
+            wrong.push(format!("{row}: two runs whose records read the same have two ids"));
+        }
+        if values[0] != values[1] && started(a) != started(b) && *row != "a secret by its text" {
+            wrong.push(format!("{row}: the two records differ"));
+        }
+        // The id the value as it was makes, the rest as the record has it.
+        let request = a["request"].to_string();
+        let at = request.find(mark).unwrap_or(0);
+        let end = at + request[at..].find('›').map_or(0, |e| e + '›'.len_utf8());
+        let escaped = serde_json::to_string(&values[0]).unwrap();
+        let raw_request = format!("{}{}{}", &request[..at], &escaped[1..escaped.len() - 1], &request[end..]);
+        let sv = |v: &serde_json::Value| serde_json::from_value::<SValue>(v.clone()).unwrap().into_core();
+        let raw = sv(&serde_json::from_str(&raw_request).unwrap());
+        let sourced: Vec<(Capability, Value)> = a["sourced"].as_array().unwrap().iter().map(|p| (crate::durable::capability_named(p[0].as_str().unwrap()).unwrap(), sv(&p[1]))).collect();
+        let state_before = State::from_values(a["state_before"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), sv(v))).collect()).unwrap_or_default()).unwrap();
+        let hex = a["nonce"].as_str().unwrap();
+        let nonce: [u8; 16] = (0..16).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect::<Vec<_>>().try_into().unwrap();
+        let unit = parse_hash(a["unit"].as_str().unwrap()).unwrap();
+        // With its state, or none (a run without one, as verify takes it).
+        let of = |request: Value| [Some(&state_before), None].map(|s| to_hex(&run_id_of(unit, &[Some(request.clone())], s, &sourced, &nonce, None)));
+        if of(raw).iter().any(|id| a["run_id"] == *id) {
+            wrong.push(format!("{row}: its id is the one the value as it was makes"));
+        }
+        if !of(sv(&a["request"])).iter().any(|id| a["run_id"] == *id) {
+            wrong.push(format!("{row}: its id isn't made again from its record"));
+        }
+    }
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    if !report.ids_given.is_empty() || !report.ok() || report.reruns.iter().any(|(_, r)| *r != verify::Rerun::Matched) {
+        wrong.push(format!("holon verify: {}", verify::describe(&report, None)));
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 /// A secret is set over the control plane and never returned by it; a run granted it reads it;
@@ -7834,9 +7934,11 @@ fn a_look_alike_of_a_placeholder_is_computed_with_not_taken_as_given() {
     assert_eq!(report.reruns, vec![(0, verify::Rerun::Differs("its outputs, the steps it took (its timeline), what it answered".into()))], "{}", verify::describe(&report, None));
 }
 
-/// A run that received a real secret or a real token was given its id from the value, which the
-/// log never holds: verify keeps the log's run id for it and says so, and checks the rest. Here a
-/// bearer token equal to a secret, and a resume route's token in its path.
+/// A run that received a real token was given its id from the value, which the log never holds
+/// (a token is found only as the run goes, `data::start_marks`): verify keeps the log's run id for
+/// it and says so, and checks the rest. Here a resume route's token in its path. One that received
+/// a secret, a bearer token equal to one, is given its id from the secret's mark, as its record
+/// writes it (R80): verify makes that one again.
 #[test]
 fn a_run_that_received_a_secret_or_a_token_keeps_its_logged_run_id() {
     let state = claims_state("");
@@ -7862,7 +7964,7 @@ fn a_run_that_received_a_secret_or_a_token_keeps_its_logged_run_id() {
     let entry = |route: &str| export.lines.iter().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).find(|e| e["route"] == route).unwrap();
     // The run the request started parks, and is logged, before the request's run is.
     let (request, resume) = (entry("POST /me"), entry("GET /paid/:token"));
-    assert!(report.ids_given.contains(&request["seq"].as_u64().unwrap()), "the request carried the secret: {}", verify::describe(&report, None));
+    assert!(!report.ids_given.contains(&request["seq"].as_u64().unwrap()), "the request carried the secret, hashed as its mark: {}", verify::describe(&report, None));
     assert!(report.ids_given.contains(&resume["seq"].as_u64().unwrap()), "the resume carried the token: {}", verify::describe(&report, None));
     assert!(verify::describe(&report, None).contains("checked given the run id the log kept"), "{}", verify::describe(&report, None));
 }
@@ -17662,6 +17764,7 @@ fn the_server_records_what_its_golden_record_holds() {
     let state = test_state();
     let mut out = String::new();
     let mut skipped = Vec::new();
+    let mut deployed: Vec<String> = Vec::new();
     for sample in holon_author::samples::samples() {
         let Ok(plan) = holon_author::agent::plan(sample.text) else { continue };
         for u in &plan.units {
@@ -17681,6 +17784,7 @@ fn the_server_records_what_its_golden_record_holds() {
             continue;
         }
         let slug = plan.name.clone();
+        deployed.push(slug.clone());
         let (routes, actions) = {
             let table = state.deployments.lock().unwrap();
             let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, taint: vec![], never_keep: vec![], tags: vec![], routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], queues: vec![], websockets: vec![], actions: vec![] });
@@ -17731,6 +17835,22 @@ fn the_server_records_what_its_golden_record_holds() {
         }
     }
     firing::fixed::from(None);
+    // Every sample's run ids are made again from its record by `holon verify` (R80): none differs,
+    // and one is taken as the record says only where what started its run holds a token (a resume
+    // route's), which the record marks and the id, made before the run found it, doesn't.
+    for slug in &deployed {
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let report = verify::check(&export, None, &BTreeMap::new());
+        for (seq, rerun) in &report.reruns {
+            assert!(!matches!(rerun, verify::Rerun::Differs(why) if why.contains("run id")), "{slug}, run {seq}: {}", verify::describe(&report, None));
+        }
+        for seq in &report.ids_given {
+            let line = export.lines.iter().find(|l| serde_json::from_str::<serde_json::Value>(l).is_ok_and(|e| e["seq"] == *seq)).unwrap();
+            let e: serde_json::Value = serde_json::from_str(line).unwrap();
+            let started = format!("{} {} {}", e["request"], e["sourced"], e["state_before"]);
+            assert!(started.contains("‹token:"), "{slug}, run {seq}: its id taken as given, what started it holding no token");
+        }
+    }
     out.push_str(&format!("skipped (outside the server): {}\n", skipped.join(", ")));
     // A resume token is keyed by the host's key, drawn once per process: shown as a token, not
     // its value.

@@ -261,22 +261,60 @@ pub(crate) fn never_kept(never_keep: &[String], entry: &mut crate::recorder::Log
     found_at(&keys, entry, lines, marked)
 }
 
-/// The values of the keys a flow never keeps in what started a run (`inputs`: a request, a
-/// message), as [`never_kept`] finds them in its entry: known before the run takes a step, for
-/// its timer to measure each step as its record will write it (`secrets::Measured`).
-pub(crate) fn never_kept_in(never_keep: &[String], inputs: &[Option<Value>]) -> Vec<(String, String)> {
-    if never_keep.is_empty() {
-        return Vec::new();
+/// What a run's record keeps out of what started it, as far as it is known before the run takes
+/// a step: its secrets by their text (`Redactor::of`), and the values its inputs, its sourced
+/// values and its state hold under the keys its flow taints, those every run does and those it
+/// never keeps, found as [`tainted`] and [`never_kept`] find them in its entry. What its id hashes
+/// each such value as (`firing::run_id_of`, audit R80), and what its timer measures a step as
+/// (`secrets::Measured`).
+///
+/// Its record is redacted of more, found only as the run goes (its tokens, what its calls
+/// answered, what it computed from a secret, a guarded value met first in a call's answer and
+/// held again in a request's text): an input holding one of those is written marked where the id
+/// hashed it as it was. `holon verify` then can't make the id again from the record, and takes
+/// it as the record says, as it does for any run whose inputs carry a mark it can't account for.
+/// No worse than the record: what the id hashed that the record marks is still a value guessed
+/// only with the rest of what started the run, never one the record leaves out by key.
+pub(crate) fn start_marks<'v>(
+    secrets: &crate::secrets::Vault,
+    taint: &[String],
+    never_keep: &[String],
+    started: impl IntoIterator<Item = &'v Value> + Clone,
+) -> crate::secrets::Redactor {
+    use crate::secrets::Redactor;
+    let marked = Redactor::of(secrets);
+    let tainted: Vec<&str> = holon_core::ALWAYS_TAINTED.iter().copied().chain(taint.iter().map(String::as_str)).collect();
+    let found = found_in(&tainted, started.clone(), &marked);
+    let never: Vec<&str> = never_keep.iter().map(String::as_str).collect();
+    let never = match never.is_empty() {
+        true => Vec::new(),
+        false => found_in(&never, started, &marked),
+    };
+    marked.and(Redactor::tainted(&found)).and(Redactor::never_kept(crate::never_keep::Places::new(never_keep), &never))
+}
+
+/// The values under `keys` in `values`, found as [`tainted`] finds them in an entry. A value that
+/// names none of them, either case, is passed by uncopied.
+fn found_in<'v>(keys: &[&str], values: impl IntoIterator<Item = &'v Value>, marked: &crate::secrets::Redactor) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    for v in values {
+        if names_a_key(v, keys) {
+            svalue_tainted(&crate::wire::SValue::from_core(v), keys, &mut found);
+        }
     }
-    let keys: Vec<&str> = never_keep.iter().map(String::as_str).collect();
-    let mut found = Vec::new();
-    for v in inputs.iter().flatten() {
-        svalue_tainted(&crate::wire::SValue::from_core(v), &keys, &mut found);
+    held_with_parts(found, marked)
+}
+
+/// Whether any text of `v`, a record's field names included, holds one of `keys`, either case.
+fn names_a_key(v: &Value, keys: &[&str]) -> bool {
+    let text = |s: &str| keys.iter().any(|k| contains_either_case(s, k));
+    match v {
+        Value::Text(s) => text(s),
+        Value::Record(fields) => fields.iter().any(|(k, x)| text(k) || names_a_key(x, keys)),
+        Value::List(xs) => xs.iter().any(|x| names_a_key(x, keys)),
+        Value::Effect { payload, .. } | Value::Sum { payload, .. } => names_a_key(payload, keys),
+        Value::Number(_) | Value::Boolean(_) | Value::Bytes(_) => false,
     }
-    found.retain(|(_, value)| value.chars().count() >= crate::secrets::MIN_SECRET_LEN && !value.contains('‹'));
-    found.sort();
-    found.dedup();
-    found
 }
 
 /// [`tainted`]'s finding, for `keys`.
@@ -290,6 +328,13 @@ fn found_at(keys: &[&str], entry: &mut crate::recorder::LogEntry, lines: &[(Stri
     for (_, line) in lines {
         svalue_tainted(&crate::wire::SValue::from_core(line), &keys, &mut found);
     }
+    held_with_parts(found, marked)
+}
+
+/// The values `found` under keys, with what each credential among them holds (what follows its
+/// scheme, a Basic one's text and its password alone, each cookie's value), each as long as a
+/// secret may be and not one `marked` marks already.
+fn held_with_parts(mut found: Vec<(String, String)>, marked: &crate::secrets::Redactor) -> Vec<(String, String)> {
     let mut held = Vec::new();
     for (key, value) in &found {
         if let Some((scheme, rest)) = value.trim().split_once(' ')
