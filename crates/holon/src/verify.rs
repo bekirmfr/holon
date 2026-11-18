@@ -1824,7 +1824,9 @@ fn rerun(
             });
             found.get()
         };
-        let (mut short, mut perhaps, mut long): (BTreeSet<&[u32]>, BTreeSet<&[u32]>, BTreeSet<&[u32]>) = Default::default();
+        let mut short: BTreeSet<&[u32]> = BTreeSet::new();
+        let mut perhaps: BTreeSet<&[u32]> = BTreeSet::new();
+        let mut long: BTreeSet<&[u32]> = BTreeSet::new();
         // A run that kept no timeline was followed without one (`secrets::short_steps`).
         for node in observer.timer.timeline.iter().filter(|_| !entry.timeline.is_empty()) {
             match &node.outputs {

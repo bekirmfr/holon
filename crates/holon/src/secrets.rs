@@ -1284,7 +1284,6 @@ pub(crate) fn echoed_parts<'a>(given: impl Iterator<Item = &'a SValue>, vault: &
         vault
             .current
             .iter()
-            .map(|(name, value)| (name, value))
             .chain(vault.retired.iter().map(|(name, _, value)| (name, value)))
             .filter(|(name, _)| names.contains(*name))
             .flat_map(|(_, value)| spellings(value.as_str()))
