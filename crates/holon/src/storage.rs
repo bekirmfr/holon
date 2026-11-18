@@ -312,6 +312,9 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
     let size = |b: u64| folders::size_text(b);
     let mut out: Vec<Warning> = crate::failing::now(&state.deployments_path).into_iter().map(|(w, e)| writer_warning(w, &e)).collect();
     out.extend(crate::heads::failing().map(|(w, why)| witness_warning(&w, &why)));
+    // What the server's start kept in its spools, unsent: their runs can't be told (spools.rs).
+    out.extend(state.folders.mails.kept_back());
+    out.extend(state.folders.queues.kept_back());
     let watch = state.sweeps.watch.lock().unwrap();
     let fastest = watch.grew.iter().max_by_key(|(_, g)| **g).filter(|(_, g)| **g > 0).map(|(slug, g)| (slug.clone(), *g));
     let full = watch.caches.len() >= LOOKS_AN_HOUR / 12;
