@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0-rc.36
+
 - **What a flow reads from a reply that sent its secret back is treated as the secret.** A
   service that answers with the secret it was sent (its headers echoed, an account record with
   the key in it) handed the flow the secret again in a reply the server took as ordinary. A

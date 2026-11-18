@@ -1657,7 +1657,7 @@ dependencies = [
 
 [[package]]
 name = "holon"
-version = "0.1.0-rc.35"
+version = "0.1.0-rc.36"
 dependencies = [
  "argon2",
  "axoupdater",
