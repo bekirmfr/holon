@@ -1414,6 +1414,27 @@ impl LineSeal {
         std::fs::read_to_string(path).map(|t| self.open_lines(&t).collect()).unwrap_or_default()
     }
 
+    /// The file at `path`'s lines that open, opened: none if there is no file. An error if it is
+    /// there and can't be read, or a line's key is missing: what reads every line to tell what
+    /// they name (the sweep) fails rather than take them as none (release audit R92). A line cut
+    /// short or changed is left out, as [`LineSeal::open_lines`] leaves it.
+    pub(crate) fn try_read_lines(&self, path: &Path) -> std::io::Result<Vec<String>> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(std::io::Error::new(e.kind(), format!("its file can't be read: {e}"))),
+        };
+        let mut lines = Vec::new();
+        for line in text.lines() {
+            match self.read(line) {
+                Ok(plain) => lines.push(plain),
+                Err(e) if e.key_missing() => return Err(std::io::Error::other(format!("a line of its file is {e}: {RESTORE_KEYS}"))),
+                Err(_) => {}
+            }
+        }
+        Ok(lines)
+    }
+
     /// `plain` (one line) sealed and appended to the file at `path`, owner-only.
     pub(crate) fn append(&self, path: &Path, plain: &str) -> std::io::Result<()> {
         use std::io::Write;

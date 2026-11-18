@@ -375,6 +375,20 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
             todo: "its runs are in the batch still, as the log wrote them, and the other batches are made exports all the same; check the drive or folder is writable and the batch is whole, it is tried again every ten seconds".into(),
         });
     }
+    {
+        // A round that couldn't read all that names what is kept removed nothing (release audit
+        // R92); until one can, the store and the folders' texts only grow.
+        let kept = state.sweeps.kept.lock().unwrap();
+        for (what, report) in [("store", &kept.store), ("file texts", &kept.folders)] {
+            if let Some(e) = report.as_ref().and_then(|r| r.error.as_ref()) {
+                out.push(Warning {
+                    key: format!("sweep:{what}"),
+                    says: format!("the last sweep of the {what} removed nothing: {e}"),
+                    todo: "nothing is removed while what names what is kept can't all be read: make it readable again (a file's permissions, a disk, the server's open files), or restore it from a copy of the data folder; the next round sweeps as before".into(),
+                });
+            }
+        }
+    }
     for (pack, e) in state.store.2.packs().map(|p| p.unreadable().to_vec()).unwrap_or_default() {
         out.push(Warning {
             key: format!("pack:{}", pack.display()),
