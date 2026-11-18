@@ -4,6 +4,30 @@
 
 ## 0.1.0-rc.36
 
+- **Known limits of this release.** The first three are the first work after it.
+  - Changing a secret while a run waits sends that run's earlier requests again. When the run goes
+    on, the requests it made before its wait that carried the secret go out a second time, with the
+    new value (`holon secret set`, or an env or vault secret that changes). Change a secret when
+    `holon runs <slug> --waiting` lists none.
+  - A warning for the admin is also written to the activity record, where everyone who views every
+    flow reads it: a viewer or an editor bound on the host, an agent with such a role. Its text can
+    say where the data folder is and the system's words for the failure, which the admin's
+    warnings keep for whoever views the host.
+  - The approval-mail sample mails the asker "Your payout … was approved, and is recorded" when its
+    approval only ran out, and nothing is recorded then. Copying it, return before the mail when
+    the answer says it expired, as the trading-bot sample does:
+    `if (approved.expired ?? false) return …`.
+  - A file whose writing pauses for a second or more is read part way, and the rest starts a
+    second run, `changed`, with the whole file. Write a file under another name, or elsewhere on
+    the same disk, and rename it into the folder once it is complete.
+  - `holon verify` reads DIFFERS for a run that read a never-kept value under six characters out
+    of its key, though nothing in its record was changed.
+  - A deployment whose run records are truly damaged can't be removed until the damaged file is
+    restored from a backup of the data folder. Moving it out by hand, with the server stopped, is a
+    last resort and only for the oldest of its sealed files: from anywhere else the kept records
+    then fail `holon verify` for good.
+  - A client whose upload stops is told 408 when the server's 60-second idle limit ends the read,
+    up to a minute after it stopped, not at the body's own deadline.
 - **What a flow reads from a reply that sent its secret back is treated as the secret.** A
   service that answers with the secret it was sent (its headers echoed, an account record with
   the key in it) handed the flow the secret again in a reply the server took as ordinary. A
