@@ -5,6 +5,7 @@ use std::io::Result as IoResult;
 use std::io::{BufReader, BufWriter, ErrorKind, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -41,14 +42,36 @@ pub struct ClientConnection {
     closer: Arc<Closer>,
 }
 
-/// Holon (PATCHED.md): a response sent with `Connection: close` is the connection's last: no
-/// request after it is read, and the client is sent the end of the stream once it is written.
+/// Holon (PATCHED.md): what a connection's requests tell it. A response sent with `Connection:
+/// close` is the connection's last: no request after it is read, and the client is sent the end
+/// of the stream once it is written. And whether it is idle: each request read holds a clone of
+/// this until it is answered (dropped), so a connection is owed an answer while there is more
+/// than one; it is idle once none is owed and the idle limit has passed since the last answer
+/// ended (or since it was accepted).
 pub(crate) struct Closer {
     stop: AtomicBool,
     sink: Arc<Mutex<BufWriter<RefinedTcpStream>>>,
+    idle: Option<Duration>,
+    last: Mutex<Instant>,
 }
 
 impl Closer {
+    pub(crate) fn answered(&self) {
+        if let Ok(mut last) = self.last.lock() {
+            *last = Instant::now();
+        }
+    }
+
+    /// Owed no answer, and none sent for the idle limit.
+    fn idle(self: &Arc<Self>) -> bool {
+        let owed = Arc::strong_count(self) > 1;
+        let quiet = match (self.idle, self.last.lock()) {
+            (Some(idle), Ok(last)) => last.elapsed() >= idle,
+            _ => true,
+        };
+        !owed && quiet
+    }
+
     pub(crate) fn close(&self) {
         self.stop.store(true, Ordering::Release);
         if let Ok(mut sink) = self.sink.lock() {
@@ -82,9 +105,12 @@ enum ReadError {
 
 impl ClientConnection {
     /// Creates a new `ClientConnection` that takes ownership of the `TcpStream`.
+    ///
+    /// Holon (PATCHED.md): `idle`, the limit each read of it waits (`limits::Limits::idle`).
     pub fn new(
         write_socket: RefinedTcpStream,
         mut read_socket: RefinedTcpStream,
+        idle: Option<Duration>,
     ) -> ClientConnection {
         let remote_addr = read_socket.peer_addr();
         let secure = read_socket.secure();
@@ -95,6 +121,8 @@ impl ClientConnection {
         let closer = Arc::new(Closer {
             stop: AtomicBool::new(false),
             sink: sink.shared(),
+            idle,
+            last: Mutex::new(Instant::now()),
         });
 
         ClientConnection {
@@ -118,8 +146,10 @@ impl ClientConnection {
     /// Reads until `CRLF` is reached. The next read will start
     ///  at the first byte of the new line.
     ///
-    /// Holon (PATCHED.md): when `first` (a request line) and the idle limit passes before any of
-    ///  it comes, the error is `Idle`.
+    /// Holon (PATCHED.md): when `first` (a request line) and a read waits past the idle limit
+    ///  before any of it comes, the error is `Idle` if the connection is idle (`Closer::idle`);
+    ///  while it is owed an answer, or its last ended less than the limit ago, it reads on (so it
+    ///  is closed between one and two limits after its last answer).
     fn read_next_line(&mut self, first: bool) -> IoResult<AsciiString> {
         let mut buf = Vec::new();
         let mut prev_byte_was_cr = false;
@@ -129,7 +159,10 @@ impl ClientConnection {
 
             let byte = match byte {
                 Some(Err(e)) if first && buf.is_empty() && crate::limits::timed_out(&e) => {
-                    return Err(IoError::new(ErrorKind::TimedOut, Idle))
+                    if self.closer.idle() {
+                        return Err(IoError::new(ErrorKind::TimedOut, Idle));
+                    }
+                    continue;
                 }
                 Some(b) => b?,
                 None => return Err(IoError::new(ErrorKind::ConnectionAborted, "Unexpected EOF")),

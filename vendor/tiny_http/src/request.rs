@@ -507,6 +507,10 @@ impl Drop for Request {
                 sender.send(()).unwrap();
             }
         }
+        // Holon (PATCHED.md): answered, and the connection's idle time starts now
+        if let Some(closer) = &self.closer {
+            closer.answered();
+        }
     }
 }
 

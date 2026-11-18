@@ -104,6 +104,15 @@ impl Connection {
         }
     }
 
+    /// Holon (PATCHED.md): a refused connection is read without waiting (`limits::Refusals`).
+    pub(crate) fn set_nonblocking(&self, nonblocking: bool) -> std::io::Result<()> {
+        match self {
+            Self::Tcp(s) => s.set_nonblocking(nonblocking),
+            #[cfg(unix)]
+            Self::Unix(s) => s.set_nonblocking(nonblocking),
+        }
+    }
+
     pub(crate) fn try_clone(&self) -> std::io::Result<Self> {
         match self {
             Self::Tcp(s) => s.try_clone().map(Self::from),

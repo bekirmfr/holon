@@ -315,6 +315,7 @@ impl Server {
             // a tasks pool is used to dispatch the connections into threads
             let tasks_pool = inside_pool;
             let open = inside_open;
+            let refusals = limits::Refusals::start();
 
             log::debug!("Running accept thread");
             while !inside_close_trigger.load(Relaxed) {
@@ -327,7 +328,7 @@ impl Server {
                         let held = match open.take(addr.map(|a: std::net::SocketAddr| a.ip())) {
                             Ok(held) => held,
                             Err(why) => {
-                                limits::refuse(sock, why);
+                                refusals.keep(limits::refuse(sock, why));
                                 continue;
                             }
                         };
@@ -351,7 +352,7 @@ impl Server {
                         read_closable.held = Some(held.clone());
                         write_closable.held = Some(held);
 
-                        Ok(ClientConnection::new(write_closable, read_closable))
+                        Ok(ClientConnection::new(write_closable, read_closable, open.limits().idle))
                     }
                     Err(e) => Err(e),
                 };

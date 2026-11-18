@@ -12,14 +12,14 @@ edition = "2018"
 publish = false
 
 # Holon: upstream's doc examples are left as written and not run (one needs rustc-serialize, a
-# dependency the copy doesn't carry); the copy's tests are its unit tests (src/).
+# dependency the copy doesn't carry); its tests are upstream's (tests/) and Holon's (src/).
 [lib]
 doctest = false
 
 # Holon: the SSL features keep their names, which rouille's own features name, but not their
 # dependencies (openssl, rustls 0.20): Holon's control port is plain HTTP, TLS is a proxy's.
 # Turning one on fails to build. Upstream's dev-dependencies (rustc-serialize, sha1, fdlimit)
-# are dropped with its tests/, benches/ and examples/.
+# are dropped with the benches/ and examples/ that need them; its tests/ need none.
 [features]
 default = []
 ssl = ["ssl-openssl"]

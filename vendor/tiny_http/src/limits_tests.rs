@@ -13,7 +13,8 @@ use crate::{Header, Response, Server};
 /// Longer than anything here should take, on a loaded machine too.
 const PATIENCE: Duration = Duration::from_secs(10);
 
-/// A server held to `limits` that answers `/slow` with a body that streams for 1.6 s, `/close`
+/// A server held to `limits` that answers `/think?ms=N` after reading its body and waiting N ms,
+/// `/slow` with a body that streams for 1.6 s, `/close`
 /// with `Connection: close`, a request with a body with its length, and anything else `ok`;
 /// each request on a thread of its own, as rouille answers them.
 fn serve(limits: Limits) -> (Arc<Server>, SocketAddr) {
@@ -24,7 +25,14 @@ fn serve(limits: Limits) -> (Arc<Server>, SocketAddr) {
     thread::spawn(move || {
         for mut rq in inside.incoming_requests() {
             thread::spawn(move || {
-                if rq.url() == "/slow" {
+                if let Some(ms) = rq.url().strip_prefix("/think?ms=") {
+                    // Read what body it has, think, then answer.
+                    let ms: u64 = ms.parse().unwrap();
+                    let mut body = Vec::new();
+                    let _ = rq.as_reader().read_to_end(&mut body);
+                    thread::sleep(Duration::from_millis(ms));
+                    let _ = rq.respond(Response::from_string(format!("thought {}", body.len())));
+                } else if rq.url() == "/slow" {
                     let _ = rq.respond(Response::empty(200).with_data(Slow(8), None));
                 } else if rq.url() == "/close" {
                     let close = Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap();
@@ -262,5 +270,106 @@ fn sockets_past_the_bound_hold_no_threads() {
     // And those inside are served.
     sockets[0].write_all(get("/").as_bytes()).unwrap();
     assert_eq!(answer(&mut sockets[0]).unwrap().0, 200);
+    server.unblock();
+}
+
+/// A connection owed an answer is not idle, whatever shape its request has (no body, a body
+/// tiny_http reads itself, one the handler reads, a chunked one): a handler that thinks for twice
+/// the limit is answered whole, the next request sent at once on the same connection is
+/// answered, and the connection, left alone after that, is closed no sooner than the limit after
+/// its last answer.
+#[test]
+fn a_connection_owed_an_answer_is_not_idle_whatever_its_request() {
+    let idle = Duration::from_millis(500);
+    let (server, at) = serve(Limits { idle: Some(idle), ..Limits::default() });
+    let think = format!("/think?ms={}", 2 * idle.as_millis());
+    let small = "x".repeat(100);
+    let large = "x".repeat(2000);
+    let shapes: Vec<(&str, String, usize)> = vec![
+        ("no body", get(&think), 0),
+        ("a body of 100 bytes", format!("POST {} HTTP/1.1\r\nHost: test\r\nContent-Length: 100\r\n\r\n{}", think, small), 100),
+        ("a body of 2,000 bytes", format!("POST {} HTTP/1.1\r\nHost: test\r\nContent-Length: 2000\r\n\r\n{}", think, large), 2000),
+        ("a chunked body", format!("POST {} HTTP/1.1\r\nHost: test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", think), 5),
+    ];
+    let runs: Vec<_> = shapes
+        .into_iter()
+        .map(|(shape, request, length)| {
+            thread::spawn(move || -> Result<(), String> {
+                let mut s = connect(at);
+                s.write_all(request.as_bytes()).unwrap();
+                let (status, _, body) = answer(&mut s).map_err(|e| format!("{}: the answer: {}", shape, e))?;
+                let want = format!("thought {}", length);
+                if status != 200 || String::from_utf8_lossy(&body) != want {
+                    return Err(format!("{}: answered {} {:?}", shape, status, String::from_utf8_lossy(&body)));
+                }
+                s.write_all(get("/").as_bytes()).map_err(|e| format!("{}: the next request: {}", shape, e))?;
+                let next = answer(&mut s).map_err(|e| format!("{}: the next request on it: {}", shape, e))?;
+                if next.0 != 200 {
+                    return Err(format!("{}: the next request answered {}", shape, next.0));
+                }
+                let took = closed_within(&mut s).map_err(|e| format!("{}: left alone: {}", shape, e))?;
+                if took < idle - Duration::from_millis(50) {
+                    return Err(format!("{}: closed {:?} after its last answer, before the limit", shape, took));
+                }
+                Ok(())
+            })
+        })
+        .collect();
+    let failed: Vec<String> = runs.into_iter().filter_map(|r| r.join().unwrap().err()).collect();
+    assert!(failed.is_empty(), "{:#?}", failed);
+    server.unblock();
+}
+
+/// Behind a proxy, every client's request comes from the proxy's one address, each on a
+/// connection of its own: one address is let in as many connections as Holon answers requests
+/// at once (512), and only the one past `FROM_ONE` is refused.
+#[test]
+fn one_address_is_let_in_every_request_holon_answers_at_once() {
+    assert!(crate::limits::FROM_ONE >= 512, "one address holds Holon's MAX_IN_FLIGHT");
+    let (server, at) = serve(Limits::default());
+    let mut held: Vec<TcpStream> = (0..crate::limits::FROM_ONE).map(|_| connect(at)).collect();
+    for (i, s) in held.iter_mut().enumerate() {
+        s.write_all(get("/").as_bytes()).unwrap();
+        assert_eq!(answer(s).map(|a| a.0), Ok(200), "connection {} from one address", i);
+    }
+    let mut past = connect(at);
+    assert_eq!(answer(&mut past).map(|a| a.0), Ok(503), "the one past FROM_ONE");
+    server.unblock();
+}
+
+/// A client past a bound that sends its request at once, before it reads (as every client
+/// does), still reads the 503, whether its request is a line or a 256 KiB body it is still
+/// sending when the 503 is written: what it sends is read off the socket and thrown away until it
+/// closes, where a close with bytes unread would be a reset, cutting its sending and its reading.
+#[test]
+fn a_refused_client_that_sent_its_request_first_reads_the_503() {
+    let (server, at) = serve(Limits { idle: None, connections: 100, from_one: 2 });
+    let mut inside: Vec<TcpStream> = (0..2).map(|_| connect(at)).collect();
+    for s in inside.iter_mut() {
+        s.write_all(get("/").as_bytes()).unwrap();
+        assert_eq!(answer(s).unwrap().0, 200);
+    }
+    let (mut told, mut other) = (0, Vec::new());
+    let body = vec![b'x'; 256 * 1024];
+    for i in 0..50 {
+        let mut s = connect(at);
+        let sent = if i % 2 == 0 {
+            s.write_all(get("/").as_bytes())
+        } else {
+            let head = format!("POST /upload HTTP/1.1\r\nHost: test\r\nContent-Length: {}\r\n\r\n", body.len());
+            s.write_all(head.as_bytes()).and_then(|_| s.write_all(&body))
+        };
+        if let Err(e) = sent {
+            other.push(format!("{}: sending: {}", if i % 2 == 0 { "GET" } else { "POST" }, e));
+            continue;
+        }
+        match answer(&mut s) {
+            Ok((503, _, _)) => told += 1,
+            Ok((status, _, _)) => other.push(format!("{}: {}", if i % 2 == 0 { "GET" } else { "POST" }, status)),
+            Err(e) => other.push(format!("{}: {}", if i % 2 == 0 { "GET" } else { "POST" }, e)),
+        }
+    }
+    eprintln!("refused clients that sent first: {} of 50 read the 503; the rest: {:?}", told, other);
+    assert_eq!(told, 50, "every refused client reads its 503: {:?}", other);
     server.unblock();
 }
