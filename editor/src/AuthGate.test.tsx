@@ -28,6 +28,7 @@
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { held as hold } from "./held.fixture";
 import type { Me } from "./AuthGate";
 
 /** What the server answers, and what the console must show once it has. */
@@ -320,11 +321,12 @@ async function open(c: Case, choices: number[], replays: string[][]) {
     const can = useCan();
     return <span>{`editor of ${me.name}; save ${String(can.may("save"))}; people ${String(can.holds("people"))}`}</span>;
   }
-  const { RETRY_MS, ASKING } = await import("./can");
+  const { RETRY_MS, ASKING, UNREACHED } = await import("./can");
   const { bearer } = await import("./server");
-  // From the first paint on, at every point: what the buttons show is asking (disabled), or what
-  // the server answered whoever the tab acts as then. Never enabled before an answer, never
-  // another's (cy's Save shown enabled for 15 s on the e2e's slow runner).
+  // From the first paint on, at every point: what the buttons show is asking, or, a read lost,
+  // trying again (disabled either way), or what the server answered whoever the tab acts as
+  // then. Never enabled before an answer, never another's (cy's Save shown enabled for 15 s on
+  // the e2e's slow runner).
   const notTheirs: string[] = [];
   const answered: string[] = [];
   const look = () => {
@@ -336,7 +338,7 @@ async function open(c: Case, choices: number[], replays: string[][]) {
       const actsAs = whose(bearer() || null);
       const who = actsAs ?? drawnFor;
       const theirs = PEOPLE[who].can;
-      const saveOk = save === ASKING || save === String(theirs["flow.edit"] ?? true);
+      const saveOk = save === ASKING || save === UNREACHED || save === String(theirs["flow.edit"] ?? true);
       const peopleOk = people === "false" || theirs["people.view"] === true;
       if (!saveOk || !peopleOk) notTheirs.push(`after ${answered.join(", ") || "nothing"}, acting as ${actsAs ?? "no one"}: ${said}`);
     }
@@ -346,16 +348,17 @@ async function open(c: Case, choices: number[], replays: string[][]) {
   vi.stubGlobal(
     "fetch",
     vi.fn(
-      (url: string, init: RequestInit = {}) =>
-        new Promise<Response>((resolve, reject) => {
-          const path = new URL(url, location.origin).pathname;
-          const method = init.method ?? "GET";
-          const key = method === "GET" ? path : `${method} ${path}`;
-          const bearer = (init.headers as Record<string, string> | undefined)?.Authorization?.replace(/^Bearer /, "") ?? null;
-          const body = typeof init.body === "string" ? init.body : undefined;
-          if (lost.delete(key)) return held.push({ path: `${key} (lost)`, answer: () => reject(new TypeError("Failed to fetch")) });
-          held.push({ path: key, answer: () => resolve((c.answers?.[key] ?? server(key, bearer, body) ?? json({}))()) });
-        }),
+      (url: string, init: RequestInit = {}) => {
+        const h = hold(init);
+        const path = new URL(url, location.origin).pathname;
+        const method = init.method ?? "GET";
+        const key = method === "GET" ? path : `${method} ${path}`;
+        const bearer = (init.headers as Record<string, string> | undefined)?.Authorization?.replace(/^Bearer /, "") ?? null;
+        const body = typeof init.body === "string" ? init.body : undefined;
+        if (lost.delete(key)) held.push({ path: `${key} (lost)`, answer: () => h.fail() });
+        else held.push({ path: key, answer: () => h.answer((c.answers?.[key] ?? server(key, bearer, body) ?? json({}))()) });
+        return h.answered;
+      },
     ),
   );
   container = document.createElement("div");
