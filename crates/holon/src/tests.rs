@@ -37,6 +37,8 @@ mod writers;
 mod unread_readers;
 /// Which lines of a source file are a test module's, for the sweeps of the source (R78).
 mod source;
+/// What a run's record says of an effect it held and didn't make (R99).
+mod skipped;
 use source::{in_test_modules, inert, test_files, test_modules};
 
 pub(crate) fn test_state() -> AppState {
