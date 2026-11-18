@@ -692,7 +692,9 @@ fn around(text: &str, part: &str) -> String {
 /// listings. Each answer is held by writers.rs's `where_or_why`: no part of the folder's path,
 /// its name, a file's name under it, the temporary folder, an OS error's words, or the failure's
 /// own (`at_rest::MADE_TO_FAIL`). A GET that says where to ada before the fault too (she views
-/// the host) may say it still, never why. Set up first so each reader is reached: a policy file
+/// the host) may say it still, never why; the admin's warnings in a GET to her are hers, and
+/// what a GET says is read without them, so nothing hangs on a warning the machine has (its disk
+/// past `warn_at`). Set up first so each reader is reached: a policy file
 /// naming a backup folder, console lines, a folder read whose text is kept, and a log past what it
 /// keeps in memory and in its file, cut into sealed segments. Then a second pass fails alone each
 /// place a request reaches only behind another that passes, or that reads what was kept before
@@ -815,12 +817,33 @@ fn no_answer_says_where_or_why_the_data_folder_failed() {
         .collect();
     assert!(left.is_empty(), "left unsent, and not sent the data folder's sweep: {left:?}");
 
-    // What each GET says before the fault: where, to whoever may view the host.
+    // The disk warned of on every machine, as a floor no disk has makes it (tests.rs's
+    // the_host_warns_of_a_full_disk_and_a_full_cache_once_each sets one): its warning names the
+    // data folder's disk, in the admin's warnings, so every run looks at the same answers, whatever
+    // this machine's disk holds, and finds a GET that hands the warnings to hal.
+    let (code, said) = send(&state, &ada, "POST", "/admin/storage", json!({ "warn_at": "1000T" }));
+    assert_eq!(code, 200, "{said}");
+    let (_, warned) = send(&state, &ada, "GET", "/admin/warnings", Value::Null);
+    assert!(warned.contains("\"disk:"), "the data folder's disk is warned of: {warned}");
+    // An answer without the admin's warnings in it. They say where and why, as they are meant to
+    // (failing::note_file: a listener's record that can't be read, its path and why), to whoever
+    // views the host alone. What else a GET says is read without them, before the fault as under
+    // it, so what it may say doesn't hang on a warning this machine happens to have: its disk past
+    // `[storage] warn_at` (rob's sweep sets 90%) is warned of by the data folder's path.
+    let outside_warnings = |said: &str| match serde_json::from_str::<Value>(said) {
+        Ok(Value::Object(mut answer)) if answer.contains_key("warnings") => {
+            answer.remove("warnings");
+            Value::Object(answer).to_string()
+        }
+        _ => said.to_string(),
+    };
+    // What each GET says before the fault, outside the admin's warnings: where, to whoever may
+    // view the host.
     let mut before: BTreeMap<(String, String), bool> = BTreeMap::new();
     for (who, token) in callers {
         for path in &gets {
             let (_, said) = send(&state, token, "GET", path, Value::Null);
-            before.insert((who.to_string(), path.clone()), !super::writers::where_or_why(&said, &dir, &[]).is_empty());
+            before.insert((who.to_string(), path.clone()), !super::writers::where_or_why(&outside_warnings(&said), &dir, &[]).is_empty());
         }
     }
 
@@ -853,17 +876,11 @@ fn no_answer_says_where_or_why_the_data_folder_failed() {
     let mut look = |who: &str, method: &str, path: &str, code: u16, said: &str| -> Vec<String> {
         *codes.entry(code).or_default() += 1;
         // A GET that says where to ada before the fault too (one that views the host) may say it
-        // still: never why. And the admin's warnings in it say both, as they are meant to
-        // (failing::note_file: a listener's record that can't be read, its path and why): to
-        // whoever views the host alone, as the same GET to hal shows.
+        // still: never why. The admin's warnings in a GET to her are hers, left out
+        // (`outside_warnings`); the same GET to hal is held whole, so a warning that reaches
+        // whoever doesn't view the host is found.
         let also = method == "GET" && before.get(&(who.to_string(), path.to_string())).copied().unwrap_or(false);
-        let said = match serde_json::from_str::<Value>(said) {
-            Ok(Value::Object(mut answer)) if also && answer.contains_key("warnings") => {
-                answer.remove("warnings");
-                Value::Object(answer).to_string()
-            }
-            _ => said.to_string(),
-        };
+        let said = if method == "GET" && who == "ada" { outside_warnings(said) } else { said.to_string() };
         let said = said.as_str();
         let parts = super::writers::where_or_why(said, &dir, &[crate::at_rest::MADE_TO_FAIL]);
         let parts: Vec<String> = parts.into_iter().filter(|p| !also || whys.contains(&p.as_str())).collect();
