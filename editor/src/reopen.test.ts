@@ -3,9 +3,12 @@
 // page read whether it was deployed from a list it hadn't loaded yet, and told the person their
 // deployed flow didn't exist. Each case: what the server holds, what the tab reopens as, and that
 // the server was asked then.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { reopening } from "./reopen";
 import { setSession } from "./server";
+
+// A tab reopens signed in (with no one, nothing is asked: server.ts's `api`).
+beforeEach(() => setSession({ token: "t", name: "cy", kind: "person", role: "editor" }));
 
 /** The server: `saved` the flows saved, `deployed` the slugs deployed, each read when asked. */
 function server(held: { saved: string[]; deployed: string[] }) {

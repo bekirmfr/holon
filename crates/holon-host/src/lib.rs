@@ -572,6 +572,19 @@ impl FileStore {
     }
 }
 
+/// A folder's listing (what `fs::read_dir` gave), each entry: none for a folder that isn't there,
+/// and an error for one that is but can't be listed, or an entry that can't be read. Never fewer
+/// entries than the folder holds taken as all of them: what lists a folder to tell what is kept
+/// (the packs, a log's segments, the values a sweep looks at) would take what it couldn't list as
+/// gone (release audit R92).
+pub fn listed<T>(listing: io::Result<impl Iterator<Item = io::Result<T>>>) -> io::Result<Vec<T>> {
+    match listing {
+        Ok(entries) => entries.collect(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Replace `path` with `bytes` so a crash leaves either the old file or the new one, never a
 /// truncated mix: write a sibling temp file, flush it to disk, then rename it over `path` (an
 /// atomic replace on Unix and Windows alike). The temp name is unique per process and call, so
@@ -1626,6 +1639,32 @@ mod registry_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder's listing is all of it or an error: one not there is empty; one that can't be
+    /// listed, or that has an entry that can't be read, is an error, never the entries it could
+    /// read taken as all (release audit R92).
+    #[test]
+    fn a_listing_is_whole_or_an_error() {
+        let entries = |items: Vec<io::Result<u8>>| -> io::Result<std::vec::IntoIter<io::Result<u8>>> { Ok(items.into_iter()) };
+        assert_eq!(listed(entries(vec![Ok(1), Ok(2)])).unwrap(), vec![1, 2]);
+        let none: io::Result<std::vec::IntoIter<io::Result<u8>>> = Err(io::ErrorKind::NotFound.into());
+        assert_eq!(listed(none).unwrap(), Vec::<u8>::new(), "a folder not there holds nothing");
+        let unlisted: io::Result<std::vec::IntoIter<io::Result<u8>>> = Err(io::ErrorKind::PermissionDenied.into());
+        assert_eq!(listed(unlisted).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        let entry = listed(entries(vec![Ok(1), Err(io::Error::other("an entry that can't be read")), Ok(3)]));
+        assert!(entry.is_err(), "an entry that can't be read: {entry:?}");
+        let gone_inside = listed(entries(vec![Ok(1), Err(io::ErrorKind::NotFound.into())]));
+        assert!(gone_inside.is_err(), "only the folder itself not there is none: {gone_inside:?}");
+        // On disk: a file where the folder is can't be listed, and isn't taken as an empty one.
+        let dir = std::env::temp_dir().join(format!("holon-listed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a"), b"1").unwrap();
+        assert_eq!(listed(fs::read_dir(&dir)).unwrap().len(), 1);
+        assert!(listed(fs::read_dir(dir.join("a"))).is_err(), "a file where a folder is");
+        assert!(listed(fs::read_dir(dir.join("none"))).unwrap().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     /// A descriptor as `restrict_to_owner` leaves it is its owner's alone; one that inherits, or
     /// lets anyone else in, is not.

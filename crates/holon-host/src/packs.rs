@@ -125,8 +125,15 @@ impl Packs {
         let dir = values.join("packs");
         let mut kept = Kept::default();
         let mut unreadable = Vec::new();
-        if let Ok(entries) = fs::read_dir(&dir) {
-            let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "pack")).collect();
+        // A folder there that can't be listed, or an entry of it that can't be read, is said as
+        // a pack is that can't be read: its values aren't taken as none (release audit R92).
+        let listed = crate::listed(fs::read_dir(&dir)).unwrap_or_else(|e| {
+            eprintln!("holon: the store's packs in {} can't be listed, their values are missing from the store until they can: {e}", dir.display());
+            unreadable.push((dir.clone(), e.to_string()));
+            Vec::new()
+        });
+        {
+            let mut paths: Vec<PathBuf> = listed.into_iter().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "pack")).collect();
             paths.sort();
             for path in paths {
                 // One that can't be read (cut short, or changed on disk) is said and left as it
@@ -186,7 +193,8 @@ impl Packs {
                 Err(e) => return Err(e),
             }
         }
-        Ok(None)
+        // Still in the index, its pack gone each time: there, and not read (release audit R92).
+        Err(io::Error::other("a packed value's pack was gone each time it was read"))
     }
 
     fn block(&self, path: &Path, at: At) -> io::Result<Arc<Vec<u8>>> {
@@ -541,6 +549,28 @@ mod tests {
         assert_eq!(packs.held().values, 2_001);
         let again_open = Packs::open(&dir, crate::test_seal::sealing()).unwrap();
         assert_eq!(again_open.held().values, 2_001, "as on disk");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Packs there and not read are never taken as none (release audit R92): a packs' folder that
+    /// can't be listed is said as a pack is that can't be read; a value in the index whose pack is
+    /// gone each time it is read is an error, not absent.
+    #[test]
+    fn packs_there_and_not_read_are_never_taken_as_none() {
+        let dir = temp("unlisted");
+        fs::write(dir.join("packs"), b"not a folder").unwrap();
+        let packs = Packs::open(&dir, crate::test_seal::sealing()).unwrap();
+        assert_eq!(packs.unreadable().iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(), [dir.join("packs")], "the folder, said");
+        fs::remove_file(dir.join("packs")).unwrap();
+        let packs = Packs::open(&dir, crate::test_seal::sealing()).unwrap();
+        assert!(packs.unreadable().is_empty(), "a folder not there yet holds no pack");
+        let vs = values(10);
+        packs.pack(&vs).unwrap();
+        for e in fs::read_dir(dir.join("packs")).unwrap() {
+            fs::remove_file(e.unwrap().path()).unwrap();
+        }
+        assert!(packs.get(&vs[0].0).is_err(), "in the index, its pack gone: not absent");
+        assert_eq!(packs.get(&[9u8; 32]).unwrap(), None, "a value no pack holds is absent");
         let _ = fs::remove_dir_all(&dir);
     }
 

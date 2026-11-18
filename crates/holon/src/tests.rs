@@ -1727,6 +1727,410 @@ fn the_states_sealed_runs_left_are_kept_by_a_sweep() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
+/// What a sweep takes the names of the values it keeps from, made unreadable in turn: the run log's
+/// file, one of its sealed segments, a line whose key is missing, its events, the store's values
+/// folder; the log opened with its segments' folder unlistable or a segment that doesn't open; the
+/// store opened with its packs' folder unlistable or a pack that doesn't open; and for the
+/// folders' sweep of kept file texts, the run log's file. Each time the sweep fails, saying what it
+/// couldn't read and naming no place on the server's disk (it may answer an admin's request), and
+/// removes nothing: a run's state only that source names is never taken as named by nothing
+/// (release audit R92: a log unreadable for one round lost the states of every run in its file).
+/// Readable again, the next sweep removes what nothing names.
+#[test]
+fn a_sweep_that_cant_read_what_names_its_values_removes_none() {
+    use crate::recorder::{Log, LogCell};
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    struct Kept {
+        state: AppState,
+        store: PathBuf,
+        logs: PathBuf,
+        later: u64,
+    }
+    // A deployment keeping 60 runs of the 80 it ran, its older runs in sealed segments; with
+    // `packed`, its values packed by a paced sweep, then 20 runs more, so some packed states are
+    // named no more. Every value older than a sweep at `later` spares.
+    fn kept(packed: bool) -> Kept {
+        let store = PathBuf::from(unique_temp_path("unread-store"));
+        let disk = FileStore::new(&store, crate::at_rest::store()).unwrap();
+        let values = disk.values_dir();
+        let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
+        let data = PathBuf::from(unique_temp_path("unread-data"));
+        std::fs::create_dir_all(&data).unwrap();
+        state.deployments_path = data.join("deployments.json").display().to_string().into();
+        let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"kept\", { keep: { runs: 60 } })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n").unwrap_or_else(|e| panic!("{e}"));
+        let requirements = plan.requirements.clone().unwrap();
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "kept", "unit": plan.unit, "requirements": requirements })).unwrap())));
+        let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
+        assert_eq!(deploy_json(&state, "kept", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
+        state.deployments.lock().unwrap()["kept"].log.with(|l| l.set_hot(5));
+        let bump = |n: usize| {
+            for i in 0..n {
+                assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
+                if i % 4 == 0 {
+                    crate::recorder::sync_logs(&state.deployments).unwrap();
+                }
+            }
+            crate::recorder::sync_logs(&state.deployments).unwrap();
+        };
+        bump(80);
+        let mut later = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 2 * sweep::SPARES_MS;
+        if packed {
+            let swept = sweep::Scheduled::default().sweep(&state.store, &state.deployments, later).unwrap().unwrap();
+            assert!(swept.packed > 0, "{swept:?}");
+            bump(20);
+            later += 2 * sweep::SPARES_MS;
+        }
+        let (segments, ..) = state.deployments.lock().unwrap()["kept"].log.with(|l| l.sealed_holds());
+        assert!(segments > 0, "its older runs sealed");
+        Kept { state, store, logs: data.join("deployments.logs"), later }
+    }
+    // The values a store holds: its files, and its packs'.
+    fn held(state: &AppState) -> (usize, usize) {
+        let dir = state.store.2.dir().unwrap().to_path_buf();
+        let files = std::fs::read_dir(&dir).map_or(0, |d| d.flatten().filter(|e| e.file_name().len() == 64).count());
+        (files, state.store.2.packs().map_or(0, |p| p.held().values))
+    }
+    // `path` put aside, and what it isn't put in its place (a folder for a file, a file for a
+    // folder): it can't be read, or listed, as what it was. Undone by `heal`.
+    fn spoil(path: &Path) {
+        let aside = path.with_extension("aside");
+        std::fs::rename(path, &aside).unwrap();
+        if aside.is_dir() {
+            std::fs::write(path, b"not a folder").unwrap();
+        } else {
+            std::fs::create_dir(path).unwrap();
+        }
+    }
+    fn heal(path: &Path) {
+        if path.is_dir() {
+            std::fs::remove_dir_all(path).unwrap();
+        } else {
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::rename(path.with_extension("aside"), path).unwrap();
+    }
+    // The deployment's log opened again from its files, as a server starting opens it.
+    fn reopen(k: &Kept) {
+        let mut log = Log::for_deployment(&k.state.deployments_path, "kept");
+        assert!(log.refused().is_none(), "{:?}", log.refused());
+        log.retain(60, None);
+        k.state.deployments.lock().unwrap().get_mut("kept").unwrap().log = Arc::new(LogCell::new(log));
+    }
+    fn first_segment(k: &Kept) -> PathBuf {
+        let mut segments: Vec<PathBuf> = std::fs::read_dir(k.logs.join("kept.sealed")).unwrap().flatten().map(|e| e.path()).filter(|p| p.to_string_lossy().ends_with(".jsonl.gz")).collect();
+        segments.sort();
+        segments.remove(0)
+    }
+    fn missing_key() -> String {
+        crate::at_rest::testing::line_of_missing_key(Some((1_000, "a".repeat(64).as_str())))
+    }
+
+    let temp = std::env::temp_dir().display().to_string();
+    // Each row: what is made unreadable, how, what the sweep says, and how it is made readable.
+    type Row = (&'static str, &'static str, fn(&Kept), fn(&Kept));
+    let rows: [Row; 8] = [
+        ("the run log's file", "\"kept\"'s run log can't be read", |k| spoil(&k.logs.join("kept.jsonl")), |k| heal(&k.logs.join("kept.jsonl"))),
+        ("one of its sealed segments", "\"kept\"'s run log can't be read", |k| {
+            let segment = first_segment(k);
+            std::fs::write(k.logs.join("spoiled"), segment.display().to_string()).unwrap();
+            spoil(&segment);
+        }, |k| heal(Path::new(&std::fs::read_to_string(k.logs.join("spoiled")).unwrap()))),
+        ("a line of its file whose key is missing", "\"kept\"'s run log can't be read", |k| {
+            let mut file = std::fs::OpenOptions::new().append(true).open(k.logs.join("kept.jsonl")).unwrap();
+            file.write_all(format!("{}\n", missing_key()).as_bytes()).unwrap();
+        }, |k| {
+            let path = k.logs.join("kept.jsonl");
+            let text = std::fs::read_to_string(&path).unwrap();
+            let whole: String = text.lines().filter(|l| *l != missing_key()).map(|l| format!("{l}\n")).collect();
+            std::fs::write(&path, whole).unwrap();
+        }),
+        ("its events", "\"kept\"'s events can't be read", |k| spoil(&k.logs.join("kept.events.jsonl")), |k| heal(&k.logs.join("kept.events.jsonl"))),
+        ("a line of its events whose key is missing", "\"kept\"'s events can't be read", |k| {
+            let mut file = std::fs::OpenOptions::new().append(true).open(k.logs.join("kept.events.jsonl")).unwrap();
+            file.write_all(format!("{}\n", crate::at_rest::testing::line_of_missing_key(None)).as_bytes()).unwrap();
+        }, |k| {
+            let path = k.logs.join("kept.events.jsonl");
+            let text = std::fs::read_to_string(&path).unwrap();
+            let missing = crate::at_rest::testing::line_of_missing_key(None);
+            let whole: String = text.lines().filter(|l| *l != missing).map(|l| format!("{l}\n")).collect();
+            std::fs::write(&path, whole).unwrap();
+        }),
+        ("the store's values folder", "the store's values can't be listed", |k| spoil(&k.store.join("values")), |k| heal(&k.store.join("values"))),
+        ("its segments' folder, as the log opens", "\"kept\"'s run log can't be read", |k| {
+            spoil(&k.logs.join("kept.sealed"));
+            reopen(k);
+        }, |k| {
+            heal(&k.logs.join("kept.sealed"));
+            reopen(k);
+        }),
+        ("a segment that doesn't open, as the log opens", "\"kept\"'s run log can't be read", |k| {
+            let path = first_segment(k);
+            let bytes = std::fs::read(&path).unwrap();
+            std::fs::write(k.logs.join("whole"), &bytes).unwrap();
+            std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+            reopen(k);
+        }, |k| {
+            std::fs::copy(k.logs.join("whole"), first_segment(k)).unwrap();
+            reopen(k);
+        }),
+    ];
+    // On Windows, a file another handle has locked opens, and its reads fail: the log's file
+    // failing once open (elsewhere the folder in its place, above, fails as it is read).
+    #[cfg(windows)]
+    let rows: Vec<Row> = {
+        static LOCKED: crate::sync::Mutex<Option<std::fs::File>> = crate::sync::Mutex::new(None);
+        let locked: Row = ("the run log's file, locked as it is read", "\"kept\"'s run log can't be read", |k| {
+            let file = std::fs::OpenOptions::new().read(true).write(true).open(k.logs.join("kept.jsonl")).unwrap();
+            file.lock().unwrap();
+            *LOCKED.lock().unwrap() = Some(file);
+        }, |_| drop(LOCKED.lock().unwrap().take()));
+        rows.into_iter().chain([locked]).collect()
+    };
+    for (what, says, spoil_it, heal_it) in rows {
+        let k = kept(false);
+        let before = held(&k.state);
+        spoil_it(&k);
+        let said = sweep::sweep(&k.state.store, &k.state.deployments, k.later, sweep::SPARES_MS, false, true).expect_err(what);
+        assert!(said.contains(says), "{what}: {said}");
+        // It may answer an admin's request: where the data folder is, is stderr's and the
+        // warnings' (a pack's), never the answer's.
+        assert!(!said.contains(temp.trim_end_matches(['/', '\\'])), "{what}: it names no place on the server's disk: {said}");
+        heal_it(&k);
+        assert_eq!(held(&k.state), before, "{what}: nothing removed");
+        let swept = sweep::sweep(&k.state.store, &k.state.deployments, k.later, sweep::SPARES_MS, false, true).unwrap_or_else(|e| panic!("{what}, readable again: {e}")).unwrap();
+        assert!(swept.values > 0, "{what}, readable again: what nothing names is removed ({swept:?})");
+        let _ = std::fs::remove_dir_all(&k.store);
+        let _ = std::fs::remove_dir_all(k.logs.parent().unwrap());
+    }
+
+    // The store opened with what holds its packed values unreadable, a copy of it opened as a
+    // store of its own (its packs read as it opens): what they name can't be told.
+    let k = kept(true);
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap().flatten() {
+            if e.path().is_dir() {
+                copy(&e.path(), &to.join(e.file_name()));
+            } else {
+                std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+            }
+        }
+    }
+    type Spoil = fn(&Path);
+    let spoils: [(&str, Spoil); 2] = [
+        ("its packs' folder", |values| spoil(&values.join("packs"))),
+        ("a pack that doesn't open", |values| {
+            let pack = std::fs::read_dir(values.join("packs")).unwrap().flatten().map(|e| e.path()).next().unwrap();
+            let bytes = std::fs::read(&pack).unwrap();
+            std::fs::write(&pack, &bytes[..bytes.len() - 10]).unwrap();
+        }),
+    ];
+    for (what, spoil_it) in spoils {
+        let at = PathBuf::from(unique_temp_path("unread-copy"));
+        copy(&k.store, &at);
+        spoil_it(&at.join("values"));
+        let disk = FileStore::new(&at, crate::at_rest::store()).unwrap();
+        let values = disk.values_dir();
+        let store = SharedStore::on_disk(Box::new(disk), values);
+        let files = || std::fs::read_dir(at.join("values")).unwrap().flatten().count();
+        let before = files();
+        let said = sweep::sweep(&store, &k.state.deployments, k.later, sweep::SPARES_MS, false, true).expect_err(what);
+        assert!(said.contains("the store's packed values ("), "{what}: {said}");
+        assert!(!said.contains(temp.trim_end_matches(['/', '\\'])), "{what}: it names no place on the server's disk: {said}");
+        assert_eq!(files(), before, "{what}: nothing removed");
+        assert!(storage::warnings(&test_state_with(store)).iter().any(|w| w.key.starts_with("pack:")), "{what}: the admin is warned of it");
+        let _ = std::fs::remove_dir_all(&at);
+    }
+    let swept = sweep::sweep(&k.state.store, &k.state.deployments, k.later, sweep::SPARES_MS, false, true).unwrap().unwrap();
+    assert!(swept.values > 0, "the store itself, whole: {swept:?}");
+    let _ = std::fs::remove_dir_all(&k.store);
+    let _ = std::fs::remove_dir_all(k.logs.parent().unwrap());
+
+    // The folders' sweep, by the texts the run logs name within their folder's window: a log it
+    // can't read removes none of them (each would be named by nothing, and go).
+    let data = PathBuf::from(unique_temp_path("unread-texts"));
+    let folder = data.join("journal");
+    std::fs::create_dir_all(&folder).unwrap();
+    let mut state = claims_state("");
+    state.deployments_path = data.join("deployments.json").display().to_string().into();
+    let body = serde_json::json!({ "name": "journal", "path": folder.display().to_string(), "access": "read-write", "keep": "bytes for 7d" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/journal.holon.ts"), "");
+    // A page past what a log line holds itself (`LOG_INLINE_BYTES`), so its runs keep it as a text.
+    let page: String = (0..400).map(|i| format!("{i:05} an entry of the journal\n")).collect();
+    assert!(page.len() as u64 > folders::LOG_INLINE_BYTES);
+    std::fs::write(folder.join("today.txt"), &page).unwrap();
+    for line in ["one more line", "and another"] {
+        assert_eq!(data_call(&state, &slug, "POST", "/journal/today", line).0, 200);
+    }
+    crate::recorder::sync_logs(&state.deployments).unwrap();
+    let texts = state.folders.blobs.held();
+    assert!(texts.texts > 0, "{texts:?}");
+    let in_window = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000;
+    let file = data.join("deployments.logs").join(format!("{slug}.jsonl"));
+    spoil(&file);
+    let said = folders::sweep(&state.folders, &state.deployments, in_window, 0).expect_err("its log's file");
+    assert!(said.contains(&format!("{slug:?}'s run log can't be read")), "{said}");
+    assert!(!said.contains(temp.trim_end_matches(['/', '\\'])), "it names no place on the server's disk: {said}");
+    assert_eq!(state.folders.blobs.held(), texts, "no text removed");
+    heal(&file);
+    let swept = folders::sweep(&state.folders, &state.deployments, in_window, 0).unwrap();
+    assert_eq!((swept.texts, state.folders.blobs.held()), (0, texts), "readable again, its runs name them all");
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// The server's own sweep round that couldn't read what names its values is an admin's warning
+/// until a round can: what it couldn't read, and that it removed nothing.
+#[test]
+fn a_sweep_round_that_removed_nothing_is_warned_of_until_one_can_read() {
+    let dir = unique_temp_path("unread-warn");
+    let disk = FileStore::new(&dir, crate::at_rest::store()).unwrap();
+    let values = disk.values_dir();
+    let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
+    let data = std::path::PathBuf::from(unique_temp_path("unread-warn-data"));
+    std::fs::create_dir_all(&data).unwrap();
+    state.deployments_path = data.join("deployments.json").display().to_string().into();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[storage]\nsweep_every = \"1m\"").unwrap());
+    let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"kept\", { keep: { runs: 3 } })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n").unwrap_or_else(|e| panic!("{e}"));
+    let requirements = plan.requirements.clone().unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "kept", "unit": plan.unit, "requirements": requirements })).unwrap())));
+    let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
+    assert_eq!(deploy_json(&state, "kept", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
+    assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
+    crate::recorder::sync_logs(&state.deployments).unwrap();
+    let log = data.join("deployments.logs").join("kept.jsonl");
+    std::fs::rename(&log, log.with_extension("aside")).unwrap();
+    std::fs::create_dir(&log).unwrap();
+    let warned = |state: &AppState| storage::warnings(state).into_iter().find(|w| w.key == "sweep:store");
+    assert!(warned(&state).is_none());
+    let t0 = 1_000_000_000;
+    assert!(!state.sweeps.tick(&state, t0), "the first look starts the clock");
+    assert!(state.sweeps.tick(&state, t0 + 60_000), "a round");
+    let warning = warned(&state).unwrap_or_else(|| panic!("warned: {:?}", storage::warnings(&state).iter().map(|w| w.key.clone()).collect::<Vec<_>>()));
+    assert!(warning.says.contains("removed nothing") && warning.says.contains("\"kept\"'s run log can't be read"), "{}", warning.says);
+    std::fs::remove_dir(&log).unwrap();
+    std::fs::rename(log.with_extension("aside"), &log).unwrap();
+    let next = body_json(route(&state, &req("GET", "/admin/host", vec![])))["sweeps"]["next_at_ms"].as_u64().unwrap();
+    assert!(state.sweeps.tick(&state, next), "the next round");
+    assert!(warned(&state).is_none(), "a round that could read it: the warning goes");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&data);
+}
+
+/// What the sweeps read to tell what is kept, each function by its file and the start of its
+/// signature (holon-host's from this crate's folder).
+const SWEEP_READS: &[(&str, &str)] = &[
+    ("src/sweep.rs", "fn named("),
+    ("src/sweep.rs", "pub(crate) fn sweep(store"),
+    ("src/sweep.rs", "fn changed_ms("),
+    ("src/recorder.rs", "pub fn each_line("),
+    ("src/recorder.rs", "pub fn lines_holding("),
+    ("src/recorder.rs", "pub fn its_lines("),
+    ("src/recorder.rs", "fn each(self"),
+    ("src/recorder.rs", "fn read_segment("),
+    ("src/recorder.rs", "pub fn open_retaining("),
+    ("src/events.rs", "pub(crate) fn try_lines("),
+    ("src/at_rest.rs", "pub(crate) fn try_read_lines("),
+    ("src/at_rest.rs", "pub(crate) fn read(&self, line"),
+    ("src/folders.rs", "pub(crate) fn sweep(folders"),
+    ("../holon-host/src/packs.rs", "fn open(values"),
+    ("../holon-host/src/packs.rs", "pub fn get(&self"),
+    ("../holon-host/src/packs.rs", "pub fn hashes("),
+    ("../holon-host/src/lib.rs", "pub fn listed<"),
+];
+
+/// What would take an error, or a value that isn't there, as none.
+const SWALLOWS: &[&str] = &["unwrap_or_default(", ".ok()", "if let Ok(", "let Ok(", ".flatten()", "Err(_)", "unwrap_or_else(", ".unwrap_or(", "map_or(", "is_ok", "Ok(None) =>", "let _ ="];
+
+/// Each of those in SWEEP_READS that takes no read's error as none: its function, what its line
+/// holds, and why.
+const SWEEP_READS_ALLOWED: &[(&str, &str, &str)] = &[
+    ("fn named(", "let Ok(entry) = crate::wire::read_json", "a line's parse for the file texts it names: its hashes were taken from its text before, and a line that doesn't parse names no text"),
+    ("pub(crate) fn sweep(store", "sweeping.lock().unwrap_or_else", "a lock taken back from a panic, not a read"),
+    ("pub(crate) fn sweep(store", "metadata().map_or(0", "a value's size, for the counts only"),
+    ("pub(crate) fn sweep(store", "pack.file_name().map_or(", "a pack's name for the error it answers: not a read"),
+    ("pub(crate) fn sweep(store", "Ok(None) => continue", "a value listed, then not there as it is read (removed meanwhile), names nothing; one there and unreadable is an error"),
+    ("pub(crate) fn sweep(store", ".copied().unwrap_or(0)", "no put of it this process recorded, in memory: not a read"),
+    ("fn changed_ms(", "map_or(0, |d| d.as_millis()", "a file whose time can't be read is taken as old: that only lets a value nothing names go, which this time doesn't decide (this process's own puts are spared by what it recorded)"),
+    ("pub fn its_lines(", "serde_json::to_string(e).ok()", "a log kept in memory only: its entries made lines, no file read"),
+    ("fn each(self", "strip_suffix(b\"\\n\").unwrap_or", "a line without its newline: not a read"),
+    ("fn each(self", "let Ok(text) = std::str::from_utf8", "bytes that aren't text are damage, as a line that doesn't open: left out, as the log leaves it out as it opens"),
+    ("fn each(self", "Err(_) => {}", "a line cut short or changed: left out, as the log leaves it out as it opens; one whose key is missing is an error before it"),
+    ("fn read_segment(", "map(slug_of).unwrap_or_default()", "a path's folder name: not a read"),
+    ("pub fn open_retaining(", "holon_host::listed(std::fs::read_dir(&dir)).unwrap_or_else", "noted as the log's `unread`, which fails every read of all its lines"),
+    ("pub fn open_retaining(", "let _ = std::fs::remove_file(&p)", "a crashed cut-back's leftover removed: not a read"),
+    ("pub fn open_retaining(", "std::fs::metadata(&p).map_or(0", "a segment's size, for the counts only"),
+    ("pub fn open_retaining(", "first_prev.unwrap_or_default()", "a segment holding no run names no prev: not a read"),
+    ("pub fn open_retaining(", "entry_lines.pop_front().unwrap_or(0)", "what it keeps in memory, counted: not a read"),
+    ("pub(crate) fn try_lines(", "serde_json::to_string(e).ok()", "events kept in memory only: no file read"),
+    ("pub(crate) fn try_read_lines(", "Err(_) => {}", "a line cut short or changed: left out, as the events leave it out as they open; one whose key is missing is an error before it"),
+    ("pub(crate) fn sweep(folders", "read_json::<LogEntry>(l.as_bytes()).ok()", "a line's parse: one that doesn't parse names no text"),
+    ("fn open(values", "crate::listed(fs::read_dir(&dir)).unwrap_or_else", "noted in the packs' `unreadable`, on which the sweep refuses and the admin is warned"),
+    ("pub fn get(&self", "read().unwrap_or_else(PoisonError::into_inner)", "a lock taken back from a panic, not a read"),
+    ("pub fn hashes(", "read().unwrap_or_else(PoisonError::into_inner)", "a lock taken back from a panic, not a read"),
+];
+
+/// Guards: nothing the sweeps read to tell what is kept (the run logs and their segments, the
+/// events, the store's values and packs, and the listings of each) takes a read's error as none:
+/// each function on that path holds none of SWALLOWS but those SWEEP_READS_ALLOWED says why.
+/// Why: a sweep removes what nothing names. A source it couldn't read names nothing, and what only
+/// it named went for good: a run log unreadable for one round lost the state of every run in its
+/// file (release audit R92). The class test above makes each source unreadable in turn; this
+/// keeps a `.ok()` or an `if let Ok` from coming back on a path it doesn't take.
+/// If it fails: an error read on the sweep's path must reach the sweep (`?`, an `Err`), or be
+/// noted where the sweep refuses on it (`Log::unread`, the packs' `unreadable`); if the line reads
+/// nothing (a parse, a lock, a count), add it to SWEEP_READS_ALLOWED with why. A function added to
+/// the path goes in SWEEP_READS.
+#[test]
+fn nothing_a_sweep_reads_to_tell_what_is_kept_takes_an_error_as_none() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut found = Vec::new();
+    let mut allowed_used = vec![false; SWEEP_READS_ALLOWED.len()];
+    for (file, sig) in SWEEP_READS {
+        let text = std::fs::read_to_string(root.join(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+        // Read as every sweep of the source reads it (source.rs): code only, test modules left out.
+        let code = inert(&text);
+        let code: Vec<&str> = code.lines().collect();
+        let test = in_test_modules(&text);
+        let raw: Vec<&str> = text.lines().collect();
+        let at: Vec<usize> = (0..code.len()).filter(|&i| !test[i] && code[i].contains(sig)).collect();
+        assert!(!at.is_empty(), "{file} has no {sig}: SWEEP_READS names a function that isn't there");
+        assert_eq!(at.len(), 1, "{file}: {sig} is there twice; name it by more of its signature");
+        let (mut depth, mut opened) = (0, false);
+        for (code_line, line) in code.iter().zip(&raw).skip(at[0]) {
+            for swallow in SWALLOWS.iter().filter(|s| code_line.contains(*s)) {
+                match SWEEP_READS_ALLOWED.iter().position(|(f, holds, _)| f == sig && line.contains(holds)) {
+                    Some(k) => allowed_used[k] = true,
+                    None => found.push(format!("{file}, {sig}…: {swallow} in `{}`", line.trim())),
+                }
+            }
+            for c in code_line.chars() {
+                match c {
+                    '{' => (depth, opened) = (depth + 1, true),
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            if opened && depth == 0 {
+                break;
+            }
+        }
+    }
+    assert!(found.is_empty(), "a read on the sweep's path may take an error as none:\n{}", found.join("\n"));
+    let stale: Vec<_> = SWEEP_READS_ALLOWED.iter().zip(&allowed_used).filter(|(_, used)| !**used).map(|((f, holds, _), _)| format!("{f}: {holds}")).collect();
+    assert!(stale.is_empty(), "SWEEP_READS_ALLOWED names lines no longer there: {stale:?}");
+    // The scan itself: it sees a swallow in code, and none in a comment or a string.
+    let code = inert("let a = x.ok(); // y.ok()\nlet b = \"z.ok()\"; let c = '{';");
+    assert_eq!(code.matches(".ok()").count(), 1, "{code}");
+}
+
 /// An admin sets how often the server sweeps (`POST /admin/storage`): written into `holon.toml`'s
 /// `[storage]`, the rest of the file as it was, comments too, and in force at once; a setting that
 /// isn't one changes nothing.

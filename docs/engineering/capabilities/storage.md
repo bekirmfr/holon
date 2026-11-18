@@ -77,6 +77,17 @@ it (`Puts::sweeping`), unpaced. The mechanics and their costs are
 removes kept texts no kept run names, sparing the last `SWEEP_SPARES_MS` (5 minutes), and is
 skipped when nothing is older (`Blobs::any_put_before`, R5).
 
+**A source of names that can't be read stops the round** (release audit R92). What is there and
+can't be read is an error, never none: the values' or the packs' listing (`holon_host::listed`), a
+pack (`Packs::unreadable`), a deployment's events (`Events::try_lines`), its log's file, a sealed
+segment, a line whose key is missing, or the segments' listing as the log opened (`Log::unread`)
+each fail `named()` or `sweep()`, and the round removes nothing; a read that fails is no longer
+taken as naming nothing. The server's round says why in the admin's warnings (`sweep:store`,
+`sweep:file texts`) until a round reads everything; an admin's sweep is answered with the error.
+What isn't there (a segment let go of since it was named, a file not written yet) still names
+nothing. Before, a log file unreadable for one round lost the state of every run in it, and
+restores to them answered 500.
+
 ### Packing long-lived values
 
 The server's sweep collects the named values older than it spares (`to_pack`) and `pack` moves
@@ -175,7 +186,9 @@ person resumes while the disk is full is paused again at the next look.
   reaches it too).
 - **`GET /admin/warnings`**, by key: `disk:<path>`, `cache:flows`, `cache:values` (at its size most
   looks of the last hour), `backup` (a log couldn't write to it), `backup-export` (a batch couldn't
-  be made an export), `pack:<path>`, `sweep-off` (off, with the store past a tenth of its disk).
+  be made an export), `pack:<path>`, `sweep:store` and `sweep:file texts` (the last round
+  removed nothing, as what names what is kept couldn't all be read), `sweep-off` (off, with the
+  store past a tenth of its disk).
   Each says what to do.
 
 **What crashes leave**, a file written aside and never renamed in (`is_aside`), is removed by
