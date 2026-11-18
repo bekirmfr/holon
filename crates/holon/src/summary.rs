@@ -253,7 +253,7 @@ struct Linked {
 /// parse (the newest, cut short as it is written) is left out.
 fn check_log(log: &LogCell) -> (u64, Vec<u64>, String) {
     let (mut runs, mut breaks, mut head, mut chained) = (0u64, Vec::new(), String::new(), false);
-    log.each_line(|line| {
+    let read = log.each_line(|line| {
         let Ok(linked) = serde_json::from_str::<Linked>(line) else { return };
         if (chained || !linked.prev.is_empty()) && !head.is_empty() && linked.prev != head {
             breaks.push(linked.seq);
@@ -262,6 +262,9 @@ fn check_log(log: &LogCell) -> (u64, Vec<u64>, String) {
         head = line_hash(line);
         runs += 1;
     });
+    if let Err(e) = read {
+        eprintln!("holon: a run log's chain is checked only as far as its lines could be read: {e}");
+    }
     (runs, breaks, head)
 }
 

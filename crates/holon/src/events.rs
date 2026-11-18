@@ -289,6 +289,15 @@ impl Events {
         self.entries.iter().filter_map(|e| serde_json::to_string(e).ok()).collect()
     }
 
+    /// [`Events::lines`], an error if its file is there and can't be read, or a line's key is
+    /// missing (`LineSeal::try_read_lines`): for what reads them to tell what they name.
+    pub(crate) fn try_lines(&self) -> std::io::Result<Vec<String>> {
+        if let (Some(path), Some(seal)) = (&self.file, &self.line_seal) {
+            return seal.try_read_lines(path);
+        }
+        Ok(self.entries.iter().filter_map(|e| serde_json::to_string(e).ok()).collect())
+    }
+
     /// The hash of the newest line.
     pub(crate) fn head(&self) -> &str {
         &self.head

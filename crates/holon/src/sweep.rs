@@ -197,7 +197,7 @@ fn named(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<Vec<Names>
     {
         let table = deployments.lock().unwrap();
         for (slug, dep) in table.iter() {
-            let mut texts = dep.events.lines();
+            let mut texts = dep.events.try_lines().map_err(|e| format!("{slug:?}'s events can't be read for what they name: {e}"))?;
             texts.push(json("sessions", serde_json::to_string(&dep.life.sessions))?);
             texts.push(json("versions", serde_json::to_string(&dep.versions))?);
             texts.push(json("waiting runs", serde_json::to_string(&dep.parked))?);
@@ -224,7 +224,8 @@ fn named(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<Vec<Names>
                     }
                 }
             }
-        });
+        })
+        .map_err(|e| format!("{slug:?}'s run log can't be read for what it names: {e}"))?;
         if let Some(cell) = state {
             let state = cell.state.lock().unwrap();
             for (key, value) in state.iter() {
@@ -252,13 +253,24 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
     // of which value it is until the walk below reaches it by its hash. Each its own file (its
     // path), or packed (none, and its hash, which the packs' index holds).
     let mut there: BTreeMap<String, (Option<PathBuf>, u64, Option<Hash>)> = BTreeMap::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let Some(name) = entry.file_name().to_str().filter(|n| n.len() == 64 && parse_hash(n).is_some()).map(str::to_string) else { continue };
-            there.insert(name, (Some(entry.path()), entry.metadata().map_or(0, |m| m.len()), None));
-        }
+    // One it couldn't list would be none to walk through: a packed value only it names would be
+    // taken as named by nothing, and go (release audit R92).
+    let listed = holon_host::listed(std::fs::read_dir(dir)).map_err(|e| {
+        eprintln!("holon: the store's values in {} can't be listed, so the sweep removes nothing: {e}", dir.display());
+        format!("the store's values can't be listed: {e}")
+    })?;
+    for entry in listed {
+        let Some(name) = entry.file_name().to_str().filter(|n| n.len() == 64 && parse_hash(n).is_some()).map(str::to_string) else { continue };
+        there.insert(name, (Some(entry.path()), entry.metadata().map_or(0, |m| m.len()), None));
     }
     if let Some(packs) = store.2.packs() {
+        // A pack that couldn't be read as the store opened holds values none of this can see, and
+        // may name values the others hold: nothing is removed until it is restored.
+        if let Some((pack, e)) = packs.unreadable().first() {
+            // Which pack is the admin's warnings' (`pack:<path>`); this may answer a request.
+            let name = pack.file_name().map_or("packs".into(), |n| n.to_string_lossy());
+            return Err(format!("the store's packed values ({name}) can't be read, so what they name can't be told: {e}"));
+        }
         for (hash, len) in packs.hashes() {
             there.entry(at_rest.name(&hash)).or_insert((None, len, Some(hash)));
         }
