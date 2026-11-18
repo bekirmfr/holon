@@ -79,7 +79,7 @@ notes-api: 42 runs, runs 1 to 42
   3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret, a token or a tainted value (not computed again):
     hmac_sha256 fed the secret stripe_key v3 #a1b2c3d4: 3 nodes in 3 runs: 4, 17, 30, as recorded
   40 runs: 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, … called out: what each call was answered is as recorded, held by the chain alone (and a witnessed head)
-  2 runs: 9, 31 checked given the run id the log kept (it hashed a value the run found only as it went, as it was: a resume token, or a guarded value a call answered or a row held; not computed again)
+  2 runs: 9, 31 checked given the run id the log kept (it hashed a value the run found only as it went, as it was: a resume token, a guarded value a call answered or a row held, or a text computed from a secret, a piece of one a far side sent back among them; not computed again)
   secrets: 38 outbound requests carried one, each to a host its approval shows it going to
   tokens: 12 outbound requests carried what a call answered to a secret, each to a host its approval shows that going to
   state: run 1 began from nothing, as a log's first does; 41 runs began from the state the run before them left, 42 left what their writes make of the one they began with
@@ -263,8 +263,9 @@ A run's id is made from what it received, as its record keeps it: a secret a cal
 tainted key's value (a credential header's among them) and a value its flow never keeps are
 hashed as their marks, so the id beside the nonce in the record says nothing a guess at them could
 check, and `verify` makes it again from the record. When what it received held something the
-server finds only as the run goes (a resume link's token in its path, or a tainted value it met
-first in a call's answer or a database row, such as an email it looked up as `?q=`), the id hashed
+server finds only as the run goes (a resume link's token in its path, a tainted value it met
+first in a call's answer or a database row, such as an email it looked up as `?q=`, or a piece of
+its secret that a service it called sent back, which the caller sent too), the id hashed
 it as it was, and can't be made again: the log keeps the run id it has, and the report lists
 those runs. That is taken from the log too, but nothing is lost: the id binds nothing a forger
 couldn't compute, and the chain and the head are what catch an entry that was changed.
@@ -361,6 +362,18 @@ mark can be put into (another writer's: `\u0022` for a quote) is kept out whole,
 `‹respelled:secret:name›`; a step fed one, or whose own record is one, is taken as recorded and
 named in the report, as a step fed any value the log doesn't hold. A write or a send that the server refuses for a secret, it
 refuses in any of these spellings.
+
+Where a service sent a secret back and the flow took a piece of the reply (a slice, a field),
+the log marks each piece of six or more of the secret's characters the same way, as
+`‹derived #…›`, wherever the run had it; the rest of the reply stays readable. A piece the flow
+changed (upper case, an encoding) is not marked, though it is still refused to callers and to
+storage. One thing to know if you let people, or an agent, read a flow's runs: in such a flow,
+when a caller's own text travels through the service and back (their email, a note), the log
+marks it where it happens to be six characters of the secret in a row. Someone who can both
+read that flow's runs and call it could use that to test guesses. It needs all three: a service
+that sends the secret back, a flow that passes callers' text through it, and a reader who can
+also call. If that is your case, stop the service sending the secret back, or limit who may read
+that flow's runs.
 
 The log keeps sizes as they came. It keeps the size line of a reply (`content-length`) as the
 other service sent it, and a file's size beside its text. So where another service sends a
