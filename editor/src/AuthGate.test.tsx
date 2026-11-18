@@ -28,6 +28,7 @@
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { held as hold } from "./held.fixture";
 import type { Me } from "./AuthGate";
 
 /** What the server answers, and what the console must show once it has. */
@@ -347,16 +348,17 @@ async function open(c: Case, choices: number[], replays: string[][]) {
   vi.stubGlobal(
     "fetch",
     vi.fn(
-      (url: string, init: RequestInit = {}) =>
-        new Promise<Response>((resolve, reject) => {
-          const path = new URL(url, location.origin).pathname;
-          const method = init.method ?? "GET";
-          const key = method === "GET" ? path : `${method} ${path}`;
-          const bearer = (init.headers as Record<string, string> | undefined)?.Authorization?.replace(/^Bearer /, "") ?? null;
-          const body = typeof init.body === "string" ? init.body : undefined;
-          if (lost.delete(key)) return held.push({ path: `${key} (lost)`, answer: () => reject(new TypeError("Failed to fetch")) });
-          held.push({ path: key, answer: () => resolve((c.answers?.[key] ?? server(key, bearer, body) ?? json({}))()) });
-        }),
+      (url: string, init: RequestInit = {}) => {
+        const h = hold(init);
+        const path = new URL(url, location.origin).pathname;
+        const method = init.method ?? "GET";
+        const key = method === "GET" ? path : `${method} ${path}`;
+        const bearer = (init.headers as Record<string, string> | undefined)?.Authorization?.replace(/^Bearer /, "") ?? null;
+        const body = typeof init.body === "string" ? init.body : undefined;
+        if (lost.delete(key)) held.push({ path: `${key} (lost)`, answer: () => h.fail() });
+        else held.push({ path: key, answer: () => h.answer((c.answers?.[key] ?? server(key, bearer, body) ?? json({}))()) });
+        return h.answered;
+      },
     ),
   );
   container = document.createElement("div");

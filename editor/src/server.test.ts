@@ -7,6 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { held } from "./held.fixture";
 import {
   acceptInvite,
   ANSWER_WITHIN,
@@ -179,7 +180,8 @@ describe("with no one signed in", () => {
 describe("a request the server doesn't answer", () => {
   /** Each request sent: its method and path, whether it was given up (its connection dropped),
    *  and its answer, held until given (as a connection the server left unread holds it), or
-   *  given late, after it was given up. */
+   *  given late, after it was given up. Held as a browser's fetch holds it (held.fixture.ts):
+   *  given up, it rejects inside the abort, before the editor's own timer has said so. */
   type Sent = { method: string; path: string; dropped: () => boolean; answer: (body: unknown) => void };
   let sent: Sent[];
   beforeEach(() => {
@@ -188,18 +190,16 @@ describe("a request the server doesn't answer", () => {
     sent = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(
-        (url: string, init?: RequestInit) =>
-          new Promise<Response>((resolve) => {
-            const signal = init?.signal;
-            sent.push({
-              method: init?.method ?? "GET",
-              path: new URL(url, "http://127.0.0.1:7420").pathname,
-              dropped: () => signal?.aborted === true,
-              answer: (body) => resolve(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } })),
-            });
-          }),
-      ),
+      vi.fn((url: string, init?: RequestInit) => {
+        const h = held(init);
+        sent.push({
+          method: init?.method ?? "GET",
+          path: new URL(url, "http://127.0.0.1:7420").pathname,
+          dropped: h.dropped,
+          answer: (body) => h.answer(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } })),
+        });
+        return h.answered;
+      }),
     );
   });
   afterEach(() => vi.useRealTimers());
@@ -279,6 +279,37 @@ describe("a request the server doesn't answer", () => {
     await wait(ANSWER_WITHIN.work);
     expect(((await replay) as { said: unknown }).said).toBeInstanceOf(Unanswered);
     expect(sent.map((s) => s.path)).toEqual(["/deployments/d/replay"]);
+  });
+
+  // The rows above hold their answers as a browser's fetch does. In Chrome, aborted from a timer
+  // and raced as `once` raced it before, the fetch's own AbortError won over the timer's
+  // `Unanswered`, and the editor took a give-up for another failure: a read wasn't asked again,
+  // a change wasn't said as maybe done. Node's fetch, and a stand-in that only held its answer,
+  // let the timer win. So the stand-ins are held to the browser's order, here, and every one
+  // holds its answer through held.fixture.ts.
+  it("a stand-in's held answer, given up, rejects as a browser's fetch does: inside the abort, with its reason", async () => {
+    const raced = (abort: (stop: AbortController) => void) => {
+      const stop = new AbortController();
+      const h = held({ signal: stop.signal });
+      const timer = new Promise<never>((_, reject) => {
+        abort(stop);
+        reject(new Error("the timer's own, after the abort"));
+      });
+      return Promise.race([h.answered, timer]).then(
+        () => new Error("answered"),
+        (e: unknown) => e as Error,
+      );
+    };
+    const plain = await raced((stop) => stop.abort());
+    expect(plain.name, "the fetch's own, before the timer's").toBe("AbortError");
+    expect(plain).not.toBeInstanceOf(Unanswered);
+    expect(await raced((stop) => stop.abort(new Unanswered("given up"))), "the reason given").toBeInstanceOf(Unanswered);
+    const tests = Object.entries(import.meta.glob("./**/*.test.{ts,tsx}", { query: "?raw", import: "default", eager: true }) as Record<string, string>);
+    const own = new RegExp("new Promise" + "<Response>");
+    expect(
+      tests.filter(([, text]) => own.test(text)).map(([path]) => path),
+      "a stand-in fetch holding its answer otherwise",
+    ).toEqual([]);
   });
 
   it("the host's folder picker waits on a person, as long as they take", async () => {

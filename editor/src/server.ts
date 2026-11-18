@@ -139,19 +139,34 @@ function askingAgainBy(n: number): void {
  *  and its connection dropped. Each answer is live and the signed-in person's own, never one to
  *  keep; and through the cache, Chrome lets one request for an address go at a time, the next
  *  waiting on it: on a busy machine one held there held every later read of `/auth/me` past the
- *  15 s a test waits, and with them the access version a page follows (can.tsx). */
+ *  15 s a test waits, and with them the access version a page follows (can.tsx).
+ *
+ *  Given up, a try says so (`Unanswered`) whichever of the two settles first. A browser's fetch
+ *  rejects inside `abort()` itself, before anything after it in the timer has run: aborted with
+ *  no reason, it rejected with the browser's AbortError, and won the race over the timer's own
+ *  `Unanswered` (Chrome, run on a page); taken for some other failure, a read wasn't asked again
+ *  and a change wasn't said as maybe done. Node's fetch settles a few turns later, and the timer
+ *  won there. So the abort carries the give-up as its reason (what a browser's fetch rejects
+ *  with), and whatever the race settles with once the try is given up is said as the give-up
+ *  (a browser that drops the reason, or a failure that came with it). The race stays: a late
+ *  answer is never taken, even from a fetch that doesn't heed its signal. */
 function once(url: string, init: RequestInit, ms: number | null): Promise<Response> {
   const stop = new AbortController();
   const answered = fetch(url, { ...init, cache: "no-store", signal: stop.signal });
   if (ms === null) return answered;
+  const givenUp = new Unanswered(`the server didn't answer in ${took(ms)}`);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      stop.abort();
-      reject(new Unanswered(`the server didn't answer in ${took(ms)}`));
+      reject(givenUp);
+      stop.abort(givenUp);
     }, ms);
   });
-  return Promise.race([answered, late]).finally(() => clearTimeout(timer));
+  return Promise.race([answered, late])
+    .catch((e: unknown) => {
+      throw stop.signal.aborted ? givenUp : e;
+    })
+    .finally(() => clearTimeout(timer));
 }
 
 /** Every request to the server, as `waits` says (by default a GET is a `read`, anything else a

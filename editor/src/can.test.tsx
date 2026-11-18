@@ -12,6 +12,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { held } from "./held.fixture";
 import fixture from "./can.fixture.json";
 import {
   ACTIONS,
@@ -223,13 +224,15 @@ beforeEach(() => {
         expect(u.searchParams.get("actions")?.split(",")).toEqual([...ACTIONS]);
         if (flow === "" && hostHeld > 0) {
           hostHeld -= 1;
-          return new Promise<Response>((resolve) => late.push((body) => resolve(json(body))));
+          const h = held(init);
+          late.push((body) => h.answer(json(body)));
+          return h.answered;
         }
         return json(answers[flow] ?? {});
       }
       if (u.pathname === "/auth/me" && meHeld > 0) {
         meHeld -= 1;
-        return new Promise<Response>(() => undefined);
+        return held(init).answered;
       }
       if (u.pathname === "/auth/me") return json({ name: "cy", kind: "person", role: "viewer", access_version: version });
       if (u.pathname === "/auth/owned") return json(owned.map((name) => ({ name, kind: "agent", owner: "cy" })));
