@@ -8107,7 +8107,7 @@ fn a_removed_deployment_keeps_its_run_records_and_its_slug_starts_a_new_chain() 
 
 /// A caller decides nothing of how big a log line is (release audit D1, class 2's caller side):
 /// whatever body a request is sent, of any size and any bytes JSON writes long (`\u0001`, six
-/// to one), with a look-alike of a mark or a tainted value in it, to a route that never reads it
+/// to one), with a look-alike of a mark, a tainted value or one never kept in it, to a route that never reads it
 /// or one that does, its run's line is held under a bound of the server's, not the caller's. A
 /// body past `BODY_INLINE` is kept by hash in the blob store, redacted as the entry is, and named
 /// by the entry; the run verifies and replays as itself from it, and a sweep keeps it while its
@@ -8118,7 +8118,7 @@ fn a_caller_decides_nothing_of_how_big_a_log_line_is() {
     let state = claims_state("");
     let text = "import { flow, route } from \"holon\"
 
-flow(\"bodies\", { port: 18241, taint: [\"number\"] })
+flow(\"bodies\", { port: 18241, taint: [\"number\"], never_keep: [\"cvc\"] })
 
 route.post(\"/drop\", (req) => \"ok\")
 
@@ -8129,7 +8129,7 @@ route.post(\"/name\", (req) => req.json.name)
     // Each body: as many of `fill` as make it `n` bytes or so, as JSON when `json`.
     let body = |fill: &str, n: usize, json: bool| {
         let pad = fill.repeat(n.div_ceil(fill.len()));
-        if json { serde_json::json!({ "name": "Ada", "number": card, "pad": pad }).to_string() } else { pad }
+        if json { serde_json::json!({ "name": "Ada", "number": card, "cvc": "739", "pad": pad }).to_string() } else { pad }
     };
     let mut sent = Vec::new();
     for n in [10, BODY_INLINE / 6, BODY_INLINE / 2, BODY_INLINE, BODY_INLINE + 1, 1 << 20] {
@@ -8155,6 +8155,10 @@ route.post(\"/name\", (req) => req.json.name)
         assert!(line.len() <= bound, "{url} with {} bytes made a line of {}", b.len(), line.len());
         let entry: crate::recorder::LogEntry = serde_json::from_str(line).unwrap();
         assert!(!line.contains(card), "a tainted value is marked, kept by hash or not");
+        // And a value under a key its flow never keeps, as its stand-in's mark: in the line, and in
+        // a body kept by hash (taken out before the entry is redacted).
+        let cvc = |s: &str| s.contains("\"739\"") || s.contains("\\\"739\\\"");
+        assert!(!cvc(line), "{url}: a value never kept is in no line");
         // As its line writes it: a control character six bytes.
         let written = serde_json::to_string(b).unwrap().len() - 2;
         match &entry.body {
@@ -8166,6 +8170,7 @@ route.post(\"/name\", (req) => req.json.name)
                 let held = export["blobs"][blob].as_str().expect("the export ships it");
                 assert_eq!(held.len() as u64, kept.size);
                 assert!(!held.contains(card) && (!b.contains(card) || held.contains("‹taint:number›")), "kept redacted");
+                assert!(!cvc(held) && (!b.contains("\"cvc\"") || held.contains("‹never_keep:cvc›")), "{url}: a value never kept is in no kept body");
             }
         }
     }

@@ -6,7 +6,7 @@
   ["number"], never_keep: ["cvc"] })`: a value under a key it never keeps is replaced where it
   stands, by `‹never_keep:cvc›`, at any length, in every form a run's record holds it (a record's
   field, a header, a JSON text's field, a query or a form, either inside a JSON text's string as a
-  host's echo has it), and a write or a send that holds it is
+  host's echo has it, and a request body over 64 KiB kept by hash), and a write or a send that holds it is
   refused (state, a collection, a file, a database, a channel, a mail, a queue, a line of its log,
   another flow's action); a request to a host is sent. A tainted value is removed by its text,
   which a short one can't be (a CVC `737` is in an amount `1737`), so one under six characters is

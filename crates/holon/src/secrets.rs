@@ -1533,8 +1533,13 @@ impl Redactor {
     }
 
     /// `s` as the log writes it ([`Redactor::logged`]), and whether a look-alike of a mark was
-    /// escaped: what [`Redactor::entry`] makes of a text the entry holds.
-    pub(crate) fn logged_text(&self, s: String) -> (String, bool) {
+    /// escaped: what [`Redactor::entry`] makes of a text the entry holds, a value under a key its
+    /// flow never keeps stood in for first, as there (a request body kept by hash,
+    /// `firing::keep_body_by_hash`, is taken out before the entry is redacted).
+    pub(crate) fn logged_text(&self, mut s: String) -> (String, bool) {
+        if let Some(places) = &self.places {
+            places.text(&mut s);
+        }
         self.logged(&s).unwrap_or((s, false))
     }
 
