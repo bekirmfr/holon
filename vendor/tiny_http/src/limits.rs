@@ -149,68 +149,149 @@ pub(crate) fn refuse(mut sock: Connection, why: &str) -> Connection {
     sock
 }
 
-/// How long a refused connection is kept for its client to read its 503 and close.
-const LINGER: Duration = Duration::from_secs(2);
-/// Refused connections kept at once; past them, the oldest is closed.
-const LINGERING: usize = 256;
+/// How long a refused connection is kept for its client to read its 503 and close, from its
+/// refusal.
+pub(crate) const LINGER: Duration = Duration::from_secs(2);
+/// Refused connections kept at once, all told; past them, the oldest is closed when the next is
+/// refused.
+pub(crate) const LINGERING: usize = 256;
+/// The most read from one refused connection in one pass, so a client that sends without end
+/// can't hold the thread from the others and from their deadlines.
+const READ_PER_PASS: usize = 64 * 1024;
 
 /// The refused connections, kept a moment after their 503 by one thread for them all, and what
 /// their clients send meanwhile read and thrown away. A socket closed with bytes it hasn't read
 /// (the client's request, sent before it read anything) is reset on Windows and Linux both, and
 /// a reset can reach the client before it reads the 503: it then sees only the reset. Read
 /// empty, the socket closes cleanly once the client has read the 503 and closed its side, or at
-/// `LINGER`.
+/// its deadline.
+///
+/// The bound is held where a socket is handed over (`keep`, on the accept thread): one list,
+/// oldest first, behind a mutex; past `LINGERING` the oldest is taken off there and closed at
+/// once, and each deadline is stamped there, at the refusal. No queue sits in between, so
+/// nothing waits uncounted however fast refusals come. The thread reads each socket where it
+/// lies, under the lock, at most `READ_PER_PASS` (non-blocking, so a few reads), so the list
+/// stays in refusal order and `keep` waits at most for one socket's read.
 pub(crate) struct Refusals {
-    to: Mutex<std::sync::mpsc::Sender<Connection>>,
+    shared: Arc<Kept>,
+}
+
+struct Kept {
+    state: Mutex<KeptState>,
+    more: std::sync::Condvar,
+    linger: Duration,
+}
+
+struct KeptState {
+    /// Oldest first: each one's number in refusal order, the socket, its deadline.
+    list: std::collections::VecDeque<(u64, Connection, Instant)>,
+    /// The number the next refused socket gets.
+    next: u64,
+    /// The server is gone: the thread ends once the list is empty.
+    gone: bool,
 }
 
 impl Refusals {
     pub(crate) fn start() -> Refusals {
-        let (to, from) = std::sync::mpsc::channel::<Connection>();
-        std::thread::spawn(move || {
-            let mut kept: std::collections::VecDeque<(Connection, Instant)> = Default::default();
-            let mut buf = [0u8; 4096];
-            loop {
-                // Wait for one when none is kept, else look again every 20 ms.
-                let next = if kept.is_empty() {
-                    from.recv().map_err(|_| ())
-                } else {
-                    match from.recv_timeout(Duration::from_millis(20)) {
-                        Ok(sock) => Ok(sock),
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(()),
-                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(()),
-                    }
-                };
-                match next {
-                    Ok(sock) => {
-                        if kept.len() >= LINGERING {
-                            kept.pop_front();
-                        }
-                        kept.push_back((sock, Instant::now() + LINGER));
-                    }
-                    Err(()) if kept.is_empty() => return, // the server is gone
-                    Err(()) => {}
-                }
-                kept.retain_mut(|(sock, until)| {
-                    loop {
-                        match sock.read(&mut buf) {
-                            Ok(0) => return false, // the client closed: close too
-                            Ok(_) => continue,
-                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                            Err(_) => return false,
-                        }
-                    }
-                    Instant::now() < *until
-                });
-            }
-        });
-        Refusals { to: Mutex::new(to) }
+        Refusals::lingering(LINGER)
     }
 
+    pub(crate) fn lingering(linger: Duration) -> Refusals {
+        let shared = Arc::new(Kept {
+            state: Mutex::new(KeptState {
+                list: Default::default(),
+                next: 0,
+                gone: false,
+            }),
+            more: std::sync::Condvar::new(),
+            linger,
+        });
+        let mine = Arc::clone(&shared);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                {
+                    let mut s = mine.state.lock().unwrap();
+                    while s.list.is_empty() && !s.gone {
+                        s = mine.more.wait(s).unwrap();
+                    }
+                    if s.list.is_empty() {
+                        return; // the server is gone, and nothing is kept
+                    }
+                }
+                // One pass, oldest first: every socket kept, each read at most READ_PER_PASS and
+                // its deadline looked at. `after` is the last one looked at, so one closed or
+                // added by `keep` between two locks neither skips nor repeats one.
+                let mut after: Option<u64> = None;
+                loop {
+                    let mut s = mine.state.lock().unwrap();
+                    let at = match after {
+                        None => 0,
+                        Some(n) => s.list.partition_point(|(id, _, _)| *id <= n),
+                    };
+                    let Some((id, sock, until)) = s.list.get_mut(at) else {
+                        break;
+                    };
+                    after = Some(*id);
+                    let mut read = 0;
+                    let open = loop {
+                        if read >= READ_PER_PASS {
+                            break true;
+                        }
+                        match sock.read(&mut buf) {
+                            Ok(0) => break false, // the client closed: close too
+                            Ok(k) => read += k,
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break true,
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                            Err(_) => break false,
+                        }
+                    };
+                    let done = !open || Instant::now() >= *until;
+                    let gone = if done { s.list.remove(at) } else { None };
+                    drop(s);
+                    drop(gone); // closed outside the lock
+                }
+                let s = mine.state.lock().unwrap();
+                if !s.list.is_empty() {
+                    let _ = mine.more.wait_timeout(s, Duration::from_millis(20));
+                }
+            }
+        });
+        Refusals { shared }
+    }
+
+    /// Keep a refused socket: a lock and a push. Past the bound, the oldest kept is taken off
+    /// and closed here, after the lock is let go.
     pub(crate) fn keep(&self, sock: Connection) {
-        if let Ok(to) = self.to.lock() {
-            let _ = to.send(sock);
+        let oldest = {
+            let mut s = self.shared.state.lock().unwrap();
+            let oldest = if s.list.len() >= LINGERING {
+                s.list.pop_front()
+            } else {
+                None
+            };
+            let id = s.next;
+            s.next += 1;
+            s.list.push_back((id, sock, Instant::now() + self.shared.linger));
+            oldest
+        };
+        self.shared.more.notify_one();
+        drop(oldest);
+    }
+
+    /// The refused sockets held now.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> usize {
+        self.shared.state.lock().unwrap().list.len()
+    }
+}
+
+impl Drop for Refusals {
+    fn drop(&mut self) {
+        if let Ok(mut s) = self.shared.state.lock() {
+            s.gone = true;
         }
+        self.shared.more.notify_one();
     }
 }
 

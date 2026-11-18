@@ -29,7 +29,9 @@
   `PATCHED.md`), which also closes a connection that is owed no answer and has sent nothing for
   60 seconds since its last one, answers one past 1,024 open (512 from one address, room for
   every request the server answers at once behind a proxy) with a 503 at once rather than giving
-  every socket a thread for ever, and closes the connection after an answer that says
+  every socket a thread for ever (a refused one is kept up to 2 s for its client to read the
+  503, at most 256 at once, so the control port holds at most 1,280 connections however many come), and
+  closes the connection after an answer that says
   `Connection: close` (the 408 for a body that stopped, which used to leave it open).
 - **A flow can never keep a key, however short its value.** `flow("charge", { taint:
   ["number"], never_keep: ["cvc"] })`: a value under a key it never keeps is replaced where it

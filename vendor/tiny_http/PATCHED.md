@@ -41,9 +41,14 @@ or, while the history keeps it, against the commit that added the copy unchanged
    address (512). Upstream accepted every socket and gave each a thread for as long as it was
    open. One past either bound is answered 503 at once and holds no thread. Its sending side is
    ended at once, and one thread for all refused connections reads off and throws away what
-   their clients send until each client closes, or for 2 s (256 at most at once). A client that
-   sent its request before reading, as every client does, then reads the 503, rather than a
-   reset. One address may hold every request Holon answers at once (`MAX_IN_FLIGHT`, 512),
+   their clients send until each client closes, or until 2 s after its refusal. At most 256
+   refused connections are kept, counted where the accept thread hands one over: past them,
+   the oldest is closed there at once. Nothing waits uncounted in between, and the thread reads
+   at most 64 KiB from one connection in a pass, so a client that never stops sending holds up
+   neither the others nor their deadlines. A client that sent its request before reading, as
+   every client does, then reads the 503, rather than a reset. With both bounds, the sockets
+   the server holds are at most 1,024 accepted and 256 refused, so its own sockets can't run the
+   process out of handles. One address may hold every request Holon answers at once (`MAX_IN_FLIGHT`, 512),
    which a proxy Holon trusts carries for all its clients; main.rs asserts both bounds hold
    Holon's in-flight bound. A Unix socket's connections count as one address.
 4. **`Connection: close`** (`src/response.rs`, `src/request.rs`, `src/client.rs`). Upstream

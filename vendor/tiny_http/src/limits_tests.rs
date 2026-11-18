@@ -373,3 +373,78 @@ fn a_refused_client_that_sent_its_request_first_reads_the_503() {
     assert_eq!(told, 50, "every refused client reads its 503: {:?}", other);
     server.unblock();
 }
+
+/// Whether the server has closed its socket of a refused client (as against its end of the
+/// stream, which every refused client reads after its 503): bytes sent to a closed socket are
+/// answered with a reset, and bytes sent to a kept one are read and thrown away. Sends a byte
+/// and reads, again, until a reset or `within`.
+fn closed_by_the_server(c: &mut TcpStream, within: Duration) -> bool {
+    let start = Instant::now();
+    c.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+    let mut buf = [0u8; 512];
+    while start.elapsed() < within {
+        if c.write_all(b"x").is_err() {
+            return true;
+        }
+        match c.read(&mut buf) {
+            Ok(_) => thread::sleep(Duration::from_millis(5)),
+            Err(e) if crate::limits::timed_out(&e) => {}
+            Err(_) => return true, // reset or aborted
+        }
+    }
+    false
+}
+
+/// Refused sockets held never pass `LINGERING`, however many come and however fast, and one
+/// client that sends without end holds nothing up. More than the bound are handed to `keep` as
+/// the accept thread hands them (the first a client that never stops sending, the rest clients
+/// that send nothing and stay open), with a linger far past the test, so no deadline closes
+/// one. The count held never passes the bound after any `keep`; the oldest past it, after their
+/// 503, are closed (closed when newer came, not at a deadline); the newest are kept.
+#[test]
+fn refused_sockets_held_never_pass_the_bound_and_the_oldest_are_closed_first() {
+    use crate::connection::Connection;
+    use crate::limits::{refuse, Refusals, LINGERING};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let at = listener.local_addr().unwrap();
+    let refusals = Refusals::lingering(Duration::from_secs(3600));
+    let extra = 40;
+    let (mut clients, mut most) = (Vec::new(), 0);
+    for i in 0..LINGERING + extra {
+        let c = connect(at);
+        let (s, _) = listener.accept().unwrap();
+        if i == 0 {
+            let mut w = c.try_clone().unwrap();
+            thread::spawn(move || {
+                let chunk = vec![b'x'; 1 << 20];
+                while w.write_all(&chunk).is_ok() {}
+            });
+        }
+        refusals.keep(refuse(Connection::from(s), TOO_MANY));
+        most = most.max(refusals.held());
+        clients.push(c);
+    }
+    assert!(most <= LINGERING, "refused sockets held at most {}, over the bound {}", most, LINGERING);
+    // The oldest past the bound (the sender, the first, is closed with its bytes unread: a reset
+    // it may meet before its 503, so it is left out).
+    for (i, c) in clients.iter_mut().enumerate().take(extra).skip(1) {
+        match answer(c) {
+            Ok((503, _, _)) => {}
+            other => panic!("refused client {}: {:?}", i, other),
+        }
+        assert!(closed_by_the_server(c, PATIENCE), "refused client {}, past the bound, still kept", i);
+    }
+    for (i, c) in clients.iter_mut().enumerate().skip(LINGERING + extra - 10) {
+        match answer(c) {
+            Ok((503, _, _)) => {}
+            other => panic!("refused client {}: {:?}", i, other),
+        }
+        assert!(
+            !closed_by_the_server(c, Duration::from_millis(300)),
+            "refused client {}, inside the bound, closed",
+            i
+        );
+    }
+    assert_eq!(refusals.held(), LINGERING);
+}
