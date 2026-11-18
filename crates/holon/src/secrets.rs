@@ -216,10 +216,16 @@ pub(crate) fn derived_hash(key: &[u8], run: &str, value: &str) -> String {
 /// that gave a true or false, a number, bytes, a list, a short text or nothing leaves the run
 /// not whole: no mark stands for those, and what is computed from a secret is then withheld
 /// whole, as it is for a run with no key.
-pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint::SecretFed, key: Option<&[u8]>, run: &str, kept: bool) -> crate::recorder::Born {
+///
+/// So does a text that holds a value under a key its flow never keeps (`never_keep`, by place:
+/// `never_keep::in_text`): its hash would be the value a few tries away for whoever holds the
+/// key (a CVC is a thousand), so nothing is listed for it, and the graph withholds it.
+pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint::SecretFed, key: Option<&[u8]>, run: &str, kept: bool, never_keep: &[String]) -> crate::recorder::Born {
     let Some(key) = key.filter(|_| !fed.is_empty()) else { return Default::default() };
     let mut whole = kept && fed.followed_to(crate::recorder::Timer::DEPTH);
     let mut made: BTreeSet<&str> = BTreeSet::new();
+    // Whether a text it computed holds a value under a key its flow never keeps: listed for none.
+    let mut never_kept = false;
     for node in timeline.iter().filter(|n| fed.computes(&n.path)) {
         let Some(outputs) = &node.outputs else {
             whole = false;
@@ -233,7 +239,9 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
                 whole = false;
                 continue;
             };
-            if text.chars().count() >= MIN_SECRET_LEN {
+            if crate::never_keep::in_text(text, never_keep) {
+                never_kept = true;
+            } else if text.chars().count() >= MIN_SECRET_LEN {
                 made.insert(text);
                 // Found by its value, and as JSON text writes it once: one that JSON escapes (a
                 // quote, a backslash, a control character) reads another way again written out
@@ -258,6 +266,13 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
     // value may be left out: verify computes it again on its marks (R66). A call gives what the
     // host answered, kept whole in the record's rounds.
     whole &= timeline.iter().filter(|n| fed.taken(&n.path)).all(|n| n.outputs.is_some());
+    // And no text it computed held a value its flow never keeps, under its key: no hash is
+    // listed for one (its value would be a few tries from it), so verify can't hold the step
+    // that gave it to a mark, and the record withholds, as for a step it takes and the record
+    // doesn't keep. Such a text is computed from a secret, so its step ran: `holon verify` takes
+    // a line that withholds for it as one something could have made withhold (`nothing_withheld`
+    // in its rerun), and says why among the rest (`withheld_why`).
+    whole &= !never_kept;
     crate::recorder::Born { values, whole }
 }
 
@@ -270,7 +285,11 @@ pub(crate) fn born(timeline: &[crate::recorder::NodeTiming], fed: &crate::taint:
 /// As written, each such value is its mark, as long for one secret as for another: the
 /// deployment's secrets as [`Redactor::of`] marks them, and each text the run computed from
 /// them so far as [`Redactor::born`] does, noted from the steps [`born`] notes them from, as
-/// each gives it (none for a run with no key, whose record marks none); and a look-alike of a
+/// each gives it (none for a run with no key, whose record marks none); each value its flow
+/// never keeps as [`Redactor::never_kept`] marks it, where it stands under its key and, one
+/// found so in what started the run, by its text (a CVC of 3 digits and one of 4 written alike),
+/// and each step that holds such a value measured so too, whether or not it may hold a secret;
+/// and a look-alike of a
 /// mark in the run's own text escaped, as written. Not the marks only its whole entry makes
 /// known (its tokens, the credentials its calls answered, its tainted values): those write a
 /// step it keeps longer, never take it out, so whether a step is kept for its size is decided
@@ -308,19 +327,39 @@ impl crate::recorder::Measure for Measured {
                 })
                 .collect();
             if !values.is_empty() {
-                let marks = std::mem::replace(&mut self.marks, Redactor { pairs: Vec::new(), whole: Vec::new() });
+                let marks = std::mem::replace(&mut self.marks, Redactor { pairs: Vec::new(), whole: Vec::new(), places: None });
                 self.marks = marks.and(Redactor::born(&crate::recorder::Born { values, whole: true }));
             }
         }
-        // One the walk says is clean may hold a secret as it is all the same: a far side sent it
-        // back (R70). It is measured as written too, so `holon verify`, which has the step with
-        // the secret's mark, tells a step left out of a line from one too large to keep.
-        if !self.fed.holds(path) && !outputs.iter().flatten().any(|v| svalue_holds(v, &|s| self.marks.holds(s))) {
+        // One the walk says is clean may hold a secret, or a text computed from one, as it is all
+        // the same: a far side sent it back (R70). It is measured as written too, so `holon
+        // verify`, which has the step with the secret's mark, tells a step left out of a line
+        // from one too large to keep. Only a secret's value and what is computed from it make a
+        // clean step measured so: a value the start found under a guarded key (a tainted one)
+        // doesn't, as it didn't before; one its flow never keeps does, wherever it stands (below).
+        let holds = self.fed.holds(path)
+            || (self.marks.pairs.iter().any(|(_, mark)| is_secrets(mark)) && outputs.iter().flatten().any(|v| svalue_holds(v, &|s| self.marks.holds_a_secret(s))));
+        if !holds && self.marks.places.is_none() {
             return None;
         }
         let mut written = outputs.to_vec();
+        // Whether it holds a value its flow never keeps, wherever it is from: a step that does is
+        // measured as written too, secret or not, so its size doesn't say how long the value is.
+        let mut never = false;
+        let never_values: Vec<&str> = self.marks.pairs.iter().filter(|(_, mark)| mark.starts_with(crate::never_keep::MARK)).map(|(value, _)| value.as_str()).collect();
         for v in written.iter_mut().flatten() {
+            // A value its flow never keeps stood in for where it stands, as the entry is
+            // (`Redactor::entry`), so its mark, not its length, is measured.
+            if let Some(places) = &self.marks.places {
+                never |= places.svalue(v);
+            }
+            if !never && !never_values.is_empty() {
+                texts_mut(v, &mut |s: &mut String| never |= never_values.iter().any(|value| s.contains(value)));
+            }
             self.marks.logged_svalue(v);
+        }
+        if !holds && !never {
+            return None;
         }
         Some(crate::recorder::fits(&written))
     }
@@ -1429,6 +1468,10 @@ pub(crate) struct Redactor {
     /// (value, mark), longest value first, so a value containing another is replaced whole. A
     /// value is here in each spelling JSON gives it ([`spellings`]).
     pairs: Vec<(String, String)>,
+    /// The keys its run's flow never keeps (`never_keep.rs`): each value under one is stood in for
+    /// where it stands, before any value is replaced by its text, and the stand-in (one of
+    /// `pairs`) is then written as its mark.
+    places: Option<crate::never_keep::Places>,
     /// (value, what a text is written as that still holds it): a value as it is, for the texts
     /// that hold it in a spelling no pair has (deeper than [`spellings`] goes, or another
     /// writer's: `\u0022` for a quote). Such a text is withheld whole ([`RESPELLED`]).
@@ -1489,7 +1532,7 @@ impl Redactor {
             .chain(vault.retired.iter().map(|(name, _, value)| (name, value)))
             .filter_map(|(name, value)| held_whole(value.as_str(), "secret", name))
             .collect();
-        Redactor { pairs, whole }
+        Redactor { pairs, whole, places: None }
     }
 
     /// The credentials a run's calls answered ([`answered_tokens`]), as `‹token:answer field #a1b2c3d4›`:
@@ -1506,7 +1549,7 @@ impl Redactor {
         }
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
         let whole = tokens.iter().filter_map(|(name, value)| held_whole(value, "token", name)).collect();
-        Redactor { pairs, whole }
+        Redactor { pairs, whole, places: None }
     }
 
     /// What a run computed from its secrets ([`born`]), each as `‹derived #7c1e9a02›`, the start
@@ -1521,7 +1564,7 @@ impl Redactor {
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
         // A value that JSON spells another way leaves its run's record withholding ([`born`]), so
         // none of these is held whole.
-        Redactor { pairs, whole: Vec::new() }
+        Redactor { pairs, whole: Vec::new(), places: None }
     }
 
     /// A run's tokens, as `‹token:name›`: a token is a bearer credential for its waiting point.
@@ -1530,7 +1573,7 @@ impl Redactor {
             tokens.iter().flat_map(|(name, token)| spelled(token, &format!("‹token:{name}›"))).collect();
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
         let whole = tokens.iter().filter_map(|(name, token)| held_whole(token, "token", name)).collect();
-        Redactor { pairs, whole }
+        Redactor { pairs, whole, places: None }
     }
 
     /// A run's tainted values (`data::tainted`), each as `‹taint:key›`, the key it was found at;
@@ -1544,7 +1587,26 @@ impl Redactor {
         }
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
         let whole = values.iter().filter_map(|(key, value)| held_whole(value, "taint", key)).collect();
-        Redactor { pairs, whole }
+        Redactor { pairs, whole, places: None }
+    }
+
+    /// A run's values its flow never keeps: each where it stands under its key, at any length
+    /// (`places`), as `‹never_keep:key›`; and each found there that is as long as a secret may be
+    /// (`values`, `data::never_kept`) by its text too, as a tainted one is: in each spelling JSON
+    /// gives it ([`spelled`]), a text that holds it in one no pair has withheld whole
+    /// ([`held_whole`]), and a number that is one as it is written.
+    pub(crate) fn never_kept(places: Option<crate::never_keep::Places>, values: &[(String, String)]) -> Redactor {
+        // A stand-in needs no other spelling: it is made of characters JSON never escapes (two of
+        // Unicode's private use, hex digits, a dot and digits: `never_keep::Places`), so it reads
+        // the same written out as JSON however deep, and one pair each finds it there.
+        let mut pairs: Vec<(String, String)> = places.as_ref().map(crate::never_keep::Places::pairs).unwrap_or_default();
+        debug_assert!(pairs.iter().all(|(stand_in, _)| spellings(stand_in).len() == 1), "a stand-in JSON spells another way");
+        for (key, value) in values {
+            pairs.extend(spelled(value, &crate::never_keep::mark(key)));
+        }
+        pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+        let whole = values.iter().filter_map(|(key, value)| held_whole(value, "never_keep", key)).collect();
+        Redactor { pairs, whole, places }
     }
 
     /// The tokens a run's starts were handed (`calls::handed`), each as `‹token:name›`, as the
@@ -1553,13 +1615,15 @@ impl Redactor {
         let mut pairs: Vec<(String, String)> = handed.iter().flat_map(|(name, token)| spelled(token, &format!("‹token:{name}›"))).collect();
         pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
         let whole = handed.iter().filter_map(|(name, token)| held_whole(token, "token", name)).collect();
-        Redactor { pairs, whole }
+        Redactor { pairs, whole, places: None }
     }
 
     /// This and `other` together: an entry is redacted once, so a mark one of them writes is
     /// never read by the other as a run's own text.
     pub(crate) fn and(mut self, mut other: Redactor) -> Redactor {
         self.pairs.extend(std::mem::take(&mut other.pairs));
+        // Taken, not moved: a redactor wipes its values when it goes (its `Drop`).
+        self.places = self.places.take().or(other.places.take());
         self.pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
         self.whole.extend(std::mem::take(&mut other.whole));
         self
@@ -1604,7 +1668,7 @@ impl Redactor {
 
     /// Whether it has nothing to replace.
     pub(crate) fn is_empty(&self) -> bool {
-        self.pairs.is_empty()
+        self.pairs.is_empty() && self.places.is_none()
     }
 
     /// Whether `s` holds any of its values.
@@ -1612,11 +1676,28 @@ impl Redactor {
         self.pairs.iter().any(|(value, _)| !value.is_empty() && s.contains(value.as_str())) || self.respelled(s).is_some()
     }
 
+    /// Whether `s` holds a secret's value or a text a run computed from one, in any spelling:
+    /// [`Redactor::holds`] for those alone, not a token's, a tainted value's or one a flow never
+    /// keeps. What makes a step the walk says is clean measured as written ([`Measured`], R70).
+    pub(crate) fn holds_a_secret(&self, s: &str) -> bool {
+        if self.pairs.iter().any(|(value, mark)| is_secrets(mark) && !value.is_empty() && s.contains(value.as_str())) {
+            return true;
+        }
+        let secret = format!("{RESPELLED}secret:");
+        let wholes: Vec<&str> = self.whole.iter().filter(|(_, mark)| mark.starts_with(secret.as_str())).map(|(value, _)| value.as_str()).collect();
+        s.contains(ESCAPE) && !wholes.is_empty() && spelled_any(s, &|text: &str| wholes.iter().any(|value| text.contains(value)))
+    }
+
     pub(crate) fn text(&self, s: &str) -> String {
-        if let Some(whole) = self.whole_first(s) {
+        // A value its flow never keeps stood in for where it stands first, as `logged_text` and
+        // `entry` do, then the whole looked for, then each value marked.
+        let mut out = s.to_string();
+        if let Some(places) = &self.places {
+            places.text(&mut out);
+        }
+        if let Some(whole) = self.whole_first(&out) {
             return whole.to_string();
         }
-        let mut out = s.to_string();
         for (value, mark) in &self.pairs {
             if out.contains(value.as_str()) {
                 out = out.replace(value.as_str(), mark);
@@ -1673,7 +1754,7 @@ impl Redactor {
         // (each text in it written as here, the whole of each looked for first).
         let t = s.trim_start();
         if (t.starts_with('{') || t.starts_with('['))
-            && self.pairs.iter().any(|(value, mark)| mark.starts_with(TAINT_MARK) && value.parse::<f64>().is_ok() && s.contains(value.as_str()))
+            && self.pairs.iter().any(|(value, mark)| is_keyed(mark) && value.parse::<f64>().is_ok() && s.contains(value.as_str()))
             && let Ok(mut json) = serde_json::from_str::<serde_json::Value>(t)
         {
             let mut escaped = false;
@@ -1703,8 +1784,13 @@ impl Redactor {
     }
 
     /// `s` as the log writes it ([`Redactor::logged`]), and whether a look-alike of a mark was
-    /// escaped: what [`Redactor::entry`] makes of a text the entry holds.
-    pub(crate) fn logged_text(&self, s: String) -> (String, bool) {
+    /// escaped: what [`Redactor::entry`] makes of a text the entry holds, a value under a key its
+    /// flow never keeps stood in for first, as there (a request body kept by hash,
+    /// `firing::keep_body_by_hash`, is taken out before the entry is redacted).
+    pub(crate) fn logged_text(&self, mut s: String) -> (String, bool) {
+        if let Some(places) = &self.places {
+            places.text(&mut s);
+        }
         self.logged(&s).unwrap_or((s, false))
     }
 
@@ -1722,7 +1808,7 @@ impl Redactor {
             serde_json::Value::String(s) => *s = text(s, escaped),
             serde_json::Value::Number(n) => {
                 let written = n.to_string();
-                if let Some((_, mark)) = self.pairs.iter().find(|(value, mark)| mark.starts_with(TAINT_MARK) && *value == written) {
+                if let Some((_, mark)) = self.pairs.iter().find(|(value, mark)| is_keyed(mark) && *value == written) {
                     *json = serde_json::Value::String(mark.clone());
                 }
             }
@@ -1745,7 +1831,7 @@ impl Redactor {
                 escaped |= e;
             }
         });
-        if self.pairs.iter().any(|(_, mark)| mark.starts_with(TAINT_MARK)) {
+        if self.pairs.iter().any(|(_, mark)| is_keyed(mark)) {
             self.tainted_numbers(v);
         }
         escaped
@@ -1757,7 +1843,7 @@ impl Redactor {
         match v {
             SValue::Number(n) => {
                 let written = format!("{n}");
-                if let Some((_, mark)) = self.pairs.iter().find(|(value, mark)| mark.starts_with(TAINT_MARK) && *value == written) {
+                if let Some((_, mark)) = self.pairs.iter().find(|(value, mark)| is_keyed(mark) && *value == written) {
                     *v = SValue::Text(mark.clone());
                 }
             }
@@ -1772,6 +1858,9 @@ impl Redactor {
     /// it: with each value marked, and the run's own look-alikes of a mark escaped. Applied once,
     /// where the entry is logged, with every value the entry is redacted of (`and`).
     pub(crate) fn entry(&self, e: &mut LogEntry) {
+        if let Some(places) = &self.places {
+            places.entry(e);
+        }
         let mut escaped = false;
         e.values_mut(&mut |v: &mut SValue| escaped |= self.logged_svalue(v));
         for read in &mut e.reads {
@@ -1799,6 +1888,66 @@ impl Redactor {
             }
         }
         e.escaped |= escaped;
+    }
+
+    /// `v` as a run's record writes it: what [`Redactor::entry`] makes of each value an entry
+    /// holds (a request, a sourced value, a state cell), here for one value. Each value under a
+    /// key its flow never keeps stood in for where it stands, then each value marked by its text
+    /// and each tainted number by its key, and the run's own look-alikes of a mark escaped. What a
+    /// run's id hashes (`firing::run_id_of`, audit R80): the id is in its record beside its nonce,
+    /// so it hashes nothing the record leaves out. `v` as it is where none of that touches it.
+    pub(crate) fn logged_value<'v>(&self, v: &'v holon_core::Value) -> std::borrow::Cow<'v, holon_core::Value> {
+        if let Some(places) = &self.places {
+            let mut s = SValue::from_core(v);
+            places.svalue(&mut s);
+            self.logged_svalue(&mut s);
+            return std::borrow::Cow::Owned(s.into_core());
+        }
+        match self.logged_core(v) {
+            Some(written) => std::borrow::Cow::Owned(written),
+            None => std::borrow::Cow::Borrowed(v),
+        }
+    }
+
+    /// `v` as [`Redactor::logged_svalue`] writes it, in one walk: each text looked at once, and
+    /// only what changes copied (a record's other fields cloned beside it). None where nothing
+    /// does. A request's 200 KiB body beside a marked header is read once, rather than looked at,
+    /// copied whole and read again (R80's cost, performance.md).
+    fn logged_core(&self, v: &holon_core::Value) -> Option<holon_core::Value> {
+        use holon_core::Value;
+        let text = |s: &str| self.logged(s).map(|(out, _)| out);
+        match v {
+            Value::Text(s) => text(s).map(Value::Text),
+            Value::Number(n) => {
+                // As `tainted_numbers` writes it.
+                let written = format!("{n}");
+                self.pairs.iter().find(|(value, mark)| is_keyed(mark) && *value == written).map(|(_, mark)| Value::Text(mark.clone()))
+            }
+            Value::Boolean(_) => None,
+            // Their texts looked into, as the record does.
+            Value::Bytes(_) => {
+                let mut s = SValue::from_core(v);
+                self.logged_svalue(&mut s);
+                Some(s.into_core()).filter(|w| w != v)
+            }
+            Value::List(xs) => {
+                let written: Vec<Option<Value>> = xs.iter().map(|x| self.logged_core(x)).collect();
+                written.iter().any(Option::is_some).then(|| Value::List(xs.iter().zip(written).map(|(x, w)| w.unwrap_or_else(|| x.clone())).collect()))
+            }
+            Value::Record(fields) => {
+                let written: Vec<(Option<String>, Option<Value>)> = fields.iter().map(|(k, x)| (text(k), self.logged_core(x))).collect();
+                // In key order as a record keeps it: a key marked may sort elsewhere, and of two
+                // written the same the later stands, as `into_core` keeps it.
+                written.iter().any(|(k, x)| k.is_some() || x.is_some()).then(|| {
+                    Value::Record(fields.iter().zip(written).map(|((k, x), (wk, wx))| (wk.unwrap_or_else(|| k.clone()), wx.unwrap_or_else(|| x.clone()))).collect())
+                })
+            }
+            Value::Effect { sink, payload } => {
+                let (ws, wp) = (text(sink), self.logged_core(payload));
+                (ws.is_some() || wp.is_some()).then(|| Value::Effect { sink: ws.unwrap_or_else(|| sink.clone()), payload: Box::new(wp.unwrap_or_else(|| (**payload).clone())) })
+            }
+            Value::Sum { arm, payload } => self.logged_core(payload).map(|p| Value::Sum { arm: *arm, payload: Box::new(p) }),
+        }
     }
 }
 
@@ -1829,10 +1978,22 @@ pub(crate) fn texts_mut(v: &mut SValue, f: &mut impl FnMut(&mut String)) {
 }
 
 /// What follows a mark's `‹`: the kinds of value the log writes a mark in place of.
-const MARKED: [&str; 5] = ["secret:", "token:", "taint:", "derived #", "respelled:"];
+const MARKED: [&str; 6] = ["secret:", "token:", "taint:", "derived #", "respelled:", "never_keep:"];
 
 /// How a tainted value's mark begins: `‹taint:number›`.
 const TAINT_MARK: &str = "‹taint:";
+
+/// Whether `mark` is one of a value found under a key (`‹taint:number›`, `‹never_keep:cvc›`): a
+/// number that is its value is marked too.
+fn is_keyed(mark: &str) -> bool {
+    mark.starts_with(TAINT_MARK) || mark.starts_with(crate::never_keep::MARK)
+}
+
+/// Whether `mark` is a secret's (`‹secret:k›`) or a text's a run computed from one
+/// (`‹derived #7c1e9a02›`, a part of a secret a far side sent back among them).
+fn is_secrets(mark: &str) -> bool {
+    mark.starts_with("‹secret:") || mark.starts_with(DERIVED_MARK)
+}
 
 /// The longest answer a line keeps, as the line writes it, the `…` that says it was cut included.
 pub(crate) const ANSWER_KEPT: usize = 64 * 1024;
@@ -1866,7 +2027,7 @@ pub(crate) fn cut_written(written: &mut String) -> bool {
 }
 
 /// Whether `s` starts with what reads as a mark the log writes: a run of `‹` before `secret:`,
-/// `token:`, `taint:` or `derived #`.
+/// `token:`, `taint:`, `derived #` or `never_keep:`.
 fn reads_as_mark(s: &str) -> bool {
     let rest = s.trim_start_matches('‹');
     rest.len() < s.len() && MARKED.iter().any(|kind| rest.starts_with(kind))
@@ -2455,6 +2616,18 @@ mod tests {
             assert_eq!(out, logged, "{run:?}");
             assert_eq!(escaped, logged != run.replace("sk_123456", "‹secret:key›").replace("tok-abcdef", "‹token:paid›"), "{run:?}");
             assert_eq!(read(&out, escaped), marks, "{run:?}");
+        }
+        // Every kind of mark the log writes (`MARKED`), the marks written beside the secret's
+        // (a value computed from a secret, a value under a key its flow never keeps) among them:
+        // a look-alike of each is escaped and reads back as the run's text.
+        for kind in MARKED {
+            let run = format!("sent ‹{kind}x›");
+            let (out, escaped) = r.logged(&run).unwrap_or_else(|| (run.clone(), false));
+            assert!(escaped && out == format!("sent ‹‹{kind}x›"), "{kind}: {out}");
+            assert_eq!(read(&out, true), run, "{kind}");
+        }
+        for mark in [DERIVED_MARK, TAINT_MARK, crate::never_keep::MARK] {
+            assert!(MARKED.iter().any(|kind| mark == format!("‹{kind}")), "{mark} is a kind the log reads as a mark");
         }
         // An entry logged before look-alikes were escaped: each reads as a mark, as it did then.
         assert_eq!(read("sent ‹token:paid› and ‹‹secret:key›", false), "sent [‹token:paid›] and ‹[‹secret:key›]");

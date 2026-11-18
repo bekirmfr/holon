@@ -61,6 +61,10 @@ pub enum HeaderKind {
     /// `taint: ["x-api-key", "number"]`: the keys whose values the host never keeps of any of the
     /// flow's runs, wherever a run has them (a request, a message, a call, an answer).
     Taint(Vec<String>),
+    /// `never_keep: ["cvc", "pin"]`: the keys whose values the host never keeps by where they stand
+    /// (under their key), whatever their length, and refuses to write or hand on. None is tainted
+    /// too.
+    NeverKeep(Vec<String>),
     /// `tags: ["payments"]`: the flow's tags, sorted, once each. A binding on a tag covers every
     /// flow deployed with it.
     Tags(Vec<String>),

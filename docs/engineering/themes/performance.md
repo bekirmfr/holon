@@ -718,6 +718,35 @@ timed builds' whole runs confirm the pieces' sum: their difference moved −148 
   51–57 µs on a large reply. Left out at 2.4%: it is one more rule in Measured, and it holds only
   under its condition (a long secret, a PEM key, can be longer than its mark).
 
+### A run's id hashes what its record keeps (R80, 2026-11-18)
+
+A run's id now hashes each started value as its record writes it (`Redactor::logged_value`),
+with the marks known at the start (`data::start_marks`): a run looks for guarded keys in what
+started it and writes those values as marks before it takes a step, and its record does the same
+again at its end. Measured in release, a route that uses no secret and is sent an `Authorization`
+header, a body of 1 KiB and 200 KiB, 300 requests each after 30 to warm, one kept-alive
+connection, main (`9d45cb07`) against the tip, a fresh server each, the order turned each round,
+eight rounds; the turn ran alone (`running/` held only its own ticket at its start and its end),
+the machine's screen off, no sleep in the window (no Kernel-Power 42, 506 or 507 in it).
+
+| | 1 KiB | 200 KiB |
+|---|---|---|
+| main | 2,707 µs (2,636–2,779) | 3,570 µs (3,532–3,721) |
+| R80 as first written (`f526100a`, beside another session's vitest: indicative) | +1.2% | +53% (+45 to +59) |
+| the start's key search gated as the record's, one pass for all keys; `logged_value` one walk; the start's marks made once | +0.9% (−4.4 to +5.8) | +5.5% (−6.1 to +9.2) |
+| and a value past 32 bytes looked for by its first 32 first (no gain: taken out again) | +3.2% (−0.6 to +6.5) | +5.6% (−1.7 to +8.3) |
+
+Medians of the round medians (their range); each row's percentages are the tip against main in
+that round. Most of the first cost was the start's search for a key: it compared every place of
+every text against each key, byte by byte, where the record's own search reads only a text that
+is JSON or holds a form's `=` (`data::names_a_key`, `text_names_a_key`,
+`contains_any_either_case`). What is left at 200 KiB, about 200 µs, is the start writing the
+request as its record does: its texts read once more against each value a credential gives (the
+header's whole, its rest, a Basic one's text and password), and the body copied beside the
+marked header. Not yet cut, and over the 3% asked of it: one pass for every value at once (a
+multi-pattern search), or the record reusing what the start wrote of the request, would take it;
+the long-value prefilter didn't (its row), and the code is as the row before it measured.
+
 ### Limits
 
 - **Strict is the disk's pace.** About 60% of a strict request is the fsync; any service keeping

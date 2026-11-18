@@ -659,7 +659,10 @@ verify` and a replay put it back. Secrets and resume tokens are replaced by
 values of the keys its flow taints, by `‹taint:key›`, wherever the run had them (the flow's
 `taint` keys, and every flow's `authorization`, `proxy-authorization`, `cookie` and `set-cookie`;
 see [Tainted keys](../language/reference.md#imports-and-settings)): no one, an admin included, can
-read them back from the log, the run's lines, its export or an unrecorded handler's tally. Text a run received that only
+read them back from the log, the run's lines, its export or an unrecorded handler's tally. The
+values of the keys its flow never keeps are replaced where they stand under their key, at any
+length, by `‹never_keep:key›` (and by their text too when six characters or more; see [Keys never
+kept](../language/reference.md#imports-and-settings)). Text a run received that only
 looks like one is written escaped (each `‹` before it doubled, and `"escaped": true` on the
 entry), so a placeholder in the log is always the server's own.
 

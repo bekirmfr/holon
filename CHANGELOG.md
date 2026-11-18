@@ -20,6 +20,42 @@
   characters, a number worked out from a piece, a flow that compares the reply with its
   caller's text itself, and a reply holding only a hint of the secret. `holon verify` refuses
   the same writes when it runs such a run again.
+- **A flow can never keep a key, however short its value.** `flow("charge", { taint:
+  ["number"], never_keep: ["cvc"] })`: a value under a key it never keeps is replaced where it
+  stands, by `‹never_keep:cvc›`, at any length, in every form a run's record holds it (a record's
+  field, a header, a JSON text's field, a query or a form, either inside a JSON text's string as a
+  host's echo has it, and a request body over 64 KiB kept by hash), and a write or a send that holds it is
+  refused (state, a collection, a file, a database, a channel, a mail, a queue, a line of its log,
+  another flow's action); a request to a host is sent. A tainted value is removed by its text,
+  which a short one can't be (a CVC `737` is in an amount `1737`), so one under six characters is
+  kept; a key never kept is guarded by its place, and the amount stays. For now a flow with it
+  can't wait, and a value read out of its key into one of its own (`const c = req.json.cvc`) is
+  followed no further. `holon check` says `it never keeps: cvc`, the deploy settings list it under
+  "never keeps", and an agent's version that drops a key waits for a person (`KeepAgain`). A text
+  computed from a secret that holds such a value under its key gets no hash in the run's record
+  (a CVC's would be a thousand tries from it): the record withholds what the run computed from a
+  secret, and `holon verify` says why it doesn't run it again. A run's id hashes such a value as
+  its mark, so that the id beside its nonce isn't a CVC a thousand tries away either, and verify
+  makes it again from the record; a step is kept or left out, for its size, as the record writes
+  it, the value as its mark. The **card-check** sample shows it.
+- **A run's id hashes a guarded value as its record writes it, where the run knows it at the
+  start.** The id is in a run's record beside its nonce
+  and everything else it hashes, and it hashed what started the run as it was: a value the record
+  marks could be found from the record by guessing until the id came out the same. A weak password
+  in an `authorization` header, a tainted card number whose first six digits are a bank's and
+  whose last four the flow answers (about 100,000 guesses), a secret a caller sent. Now the id
+  hashes each input, sourced value and state cell as the record writes it: a secret by its text, a
+  tainted key's value (those of the four credential headers every flow taints included, and a
+  credential's parts) and a value never kept, each as its mark. A short tainted value the record
+  keeps in clear is hashed as kept. `holon verify` makes the id again from the record, so a run
+  that received a secret (a bearer token equal to one) is now checked rather than taken as the
+  record says; one that received a value the run finds only as it goes still is: a resume link's
+  token, or a tainted value it meets first in a call's answer or a database row (an email it
+  looked up as `?q=`, answered under `email`). For that value the id still hashes it as it was,
+  so a guess at it can be checked against the id: a limit, which a salted id would close. A
+  record made before this change, of a run whose request carried a credential header or a guarded
+  key's value under its key, now reads "its run id differs" (its id hashed the value as it was);
+  a run with no mark in what started it still checks.
 - **A change to a deployment that isn't saved says so, and a crash doesn't run a part twice.** A
   deploy, a removal, a grant or a revoke, a pause, a stop or a run, a deployment's settings, its
   state put back, a decision on a waiting run and a run that waits (its token) each answered 200

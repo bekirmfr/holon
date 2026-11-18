@@ -95,16 +95,22 @@ pub(crate) const MARK_STANDS_FOR: &str = "only a text of 6 characters or more, i
 /// was too large or too deep to keep; or where it computed a step the log left out on a record
 /// keyed by a mark (`keyed`, [`Asserting`]). None: the log kept all it keeps, and the run
 /// differs.
-fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry, unrecorded: &BTreeSet<Vec<u32>>, keyed: bool) -> Option<String> {
+fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry, unrecorded: &BTreeSet<Vec<u32>>, keyed: bool, never_keep: &[String]) -> Option<String> {
     let fed = taint::SecretFed::of(root, resolver);
+    // A step of a request's run as deep as the log follows is in its timeline, its outputs kept
+    // or not (`recorder::Timer`): a request's run never waits, so its steps are all its own. One
+    // this check needed and the timeline doesn't hold at all was taken out: the run differs.
+    let deep = |p: &Vec<u32>| p.len() > recorder::Timer::DEPTH;
+    if entry.kind == "request" && unrecorded.iter().any(|p| !deep(p) && !entry.timeline.iter().any(|t| t.path == *p)) {
+        return None;
+    }
     let derived_missing = entry.timeline.iter().any(|t| t.outputs.is_none() && fed.derives(&t.path)) || unrecorded.iter().any(|p| fed.derives(p));
     if entry.withheld && derived_missing {
-        return Some(withheld_why(root, resolver, &fed, entry));
+        return Some(withheld_why(root, resolver, &fed, entry, never_keep));
     }
     // A line that says it marked every value the run computed from a secret kept each step this
     // check takes from it (`secrets::born`, `SecretFed::taken`), as deep as the log follows a
     // run's steps: one without is taken out, and the run differs.
-    let deep = |p: &Vec<u32>| p.len() > recorder::Timer::DEPTH;
     let taken_missing = entry.timeline.iter().any(|t| t.outputs.is_none() && fed.taken(&t.path)) || unrecorded.iter().any(|p| fed.taken(p) && !deep(p));
     if !entry.withheld && taken_missing {
         return None;
@@ -122,8 +128,10 @@ fn left_out(root: &holon_core::Unit, resolver: &impl Resolver, entry: &LogEntry,
 /// one that gives a text, which may have been too short, or given by a step the log doesn't
 /// keep (too large even with its marks, `secrets::Measured`, or carrying a file it keeps by
 /// its hash): the line doesn't say which. A run that computed where the log follows no steps
-/// says that.
-fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::SecretFed, entry: &LogEntry) -> String {
+/// says that. Of a flow that never keeps some keys, a text may be withheld for holding one's
+/// value under its key, of which the record keeps no hash (`secrets::born`): said too, as the
+/// log can't tell which.
+fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::SecretFed, entry: &LogEntry, never_keep: &[String]) -> String {
     if !fed.followed_to(recorder::Timer::DEPTH) {
         return "it computed with a secret inside a function applied to each item, inside a module, or deeper than the log records a run's steps: the values made there can't each be marked, so the log withholds them, and only the secret could compute them again".into();
     }
@@ -159,7 +167,11 @@ fn withheld_why(root: &holon_core::Unit, resolver: &impl Resolver, fed: &taint::
     };
     match what {
         Some(what) => format!("{leaf} computed {what} from {from}: {MARK_STANDS_FOR}"),
-        None => format!("{leaf} computed from {from} a value no mark stands for (too short, or not a text), or one a step the log doesn't keep gave (too large even marked, or carrying a file it keeps by its hash): {MARK_STANDS_FOR}"),
+        None if never_keep.is_empty() => format!("{leaf} computed from {from} a value no mark stands for (too short, or not a text), or one a step the log doesn't keep gave (too large even marked, or carrying a file it keeps by its hash): {MARK_STANDS_FOR}"),
+        None => format!(
+            "{leaf} computed from {from} a value no mark stands for (too short, not a text, or a text holding a value under a key its flow never keeps, {}, of which the record keeps no hash), or one a step the log doesn't keep gave (too large even marked, or carrying a file it keeps by its hash): {MARK_STANDS_FOR}",
+            never_keep.join(", ")
+        ),
     }
 }
 
@@ -639,6 +651,9 @@ pub(crate) struct Stood {
     /// The tainted keys in its inputs (`authorization`): values of the request's the host never
     /// keeps.
     pub(crate) tainted: Vec<String>,
+    /// The keys its flow never keeps in its inputs (`cvc`): values of the request's the host
+    /// never keeps, at any length (`never_keep.rs`).
+    pub(crate) never_kept: Vec<String>,
     /// Whether its inputs held a value the run computed from a secret (`‹derived #7c1e9a02›`).
     /// Not which: such a mark is a run's own, and the same step in two runs reads as one here.
     pub(crate) derived: bool,
@@ -659,6 +674,7 @@ impl Stood {
             some("the secret", "the secrets", &self.secrets),
             some("the token", "the tokens", &self.tokens),
             some("the request's", "the request's", &self.tainted).map(|t| t + ", which the log never keeps"),
+            some("the request's", "the request's", &self.never_kept).map(|t| t + ", which its flow never keeps"),
             self.derived.then(|| "a value computed from a secret".to_string()),
             self.respelled.then(|| "a text that held a secret spelled another way, withheld whole".to_string()),
         ]
@@ -1677,15 +1693,45 @@ fn rerun(
 
     let mut differs = Vec::new();
     let nonce = bytes_of(&entry.nonce).and_then(|b| <[u8; 16]>::try_from(b).ok());
-    // A run that received a secret or a token (a resume route's in its path, a bearer token equal
-    // to a secret) was given its id from the value, which the log never holds: it can't be made
-    // again, and the log's stands, as what the log kept stands in for a node fed one. Only a mark
-    // the log wrote counts: a look-alike a caller sent is computed with.
-    given.id = inputs.iter().flatten().chain(state.iter().map(|(_, v)| v)).chain(extra.iter().map(|(_, v)| v)).any(|v| marks.carried(v));
-    let id_matches = given.id || nonce.is_some_and(|nonce| {
-        let id = |state: Option<&State>| to_hex(&run_id_of(deployment, &inputs, state, &extra, &nonce));
-        id(Some(&state)) == entry.run_id || (state.is_empty() && id(None) == entry.run_id)
+    // A run's id hashes what started it as its record writes it (`firing::run_id_of`, R80), so
+    // it is made again from the record's own values as they are, marks and all. A run whose
+    // record marks in what started it a value found only as it went (a token, a guarded value a
+    // call answered or a row held, a value computed from a secret: `data::start_marks`) hashed
+    // that value as it was, which the log never holds: its id can't be made again, and the log's
+    // stands, as what the log kept stands in for a node fed one. Only a mark the log wrote
+    // counts: a look-alike a caller sent is computed with, and an id that isn't made again from
+    // a record without one is not the run's.
+    let written = |v: &crate::wire::SValue| v.clone().into_core();
+    let id_inputs: Vec<Option<Value>> = inputs.iter().map(|_| entry.request.as_ref().map(written)).collect();
+    let id_extra: Vec<(Capability, Value)> = entry.sourced.iter().zip(&extra).map(|((_, v), (cap, _))| (cap.clone(), written(v))).collect();
+    let id_state = State::from_values(entry.state_before.iter().map(|(k, v)| (k.clone(), written(v))).collect()).ok();
+    let made = nonce.is_some_and(|nonce| {
+        let id = |state: Option<&State>| to_hex(&run_id_of(deployment, &id_inputs, state, &id_extra, &nonce, None));
+        id_state.as_ref().is_some_and(|s| id(Some(s)) == entry.run_id) || (state.is_empty() && id(None) == entry.run_id)
     });
+    // The log's id stands only where a mark in what started the run is one the start couldn't have
+    // written (`data::start_marks`), so the id hashed what it stood for as it was: a token's, a
+    // value computed from a secret's, a guarded value the run met first in a call's answer or a
+    // row and the record then marked where else it stood. The start writes a secret's mark wherever
+    // its value is, and a guarded key's where it finds it by that key (`data::keyed_at_start`, run
+    // here on the record): a record whose marks are all such makes its id again, or the id isn't
+    // the run's.
+    let (taint, never_keep) = read_server(deployed, resolver).map(|s| (s.taint, s.never_keep)).unwrap_or_default();
+    let started: Vec<&Value> = inputs.iter().flatten().chain(state.iter().map(|(_, v)| v)).chain(extra.iter().map(|(_, v)| v)).collect();
+    // Counted a place each: a guarded key's mark names its key, not its value, so the same mark
+    // outside a value under a guarded key may stand for one met as the run went.
+    let mut everywhere = BTreeMap::new();
+    started.iter().for_each(|v| marks.count_in_value(v, &mut everywhere));
+    let mut keyed = BTreeMap::new();
+    data::keyed_at_start(&taint, &never_keep, started.iter().copied()).iter().for_each(|s| marks.count_in(s, &mut keyed));
+    let at_start = |placeholder: &str, places: usize| {
+        let stands_for = placeholder.strip_prefix(marks.start.as_str()).unwrap_or(placeholder);
+        let stands_for = stands_for.strip_prefix("respelled:").unwrap_or(stands_for);
+        let by_key = stands_for.starts_with("taint:") || stands_for.starts_with(Marks::NEVER_KEPT);
+        stands_for.starts_with("secret:") || (by_key && keyed.get(placeholder).is_some_and(|under_key| *under_key >= places))
+    };
+    given.id = !made && everywhere.iter().any(|(p, places)| !at_start(p, *places));
+    let id_matches = made || given.id;
     if !id_matches {
         differs.push("its run id");
     }
@@ -1764,6 +1810,9 @@ fn rerun(
             ..stood.clone()
         })
         .collect();
+    // What holds a value its flow never keeps, under its key, is refused where it runs
+    // (never_keep.rs), and so here: its mark stands where the value stood.
+    host.performed.retain(|(c, p)| crate::never_keep::refused(c, p, &never_keep).is_none());
     // A write of a secret's value is refused where it runs (firing.rs), and run again here with
     // its placeholder it can't be told from one that was performed (a file's text, logged by
     // hash, differs too): the run isn't checked.
@@ -1816,10 +1865,16 @@ fn rerun(
     let mut trail: Option<(taint::SecretFed, taint::SecretFed)> = None;
     if !echoed.is_empty() {
         // Each step run again: short for sure, or perhaps (the server may have seen it either way).
+        // Perhaps where it holds a mark as long whatever it stands for: what is withheld, a
+        // token's, a tainted value's, one its flow never keeps (stood in at any length where it
+        // stands under its key: a form's `pin=1` is a short text there, and isn't here).
+        let never_kept = format!("{}{}", marks.start, Marks::NEVER_KEPT);
         let unsure = |v: &SValue| {
             let found = std::cell::Cell::new(false);
             secrets::value_holds(&v.clone().into_core(), &|t: &str| {
-                found.set(t.contains(taint::WITHHELD) || t.contains(&format!("{}token:", marks.start)) || t.contains(&format!("{}taint:", marks.start)));
+                found.set(
+                    t.contains(taint::WITHHELD) || t.contains(&format!("{}token:", marks.start)) || t.contains(&format!("{}taint:", marks.start)) || t.contains(never_kept.as_str()),
+                );
                 found.get()
             });
             found.get()
@@ -2071,7 +2126,7 @@ fn rerun(
         // it was, whether or not a node here asked for what the log left out (one that reads a
         // secret inside a function applied to each item is asked for nothing). For other nodes,
         // the outputs were too large or too deep to keep. Each is a different thing to be told.
-        false if let Some(why) = left_out(root, resolver, entry, &observer.unrecorded, observer.keyed) => Rerun::Skipped(why),
+        false if let Some(why) = left_out(root, resolver, entry, &observer.unrecorded, observer.keyed, &never_keep) => Rerun::Skipped(why),
         // Stopped by a limit verify isn't held to (its budget, the clock), or one past which the
         // server dropped what it did (a file's, a queue's size): run again, it goes further. So
         // its entry may say less than the run again does, never other: the same run, each output
@@ -2157,7 +2212,8 @@ fn ill_formed(entry: &LogEntry, marks: &Marks) -> Option<String> {
         let Value::Record(made) = data::request_record(method, path, BTreeMap::new(), query, &[], "") else { unreachable!("a request's record") };
         // A value the log keeps out of it (a tainted query parameter) is marked where the log
         // found it, which a URL's percent-encoding may hide: only its method is then compared.
-        let marked = marks.carried(&Value::Text(url.clone())) || fields.values().any(|v| marks.carried(v));
+        // A mark in what the URL doesn't make (its body, its headers) leaves them compared.
+        let marked = marks.carried(&Value::Text(url.clone())) || ["path", "query"].iter().any(|k| fields.get(*k).is_some_and(|v| marks.carried(v)));
         let differs = |k: &str| fields.get(k) != made.get(k);
         if differs("method") || (!marked && (differs("path") || differs("query"))) {
             return Some("its request isn't the one its method and URL make".into());
@@ -2340,18 +2396,22 @@ fn steps_of(
                 };
                 !recorder::fits(&written) || a.iter().flatten().any(unknown)
             }
-            // One holding only a secret's marks, in a run given one (`measured`): the server
-            // measured it as its record writes it, each secret as its mark, wherever the walk says
-            // it is clean too (a far side that sent the secret back, R70; `secrets::Measured`).
-            // Kept unless too large so: whether it is kept doesn't say how long the secret is.
-            (None, Some(a)) if measured && a.iter().flatten().all(|v| marks.only_secrets(&v.clone().into_core())) && a.iter().flatten().any(|v| marks.carried(&v.clone().into_core())) => {
-                let written: Vec<Option<SValue>> = a.iter().map(|o| o.clone().map(|v| marks.write(v))).collect();
-                !recorder::fits(&written)
+            // A step holding a mark: too large to keep as the run had it (the mark is shorter
+            // than the value). Where the walk says clean, a mark is a copy a caller sent or a
+            // host echoed, and explains it. But one whose marks are each of a value its flow
+            // never keeps, or, in a run given a secret (`measured`), of a secret (a far side that
+            // sent it back, R70), or of both, was measured as the record writes it
+            // (`secrets::Measured`): left out only too large so, as one that only moves a
+            // secret's value is. Whether it is kept doesn't say how long the value is.
+            (None, Some(a)) => {
+                let held: Vec<Value> = a.iter().flatten().map(|v| v.clone().into_core()).collect();
+                let marked: Vec<&Value> = held.iter().filter(|v| marks.carried(v)).collect();
+                let kinds: &[&str] = if measured { &["secret:", Marks::NEVER_KEPT] } else { &[Marks::NEVER_KEPT] };
+                match !marked.is_empty() && marked.iter().all(|v| marks.only_of(v, kinds)) {
+                    true => !recorder::fits(&a.iter().map(|o| o.clone().map(|v| marks.write(v))).collect::<Vec<_>>()),
+                    false => !marked.is_empty(),
+                }
             }
-            // A step holding another mark: too large to keep as the run had it (the mark is
-            // shorter than the value). Where the walk says clean, a mark is a copy a caller sent or
-            // a host echoed, and explains it.
-            (None, Some(a)) => a.iter().flatten().any(|v| marks.carried(&v.clone().into_core())),
             (Some(l), None) => l.iter().flatten().any(|v| marks.carried(&marks.read(v, escaped))),
         };
         let reason = match (&l.reason, &a.reason) {
@@ -2703,12 +2763,13 @@ impl Observer for Asserting {
                     holon_core::UnitBody::Primitive { name } => name.clone(),
                     _ => "a module".into(),
                 };
-                let mut fed = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+                let mut fed = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
                 let mut derived = false;
                 for v in inputs.iter().flatten() {
                     fed.0.extend(self.marks.secrets_in(v));
                     fed.1.extend(self.marks.tokens_in(v));
                     fed.2.extend(self.marks.tainted_in(v));
+                    fed.3.extend(self.marks.never_kept_in(v));
                     derived |= !self.marks.rest_of(Marks::DERIVED, v).is_empty();
                 }
                 let list = |set: BTreeSet<String>| set.into_iter().collect();
@@ -2729,7 +2790,7 @@ impl Observer for Asserting {
                     }
                 }
                 let respelled = inputs.iter().flatten().copied().chain(outputs.iter().flatten()).any(|v| !self.marks.rest_of(&secrets::RESPELLED['‹'.len_utf8()..], v).is_empty());
-                self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2), derived, respelled });
+                self.stood_in.insert(path.to_vec(), Stood { leaf, secrets: list(fed.0), tokens: list(fed.1), tainted: list(fed.2), never_kept: list(fed.3), derived, respelled });
                 Some(outputs)
             }
             // None kept, for a leaf that only moves what it is handed: computed on its marks,
@@ -2768,6 +2829,11 @@ impl Marks {
     /// print (`secrets::DERIVED_MARK`, less the `‹`).
     const DERIVED: &'static str = "derived #";
 
+    /// What follows a placeholder's start for a value under a key its flow never keeps
+    /// (`never_keep::MARK`, less the `‹`): as a tainted value's, it has no fingerprint, so a step
+    /// that only moves it is computed on it and one that compares it isn't (`Asserting::computes`).
+    const NEVER_KEPT: &'static str = "never_keep:";
+
     /// How the mark of a value a run computed from a secret begins, as this check reads it.
     fn of_computed(&self) -> String {
         format!("{}{}", self.start, Marks::DERIVED)
@@ -2805,17 +2871,44 @@ impl Marks {
         self.rest_of("taint:", v)
     }
 
+    /// The keys never kept whose placeholder is in `v` (`‹never_keep:cvc›`), by key.
+    fn never_kept_in(&self, v: &Value) -> BTreeSet<String> {
+        self.rest_of(Marks::NEVER_KEPT, v)
+    }
+
+    /// Whether every placeholder in `v` is of one of `kinds` (`secret:`, [`Marks::NEVER_KEPT`]):
+    /// none a token's, a tainted value's, a respelled text's or a mark of what was computed from
+    /// a secret. True for a value with none; asked of one that holds one ([`Marks::carried`]).
+    fn only_of(&self, v: &Value, kinds: &[&str]) -> bool {
+        let starts: Vec<String> = kinds.iter().map(|kind| format!("{}{kind}", self.start)).collect();
+        !secrets::value_holds(v, &|s: &str| s.match_indices(self.start.as_str()).any(|(i, _)| !starts.iter().any(|start| s[i..].starts_with(start.as_str()))))
+    }
+
     /// The tokens whose placeholder is in `v` (as [`Marks::read`] gives it): each as its mark
     /// reads, `answer access_token #a1b2c3d4`, so one token is told from another by its print.
     fn tokens_in(&self, v: &Value) -> BTreeSet<String> {
         self.rest_of("token:", v)
     }
 
-    /// Whether every placeholder in `v` is a secret's (none a token's, a tainted value's, or a
-    /// mark of what was computed from one).
-    fn only_secrets(&self, v: &Value) -> bool {
-        let secret = format!("{}secret:", self.start);
-        !secrets::value_holds(v, &|s: &str| s.matches(self.start.as_str()).count() != s.matches(secret.as_str()).count())
+    /// Each placeholder in `s`, whole (its start, what it stands for, its end), counted once a
+    /// place it stands, into `counts`.
+    fn count_in(&self, s: &str, counts: &mut BTreeMap<String, usize>) {
+        for (i, _) in s.match_indices(self.start.as_str()) {
+            let rest = &s[i..];
+            *counts.entry(rest[..rest.find('›').map_or(rest.len(), |e| e + '›'.len_utf8())].to_string()).or_default() += 1;
+        }
+    }
+
+    /// [`Marks::count_in`], each text of `v`, its record's field names included.
+    fn count_in_value(&self, v: &Value, counts: &mut BTreeMap<String, usize>) {
+        let found = std::cell::RefCell::new(BTreeMap::new());
+        secrets::value_holds(v, &|s: &str| {
+            self.count_in(s, &mut found.borrow_mut());
+            false
+        });
+        for (p, n) in found.into_inner() {
+            *counts.entry(p).or_default() += n;
+        }
     }
 
     /// What follows `kind` in each placeholder of that kind in `v`, up to the placeholder's end.
@@ -2907,7 +3000,8 @@ impl Marks {
     }
 
     /// Whether every placeholder in the text `v` tells its value from another's: a secret's or a
-    /// token's with its fingerprint. A tainted value's has none, so two of them read alike.
+    /// token's with its fingerprint. A tainted value's has none, so two of them read alike, nor
+    /// has a value's its flow never keeps.
     fn told_apart(&self, v: &Value) -> bool {
         match v {
             Value::Text(t) => self.each_in(t).all(|(_, _, body)| Marks::print_of(body).is_some()),
@@ -3371,7 +3465,7 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
     }
     if !r.ids_given.is_empty() {
         out += &format!(
-            "  {} checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)\n",
+            "  {} checked given the run id the log kept (it hashed a value the run found only as it went, as it was: a resume token, a guarded value a call answered or a row held, or a text computed from a secret, a piece of one a far side sent back among them; not computed again)\n",
             count_of(&r.ids_given)
         );
     }
@@ -3711,6 +3805,7 @@ mod tests {
             ("a look-alike the run wrote itself, escaped", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec![same, "‹‹secret:k v2 #bbbbbbbb›"], None),
             ("another secret's mark", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec![same, "‹secret:other v2 #bbbbbbbb›"], None),
             ("a token's mark and a tainted value's", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec![same, "‹token:answer access_token #bbbbbbbb›", "‹taint:authorization›"], None),
+            ("a value never kept's mark, its look-alike escaped", entry(1, "v2 #aaaaaaaa", kept("local", &hex('1'))), vec![same, "‹never_keep:cvc›", "‹‹never_keep:cvc›"], None),
             ("a kind that isn't one", entry(1, "v2 #aaaaaaaa", kept("here", &hex('1'))), vec![same], Some("isn't a kind and a commitment")),
             ("a commitment cut short", entry(1, "v2 #aaaaaaaa", kept("local", "abcd")), vec![same], Some("isn't a kind and a commitment")),
             ("a commitment that isn't hex", entry(1, "v2 #aaaaaaaa", kept("local", &hex('z'))), vec![same], Some("isn't a kind and a commitment")),
@@ -3825,10 +3920,18 @@ mod tests {
         let refs = |v: &[Option<Value>; 2]| -> Vec<Option<Value>> { v.to_vec() };
         let gave = |v: &[Option<Value>; 2]| asserting.compared("secure_equals", &unit, &refs(v).iter().map(Option::as_ref).collect::<Vec<_>>());
         assert_eq!((gave(&same), gave(&apart)), (vec![Some(Value::Boolean(true))], vec![Some(Value::Boolean(false))]));
-        // A tainted value's mark tells nothing apart: a comparison of one isn't computed.
-        let tainted = Some(Value::Text(format!("{}taint:authorization›", marks.start)));
-        assert_eq!(asserting.computes("secure_equals", &[tainted.as_ref(), same[0].as_ref()]), None);
-        assert_eq!(asserting.computes("concat", &[tainted.as_ref(), same[0].as_ref()]), Some(OnAMark::Moves), "moving one is");
+        // A mark of a value found under a key, tainted or never kept, tells nothing apart: a
+        // comparison of one isn't computed, moving one is. Each kind as `Marks::read` gives it
+        // from what the log wrote.
+        for logged in ["‹taint:authorization›", "‹never_keep:cvc›"] {
+            let read = marks.read(&SValue::Text(logged.into()), false);
+            assert!(marks.carried(&read), "{logged}");
+            let mark = Some(read);
+            assert_eq!(asserting.computes("secure_equals", &[mark.as_ref(), same[0].as_ref()]), None, "{logged}");
+            assert_eq!(asserting.computes("concat", &[mark.as_ref(), same[0].as_ref()]), Some(OnAMark::Moves), "moving {logged} is");
+        }
+        let fed: BTreeSet<String> = marks.never_kept_in(&marks.read(&SValue::Text("cvc=‹never_keep:cvc›".into()), false));
+        assert_eq!(fed, BTreeSet::from(["cvc".to_string()]), "a step fed one names its key");
     }
 
     /// Guards: what verify says a witnessed head proves names the runs it covers: from the oldest

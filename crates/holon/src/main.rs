@@ -111,6 +111,7 @@ mod permissions;
 mod persist;
 mod proposals;
 mod pick;
+mod never_keep;
 mod ranges;
 mod recorder;
 mod restore;

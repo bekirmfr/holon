@@ -79,7 +79,7 @@ notes-api: 42 runs, runs 1 to 42
   3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret, a token or a tainted value (not computed again):
     hmac_sha256 fed the secret stripe_key v3 #a1b2c3d4: 3 nodes in 3 runs: 4, 17, 30, as recorded
   40 runs: 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, … called out: what each call was answered is as recorded, held by the chain alone (and a witnessed head)
-  2 runs: 9, 31 checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)
+  2 runs: 9, 31 checked given the run id the log kept (it hashed a value the run found only as it went, as it was: a resume token, a guarded value a call answered or a row held, or a text computed from a secret, a piece of one a far side sent back among them; not computed again)
   secrets: 38 outbound requests carried one, each to a host its approval shows it going to
   tokens: 12 outbound requests carried what a call answered to a secret, each to a host its approval shows that going to
   state: run 1 began from nothing, as a log's first does; 41 runs began from the state the run before them left, 42 left what their writes make of the one they began with
@@ -238,9 +238,13 @@ A node fed a secret, a resume token or a tainted value (a caller's API key:
 was: the log never holds it. A node that only moves the value (into a text, a record, a list) is
 computed with the placeholder, and so is a `secure_equals` of it, since a caller's token is the
 secret exactly when the log shows it as the secret's mark; what the log recorded for such a node
-is held to what it gives, and a record that says other differs. A node that computes with what
-the value holds (a signature, a hash, an encoding) can't be computed again, nor can a check of a
-token that isn't the secret, of which the log keeps only that it came. What the log kept for that
+is held to what it gives, and a record that says other differs. A value a flow never keeps is a
+placeholder too, `‹never_keep:cvc›` where it stood: as a tainted value's, it tells no value from
+another, so a node that only moves it is computed with it and one that compares it is taken from
+the log (the report names it as fed "the request's cvc, which its flow never keeps"); a write that
+held it was refused when the run ran, and is refused again when the run is checked. A node that computes with what the value holds
+(a signature, a hash, an encoding) can't be computed again, nor can a check of a token that isn't
+the secret, of which the log keeps only that it came. What the log kept for that
 node stands in, as in the editor's replay, and the rest of the run is checked against it: the
 answer built from a signature, the effects, the status. The report says which runs were checked
 that way, and names each such step: its leaf, the secret or token it was fed (a secret by its
@@ -255,11 +259,30 @@ The line that counts the runs that matched says how many matched given such a st
 node produced is taken from the log, not checked: a run whose signature check the log says passed
 is checked as if it had, and the named line is where the report says so.
 
-A run's id is made from what it received. When that held a secret or a token (a bearer token
-equal to a secret, a resume link's token in its path), the id can't be made again either: the log
-keeps the run id it has, and the report lists those runs. That is taken from the log too, but
-nothing is lost: the id binds nothing a forger couldn't compute, and the chain and the head are
-what catch an entry that was changed.
+A run's id is made from what it received, as its record keeps it: a secret a caller sent, a
+tainted key's value (a credential header's among them) and a value its flow never keeps are
+hashed as their marks, so the id beside the nonce in the record says nothing a guess at them could
+check, and `verify` makes it again from the record. When what it received held something the
+server finds only as the run goes (a resume link's token in its path, a tainted value it met
+first in a call's answer or a database row, such as an email it looked up as `?q=`, or a piece of
+its secret that a service it called sent back, which the caller sent too), the id hashed
+it as it was, and can't be made again: the log keeps the run id it has, and the report lists
+those runs. That is taken from the log too, but nothing is lost: the id binds nothing a forger
+couldn't compute, and the chain and the head are what catch an entry that was changed.
+
+That case is also the limit of the first: there the id still hashes the value as it was, so a
+guess at it can be checked against the id and the nonce beside it. The record marks the email in
+`?q=` once the run's call answers it under `email`; the id was made before the run knew that.
+A value under its own key (a tainted field, a credential header, a key never kept) and a secret
+are always hashed as their marks. A secret added while a run goes is the other case the start
+can't know: the run's record marks it, but its id hashed it as it was, so that run reads "its run
+id differs".
+
+A record made before run ids hashed what the record keeps, of a run whose request carried a
+credential header or a guarded key's value under its key, now reads "its run id differs": its id
+hashed that value as it was. `verify` can't tell such a record from one whose id was forged and
+the chain made again, so it doesn't take that id as given. A run with no mark in what started it
+hashed the same either way, and still checks.
 
 Only placeholders the server wrote are taken that way. A caller who sends text that looks like
 one (`‹token:paid›` in a body) gets it logged escaped (`‹‹token:paid›`, with `"escaped": true` on

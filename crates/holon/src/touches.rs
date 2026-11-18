@@ -48,6 +48,7 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
         "AgentRuns" => ("triggers", "action", arg, s("by agents")),
         "Unrecorded" => ("other", "log", arg, s("not recorded")),
         "Untaint" => ("other", "tainted key", arg, s("recorded again")),
+        "KeepAgain" => ("other", "key never kept", arg, s("kept again")),
         "AgentReadsLogs" => ("other", "log", s("its lines"), s("read by agents")),
         "Await" => ("triggers", "wait", arg, s("wait for it")),
         "Approval" => match arg.split_once('/').and_then(|(name, steps)| Some((name, holon_core::approval::Steps::parse(steps)?))) {
@@ -299,6 +300,8 @@ pub(crate) struct Settings<'a> {
     pub(crate) browsers: [&'a [String]; 2],
     /// The keys it keeps out of its records (`taint`), beside those every flow does.
     pub(crate) taint: [&'a [String]; 2],
+    /// The keys it never keeps (`never_keep`).
+    pub(crate) never_keep: [&'a [String]; 2],
     /// The port its routes answer on.
     pub(crate) port: [Option<u16>; 2],
     /// Each handler's log level, by its label, as its code says it.
@@ -307,7 +310,7 @@ pub(crate) struct Settings<'a> {
 
 /// The deploy settings that differ between the version deployed now and the one a dry run would
 /// deploy, each `{ name, now, then }`: the sites whose pages it answers, the keys it keeps out of
-/// its records, the port it answers on, and the log level of each handler both have (one added or
+/// its records and those it never keeps, the port it answers on, and the log level of each handler both have (one added or
 /// removed is in its code). Its tags and limits are rows of what it touches.
 pub(crate) fn settings(s: Settings) -> Value {
     let said = |b: &[String], none: &str| if b.is_empty() { none.to_string() } else { b.join(" ") };
@@ -321,6 +324,11 @@ pub(crate) fn settings(s: Settings) -> Value {
         && now != then
     {
         out.push(json!({ "name": "keeps out of its records", "now": said(now, "none of its own"), "then": said(then, "none of its own") }));
+    }
+    if let [now, then] = s.never_keep
+        && now != then
+    {
+        out.push(json!({ "name": "never keeps", "now": said(now, "none"), "then": said(then, "none") }));
     }
     if let [now, then] = s.port
         && now != then
@@ -586,7 +594,7 @@ mod tests {
         let since = [ran(&["HttpRequest(\"b.example\")", "StateWrite(\"count\")"]), ran(&["HttpRequest(\"b.example\")"])];
         with_restore(&mut rows, &since, &json!({ "changed": ["count"], "added": [], "removed": [] }));
         let (browsers, none) = (["https://shop.example".to_string()], BTreeMap::new());
-        let said = text(&lines(&rows, &settings(Settings { browsers: [&[], &browsers], taint: [&[], &[]], port: [None, None], logs: [&none, &none] })));
+        let said = text(&lines(&rows, &settings(Settings { browsers: [&[], &browsers], taint: [&[], &[]], never_keep: [&[], &[]], port: [None, None], logs: [&none, &none] })));
         assert_eq!(
             said,
             [

@@ -19,12 +19,12 @@ import { findRoutes } from "./derive";
 // holon-author's (crates/holon-author/src/flow.rs), through the Evaluator, which stores every
 // unit it derives: the same code the command line runs.
 
-/** A flow's deploy settings that are part of the unit it deploys as: its tags, and the keys it
- *  keeps out of its records. */
-export type UnitSettings = { tags?: string[]; taint?: string[] };
+/** A flow's deploy settings that are part of the unit it deploys as: its tags, the keys it keeps
+ *  out of its records, and those it never keeps. */
+export type UnitSettings = { tags?: string[]; taint?: string[]; never_keep?: string[] };
 
-/** `unit` as the Evaluator takes it: its tags, then its taint keys. */
-export const unitArgs = (unit: UnitSettings): [string[], string[]] => [unit.tags ?? [], unit.taint ?? []];
+/** `unit` as the Evaluator takes it: its tags, its taint keys, then the keys it never keeps. */
+export const unitArgs = (unit: UnitSettings): [string[], string[], string[]] => [unit.tags ?? [], unit.taint ?? [], unit.never_keep ?? []];
 
 /** The unit a flow deploys as: its server when it has routes, else the whole canvas as one
  *  composite. Throws why it can't be derived. */
