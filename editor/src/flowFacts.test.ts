@@ -80,6 +80,8 @@ describe("a run", () => {
     const not = witnessed(3000, { address: "https://w.example", taken_ms: 2000, waiting: 2 });
     expect(not.yes).toBe(false);
     expect(not.said).toContain("2 heads wait");
+    // Where it is goes to whoever views the host; anyone else is told that one is set.
+    expect(witnessed(3000, { taken_ms: 2000, waiting: 0 }).said).toBe("not yet: the witness takes the next batch");
   });
 });
 

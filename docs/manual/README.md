@@ -55,6 +55,8 @@ propose, and find out what happened. For how Holon is built, see the design docu
   on each message and as it ends, channels to reach the others, and what the host holds.
 - **[Checking runs](guides/checking-runs.md):** exporting a deployment's runs, verifying them
   offline, and witnesses.
+- **[Running it as a service](guides/running-as-a-service.md):** systemd, a container or a
+  Windows service: where the root key goes, how long a stop takes, and what `/health` says.
 
 ## Reference
 

@@ -117,11 +117,12 @@ export function settingsOf(server: FlowDocument["server"]): FlowSettings {
     ...(server?.browsers ? { browsers: server.browsers } : {}),
     ...(server?.tags?.length ? { tags: server.tags } : {}),
     ...(server?.taint?.length ? { taint: server.taint } : {}),
+    ...(server?.never_keep?.length ? { never_keep: server.never_keep } : {}),
   };
 }
 
 /** A flow's settings once a typed text, whose document's settings are `server`, is applied over
- *  `was`, the flow's before: everything the text says (port, browsers, tags, taint, optional,
+ *  `was`, the flow's before: everything the text says (port, browsers, tags, taint, never_keep, optional,
  *  keep), and what only the deploy settings say (the other limits, the exceptions) as it was. */
 export function settingsSaid(server: FlowDocument["server"], was: FlowSettings): FlowSettings {
   const { requirements: said, ...rest } = settingsOf(server);

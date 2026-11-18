@@ -50,6 +50,10 @@ pub struct Settings {
     /// its server unit too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub taint: Vec<String>,
+    /// The keys whose values the host never keeps by where they stand, and refuses to write or
+    /// hand on, as written, once each, none of them tainted too: part of its server unit too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub never_keep: Vec<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -57,16 +61,17 @@ pub struct Settings {
 impl Settings {
     /// What its server unit holds of them.
     pub fn unit(&self) -> UnitSettings<'_> {
-        UnitSettings { tags: &self.tags, taint: &self.taint }
+        UnitSettings { tags: &self.tags, taint: &self.taint, never_keep: &self.never_keep }
     }
 }
 
-/// What a flow's server unit holds of its settings beside its port: its tags and the keys it
-/// taints (`routes::server_unit`), so the unit's hash covers them.
+/// What a flow's server unit holds of its settings beside its port: its tags, the keys it taints
+/// and those it never keeps (`routes::server_unit`), so the unit's hash covers them.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct UnitSettings<'a> {
     pub tags: &'a [String],
     pub taint: &'a [String],
+    pub never_keep: &'a [String],
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]

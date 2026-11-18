@@ -1337,21 +1337,21 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
               <Resource
                 key={`mail:${keyOf(m)}`}
                 title={`mail ${m.name}`}
-                detail={`${[m.smtp ? `to ${m.to.join(", ")}` : "", m.mailbox ? `receives in ${m.mailbox.folder}` : ""].filter(Boolean).join(" · ")}${m.deployment ? ` · for ${m.deployment} only` : ""}`}
+                detail={`${[m.smtp || m.sends ? `to ${m.to.join(", ")}` : "", m.mailbox ? `receives in ${m.mailbox.folder}` : ""].filter(Boolean).join(" · ")}${m.deployment ? ` · for ${m.deployment} only` : ""}`}
                 holders={mailHolders(m)}
                 onOpen={onOpenDeployment}
               />
             ))}
           {(kind === "everything" || kind === "feeds") &&
             feeds.map((f) => (
-              <Resource key={`feed:${keyOf(f)}`} title={`feed ${f.name}`} detail={`${f.address}${f.deployment ? ` · for ${f.deployment} only` : ""}`} holders={feedHolders(f)} onOpen={onOpenDeployment} />
+              <Resource key={`feed:${keyOf(f)}`} title={`feed ${f.name}`} detail={[f.address, f.deployment ? `for ${f.deployment} only` : ""].filter(Boolean).join(" · ")} holders={feedHolders(f)} onOpen={onOpenDeployment} />
             ))}
           {(kind === "everything" || kind === "queues") &&
             queues.map((q) => (
               <Resource
                 key={`queue:${keyOf(q)}`}
                 title={`queue ${q.name}`}
-                detail={`${q.address}${q.fifo ? " · FIFO" : ""}${q.deployment ? ` · for ${q.deployment} only` : ""}`}
+                detail={[q.address, q.fifo ? "FIFO" : "", q.deployment ? `for ${q.deployment} only` : ""].filter(Boolean).join(" · ")}
                 holders={queueHolders(q)}
                 onOpen={onOpenDeployment}
               />

@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- **A flow can never keep a key, however short its value.** `flow("charge", { taint:
+  ["number"], never_keep: ["cvc"] })`: a value under a key it never keeps is replaced where it
+  stands, by `‹never_keep:cvc›`, at any length, in every form a run's record holds it (a record's
+  field, a header, a JSON text's field, a query or a form, either inside a JSON text's string as a
+  host's echo has it, and a request body over 64 KiB kept by hash), and a write or a send that holds it is
+  refused (state, a collection, a file, a database, a channel, a mail, a queue, a line of its log,
+  another flow's action); a request to a host is sent. A tainted value is removed by its text,
+  which a short one can't be (a CVC `737` is in an amount `1737`), so one under six characters is
+  kept; a key never kept is guarded by its place, and the amount stays. For now a flow with it
+  can't wait, and a value read out of its key into one of its own (`const c = req.json.cvc`) is
+  followed no further. `holon check` says `it never keeps: cvc`, the deploy settings list it under
+  "never keeps", and an agent's version that drops a key waits for a person (`KeepAgain`). A text
+  computed from a secret that holds such a value under its key gets no hash in the run's record
+  (a CVC's would be a thousand tries from it): the record withholds what the run computed from a
+  secret, and `holon verify` says why it doesn't run it again. A run's id hashes such a value as
+  its mark, so that the id beside its nonce isn't a CVC a thousand tries away either, and verify
+  makes it again from the record; a step is kept or left out, for its size, as the record writes
+  it, the value as its mark. The **card-check** sample shows it.
+- **A run's id hashes a guarded value as its record writes it, where the run knows it at the
+  start.** The id is in a run's record beside its nonce
+  and everything else it hashes, and it hashed what started the run as it was: a value the record
+  marks could be found from the record by guessing until the id came out the same. A weak password
+  in an `authorization` header, a tainted card number whose first six digits are a bank's and
+  whose last four the flow answers (about 100,000 guesses), a secret a caller sent. Now the id
+  hashes each input, sourced value and state cell as the record writes it: a secret by its text, a
+  tainted key's value (those of the four credential headers every flow taints included, and a
+  credential's parts) and a value never kept, each as its mark. A short tainted value the record
+  keeps in clear is hashed as kept. `holon verify` makes the id again from the record, so a run
+  that received a secret (a bearer token equal to one) is now checked rather than taken as the
+  record says; one that received a value the run finds only as it goes still is: a resume link's
+  token, or a tainted value it meets first in a call's answer or a database row (an email it
+  looked up as `?q=`, answered under `email`). For that value the id still hashes it as it was,
+  so a guess at it can be checked against the id: a limit, which a salted id would close. A
+  record made before this change, of a run whose request carried a credential header or a guarded
+  key's value under its key, now reads "its run id differs" (its id hashed the value as it was);
+  a run with no mark in what started it still checks.
+- **`holon serve --emit-test-unit` is gone.** An undocumented flag from the server's first days,
+  for checking `POST /unit` by hand: it wrote a fixed test unit to whatever path it was given, from
+  the binary that ships. Nothing used it.
 - **A change to a deployment that isn't saved says so, and a crash doesn't run a part twice.** A
   deploy, a removal, a grant or a revoke, a pause, a stop or a run, a deployment's settings, its
   state put back, a decision on a waiting run and a run that waits (its token) each answered 200
@@ -368,6 +407,29 @@
   waiting 30 s on a call held every deployment's clocks, and every deadline, as long. Each tick now
   goes on by itself (a clock isn't fired again over its own tick), and the deadlines have a thread
   of their own.
+- **Where a resource is goes only to whoever may bind it, and a flow's answers are sent
+  `nosniff`.** A feed's, a queue's and a mail server's address, and the sources their URLs, headers
+  and logins are read from, were shown to anyone who could view resources, and a flow's timeline
+  and its feeds' and queues' listings showed them to anyone who could view the flow. Now they go
+  only to whoever may bind (`resource.bind`), as a folder's path and a database's address already
+  did: anyone else is told what each does, and a connection's error names the binding where it
+  named the address. Deleting a deployment says where its records are kept in full to whoever
+  views the host, and within the data folder to anyone else, and so does where the run logs'
+  witness is (`GET /summary`'s `witness.address`). `GET /summary`'s last check and `POST
+  /summary/check` name only the deployments whose runs their caller may view; they named every
+  deployment and its head. Every answer of a flow's port carries `X-Content-Type-Options: nosniff`
+  (a flow's own kept). The timeline says `listens to the feed prices`, without its address.
+- **`/health` says when the server can't keep what it is asked to, and a stop has a deadline.**
+  `GET /health` answers 503 `not ok: ` and what fails while the deployments file can't be
+  written or the run logs can't be synced to disk (before, it said `ok` throughout, and a deploy
+  answered while the file couldn't be written was lost on the next start). Each, and a witness
+  that doesn't take the runs' heads, is an admin's warning with why and what to do (`holon host`,
+  the admin page, `GET /admin/warnings`), where before each was one line on stderr. A stop waits
+  for the runs going on up to `--stop-within` (default `1m`; `HOLON_STOP_WITHIN`), then syncs
+  what is written and exits with status 1, the runs it cut off taken as a crash's by the next
+  start; before, one long run held it until a service manager killed it, unsynced. A new guide,
+  [running it as a service](docs/manual/guides/running-as-a-service.md): systemd, containers and
+  Windows, where a service's root key goes, and how long each should wait for a stop.
 - **`holon fmt` formats the texts it refused.** An ordinary text was refused as "a mistake in fmt":
   `((1 + 1) + 1)`, whose parentheses Prettier takes out, where in a flow they break a chain (two
   `add` nodes, where `1 + 1 + 1` is one); `a && (b && c)` and `a ?? (b ?? c)`, which Prettier

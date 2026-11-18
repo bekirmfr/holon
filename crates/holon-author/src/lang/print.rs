@@ -1121,7 +1121,7 @@ impl<'s> Printer<'s> {
         out
     }
 
-    /// `flow("name", { port, keep, limits, browsers, tags, taint })`, from the document's settings.
+    /// `flow("name", { port, keep, limits, browsers, tags, taint, never_keep })`, from the document's settings.
     fn settings(&self, doc: &FlowDocument) -> Result<String, String> {
         let name = self.own.clone().unwrap_or_default();
         let mut fields = Vec::new();
@@ -1157,6 +1157,9 @@ impl<'s> Printer<'s> {
             }
             if !s.taint.is_empty() {
                 fields.push(format!("taint: [{}]", s.taint.iter().map(|k| quote(k)).collect::<Vec<_>>().join(", ")));
+            }
+            if !s.never_keep.is_empty() {
+                fields.push(format!("never_keep: [{}]", s.never_keep.iter().map(|k| quote(k)).collect::<Vec<_>>().join(", ")));
             }
         }
         Ok(if fields.is_empty() { format!("flow({})", quote(&name)) } else { format!("flow({}, {{ {} }})", quote(&name), fields.join(", ")) })

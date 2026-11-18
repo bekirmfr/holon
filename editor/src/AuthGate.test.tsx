@@ -12,6 +12,18 @@
 // buttons are looked at after every answer, from the first paint: disabled while the server
 // hasn't said, then the answers of whoever the tab acts as (signed out, of whom the editor kept
 // under "sign in again" was drawn for), never anyone else's.
+//
+// The sweep keeps its own time. Each order is a run of its own, replaying the choices of the run
+// it came from, and a run given the same choices must hold the same requests at each answer,
+// however fast or busy the machine. So nothing the page waits on is left to the machine's time:
+// - the page's timers (a read that got no answer asked again, the access version read again) run
+//   only where a case waits for them;
+// - the one piece of work the page has the machine do off its thread, the sign-in challenge's
+//   digest (signin.ts, before the pop-up opens), is answered at once.
+// On the machine's time (R83), a busy machine's digest came back after a run's settling in some
+// runs and within it in others: the pop-up opened an answer later, and a replayed run held fewer
+// requests than the run it replayed (a TypeError, on CI). The retry of a refused read could do the
+// same. A run that holds others all the same says so.
 
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -265,19 +277,36 @@ beforeAll(() => {
 let root: Root | null = null;
 let container: HTMLDivElement | null = null;
 afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   localStorage.clear();
   history.replaceState(null, "", "/");
 });
 
+/** The machine's own setTimeout, taken before any run puts the page's timers on the sweep's time. */
+const machineTimeout = globalThis.setTimeout;
+/** Lets the page do all it does with no time passing: what was answered, and the timers it set
+ *  for at once (none set for later). */
 const settle = async () => {
-  for (let i = 0; i < 5; i++) await act(async () => new Promise((r) => setTimeout(r, 0)));
+  for (let i = 0; i < 5; i++)
+    await act(async () => {
+      vi.advanceTimersByTime(0);
+      await new Promise((r) => machineTimeout(r, 0));
+    });
 };
 
 /** Opens the console on `c`, doing its steps as soon as the page lets them and answering its held
- *  requests as `choices` picks (the first held after them). Says what it answered, how many were
- *  held at each answer, and what it then showed. */
-async function open(c: Case, choices: number[]) {
+ *  requests as `choices` picks (the first held after them). `replays`: what the run these choices
+ *  came from held at each of their answers. Says what it answered, how many were held at each
+ *  answer and which, and what it then showed. */
+async function open(c: Case, choices: number[], replays: string[][]) {
+  // The sweep's own time, a clock of this run's: the run before's timers are gone with its clock.
+  vi.useRealTimers();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  // The machine's digest, off the page's thread, answered at once: what it digests is not checked
+  // here (the provider is a stand-in), only when the pop-up opens.
+  const digest = vi.spyOn(crypto.subtle, "digest").mockImplementation(async () => new ArrayBuffer(32));
   history.replaceState(null, "", c.address);
   localStorage.clear();
   ended = new Set();
@@ -359,9 +388,18 @@ async function open(c: Case, choices: number[]) {
   await act_();
   const widths: number[] = [];
   const taken: number[] = [];
-  for (let waited = false; ; waited = true) {
+  const heldAt: string[][] = [];
+  let differs: string | null = null;
+  run: for (let waited = false; ; waited = true) {
     while (held.length > 0) {
       const pick = choices[taken.length] ?? 0;
+      const now = held.map((h) => h.path);
+      const then = replays[taken.length];
+      if (then && now.join(" | ") !== then.join(" | ")) {
+        differs = `not the same run: at answer ${taken.length + 1}, ${now.length} held (${now.join(", ")}) where the run it replays had ${then.length} (${then.join(", ")})`;
+        break run;
+      }
+      heldAt.push(now);
       // Before `sweepFrom`'s steps are done, one order: no other to run.
       widths.push(done < (c.sweepFrom ?? 0) ? 1 : held.length);
       taken.push(pick);
@@ -373,19 +411,24 @@ async function open(c: Case, choices: number[]) {
     }
     // A request got no answer: the page asks again shortly, and that is answered too.
     if (!c.lost || waited) break;
-    await act(async () => new Promise((r) => setTimeout(r, RETRY_MS + 100)));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RETRY_MS + 100);
+    });
     await settled();
     await act_();
   }
   const missing =
-    notTheirs.length > 0
+    differs ??
+    (notTheirs.length > 0
       ? `the buttons of whoever the tab acts as, from the first paint: ${notTheirs[0]}`
       : done < steps.length
         ? `step ${done + 1} of ${steps.length} never possible`
-        : c.shows(container);
+        : c.shows(container));
   act(() => root!.unmount());
   container.remove();
-  return { answered, widths, taken, missing };
+  digest.mockRestore();
+  vi.useRealTimers();
+  return { answered, widths, taken, heldAt, missing };
 }
 
 describe("the console shows what the server and the address said, and the buttons follow whoever signed in, whatever order the server answers in", () => {
@@ -393,14 +436,16 @@ describe("the console shows what the server and the address said, and the button
     it(c.name, async () => {
       const wrong: string[] = [];
       // Every order, depth first: each run answers the first held after the choices it is given,
-      // and every other request it could have answered there is a run to come.
-      const toRun: number[][] = [[]];
+      // and every other request it could have answered there is a run to come, which must hold
+      // what this one held up to there.
+      const toRun: { choices: number[]; replays: string[][] }[] = [{ choices: [], replays: [] }];
       let runs = 0;
       while (toRun.length > 0) {
-        const choices = toRun.pop()!;
-        const { answered, widths, taken, missing } = await open(c, choices);
+        const { choices, replays } = toRun.pop()!;
+        const { answered, widths, taken, heldAt, missing } = await open(c, choices, replays);
         runs += 1;
-        for (let k = choices.length; k < widths.length; k++) for (let other = 1; other < widths[k]; other++) toRun.push([...taken.slice(0, k), other]);
+        for (let k = choices.length; k < widths.length; k++)
+          for (let other = 1; other < widths[k]; other++) toRun.push({ choices: [...taken.slice(0, k), other], replays: heldAt.slice(0, k + 1) });
         if (missing) wrong.push(`answered ${answered.join(", ")}: not ${missing}`);
       }
       expect(wrong.length === 0 ? [] : [`wrong in ${wrong.length} of ${runs} orders`, ...wrong.slice(0, 3)]).toEqual([]);

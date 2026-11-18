@@ -60,23 +60,28 @@ Ctrl+C, SIGTERM (what a service manager or a container sends) or closing its con
 server, and it says what it waits for:
 
 ```
-holon: stopping: no new runs, 2 going on (ctrl+c again stops at once)
+holon: stopping: no new runs, 2 going on, waited for up to 1m (ctrl+c again stops at once)
 holon: stopped
 ```
 
 From then on it starts no run: its flows' requests and the editor's are answered 503, and its
 clocks, folders, mailboxes, feeds and queues start none (a waiting run's deadline passes it by,
 and the run times out once the server is back). The runs going on finish, each to its line in
-the log; then the logs and the witness's queue are synced and it exits. Each run is held to its
-[limits](#limits-a-run-has) (its time budget, each call's timeout), so a stop waits no longer
-than the slowest of them may take. A second ctrl+c stops it at once, as a power loss would: a
-`lazy` run's line in the last second may be lost.
+the log; then the logs and the witness's queue are synced and it exits. It waits for them up to
+`--stop-within` (default `1m`; `HOLON_STOP_WITHIN`), since a run held only to its
+[limits](#limits-a-run-has) may take longer than a service manager waits before it kills the
+server. Past it, the server syncs what is written and exits with status 1, saying how many runs
+it cut off, as a crash cuts them. A second ctrl+c stops it at once, as a power loss would: a
+`lazy` run's line in the last second may be lost. [Running it as a
+service](../guides/running-as-a-service.md) says how long to have systemd, a container or a
+Windows service wait.
 
 A stop leaves a mark beside the deployments file (`deployments.stopped`), which the next start
-takes away. A start that finds none follows a crash, which may have cut a run off between its
-commit and its line: a deployment whose state isn't the one its last run left says so on its
-timeline, and [`holon verify`](../guides/checking-runs.md#the-state-run-to-run) doesn't check where
-the next run began, rather than report the state as changed outside holon.
+takes away; one that cut runs off leaves none. A start that finds none follows a crash, which may
+have cut a run off between its commit and its line: a deployment whose state isn't the one its
+last run left says so on its timeline, and
+[`holon verify`](../guides/checking-runs.md#the-state-run-to-run) doesn't check where the next run
+began, rather than report the state as changed outside holon.
 
 Closing its console on Windows gives it a few seconds before Windows ends it.
 
@@ -120,6 +125,12 @@ server holds now:
 
 The server looks at what it holds every ten seconds, and warns of:
 
+- **the deployments file that can't be written**: a deploy, a grant, a pause or a waiting run kept
+  while it fails is lost when the server starts again (it is written again at the next change);
+- **the run logs that can't be synced to disk**: a strict run answers 500 until they are, and a
+  `lazy` run's newest lines may be lost to a power loss (it is tried again every second);
+- **a witness that doesn't take the runs' heads** (`--export-heads`): they wait on disk and are
+  sent again;
 - **a disk past `warn_at`** (or past `full_at`, if that is reached first), naming the flow whose share grew most since the store was last
   counted;
 - **a cache at its size** most of the last hour: it let go of flows (or values) to make room at
@@ -138,6 +149,13 @@ Each says what to do. They are shown first in `holon host` and on the admin page
 on the home page for admins, and in the terminal editor's top bar and overview
 (`GET /admin/warnings`); and each is said once in the server's log and its activity as it starts,
 and in the log as it ends.
+
+`GET /health`, which anyone who reaches the server may ask, answers `ok`; while the deployments
+file can't be written or the logs can't be synced, 503 `not ok: ` and which (`not ok: the run logs
+can't be synced to disk`), never a path or an error's text; and 503 while the server stops. A
+witness that doesn't take heads is a warning only: one witness down would take every server it
+witnesses out of a load balancer at once. It is a readiness check, not one to restart the server
+on ([running it as a service](../guides/running-as-a-service.md)).
 ## The policy
 
 `holon.toml` in the data folder (or `--policy PATH`) says what this server may ever grant, and
@@ -260,6 +278,21 @@ waiting run's shown values also go to whoever may decide it.
 
 What a role may not do is refused with 403, saying why. A path the control plane has no route for
 is answered 404, once its caller has signed in (401 before).
+
+Where the host's resources are goes only to whoever may bind them (`resource.bind`, an admin's): a
+folder's path; a database's, a mail server's, a feed's and a queue's address; and the sources their
+URLs, headers and logins are read from. Anyone else who may view resources (`resource.view`), or a
+flow that uses one, is told what each does (a database's access, whom a mail sends as and to and
+the folder it reads, a feed's buffer) and not where it is. A flow's timeline, which everyone who
+views the flow reads, names the binding where a connection's error named its address (`lost the
+feed prices: the feed prices answered 404`), and so do its feeds' and queues' listings to whoever
+may not bind. Where the server keeps its data goes to whoever views the host (`host.view`):
+deleting a deployment answers anyone else where its records are within the data folder
+(`deployments.logs/removed/shop-runs-1762963200000.json.gz`). So does where the run logs'
+witness is (`GET /summary`'s `witness.address`): anyone else is told that one is set, when it
+last took the heads and how many wait. `GET /summary`, and the answer to a
+check of the run logs (`POST /summary/check`), name only the deployments whose runs their caller
+may view.
 
 A role is bound to a principal on the server when it is invited or added with one, and in place
 of it when it is changed. What is bound is kept apart from the accounts, in `access.json` beside
@@ -627,6 +660,11 @@ server or these ports listen beyond loopback. It has no sign-in: a flow guards i
 A browser page from another site may call the routes only if the flow lists its origin in
 `browsers` (or the deploy settings' **web pages from**).
 
+Every answer is sent with `X-Content-Type-Options: nosniff`, so a browser takes it as the type it
+says: JSON that echoes what its caller sent isn't run as a page. A flow that sets the header keeps
+its own. Whether a flow's page may be shown in another site's frame is the flow's to say, with its
+own headers (`X-Frame-Options`, `Content-Security-Policy: frame-ancestors`): a widget is meant to be.
+
 Every request that runs a handler is a run in the log. One that runs nothing (no route takes
 it, its route doesn't take its method, or its body isn't text) is counted instead, under
 `(ran nothing)` in the log's `tallies` (how many, and the last one's time, status and path), and
@@ -659,7 +697,10 @@ verify` and a replay put it back. Secrets and resume tokens are replaced by
 values of the keys its flow taints, by `‹taint:key›`, wherever the run had them (the flow's
 `taint` keys, and every flow's `authorization`, `proxy-authorization`, `cookie` and `set-cookie`;
 see [Tainted keys](../language/reference.md#imports-and-settings)): no one, an admin included, can
-read them back from the log, the run's lines, its export or an unrecorded handler's tally. Text a run received that only
+read them back from the log, the run's lines, its export or an unrecorded handler's tally. The
+values of the keys its flow never keeps are replaced where they stand under their key, at any
+length, by `‹never_keep:key›` (and by their text too when six characters or more; see [Keys never
+kept](../language/reference.md#imports-and-settings)). Text a run received that only
 looks like one is written escaped (each `‹` before it doubled, and `"escaped": true` on the
 entry), so a placeholder in the log is always the server's own.
 

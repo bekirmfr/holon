@@ -540,7 +540,7 @@ fn read(shared: &Shared, deployments: &Mutex<BTreeMap<String, Deployment>>, bind
             break;
         }
         if !listened {
-            shared.note(deployments, format!("listens to the feed {feed} ({})", binding.address));
+            shared.note(deployments, format!("listens to the feed {feed}"));
             listened = true;
         } else if binding.channel.is_some() {
             shared.note(deployments, format!("listens to the feed {feed} again: what was sent meanwhile is lost"));

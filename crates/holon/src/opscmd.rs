@@ -277,8 +277,10 @@ pub(crate) fn lifecycle(action: &str, args: &[String]) -> i32 {
         Ok(d) if action == "remove" => {
             println!("{slug}: removed{}", if d["status"].is_string() { ", its secrets forgotten" } else { "" });
             if !args.flag("--forget") {
+                // In full to whoever views the host; within the data folder to anyone else.
                 if let Some(at) = d["records"].as_str() {
-                    println!("its run records: {at} (holon verify checks it)");
+                    let within = if std::path::Path::new(at).is_absolute() || at.starts_with('/') { "" } else { ", in the server's data folder" };
+                    println!("its run records: {at}{within} (holon verify checks it)");
                 }
                 return 0;
             }
