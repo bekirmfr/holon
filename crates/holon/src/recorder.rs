@@ -140,6 +140,11 @@ pub struct LogEntry {
     pub outputs: Vec<Option<SValue>>,
     /// The effects the host performed.
     pub performed: Vec<PerformedEntry>,
+    /// The effects its handler held and didn't make, each with why (skipped.rs): a value absent,
+    /// at every level but the flow's own condition, which the views work out again; or the host
+    /// refused it. Absent when none was, and for a run that failed or waits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<Skipped>,
     /// The response body sent, for a request (as text, cut at 64 KiB).
     pub response_body: Option<String>,
     /// Why the run failed before it could settle, if it did.
@@ -240,6 +245,41 @@ pub struct LogEntry {
     /// until the entry is logged and they are written beside it (logs.rs): no part of it.
     #[serde(skip)]
     pub lines: Vec<(String, holon_core::Value)>,
+}
+
+/// An effect a run's handler held and didn't make (skipped.rs): which, why, and where that
+/// began. It holds no value of the run's: paths of steps, a leaf's name, fixed words, and what
+/// the deployed unit names (a state key, a host, an action), so it says nothing a guarded value
+/// (a secret, a tainted or a never-kept one) would.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct Skipped {
+    /// The effect, as `performed` names one: `StateWrite("last")`, `RunsAction("shop/pay")`.
+    pub effect: String,
+    /// Why: `read` (a read found nothing), `missing` (a value lacked a field or an item),
+    /// `failed` (a `throw`, a module), `withheld` (where it began may be computed from a secret),
+    /// `refused` (made, and the host refused it). `condition` (the flow's own test came out false)
+    /// is never kept: the views work it out again.
+    pub level: String,
+    /// The step that would have made it, by its path in the run's steps; none for a refused one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub at: Vec<u32>,
+    /// The step where its absence began, and its leaf; neither for a withheld or a refused one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub from: Vec<u32>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub leaf: String,
+    /// Where that step is a read, its place in the entry's `reads`: what it asked, as the record
+    /// keeps it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read: Option<usize>,
+    /// The record doesn't see past `from` (a function applied by `map` or `fold`, a step deeper
+    /// than it keeps): as far as it sees.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unseen: bool,
+    /// For a refused one, which rule refused it, in fixed words.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub rule: String,
 }
 
 /// A run as the list of runs says it (`GET …/log/heads`, run.view's; the audit register's R55):
@@ -624,6 +664,9 @@ pub struct Timer {
     /// of a reply that sent its secret back is then followed as far as a kept run's is (R70):
     /// a balance read out of it is a balance, logged or not. None: not noted.
     pub(crate) kinds: Option<Vec<(Vec<u32>, bool)>>,
+    /// Whether an absence began at a node of the run (core's `Observer::began_absent`): only then
+    /// is an effect it didn't make asked why (`skipped.rs`). Heard on or off.
+    pub began_absent: bool,
 }
 
 /// Whether a step's outputs fit as its run's record writes them, for a step it writes another
@@ -644,7 +687,7 @@ impl Timer {
     pub const MAX_RECORDED_BYTES: usize = 16 * 1024;
 
     pub fn new() -> Timer {
-        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new(), reason: None, on: true, measure: None, kinds: None }
+        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new(), reason: None, on: true, measure: None, kinds: None, began_absent: false }
     }
 
     /// One that keeps nothing: its timeline stays empty.
@@ -785,6 +828,9 @@ impl holon_core::Observer for Timer {
         if self.on && path.len() <= Self::DEPTH {
             self.reason = Some(reason.to_string());
         }
+    }
+    fn began_absent(&mut self) {
+        self.began_absent = true;
     }
 }
 
@@ -3068,6 +3114,7 @@ mod tests {
             commit: None,
             outputs: vec![],
             performed: vec![],
+            skipped: vec![],
             response_body: None,
             error: None,
             timeline: vec![],

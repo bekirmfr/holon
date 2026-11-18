@@ -2832,6 +2832,7 @@ mod tests {
             commit: Some(Commit { cell: t(), after: Some(1), n: Some(2) }),
             outputs: vec![Some(v())],
             performed: vec![performed()],
+            skipped: vec![],
             response_body: Some(t()),
             error: Some(t()),
             timeline: vec![NodeTiming { path: vec![0], start_us: 0.0, end_us: 1.0, round: 0, outputs: Some(vec![Some(v())]), reason: Some(t()) }],

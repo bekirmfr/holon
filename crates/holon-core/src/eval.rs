@@ -147,6 +147,14 @@ pub trait Observer {
     /// of fuel, a trap, a body's exception as the engine words it). Called just before its
     /// `produced`, so a host can keep the reason beside the node for a replay to show.
     fn failed(&mut self, _path: &[u32], _reason: &str) {}
+    /// A node that isn't a function or a choice gave nothing though each input wired to it
+    /// arrived: an absence began there (a read that found nothing, a field a record lacks, a
+    /// `throw`), rather than coming in from an input or from a choice that didn't need its value.
+    /// Said at most as often as nodes run, and only where one gives nothing, so a run that only
+    /// took the other side of an `if` is told nothing: a host asks why an effect wasn't made
+    /// (`absence::origin`) only after this was heard. It may be heard more often than an
+    /// absence began (a node given a large value to build on is told so whatever its inputs).
+    fn began_absent(&mut self) {}
     /// What the node at `path` (the unit `unit`) produced, when the observer stands that in for
     /// what core would compute from `inputs`: none (the default) computes the node. A check that
     /// runs a recorded run again (`holon verify`) answers for a node whose inputs carry what the
@@ -2011,7 +2019,7 @@ impl<'r> Prepared<'r> {
             // Waiting on an answer: not run in this round.
             return smallvec![Slot::Pending; child.outputs.len()];
         }
-        self.told(ci, observer, path, |observer, path| match self.ahead(ci, gathered, open, observer, path) {
+        let outs = self.told(ci, observer, path, |observer, path| match self.ahead(ci, gathered, open, observer, path) {
             Some(outs) => outs,
             None => match (kind.body, &self.many) {
                 // A composite child of a preparation run many times runs its own, kept.
@@ -2030,7 +2038,16 @@ impl<'r> Prepared<'r> {
                 }
                 _ => eval_as(child, kind, gathered, resolver, observer, path),
             },
-        })
+        });
+        // An absence that began here: each wired input arrived, and it gave nothing.
+        if kind.choice.is_none()
+            && !matches!(kind.body, Body::Composite)
+            && outs.contains(&Slot::Absent)
+            && gathered.iter().enumerate().all(|(p, v)| v.is_some() || !self.shape.incoming.wired(ci as u32, p as u32))
+        {
+            observer.began_absent();
+        }
+        outs
     }
 
     /// `eval`, told to the observer as child `ci`'s evaluation: entered, produced and left, at
@@ -2079,7 +2096,7 @@ impl<'r> Prepared<'r> {
         let Some(many) = self.many.as_deref() else { return smallvec![Slot::Absent; child.outputs.len()] };
         let k = child.inputs.len();
         let open = crate::open_trigger();
-        self.told(ci, observer, path, |observer, path| {
+        let outs = self.told(ci, observer, path, |observer, path| {
             let ahead = {
                 let mut gathered: Refs = (0..k).map(|p| self.read(ci, p, scratch, inputs).value()).collect();
                 self.ahead(ci, &mut gathered, &open, observer, path)
@@ -2104,7 +2121,12 @@ impl<'r> Prepared<'r> {
                 self.put_back(ci, p, v, scratch, inputs);
             }
             outs
-        })
+        });
+        // Its inputs aren't read again here: one that gave nothing is said whatever they were.
+        if !matches!(kind.body, Body::Composite) && outs.contains(&Slot::Absent) {
+            observer.began_absent();
+        }
+        outs
     }
 
     /// [`run`](Prepared::run), in `scratch` (empty).

@@ -133,6 +133,7 @@ mod secret_sources;
 mod secretcmd;
 mod secrets;
 mod selfmanage;
+mod skipped;
 mod taint;
 mod touches;
 #[cfg(test)]
