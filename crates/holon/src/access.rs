@@ -115,7 +115,10 @@ fn forwarded_address(entry: &str) -> Option<IpAddr> {
 }
 
 /// The control plane's access settings.
-#[derive(Default)]
+// Without accounts (`default`), the tests' alone: the server is built with `new`, so everything
+// but the open routes needs a sign-in, which the editor counts on (server.ts's `api` sends
+// nothing without one, R89).
+#[cfg_attr(test, derive(Default))]
 pub(crate) struct Access {
     /// The accounts; none only in the tests, where the control plane is open.
     accounts: Option<Arc<Accounts>>,

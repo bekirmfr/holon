@@ -1,7 +1,8 @@
 // Guards: whom a tab acts as, and what becomes of an open console when its sign-in ends (R44).
 // Each tab acts with the session, or the provider's ID token, it loaded with or signed in with
-// since: another tab's sign-in leaves it alone. A 401 to what it is signed in with, or to none
-// once its ID token expired, ends the sign-in without unmounting the editor: a sign-in covers it,
+// since: another tab's sign-in leaves it alone. A 401 to what it is signed in with, or its ID
+// token expiring (the next request, not sent without it), ends the sign-in without unmounting the
+// editor: a sign-in covers it,
 // and the same person signing in again goes on with the editor as it was, someone else gets one
 // of their own. A pop-up back from the provider hands its token to the tab that opened it. Signing
 // out asks first while open flows have changes not saved. Needed because a 401 dropped the editor
@@ -117,7 +118,7 @@ describe("a sign-in that ends", () => {
     expect(server.getSession()?.token).toBe("token-again");
   });
 
-  it("through the provider, ends once its ID token expires: the request goes without it, and the 401 ends it", async () => {
+  it("through the provider, ends once its ID token expires: the request isn't sent without it, the server's 401 is answered here, and the sign-in ends", async () => {
     const soon = { idToken: jwt({ email: "ada@example.com" }), exp: now() + 20, who: "ada@example.com" };
     localStorage.setItem(SIGNED_IN_KEY, JSON.stringify(soon));
     const { server, signin } = await load();
@@ -125,9 +126,13 @@ describe("a sign-in that ends", () => {
     const ended = vi.fn();
     window.addEventListener("holon:session-ended", ended);
     const sent = answering(401);
-    await server.whoAmI().catch(() => undefined);
+    const said = await server.whoAmI().then(
+      () => "answered",
+      (e: unknown) => String(e),
+    );
     window.removeEventListener("holon:session-ended", ended);
-    expect(sent).toEqual([null]);
+    expect(sent).toEqual([]);
+    expect(said).toContain(server.SIGN_IN_FIRST);
     expect(ended).toHaveBeenCalledTimes(1);
     expect(signin.signInExpired(), "said once").toBe(false);
   });

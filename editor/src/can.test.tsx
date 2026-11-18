@@ -5,15 +5,16 @@
 // button asks the action its route asks, and the table below says, for each caller, which buttons
 // they may use and which are disabled in the server's words. Then the hook: one read per flow
 // however many follow it, kept until the access version moves, a change is made or refused, a
-// minute goes by, or someone else signs in; a choice made outside a render (deploying under a name
-// just typed) reads from the same; and the nav's host group lists the pages the caller may view.
+// minute goes by, or someone else signs in; nothing asked while no one is signed in, and read at
+// once on signing in; a choice made outside a render (deploying under a name just typed) reads
+// from the same; and the nav's host group lists the pages the caller may view.
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import fixture from "./can.fixture.json";
-import { ACTIONS, AGAIN_EVERY_MS, ASKING, BUTTONS, canOf, canOn, checkVersion, Gated, gateOf, hostPagesOf, resetCan, useCan, useHostPages, type Answers, type Button, type Can, type HostPages } from "./can";
-import { mayHaveChanged } from "./server";
+import { ACTIONS, AGAIN_EVERY_MS, ASKING, BUTTONS, canOf, canOn, checkVersion, Gated, gateOf, hostPagesOf, resetCan, useCan, useHostPages, VERSION_EVERY_MS, type Answers, type Button, type Can, type HostPages } from "./can";
+import { getSession, mayHaveChanged, setSession } from "./server";
 import { hostEntries } from "./ui/Shell";
 
 type Caller = keyof typeof fixture.callers;
@@ -156,11 +157,15 @@ const NEEDS_ADMIN = "cy may not do that: that needs an admin";
 const READS_ONLY = "cy may not do that: a viewer only reads";
 
 /** The server, as far as the hook reads it: `/auth/me/can` answers `answers[flow]` (each call
- *  counted), `/auth/me` the access version `version`, `/auth/owned` what `owned` names. */
+ *  counted), `/auth/me` the access version `version`, `/auth/owned` what `owned` names; each
+ *  request sent is in `sent` (its path, and as whom), and one with no sign-in, or one the server
+ *  has ended (`ended`), is refused 401, as access.rs refuses it. */
 let answers: Record<string, Answers> = {};
 let version = 1;
 let owned: string[] = [];
 let asked: string[] = [];
+let sent: string[] = [];
+let ended = new Set<string>();
 /** How many reads of `/auth/me` to come get no answer: held up, as a busy browser held them. */
 let meHeld = 0;
 let container: HTMLDivElement | null = null;
@@ -168,16 +173,23 @@ let root: Root | null = null;
 
 beforeEach(() => {
   resetCan();
+  // Signed in: the hook reads as whoever is.
+  setSession({ token: "token-of-cy", name: "cy", kind: "person", role: "viewer" });
   answers = { "": { "people.view": NEEDS_ADMIN }, d: { "flow.lifecycle": true } };
   version = 1;
   owned = [];
   asked = [];
+  sent = [];
+  ended = new Set();
   meHeld = 0;
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (url: string) => {
+    vi.fn(async (url: string, init?: RequestInit) => {
       const u = new URL(url, "http://127.0.0.1:7420");
       const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      const token = (init?.headers as Record<string, string> | undefined)?.Authorization?.replace(/^Bearer /, "");
+      sent.push(`${u.pathname} as ${token ?? "no one"}`);
+      if (!token || ended.has(token)) return new Response(JSON.stringify({ error: "your sign-in has ended or isn't valid: sign in again" }), { status: 401 });
       if (u.pathname === "/auth/me/can") {
         const flow = u.searchParams.get("flow") ?? "";
         asked.push(flow);
@@ -202,6 +214,7 @@ afterEach(() => {
   root = null;
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  setSession(null);
 });
 
 /** What each `useCan(flow)` shown answered, by flow. */
@@ -220,11 +233,13 @@ function One({ flow }: { flow: string | null }) {
   return null;
 }
 
+/** The machine's own setTimeout, for settling while a test keeps the page's clock. */
+const machineTimeout = globalThis.setTimeout;
 /** Every pending promise settled, and what they set rendered. */
 const settle = () =>
   act(async () => {
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
-    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => machineTimeout(r, 0));
   });
 
 async function mount(node: React.ReactNode) {
@@ -344,6 +359,32 @@ describe("useCan", () => {
     expect(shown.d.known).toBe(false);
     await settle();
     expect(shown.d.may("pause")).toBe("bob may not do that: a viewer only reads");
+  });
+
+  it("asks nothing while no one is signed in, a minute on and more; signing in, it reads at once, for whoever signed in", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    await mount(<Shows flows={["d"]} />);
+    expect(shown.d.may("pause")).toBe(true);
+    // cy's sign-in ends at the server (signed out elsewhere): the page hears so from its next
+    // read of the access version, and asks to sign in again over the editor, which it keeps.
+    ended.add("token-of-cy");
+    await act(async () => void (await vi.advanceTimersByTimeAsync(VERSION_EVERY_MS)));
+    await settle();
+    expect(getSession()).toBeNull();
+    expect(sent.at(-1)).toBe("/auth/me as token-of-cy");
+    // A minute and more of the page's clock: the access version, what is kept read again, a read
+    // refused asked again. None goes out: the server would refuse each (it did, every few
+    // seconds, from every tab left open under "sign in again").
+    sent = [];
+    await act(async () => void (await vi.advanceTimersByTimeAsync(AGAIN_EVERY_MS + 2 * VERSION_EVERY_MS)));
+    await settle();
+    expect(sent).toEqual([]);
+    // Signing in, as ada: what the buttons follow is read at once, as her, and followed.
+    answers.d = { "flow.lifecycle": "ada may not do that: a viewer only reads" };
+    act(() => setSession({ token: "token-of-ada", name: "ada", kind: "person", role: "viewer" }));
+    await settle();
+    expect(sent).toEqual(["/auth/me/can as token-of-ada"]);
+    expect(shown.d.may("pause")).toBe("ada may not do that: a viewer only reads");
   });
 });
 
