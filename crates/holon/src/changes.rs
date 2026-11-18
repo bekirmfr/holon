@@ -65,7 +65,8 @@ pub(crate) fn handle_get_changes(state: &AppState, slug: &str, request: &Request
         (Arc::clone(&dep.log), dep.events.entries().to_vec(), Redactor::of(&dep.secrets), live)
     };
     // The runs read with the table let go: the older ones come from the log's file (R8).
-    let mut entries: Vec<LogEntry> = log.after(None, usize::MAX).into_iter().filter(|e| e.seq < before).collect();
+    let Ok(kept) = log.after(None, usize::MAX) else { return err(500, crate::recorder::runs_unread(slug)) };
+    let mut entries: Vec<LogEntry> = kept.into_iter().filter(|e| e.seq < before).collect();
     let older = entries.len() > SCAN;
     entries.drain(..entries.len().saturating_sub(SCAN));
     let collection = format!("#collection:{name}");

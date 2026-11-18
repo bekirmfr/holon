@@ -666,6 +666,103 @@ route.post("/bump", () => {{
     assert!(names.iter().any(|n| n == "new.key") && !names.iter().any(|n| n == "NEW.KEY"), "{names:?}");
 }
 
+/// Guards, against the real server: a deployment's run log that couldn't all be read as the
+/// server started (its sealed segments' place a file, not a folder) is an error at the commands
+/// that read it all, as at the routes under them (src/tests/unread_readers.rs): `holon runs
+/// --last`, `holon export` and `holon restore --to-run … --state --dry-run` each end with a code
+/// that isn't 0, say the server's fixed words and no place on its disk, and the export writes no
+/// file; `holon host` tells the admin to restart once it reads again. Readable again and
+/// restarted, each goes as before.
+/// Why: a command that took the server's error as none, or said it and ended with 0, shows a
+/// person fewer runs as if they were all, and lets a script go on with an export missing runs
+/// (release audit R92).
+/// If it fails: the command it names takes a failed answer as empty (`cmdline::json`,
+/// `local::admin_call`, verify.rs's `export`), or the route under it answers as if whole again.
+#[test]
+fn a_run_log_that_cant_all_be_read_is_an_error_at_the_commands() {
+    let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
+    let base = std::env::temp_dir().join(format!("holon-unread-{}-{stamp}", std::process::id()));
+    let (home, texts, export) = (base.join("home"), base.join("texts"), base.join("export"));
+    for d in [&home, &texts, &export] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let root = format!("file:{}", base.join("root.key").display());
+    let start = |name: &str, dirs: Vec<PathBuf>| {
+        let port = free_port();
+        let said = base.join(format!("{name}.err"));
+        let mut server = Server { child: serve(&home, &root, port, std::fs::File::create(&said).unwrap().into()), dirs, port, home: home.clone() };
+        answering(&mut server.child, port, &said);
+        server
+    };
+    let mut first = start("first", vec![base.clone()]);
+    let shop_port = free_port();
+    let file = texts.join("kept.holon.ts");
+    std::fs::write(
+        &file,
+        format!(
+            r#"import {{ flow, route }} from "holon"
+import state from "state"
+
+flow("kept", {{ port: {shop_port} }})
+
+route.post("/bump", () => {{
+  state.n = (state.n ?? 0) + 1
+  return state.n
+}})
+"#
+        ),
+    )
+    .unwrap();
+    first.holon(&["deploy", &file.display().to_string(), "--approve"]);
+    until("kept answers", 60, || status(&post(shop_port, "/bump", "{}")) == 200);
+    for _ in 0..4 {
+        assert_eq!(status(&post(shop_port, "/bump", "{}")), 200);
+    }
+    let exported = export.join("kept-runs.json");
+    let commands = |server: &Server| {
+        let (at, to) = (server.port.to_string(), export.display().to_string());
+        [("holon runs", vec!["runs", "kept", "--last", "200"]), ("holon export", vec!["export", "kept", "--to", &to]), ("holon restore", vec!["restore", "kept", "--to-run", "1", "--state", "--dry-run"])].map(|(name, mut args)| {
+            args.extend(["--server", &at]);
+            (name, offline(&home, &args))
+        })
+    };
+    for (name, (went, said)) in commands(&first) {
+        assert!(went, "{name}, before: {said}");
+    }
+    assert!(exported.exists(), "the export, before");
+    std::fs::remove_file(&exported).unwrap();
+    first.stop();
+
+    // Its sealed segments' place a file: as the log opens, it can't be listed.
+    let mut files = Vec::new();
+    files_under(&home, &mut files);
+    let log = files.iter().find(|f| f.file_name().is_some_and(|n| n == "kept.jsonl")).unwrap_or_else(|| panic!("its run log: {files:#?}"));
+    let sealed = log.with_extension("sealed");
+    assert!(!sealed.exists(), "five runs sealed nothing");
+    std::fs::write(&sealed, b"not a folder").unwrap();
+    let mut second = start("second", Vec::new());
+    for (name, (went, said)) in commands(&second) {
+        assert!(!went, "{name} ends with a code that isn't 0: {said}");
+        assert!(said.contains("answered 500: \"kept\"'s run log can't all be read now: the server's warnings say why"), "{name} says the server's fixed words: {said}");
+        assert!(!said.contains(&base.display().to_string()) && !said.contains("kept.sealed"), "{name} names no place on the server's disk: {said}");
+    }
+    assert!(!exported.exists(), "an export that fails writes no file");
+    let host = second.holon(&["host"]);
+    assert!(host.contains("couldn't be read as the server started") && host.contains("restart the server"), "{host}");
+    second.stop();
+
+    // Readable again (nothing there, nothing sealed), and restarted.
+    std::fs::remove_file(&sealed).unwrap();
+    let mut third = start("third", Vec::new());
+    for (name, (went, said)) in commands(&third) {
+        assert!(went, "{name}, readable again: {said}");
+    }
+    assert!(exported.exists(), "the export, readable again");
+    let host = third.holon(&["host"]);
+    assert!(!host.contains("couldn't be read as the server started"), "{host}");
+    third.stop();
+}
+
 /// How many low-level writers `text` (a source file) calls outside its test modules, each left
 /// out by its braces wherever it sits (source.rs, R78): the scan cut each file at its first one.
 fn writers_in(text: &str) -> usize {
@@ -1301,6 +1398,8 @@ const FOR_THE_ADMIN: &[(&str, &str)] = &[
     ("main.rs: serve", "the policy file that doesn't load as the server starts: refuse_to_start says why on stderr, and nothing answers"),
     ("at_rest.rs: read_seen", "disk's own error (a Failed already) made the why of the Failed it gives, whose Display says only what to do"),
     ("at_rest.rs: note_seen", "the admin's warnings (failing::note_file), the record's path the warning's place"),
+    ("recorder.rs: noted", "the admin's warnings (failing::note_file, RUNS_UNREAD), the run log's path the warning's place; whoever read it is answered recorder::runs_unread's fixed words"),
+    ("recorder.rs: LogCell::kept_runs", "a spooled mail's or message's warning as the server starts (spools.rs: the admin's warnings, and stderr), told and why as the log's own warnings say them; no answer is built from it"),
 ];
 
 /// Guards: why a file of the server's failed (`Failed::for_the_admin`) is read only where

@@ -378,12 +378,19 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
             todo: "its runs are in the batch still, as the log wrote them, and the other batches are made exports all the same; check the drive or folder is writable and the batch is whole, it is tried again every ten seconds".into(),
         });
     }
-    for (told, place, why) in crate::failing::files_now(&state.deployments_path) {
-        out.push(Warning {
-            key: format!("file:{told}:{place}"),
-            says: format!("{told}: {place} ({why})"),
-            todo: "make it readable (or writable) again, or restore it from a copy of the data folder; the warning goes when it next reads or writes".into(),
-        });
+    let files = crate::failing::files_now(&state.deployments_path);
+    let unreadable_packs = state.store.2.packs().map(|p| p.unreadable().to_vec()).unwrap_or_default();
+    // What couldn't be read as the server started is read again only as it starts again: a run
+    // log's segments, the store's packs (release audit R92). Its advice says so, never "it goes
+    // when it next reads": nothing reads it before.
+    let at_start = files.iter().any(|(told, ..)| told == crate::recorder::RUNS_UNREAD_AT_START) || !unreadable_packs.is_empty();
+    for (told, place, why) in files {
+        let todo = if told == crate::recorder::RUNS_UNREAD_AT_START {
+            "make it readable again, or restore it from a copy of the data folder, then restart the server: what couldn't be read as it started is read again only as it starts; until then a read of all its runs (a page reaching back, its history, a restore, an export, a replay) answers an error, and nothing is swept"
+        } else {
+            "make it readable (or writable) again, or restore it from a copy of the data folder; the warning goes when it next reads or writes"
+        };
+        out.push(Warning { key: format!("file:{told}:{place}"), says: format!("{told}: {place} ({why})"), todo: todo.into() });
     }
     {
         // A round that couldn't read all that names what is kept removed nothing (release audit
@@ -391,15 +398,20 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
         let kept = state.sweeps.kept.lock().unwrap();
         for (what, report) in [("store", &kept.store), ("file texts", &kept.folders)] {
             if let Some(e) = report.as_ref().and_then(|r| r.error.as_ref()) {
+                let then = if at_start {
+                    "then restart the server: what couldn't be read as it started (the warnings above say which) is read again only as it starts, and the rounds before remove nothing"
+                } else {
+                    "the next round sweeps as before"
+                };
                 out.push(Warning {
                     key: format!("sweep:{what}"),
                     says: format!("the last sweep of the {what} removed nothing: {e}"),
-                    todo: "nothing is removed while what names what is kept can't all be read: make it readable again (a file's permissions, a disk, the server's open files), or restore it from a copy of the data folder; the next round sweeps as before".into(),
+                    todo: format!("nothing is removed while what names what is kept can't all be read: make it readable again (a file's permissions, a disk, the server's open files), or restore it from a copy of the data folder; {then}"),
                 });
             }
         }
     }
-    for (pack, e) in state.store.2.packs().map(|p| p.unreadable().to_vec()).unwrap_or_default() {
+    for (pack, e) in unreadable_packs {
         out.push(Warning {
             key: format!("pack:{}", pack.display()),
             says: format!("a pack of the store's values can't be read, and its values are missing: {} ({e})", pack.display()),

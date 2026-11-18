@@ -3,7 +3,9 @@
 // signed (SigV4) with the key the tests give it, as SQS refuses one. Its queues are the names given,
 // a FIFO one's ending .fifo. A message from outside is a file dropped in its queue's folder in
 // `dir` (`dir/payout-events/…`): its text the message's body, put in the order of their names (the
-// folders are looked at every 200ms). What the host sends is a line of `sent.log` in `dir`, and
+// folders are looked at every 200ms), each read once, so put in whole: written under a name
+// beginning with a dot, which it passes over, and renamed (fixtures.ts, dropWhole). What the host
+// sends is a line of `sent.log` in `dir`, and
 // what it deletes a line of `deleted.log`, each JSON, where the tests read them.
 //
 // A message received is out of sight for its visibility, then handed out again unless it was
@@ -48,7 +50,9 @@ export function sqsServer(dir, names, keyId, secret) {
     for (const name of names) {
       const folder = join(dir, name);
       if (!existsSync(folder)) continue;
-      for (const file of readdirSync(folder).sort().filter((f) => !seen.has(`${name}/${f}`))) {
+      // A name beginning with a dot is one being written (fixtures.ts, dropWhole): read once, it
+      // would be taken half-written.
+      for (const file of readdirSync(folder).sort().filter((f) => !f.startsWith(".") && !seen.has(`${name}/${f}`))) {
         seen.add(`${name}/${file}`);
         put(name, readFileSync(join(folder, file), "utf8").trim(), name.endsWith(".fifo") ? "e2e" : undefined);
       }

@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 use holon_core::Value;
 
 use crate::at_rest::{role, Framed, LineSeal};
+use crate::failing::Failed;
 use crate::paths::Place;
 use std::borrow::Cow;
 use crate::{PerformedEntry, SValue};
@@ -906,6 +907,9 @@ pub struct Log {
     /// so what reads every line it holds (`Lines::each`, the sweeps' names) fails while this is
     /// set, rather than take what they name as gone (release audit R92).
     unread: Option<String>,
+    /// Where what its reads fail on is noted for the admin's warnings (failing::note_file): the
+    /// deployments file of the server whose deployment it is the log of ([`Log::for_deployment`]).
+    notes: Option<Place>,
 }
 
 /// A cut-back to be made with the log's lock released: the file as it was when it was planned
@@ -1433,6 +1437,60 @@ pub struct KeptRuns {
     pub unread: Option<String>,
 }
 
+/// What the admin's warnings say of a deployment's run log a read of which failed (its file's path
+/// the place, why beside it): what read it answered an error, never fewer runs. Kept until a read
+/// of all it keeps goes through ([`noted`]), or the deployment is removed (release audit R92).
+pub(crate) const RUNS_UNREAD: &str = "a deployment's run log can't all be read";
+
+/// What the admin's warnings say of a deployment's run log part of which couldn't be read as it
+/// opened (`Log::unread`): nothing reads it again before the server starts again, so every read of
+/// all it keeps fails until then, and the warning stays (release audit R92).
+pub(crate) const RUNS_UNREAD_AT_START: &str = "part of a deployment's run log couldn't be read as the server started";
+
+/// What whoever read `slug`'s runs is told when its log can't all be read: fixed words, never
+/// fewer runs (release audit R92). Where and why are the admin's, in the server's warnings,
+/// noted as the read failed ([`noted`]); none of the server's disk is in it (R71).
+pub(crate) fn runs_unread(slug: &str) -> String {
+    format!("{slug:?}'s run log can't all be read now: the server's warnings say why")
+}
+
+/// What a read meets when its log couldn't all be read as it opened (`Log::unread`): told as the
+/// warning noted then ([`RUNS_UNREAD_AT_START`]), why kept for the admin.
+fn latched(why: &str) -> std::io::Error {
+    std::io::Error::other(Failed::new(RUNS_UNREAD_AT_START, why))
+}
+
+/// `e`, met reading `what` of a log, told after it, its kind kept: why, for the admin (where, and
+/// the system's error, when it is a file of the data folder's: at_rest::disk), kept as it was.
+fn reading(what: String, e: std::io::Error) -> std::io::Error {
+    let kind = e.kind();
+    match Failed::in_io(&e) {
+        Some(f) => std::io::Error::new(kind, f.clone().retold(|told| format!("{what}: {told}"))),
+        None => std::io::Error::new(kind, format!("{what}: {e}")),
+    }
+}
+
+/// `read`, a read of a log whose failures are noted as `notes` says, noted in the admin's
+/// warnings (failing::note_file): an error kept with why, so whoever was answered it finds why
+/// there at once; a read of all the log keeps (`whole`) that goes through takes it away, and a
+/// read of part of it says nothing of the rest. An error met as the log opened is noted then
+/// already, as such (`for_deployment`), and isn't noted again.
+fn noted<T>(notes: Option<(Place, String)>, read: std::io::Result<T>, whole: bool) -> std::io::Result<T> {
+    let Some((at, place)) = notes else { return read };
+    match &read {
+        Ok(_) if whole => crate::failing::note_file(&at, RUNS_UNREAD, &place, Ok(())),
+        Ok(_) => {}
+        Err(e) => {
+            let failed = Failed::in_io(e);
+            if failed.is_none_or(|f| f.to_string() != RUNS_UNREAD_AT_START) {
+                let why = failed.map_or_else(|| e.to_string(), |f| f.for_the_admin().to_string());
+                crate::failing::note_file(&at, RUNS_UNREAD, &place, Err(&Failed::new(RUNS_UNREAD, why)));
+            }
+        }
+    }
+    read
+}
+
 /// What reading a log's lines a line at a time needs, taken under its lock (`Log::its_lines`) and
 /// read with it released: its file opened, its sealed segments named, how its lines are sealed,
 /// and the first run it keeps. A log kept in memory only, its lines.
@@ -1444,6 +1502,8 @@ pub struct Lines {
     first_kept: Option<u64>,
     /// What of the log couldn't be read as it opened (`Log::unread`).
     unread: Option<String>,
+    /// Where what a read of them fails on is noted ([`noted`]).
+    notes: Option<(Place, String)>,
 }
 
 impl Lines {
@@ -1457,9 +1517,15 @@ impl Lines {
     /// what the log names (the sweeps) fails on it, rather than take the rest as naming nothing
     /// (release audit R92). A segment let go of since it was named, and a file not written yet,
     /// hold no run it keeps, and are none.
-    fn each(self, mut f: impl FnMut(&str)) -> std::io::Result<()> {
+    fn each(mut self, f: impl FnMut(&str)) -> std::io::Result<()> {
+        let notes = self.notes.take();
+        noted(notes, self.each_unnoted(f), true)
+    }
+
+    /// [`each`](Lines::each), its outcome noted by it.
+    fn each_unnoted(self, mut f: impl FnMut(&str)) -> std::io::Result<()> {
         use std::io::{BufRead, Error, ErrorKind};
-        let mut failed = self.unread.map(Error::other);
+        let mut failed = self.unread.as_deref().map(latched);
         let Some(file) = self.file else {
             self.memory.iter().for_each(|l| f(l));
             return Ok(());
@@ -1468,14 +1534,14 @@ impl Lines {
             match read_segment(&p) {
                 Ok(text) => text.lines().for_each(&mut f),
                 Err(e) if e.kind() == ErrorKind::NotFound => {}
-                Err(e) => drop(failed.get_or_insert(Error::new(e.kind(), format!("its sealed segment {} can't be read: {e}", segment_name(&p))))),
+                Err(e) => drop(failed.get_or_insert(reading(format!("its sealed segment {} can't be read", segment_name(&p)), e))),
             }
         }
         let file = match file {
             Ok(file) => Some(file),
             Err(e) if e.kind() == ErrorKind::NotFound => None,
             Err(e) => {
-                failed.get_or_insert(Error::new(e.kind(), format!("its file can't be opened: {e}")));
+                failed.get_or_insert(reading("its file can't be opened".into(), e));
                 None
             }
         };
@@ -1488,7 +1554,7 @@ impl Lines {
                     Ok(0) => break,
                     Ok(_) => {}
                     Err(e) => {
-                        failed.get_or_insert(Error::new(e.kind(), format!("its file can't be read: {e}")));
+                        failed.get_or_insert(reading("its file can't be read".into(), e));
                         break;
                     }
                 }
@@ -1537,65 +1603,96 @@ pub struct Wanted {
     sealed: Vec<(PathBuf, Vec<(usize, u64)>)>,
     /// How the file's lines are sealed.
     line_seal: Option<LineSeal>,
+    /// Why the runs wanted can't all be read, known as they were planned: what of the log
+    /// couldn't be read as it opened (`Log::unread`), or its file that didn't open. Reading them
+    /// fails on it, rather than give fewer runs (release audit R92).
+    failed: Option<std::io::Error>,
+    /// Where what reading them fails on is noted ([`noted`]), and whether they are all the log
+    /// keeps (a read of them that goes through takes the note away).
+    notes: Option<(Place, String)>,
+    whole: bool,
 }
 
 /// Where a run's line is in a log's file: its offset, its length, and the run's seq.
 type At = (u64, usize, u64);
 
+/// Run `seq`, as `line` holds it: none if it doesn't parse or is another run's, as the log leaves
+/// such a line out as it opens.
+fn run_of(line: &str, seq: u64) -> Option<LogEntry> {
+    crate::wire::read_json::<LogEntry>(line.as_bytes()).ok().filter(|e| e.seq == seq)
+}
+
 impl Wanted {
     /// The runs, oldest first: those read from the file (each checked to be the run it should be:
-    /// a line that isn't is left out), then those from memory.
-    pub fn read(self) -> Vec<LogEntry> {
+    /// a line that isn't is left out), then those from memory. An error if what the log holds of
+    /// them is there and can't all be read (`read_if`).
+    pub fn read(self) -> std::io::Result<Vec<LogEntry>> {
         self.read_if(|_| true)
     }
 
     /// As `read`, parsing only the file's lines `keep` says may hold what is looked for.
-    fn read_if(self, keep: impl Fn(&str) -> bool) -> Vec<LogEntry> {
-        use std::io::{Read, Seek, SeekFrom};
+    ///
+    /// An error, never fewer runs, when what holds them is there and can't be read: what was
+    /// known as they were planned (`failed`), a segment that doesn't read, the file's read that
+    /// fails, a line whose key is missing. A segment let go of since they were planned holds no
+    /// run kept, and a line cut short or changed (or whose bytes the file no longer has, cut short
+    /// outside holon) is left out, as the log leaves it out as it opens.
+    fn read_if(mut self, keep: impl Fn(&str) -> bool) -> std::io::Result<Vec<LogEntry>> {
+        let (notes, whole) = (self.notes.take(), self.whole);
+        noted(notes, self.read_unnoted(keep), whole)
+    }
+
+    /// [`read_if`](Wanted::read_if), its outcome noted by it.
+    fn read_unnoted(self, keep: impl Fn(&str) -> bool) -> std::io::Result<Vec<LogEntry>> {
+        use std::io::{Error, ErrorKind, Read, Seek, SeekFrom};
+        if let Some(e) = self.failed {
+            return Err(e);
+        }
         let mut out = Vec::new();
         for (path, picks) in self.sealed {
-            // A segment let go of since: its runs are no longer kept.
-            let Ok(text) = read_segment(&path) else { continue };
+            let text = match read_segment(&path) {
+                Ok(text) => text,
+                // A segment let go of since: its runs are no longer kept.
+                Err(e) if e.kind() == ErrorKind::NotFound => continue,
+                Err(e) => return Err(reading(format!("its sealed segment {} can't be read", segment_name(&path)), e)),
+            };
             let lines: Vec<&str> = text.lines().collect();
             for (i, seq) in picks {
                 let Some(line) = lines.get(i) else { continue };
                 if !keep(line) {
                     continue;
                 }
-                if let Ok(entry) = crate::wire::read_json::<LogEntry>(line.as_bytes())
-                    && entry.seq == seq
-                {
-                    out.push(entry);
-                }
+                out.extend(run_of(line, seq));
             }
         }
         if let Some((mut file, at)) = self.file {
             let mut buf = Vec::new();
             for (offset, len, seq) in at {
                 buf.resize(len, 0);
-                if file.seek(SeekFrom::Start(offset)).is_err() || file.read_exact(&mut buf).is_err() {
-                    continue;
+                match file.seek(SeekFrom::Start(offset)).and_then(|_| file.read_exact(&mut buf)) {
+                    Ok(()) => {}
+                    // Its bytes gone (the file cut short outside holon): the line isn't there, and
+                    // is left out as a changed one is.
+                    Err(e) if e.kind() == ErrorKind::UnexpectedEof => continue,
+                    Err(e) => return Err(reading("its file can't be read".into(), e)),
                 }
                 let Ok(line) = std::str::from_utf8(&buf) else { continue };
                 let line = match &self.line_seal {
-                    Some(seal) => match seal.open(line) {
-                        Some(plain) => Cow::Owned(plain),
-                        None => continue,
+                    Some(seal) => match seal.read(line) {
+                        Ok(plain) => Cow::Owned(plain),
+                        Err(e) if e.key_missing() => return Err(Error::other(format!("a line of its file is {e}: {}", crate::at_rest::RESTORE_KEYS))),
+                        Err(_) => continue,
                     },
                     None => Cow::Borrowed(line),
                 };
                 if !keep(&line) {
                     continue;
                 }
-                if let Ok(entry) = crate::wire::read_json::<LogEntry>(line.as_bytes())
-                    && entry.seq == seq
-                {
-                    out.push(entry);
-                }
+                out.extend(run_of(&line, seq));
             }
         }
         out.extend(self.memory);
-        out
+        Ok(out)
     }
 }
 
@@ -1734,17 +1831,19 @@ impl LogCell {
     /// up none of its runs (release audit R45). Lines written after the head was taken are left
     /// out: the lines end at the head, as they did read under the lock. Lines that don't reach it
     /// (the file changed outside holon) are given as read, for the check to say so.
-    pub fn lines_to_head(&self) -> (Vec<String>, String) {
+    ///
+    /// An error, never fewer lines, when what the log holds is there and can't all be read
+    /// (`Lines::each`): an export missing them would verify as a log that holds less, a replay
+    /// would leave runs out unsaid (release audit R92).
+    pub fn lines_to_head(&self) -> std::io::Result<(Vec<String>, String)> {
         let (its, head) = self.with(|log| (log.its_lines(), log.head().to_string()));
         let mut lines = Vec::new();
-        if let Err(e) = its.each(|l| lines.push(l.to_string())) {
-            eprintln!("holon: a run log's lines can't all be read, what reads them has those it could: {e}");
-        }
+        its.each(|l| lines.push(l.to_string()))?;
         // From the newest: the head is the last line, or one of the few written since.
         if let Some(at) = lines.iter().rposition(|l| line_hash(l) == head) {
             lines.truncate(at + 1);
         }
-        (lines, head)
+        Ok((lines, head))
     }
 
     /// The runs it keeps, read a run at a time, and whether they could all be read: what a
@@ -1756,7 +1855,9 @@ impl LogCell {
             kept.runs.insert(e.run_id, e.error.is_none() && e.parked.is_empty());
         });
         if let Err(e) = read {
-            kept.unread = Some(e.to_string());
+            // For the admin (spools.rs: the warnings, stderr): what failed and why, as the log's
+            // own warnings say it; a failure's Display is only what whoever asked is told.
+            kept.unread = Some(Failed::in_io(&e).map_or_else(|| e.to_string(), |f| format!("{f}: {}", f.for_the_admin())));
         }
         kept
     }
@@ -1764,13 +1865,17 @@ impl LogCell {
     /// The runs it keeps after `after`, the newest `limit` of them, oldest first (`Log::after`):
     /// planned under the lock, read from the file with it released, so a page reading old runs
     /// holds up none of the deployment's runs.
-    pub fn after(&self, after: Option<u64>, limit: usize) -> Vec<LogEntry> {
+    ///
+    /// An error, never fewer runs, when those wanted are there and can't all be read
+    /// (`Wanted::read`), noted in the admin's warnings (release audit R92).
+    pub fn after(&self, after: Option<u64>, limit: usize) -> std::io::Result<Vec<LogEntry>> {
         self.with(|log| log.plan(after, limit)).read()
     }
 
     /// Whether some run it keeps had `text` in cell `key` before it ran: a collection root this
-    /// deployment's log has seen. Its file read with the lock released.
-    pub fn shows(&self, key: &str, text: &str) -> bool {
+    /// deployment's log has seen. Its file read with the lock released. An error, never "no",
+    /// when its runs are there and can't all be read.
+    pub fn shows(&self, key: &str, text: &str) -> std::io::Result<bool> {
         shows_in(self.with(|log| log.plan(None, usize::MAX)), key, text)
     }
 
@@ -1835,7 +1940,24 @@ impl Log {
     pub fn for_deployment(deployments_path: &Place, slug: &str) -> Log {
         let mut log = Log::open(file_for(deployments_path, slug));
         log.slug = Some(slug.to_string());
+        log.notes = Some(deployments_path.clone());
+        // What it couldn't read as it opened, in the admin's warnings until the server starts
+        // again (or the deployment is removed): nothing reads it again before (release audit R92).
+        if let Some(place) = log.place() {
+            let unread = log.unread.as_ref().map(|why| Failed::new(RUNS_UNREAD_AT_START, why.clone()));
+            crate::failing::note_file(deployments_path, RUNS_UNREAD_AT_START, &place, unread.as_ref().map_or(Ok(()), Err));
+        }
         log
+    }
+
+    /// Its file's path, as the admin's warnings name it: none for a log in memory only.
+    fn place(&self) -> Option<String> {
+        self.file.as_ref().map(|f| f.display().to_string())
+    }
+
+    /// Where its reads' failures are noted, and as what place (`notes`).
+    fn notes(&self) -> Option<(Place, String)> {
+        Some((self.notes.clone()?, self.place()?))
     }
 
     /// [`Log::open`], keeping `keep` entries.
@@ -1895,6 +2017,7 @@ impl Log {
             hot: HOT,
             refused: None,
             unread: None,
+            notes: None,
         };
         let Some(path) = log.file.clone() else { return log };
         let mut chained = false;
@@ -2721,6 +2844,11 @@ impl Log {
             let _ = std::fs::remove_file(path);
             let _ = std::fs::remove_dir_all(sealed_dir(path));
         }
+        // What the admin was warned of it goes with it.
+        if let Some((at, place)) = self.notes() {
+            crate::failing::note_file(&at, RUNS_UNREAD, &place, Ok(()));
+            crate::failing::note_file(&at, RUNS_UNREAD_AT_START, &place, Ok(()));
+        }
     }
 
     /// The runs it keeps after `after` (all of them for `None`), oldest first, at most `limit`
@@ -2729,12 +2857,12 @@ impl Log {
     /// with its lock released.
     #[cfg(test)]
     pub fn after(&self, after: Option<u64>, limit: usize) -> Vec<LogEntry> {
-        self.plan(after, limit).read()
+        self.plan(after, limit).read().expect("its runs read")
     }
 
     /// What reading its lines needs (`Lines`), taken here, with whatever lock it is under held.
     pub fn its_lines(&self) -> Lines {
-        let file = self.file.as_ref().map(std::fs::File::open);
+        let file = self.file.as_ref().map(crate::at_rest::disk::open);
         let memory = if file.is_none() { self.entries.iter().filter_map(|e| serde_json::to_string(e).ok()).collect() } else { Vec::new() };
         Lines {
             file,
@@ -2743,6 +2871,7 @@ impl Log {
             memory,
             first_kept: self.kept.front().map(|(seq, ..)| *seq),
             unread: self.unread.clone(),
+            notes: self.notes(),
         }
     }
 
@@ -2756,6 +2885,13 @@ impl Log {
     }
 
     /// What reading the runs it keeps after `after`, the newest `limit` of them, needs (`Wanted`).
+    ///
+    /// What it couldn't read as it opened (`unread`) fails the read when the runs wanted may reach
+    /// back to it: into its sealed segments (one it couldn't read may lie between two it could),
+    /// or past the oldest it keeps (fewer than `limit` after `after`) when `after` is older than
+    /// its file's first run. Those it couldn't read were sealed out of its file, older than every
+    /// run the file holds, so the newest `limit` taken from the file, and the runs after one the
+    /// file holds (a view asking for what is new), are whole without them.
     pub fn plan(&self, after: Option<u64>, limit: usize) -> Wanted {
         let newer = self.kept.iter().filter(|(seq, ..)| after.is_none_or(|a| *seq > a));
         let n = newer.clone().count();
@@ -2775,21 +2911,32 @@ impl Log {
             }
             false
         });
+        let in_file_from = self.lines.front().map_or(self.next_seq, |l| l.seq);
+        let reaches_back = !sealed.is_empty() || (n < limit && after.is_none_or(|a| a.saturating_add(1) < in_file_from));
+        let mut failed = self.unread.as_deref().filter(|_| reaches_back).map(latched);
         let file = match (&self.file, older.is_empty()) {
-            (Some(path), false) => crate::at_rest::disk::open(path).ok().map(|f| {
-                let at = older
-                    .iter()
-                    .filter_map(|seq| {
-                        let i = self.lines.binary_search_by_key(seq, |l| l.seq).ok().or_else(|| self.lines.iter().position(|l| l.seq == *seq))?;
-                        let l = &self.lines[i];
-                        Some((l.offset, l.len, l.seq))
-                    })
-                    .collect();
-                (f, at)
-            }),
+            (Some(path), false) => match crate::at_rest::disk::open(path) {
+                Ok(f) => {
+                    let at = older
+                        .iter()
+                        .filter_map(|seq| {
+                            let i = self.lines.binary_search_by_key(seq, |l| l.seq).ok().or_else(|| self.lines.iter().position(|l| l.seq == *seq))?;
+                            let l = &self.lines[i];
+                            Some((l.offset, l.len, l.seq))
+                        })
+                        .collect();
+                    Some((f, at))
+                }
+                // Removed with its deployment since: it holds no run kept.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => {
+                    failed.get_or_insert(reading("its file can't be opened".into(), e));
+                    None
+                }
+            },
             _ => None,
         };
-        Wanted { memory, file, sealed, line_seal: self.line_seal.clone() }
+        Wanted { memory, file, sealed, line_seal: self.line_seal.clone(), failed, notes: self.notes(), whole: after.is_none() && limit == usize::MAX }
     }
 
     /// The seq the next entry will get.
@@ -2862,9 +3009,9 @@ impl Log {
 
 /// Whether a run `wanted` reads had `text` in cell `key` before it ran: only the file's lines
 /// holding `text` are parsed.
-fn shows_in(wanted: Wanted, key: &str, text: &str) -> bool {
+fn shows_in(wanted: Wanted, key: &str, text: &str) -> std::io::Result<bool> {
     let want = SValue::from_core(&holon_core::Value::Text(text.to_string()));
-    wanted.read_if(|line| line.contains(text)).iter().any(|e| e.state_before.get(key) == Some(&want))
+    Ok(wanted.read_if(|line| line.contains(text))?.iter().any(|e| e.state_before.get(key) == Some(&want)))
 }
 
 /// Now, in milliseconds since the epoch.
@@ -3679,9 +3826,85 @@ mod tests {
         assert!(back.after(None, usize::MAX).len() > 100, "its file holds past what it kept");
         // A state only an old run's line still shows is found in the file.
         let cell = LogCell::new(Log::open_keeping(Some(path.clone()), 100));
-        assert!(cell.shows("n", "root-160"), "an old run's state, from the file");
-        assert!(cell.shows("n", "root-249"), "the newest, from memory");
-        assert!(!cell.shows("n", "root-10"), "one it no longer keeps");
+        assert!(cell.shows("n", "root-160").unwrap(), "an old run's state, from the file");
+        assert!(cell.shows("n", "root-249").unwrap(), "the newest, from memory");
+        assert!(!cell.shows("n", "root-10").unwrap(), "one it no longer keeps");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guards: a planned read of a log's runs (`Wanted::read`) is whole or an error. A segment
+    /// that doesn't read, its file's read failing (Windows: locked), a line whose key is missing,
+    /// each fail it; a segment let go of since, a line changed, and one whose bytes its file no
+    /// longer has, are none and left out, as the log leaves them as it opens. What couldn't be read
+    /// as the log opened (`Log::unread`) fails a read reaching back to it, and no other: the newest
+    /// runs, and those after one its file holds, are whole without it (release audit R92).
+    /// Why: read as none, a page, a history or a restore's preview gave fewer runs as if they were
+    /// all it keeps.
+    /// If it fails: `Wanted::read_unnoted` or `Log::plan`'s `failed` takes an error as none again,
+    /// or fails a read that can't reach what it couldn't read.
+    #[test]
+    fn a_planned_read_is_whole_or_an_error() {
+        let dir = temp_dir("planned");
+        let path = dir.join("planned.jsonl");
+        // Its file holding past the newest kept in memory (`IN_MEMORY`), the older runs sealed.
+        let cell = LogCell::new(Log::open_keeping(Some(path.clone()), 200));
+        cell.with(|l| l.set_hot(40));
+        for i in 0..120 {
+            cell.with(|l| l.push(LogEntry { at_ms: 1_000 + i, ..entry() }));
+            cell.cut_if_planned();
+        }
+        let seqs = |read: std::io::Result<Vec<LogEntry>>| read.map(|r| r.iter().map(|e| e.seq).collect::<Vec<_>>());
+        assert_eq!(seqs(cell.after(None, usize::MAX)).unwrap(), (0..120).collect::<Vec<_>>());
+        let mut segments: Vec<PathBuf> = std::fs::read_dir(sealed_dir(&path)).unwrap().flatten().map(|e| e.path()).collect();
+        segments.sort();
+        // The oldest: its runs are none of the newest kept in memory.
+        let segment = segments[0].clone();
+        let aside = segment.with_extension("aside");
+        // A folder where a segment is: there, and it doesn't read.
+        std::fs::rename(&segment, &aside).unwrap();
+        std::fs::create_dir(&segment).unwrap();
+        assert!(cell.after(None, usize::MAX).is_err(), "a segment that doesn't read");
+        assert_eq!(seqs(cell.after(Some(115), 10)).unwrap(), [116, 117, 118, 119], "the newest, none of it reached");
+        // Gone: let go of, its runs none.
+        std::fs::remove_dir(&segment).unwrap();
+        let fewer = seqs(cell.after(None, usize::MAX)).unwrap();
+        assert!(fewer.len() < 120 && fewer.ends_with(&[118, 119]), "a segment let go of: {fewer:?}");
+        std::fs::rename(&aside, &segment).unwrap();
+        // Its file locked as it is read (Windows): it opens, and its reads fail.
+        #[cfg(windows)]
+        {
+            let file = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+            file.lock().unwrap();
+            assert!(cell.after(None, usize::MAX).is_err(), "its file's read failing");
+            drop(file);
+            assert_eq!(seqs(cell.after(None, usize::MAX)).unwrap().len(), 120);
+        }
+        // A file's lines as planned: a line whose key is missing fails the read; one changed, and
+        // one past the file's end, are left out.
+        let odd = dir.join("odd.jsonl");
+        let missing = crate::at_rest::testing::line_of_missing_key(Some((7, "")));
+        let read = |at: Vec<At>| Wanted { memory: Vec::new(), file: Some((std::fs::File::open(&odd).unwrap(), at)), sealed: Vec::new(), line_seal: Some(seal_of(&odd)), failed: None, notes: None, whole: true }.read();
+        std::fs::write(&odd, format!("{missing}
+not a sealed line
+")).unwrap();
+        assert!(read(vec![(0, missing.len(), 7)]).is_err_and(|e| e.to_string().contains("keys.json")), "a line whose key is missing");
+        assert_eq!(read(vec![(missing.len() as u64 + 1, 17, 8)]).unwrap().len(), 0, "a line changed: left out");
+        assert_eq!(read(vec![(10_000, 17, 9)]).unwrap().len(), 0, "a line past the file's end: left out");
+        // Opened with its segments' folder unlistable: a read reaching back fails, no other.
+        let folder = sealed_dir(&path);
+        std::fs::rename(&folder, folder.with_extension("aside")).unwrap();
+        std::fs::write(&folder, b"not a folder").unwrap();
+        let log = Log::open_keeping(Some(path.clone()), 200);
+        assert!(log.refused().is_none());
+        let planned = |after, limit| seqs(log.plan(after, limit).read());
+        assert!(planned(None, usize::MAX).is_err(), "all it keeps");
+        assert!(planned(Some(1), 100).is_err(), "after one older than its file holds");
+        assert_eq!(planned(None, 3).unwrap(), [117, 118, 119], "the newest");
+        assert_eq!(planned(Some(100), 100).unwrap(), (101..120).collect::<Vec<_>>(), "after one its file holds");
+        std::fs::remove_file(&folder).unwrap();
+        std::fs::rename(folder.with_extension("aside"), &folder).unwrap();
+        let log = Log::open_keeping(Some(path.clone()), 200);
+        assert_eq!(seqs(log.plan(None, usize::MAX).read()).unwrap().len(), 120, "listed again, as it opens");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3712,7 +3935,7 @@ mod tests {
             if i % 97 == 0 {
                 for (after, limit) in [(None, usize::MAX), (None, 5), (Some(i.saturating_sub(250)), 40), (Some(i), 3)] {
                     let want = lines(in_memory.after(after, limit));
-                    assert_eq!(lines(cell.after(after, limit)), want, "the cell, after {after:?}, the newest {limit}, at run {i}");
+                    assert_eq!(lines(cell.after(after, limit).unwrap()), want, "the cell, after {after:?}, the newest {limit}, at run {i}");
                     assert_eq!(lines(held.after(after, limit)), want, "held, after {after:?}, the newest {limit}, at run {i}");
                 }
                 // Read a run at a time, as a server starting rebuilds from them (D11): the same
@@ -3743,7 +3966,7 @@ mod tests {
         assert_eq!(seen, all);
         let seqs: Vec<u64> = all.iter().map(|l| serde_json::from_str::<LogEntry>(l).unwrap().seq).collect();
         assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1) && seqs.last() == Some(&999), "in order, none twice");
-        assert!(cell.shows("n", "root-750"), "a sealed run's state, found");
+        assert!(cell.shows("n", "root-750").unwrap(), "a sealed run's state, found");
         // What retention let go of went to the backup first, segments too, each batch sealed whole.
         let batch = |p: &Path| String::from_utf8(crate::at_rest::read_sealed(p, &crate::at_rest::role::batch("cell")).unwrap().unwrap().to_vec()).unwrap();
         let backed: usize = std::fs::read_dir(backup.join("cell")).unwrap().flatten().map(|e| batch(&e.path()).lines().count()).sum();
@@ -3798,9 +4021,9 @@ mod tests {
             cell.with(|log| log.push(LogEntry { at_ms: 1_000 + i, ..entry() }));
             cell.cut_if_planned();
         }
-        let read: Vec<u64> = planned.read().iter().map(|e| e.seq).collect();
+        let read: Vec<u64> = planned.read().unwrap().iter().map(|e| e.seq).collect();
         assert_eq!(read, (20..60).collect::<Vec<_>>(), "the 40 it kept when planned, from the file it planned on");
-        assert_eq!(cell.after(None, usize::MAX).iter().map(|e| e.seq).collect::<Vec<_>>(), (160..200).collect::<Vec<_>>());
+        assert_eq!(cell.after(None, usize::MAX).unwrap().iter().map(|e| e.seq).collect::<Vec<_>>(), (160..200).collect::<Vec<_>>());
         // Read while four threads log and cut back: each read the runs it keeps, in order.
         let cell = std::sync::Arc::new(cell);
         let writers: Vec<_> = (0..4)
@@ -3818,7 +4041,7 @@ mod tests {
             .collect();
         let mut reads = 0;
         while !writers.iter().all(|w| w.is_finished()) || reads == 0 {
-            let seqs: Vec<u64> = cell.after(None, usize::MAX).iter().map(|e| e.seq).collect();
+            let seqs: Vec<u64> = cell.after(None, usize::MAX).unwrap().iter().map(|e| e.seq).collect();
             assert!(seqs.len() >= 39 && seqs.len() <= 40, "{} runs read", seqs.len());
             assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "in order, none missing: {seqs:?}");
             reads += 1;
@@ -3850,7 +4073,7 @@ mod tests {
             })
             .unwrap();
             assert_eq!(read, cell.with(|log| log.lines()));
-            assert_eq!(cell.lines_to_head(), cell.with(|log| (log.lines(), log.head().to_string())), "as read under the lock (release audit R45)");
+            assert_eq!(cell.lines_to_head().unwrap(), cell.with(|log| (log.lines(), log.head().to_string())), "as read under the lock (release audit R45)");
             assert_eq!(cell.lines_holding("\"at_ms\":1003").unwrap().len(), 1);
         }
         let _ = std::fs::remove_file(&path);
@@ -3876,7 +4099,7 @@ mod tests {
             let seqs: Vec<u64> = lines[..whole].iter().map(|l| serde_json::from_str::<LogEntry>(l).expect("a line before the last is whole").seq).collect();
             assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "in order, none missing: {seqs:?}");
             // Read to the head taken with them: every line whole, the last the head's.
-            let (lines, head) = cell.lines_to_head();
+            let (lines, head) = cell.lines_to_head().unwrap();
             let seqs: Vec<u64> = lines.iter().map(|l| serde_json::from_str::<LogEntry>(l).expect("every line to the head is whole").seq).collect();
             assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "in order, none missing: {seqs:?}");
             assert_eq!(lines.last().map_or(String::new(), |l| line_hash(l)), head, "ending at the head (none before the first run)");

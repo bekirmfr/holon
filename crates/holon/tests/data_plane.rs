@@ -202,8 +202,11 @@ route.get("/hi", () => "hi", {{ log: "unrecorded" }})
     const RECORDS: usize = 100_000;
     let body = format!("[{}]", vec![r#"{"a":0}"#; RECORDS].join(","));
     let parse = move |body: &str| raw_http(port, format!("POST /parse HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
-    // What its runs' log says, the last of them, and each that failed whole: why a run failed is
-    // its steps', which the list of runs leaves out (run.steps, R55).
+    // What its runs' log says, every run of this test (the one alone and the eight at once; /hi
+    // isn't recorded), and each that failed whole: why a run failed is its steps', which the list
+    // of runs leaves out (run.steps, R55). Not only the last few: the log is in the order the runs
+    // end, and those that fail for the memory fail at once, so the ones that succeed end last, and
+    // three of them filled a window of three that then held no failed run (main's ci, a9477f94).
     let log = || {
         let holon = |args: &[&str]| {
             let runs = Command::new(HOLON)
@@ -216,7 +219,7 @@ route.get("/hi", () => "hi", {{ log: "unrecorded" }})
                 .expect("holon runs runs");
             format!("{}{}", String::from_utf8_lossy(&runs.stdout), String::from_utf8_lossy(&runs.stderr))
         };
-        let mut said = holon(&["runs", "hold", "--last", "3", "--json"]);
+        let mut said = holon(&["runs", "hold", "--last", "9", "--json"]);
         let heads: serde_json::Value = serde_json::from_str(&said).unwrap_or_default();
         for entry in heads["entries"].as_array().into_iter().flatten().filter(|e| e["failed"] == true) {
             said.push_str(&holon(&["runs", "hold", "--run", &entry["seq"].to_string()]));

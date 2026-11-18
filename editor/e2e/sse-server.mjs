@@ -2,7 +2,8 @@
 // server.mjs): plain HTTP on loopback, at /events. Its events are files dropped in `dir`: each
 // .json file is one event, its name (without .json) the event's id and its text the event's data,
 // sent to every connection open once it is seen (the folder is looked at every 200ms, new files
-// in the order of their names). It keeps what it sent, so a connection that opens with
+// in the order of their names), each read once, so put in whole: written under another name and
+// renamed (fixtures.ts, dropWhole). It keeps what it sent, so a connection that opens with
 // `Last-Event-ID` gets what came after that event first; one without it, what comes from now.
 //
 // A file named `cut` ends every connection open (it is removed), as a feed that drops its

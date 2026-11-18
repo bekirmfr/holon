@@ -255,7 +255,7 @@ pub(crate) fn handle_get_export(
         None => return err(404, format!("no deployment {slug:?}")),
     };
     // The lines end at the head taken with them, read with the log's lock released.
-    let (lines, head) = log.lines_to_head();
+    let Ok((lines, head)) = log.lines_to_head() else { return err(500, crate::recorder::runs_unread(slug)) };
     let (lines, head, events, events_head, file) = match run {
         None => (lines, head, events, events_head, format!("{slug}-runs.json")),
         Some(n) => match lines.into_iter().find(|l| seq_of(l) == Some(n)) {

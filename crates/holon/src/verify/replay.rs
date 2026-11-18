@@ -178,7 +178,8 @@ pub(crate) fn handle_get_replay(
         return err(400, "this unit isn't a flow's version: it has no routes, clocks or actions to replay");
     }
     // Read with the log's lock released: its runs go on meanwhile (release audit R45).
-    let (lines, _) = log.lines_to_head();
+    // All of them, or an error: a replay of fewer would say the others answer as before.
+    let Ok((lines, _)) = log.lines_to_head() else { return err(500, crate::recorder::runs_unread(slug)) };
     // The file texts its runs read, as an export ships them (none holding a secret).
     let export = match export_of(store, folders, Some(&redactor), slug, lines, String::new(), Vec::new(), String::new(), u64::MAX) {
         Ok(export) => export,
