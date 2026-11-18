@@ -93,7 +93,11 @@ ok
    the server couldn't write (a full disk) isn't a break: the line after it says so, and the
    report lists it, `run 17 isn't in the file: the server couldn't write its line, and the line
    after says so`. The server numbers runs one after another, so runs missing that no line says
-   were lost were removed, and the lines after them chained again: `runs 5 to 7 MISSING`;
+   were lost were removed, and the lines after them chained again: `runs 5 to 7 MISSING`. The
+   deployment's events are checked the same way: an event the server couldn't write is said
+   lost by the next (`event 3 isn't in the file`), and one missing that none says was lost was
+   removed. A run whose line couldn't be written sends nothing: no pack, queue message or mail
+   of it goes out, so what its subscribers and queues got is what the log holds;
 2. every line is one the server writes: a kind of run there is, with that kind's fields (a
    request's method, URL and status; what was delivered only on a resumed part's), each value one
    a run holds, each commit numbered once, and a numbered commit naming the state it left. One
@@ -370,9 +374,11 @@ that read a file whose text the export doesn't hold, and a run that wrote a secr
 one computed from it (which the server refused). A failed run's entry may say less than the run does again, never other: the
 same run id, each output it keeps as computed, what it did and sent the start of what it does
 again, and the status it answered either that or a failure's (a 5xx, or 409 for an unmet
-`expect:`). One that says other differs, as a run that didn't fail would. A request no route took, and a run turned away before it began (a resource
-an admin set to `run` was held), ran nothing: their entries are checked to say they did nothing,
-and neither counts.
+`expect:`). One that says other differs, as a run that didn't fail would. A run turned away before it began (a resource
+an admin set to `run` was held) ran nothing: its entry is checked to say it did nothing, and it
+doesn't count; neither does a request no route took in a log from before such requests were only
+counted. A run whose request body its entry keeps by hash is run again with the body the export
+holds, checked against its hash; an export without it (`--without-files`) skips the run.
 
 ### Files
 
@@ -401,10 +407,13 @@ HOLON_EXPORT_HEADS_TOKEN=… holon serve --export-heads https://witness.example.
 ```
 
 Every five seconds it sends the new heads (`{batch, heads: [{deployment, kind, seq, head, at_ms}]}`,
-`kind` `run`, or `event` for the events' chain) with `Authorization: Bearer` the token. Only hashes leave the server: nothing a run read or
+`kind` `run`, `event` for the events' chain, `trim` when a log is cut back, or `removed` when the
+deployment is removed, its last run's head: the slug deployed again starts a new chain at 0) with
+`Authorization: Bearer` the token. Only hashes leave the server: nothing a run read or
 answered. If the witness can't be reached, the heads wait in a queue and are sent later. Past
-10,000 waiting, each deployment's newest head stands for the ones before it: it pins every run
-before it, so the witness is given fewer heads, and loses no run.
+10,000 waiting, each deployment's newest head stands for the ones before it (of each of its lives
+apart: a `removed` head ends one): it pins every run before it, so the witness is given fewer
+heads, and loses no run.
 
 A witness can be any service that keeps what it is sent. The **witness** sample is one, written as
 a flow: deploy it on another machine, set its `witness_key` secret to the same token, and point
@@ -432,12 +441,16 @@ changed or removed`.
 An export `holon export` writes is plain: whoever holds the file reads every run in it, and you
 decide how to keep it. The ones the server keeps on disk itself, a backup's archives and a removed
 deployment's records, are sealed under its keys, as everything in its data folder is. `holon
-verify` opens one with the server's root key; on another machine, give it the data folder's
-`keys.json` and where the root key is:
+verify` opens one with the server's root key. A backup folder keeps a copy of `keys.json` beside
+its archives, which `holon verify` finds there, so on another machine, the data folder lost, the
+backup and the root key are enough:
 
 ```sh
-holon verify holon-archive-notes-api-runs-…json.gz --data /srv/holon/data --root-key file:/etc/holon/root.key
+holon verify /mnt/backup/notes-api/holon-archive-notes-api-runs-…json.gz --root-key file:/media/usb/root.key
 ```
+
+For a removed deployment's records, give it the data folder they are in (`--data
+/srv/holon/data`).
 
 A run the server couldn't write is said lost in the next line, whose head the witness holds.
 Someone who removes a run and rewrites the lines after it to say it was lost makes a log that

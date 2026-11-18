@@ -31,6 +31,156 @@
   keeps in clear is hashed as kept. `holon verify` makes the id again from the record, so a run
   that received a secret (a bearer token equal to one) is now checked rather than taken as the
   record says; one that received a token the run finds only as it goes (a resume link's) still is.
+- **A change to a deployment that isn't saved says so, and a crash doesn't run a part twice.** A
+  deploy, a removal, a grant or a revoke, a pause, a stop or a run, a deployment's settings, its
+  state put back, a decision on a waiting run and a run that waits (its token) each answered 200
+  even when `deployments.json` couldn't be written, so a revoke or a pause was undone at the next
+  start, and a removal came back, after its maker was told it was done. Each now answers 500 when
+  the file doesn't take it: the change is in effect now, and won't hold past a restart. A waiting
+  run is saved as going on before its next part runs: not saved, it doesn't run and waits on; cut
+  off by a crash, it is ended at the next start, its timeline saying so, instead of being given
+  its event again and making its effects (a payout) twice.
+- **Smaller at-rest and record fixes.** A deployment's state head (the hash of its state's
+  snapshot) is sealed: in clear, a small state (a counter, a flag) could be confirmed offline by
+  guessing it. The server's console no longer says a given-up mail's subject or recipients, or a
+  refused recipient's address: the deployment's events, which are sealed, say them. A log cut back
+  holding its lock tells the witness of the trim only once its file is written. `receipts.jsonl`
+  rolls past 16 MiB, keeping the newest. A run's copy of the secrets' values, made to redact its
+  record, is wiped when it goes. The manual says what a data key's rotation doesn't do (nothing is
+  sealed again), and that each run-log line keeps the hash of the line before it in clear.
+- **The root key and the backup, three rough edges.** `holon key export --server PORT`, with no
+  `--root-key`, reads the root where that server reads it (`holon key status` now names its
+  `--root-key` as `source`), once its keys are the folder's; it looked in the default place and
+  found nothing for a server given `--root-key file:…`. The backup folder's copy of `keys.json` is
+  written again with each write of `keys.json`, at once: for a second or so after a forget, the
+  copy still opened the forgotten deployment's archives with the old root. And a root rotated in
+  place, `--to` the key file in use spelled another way, stays in the file as it was spelled (on a
+  disk that ignores case, the file had taken the new spelling's), and `--root-key` is printed so.
+- **Upgrading from 0.1.0-rc.35 or earlier: this release doesn't read that data folder.** The
+  server now seals everything in its data folder (below), and a folder written in clear by an
+  older release is refused at start, saying so; nothing in it is changed (only `keys.lock` is
+  written). There is no conversion: keep running the release that wrote it on it, or move it aside
+  and start over, which leaves its accounts, tokens, secrets, state, waiting runs and run logs
+  behind. `--secrets-key` and `--new-secrets-key` are gone (`--root-key`, `--new-root-key`), and
+  say so. `holon migrate` no longer moves a server's `.holon-*` files (every release that kept
+  them wrote them in clear): it names them and refuses; it still moves old key files.
+  `holon uninstall --purge` removes the key such a release kept its secrets under (the OS key
+  store's `holon / secrets-key-<id>`) with the folder.
+- **A failure is no longer retried every second for good.** With the backup unwritable or the
+  disk full, a log's cut-back is tried again after a pause that doubles up to five minutes, said
+  once, and no longer made again holding the log's lock, which read the whole file each second as
+  its runs waited. A waiting run past its deadline that can't be resumed ends, its log saying why,
+  instead of being tried each second. A server starting gives each log its backup before cutting
+  back the runs past their age, which went unbacked.
+- **A slow lock holder no longer stalls the server.** A data-plane worker no longer takes the
+  deployments table's lock: what a request needs of it is read with its run, on the blocking pool,
+  so a holder writing or sealing can't leave every port deaf. An export, a replay and a removed
+  deployment's records read and open the log with its lock released, so exporting a big log no
+  longer holds up its runs. With a witness, a run queues its head in memory only; the queue file
+  is written with the logs' sync each second, never under the lock every run takes.
+- **A removed deployment's life ends whole, and its slug used again starts apart.** A backup of
+  the runs a log lets go of is named by its last run's hash as well as its runs' numbers, so a slug
+  removed and deployed again, numbering its runs from 0 again, no longer overwrites the old one's
+  archives (the manual said they stayed). A run still going as its deployment is removed writes no
+  line after the removed deployment's records are taken, and a strict one is answered 500, not 200
+  with no record anywhere. Those records are counted by `holon host` and the console, kept as long
+  as the deployment's retention would have kept its runs, then moved to the backup or let go of;
+  before, they were kept for good, unseen. The witness is sent a `removed` head with the old
+  chain's last, and a queue cut while it is down keeps each life's newest heads apart.
+- **What is sealed opens only where it was sealed.** A run log's line, sealed apart from its seq and
+  the hash before it so the log's lock isn't held while it is sealed, now carries a keyed hash
+  binding the two to its body (`r2.` lines): before, the last line's body could be swapped for an
+  earlier one's and still open, the chain not showing it. And a deployment's listener records and
+  spool files open only where that deployment's belong, not wherever their own header says.
+- **A forget says what it reaches, and sweeps the content store.** Forgetting a removed
+  deployment's keys makes its log, events, records and backups open nowhere again; the content
+  store, which every deployment shares and the server's keys seal, isn't forgotten. The forget now
+  sweeps it at once: the values nothing else names are removed (those written in the last hour by
+  the next sweep, as any sweep spares them), and it says how many. The flow's code stays in the
+  store. The CLI, the editor, the README and the manual said nothing it left opened again.
+- **A write that fails is never taken as done.** An event the server couldn't write (a full disk)
+  no longer breaks the events' chain for good: the chain goes on from the last line written, the
+  next event says which were lost, and `holon verify` lists them (and calls events missing that
+  none says were lost removed). A run whose line couldn't be written sends nothing: its packs,
+  queue messages and mail are dropped, as a crash would have, instead of going out with no line
+  of it in the log. A queue message or mail that can't be spooled fails its run: its record says
+  so, its caller gets 500 and nothing else it sends goes out, where before the message was
+  dropped and the record said it was sent. A deployment's keys are made as it is first deployed,
+  and a deploy whose keys can't be made is refused, instead of going live with nothing it runs
+  sealable.
+- **Waiting runs are sealed once, and capped by bytes.** A run waiting at `await` is sealed as it
+  parks or parks again, and every save of the deployments file writes that sealed form, instead
+  of sealing every waiting run of every deployment again under the table's lock. A new limit,
+  `max_waiting_bytes` (64 MiB by default, 1 GiB at most), caps what a deployment's waiting runs
+  keep in all: past it a run that would wait fails as one past `max_waiting_runs` does, and a
+  waiting run whose next part would keep more waits on as it was, its event deliverable again.
+- **A caller decides nothing of how big a run log gets.** A request body longer than 64 KiB, as
+  the log's line writes it, is kept by hash beside the log (sealed, with the file texts runs
+  read), and the entry names it; `holon verify` and a replay put it back from the export. Before,
+  a 1 MiB body made a line of up to 17 MB, held in memory and read whole at start. A request that
+  runs nothing (no route takes it, a method its route doesn't, a body that isn't text) is counted
+  under `(ran nothing)` in the log's tallies instead of logged, so it can't push a deployment's
+  runs out of its log. A server starting reads a log's runs a line at a time to rebuild its
+  channels and its spooled mail and messages, instead of three whole copies.
+- **Everything in the data folder is sealed at rest, under a root key kept apart from it.** Every
+  table, the content store (its files named by a keyed hash), the run logs, events and console
+  lines (a line at a time), secrets, waiting runs, the host key, spools, removed records and
+  backups are sealed (XChaCha20-Poly1305) under data keys, one per scope (`server`, `secrets`,
+  `names`, `d:<slug>` for each deployment), kept in `keys.json` wrapped by a root key. The root
+  is kept where `--root-key` says (`os`, the default on Windows and macOS; a file in
+  `~/.holon/keys` elsewhere; `env:VAR`; `file:PATH`), never in the data folder: the first start
+  makes it and says where, and a root file inside the folder is refused. Back it up apart:
+  `holon key export --to file:PATH` copies it, from the OS key store too. The backup folder keeps
+  a copy of `keys.json` (`holon-archive-keys.json`), so a backup and the root open its archives
+  alone; `holon verify` finds it beside an archive, or takes `--data` and `--root-key`. A run
+  log's line is sealed outside the log's lock; sealing costs lazy runs about 11-14% of their
+  throughput (docs/engineering/performance.md).
+- **`holon key`: status, rotate, forget, export, and a new root.** `holon key status` says where
+  the root is and each scope's versions; `rotate <scope>` makes a new data key that seals from
+  then on; `forget <slug> --yes` (or `holon remove <slug> --forget`, or the editor's remove box)
+  drops a removed deployment's keys, so its records, backups and leftovers open nowhere again and
+  say they were forgotten, then rotates the root where it is kept, and says to back the new one
+  up. `rotate --root --to <SOURCE>`, with the server stopped, wraps every key under a new root: it
+  never writes over a key it didn't make, a rotation cut short at any write is finished or undone
+  at the next start, and a root that another data folder opens too (a copy, or a second server on
+  the same `--root-key`) is never rotated in place, naming that folder.
+- **A `keys.json` older than its data is refused, never taken as empty.** A run log, events or a
+  sealed segment holding a line whose key `keys.json` doesn't have stops the start, naming the
+  deployment, the line and the version, and a deploy onto it is refused; nothing of it is skipped,
+  numbered again from 0 or cut. A log that is there but can't be read refuses the same way. A
+  mailbox, queue, feed or folder watch whose record of what it has seen doesn't open holds: it
+  runs nothing and marks nothing seen, and says why, where before it ran everything again or
+  marked what waited as seen.
+- **Removing a flow keeps its run records.** `DELETE /deployments/<slug>` first writes its log,
+  timeline, units and file texts as an export `holon verify` checks (`removed/<slug>-runs-<ms>.json.gz`),
+  and removes nothing if it can't. One run exports alone: `GET /deployments/<slug>/export?run=N`,
+  `holon export --run N`, and `holon verify` checks it. A witnessed head now says which runs it
+  proves ("no run from 3 to 5 was changed or removed"), and that it says nothing of runs a trimmed
+  log let go.
+- **Who started a waiting run, when each account was last seen, when each flow last ran.** A run
+  that parks keeps who started it (`by` in `/runs`; "started by ada" in `holon decide`,
+  `holon runs --waiting` and the MCP tools). Each account keeps `last_seen` and each token
+  `last_used`, written at most once a minute. `/summary` gives each flow's `last_ms`, which the
+  Overview's and Flows' Last run show. `GET /deployments/<slug>/channels` counts each channel's
+  kept packs and subscribers, which Resources shows.
+- **The editor's canvas.** Nodes is the flow, edited; Statements and Grouped are read-only views
+  of it. A node clicked brings its code into view, and the code's cursor its node; the mouse is
+  the same in Edit and View (middle drag pans, left drag selects). A failed run draws red only
+  where it failed, and what never ran is faint; a waiting run replays as itself. View runs shows
+  the runs and the run picked side by side; the Inspector and bottom pane fold. Every button asks
+  the server what it may send through one hook, and a run started by another flow's run is named
+  by its first eight characters.
+- **Dialogs answer Enter with the focused control, and keep the focus.** Enter answered every
+  in-page dialog yes wherever the focus was: tabbing to Cancel on a delete or a deploy's consent
+  and pressing Enter went ahead. Now it does what a click on the focused control would, and every
+  modal keeps Tab inside it.
+- **No other page can frame the editor or the API, and the editor's fonts come with it.** The
+  server answers with `X-Frame-Options: DENY` and a `frame-ancestors 'none'` policy, so a hostile
+  page can't show the signed-in editor and lure a click onto Approve; the fonts are served by the
+  server, not fetched from Google.
+- **Text nested past 128 levels is refused at its place.** 1,000 nested parentheses overflowed
+  the stack of `holon check`, `holon lsp`, the MCP server's `check` and the editor; now it is an
+  error at the line and column where it goes too deep.
 - **A long answer is cut after its secrets are marked.** A run's line keeps 64 KiB of what a
   route answered. It was cut there as the run had it, and marked afterwards: a secret lying
   across the cut left its first part in the line, since the whole value was no longer there to

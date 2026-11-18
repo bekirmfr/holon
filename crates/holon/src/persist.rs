@@ -12,7 +12,8 @@ use crate::*;
 /// fatal: the server keeps working, and what wasn't saved won't survive a restart until a save
 /// succeeds again. What answers someone tells them so (a waiting run's token, a decision, a
 /// restore, a deploy), and a waiting run isn't given its event unless it was saved as going on
-/// (`durable::resume_parked`).
+/// (`durable::resume_parked`). Each caller is listed as answering for a change or as answering no
+/// one by `a_change_the_deployments_file_didnt_take_is_never_answered_as_done` (release audit R59).
 ///
 /// Takes the table's mutex rather than a locked table: the table lock is held only long enough
 /// to copy each deployment's fields and clone its state `Arc`. Each state map is then locked on
@@ -27,7 +28,7 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
     let records: Vec<DeploymentRecord> = deployments
         .lock()
         .unwrap()
-        .iter()
+        .iter_mut()
         .map(|(slug, dep)| {
             DeploymentRecord {
                 slug: slug.clone(),
@@ -53,24 +54,38 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
                 grant: Some(dep.grant.clone()),
                 // What a waiting run keeps that may hold a secret is sealed under its
                 // deployment's keys, whose root is kept apart from this file: a backup of it
-                // carries none. With what each sent as it parked, which its channels hold. One
-                // that can't be sealed is left out, never written in the clear.
+                // carries none. Sealed once, as it parked (`keep_waiting`), not again here: a save
+                // under the table's lock writes what each holds (release audit D4). With what
+                // each sent as it parked, which its channels hold. One that can't be sealed is
+                // left out, never written in the clear.
                 parked: {
                     let keys = dep.secrets.lock().unwrap().keys.clone();
+                    let channels = Arc::clone(&dep.channels);
                     dep.parked
-                        .values()
+                        .values_mut()
                         .filter_map(|p| {
-                            let kept = match keys.as_deref() {
-                                Some(keys) => p.sealed_for_disk(slug, keys),
-                                None => Ok(p.clone()),
+                            let sent = channels.waiting_sent(&p.run_id);
+                            // One whose sealed part didn't open as the server started: as it was.
+                            // On a server without keys (a test's), as it is.
+                            let Some(keys) = keys.as_deref().filter(|_| p.sealed.is_none()) else {
+                                return Some(ParkedRun { sent, ..p.clone() });
                             };
-                            match kept {
-                                Ok(kept) => Some(ParkedRun { sent: dep.channels.waiting_sent(&p.run_id), ..kept }),
-                                Err(e) => {
-                                    eprintln!("warning: waiting run {} of {slug:?} not kept: it can't be sealed: {e}", p.run_id);
-                                    None
-                                }
-                            }
+                            let part = match p.sealed_part.clone().filter(|part| part.sealed.is_some()) {
+                                Some(part) => part,
+                                None => match seal_waiting(slug, Some(keys), p) {
+                                    Ok(part) => {
+                                        p.sealed_part = Some(Arc::clone(&part));
+                                        part
+                                    }
+                                    Err(e) => {
+                                        eprintln!("warning: waiting run {} of {slug:?} not kept: it can't be sealed: {e}", p.run_id);
+                                        return None;
+                                    }
+                                },
+                            };
+                            #[cfg(debug_assertions)]
+                            check_sealed(slug, p, &part);
+                            Some(ParkedRun { sent, ..p.sealed_for_disk(part.sealed.as_deref().unwrap_or_default()) })
                         })
                         .collect()
                 },
@@ -79,8 +94,13 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
         .collect();
     let saved = match serde_json::to_vec_pretty(&records) {
         // Sealed under the server's keys, owner-only: it holds the flows' documents, grants and
-        // what their waiting runs need.
-        Ok(bytes) => crate::at_rest::write_table(path, crate::at_rest::role::DEPLOYMENTS, &bytes).map_err(|e| format!("the deployments file couldn't be written to {path:?}: {e}")),
+        // what their waiting runs need. A test makes it fail where the disk would
+        // (`crate::faults`).
+        Ok(bytes) => match crate::faults::failing("the deployments file") {
+            Some(_) => Err(crate::faults::error("the deployments file")),
+            None => crate::at_rest::write_table(path, crate::at_rest::role::DEPLOYMENTS, &bytes),
+        }
+        .map_err(|e| format!("the deployments file couldn't be written to {path:?}: {e}")),
         Err(e) => Err(format!("the deployments couldn't be serialized: {e}")),
     };
     if let Err(e) = &saved {
@@ -89,11 +109,109 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
     saved
 }
 
+/// A waiting run's part that may hold a secret (its inputs, sourced values, requests, tokens,
+/// events and what its points show: `ParkedRun::plain_part`), sealed once under its deployment's
+/// keys as it parks or parks again (`keep_waiting`), and written as it is by every save
+/// (`persist_deployments`) until it changes.
+pub(crate) struct SealedPart {
+    /// Sealed, bound to its run; none on a server without keys (a test's).
+    pub(crate) sealed: Option<String>,
+    /// The BLAKE3 of what was sealed: a debug build checks at each save that the run still holds
+    /// it (`check_sealed`), so a path that changed the part without sealing it again fails a
+    /// test. Its nonce makes the sealed form no witness of that.
+    of: [u8; 32],
+    /// How long what was sealed is: what `max_waiting_bytes` counts.
+    pub(crate) bytes: u64,
+}
+
+impl std::fmt::Debug for SealedPart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SealedPart")
+    }
+}
+
+/// `run`'s part sealed under `keys` (none: only measured).
+fn seal_waiting(slug: &str, keys: Option<&crate::at_rest::Keyring>, run: &ParkedRun) -> Result<Arc<SealedPart>, String> {
+    let plain = run.plain_part();
+    let sealed = match keys {
+        Some(keys) => Some(keys.seal_line(&crate::at_rest::deployment(slug), &crate::durable::parked_context(slug, &run.run_id), plain.as_bytes())?),
+        None => None,
+    };
+    Ok(Arc::new(SealedPart { sealed, of: *blake3::hash(plain.as_bytes()).as_bytes(), bytes: plain.len() as u64 }))
+}
+
+/// The bytes `run` takes of its deployment's `max_waiting_bytes`: its part's, sealed or not.
+fn waiting_bytes(run: &ParkedRun) -> u64 {
+    match (&run.sealed_part, &run.sealed) {
+        (Some(part), _) => part.bytes,
+        (None, Some(sealed)) => sealed.len() as u64,
+        (None, None) => run.plain_part().len() as u64,
+    }
+}
+
+/// Keep `run` waiting in `dep`, in place of what it was: its part sealed once, here, and every
+/// waiting run's within the bytes `dep`'s may hold in all (`max_waiting_bytes`); or `dep` left as
+/// it was, and why. Every path that parks a run, or changes what a waiting run keeps sealed,
+/// comes through here (durable.rs).
+pub(crate) fn keep_waiting(slug: &str, dep: &mut Deployment, mut run: ParkedRun) -> Result<(), String> {
+    let keys = dep.secrets.lock().unwrap().keys.clone();
+    let part = seal_waiting(slug, keys.as_deref(), &run)?;
+    let others: u64 = dep.parked.values().filter(|p| p.run_id != run.run_id).map(waiting_bytes).sum();
+    let most = dep.permit.durable.max_waiting_bytes;
+    if others.saturating_add(part.bytes) > most {
+        return Err(format!("{slug:?}'s waiting runs would hold more than the {most} bytes they may (max_waiting_bytes)"));
+    }
+    run.sealed_part = Some(part);
+    dep.parked.insert(run.run_id.clone(), run);
+    Ok(())
+}
+
+/// That `run` still holds what `part` sealed: a path that changed its sealed part without keeping
+/// it through `keep_waiting` would have a save write it as it was.
+#[cfg(debug_assertions)]
+fn check_sealed(slug: &str, run: &ParkedRun, part: &SealedPart) {
+    let now = blake3::hash(run.plain_part().as_bytes());
+    assert!(
+        now.as_bytes() == &part.of,
+        "waiting run {} of {slug:?} changed what it keeps sealed without persist::keep_waiting: a save would write it as it was",
+        run.run_id
+    );
+}
+
+/// Each waiting run of `dep` that opened as the server started, its part sealed again
+/// (`keep_waiting`'s, with no cap to hold to: it was within it), for a save to write as it is.
+pub(crate) fn seal_opened(slug: &str, dep: &mut Deployment) {
+    let keys = dep.secrets.lock().unwrap().keys.clone();
+    for run in dep.parked.values_mut().filter(|p| p.sealed.is_none()) {
+        match seal_waiting(slug, keys.as_deref(), run) {
+            Ok(part) => run.sealed_part = Some(part),
+            Err(e) => eprintln!("holon: waiting run {} of {slug:?} can't be sealed: {e}", run.run_id),
+        }
+    }
+}
+
 /// Where deployment `slug`'s state is kept for the deployments file at `path`: a file beside its
 /// run log's folder holding the hash of its current snapshot (docs/L4s/request-path-L4.md, C3 b),
 /// written as each change lands. None for a table kept nowhere.
 pub(crate) fn state_head_for(path: &Place, slug: &str) -> Option<PathBuf> {
     path.beside("state").map(|dir| dir.join(slug).into())
+}
+
+/// The state head at `head` (named for its deployment's slug) written: sealed under the server's
+/// keys, bound to that slug. A plain hash of a state's snapshot let anyone with the folder confirm
+/// a guess of a small state offline (is the counter 41?), as the snapshot's values are hashed
+/// unkeyed; the store's file names are keyed for that same reason (release audit, at rest).
+pub(crate) fn write_state_head(head: &std::path::Path, hex: &str) -> std::io::Result<()> {
+    let slug = head.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    crate::at_rest::write_table(head, &crate::at_rest::role::state_head(&slug), hex.as_bytes())
+}
+
+/// The snapshot hash the state head at `head` names: `Ok(None)` if there is none; an error if it
+/// doesn't open (a plain one, another deployment's, or damaged).
+pub(crate) fn read_state_head(head: &std::path::Path) -> Result<Option<String>, String> {
+    let slug = head.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let opened = crate::at_rest::read_sealed(head, &crate::at_rest::role::state_head(&slug))?;
+    opened.map(|b| String::from_utf8(b.to_vec()).map(|s| s.trim().to_string()).map_err(|_| format!("{} isn't a state head", head.display()))).transpose()
 }
 
 /// Load deployments from `path` at startup — the inverse of `persist_deployments`. Returns an
@@ -168,9 +286,13 @@ pub(crate) fn load_deployments(
         // Its state as its head names it (C3 b): no head, none kept yet. No older form is read
         // forward (Holon is in development: a data folder from before heads loads empty).
         let head = state_head_for(path, slug);
-        let state = match head.as_deref().and_then(|h| std::fs::read_to_string(h).ok()) {
+        let named = match head.as_deref() {
+            Some(h) => read_state_head(h).map_err(|e| format!("deployment {slug:?} in {file:?}: its state head: {e}"))?,
+            None => None,
+        };
+        let state = match named {
             Some(hex) => {
-                let refs = crate::restore::snapshot_refs(hex.trim(), store)
+                let refs = crate::restore::snapshot_refs(&hex, store)
                     .map_err(|e| format!("deployment {slug:?} in {file:?}: its state head names no snapshot the store has: {e}"))?;
                 let state = State::load(&refs, store)
                     .map_err(|e| format!("deployment {slug:?} in {file:?}: its state can't be loaded from the store: {e:?}"))?;
@@ -205,10 +327,17 @@ pub(crate) fn load_deployments(
 
         println!("loaded deployment {:?} from {file:?} (triggers: {triggers:?})", record.slug);
         let mut log = Log::for_deployment(path, &record.slug);
-        log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms());
+        // Not started on a log or events it can't read: it would number its runs again from 0,
+        // and cut what it holds (recorder.rs, `Log::refused`).
+        if let Some(why) = log.refused() {
+            return Err(format!("deployment {slug:?}'s run log can't be opened: {why}"));
+        }
         // Writing what it lets go of to the backup from its first run, as a new deployment's does
-        // (deploy.rs), not only from the housekeeping's first look.
+        // (deploy.rs), not only from the housekeeping's first look; and before its retention,
+        // which cuts back a file past its age at once: set after, the aged runs a restart found
+        // were let go of with no backup written (release audit R46).
         log.set_backup(policy.storage.backup.clone().map(|dir| (dir.into(), false)));
+        log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms());
         if !log.breaks().is_empty() {
             let runs: Vec<String> = log.breaks().iter().map(u64::to_string).collect();
             eprintln!(
@@ -222,6 +351,9 @@ pub(crate) fn load_deployments(
             channels.keep_waiting_sent(&p.run_id, p.sent.clone());
         }
         let events = crate::events::Events::for_deployment(path, &record.slug);
+        if let Some(why) = events.refused() {
+            return Err(format!("deployment {slug:?}'s events can't be opened: {why}"));
+        }
         if !events.breaks().is_empty() {
             eprintln!("holon: {:?}'s events were changed outside holon: event {:?} doesn't follow the one before it", record.slug, events.breaks());
         }
@@ -292,8 +424,7 @@ pub(crate) fn load_deployments(
 /// already (a second crash before a run).
 pub(crate) fn note_cut_off_runs(path: &Place, deployments: &mut BTreeMap<String, Deployment>) {
     for (slug, dep) in deployments.iter_mut() {
-        let Some(loaded) = state_head_for(path, slug).and_then(|head| std::fs::read_to_string(head).ok()) else { continue };
-        let loaded = loaded.trim().to_string();
+        let Some(loaded) = state_head_for(path, slug).and_then(|head| read_state_head(&head).ok().flatten()) else { continue };
         // The run verify takes a run after it to have begun from: the last that ran and didn't fail.
         let last = dep.log.with(|log| log.newest().find(|e| !e.run_id.is_empty() && e.error.is_none()).map(|e| (e.seq, e.state_after.clone())));
         let Some((seq, Some(left))) = last else { continue };

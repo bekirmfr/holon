@@ -72,18 +72,54 @@ pub(crate) fn is_aside(name: &str) -> bool {
 /// that holds other things too.
 pub(crate) const ARCHIVE_PREFIX: &str = "holon-archive-";
 
-/// The name of a batch of runs a log lets go of, `<first seq>` to `<last seq>` (recorder.rs
-/// `keep_aside`): `holon-archive-<first>-<last>.jsonl`, each seq 20 digits.
-pub(crate) fn batch_name(first: u64, last: u64) -> String {
-    format!("{ARCHIVE_PREFIX}{first:020}-{last:020}.jsonl")
+/// How many hex digits of its last line's hash a batch's name holds.
+const BATCH_HEAD: usize = 16;
+
+/// The name of a batch of runs a log lets go of, `<first seq>` to `<last seq>`, `head` the hash of
+/// the last (recorder.rs `keep_aside`): `holon-archive-<first>-<last>-<head>.jsonl`, each seq 20
+/// digits, the head's first 16 hex digits. Seqs alone would name a slug's runs of a deployment
+/// removed and its runs of the one deployed after it the same, both numbered from 0: the head
+/// names the chain (release audit R41).
+pub(crate) fn batch_name(first: u64, last: u64, head: &str) -> String {
+    let head = head.get(..BATCH_HEAD).unwrap_or(head);
+    format!("{ARCHIVE_PREFIX}{first:020}-{last:020}-{head}.jsonl")
 }
 
-/// The seqs a batch's name holds, `<first>-<last>` (each 20 digits), if it is one.
+/// What a batch's name holds after its prefix, `<first>-<last>-<head>`, if it is one.
 fn batch_seqs(name: &str) -> Option<&str> {
     let seqs = name.strip_prefix(ARCHIVE_PREFIX)?.strip_suffix(".jsonl")?;
-    let (first, last) = seqs.split_once('-')?;
-    let seq = |p: &str| p.len() == 20 && p.bytes().all(|b| b.is_ascii_digit());
-    (seq(first) && seq(last)).then_some(seqs)
+    let mut parts = seqs.split('-');
+    let seq = |p: Option<&str>| p.is_some_and(|p| p.len() == 20 && p.bytes().all(|b| b.is_ascii_digit()));
+    let head = |p: Option<&str>| p.is_some_and(|p| p.len() == BATCH_HEAD && p.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+    (seq(parts.next()) && seq(parts.next()) && head(parts.next()) && parts.next().is_none()).then_some(seqs)
+}
+
+/// The name of a removed deployment's records beside the logs (deploy.rs `removed_file`):
+/// `<slug>-runs-<removed at>.json.gz`, or, when its retention would have let its runs go,
+/// `<slug>-runs-<removed at>-until-<then>.json.gz` (`expire_removed`).
+pub(crate) fn removed_name(slug: &str, at_ms: u64, until_ms: Option<u64>) -> String {
+    match until_ms {
+        Some(until) => format!("{slug}-runs-{at_ms}-until-{until}.json.gz"),
+        None => format!("{slug}-runs-{at_ms}.json.gz"),
+    }
+}
+
+/// The slug, the time and the time to keep until that a removed deployment's records' name holds
+/// (`removed_name`), if it is one.
+fn removed_parts(name: &str) -> Option<(&str, u64, Option<u64>)> {
+    let (slug, rest) = name.strip_suffix(".json.gz")?.rsplit_once("-runs-")?;
+    let number = |p: &str| (!p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())).then(|| p.parse::<u64>().ok()).flatten();
+    let (at, until) = match rest.split_once("-until-") {
+        Some((at, until)) => (number(at)?, Some(number(until)?)),
+        None => (number(rest)?, None),
+    };
+    (!slug.is_empty()).then_some((slug, at, until))
+}
+
+/// The name a removed deployment's records are given in the backup once their time beside the
+/// logs is up (`expire_removed`): `holon-archive-<slug>-removed-<removed at>.json.gz`.
+fn removed_export_name(slug: &str, at_ms: u64) -> String {
+    format!("{ARCHIVE_PREFIX}{slug}-removed-{at_ms}.json.gz")
 }
 
 /// Whether `name` is a batch of runs a log wrote to the backup (`batch_name`): nothing else in
@@ -98,12 +134,12 @@ fn export_name(slug: &str, batch: &str) -> Option<String> {
     batch_seqs(batch).map(|seqs| format!("{ARCHIVE_PREFIX}{slug}-runs-{seqs}.json.gz"))
 }
 
-/// Whether `name` is an export the housekeeping made of a batch (`export_name`).
+/// Whether `name` is an export the housekeeping made of a batch (`export_name`), or a removed
+/// deployment's records it moved to the backup (`removed_export_name`).
 fn is_export(name: &str) -> bool {
-    name.strip_prefix(ARCHIVE_PREFIX)
-        .and_then(|n| n.strip_suffix(".json.gz"))
-        .and_then(|n| n.rsplit_once("-runs-"))
-        .is_some_and(|(slug, seqs)| !slug.is_empty() && is_batch(&format!("{ARCHIVE_PREFIX}{seqs}.jsonl")))
+    let Some(n) = name.strip_prefix(ARCHIVE_PREFIX).and_then(|n| n.strip_suffix(".json.gz")) else { return false };
+    let removed = n.rsplit_once("-removed-").is_some_and(|(slug, at)| !slug.is_empty() && !at.is_empty() && at.bytes().all(|b| b.is_ascii_digit()));
+    removed || n.rsplit_once("-runs-").is_some_and(|(slug, seqs)| !slug.is_empty() && is_batch(&format!("{ARCHIVE_PREFIX}{seqs}.jsonl")))
 }
 
 /// Count `dir`'s files that `keep` names (none for a folder that isn't there), removing each one a
@@ -366,7 +402,7 @@ impl Sweeps {
     pub(crate) fn tick(&self, state: &AppState, now_ms: u64) -> bool {
         self.watch(state);
         self.act(state, now_ms);
-        archive(state);
+        archive(state, now_ms);
         let every = state.policy().storage.sweep_every;
         // The first look counts what is kept, so the host's view has it before the first round.
         let (due, first) = {
@@ -683,9 +719,12 @@ impl Sweeps {
         let census = self.census.lock().unwrap();
         let puts = state.store.2.count();
         let at = (census.at_ms > 0).then_some(census.at_ms);
-        let (mut logs, mut console) = (None, None);
+        let (mut logs, mut console, mut removed) = (None, None, None);
         let mut left = Count::default();
         if let Some(dir) = state.deployments_path.beside("logs") {
+            // Removed deployments' records, kept beside the logs until their time is up
+            // (`expire_removed`): counted apart, as no deployment's (release audit R41).
+            removed = Some(count_dir(&dir.join("removed"), |n| removed_parts(n).is_some(), SystemTime::now(), &mut left).unwrap_or_default());
             // Counted now: a deployment's run log and events, and its sealed segments beside them
             // (their bytes, not more logs); its console lines apart (logs.rs). What crashes left is
             // removed by the census only.
@@ -729,6 +768,7 @@ impl Sweeps {
             }),
             "logs": logs,
             "console": console,
+            "removed_deployments": removed,
             "file_texts": census.file_texts.map(|h| serde_json::json!({ "texts": h.texts, "chunks": h.chunks, "bytes": h.bytes })),
             "leftovers": { "removed": census.leftovers, "waiting": left },
         })
@@ -998,6 +1038,9 @@ pub(crate) fn host_lines(v: &serde_json::Value) -> Vec<String> {
     if k["console"].is_object() {
         lines.push(format!("  console      {} files, {} on disk", n(&k["console"]["files"]), size(&k["console"]["on_disk"])));
     }
+    if n(&k["removed_deployments"]["files"]) > 0 {
+        lines.push(format!("  removed      {} removed deployments' records, {} on disk", n(&k["removed_deployments"]["files"]), size(&k["removed_deployments"]["on_disk"])));
+    }
     if k["file_texts"].is_object() {
         lines.push(format!("  file texts   {} texts, {}", n(&k["file_texts"]["texts"]), size(&k["file_texts"]["bytes"])));
     }
@@ -1136,11 +1179,33 @@ fn sweep_folders(state: &AppState, now_ms: u64) -> Report {
 /// `holon verify` checks, gzipped then sealed: `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`, with the units the runs ran and the file
 /// texts they read that the server keeps (none if the deployment is gone). The batch is removed
 /// once its export is written; one that can't be stays (its runs are in it still, as lines), is
-/// warned of, and is tried again at the next look, the others made meanwhile.
-pub(crate) fn archive(state: &AppState) {
-    let Some(dir) = state.policy().storage.backup.clone() else { return };
-    let Ok(slugs) = std::fs::read_dir(&dir) else { return };
+/// warned of, and is tried again at the next look, the others made meanwhile. Removed
+/// deployments' records whose time is up at `now_ms` go too, to the backup first
+/// (`expire_removed`).
+pub(crate) fn archive(state: &AppState, now_ms: u64) {
+    let Some(dir) = state.policy().storage.backup.clone() else {
+        crate::at_rest::keys().no_backup();
+        let _ = expire_removed(state, None, now_ms);
+        return;
+    };
     let mut failed: Option<String> = None;
+    // First the keys the archives are sealed under, so the folder opens without the data folder.
+    if let Err(e) = crate::at_rest::keys().keep_copy_in(&dir) {
+        if state.sweeps.backup_error.lock().unwrap().as_deref() != Some(e.as_str()) {
+            eprintln!("holon: backing up the keys: {e}");
+        }
+        failed = Some(e);
+    }
+    if let Err(e) = expire_removed(state, Some(&dir), now_ms) {
+        if state.sweeps.backup_error.lock().unwrap().as_deref() != Some(e.as_str()) && failed.is_none() {
+            eprintln!("holon: backing up {e}");
+        }
+        failed.get_or_insert(e);
+    }
+    let Ok(slugs) = std::fs::read_dir(&dir) else {
+        *state.sweeps.backup_error.lock().unwrap() = failed;
+        return;
+    };
     for slug_dir in slugs.flatten().filter(|e| e.path().is_dir()) {
         let slug = slug_dir.file_name().to_string_lossy().into_owned();
         let Ok(batches) = std::fs::read_dir(slug_dir.path()) else { continue };
@@ -1159,6 +1224,43 @@ pub(crate) fn archive(state: &AppState) {
         }
     }
     *state.sweeps.backup_error.lock().unwrap() = failed;
+}
+
+/// A removed deployment's records (deploy.rs `keep_records`) are kept beside the logs as long as
+/// its retention would have kept its runs: once the time their name says is up, they go, to the
+/// `backup` first when there is one (`<backup>/<slug>/holon-archive-<slug>-removed-<at>.json.gz`,
+/// sealed as they were, so `holon verify` opens them with the folder's copy of the keys), as what
+/// a cut-back lets go of does. Records of a deployment that kept runs of any age have no such
+/// time, and stay. An error says which couldn't be written to the backup: those stay, and are
+/// tried again at the next look (release audit R41).
+fn expire_removed(state: &AppState, backup: Option<&Path>, now_ms: u64) -> Result<(), String> {
+    let Some(dir) = state.deployments_path.beside("logs").map(|l| l.join("removed")) else { return Ok(()) };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Ok(()) };
+    let mut failed = Ok(());
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some((slug, at_ms, Some(until))) = removed_parts(&name) else { continue };
+        if now_ms < until {
+            continue;
+        }
+        if let Some(backup) = backup {
+            let to = backup.join(slug).join(removed_export_name(slug, at_ms));
+            let copied = std::fs::read(entry.path()).and_then(|bytes| {
+                std::fs::create_dir_all(backup.join(slug))?;
+                crate::sealing::write_private(&to, &bytes)
+            });
+            if let Err(e) = copied {
+                if failed.is_ok() {
+                    failed = Err(format!("{}: {e}", to.display()));
+                }
+                continue;
+            }
+        }
+        if let Err(e) = std::fs::remove_file(entry.path()) {
+            eprintln!("holon: {} is past its time, and couldn't be removed: {e}", entry.path().display());
+        }
+    }
+    failed
 }
 
 fn archive_one(state: &AppState, slug: &str, batch: &Path) -> Result<(), String> {
@@ -1266,8 +1368,15 @@ pub(crate) fn route(state: &AppState, request: &rouille::Request, by: &str) -> O
 
 /// Write `set` into the policy file's `[storage]` and read it again, holding every deployment to
 /// it as a reload does. The file is left as it was if the new text isn't a policy.
+///
+/// One at a time, from reading the file to reloading it (`AppState::hold_policy_file`, R75): two
+/// admins setting two keys at once each read the file before the other wrote it, and the second
+/// write left the first's key out, answered 200 and never in force. Only this writes the file:
+/// `holon policy --sweep-every …` and the other flags ask this route, and the rest of the file is
+/// the operator's to edit, followed by a reload.
 fn set_storage(state: &AppState, set: &[(&str, &str)], by: &str) -> Response {
     let Some(policy_path) = state.policy_path.at() else { return err(409, "this server reads its policy from no file, so there is none to write it into") };
+    let file = state.hold_policy_file();
     let mut text = match std::fs::read_to_string(policy_path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -1291,7 +1400,8 @@ fn set_storage(state: &AppState, set: &[(&str, &str)], by: &str) -> Response {
     if let Err(e) = holon_host::write_atomically(policy_path, text.as_bytes()) {
         return err(500, format!("could not write {policy_path:?}: {e}"));
     }
-    let reloaded = crate::grants::handle_post_permissions_reload(state);
+    let reloaded = crate::grants::reload_policy(state, &file);
+    drop(file);
     if reloaded.status_code != 200 {
         return reloaded;
     }
@@ -1326,20 +1436,30 @@ mod tests {
     /// be a drive that holds other things.
     #[test]
     fn a_backup_batch_and_its_export_are_known_by_their_names_and_nothing_else_is() {
-        let batch = batch_name(3, 17);
-        assert_eq!(batch, format!("holon-archive-{:020}-{:020}.jsonl", 3, 17));
+        let head = crate::recorder::line_hash("a line");
+        let batch = batch_name(3, 17, &head);
+        assert_eq!(batch, format!("holon-archive-{:020}-{:020}-{}.jsonl", 3, 17, &head[..16]));
         assert!(is_batch(&batch), "{batch}");
+        assert_ne!(batch, batch_name(3, 17, &crate::recorder::line_hash("another line")), "another chain's runs of the same seqs");
         let export = export_name("notes", &batch).unwrap();
-        assert_eq!(export, format!("holon-archive-notes-runs-{:020}-{:020}.json.gz", 3, 17));
+        assert_eq!(export, format!("holon-archive-notes-runs-{:020}-{:020}-{}.json.gz", 3, 17, &head[..16]));
         assert!(is_export(&export), "{export}");
         assert!(is_export(&export_name("my-runs-app", &batch).unwrap()), "a slug with -runs- in it");
-        let unprefixed = format!("{:020}-{:020}.jsonl", 3, 17);
-        for not in ["data.jsonl", "holon-archive-data.jsonl", "holon-archive-3-17.jsonl", &unprefixed, &format!("holon-archive-{:020}-{:020}.json", 3, 17), &format!("holon-archive-{:020}-{:019}.jsonl", 3, 17), &format!("{batch}.tmp-1-2"), &format!("x-{batch}")] {
+        assert!(is_export(&removed_export_name("notes", 1762963200000)), "a removed deployment's records");
+        let unprefixed = format!("{:020}-{:020}-{}.jsonl", 3, 17, &head[..16]);
+        let seqs_alone = format!("holon-archive-{:020}-{:020}.jsonl", 3, 17);
+        for not in ["data.jsonl", "holon-archive-data.jsonl", "holon-archive-3-17.jsonl", &unprefixed, &seqs_alone, &format!("holon-archive-{:020}-{:020}-{}.json", 3, 17, &head[..16]), &format!("holon-archive-{:020}-{:019}-{}.jsonl", 3, 17, &head[..16]), &format!("holon-archive-{:020}-{:020}-{}.jsonl", 3, 17, &head[..15]), &format!("holon-archive-{:020}-{:020}-{}.jsonl", 3, 17, head[..16].to_uppercase()), &format!("{batch}.tmp-1-2"), &format!("x-{batch}")] {
             assert!(!is_batch(not), "{not}");
         }
         assert_eq!(export_name("notes", "data.jsonl"), None);
-        for not in ["photos.json.gz", "holon-archive-photos.json.gz", "holon-archive-notes-runs-3-17.json.gz", &format!("notes-runs-{:020}-{:020}.json.gz", 3, 17), &format!("holon-archive--runs-{:020}-{:020}.json.gz", 3, 17)] {
+        for not in ["photos.json.gz", "holon-archive-photos.json.gz", "holon-archive-notes-runs-3-17.json.gz", "holon-archive-notes-removed-.json.gz", "holon-archive--removed-17.json.gz", &format!("notes-runs-{:020}-{:020}.json.gz", 3, 17), &format!("holon-archive--runs-{:020}-{:020}.json.gz", 3, 17)] {
             assert!(!is_export(not), "{not}");
+        }
+        // A removed deployment's records beside the logs, kept for good or until a time.
+        assert_eq!(removed_parts(&removed_name("my-runs-app", 17, None)), Some(("my-runs-app", 17, None)));
+        assert_eq!(removed_parts(&removed_name("shop", 17, Some(99))), Some(("shop", 17, Some(99))));
+        for not in ["shop.json.gz", "shop-runs-.json.gz", "-runs-17.json.gz", "shop-runs-17-until-.json.gz", "shop-runs-x.json.gz", "shop-runs-17.json.gz.tmp-1-2"] {
+            assert_eq!(removed_parts(not), None, "{not}");
         }
     }
 
@@ -1397,7 +1517,7 @@ mod tests {
         let v = serde_json::json!({
             "memory": { "resident": 742 << 20, "peak": 811 << 20, "flow_cache": { "entries": 12, "bytes": 32 << 20, "budget": 256 << 20 }, "value_cache": { "entries": 1234, "bytes": 48 << 20, "budget": 64 << 20 } },
             "disks": [{ "path": "/data", "holds": ["data", "logs", "store"], "size": 100u64 << 30, "free": 40u64 << 30, "used": 60u64 << 30 }],
-            "kept": { "at_ms": now - 180_000, "store": { "values": 432808, "bytes": 1u64 << 30, "on_disk": 2u64 << 30, "put_since": 3200 }, "logs": { "files": 34, "bytes": 192 << 20, "on_disk": 192 << 20 }, "file_texts": null, "leftovers": { "removed": { "files": 3, "bytes": 62 << 20, "on_disk": 62 << 20 }, "waiting": { "files": 0, "bytes": 0, "on_disk": 0 } } },
+            "kept": { "at_ms": now - 180_000, "store": { "values": 432808, "bytes": 1u64 << 30, "on_disk": 2u64 << 30, "put_since": 3200 }, "logs": { "files": 34, "bytes": 192 << 20, "on_disk": 192 << 20 }, "removed_deployments": { "files": 2, "bytes": 4 << 20, "on_disk": 4 << 20 }, "file_texts": null, "leftovers": { "removed": { "files": 3, "bytes": 62 << 20, "on_disk": 62 << 20 }, "waiting": { "files": 0, "bytes": 0, "on_disk": 0 } } },
             "sweeps": { "every": "10m", "next_at_ms": now + 420_000, "sweeping": false, "store": null, "folders": null },
         });
         assert_eq!(
@@ -1411,6 +1531,7 @@ mod tests {
                 "kept         counted 3 min ago",
                 "  store        432808 values, 2 GiB on disk (1 GiB of bytes); 3200 put since",
                 "  logs         34 logs, 192 MiB on disk",
+                "  removed      2 removed deployments' records, 4 MiB on disk",
                 "  left by crashes  3 files removed (62 MiB), 0 still to remove",
                 "sweeps       every 10m; the next in 7 min",
                 "  store        last: not swept yet",

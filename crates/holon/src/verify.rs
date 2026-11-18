@@ -186,8 +186,9 @@ pub(crate) struct Export {
     pub(crate) lines: Vec<String>,
     /// Every unit the runs ran, by hash (hex): its canonical bytes (hex).
     pub(crate) units: BTreeMap<String, String>,
-    /// The text of each file a run read that its log entry keeps by hash, by its place in the
-    /// content store (hex): checked against the file's hash, so it can't stand in for another.
+    /// The text of each file a run read that its log entry keeps by hash, and of each request body
+    /// it keeps so (`LogEntry::body`), by its place in the content store (hex): checked against
+    /// the file's or the body's hash, so it can't stand in for another.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) blobs: BTreeMap<String, String>,
     /// The bytes of each file a run read as bytes (`file_read_bytes`) that its log entry keeps by
@@ -253,8 +254,8 @@ pub(crate) fn handle_get_export(
         Some(dep) => (std::sync::Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets), dep.events.lines(), dep.events.head().to_string()),
         None => return err(404, format!("no deployment {slug:?}")),
     };
-    // The lines and their head under one lock, so the export's chain ends at its head.
-    let (lines, head) = log.with(|log| (log.lines(), log.head().to_string()));
+    // The lines end at the head taken with them, read with the log's lock released.
+    let (lines, head) = log.lines_to_head();
     let (lines, head, events, events_head, file) = match run {
         None => (lines, head, events, events_head, format!("{slug}-runs.json")),
         Some(n) => match lines.into_iter().find(|l| seq_of(l) == Some(n)) {
@@ -301,6 +302,8 @@ pub(crate) fn export_of(
     let (mut held, mut left_out, mut not_kept) = (0u64, LeftOut { files: 0, bytes: 0 }, 0u64);
     let mut seen = BTreeSet::new();
     let read_files = entries.iter().flat_map(|e| &e.reads).filter_map(|r| Some((r.file.as_ref()?.blob.as_ref()?, reads_bytes(&r.request))));
+    // And each request body kept by hash (`LogEntry::body`), as a text: shipped as a file's is.
+    let read_files = read_files.chain(entries.iter().filter_map(|e| Some((e.body.as_ref()?.blob.as_ref()?, false))));
     for (blob, bytes) in read_files {
         if !seen.insert((blob.clone(), bytes)) {
             continue;
@@ -463,6 +466,11 @@ pub(crate) struct Report {
     pub(crate) events: usize,
     pub(crate) bad_event_lines: Vec<usize>,
     pub(crate) event_breaks: Vec<u64>,
+    /// Events whose lines the server couldn't write, as the event after them says, and events
+    /// missing that no event says were lost: the first and the last of each run of them, as for
+    /// runs (`lost`, `gaps`).
+    pub(crate) events_lost: Vec<(u64, u64)>,
+    pub(crate) event_gaps: Vec<(u64, u64)>,
     pub(crate) events_head_matches: bool,
     /// For a head given to check against: the event it is the hash of, if it is one.
     pub(crate) witnessed_event: Option<u64>,
@@ -687,6 +695,7 @@ impl Report {
             && self.gaps.is_empty()
             && self.head_matches
             && self.event_breaks.is_empty()
+            && self.event_gaps.is_empty()
             && self.bad_event_lines.is_empty()
             && self.events_head_matches
             && (self.witnessed != Some(None) || self.witnessed_event.is_some())
@@ -1366,6 +1375,8 @@ fn whole(unit: &holon_core::Unit, resolver: &impl holon_core::Resolver) -> bool 
 /// the head the export names.
 fn check_events(export: &Export, witnessed: Option<&str>, report: &mut Report) {
     let mut head = String::new();
+    // The seq the next event has, unless the server says it lost those before it.
+    let mut next = 0;
     for (i, line) in export.events.iter().enumerate() {
         let Ok(event) = serde_json::from_str::<crate::events::Event>(line) else {
             report.bad_event_lines.push(i + 1);
@@ -1374,6 +1385,17 @@ fn check_events(export: &Export, witnessed: Option<&str>, report: &mut Report) {
         if event.prev != head {
             report.event_breaks.push(event.seq);
         }
+        // Events the server couldn't write, which the next it wrote says (`Event::lost_since`):
+        // not a break. Events missing that no line says were lost were removed, the lines after
+        // them chained again.
+        let said = event.lost_since.filter(|from| *from < event.seq);
+        if let Some(from) = said {
+            report.events_lost.push((from, event.seq - 1));
+        }
+        if event.seq > next && said.is_none_or(|from| from > next) {
+            report.event_gaps.push((next, event.seq - 1));
+        }
+        next = event.seq + 1;
         head = line_hash(line);
         if witnessed == Some(head.as_str()) {
             report.witnessed_event = Some(event.seq);
@@ -1403,6 +1425,25 @@ fn reads_bytes(request: &SValue) -> bool {
 }
 
 impl Texts<'_> {
+    /// `entry` with its request's body put back, when its entry keeps it by hash
+    /// (`LogEntry::body`): from the export's texts, checked against its hash. None: it keeps its
+    /// own. `Err`: the export doesn't hold it, or holds another text under its name.
+    fn with_body(&self, entry: &LogEntry) -> Result<Option<LogEntry>, Rerun> {
+        let Some(body) = &entry.body else { return Ok(None) };
+        let Some(text) = body.blob.as_ref().and_then(|b| self.blobs.get(b)) else {
+            return Err(Rerun::Skipped(format!(
+                "its request's body ({} bytes) is kept by hash, and the export doesn't hold it (the server couldn't keep it, or the export left it out)",
+                body.size
+            )));
+        };
+        if blake3::hash(text.as_bytes()).to_hex().as_str() != body.hash {
+            return Err(Rerun::Differs("the text kept for its request's body isn't the body it was sent".into()));
+        }
+        let mut filled = entry.clone();
+        filled.put_body(text);
+        Ok(Some(filled))
+    }
+
     /// The text a logged file read answered: the entry's own, or found by its blob or its hash.
     /// `Err`: none here (what the run read), or a blob that isn't the file it says.
     /// `marks`, `escaped`: an answer the entry holds is read as the run had it (`Marks::read`).
@@ -1577,6 +1618,11 @@ fn rerun(
     if entry.run_id.is_empty() {
         return nothing_ran(entry, "no route took the request");
     }
+    let filled = match texts.with_body(entry) {
+        Ok(filled) => filled,
+        Err(why) => return why,
+    };
+    let entry = filled.as_ref().unwrap_or(entry);
     match &entry.error {
         Some(e) if e.ends_with(firing::TURNED_AWAY) => return nothing_ran(entry, "it was turned away before it began (a run lock)"),
         // As the server writes it (`firing::panicked`): nothing it did is in it, so nothing is
@@ -2900,8 +2946,29 @@ impl Performer for Answering {
 
 /// The keys a sealed export opens under (§2.7): `keys.json` in the data folder (`--data`, else
 /// the server's own), its root where `--root-key` says (else the OS key, as the server's). Read
-/// only: a folder with no keys.json is said, never given one.
+/// only, and nothing written: a folder with no keys.json is said, never given one, and a rotation
+/// a server on that folder is making is neither finished nor undone from here.
 pub(crate) fn keys_for(data: Option<&str>, root_key: Option<&str>) -> Result<std::sync::Arc<crate::at_rest::Keyring>, String> {
+    let keys = keys_json(data)?;
+    crate::at_rest::Keyring::open_to_read(&keys, root_key).map(std::sync::Arc::new)
+}
+
+/// The keys an archive in a backup folder opens under, when `--data` doesn't say: the copy of
+/// `keys.json` the folder keeps ([`crate::at_rest::BACKUP_KEYS`]), beside the archive or in the
+/// folder above it (`<backup>/<slug>/holon-archive-…`); None when there is none.
+pub(crate) fn keys_beside(export: &Path, root_key: Option<&str>) -> Option<Result<std::sync::Arc<crate::at_rest::Keyring>, String>> {
+    let here = export.parent()?;
+    let copy = [Some(here), here.parent()].into_iter().flatten().map(|d| d.join(crate::at_rest::BACKUP_KEYS)).find(|p| p.is_file())?;
+    Some(crate::at_rest::Keyring::open_to_read(&copy, root_key).map(std::sync::Arc::new))
+}
+
+/// [`keys_for`], to change: `holon key rotate --root`, which holds the folder's lock first.
+pub(crate) fn keys_to_change(data: Option<&str>, root_key: Option<&str>) -> Result<std::sync::Arc<crate::at_rest::Keyring>, String> {
+    let keys = keys_json(data)?;
+    crate::at_rest::Keyring::open(&keys, root_key, &[]).map(std::sync::Arc::new)
+}
+
+fn keys_json(data: Option<&str>) -> Result<PathBuf, String> {
     let data = match data {
         Some(d) => PathBuf::from(d),
         None => crate::migrate::data_folder(&crate::local::holon_home().ok_or("no home folder (USERPROFILE or HOME), and no HOLON_HOME")?),
@@ -2910,7 +2977,7 @@ pub(crate) fn keys_for(data: Option<&str>, root_key: Option<&str>) -> Result<std
     if !keys.exists() {
         return Err(format!("it is sealed under a server's keys, and {} isn't there: pass --data with the data folder it came from (and --root-key where its root key is)", keys.display()));
     }
-    crate::at_rest::Keyring::open(&keys, root_key, &[]).map(std::sync::Arc::new)
+    Ok(keys)
 }
 
 /// `holon verify <export.json> [--head <hex>] [--files DIR] [--data DIR] [--root-key SOURCE]`:
@@ -2945,7 +3012,11 @@ pub(crate) fn run(args: &[String]) -> i32 {
         eprintln!("{USAGE}");
         return 2;
     };
-    let export: Export = match read_export(Path::new(&file), || keys_for(data.as_deref(), root_key.as_deref())) {
+    let keys = || match data.as_deref() {
+        Some(d) => keys_for(Some(d), root_key.as_deref()),
+        None => keys_beside(Path::new(&file), root_key.as_deref()).unwrap_or_else(|| keys_for(None, root_key.as_deref())),
+    };
+    let export: Export = match read_export(Path::new(&file), keys) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("holon verify: can't read {file}: {e}");
@@ -2987,10 +3058,13 @@ const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR
   --files DIR              where the files the runs read are, for those whose log keeps only
                            their hashes: each is found by its hash, wherever it is under DIR
   --data DIR               for an export the server keeps sealed (a backup's archive, a removed
-                           deployment's records): the data folder whose keys.json sealed it, if
-                           not this machine's server's (HOLON_DATA, or data/ in HOLON_HOME)
+                           deployment's records): the data folder whose keys.json sealed it. If
+                           not given: the copy of keys.json a backup folder keeps beside its
+                           archives, else this machine's server's (HOLON_DATA, or data/ in
+                           HOLON_HOME)
   --root-key SOURCE        where that keys.json's root key is: os, env:VAR or file:PATH (the
-                           server's --root-key); the OS key store if not given. An export
+                           server's --root-key); if not given, the server's default: the OS key
+                           store on Windows and macOS, ~/.holon/keys/<id>.key elsewhere. An export
                            holon export wrote is plain, and needs neither
 
 examples:
@@ -3061,6 +3135,14 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
         };
         if !r.bad_event_lines.is_empty() {
             out += &format!("  event lines {} aren't events (cut short by a crash, or changed)\n", list(&r.bad_event_lines));
+        }
+        for (from, to) in &r.events_lost {
+            let which = if from == to { format!("event {from} isn't") } else { format!("events {from} to {to} aren't") };
+            out += &format!("  {which} in the file: the server couldn't write it, and the event after says so\n");
+        }
+        for (from, to) in &r.event_gaps {
+            let which = if from == to { format!("event {from} is") } else { format!("events {from} to {to} are") };
+            out += &format!("  {which} MISSING, and no event says the server lost it: removed outside holon\n");
         }
     }
     if !r.events_head_matches {
@@ -3413,7 +3495,8 @@ const EXPORT_USAGE: &str = "usage: holon export <slug> [options]
 
   Writes a deployment's runs to a file for holon verify: its run log exactly as written, and
   every unit its runs ran. With them come the texts of the files they read that their log keeps
-  only by hash (a big file, or part of one); it says what it left out.
+  only by hash (a big file, or part of one), and of the request bodies it keeps so (past 64 KiB);
+  it says what it left out.
 
   --to FOLDER              the folder to write in (default this one; made if it isn't there)
   --as NAME                the file's name (default <slug>-runs.json, <slug>-run-N.json)

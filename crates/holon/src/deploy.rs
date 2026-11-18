@@ -619,13 +619,28 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
             // The log goes on across versions: a run of the old version still in flight logs to it.
             Some(old) => (Arc::clone(&old.log), old.document.take(), std::mem::take(&mut old.versions), std::mem::take(&mut old.events)),
             None => {
+                // Its keys made before it goes live: left to its first seal, a root that couldn't be
+                // read then left it live with nothing it ran sealable, lazy runs answering 200 with
+                // no record (release audit F17).
+                if let Err(why) = crate::at_rest::keys().make_scope(&crate::at_rest::deployment(&body.slug)) {
+                    return err(503, format!("{:?}'s keys couldn't be made, so nothing it runs could be kept: {why}", body.slug));
+                }
                 let mut log = Log::for_deployment(deployments_path, &body.slug);
+                let events = crate::events::Events::for_deployment(deployments_path, &body.slug);
+                // A log or events left there that it can't read (a key missing) isn't started
+                // over: numbered again from 0, what they hold would be cut (recorder.rs).
+                if let Some(why) = log.refused() {
+                    return err(409, format!("{:?}'s run log is there and can't be opened: {why}", body.slug));
+                }
+                if let Some(why) = events.refused() {
+                    return err(409, format!("{:?}'s events are there and can't be opened: {why}", body.slug));
+                }
                 // Writing what it lets go of to the backup from its first run, not only from the
                 // housekeeping's next look (storage.rs `act`, which also says whether a full disk
                 // may let them go without): or a flow running past its `keep` in its first seconds
                 // lets its oldest go unbacked.
                 log.set_backup(policy.storage.backup.clone().map(|dir| (dir.into(), false)));
-                (Arc::new(LogCell::new(log)), None, Vec::new(), crate::events::Events::for_deployment(deployments_path, &body.slug))
+                (Arc::new(LogCell::new(log)), None, Vec::new(), events)
             }
         };
         log.with(|log| log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms()));
@@ -728,7 +743,6 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     if let Err(e) = saved {
         return err(500, format!("{:?} is deployed, but {e}: after a restart it is as it was before", body.slug));
     }
-
     Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, version })
 }
 
@@ -1558,6 +1572,11 @@ pub(crate) fn handle_get_state(deployments: &Mutex<BTreeMap<String, Deployment>>
 /// (`removed_file`), and the answer's `records` says where. Only then do its live files go, so
 /// the slug deployed again starts a new chain, and the old one stays readable beside it. If they
 /// can't be written, nothing is removed.
+///
+/// Its log is closed first: a run still in flight (a stop doesn't wait for one) writes no line
+/// after the records are taken, so they hold every run its log does, and a strict one is answered
+/// 500, its record not kept, never 200 (release audit R41). The witness is told it is removed
+/// (heads.rs, `"removed"`), so the old chain's last head stays apart from the new one's.
 pub(crate) fn handle_delete_deployment(
     store: &SharedStore,
     folders: &folders::Folders,
@@ -1571,14 +1590,20 @@ pub(crate) fn handle_delete_deployment(
         Some(dep) => (Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets), dep.events.lines(), dep.events.head().to_string()),
         None => return err(404, format!("no deployment {slug:?}")),
     };
+    let log = Arc::clone(&held.0);
+    log.with(|log| log.close());
     let records = match keep_records(store, folders, deployments_path, slug, held) {
         Ok(at) => at,
-        Err(e) => return err(500, format!("{slug:?}'s run records couldn't be kept ({e}), so nothing was removed")),
+        Err(e) => {
+            log.with(|log| log.reopen());
+            return err(500, format!("{slug:?}'s run records couldn't be kept ({e}), so nothing was removed"));
+        }
     };
     let removed = {
         let mut table = deployments.lock().unwrap();
         match table.get(slug) {
             Some(dep) if dep.life.status != Status::Stopped => {
+                log.with(|log| log.reopen());
                 return err(409, format!("stop {slug:?} before deleting it"));
             }
             _ => table.remove(slug),
@@ -1586,7 +1611,10 @@ pub(crate) fn handle_delete_deployment(
     };
     match removed {
         Some(dep) => {
-            dep.log.with(|log| log.delete_file());
+            dep.log.with(|log| {
+                log.note_removed();
+                log.delete_file();
+            });
             dep.events.delete_file();
             if let Some(head) = state_head_for(deployments_path, slug) {
                 let _ = std::fs::remove_file(head);
@@ -1610,15 +1638,17 @@ pub(crate) fn handle_delete_deployment(
 }
 
 /// Where a removed deployment's run records are kept: beside the logs, in `removed/`, by its slug
-/// and when it was removed (`shop-runs-1762963200000.json.gz`). None without a data folder.
-pub(crate) fn removed_file(deployments_path: &Place, slug: &str, at_ms: u64) -> Option<PathBuf> {
-    deployments_path.beside("logs").map(|logs| PathBuf::from(logs).join("removed").join(format!("{slug}-runs-{at_ms}.json.gz")))
+/// and when it was removed (`shop-runs-1762963200000.json.gz`), and, when its retention lets runs
+/// go by age, until when (`…-until-<ms>`: the housekeeping lets them go then, to the backup first
+/// when there is one, storage.rs `expire_removed`). None without a data folder.
+pub(crate) fn removed_file(deployments_path: &Place, slug: &str, at_ms: u64, until_ms: Option<u64>) -> Option<PathBuf> {
+    deployments_path.beside("logs").map(|logs| PathBuf::from(logs).join("removed").join(crate::storage::removed_name(slug, at_ms, until_ms)))
 }
 
 /// Write a deployment's log and timeline (`held`: its log, its secrets' redactor, its events and
 /// their head) as an export, gzipped and sealed as a backup's is (storage.rs, at_rest.rs §5.5;
-/// `holon verify` opens it with the data folder's keys): where it went, or None with no data
-/// folder or nothing on record.
+/// `holon verify` opens it with the data folder's keys), kept as long as its retention would have
+/// kept its newest run: where it went, or None with no data folder or nothing on record.
 fn keep_records(
     store: &SharedStore,
     folders: &folders::Folders,
@@ -1627,8 +1657,9 @@ fn keep_records(
     (log, redactor, events, events_head): (Arc<recorder::LogCell>, crate::secrets::Redactor, Vec<String>, String),
 ) -> Result<Option<PathBuf>, String> {
     let at_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-    let Some(to) = removed_file(deployments_path, slug, at_ms) else { return Ok(None) };
-    let (lines, head) = log.with(|log| (log.lines(), log.head().to_string()));
+    let (lines, head) = log.lines_to_head();
+    let max_age_ms = log.with(|log| log.max_age_ms());
+    let Some(to) = removed_file(deployments_path, slug, at_ms, max_age_ms.map(|age| at_ms.saturating_add(age))) else { return Ok(None) };
     if lines.is_empty() && events.is_empty() {
         return Ok(None);
     }

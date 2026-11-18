@@ -117,8 +117,11 @@ oldest is a day past the age it keeps. The chain across segments is in
 ### The backup
 
 With `backup` set, a cut-back writes the lines it lets go of to
-`<backup>/<slug>/holon-archive-<first>-<last>.jsonl` first (`keep_aside`, `storage::batch_name`,
-each seq 20 digits; whole segments let go of, `keep_segments_aside`), the lines opened and sealed
+`<backup>/<slug>/holon-archive-<first>-<last>-<head>.jsonl` first (`keep_aside`,
+`storage::batch_name`, each seq 20 digits, `<head>` the first 16 hex digits of the last line's
+hash: a slug removed and deployed again numbers its runs from 0 again, and its batches never take
+the place of the old one's, release audit R41; whole segments let go of, `keep_segments_aside`),
+the lines opened and sealed
 together as one file under the deployment's keys (`role::batch`, docs/L4s/at-rest-encryption-L4.md
 §5.5). If it can't, it doesn't cut:
 the log keeps the runs and records why (`Log::backup_error`), unless `roll` is acting past
@@ -126,10 +129,16 @@ the log keeps the runs and records why (`Log::backup_error`), unless `roll` is a
 `holon verify` checks (`archive_one`: `verify::export_of`, with the units the runs ran and the file
 texts they read, redacted by the deployment's secrets; the batch opened first, so its head is over
 the lines as made), gzipped, then sealed (`role::export`), as
-`<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`, then removes the batch. `holon
-verify` opens one with the data folder's `keys.json` and the root key (`verify::keys_for`,
+`<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>-<head>.json.gz`, then removes the batch.
+`holon verify` opens one with the data folder's `keys.json` and the root key (`verify::keys_for`,
 `at_rest::open_export`, which takes the deployment from the file's own header). A removed
-deployment's records (`deploy::keep_records`) are sealed the same way. Every
+deployment's records (`deploy::keep_records`) are sealed the same way, beside the logs in
+`removed/`, its log closed first (`Log::close`) so a run in flight writes no line after them and a
+strict one is answered 500. Their name says until when its retention keeps them
+(`storage::removed_name`, `…-until-<ms>`, the removal plus its `keep_run_days`; none, for good);
+past it, `expire_removed` (each look, with `archive`) moves them to
+`<backup>/<slug>/holon-archive-<slug>-removed-<ms>.json.gz`, or with no backup lets them go. The
+census counts them (`removed_deployments`). Every
 file the server writes there starts with `ARCHIVE_PREFIX`, and it exports or removes only a file
 with a batch's exact shape (`is_batch`) and counts only its exports (`is_export`): the folder may be
 a drive or a synced folder holding other things. A batch that can't be made an export stays, is
@@ -190,7 +199,12 @@ person resumes while the disk is full is paused again at the next look.
   seconds of starting, lazy and strict `hello` and the `notes` listing no slower (SL4 step 9). The
   newest 128 stay as written so a run's append and sync are unchanged.
 - **A backup that can't be written keeps the runs**: retention was asked to move them, not lose
-  them (SL4 §4). Gzipped exports, because an export proves itself offline: `hello-api`'s 10,669
+  them (SL4 §4). The cut-back that couldn't write them is tried again after a pause, doubled while
+  it fails up to five minutes (`CUT_PAUSE_MS`, `CUT_PAUSE_MAX_MS`), and not made again holding the
+  log's lock: that failed the same way, each second, reading the whole file as the runs waited
+  (release audit R46). A backup set again is tried at once. A server starting gives each log its
+  backup before its retention, which cuts a file past its age at once: given after, the aged
+  runs a restart found went unbacked. Gzipped exports, because an export proves itself offline: `hello-api`'s 10,669
   runs went from 51 MB to 3.9 MB, `notes-api`'s 10,049 from 618 MB to 20 MB (steps 6, 8).
 - **Only its own files**: a file of the admin's own on the backup drive was once "exported" empty
   and deleted (`7c0b545`); the prefix and the exact shape make every file the server touches its

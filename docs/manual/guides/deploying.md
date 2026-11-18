@@ -113,7 +113,7 @@ A flow imports the secrets it reads (`import stripe_webhook_secret from
 "secret:stripe_webhook_secret"`); their values are set per deployment, by an admin, under **Settings →
 secrets**. The flow must have a name first. Each secret has a source:
 
-- **value**: typed in, sealed on the server (XChaCha20-Poly1305, under keys whose root is in the OS key store by default).
+- **value**: typed in, sealed on the server (XChaCha20-Poly1305, under keys whose root is in the OS key store by default on Windows and macOS, in `~/.holon/keys` elsewhere).
   It is never shown again.
 - **env**: read from an environment variable of the server, `HOLON_SECRET_<NAME>`, or from a
   `.env` file the server reads (see [Secrets from a `.env` file](#secrets-from-a-env-file)).

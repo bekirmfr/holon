@@ -1282,6 +1282,19 @@ fn held_whole(value: &str, kind: &str, name: &str) -> Option<(String, String)> {
     (value.chars().count() >= MIN_SECRET_LEN || spellings(value).len() > 1).then(|| (value.to_string(), format!("{RESPELLED}{kind}:{name}›")))
 }
 
+/// Each run makes one, a copy of every secret's value: wiped when it goes, as the vault's are
+/// (`Zeroizing`), rather than left in freed memory run after run (release audit B10).
+impl Drop for Redactor {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        for (value, _) in &mut self.pairs {
+            value.zeroize();
+        }
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for Redactor {}
+
 impl Redactor {
     pub(crate) fn of(vault: &Vault) -> Redactor {
         let vault = vault.lock().unwrap();
@@ -1391,11 +1404,12 @@ impl Redactor {
 
     /// This and `other` together: an entry is redacted once, so a mark one of them writes is
     /// never read by the other as a run's own text.
-    pub(crate) fn and(mut self, other: Redactor) -> Redactor {
-        self.pairs.extend(other.pairs);
-        self.places = self.places.or(other.places);
+    pub(crate) fn and(mut self, mut other: Redactor) -> Redactor {
+        self.pairs.extend(std::mem::take(&mut other.pairs));
+        // Taken, not moved: a redactor wipes its values when it goes (its `Drop`).
+        self.places = self.places.take().or(other.places.take());
         self.pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
-        self.whole.extend(other.whole);
+        self.whole.extend(std::mem::take(&mut other.whole));
         self
     }
 
@@ -1516,6 +1530,12 @@ impl Redactor {
             return Some(write_marked(&[(whole, true)]));
         }
         Some(write_marked(&pieces))
+    }
+
+    /// `s` as the log writes it ([`Redactor::logged`]), and whether a look-alike of a mark was
+    /// escaped: what [`Redactor::entry`] makes of a text the entry holds.
+    pub(crate) fn logged_text(&self, s: String) -> (String, bool) {
+        self.logged(&s).unwrap_or((s, false))
     }
 
     /// `json` as the log writes it: each text as [`Redactor::logged`] writes it, its keys too, and
@@ -2461,6 +2481,7 @@ mod tests {
             url: Some(t()),
             status: Some(200),
             request: Some(v()),
+            body: Some(LoggedFile { hash: t(), size: 1, blob: Some(t()), range: None }),
             sourced: vec![(t(), v())],
             state_before: BTreeMap::from([(t(), v())]),
             state_after: Some(t()),
@@ -2544,6 +2565,8 @@ mod tests {
             ".derived[]",
             // A file read's hashes: the file's, its text's in the blob store, the proof's.
             ".reads[].file.hash", ".reads[].file.blob", ".reads[].file.range.proof[]",
+            // A request body kept by hash: its hash, and its text's in the blob store.
+            ".body.hash", ".body.blob",
         ]
         .into_iter()
         .map(String::from)
