@@ -991,11 +991,12 @@ async function signIn() {
   refreshAll();
 }
 
-/** Whether a server answers its health check at `url`. */
+/** Whether a server answers its health check at `url`: "ok", or 503 "not ok" from one that can't
+ *  write something (it is there all the same, and its admin page says what). */
 async function answers(url) {
   try {
     const res = await fetch(new URL("/health", url), { signal: AbortSignal.timeout(1000) });
-    return res.ok;
+    return res.ok || (res.status === 503 && (await res.text()).startsWith("not ok"));
   } catch {
     return false;
   }

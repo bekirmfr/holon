@@ -308,7 +308,11 @@ The same is in `GET /deployments/<slug>/feeds`:
             "address": "https://stream.example.com/v1/prices", "position": "41", "waiting": 0}]}
 ```
 
-`replaced`, `missed`, `passed_over` and `gaps` are there too once they aren't 0.
+`replaced`, `missed`, `passed_over` and `gaps` are there too once they aren't 0. `address` goes
+only to whoever may bind resources; anyone else is told the rest, and an `error` that named the
+address names the feed in its place, as the timeline does for everyone (`lost the feed prices: the
+feed prices answered 404`). `holon feed list` and the admin's Resources page show where each feed
+is, and the sources of its URL and headers, to whoever may bind too.
 
 `status` is `connected`, `reconnecting` (with `error`) or `closed` (a deployment stopped).
 

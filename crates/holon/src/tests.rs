@@ -25,8 +25,17 @@ mod meanwhile;
 mod scopes;
 mod never_keep;
 mod tags;
+/// A flow's answers are sent nosniff, built in one place (R51).
+mod sniffing;
+/// Where a resource or the data is, only to whoever may bind or view the host (R51).
+mod whereabouts;
 /// What a handler's text does, against what the same text does as JavaScript.
 mod semantics;
+/// A writer that fails reaches an admin and /health.
+mod writers;
+/// Which lines of a source file are a test module's, for the sweeps of the source (R78).
+mod source;
+use source::{in_test_modules, inert, test_files, test_modules};
 
 pub(crate) fn test_state() -> AppState {
     test_state_with(SharedStore::new(Box::new(MemStore::new())))
@@ -6372,11 +6381,14 @@ route.get("/paid/:token", () => "ok", {{ resumes: "paid" }})
         ("a stop", &|| ask(&ada, "POST", "/deployments/counter/stop", J::Null), 500, "\"counter\" is stopped, but"),
         ("a delete", &|| ask(&ada, "DELETE", "/deployments/counter", J::Null), 500, "\"counter\" is deleted, but"),
     ];
+    // And none says where the file is, or the error's text (audit R71): a flow's caller is told
+    // by the first row.
     for (what, answer, status, said) in rows {
         let (code, text) = answer();
         assert_eq!(code, status, "{what}: {text}");
         let text = text.replace("\\\"", "\"");
-        assert!(text.contains(said) && text.contains("deployments file couldn't be written"), "{what}: {text}");
+        assert!(text.contains(said) && text.contains(crate::persist::UNWRITTEN), "{what}: {text}");
+        writers::neither_where_nor_why(what, &text, &dir, &[]);
     }
     // Saved again, each answers as before.
     std::fs::remove_dir(&path).unwrap();
@@ -7474,33 +7486,26 @@ export const look = action((input) => notes[input.id])
 #[test]
 fn every_body_the_control_plane_reads_is_read_by_the_deadline() {
     let mut read_elsewhere = Vec::new();
-    let mut dirs = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
+    let (mut dirs, mut files) = (vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))], Vec::new());
     while let Some(dir) = dirs.pop() {
         for path in std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()) {
             if path.is_dir() {
                 dirs.push(path);
-                continue;
+            } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("tests.rs") {
+                files.push(path);
             }
-            if path.extension().is_none_or(|e| e != "rs") || path.ends_with("tests.rs") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap();
-            // Each test-only module left out: from its `#[cfg(test)]` to the `}` that closes it,
-            // the first at the start of a line.
-            let (mut lines, mut in_tests) = (text.lines().enumerate().peekable(), false);
-            let mut code = Vec::new();
-            while let Some((n, line)) = lines.next() {
-                let opens = line == "#[cfg(test)]" && lines.peek().is_some_and(|(_, l)| l.starts_with("mod ") || l.starts_with("pub(crate) mod "));
-                in_tests = (in_tests || opens) && line != "}";
-                if !in_tests && line != "}" {
-                    code.push((n, line));
-                }
-            }
-            for (n, line) in code.into_iter().filter(|(_, l)| l.contains(".data()")) {
-                let in_read_body = path.ends_with("http.rs") && line.trim_start().starts_with("let read = owned.data()");
-                if !in_read_body {
-                    read_elsewhere.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
-                }
+        }
+    }
+    // A test module's file of its own left out (`#[cfg(test)] mod x;`), and in the rest each test
+    // module, by its braces, wherever it sits (source.rs, R78).
+    let tests = test_files(&files);
+    for path in files.iter().filter(|path| !tests.contains(*path)) {
+        let text = std::fs::read_to_string(path).unwrap();
+        let code = text.lines().enumerate().zip(in_test_modules(&text)).filter(|(_, test)| !test).map(|(line, _)| line);
+        for (n, line) in code.filter(|(_, l)| l.contains(".data()")) {
+            let in_read_body = path.ends_with("http.rs") && line.trim_start().starts_with("let read = owned.data()");
+            if !in_read_body {
+                read_elsewhere.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
             }
         }
     }
@@ -9072,99 +9077,31 @@ fn second_meets_first<A: Send, B: Send>(state: &AppState, gate: &Gate, first: im
     })
 }
 
-/// `text` (Rust) with its strings, chars and comments made inert for the sweep below: in strings
-/// and chars, brackets, operators and commas are spaces (words stay, so `claim["waited_ms"]` still
-/// says what it reads); comments are gone. Every line stays where it was.
-fn inert(text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let quiet = |c: char| if c.is_alphanumeric() || c == '_' || c == '\n' { c } else { ' ' };
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < chars.len() {
-        let (c, next) = (chars[i], chars.get(i + 1).copied());
-        let after = if i > 0 { chars[i - 1] } else { ' ' };
-        if c == '/' && next == Some('/') {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-        } else if c == '/' && next == Some('*') {
-            i += 2;
-            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
-                out.push(quiet(chars[i]));
-                i += 1;
-            }
-            i += 2;
-        } else if c == 'r' && matches!(next, Some('"' | '#')) && (after == 'b' || !(after.is_alphanumeric() || after == '_')) && chars[i + 1..].iter().find(|&&h| h != '#') == Some(&'"') {
-            // A raw string: r"…", r#"…"#.
-            let hashes = chars[i + 1..].iter().take_while(|&&h| h == '#').count();
-            out.push('"');
-            i += 2 + hashes;
-            while i < chars.len() && !(chars[i] == '"' && (1..=hashes).all(|k| chars.get(i + k) == Some(&'#'))) {
-                out.push(quiet(chars[i]));
-                i += 1;
-            }
-            out.push('"');
-            i += 1 + hashes;
-        } else if c == '"' {
-            out.push('"');
-            i += 1;
-            while i < chars.len() && chars[i] != '"' {
-                if chars[i] == '\\' {
-                    out.push(' ');
-                    i += 1;
-                }
-                if i < chars.len() {
-                    out.push(quiet(chars[i]));
-                    i += 1;
-                }
-            }
-            out.push('"');
-            i += 1;
-        } else if c == '\'' && (next == Some('\\') || chars.get(i + 2) == Some(&'\'')) {
-            // A char ('{', '\'', '\u{1F600}'), not a lifetime.
-            let mut end = i + 2;
-            if next == Some('\\') {
-                end = if chars.get(i + 2) == Some(&'u') { (i..chars.len()).find(|&j| chars[j] == '}').unwrap_or(i) + 1 } else { i + 3 };
-            }
-            out.extend(std::iter::repeat_n(' ', end + 1 - i));
-            i = end + 1;
-        } else {
-            out.push(c);
-            i += 1;
-        }
-    }
-    out
-}
-
 /// What of `code` (made [`inert`]) is a test's: all of it in a tests.rs or under a tests folder,
 /// else its `#[cfg(test)]` modules; the rest blank lines, so every line stays where it was.
 fn test_code(path: &str, code: &str) -> String {
     if path.ends_with("tests.rs") || path.contains("/tests/") {
         return code.to_string();
     }
-    let lines: Vec<&str> = code.lines().collect();
-    let mut keep = vec![false; lines.len()];
-    let mut i = 0;
-    while i < lines.len() {
-        let module = |l: &&&str| {
-            let l = l.trim();
-            (l.starts_with("mod ") || l.starts_with("pub mod ") || l.starts_with("pub(crate) mod ")) && l.ends_with('{')
-        };
-        if lines[i].trim() == "#[cfg(test)]" && lines[i + 1..].iter().find(|l| !l.trim().is_empty()).is_some_and(|l| module(&l)) {
-            let (mut depth, mut j) = (0i32, i + 1);
-            while j < lines.len() {
-                depth += lines[j].matches('{').count() as i32 - lines[j].matches('}').count() as i32;
-                keep[j] = true;
-                if depth <= 0 && lines[j].contains('}') {
-                    break;
-                }
-                j += 1;
-            }
-            i = j;
-        }
-        i += 1;
+    let keep = test_modules(code);
+    code.lines().zip(keep).map(|(l, k)| if k { l } else { "" }).collect::<Vec<_>>().join("\n")
+}
+
+/// What R50's lint finds in `files` (under `root`, which their names are shown from): in each
+/// one's test code ([`test_code`]), or all of one a test module is the whole of ([`test_files`]).
+fn held_times(root: &std::path::Path, files: &[std::path::PathBuf]) -> Vec<String> {
+    let tests = test_files(files);
+    let mut found = Vec::new();
+    for path in files {
+        let shown = path.strip_prefix(root).unwrap().display().to_string().replace('\\', "/");
+        let text = std::fs::read_to_string(path).unwrap();
+        let whole = inert(&text);
+        let code = if tests.contains(path) { whole.clone() } else { test_code(&shown, &whole) };
+        found.extend(upper_bounds(&code).into_iter().map(|(line, condition)| format!("{shown}:{line}: holds a time from above: {condition}")));
+        found.extend(short_deadlines(&code, &whole, &text).into_iter().map(|(line, waits)| format!("{shown}:{line}: waits less than EVENTUALLY: {waits}")));
+        found.extend(sleeps_between_spawns(&code).into_iter().map(|line| format!("{shown}:{line}: a sleep between two spawns")));
     }
-    lines.iter().zip(keep).map(|(l, k)| if k { *l } else { "" }).collect::<Vec<_>>().join("\n")
+    found
 }
 
 /// Whether a comparison in `condition` (an assert's, made [`inert`]) holds a measured time from
@@ -9452,6 +9389,19 @@ fn no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep() {
     let only_tests = test_code("crates/x/src/a.rs", &inert("fn f() {\n    assert!(t.elapsed() < cap);\n}\n#[cfg(test)]\nmod tests {\n    fn g() {\n        assert!(t.elapsed() < cap);\n    }\n}\nfn h() {\n    assert!(t.elapsed() < cap);\n}\n"));
     assert_eq!(upper_bounds(&only_tests).iter().map(|(line, _)| *line).collect::<Vec<_>>(), [7], "only a test module's, at its own line");
 
+    // A test module in a file of its own is test code, and what it declares in turn; a plain
+    // module's file isn't (R78).
+    let dir = std::path::PathBuf::from(unique_temp_path("held-times"));
+    std::fs::create_dir_all(dir.join("t")).unwrap();
+    let held = "fn f() {\n    assert!(t.elapsed() < cap);\n}\n";
+    let plan = [("lib.rs", "#[cfg(test)]\nmod t;\nmod p;\n".to_string()), ("t.rs", format!("{held}mod u;\n")), ("t/u.rs", held.to_string()), ("p.rs", held.to_string())];
+    for (file, text) in &plan {
+        std::fs::write(dir.join(file), text).unwrap();
+    }
+    let flagged: Vec<String> = held_times(&dir, &plan.iter().map(|(file, _)| dir.join(file)).collect::<Vec<_>>()).into_iter().map(|f| f.split(": ").next().unwrap().to_string()).collect();
+    assert_eq!(flagged, ["t.rs:2", "t/u.rs:2"], "a test module's own file, and the one it declares; not p.rs");
+    let _ = std::fs::remove_dir_all(&dir);
+
     // Every crate's tests.
     fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
@@ -9466,16 +9416,7 @@ fn no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep() {
     let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut files = Vec::new();
     sources(crates, &mut files);
-    let mut found = Vec::new();
-    for path in &files {
-        let shown = path.strip_prefix(crates).unwrap().display().to_string().replace('\\', "/");
-        let text = std::fs::read_to_string(path).unwrap();
-        let whole = inert(&text);
-        let code = test_code(&shown, &whole);
-        found.extend(upper_bounds(&code).into_iter().map(|(line, condition)| format!("{shown}:{line}: holds a time from above: {condition}")));
-        found.extend(short_deadlines(&code, &whole, &text).into_iter().map(|(line, waits)| format!("{shown}:{line}: waits less than EVENTUALLY: {waits}")));
-        found.extend(sleeps_between_spawns(&code).into_iter().map(|line| format!("{shown}:{line}: a sleep between two spawns")));
-    }
+    let found = held_times(crates, &files);
     assert!(found.is_empty(), "tests that hold how long something took, not what happened (hold an order of events: Gate, Waiters, soon; wait EVENTUALLY):\n{}", found.join("\n"));
     assert!(files.len() > 150, "the sweep read the source: {}", files.len());
 }
@@ -10375,8 +10316,10 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
         ("hashed", "const got = await host.get(\"/a\", { headers: { \"x-h\": sha256(k.slice(0, 12)) } })\n  return { status: got.status }", nothing, true),
         // A part that is the whole of the first secret and not of the second: a value computed
         // from a secret that is the secret itself is written with the secret's mark, so the
-        // record tells a secret of 20 characters or fewer from a longer one (R65, the owner's to
-        // weigh). The records differ in that mark's kind and nothing else.
+        // record tells a secret of 20 characters or fewer from a longer one. A known limit, kept
+        // by the owner's choice (R65, 2026-11-17: the log stays as it is, the docs say so, and
+        // who may read a run's details is what is controlled). The records differ in that mark's
+        // kind and nothing else.
         ("whole", "const got = await host.get(\"/a\", { headers: { \"x-h\": sha256(k.slice(0, 20)) } })\n  return { status: got.status }", nothing, true),
         // Whether a part of it is what the caller sent, one way or not: a true or false. (The
         // caller sends what is no part of either: a text that is one is marked where it came in,
@@ -10468,12 +10411,13 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
             }
             at.retain(|d| !d.starts_with(".timeline"));
         }
-        // R65: the step that gave the whole of the first secret is written with its mark, where
-        // the second's part is a computed value's. Once that is fixed, this is a plain row.
+        // R65, a known limit the owner chose to keep: the step that gave the whole of the first
+        // secret is written with its mark, where the second's part is a computed value's. Where
+        // that no longer shows, the limit is gone: this is a plain row, and the docs say so.
         if *path == "whole" {
             let one_mark = |d: &String| d.starts_with(".timeline[") && d.ends_with(r#".value: "‹secret:k›" | "‹derived›""#);
             if !at.iter().any(one_mark) {
-                wrong.push(format!("{path}: the whole secret is no longer written with its mark: R65 is fixed, make this a plain row"));
+                wrong.push(format!("{path}: the whole secret is no longer written with its mark: R65's limit is gone, make this a plain row and take it out of the docs"));
             }
             at.retain(|d| !one_mark(d));
         }
@@ -10541,21 +10485,23 @@ fn a_runs_record_reads_the_same_whatever_its_secret() {
 /// secret). Two secrets the same but for one letter: their records differ in the answer's text,
 /// and in the answer's `content-length`, and nothing else; `holon verify` runs both again.
 ///
-/// The `content-length` is a leak of its own, found here: the record keeps the far side's
-/// headers as they came, and an answer that echoes a secret says, in its length, how long the
-/// secret is as the far side spelled it (here 27 and 32: the escaped letter is six characters).
-/// It isn't R67's: two ASCII secrets of other lengths, echoed, differ in it too. The class test's
-/// far sides answer the same whatever they are sent, so it doesn't show there.
+/// The `content-length` is a known limit, found here and kept by the owner's choice (R69,
+/// 2026-11-17: the log stays as it is, the docs say so, and who may read a run's details is
+/// what is controlled). The record keeps a far side's headers as they came, so an answer that
+/// echoes a secret says, in its length, how long the secret is as the far side spelled it (here
+/// 27 and 32: the escaped letter is six characters). It isn't R67's: two ASCII secrets of other
+/// lengths, echoed, differ in it too. The class test's far sides answer the same whatever they
+/// are sent, so it doesn't show there.
 ///
 /// **Why:** `a_runs_record_reads_the_same_whatever_its_secret` holds a record to reading the same
 /// whatever its secret, with two ASCII secrets. This is the difference R67 leaves (secrets.rs,
-/// `held_whole`), and the length an echo tells, kept in sight, as R65's is there, until each is
-/// closed.
+/// `held_whole`), kept in sight until it is closed, and the length an echo tells, kept as the
+/// record of a limit the owner chose, as R65's is there.
 ///
 /// **If it fails:** where the second record keeps its mark in place, the residual is closed;
-/// where the two lengths no longer show, the length is: take each out of what is excused, and
-/// when both are, make this a plain equality. Anything else the two records differ in is a leak
-/// of its own.
+/// where the two lengths no longer show, the limit is gone (take it out of the docs too): take
+/// each out of what is excused, and when both are, make this a plain equality. Anything else the
+/// two records differ in is a leak of its own.
 #[test]
 fn a_far_sides_spelling_says_whether_a_secret_has_a_letter_past_ascii() {
     let (host, _) = counting_server();
@@ -10586,7 +10532,7 @@ fn a_far_sides_spelling_says_whether_a_secret_has_a_letter_past_ascii() {
     let length = |d: &String| d.ends_with(&lengths);
     assert!(
         at.iter().any(|d| d.starts_with(".rounds[0].exchanges[0].response.") && length(d)),
-        "the answer's length no longer tells the secret's: take it out of what is excused:\n  {}",
+        "the answer's length no longer tells the secret's: R69's limit is gone, take it out of what is excused and of the docs:\n  {}",
         at.join("\n  ")
     );
     at.retain(|d| !length(d));
@@ -15046,7 +14992,7 @@ fn remittance_mail_settles_invoices_from_authenticated_mail_and_moves_each_messa
     assert_eq!(log_entries(&state, &slug).iter().filter(|e| e["kind"] == "mail").count(), 0, "what was there at the first look isn't new");
     assert_eq!(imap.folders.lock().unwrap().of("INBOX").len(), 1, "nor moved");
     let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
-    assert!(events.contains(&format!("listens to the mailbox of remit (imap://127.0.0.1:{} INBOX), what it holds now (1 message) isn't run on", imap.port)), "{events}");
+    assert!(events.contains("listens to the mailbox of remit (its folder INBOX), what it holds now (1 message) isn't run on"), "{events}");
 
     // INV-1 paid in full, INV-2 short; the same from someone the mailbox's server didn't vouch
     // for; and the first again.
@@ -15372,7 +15318,7 @@ fn price_feed_runs_on_each_event_and_opens_again_from_where_it_was() {
     eventually("a fourth run", || runs().len() == 4);
     assert_eq!(feed.asked().len(), 3, "read on, not opened again");
     let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
-    assert!(events.contains(&format!("listens to the feed prices ({})", feed.url("/events"))), "{events}");
+    assert!(events.contains("listens to the feed prices\"") && !events.contains(&feed.url("")), "{events}");
     assert!(events.contains("passed over an event of prices it ran already (3)"), "{events}");
     assert!(events.contains("passed over an event of prices past 1 MiB"), "{events}");
     let (_, prices, _) = data_call(&state, &slug, "GET", "/prices", "");
@@ -16022,7 +15968,7 @@ fn ledger_watch_listens_on_its_channel_and_reads_what_it_missed() {
         let b = balances();
         assert_eq!((b["acct_1"]["balance"].as_str(), b["acct_1"]["entries"].as_u64(), b["acct_1"]["read"].as_u64(), b["acct_1"]["last"].as_u64()), (Some("112.25"), Some(5), Some(1), Some(5)), "{b}");
         let said = events();
-        assert!(said.contains(&format!("listens to the feed entries ({address})")), "{said}");
+        assert!(said.contains("listens to the feed entries\"") && !said.contains(&address), "{said}");
 
         // Its runs check offline, the ledger's rows read as each run read them.
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
@@ -19028,24 +18974,27 @@ fn a_change_the_deployments_file_didnt_take_is_never_answered_as_done() {
         ("storage.rs act", "the host's room: runs kept as granted again"),
         ("subscriptions.rs fire_one_feed", "a feed's event parked a run: no one asked"),
     ];
-    fn calls(dir: &Path, found: &mut Vec<(String, bool)>) {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
+    // Each file's code: a test module left out by its braces, wherever it sits, and a test
+    // module's file of its own (`#[cfg(test)] mod x;`: this one, and what it declares) left out
+    // whole (source.rs, R78). A cut at a file's first inline test module took the code after one
+    // for test code, and a caller there went unlisted.
+    fn calls(src: &Path, found: &mut Vec<(String, bool)>) {
+        let (mut dirs, mut files) = (vec![src.to_path_buf()], Vec::new());
+        while let Some(dir) = dirs.pop() {
+            for path in std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()) {
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        let tests = test_files(&files);
+        for path in files.iter().filter(|path| !tests.contains(*path)) {
             let file = path.file_name().unwrap().to_string_lossy().to_string();
-            if path.is_dir() {
-                calls(&path, found);
-                continue;
-            }
-            if !file.ends_with(".rs") || file == "tests.rs" {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
-            // Test code (a `#[cfg(test)]` module written inline, to the end of the file) aside; a
-            // module declared there (`mod tests;`) is a file of its own.
-            let inline = |at: &usize| text[*at..].lines().nth(2).is_some_and(|l| l.trim_start_matches("pub(crate) ").starts_with("mod ") && l.trim_end().ends_with('{'));
-            let code = text.match_indices("\n#[cfg(test)]\n").map(|(at, _)| at).find(inline).map_or(&text[..], |at| &text[..at]);
+            let text = std::fs::read_to_string(path).unwrap();
             let mut function = String::new();
-            for line in code.lines().map(str::trim_start).filter(|l| !l.starts_with("//")) {
+            for (line, _) in text.lines().map(str::trim_start).zip(in_test_modules(&text)).filter(|(l, test)| !test && !l.starts_with("//")) {
                 let head = line.trim_start_matches("pub(crate) ").trim_start_matches("pub ");
                 if let Some(rest) = head.strip_prefix("fn ") {
                     function = rest.split(['(', '<']).next().unwrap_or_default().to_string();

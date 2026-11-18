@@ -13,6 +13,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 mod common;
 use common::{answering, free_port, raw_http, status, EVENTUALLY};
+/// Which lines of a source file are a test module's (R78): the server's tests ask it too.
+#[path = "../src/tests/source.rs"]
+mod source;
 
 /// A kind of file the test means to look at: what it is, and how its path (with `/`) is known.
 type Kind = (&'static str, fn(&str) -> bool);
@@ -663,6 +666,80 @@ route.post("/bump", () => {{
     assert!(names.iter().any(|n| n == "new.key") && !names.iter().any(|n| n == "NEW.KEY"), "{names:?}");
 }
 
+/// How many low-level writers `text` (a source file) calls outside its test modules, each left
+/// out by its braces wherever it sits (source.rs, R78): the scan cut each file at its first one.
+fn writers_in(text: &str) -> usize {
+    let mut n = 0;
+    for (line, _) in text.lines().map(str::trim).zip(source::in_test_modules(text)).filter(|(l, test)| !test && !l.starts_with("//")) {
+        for writer in ["write_private(", "write_aside(", "append_private(", "write_atomically("] {
+            let mut rest = line;
+            while let Some(at) = rest.find(writer) {
+                let before = &rest[..at];
+                // A definition, and a call to at_rest's own sealing writer, aren't one of these.
+                if !before.ends_with("fn ") && !before.ends_with("at_rest::") && !before.ends_with("_") {
+                    n += 1;
+                }
+                rest = &rest[at + writer.len()..];
+            }
+        }
+        n += line.matches("OpenOptions::new(").count() + line.matches("fs::write(").count();
+    }
+    n
+}
+
+/// Each file under `src` that calls low-level writers outside test code, and how many
+/// ([`writers_in`]): a tests.rs, a file under a tests folder, and a test module's file of its own
+/// (`#[cfg(test)] mod x;`, source.rs's test_files) left out.
+fn writers_under(src: &Path) -> std::collections::BTreeMap<String, usize> {
+    let mut files = Vec::new();
+    files_under(src, &mut files);
+    files.retain(|f| f.extension().is_some_and(|e| e == "rs"));
+    let tests = source::test_files(&files);
+    let mut found = std::collections::BTreeMap::new();
+    for f in files.iter().filter(|f| !tests.contains(*f)) {
+        let name = f.strip_prefix(src).unwrap().to_string_lossy().replace('\\', "/");
+        if name.ends_with("tests.rs") || name.contains("/tests/") || name.starts_with("tests/") {
+            continue;
+        }
+        let n = writers_in(&std::fs::read_to_string(f).unwrap());
+        if n > 0 {
+            found.insert(name, n);
+        }
+    }
+    found
+}
+
+/// Guards: the writers scan reads all of a file but its test modules (R78): one after a test
+/// module, or after `mod name;` declaring one, is counted; one in it, or in a string or comment
+/// there, isn't, and a brace in a string doesn't end the module early. A test module's file of
+/// its own, and what it declares, are left out; a plain module's file is read.
+/// Why: the scan cut each file at its first test module, so main.rs, which declares one near its
+/// top, was read only to that, near its top, and a writer added below it went unseen.
+/// If it fails: source.rs's test_modules misreads where a test module ends.
+#[test]
+fn the_writers_scan_reads_past_each_test_module() {
+    for (text, n) in [
+        ("fn f() {\n    std::fs::write(a, b);\n}\n#[cfg(test)]\nmod tests {\n    fn g() {\n        std::fs::write(a, b);\n    }\n}\nfn h() {\n    std::fs::write(a, b);\n}\n", 2),
+        ("#[cfg(test)]\nmod surfaces;\nmod sweep;\nfn main() {\n    std::fs::write(a, b);\n}\n", 1),
+        ("#[cfg(test)]\n#[allow(dead_code)]\npub(crate) mod in_test {\n    const C: char = '}';\n    const S: &str = \"}}\";\n    // }\n    fn g() { std::fs::write(a, b); }\n}\nfn h() { std::fs::write(a, b); }\n", 1),
+        ("mod a {\n    #[cfg(test)]\n    mod tests {\n        fn g() { std::fs::write(a, b); }\n    }\n    fn h() { std::fs::write(a, b); }\n}\n", 1),
+        ("#[cfg(test)]\nfn helper() {\n    std::fs::write(a, b);\n}\n", 1),
+    ] {
+        assert_eq!(writers_in(text), n, "{text}");
+    }
+    // A test module in a file of its own leaves the count, and what it declares in turn; a plain
+    // module's file stays in it.
+    let dir = std::env::temp_dir().join(format!("holon-writers-scan-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("t")).unwrap();
+    let writes = "fn f() {\n    std::fs::write(a, b);\n}\n";
+    for (file, text) in [("lib.rs", "#[cfg(test)]\nmod t;\nmod p;\n".to_string()), ("t.rs", format!("{writes}mod u;\n")), ("t/u.rs", writes.to_string()), ("p.rs", writes.to_string())] {
+        std::fs::write(dir.join(file), text).unwrap();
+    }
+    assert_eq!(writers_under(&dir), std::collections::BTreeMap::from([("p.rs".to_string(), 1)]), "only the plain module's file");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The low-level writers (owner-only, atomic, appending) and the standard library's, outside
 /// test code: each file's count of them, and why it may write past at_rest.rs.
 const WRITERS: &[(&str, usize, &str)] = &[
@@ -699,37 +776,7 @@ const WRITERS: &[(&str, usize, &str)] = &[
 /// WRITERS with why.
 #[test]
 fn no_writer_under_the_data_folder_bypasses_at_rest() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files = Vec::new();
-    files_under(&src, &mut files);
-    let mut found = std::collections::BTreeMap::<String, usize>::new();
-    for f in files.iter().filter(|f| f.extension().is_some_and(|e| e == "rs")) {
-        let name = f.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
-        if name.ends_with("tests.rs") || name.contains("/tests/") || name.starts_with("tests/") {
-            continue;
-        }
-        let text = std::fs::read_to_string(f).unwrap();
-        // Test code (a `#[cfg(test)]` module, to the end of the file, as they are here) aside.
-        let code = ["\n#[cfg(test)]\nmod ", "\n#[cfg(test)]\npub(crate) mod "].iter().filter_map(|m| text.find(m)).min().map_or(&text[..], |at| &text[..at]);
-        let mut n = 0;
-        for line in code.lines().map(str::trim).filter(|l| !l.starts_with("//")) {
-            for writer in ["write_private(", "write_aside(", "append_private(", "write_atomically("] {
-                let mut rest = line;
-                while let Some(at) = rest.find(writer) {
-                    let before = &rest[..at];
-                    // A definition, and a call to at_rest's own sealing writer, aren't one of these.
-                    if !before.ends_with("fn ") && !before.ends_with("at_rest::") && !before.ends_with("_") {
-                        n += 1;
-                    }
-                    rest = &rest[at + writer.len()..];
-                }
-            }
-            n += line.matches("OpenOptions::new(").count() + line.matches("fs::write(").count();
-        }
-        if n > 0 {
-            found.insert(name, n);
-        }
-    }
+    let found = writers_under(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
     let allowed: std::collections::BTreeMap<String, usize> = WRITERS.iter().map(|(f, n, _)| (f.to_string(), *n)).collect();
     assert_eq!(found, allowed, "a low-level writer added or gone: seal through at_rest.rs, or say in WRITERS why it may write past it");
 }

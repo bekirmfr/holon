@@ -841,7 +841,7 @@ pub struct Log {
     fail_partway: bool,
     /// A test's: the next syncs of its file fail, as a disk that can't flush fails them.
     #[cfg(test)]
-    fail_syncs: bool,
+    pub(crate) fail_syncs: bool,
     /// Cut-backs begun holding the lock (`cut_back`), counted for a test.
     #[cfg(test)]
     cuts_holding_lock: usize,
@@ -1094,6 +1094,9 @@ fn keep_segments_aside(backup: Option<&(PathBuf, bool)>, path: &Path, segments: 
 /// How often the logs' files are synced to disk (`sync_logs`): what a power loss can lose of them,
 /// at most (docs/L4s/request-path-L4.md, C2 d).
 pub const SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What a strict run's caller is told when its record's sync fails (`Log::sync_through`).
+pub(crate) const UNSYNCED: &str = "its record couldn't be synced to disk";
 
 /// Sync the directory holding `path`, so a file just renamed into it stays renamed after a crash
 /// (where the system has directories to sync; a failure is only said: the file itself is synced).
@@ -1577,10 +1580,14 @@ impl LogCell {
     /// run's before it: a sync puts what was written on disk, and says nothing of an entry that
     /// wasn't. With no line lost lately, which is the usual case, the log's lock isn't taken to
     /// ask (`lost`).
+    ///
+    /// The error is said to the run's caller, a flow's caller among them: that the record isn't
+    /// on disk, not where its file is or the sync's own error (audit R71). The admin hears both
+    /// from the syncer's `sync` (failing.rs), which fails the same way within a second.
     pub fn sync_through(&self, seq: u64) -> Result<(), String> {
         let mut synced = self.synced.lock().unwrap();
         if *synced <= seq {
-            self.sync_locked(&mut synced)?;
+            self.sync_locked(&mut synced).map_err(|why| crate::failing::Failed::new(UNSYNCED, why).told())?;
         }
         if self.lost.load(Ordering::Acquire) && self.with(|log| log.unkept.contains(&seq)) {
             return Err(format!("its record (entry {seq}) couldn't be written to the log's file"));
@@ -4041,7 +4048,7 @@ mod tests {
                 let told = sync(cell, fail, &|cell| cell.sync_through(seq));
                 // A sync of its own unless one since it was written went through; then its line.
                 let synced = model.synced > seq || model.sync(cell.next_seq(), fail);
-                let want = if !synced { Some("could not sync") } else if failed { Some("couldn't be written") } else { None };
+                let want = if !synced { Some(UNSYNCED) } else if failed { Some("couldn't be written") } else { None };
                 match (&told, want) {
                     (Ok(()), None) => {
                         kept.insert(seq);
