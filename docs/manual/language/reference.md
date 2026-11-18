@@ -162,9 +162,13 @@ the value as its mark: a CVC of four digits and one of three leave the same reco
 What this doesn't do yet: a flow that never keeps a key can't wait (`await event`, `await
 approval`), since a waiting run is stored whole until it goes on, the value with it; the mistake
 is said where it waits. And a value read out of its key into a value of its own (`const c =
-req.json.cvc`) stands under no key: `state.c = c` or `console.log(c)` keeps it. Following it
-through the flow is the next stage. The value is in the server's memory while the run goes on, as
-everything the run has is. The **card-check** sample shows it.
+req.json.cvc`) stands under no key: `state.c = c` or `console.log(c)` keeps it. The run's record
+then has the value as it is wherever it stands outside its key, and `holon verify` reads that run
+as DIFFERS, though nothing in its record was changed: it runs the run again with the mark where
+the request held the value, so the step that read it out gives the mark where the record has the
+value. Only a value shorter than six characters does this; a longer one is marked by its text
+wherever it stands. Following it through the flow is the next stage. The value is in the server's
+memory while the run goes on, as everything the run has is. The **card-check** sample shows it.
 
 ## Names and literals
 

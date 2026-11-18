@@ -242,9 +242,15 @@ is held to what it gives, and a record that says other differs. A value a flow n
 placeholder too, `‹never_keep:cvc›` where it stood: as a tainted value's, it tells no value from
 another, so a node that only moves it is computed with it and one that compares it is taken from
 the log (the report names it as fed "the request's cvc, which its flow never keeps"); a write that
-held it was refused when the run ran, and is refused again when the run is checked. A node that computes with what the value holds
-(a signature, a hash, an encoding) can't be computed again, nor can a check of a token that isn't
-the secret, of which the log keeps only that it came. What the log kept for that
+held it was refused when the run ran, and is refused again when the run is checked. A value read
+out of its key into a value of its own (`const c = req.json.cvc`) is the exception: the run's
+record then has the value as it is wherever it stands outside its key, and `holon verify` reads
+that run as DIFFERS, though nothing in its record was changed: it runs the run again with the mark
+where the request held the value, so the step that read it out gives the mark where the record has
+the value. Only a value shorter than six characters does this; a longer one is marked by its text
+wherever it stands. A node that computes with what the value holds (a signature, a hash, an
+encoding) can't be computed again, nor can a check of a token that isn't the secret, of which the
+log keeps only that it came. What the log kept for that
 node stands in, as in the editor's replay, and the rest of the run is checked against it: the
 answer built from a signature, the effects, the status. The report says which runs were checked
 that way, and names each such step: its leaf, the secret or token it was fed (a secret by its
