@@ -78,6 +78,8 @@ mod json;
 mod manifest;
 mod module;
 mod numbers;
+/// Where an absence began: why an effect a run held wasn't made.
+pub mod absence;
 mod resolve;
 mod simulate;
 pub mod taint;
