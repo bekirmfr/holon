@@ -148,6 +148,21 @@ on another run for it (503) or failed (500) tells the caller something of the se
 the route returns. A deployment without that grant answers such a request 500, and its log says why; so
 does one whose answer holds a secret's value it didn't compute (a service echoing a header back).
 
+When a service sends your secret back in its reply, what your flow reads from that reply is
+treated as the secret too. A number, a true or false, or a text shorter than six characters read
+from it passes as before (a balance, a count, a currency code). A longer text read from it is
+refused to callers (500) and to storage (the write doesn't land), even a harmless one such as a
+customer's name, and the run's log says so, which service sent the secret back, and what to do. The server decides this by where the
+value came from and what kind of value it is, never by looking for the secret's characters in
+it, so nobody calling your flow can learn anything of the secret from which answers are refused.
+The ways on: answer with a number or a shorter value; stop the service sending the secret back
+(most have a setting, or another endpoint); or, where callers really may have that text, give
+the flow the permission to answer with that secret. A flow asks for that permission where one
+of its routes answers with the secret, so today that last way means the flow says so in its
+text. What stays open: a piece shorter than six characters; a number worked out from a piece;
+a flow that itself compares the reply with what its caller sent and answers yes or no; and a
+reply that holds only a hint of the secret, never all of it, which isn't noticed.
+
 The approval also says where each secret goes. A secret that reaches a request's path, headers or
 body, as it is or computed from it, is listed with the hosts it is sent to: "read the secret
 "slack_webhook_path", and send it to https://hooks.slack.com". A secret passed as a database

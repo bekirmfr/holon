@@ -3083,6 +3083,34 @@ fn a_runs_id_hashes_what_its_record_keeps() {
     if said.contains("its run id") || !said.contains("a guarded value a call answered or a row held") {
         wrong.push(format!("holon verify doesn't name why the lookups' ids are taken as given: {said}"));
     }
+
+    // And a piece of a secret a far side sent back (R70), which the caller sent too: the record
+    // marks the piece wherever it stands, the request included, as a text computed from the
+    // secret; the start can't know it before the reply. So the same as a guarded value met as the
+    // run went: the log's id taken as given, said, never "its run id differs". (Where R70 meets
+    // the run id: the start writes no mark a run makes as it goes.)
+    let far = echoing_server(false);
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport far from \"host:{far}\"\n\nflow(\"ids-echo\", {{ port: {} }})\n\nroute.post(\"/echo\", async (req) => {{\n  const got = await far.post(\"/e\", {{ body: k }})\n  return {{ same: got.body.slice(0, 12) === req.body }}\n}})\n",
+        free_port()
+    );
+    let echo = deploy_text(&state, &text, &far);
+    let set = req("POST", &format!("/deployments/{echo}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    let (status, answer, _) = data_call(&state, &echo, "POST", "/echo", &secret[..12]);
+    if status != 200 || !answer.contains("true") {
+        wrong.push(format!("a piece sent back that the caller sent too: answered {status}: {answer}"));
+    }
+    let entry = log_entries(&state, &echo).last().unwrap().clone();
+    if !entry["request"].to_string().contains(secrets::DERIVED_MARK) || entry.to_string().contains(&secret[..12]) {
+        wrong.push(format!("a piece sent back that the caller sent too: its record doesn't write the request's piece as its mark: {}", entry["request"]));
+    }
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{echo}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let said = verify::describe(&report, None);
+    if report.ids_given != vec![entry["seq"].as_u64().unwrap()] || !report.ok() || said.contains("its run id") || !said.contains("a piece of one a far side sent back") {
+        wrong.push(format!("holon verify, a piece sent back that the caller sent too (ids given {:?}): {said}", report.ids_given));
+    }
     let _ = std::fs::remove_dir_all(&dir);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
@@ -9302,6 +9330,481 @@ fn an_answer_is_cut_after_its_values_are_marked() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+/// **Guards:** a step's kind is told the same way whether the run kept it (an `SValue` in its
+/// timeline) or only noted it (a core value, a run that keeps no timeline): a number, a true or
+/// false, a text or bytes under six, and what holds only those, can't hold a part of a secret;
+/// anything else can. **Why:** an unlogged route stored nothing a logged one would, and the other
+/// way round, only while the two agree (R70). **If it fails:** `secrets::may_hold_a_part` and
+/// `may_hold_a_part_of` drifted apart.
+#[test]
+fn a_steps_kind_is_told_the_same_kept_or_only_noted() {
+    use holon_core::Value;
+    let text = |s: &str| Value::Text(s.into());
+    let record = |k: &str, v: Value| Value::Record([(k.to_string(), v)].into_iter().collect());
+    let table: Vec<(Value, bool)> = vec![
+        (Value::Number(12.0), false),
+        (Value::Boolean(true), false),
+        (text("EUR"), false),
+        (text("abcde"), false),
+        (text("abcdef"), true),
+        (text("ééééé"), false),
+        (text("éééééé"), true),
+        (Value::Bytes(vec![1u8; 5]), false),
+        (Value::Bytes(vec![1u8; 6]), true),
+        (Value::List(vec![Value::Number(1.0), text("ok")]), false),
+        (Value::List(vec![Value::Number(1.0), text("longer")]), true),
+        (record("v", Value::Number(1.0)), false),
+        (record("balance", Value::Number(1.0)), true),
+        (record("v", text("longer")), true),
+    ];
+    for (value, holds) in table {
+        assert_eq!(secrets::may_hold_a_part_of(&value), holds, "{value:?}, noted");
+        assert_eq!(secrets::may_hold_a_part(&SValue::from_core(&value)), holds, "{value:?}, kept");
+    }
+}
+
+/// A far side that answers with what it is sent: `/e` the body as it is; `/j` a JSON answer with
+/// the body, its first eight characters, its length, a balance, a name and a currency that are
+/// nobody's secret; `/jj` a JSON answer whose field is a JSON text holding the body (two deep, as
+/// a service wrapping another's answer writes it); `/n`, sent `key|note`, the key and the note in
+/// lower case (a service that tidies what its caller wrote). `silent`: it answers the same with a
+/// text that isn't what it was sent, where the body or the key would be.
+fn echoing_server(silent: bool) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            std::thread::spawn(move || {
+                let mut seen = Vec::new();
+                let mut piece = [0u8; 4096];
+                let (mut head, mut length) = (None, 0usize);
+                loop {
+                    let Ok(n) = stream.read(&mut piece) else { return };
+                    if n == 0 {
+                        break;
+                    }
+                    seen.extend_from_slice(&piece[..n]);
+                    if head.is_none()
+                        && let Some(at) = seen.windows(4).position(|w| w == b"\r\n\r\n")
+                    {
+                        let text = String::from_utf8_lossy(&seen[..at]).to_ascii_lowercase();
+                        length = text.lines().find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0))).unwrap_or(0);
+                        head = Some(at + 4);
+                    }
+                    if head.is_some_and(|h| seen.len() >= h + length) {
+                        break;
+                    }
+                }
+                let Some(h) = head else { return };
+                let path = String::from_utf8_lossy(&seen[..h]).split_whitespace().nth(1).unwrap_or("/").to_string();
+                let sent = String::from_utf8_lossy(&seen[h..]).into_owned();
+                let (key, note) = match (path.as_str(), sent.split_once('|')) {
+                    ("/n", Some((key, note))) => (key.to_string(), note.to_string()),
+                    _ => (sent.clone(), String::new()),
+                };
+                let key = if silent { "nothing-anyone-keeps-00001".to_string() } else { key };
+                let answer = match path.as_str() {
+                    "/j" => serde_json::json!({ "echo": key, "first": key.chars().take(8).collect::<String>(), "len": key.chars().count(), "balance": 12, "name": "Alice Example", "code": "EUR" }).to_string(),
+                    "/jj" => serde_json::json!({ "wrapped": serde_json::json!({ "echo": key }).to_string() }).to_string(),
+                    "/n" => serde_json::json!({ "key": key, "note": note.to_lowercase() }).to_string(),
+                    _ => key,
+                };
+                let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}", answer.len()).as_bytes());
+            });
+        }
+    });
+    host
+}
+
+/// **Guards:** what a flow reads out of a reply that sent its secret back is the secret's again,
+/// by where it came from and what kind of value it is. A flow sends its secret to a far side and
+/// does something with the reply: returns it whole, its length, a slice, a slice in upper case,
+/// its `content-length`, fields parsed out of JSON (the first eight characters, a balance and a
+/// length, a name, a currency code), sends a slice on to the same host and to another, writes a
+/// slice and a balance to a collection; returns a slice of the secret the far side gave back two
+/// deep (a JSON text inside its JSON); and returns a note the far side gave back in lower case,
+/// which its caller chose. Against a far side that sends the secret back, one that doesn't, one
+/// that does for a flow approved to answer with its secret, and for a secret JSON spells another
+/// way. Where the reply held the secret and the flow isn't approved: a route that answers with a
+/// text of six characters or more read from that reply is refused, its record saying what to
+/// do, whatever the text is (a part of the secret, a name, a caller's note); one that answers a
+/// number or a shorter text answers; the write of a slice doesn't land and the write of a
+/// balance does. No caller is answered six of the secret's characters in a row, and no record
+/// holds them. The attack: a caller who puts six characters where the note goes, the far side
+/// giving them back as a part of the secret reads (a right guess, how it begins) or as nothing
+/// of it (a wrong one), is answered the same each time. Where no reply held the secret, every
+/// route answers, nothing is marked, every write lands. `holon verify` calls no run changed.
+///
+/// **Why:** a reply is clean to the walk that follows a secret through a flow, and a secret is
+/// found by its text whole. So a flow that returned twelve characters of a reply that echoed
+/// its secret handed them to its caller and wrote them in its record (R70). Refusing by the
+/// secret's characters instead (six or more in a row) would answer a right guess and a wrong
+/// one differently wherever a caller's text comes back through such a reply: a way to find the
+/// secret a character at a time.
+///
+/// **If it fails:** the row says which route and far side. A piece answered or stored: the
+/// trail from the echoing call stops early (`SecretFed::echoed_at`, `secrets::short_steps`,
+/// `may_hold_a_part`) or isn't asked (`firing::Echoed::answered`, the write guard in
+/// `firing::fire`). The guesses answered differently: something decides by the secret's text
+/// again. A record holding a piece: `secrets::echoed_parts` or where `fire` looks for them.
+#[test]
+fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
+    let echo = echoing_server(false);
+    let plain = echoing_server(true);
+    let (other, other_hits) = counting_server();
+    let mut state = claims_state("");
+    // Each flow's own port, for its WebSocket.
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    const J: &str = "const said = JSON.parse(got.body)\n  ";
+    // (the route, what it does with the reply `got`, the far side's path it calls, whether it
+    // answers with a text of six characters or more read from the reply)
+    let routes: Vec<(&str, String, &str, bool)> = vec![
+        ("whole", "return { got: got.body }".into(), "/e", true),
+        ("length", "return { n: text_length(got.body) }".into(), "/e", false),
+        ("slice", "return { part: got.body.slice(8, 20) }".into(), "/e", true),
+        ("changed", "return { part: got.body.slice(8, 20).toUpperCase() }".into(), "/e", true),
+        ("header", "return { n: got.headers[\"content-length\"] }".into(), "/e", false),
+        ("first", format!("{J}return {{ first: said.first }}"), "/j", true),
+        // The secret two deep in the reply: a JSON text inside its JSON, each spelling it its way.
+        ("deep", format!("{J}return {{ inner: JSON.parse(said.wrapped).echo.slice(2, 14) }}"), "/jj", true),
+        ("balance", format!("{J}return {{ balance: said.balance, len: said.len }}"), "/j", false),
+        ("name", format!("{J}return {{ name: said.name }}"), "/j", true),
+        ("code", format!("{J}return {{ code: said.code }}"), "/j", false),
+        ("on", "const again = await far.post(\"/e\", { body: got.body.slice(8, 20) })\n  return { status: again.status }".into(), "/e", false),
+        ("elsewhere", "const again = await other.post(\"/b\", { body: got.body.slice(8, 20) })\n  return { passed: again.error ?? again.status }".into(), "/e", false),
+        ("written", "seen[\"p\"] = { v: got.body.slice(8, 20) }\n  return { ok: true }".into(), "/e", false),
+        ("kept", format!("{J}seen[\"b\"] = {{ v: said.balance }}\n  return {{ ok: true }}"), "/j", false),
+    ];
+    // (its name, the far side, the secret, whether the flow may answer with its secret)
+    let sides: [(&str, &str, &str, bool); 4] = [
+        ("echoes", &echo, "kq7_alpha-zx9kp2-wm4tn8-1", false),
+        ("silent", &plain, "kq7_alpha-zx9kp2-wm4tn8-1", false),
+        ("allowed", &echo, "kq7_alpha-zx9kp2-wm4tn8-1", true),
+        ("quoted", &echo, "pa\"ss\\word-and-more-x7q9z2", false),
+    ];
+    // Every text in a logged entry, keys included.
+    fn texts(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            serde_json::Value::Array(xs) => xs.iter().for_each(|x| texts(x, out)),
+            serde_json::Value::Object(o) => o.iter().for_each(|(k, x)| {
+                out.push(k.clone());
+                texts(x, out)
+            }),
+            _ => {}
+        }
+    }
+    let mut wrong: Vec<String> = Vec::new();
+    // What a refused caller is told, as on main: the plain sentence, nothing of where or why.
+    let plain_http = String::from_utf8(data::DataResponse::json_error(500, "this deployment may not answer its callers with the secret \"k\"").body).unwrap();
+    let plain_ws = format!("500 {}", String::from_utf8(data::DataResponse::json_error(500, "the WebSocket's block failed: its run log says why").body).unwrap());
+    for (side, far, secret, may_answer) in sides {
+        let port = free_port();
+        let bodies: String = routes
+            .iter()
+            .map(|(path, does, at, _)| format!("route.post(\"/{path}\", async (req) => {{\n  const got = await far.post(\"{at}\", {{ body: k }})\n  {does}\n}})\n\n"))
+            .collect();
+        // The note its caller chose goes to the far side beside the secret, and what comes back
+        // for it is answered.
+        let note = "route.post(\"/note\", async (req) => {\n  const got = await far.post(\"/n\", { body: `${k}|${req.body}` })\n  const said = JSON.parse(got.body)\n  return { note: said.note }\n})\n\n";
+        // A WebSocket whose open block answers with a slice of the reply, as a route can.
+        let socket = "route.websocket(\"/w\", {\n  open: async () => {\n    const got = await far.post(\"/e\", { body: k })\n    return got.body.slice(8, 20)\n  },\n})\n\n";
+        // Routes whose runs aren't logged write a balance, and a slice, out of the reply: the
+        // same rule as a logged one's, though they keep no timeline. (Each its own route: a run's
+        // writes to a collection are refused together, as the logged ones' are.)
+        let quiet = "route.post(\"/quiet\", async (req) => {\n  const got = await far.post(\"/j\", { body: k })\n  const said = JSON.parse(got.body)\n  seen[\"q\"] = { v: said.balance }\n  return { ok: true }\n}, { log: \"unrecorded\" })\n\nroute.post(\"/quiets\", async (req) => {\n  const got = await far.post(\"/e\", { body: k })\n  seen[\"qs\"] = { v: got.body.slice(8, 20) }\n  return { ok: true }\n}, { log: \"unrecorded\" })\n\n";
+        // A flow that may answer with its secret has a route that does: its approval asks.
+        let shows = if may_answer { "route.get(\"/shows\", () => ({ k }))\n\n" } else { "" };
+        let text = format!(
+            "import {{ flow, route, text_length }} from \"holon\"\nimport k from \"secret:k\"\nimport far from \"host:{far}\"\nimport other from \"host:{other}\"\nimport seen from \"collection:seen\"\n\nflow(\"parts-{side}\", {{ port: {port} }})\n\n{bodies}{note}{quiet}{socket}{shows}route.get(\"/read\", () => seen.list())\n"
+        );
+        let slug = deploy_text_to(&state, &text, &[far, &other]);
+        let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+        // Six characters of the secret in a row, as it is and as JSON writes it.
+        let once = serde_json::to_string(secret).unwrap();
+        let parts: Vec<String> = [secret, &once[1..once.len() - 1]]
+            .iter()
+            .flat_map(|s| {
+                let chars: Vec<char> = s.chars().collect();
+                chars.windows(6).map(|w| w.iter().collect::<String>()).collect::<Vec<_>>()
+            })
+            .collect();
+        let holds_a_part = |text: &str| parts.iter().any(|part| text.contains(part.as_str()));
+        let echoed = side != "silent";
+        let closed = echoed && !may_answer;
+        let said = |status: u16, body: &str| format!("{status} {}", if holds_a_part(body) { "(with a part)" } else { body });
+        // What each call was, for its entry: the route, and whether its answer is refused.
+        let mut calls: Vec<(String, bool)> = Vec::new();
+        for (path, _, _, long) in &routes {
+            let (status, body, _) = data_call(&state, &slug, "POST", &format!("/{path}"), "");
+            let refused = closed && *long;
+            calls.push((path.to_string(), refused));
+            // What a caller gets holds no part of it, unless the flow may answer with its secret.
+            if holds_a_part(&body) && !may_answer {
+                wrong.push(format!("{side}, /{path}: the caller is answered with a part of the secret"));
+            }
+            if refused != (status == 500) || (!refused && status != 200) {
+                wrong.push(format!("{side}, /{path}: answered {}", said(status, &body)));
+            }
+            // A refused caller is told the plain sentence, as on main: not which service the flow
+            // talks to, nor the rule, nothing a right guess and a wrong one could differ by.
+            if refused && body != plain_http {
+                wrong.push(format!("{side}, /{path}: a refused caller is told {}", said(status, &body)));
+            }
+            if *path == "balance" && !body.contains("12") {
+                wrong.push(format!("{side}, /balance: what isn't the secret isn't answered: {body}"));
+            }
+            if *path == "code" && !body.contains("EUR") {
+                wrong.push(format!("{side}, /code: a short text isn't answered: {body}"));
+            }
+        }
+        // The attack. Six characters where the note goes, in upper case, which the far side gives
+        // back in lower case beside the secret: a part of the secret as it reads (a right guess,
+        // and how it begins), or nothing of it (a wrong guess). Each is answered the same. A note
+        // too short to hold a part is answered as it is.
+        let chars: Vec<char> = secret.chars().collect();
+        let window = |from: usize| chars[from..from + 6].iter().collect::<String>().to_uppercase();
+        let guesses = [("a right guess", window(6)), ("how it begins", window(0)), ("a wrong guess", "QZQZQZ".to_string())];
+        let mut answers = Vec::new();
+        let first_guess = calls.len();
+        for (what, guess) in &guesses {
+            let (status, body, _) = data_call(&state, &slug, "POST", "/note", guess);
+            calls.push(("note".into(), closed));
+            // (Its own note given back is its own, where no reply held the secret.)
+            if holds_a_part(&body.replace(&guess.to_lowercase(), "")) && !may_answer {
+                wrong.push(format!("{side}, /note, {what}: the caller is answered with a part of the secret"));
+            }
+            if closed != (status == 500) || (!closed && status != 200) {
+                wrong.push(format!("{side}, /note, {what}: answered {}", said(status, &body)));
+            }
+            if closed && body != plain_http {
+                wrong.push(format!("{side}, /note, {what}: a refused caller is told {}", said(status, &body)));
+            }
+            // What a caller can tell a right guess from a wrong one by: nothing but its own text.
+            answers.push((status, body.replace(&guess.to_lowercase(), "<the note>")));
+        }
+        if answers.iter().any(|a| *a != answers[0]) {
+            wrong.push(format!("{side}, /note: a right guess, how it begins and a wrong guess are answered differently: {:?}", answers.iter().map(|(s, b)| said(*s, b)).collect::<Vec<_>>()));
+        }
+        let (status, body, _) = data_call(&state, &slug, "POST", "/note", "abc");
+        calls.push(("note".into(), false));
+        if status != 200 || !body.contains("abc") {
+            wrong.push(format!("{side}, /note: a note of three characters is answered {}", said(status, &body)));
+        }
+        // Not in the log: the same writes, on routes whose runs keep no timeline.
+        for quiet in ["/quiet", "/quiets"] {
+            let (status, body, _) = data_call(&state, &slug, "POST", quiet, "");
+            if status != 200 {
+                wrong.push(format!("{side}, {quiet}: answered {}", said(status, &body)));
+            }
+        }
+        // The write of a slice doesn't land; of a balance, it does, logged or not.
+        let (_, kept, _) = data_call(&state, &slug, "GET", "/read", "");
+        if echoed == kept.contains("\"qs\"") || !kept.contains("\"q\"") {
+            wrong.push(format!("{side}: of the slice and the balance an unlogged run wrote, the store has {}", if holds_a_part(&kept) { "(a part)" } else { kept.as_str() }));
+        }
+        if holds_a_part(&kept) {
+            wrong.push(format!("{side}: the store keeps a part of the secret"));
+        }
+        if echoed == kept.contains("\"p\"") || !kept.contains("\"b\"") {
+            wrong.push(format!("{side}: of the slice and the balance written, the store has {}", if holds_a_part(&kept) { "(a part)" } else { kept.as_str() }));
+        }
+        let entries = log_entries(&state, &slug);
+        assert_eq!(entries.len(), calls.len() + 1, "{side}");
+        for (entry, (path, refused)) in entries.iter().zip(&calls) {
+            let mut held = Vec::new();
+            texts(entry, &mut held);
+            // A note is the caller's own text: what it says of the secret is the caller's guess,
+            // not the run's. (Where the reply held the secret, the stated limit below holds what
+            // the record does with it.)
+            if path == "note" {
+                for (_, guess) in &guesses {
+                    held = held.into_iter().map(|t| t.replace(guess.as_str(), "").replace(&guess.to_lowercase(), "")).collect();
+                }
+            }
+            if held.iter().any(|t| holds_a_part(t)) {
+                wrong.push(format!("{side}, /{path}: its record holds six characters of the secret in a row"));
+            }
+            // Where no reply held it, nothing is marked: the record is as it was.
+            if !echoed && held.iter().any(|t| t.contains("‹derived #")) {
+                wrong.push(format!("{side}, /{path}: its record marks something as a part"));
+            }
+            if entry["withheld"] == true {
+                wrong.push(format!("{side}, /{path}: its record withholds"));
+            }
+            // A refusal tells the flow's author what to do, and only what this flow can do: it
+            // names the service that sent the secret back and the change to make, never the
+            // approval to answer with the secret, since a flow that has it isn't refused (the
+            // "allowed" side, which answers every route). The secret whole says it is that.
+            let error = entry["error"].as_str().unwrap_or_default();
+            let told = if path == "whole" {
+                error.contains("refused to answer with the secret \"k\"")
+            } else {
+                error.contains(&format!("refused to answer with what {far} sent back: its reply held the secret \"k\""))
+                    && error.contains(&format!("Change the flow so this route doesn't answer with what {far} sent back"))
+                    && error.contains("a number, a true or false, or a text shorter than six characters")
+                    && !error.contains("approv")
+            };
+            if *refused != told {
+                wrong.push(format!("{side}, /{path}: its record says {error:?}"));
+            }
+        }
+        // A STATED LIMIT, held here so that nobody loosens it unseen. To the caller the three
+        // guesses are one answer (above). In the record they are not: the far side gave the
+        // right guess back as six of the secret's characters in a row, which is a part of the
+        // secret as the record finds one, so it is marked, and a wrong guess is not. Someone who
+        // may read this flow's runs and can also call its route can so test a guess (secrets.md
+        // section 4, checking-runs.md). Marking by kind instead (every text of six or more from
+        // such a reply) would leave no such signal, and would hide a customer's name in every
+        // such flow's record: not taken, since who may read a run's steps is what is controlled.
+        let marked: Vec<bool> = (0..3).map(|i| entries[first_guess + i]["derived"].as_array().is_some_and(|hashes| !hashes.is_empty())).collect();
+        if marked != [echoed, echoed, false] {
+            wrong.push(format!("{side}, /note: of a right guess, how it begins and a wrong guess, its record marks {marked:?}"));
+        }
+        // On a WebSocket, as on a route: an open block that answers with what the far side sent
+        // back is refused where the flow may not answer with its secret. The page is told only
+        // the sentence any failed block gets, as on main; the run's record names the service and
+        // the change to make, never an approval.
+        sync_listeners(&state);
+        let opened: Result<String, String> = {
+            use tungstenite::client::IntoClientRequest;
+            let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
+            match tungstenite::client(format!("ws://127.0.0.1:{port}/w").into_client_request().unwrap(), stream) {
+                Ok((mut ws, _)) => loop {
+                    match ws.read() {
+                        Ok(tungstenite::Message::Text(t)) => break Ok(t.to_string()),
+                        Ok(_) => continue,
+                        Err(e) => break Err(format!("read: {e}")),
+                    }
+                },
+                Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response))) => {
+                    Err(format!("{} {}", response.status().as_u16(), String::from_utf8_lossy(response.body().as_deref().unwrap_or_default())))
+                }
+                Err(e) => Err(format!("handshake: {e}")),
+            }
+        };
+        let fine = match &opened {
+            Err(told) => closed && *told == plain_ws,
+            Ok(first) => !closed && holds_a_part(first) == may_answer,
+        };
+        if !fine {
+            let shown = match &opened {
+                Ok(t) | Err(t) => if holds_a_part(t) { "(with a part)".to_string() } else { t.clone() },
+            };
+            wrong.push(format!("{side}, the WebSocket: opened as {} {shown}", if opened.is_ok() { "ok" } else { "refused" }));
+        }
+        let socket_run = (0..50).find_map(|_| {
+            let found = log_entries(&state, &slug).into_iter().find(|e| e["kind"] == "websocket");
+            if found.is_none() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            found
+        });
+        match socket_run {
+            None => wrong.push(format!("{side}, the WebSocket: no run in its log")),
+            Some(entry) => {
+                let error = entry["error"].as_str().unwrap_or_default();
+                let told = error.contains(&format!("refused to answer with what {far} sent back: its reply held the secret \"k\""))
+                    && error.contains(&format!("Change the flow so this route doesn't answer with what {far} sent back"))
+                    && !error.contains("approv");
+                if told != closed || (!closed && !error.is_empty()) {
+                    wrong.push(format!("{side}, the WebSocket: its record says {error:?}"));
+                }
+            }
+        }
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let report = verify::check(&export, None, &BTreeMap::new());
+        // A line changed and chained again, in the ways a refusal opens: a write that landed
+        // taken out of its line, and a write the server refused put into its line; a refused
+        // answer's error, status or answer changed; the reply, holding the secret whole, taken
+        // out of its line; a name in the reply as read changed, where nothing after uses it.
+        // Each reads as changed: the check refuses just what the server refused, holds a step
+        // holding the secret to the size its record writes it at, and holds what it takes from
+        // the line to the reply. And the stated limit (secrets.md §4, closed by stage B): the
+        // reply as read, holding a piece of the secret beside the whole, taken out of its line,
+        // reads as too large to keep and passes as checked. Asserted as it is today, so the
+        // change that closes it turns this row on purpose.
+        #[derive(PartialEq, Debug)]
+        enum Says {
+            Differs,
+            Matched,
+        }
+        if side == "echoes" {
+            let values: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+            let at = |route: &str| calls.iter().position(|(path, _)| path == route).unwrap();
+            let landed = values[at("kept")]["performed"].clone();
+            let written = &values[at("written")]["performed"];
+            assert!(landed.as_array().is_some_and(|p| !p.is_empty()) && written.as_array().is_none_or(|p| p.is_empty()), "{side}: the balance's line has its write and the slice's has none: {landed} {written}");
+            // The kept run's step that read the reply as JSON: the one that holds the name.
+            let name = r#"["name",{"type":"Text","value":"Alice Example"}]"#;
+            let read = values[at("kept")]["timeline"].as_array().unwrap().iter().position(|t| t["outputs"].to_string().contains(name)).expect("the kept run's line keeps the reply as read");
+            // The written run's reply: a step the walk says is clean, holding the secret whole.
+            let whole = values[at("written")]["timeline"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|t| {
+                    let outputs = t["outputs"].to_string();
+                    outputs.contains(r#"["body",{"type":"Text","value":"‹secret:k "#) && outputs.contains(r#"["headers","#)
+                })
+                .expect("the written run's line keeps the reply");
+            type Change = Box<dyn Fn(&mut serde_json::Value)>;
+            let changes: Vec<(&str, usize, Change, Says)> = vec![
+                ("a write that landed taken out", at("kept"), Box::new(|v| v["performed"] = serde_json::json!([])), Says::Differs),
+                ("a write the server refused put in", at("written"), Box::new(move |v| v["performed"] = landed.clone()), Says::Differs),
+                ("a refused answer's error taken out", at("slice"), Box::new(|v| v["error"] = serde_json::Value::Null), Says::Differs),
+                ("a refused answer's status changed", at("slice"), Box::new(|v| v["status"] = 200.into()), Says::Differs),
+                ("what a refused caller was told changed", at("slice"), Box::new(|v| v["response_body"] = "{}".into()), Says::Differs),
+                ("the reply, holding the secret whole, taken out of its line", at("written"), Box::new(move |v| v["timeline"][whole]["outputs"] = serde_json::Value::Null), Says::Differs),
+                ("a step that read the reply taken out of its line", at("kept"), Box::new(move |v| v["timeline"][read]["outputs"] = serde_json::Value::Null), Says::Matched),
+                ("a name in the reply as read changed", at("kept"), Box::new(move |v| v["timeline"][read]["outputs"] = serde_json::from_str(&v["timeline"][read]["outputs"].to_string().replace("Alice Example", "Bob Example")).unwrap()), Says::Differs),
+            ];
+            for (what, line, change, says) in changes {
+                let mut lines: Vec<String> = Vec::new();
+                for (j, v) in values.iter().enumerate() {
+                    let mut v = v.clone();
+                    if j == line {
+                        change(&mut v);
+                    }
+                    if let Some(before) = lines.last() {
+                        v["prev"] = recorder::line_hash(before).into();
+                    }
+                    lines.push(serde_json::to_string(&v).unwrap());
+                }
+                let head = recorder::line_hash(lines.last().unwrap());
+                let forged = verify::Export { lines, head, ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+                let report = verify::check(&forged, None, &BTreeMap::new());
+                let seq = values[line]["seq"].as_u64().unwrap();
+                let said = report.reruns.iter().find(|(s, _)| *s == seq).map(|(_, r)| r);
+                let as_said = match said {
+                    Some(verify::Rerun::Differs(_)) => Some(Says::Differs),
+                    Some(verify::Rerun::Matched) => Some(Says::Matched),
+                    _ => None,
+                };
+                if as_said.as_ref() != Some(&says) {
+                    let stated = if says == Says::Matched { " (the stated limit's row: if stage B closed it, make this row say Differs)" } else { "" };
+                    wrong.push(format!("{side}: {what}, and holon verify says {said:?}, not {says:?}{stated}:\n{}", verify::describe(&report, None)));
+                }
+            }
+        }
+        for (seq, rerun) in &report.reruns {
+            let path = calls.get(*seq as usize).map_or("read", |c| c.0.as_str());
+            match rerun {
+                verify::Rerun::Differs(why) => wrong.push(format!("{side}, /{path}: holon verify says it differs: {why}")),
+                // Each is run again and found the same, a refused write refused there too.
+                verify::Rerun::Skipped(why) => wrong.push(format!("{side}, /{path}: not run again: {why}")),
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(other_hits.lock().unwrap().get("/b").copied().unwrap_or(0), 4, "a slice goes on to a host the approval shows what is answered going to");
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 // ── key claims: a key read before a call is held until the run commits ───────────────────────
 // (docs/L4s/key-claims-L4.md §10)
 
@@ -11774,12 +12277,15 @@ fn changes_of(line: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
 /// log keeps by its hash ("sized", R66); a flow that never keeps a key, a text computed from
 /// its secret holding the caller's CVC under it (withheld, as the record lists no hash of it)
 /// beside its secret sent as it is (whole: said to withhold, refused) ("cards"); and calls,
-/// reads and a claim with no secret ("calls",
-/// "reads"). Not, and so where to look next: a step that computes from a secret past that size
+/// reads and a claim with no secret ("calls", "reads"); and a call whose reply sends the secret
+/// back, what the flow reads out of it answered (refused), written (refused, so its line has no
+/// write) and, a balance, written ("echoed", R70); on that flow, a change to a step holding the
+/// mark of a piece read out of the reply, or its whole timeline taken out, is R70's stated limit
+/// (secrets.md §4, closed by stage B), counted on its own and asserted to be found on that flow
+/// only. Not, and so where to look next: a step that computes from a secret past that size
 /// or carrying such a file (withheld, its record held by the "computed" row of
 /// `a_runs_record_reads_the_same_whatever_its_secret`); a mark as a record's key (its "keyed"
-/// row); a value computed from a secret answered to the caller; a call whose answer echoes the
-/// secret; a resume token or a tainted value (a caller's key) in a call; a secret JSON spells
+/// row); a value computed from a secret answered to the caller; a resume token or a tainted value (a caller's key) in a call; a secret JSON spells
 /// another way; one reached inside a function applied to each item or inside a module; and
 /// runs of other kinds (a feed's, a schedule's, one flow calling another).
 ///
@@ -11873,6 +12379,37 @@ route.post("/upload", async (req) => {
     .replace("HOST", &host)
     .replace("PORT", &free_port().to_string());
     let sized = deploy_text(&state, &text, &host);
+    // And one whose far side sends its secret back: what it reads out of that reply is the
+    // secret's again (R70). A slice answered is refused; a slice written is refused, its line
+    // keeping no write; a balance written lands. The check refuses what the server refused.
+    let far = echoing_server(false);
+    let text = r#"import { flow, route } from "holon"
+import k from "secret:k"
+import far from "host:HOST"
+import seen from "collection:seen"
+
+flow("echoed", { port: PORT })
+
+route.post("/slice", async (req) => {
+  const got = await far.post("/e", { body: k })
+  return { part: got.body.slice(8, 20), n: req.body }
+})
+
+route.post("/written", async (req) => {
+  const got = await far.post("/e", { body: k })
+  seen["p"] = { v: got.body.slice(8, 20) }
+  return { n: req.body }
+})
+
+route.post("/kept", async (req) => {
+  const got = await far.post("/j", { body: k })
+  seen["b"] = { v: JSON.parse(got.body).balance }
+  return { n: req.body }
+})
+"#
+    .replace("HOST", &far)
+    .replace("PORT", &free_port().to_string());
+    let echoed = deploy_text(&state, &text, &far);
     // And one that never keeps a key (never_keep): /sign splices its secret's base64 into the
     // form its caller sent, the CVC under its key in it, a text of which no hash is listed, so its
     // record withholds what it computed (`secrets::born`), as it honestly does; /plain sends its
@@ -11883,7 +12420,7 @@ route.post("/upload", async (req) => {
         free_port()
     );
     let cards = deploy_text(&state, &text, &host);
-    // And one that reads:an item of a collection it writes (so it claims it before it calls
+    // And one that reads: an item of a collection it writes (so it claims it before it calls
     // out), a folder's file, a database's row. Each read is answered from the line (R62).
     let files = std::env::temp_dir().join(format!("holon-sweep-reads-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&files).unwrap();
@@ -11898,7 +12435,14 @@ route.post("/upload", async (req) => {
     );
     let reads = deploy_text(&state, &text, &host);
     let big = format!("live_{}", "q".repeat(recorder::Timer::MAX_RECORDED_BYTES));
-    for (slug, value) in [(&signed, "live_alpha-secret-value-1"), (&counted, "live_alpha-secret-value-1"), (&large, big.as_str()), (&sized, "live_alpha-secret-value-1"), (&cards, "live_alpha-secret-value-1")] {
+    for (slug, value) in [
+        (&signed, "live_alpha-secret-value-1"),
+        (&counted, "live_alpha-secret-value-1"),
+        (&large, big.as_str()),
+        (&sized, "live_alpha-secret-value-1"),
+        (&cards, "live_alpha-secret-value-1"),
+        (&echoed, "kq7_alpha-zx9kp2-wm4tn8-1"),
+    ] {
         let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
         assert_eq!(route(&state, &set).status_code, 200);
     }
@@ -11919,6 +12463,13 @@ route.post("/upload", async (req) => {
         assert_eq!(status, 200, "{body}");
         let (status, body, _) = data_call(&state, &cards, "POST", "/plain", &format!("cvc=737&amount=1737&n={n}"));
         assert_eq!(status, 200, "{body}");
+        // The balance's route first: the newest run's state, changed, is said unchecked where it
+        // wrote a collection and no run began from what it left (R62), which this sweep would
+        // count as saying less; a newest run that wrote none breaks.
+        for (path, answers) in [("/kept", 200), ("/slice", 500), ("/written", 200)] {
+            let (status, body, _) = data_call(&state, &echoed, "POST", path, n);
+            assert_eq!(status, answers, "{path}: {body}");
+        }
     }
     let (status, body, _) = data_call(&state, &reads, "PUT", "/keep", "1");
     assert_eq!(status, 200, "{body}");
@@ -11967,10 +12518,11 @@ export const pay = action(async (order) => {
     let mut by_field: BTreeMap<String, usize> = BTreeMap::new();
     let mut marks = 0;
     // Per flow: tried, passing without the head, passing with it, as checked, saying less, on a
-    // run not re-run, a call's answer changed.
-    let mut per_flow: BTreeMap<String, [usize; 7]> = BTreeMap::new();
+    // run not re-run, a call's answer changed, a piece's step left out (R70's stated limit).
+    let mut per_flow: BTreeMap<String, [usize; 8]> = BTreeMap::new();
     let (mut unrun, mut answered, mut flips) = (0, 0, Vec::new());
-    for slug in ["c", "seen", calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), sized.as_str(), cards.as_str(), reads.as_str(), "payouts"] {
+    let mut pieces: Vec<String> = Vec::new();
+    for slug in ["c", "seen", calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), sized.as_str(), cards.as_str(), reads.as_str(), echoed.as_str(), "payouts"] {
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req_as(&ada, "GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
         let honest = verify::check(&export, None, &BTreeMap::new());
         // The flow whose record withholds isn't run again: each of its runs says so.
@@ -11995,7 +12547,7 @@ export const pay = action(async (order) => {
         // line's say-so (R61). And the flow whose secret is larger than a step's record keeps its
         // step on the mark (R63).
         let said = verify::describe(&honest, None);
-        let called = [calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), sized.as_str(), cards.as_str(), reads.as_str()].contains(&slug);
+        let called = [calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), sized.as_str(), cards.as_str(), reads.as_str(), echoed.as_str()].contains(&slug);
         // The reading flow's line holds what it read, and what it claimed before it called out.
         if slug == reads {
             assert!(export.lines.iter().any(|l| l.contains("\"reads\":") && l.contains("\"claims\":")), "{slug}: its lines hold reads and claims");
@@ -12003,6 +12555,12 @@ export const pay = action(async (order) => {
         assert_eq!(said.contains("called out: what their calls were answered is the log's say-so"), called, "{slug}:\n{said}");
         if slug == sized {
             assert!(export.lines.iter().all(|l| !l.contains("\"withheld\":true")), "{slug}: a line withholds");
+        }
+        // The echoing flow's writes: the balance's line has one, the slice's has none.
+        if slug == echoed {
+            let wrote = |l: &&String| l.contains("CollectionWrite");
+            assert_eq!(export.lines.iter().filter(wrote).count(), 2, "{slug}: the balance written twice, the slice never");
+            assert!(export.lines.iter().any(|l| l.contains("derived #")), "{slug}: a part of its secret is marked");
         }
         if slug == large {
             assert!(export.lines.iter().all(|l| !l.contains("\"withheld\":true") && l.contains("‹secret:k ")), "{slug}: a line withholds, or keeps no step with its secret's mark");
@@ -12085,6 +12643,19 @@ export const pay = action(async (order) => {
                 if parts.len() > 4 && parts[0] == "rounds" && parts[2] == "exchanges" && parts[4] == "response" {
                     answered += 1;
                     counts[6] += 1;
+                    continue;
+                }
+                // R70's stated limit (secrets.md §4, closed by stage B): in a run whose far side
+                // sent a secret back, a step holding the mark of a piece read out of the reply,
+                // changed or left out, or the run's whole timeline taken out. The server keeps
+                // such a step as the run had it, so verify can't tell one left out from one too
+                // large to keep, and takes those it can't compute from the line. Counted on its
+                // own, and asserted below to be found on the echoing flow only.
+                let echoing = line["rounds"].to_string().contains("\u{2039}secret:");
+                let piece_at = |n: &str| n.parse::<usize>().is_ok_and(|n| line["timeline"][n]["outputs"].to_string().contains("\u{2039}derived #"));
+                if echoing && (at == "timeline/out" || (parts.len() > 2 && parts[0] == "timeline" && piece_at(parts[1]))) {
+                    counts[7] += 1;
+                    pieces.push(format!("{slug} run {seq}: {at}"));
                     continue;
                 }
                 match account(&report) == account(&honest) {
@@ -12181,10 +12752,16 @@ export const pay = action(async (order) => {
         less_state.len(),
         ends_0.len()
     );
-    for (slug, [tried, passed, witnessed, checked, less, unrun, answered]) in &per_flow {
-        eprintln!("  {slug}: {tried} tried, {passed} pass without the head, {witnessed} with it; {checked} as checked, {less} saying less, {unrun} on a run not re-run, {answered} a call's answer");
+    for (slug, [tried, passed, witnessed, checked, less, unrun, answered, piece]) in &per_flow {
+        eprintln!("  {slug}: {tried} tried, {passed} pass without the head, {witnessed} with it; {checked} as checked, {less} saying less, {unrun} on a run not re-run, {answered} a call's answer, {piece} a piece's step left out");
     }
-    eprintln!("{unrun} pass on a run not re-run, {answered} change what a call was answered");
+    eprintln!("{unrun} pass on a run not re-run, {answered} change what a call was answered, {} a piece's step left out:\n{}", pieces.len(), pieces.join("\n"));
+    // The stated limit stays where it is: no flow but the echoing one has a change of its kind.
+    let spread: Vec<&String> = per_flow.iter().filter(|(slug, c)| **slug != echoed && c[7] > 0).map(|(slug, _)| slug).collect();
+    assert!(spread.is_empty(), "a piece's step left out passes on a flow other than the echoing one: {spread:?}");
+    if !leaks.is_empty() || !said_less.is_empty() {
+        eprintln!("as checked:\n{}\nsaying less:\n{}", leaks.join("\n"), said_less.join("\n"));
+    }
     assert!(flips.is_empty(), "a line that says whether it withholds, changed, passes: {flips:?}");
     assert!(witnessed.is_empty(), "{} of {tried} changes pass with the witnessed head:\n{}", witnessed.len(), witnessed.join("\n"));
     assert!(leaks.is_empty(), "{} of {tried} changes pass as checked:\n{}", leaks.len(), leaks.join("\n"));
