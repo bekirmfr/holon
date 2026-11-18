@@ -90,6 +90,10 @@ pub struct Exporter {
     before_send: OnceLock<Hook>,
     /// When the witness last took a batch (ms since the epoch; 0: not since the server started).
     taken_ms: std::sync::atomic::AtomicU64,
+    /// Why the witness didn't take the last batch, while it doesn't: an admin's warning
+    /// (storage.rs), never `/health`'s, since one witness down would take every server it
+    /// witnesses out at once.
+    failing: Mutex<Option<String>>,
 }
 
 /// The witness the heads go to, as the console's Overview says it (summary.rs): where (its
@@ -104,9 +108,18 @@ pub struct Witness {
 
 /// The witness, if heads are being exported.
 pub fn witness() -> Option<Witness> {
+    #[cfg(test)]
+    if let Some(set) = in_test::get() {
+        return Some(set);
+    }
     let exporter = EXPORTER.get()?;
     let taken = exporter.taken_ms.load(std::sync::atomic::Ordering::Relaxed);
     Some(Witness { address: address_of(&exporter.url), taken_ms: (taken > 0).then_some(taken), waiting: exporter.pending.lock().unwrap().heads.len() })
+}
+
+/// The witness, and why it doesn't take the runs' heads, while it doesn't.
+pub fn failing() -> Option<(Witness, String)> {
+    EXPORTER.get()?.failing()
 }
 
 /// A URL's scheme, host and port: what's before its path, without a login.
@@ -205,6 +218,7 @@ impl Exporter {
             agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build(),
             before_send: OnceLock::new(),
             taken_ms: std::sync::atomic::AtomicU64::new(0),
+            failing: Mutex::new(None),
         };
         // A queue a server before this one let grow past the bound.
         let cut = {
@@ -330,9 +344,23 @@ impl Exporter {
     }
 
     /// Send what waits now, a batch at a time: the number sent, or why the witness didn't take a
-    /// batch (what it didn't take still waits). Heads queued meanwhile wait for the next time:
-    /// a witness that runs on this server makes a head of its own for each batch it takes.
+    /// batch (what it didn't take still waits, and why is kept until one is taken: `failing`).
+    /// Heads queued meanwhile wait for the next time: a witness that runs on this server makes a
+    /// head of its own for each batch it takes.
     pub fn flush(&self) -> Result<usize, String> {
+        let flushed = self.send_waiting();
+        *self.failing.lock().unwrap() = flushed.as_ref().err().cloned();
+        flushed
+    }
+
+    /// The witness, and why it didn't take the last batch, while it doesn't.
+    pub fn failing(&self) -> Option<(Witness, String)> {
+        let why = self.failing.lock().unwrap().clone()?;
+        let taken = self.taken_ms.load(std::sync::atomic::Ordering::Relaxed);
+        Some((Witness { address: address_of(&self.url), taken_ms: (taken > 0).then_some(taken), waiting: self.waiting() }, why))
+    }
+
+    fn send_waiting(&self) -> Result<usize, String> {
         let mut left = self.waiting();
         let mut sent = 0;
         loop {
@@ -506,6 +534,30 @@ mod tests {
         assert_eq!(receipt["batch"], id);
         assert_eq!(receipt["receipt"]["took"], id, "the witness's answer, as it gave it");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guards: a witness that doesn't take the heads is an admin's warning saying where, why and
+    /// how many wait, until it takes a batch again.
+    /// Why: a witness down for days showed as one stderr line and nothing in the warnings (audit
+    /// R39, EN's P5). It is never `/health`'s, since one witness down would take every server it
+    /// witnesses out at once.
+    /// If it fails: the witness fails in silence, or a witness that recovered goes on being
+    /// reported.
+    #[test]
+    fn a_witness_that_doesnt_take_the_heads_is_a_warning_until_it_does() {
+        let status = Arc::new(Mutex::new(503));
+        let (url, _) = witness(Arc::clone(&status));
+        let exporter = Exporter::new(&url, None, None).unwrap();
+        exporter.note(head(0));
+        assert!(exporter.failing().is_none(), "nothing sent yet");
+        assert!(exporter.flush().is_err());
+        let (at, why) = exporter.failing().expect("it failed");
+        let warning = crate::storage::witness_warning(&at, &why);
+        assert_eq!(warning.key, "witness");
+        assert!(warning.says.contains(&address_of(&url)) && warning.says.contains("503") && warning.says.contains(": 1 wait; it has taken none"), "{warning:?}");
+        *status.lock().unwrap() = 200;
+        assert_eq!(exporter.flush(), Ok(1));
+        assert!(exporter.failing().is_none(), "it takes them again");
     }
 
     /// Guards: the receipts kept are the newest, rolled to one file before them past
@@ -767,5 +819,23 @@ mod tests {
         for bad in ["http://witness.example/heads", "http://localhost.evil.example/", "ftp://x", "witness"] {
             assert!(Exporter::new(bad, None, None).is_err(), "{bad}");
         }
+    }
+}
+
+/// A witness this thread's summaries say is set, for a test: the exporter is the process's, and
+/// one a test started would be sent every other test's heads.
+#[cfg(test)]
+pub(crate) mod in_test {
+    use super::Witness;
+    use std::cell::RefCell;
+
+    thread_local!(static SET: RefCell<Option<Witness>> = const { RefCell::new(None) });
+
+    pub(crate) fn set(witness: Option<Witness>) {
+        SET.with(|s| *s.borrow_mut() = witness);
+    }
+
+    pub(super) fn get() -> Option<Witness> {
+        SET.with(|s| s.borrow().clone())
     }
 }

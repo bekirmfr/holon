@@ -52,6 +52,10 @@ describe("a resource's row", () => {
     );
     expect(line.notes).toEqual(["logs in with OAuth (https://login.example/token from env:HOLON_SECRET_OPS_OAUTH)"]);
     expect(mailLine({ ...mail, smtp: "", mailbox: null, oauth: null }).where).toBeNull();
+    // To whoever may not bind, the server leaves out where its servers are: what it does is said.
+    const unplaced: MailEntry = { name: "ops", deployment: null, sends: true, from: mail.from, to: mail.to, mailbox: { folder: "INBOX", done: "Processed", every: 30 } };
+    expect(mailLine(unplaced).where).toBe("sends as Treasury <treasury@acme.com> · to *@acme.com · receives in INBOX, moved to Processed · no verdict believed");
+    expect(mailLine(unplaced).notes).toEqual([]);
   });
 
   it("says a feed's and a queue's address, and what they keep", () => {
@@ -65,5 +69,9 @@ describe("a resource's row", () => {
       "http://sqs.example/1/retries.fifo (from env:HOLON_SECRET_RETRIES_URL) · FIFO · 256 KiB at most · out of sight for 300s · a failed run's message is left for the redrive",
     );
     expect(lineLabel(queueLine(queue))).toBe("queue retries for payouts");
+    // To whoever may not bind, the server leaves out where each is.
+    expect(feedLine({ name: "prices", deployment: null, buffer: 1000, idle: 90, on_full: "wait" }).where).toBe("1000 may wait · quiet for 90s at most");
+    expect(feedLine({ name: "prices", deployment: null, buffer: 1000, idle: 90, on_full: "wait", database: "ledger" }).where).toBe("listens on the database ledger · 1000 may wait · quiet for 90s at most");
+    expect(queueLine({ ...queue, url: undefined, address: undefined }).where).toBe("FIFO · 256 KiB at most · out of sight for 300s · a failed run's message is left for the redrive");
   });
 });

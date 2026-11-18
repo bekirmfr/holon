@@ -36,6 +36,11 @@ pub(crate) use holon_author::LIMIT_NAMES;
 pub(crate) const MODULE_FUEL_CEILING: u64 = 100 * holon_core::DEFAULT_MODULE_FUEL;
 pub(crate) const MODULE_MEMORY_CEILING: u64 = 16 * holon_core::DEFAULT_MODULE_MEMORY;
 
+/// What an editor reloading the policy is told when its file can't be read (`Policy::load`).
+pub(crate) const UNREAD: &str = "the policy file couldn't be read";
+/// ... and when it isn't TOML holon reads, with where in it.
+pub(crate) const UNPARSED: &str = "the policy file doesn't parse";
+
 /// Limits on durable runs (§4.3): how long one waiting point may wait, and how many runs may wait
 /// at once; and how deep a chain of flows calling flows may go. The host's, like the request
 /// limits; not part of a run (`holon_host::Limits`).
@@ -738,14 +743,30 @@ impl Policy {
     /// The policy in `path`, or the defaults when there is no such file. A file that exists but
     /// doesn't parse, names an unknown limit, or sets a default above its ceiling is an error:
     /// the server refuses to start rather than run under a policy nobody wrote.
-    pub(crate) fn load(path: &crate::paths::Place) -> Result<Policy, String> {
+    ///
+    /// Why it isn't (where the file is, the read's error, TOML's message) is for whoever runs
+    /// the server; an editor reloading it is told what is wrong without where the file is or the
+    /// error's text, and, for a file that isn't TOML holon reads, the line and column alone:
+    /// TOML's message can quote a line of the file or a value in it, which can name a secret's
+    /// source (audit R71).
+    pub(crate) fn load(path: &crate::paths::Place) -> Result<Policy, crate::failing::Failed> {
+        use crate::failing::{line_and_column, Failed};
         let Some(path) = path.at() else { return Ok(Policy::default()) };
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Policy::default()),
-            Err(e) => return Err(format!("could not read {path:?}: {e}")),
+            Err(e) => return Err(Failed::new(UNREAD, format!("could not read {path:?}: {e}"))),
         };
-        let policy = Policy::parse(&text).map_err(|e| format!("{path:?}: {e}"))?;
+        let policy = Policy::parse(&text).map_err(|e| {
+            let why = format!("{path:?}: {e}");
+            match toml::from_str::<PolicyFile>(&text) {
+                Err(not_toml) => {
+                    let (line, column) = line_and_column(&text, not_toml.span().map_or(0, |s| s.start));
+                    Failed::at(UNPARSED, line, column, why)
+                }
+                Ok(_) => Failed::reason(e, why),
+            }
+        })?;
         Ok(Policy { text: Some(text), ..policy })
     }
 

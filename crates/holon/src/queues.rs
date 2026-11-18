@@ -756,8 +756,10 @@ pub(crate) fn past_limit(performed: &[(Capability, Value)], largest: impl Fn(&st
 }
 
 /// `GET /deployments/<slug>/queues`: each queue its handlers listen to, and what its listener is
-/// doing; and each queue it sends to, and what its messages came to.
-pub(crate) fn handle_get_queues(state: &AppState, slug: &str) -> Response {
+/// doing; and each queue it sends to, and what its messages came to. Where each is, and an error as
+/// it names it, only for `sees_where` (whoever may bind, web console L4, Q4); anyone else is told
+/// the error with the queue named in its place.
+pub(crate) fn handle_get_queues(state: &AppState, slug: &str, sees_where: bool) -> Response {
     let (listened, sends): (Vec<(String, String)>, Vec<String>) = match state.deployments.lock().unwrap().get(slug) {
         Some(d) => (
             d.server.as_ref().map(|s| s.queues.iter().map(|q| (q.queue.clone(), q.label.clone())).collect()).unwrap_or_default(),
@@ -766,6 +768,7 @@ pub(crate) fn handle_get_queues(state: &AppState, slug: &str) -> Response {
         None => return err(404, format!("no deployment {slug:?}")),
     };
     let queues = &state.folders.queues;
+    let places = if sees_where { Vec::new() } else { state.folders.whereabouts(slug) };
     let listening: Vec<serde_json::Value> = listened
         .into_iter()
         .map(|(queue, label)| {
@@ -779,6 +782,9 @@ pub(crate) fn handle_get_queues(state: &AppState, slug: &str) -> Response {
                 l["label"] = serde_json::json!(label);
                 shown = l;
             }
+            if !sees_where {
+                folders::left_where(&mut shown, &places);
+            }
             shown
         })
         .collect();
@@ -789,7 +795,7 @@ pub(crate) fn handle_get_queues(state: &AppState, slug: &str) -> Response {
             let mut shown = serde_json::to_value(&sent).unwrap_or_default();
             shown["queue"] = serde_json::json!(queue);
             shown["waiting"] = serde_json::json!(waiting);
-            if let Some(address) = queues.resolve(slug, &queue).map(|b| b.address) {
+            if let Some(address) = queues.resolve(slug, &queue).map(|b| b.address).filter(|_| sees_where) {
                 shown["address"] = serde_json::json!(address);
             }
             shown
@@ -800,8 +806,14 @@ pub(crate) fn handle_get_queues(state: &AppState, slug: &str) -> Response {
 
 // ── admin ──
 
-fn shown(name: &str, deployment: Option<&str>, b: &Binding) -> serde_json::Value {
-    serde_json::json!({ "name": name, "deployment": deployment, "url": b.url, "address": b.address, "fifo": b.fifo, "largest": b.largest, "visibility": b.visibility, "keep_failed": b.keep_failed })
+/// A binding as the admin panel and `holon queue list` show it. Where it is (its address, and the
+/// source its URL is read from) only for `sees_where`: whoever may bind (web console L4, Q4).
+fn shown(name: &str, deployment: Option<&str>, b: &Binding, sees_where: bool) -> serde_json::Value {
+    let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "fifo": b.fifo, "largest": b.largest, "visibility": b.visibility, "keep_failed": b.keep_failed });
+    if sees_where {
+        (shown["url"], shown["address"]) = (serde_json::json!(b.url), serde_json::json!(b.address));
+    }
+    shown
 }
 
 fn labelled(name: &str, deployment: Option<&str>) -> String {
@@ -809,9 +821,10 @@ fn labelled(name: &str, deployment: Option<&str>) -> String {
 }
 
 /// `/admin/queues` (list, bind), `/admin/queues/<name>` (unbind; `?deployment=<slug>` for a
-/// deployment's own), or None for any other path. Only an admin gets this far (can.rs); what
-/// they do goes in the activity log.
-pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Response> {
+/// deployment's own), or None for any other path. The gate (can.rs) let the caller this far;
+/// `sees_where` says whether they may bind, and so see where each queue is. What they do goes in
+/// the activity log.
+pub(crate) fn route(state: &AppState, request: &Request, by: &str, sees_where: bool) -> Option<Response> {
     let url = request.url();
     let method = request.method();
     let all = &state.folders.queues;
@@ -819,8 +832,8 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
         return Some(match method {
             "GET" => {
                 let bound = all.all();
-                let server = bound.server.iter().map(|(n, b)| shown(n, None, b));
-                let own = bound.deployments.iter().flat_map(|(s, bs)| bs.iter().map(move |(n, b)| shown(n, Some(s), b)));
+                let server = bound.server.iter().map(|(n, b)| shown(n, None, b, sees_where));
+                let own = bound.deployments.iter().flat_map(|(s, bs)| bs.iter().map(move |(n, b)| shown(n, Some(s), b, sees_where)));
                 Response::json(&server.chain(own).collect::<Vec<_>>())
             }
             "POST" => {
@@ -846,7 +859,7 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                             let detail = crate::events::Detail { name: Some(b.name.clone()), ..Default::default() };
                             crate::events::note(&state.deployments, slug, "binding", format!("bound the queue {}", b.name), Some(by), detail);
                         }
-                        Response::json(&shown(&b.name, b.deployment.as_deref(), &q))
+                        Response::json(&shown(&b.name, b.deployment.as_deref(), &q, sees_where))
                     }
                     Err(e) => e,
                 }
@@ -932,7 +945,12 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         Err(code) => return code,
     };
     let line = |q: &serde_json::Value| {
-        let mut said = vec![q["name"].as_str().unwrap_or("").to_string(), format!("{} (from {})", q["address"].as_str().unwrap_or(""), q["url"].as_str().unwrap_or(""))];
+        // Where it is, to whoever may bind (web console L4, Q4).
+        let at = match q["address"].as_str() {
+            Some(at) => format!("{at} (from {})", q["url"].as_str().unwrap_or("")),
+            None => "where, to whoever may bind".to_string(),
+        };
+        let mut said = vec![q["name"].as_str().unwrap_or("").to_string(), at];
         if q["fifo"].as_bool() == Some(true) {
             said.push("FIFO".into());
         }

@@ -1763,7 +1763,9 @@ function Canvas({
                 onRemove: async (forget) => {
                   const { records } = await deleteDeployment(route.slug);
                   if (!forget) {
-                    toast(`Removed ${route.slug}.${records ? ` Its run records are kept in ${records}.` : ""}`, "ok");
+                    // In full to whoever views the host; within the data folder to anyone else.
+                    const within = records && !/^([A-Za-z]:[\\/]|[\\/])/.test(records) ? " in the server's data folder" : "";
+                    toast(`Removed ${route.slug}.${records ? ` Its run records are kept in ${records}${within}.` : ""}`, "ok");
                   } else {
                     // Its keys forgotten once it is gone (keys.rs): what it left can't be opened again.
                     const f: Forgotten = await forgetKeys(route.slug).catch((e: unknown): Forgotten => ({ slug: route.slug, forgotten: false, root: { rotated: false }, error: e instanceof Error ? e.message : String(e) }));
