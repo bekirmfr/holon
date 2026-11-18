@@ -33,9 +33,14 @@ log = "0.4.4"
 httpdate = "1.0.2"
 
 # Holon: clippy's advice on upstream's code is upstream's to take, so the workspace's
-# `clippy -- -D warnings` doesn't fail on it; rustc's warnings still do.
+# `clippy -- -D warnings` doesn't fail on it. Of rustc's, upstream's code as published has two
+# unused imports and a never-used trait (today's compiler); every other warning still fails.
 [lints.clippy]
 all = { level = "allow", priority = -1 }
+
+[lints.rust]
+unused_imports = "allow"
+dead_code = "allow"
 
 [package.metadata.docs.rs]
 # Enable just one SSL implementation

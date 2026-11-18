@@ -2,7 +2,9 @@ use ascii::AsciiString;
 
 use std::io::Error as IoError;
 use std::io::Result as IoResult;
-use std::io::{BufReader, BufWriter, ErrorKind, Read};
+use std::io::{BufReader, BufWriter, ErrorKind, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -34,7 +36,39 @@ pub struct ClientConnection {
 
     // true if the connection goes through SSL
     secure: bool,
+
+    // Holon (PATCHED.md): how a response that says `Connection: close` ends the connection
+    closer: Arc<Closer>,
 }
+
+/// Holon (PATCHED.md): a response sent with `Connection: close` is the connection's last: no
+/// request after it is read, and the client is sent the end of the stream once it is written.
+pub(crate) struct Closer {
+    stop: AtomicBool,
+    sink: Arc<Mutex<BufWriter<RefinedTcpStream>>>,
+}
+
+impl Closer {
+    pub(crate) fn close(&self) {
+        self.stop.store(true, Ordering::Release);
+        if let Ok(mut sink) = self.sink.lock() {
+            let _ = sink.flush();
+            sink.get_mut().shutdown_write();
+        }
+    }
+}
+
+/// Holon (PATCHED.md): a connection that sent nothing of its next request within the idle limit.
+#[derive(Debug)]
+struct Idle;
+
+impl std::fmt::Display for Idle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("nothing sent within the idle limit")
+    }
+}
+
+impl std::error::Error for Idle {}
 
 /// Error that can happen when reading a request.
 #[derive(Debug)]
@@ -57,10 +91,16 @@ impl ClientConnection {
 
         let mut source = SequentialReaderBuilder::new(BufReader::with_capacity(1024, read_socket));
         let first_header = source.next().unwrap();
+        let sink = SequentialWriterBuilder::new(BufWriter::with_capacity(1024, write_socket));
+        let closer = Arc::new(Closer {
+            stop: AtomicBool::new(false),
+            sink: sink.shared(),
+        });
 
         ClientConnection {
             source,
-            sink: SequentialWriterBuilder::new(BufWriter::with_capacity(1024, write_socket)),
+            sink,
+            closer,
             remote_addr,
             next_header_source: first_header,
             no_more_requests: false,
@@ -77,7 +117,10 @@ impl ClientConnection {
     ///
     /// Reads until `CRLF` is reached. The next read will start
     ///  at the first byte of the new line.
-    fn read_next_line(&mut self) -> IoResult<AsciiString> {
+    ///
+    /// Holon (PATCHED.md): when `first` (a request line) and the idle limit passes before any of
+    ///  it comes, the error is `Idle`.
+    fn read_next_line(&mut self, first: bool) -> IoResult<AsciiString> {
         let mut buf = Vec::new();
         let mut prev_byte_was_cr = false;
 
@@ -85,6 +128,9 @@ impl ClientConnection {
             let byte = self.next_header_source.by_ref().bytes().next();
 
             let byte = match byte {
+                Some(Err(e)) if first && buf.is_empty() && crate::limits::timed_out(&e) => {
+                    return Err(IoError::new(ErrorKind::TimedOut, Idle))
+                }
                 Some(b) => b?,
                 None => return Err(IoError::new(ErrorKind::ConnectionAborted, "Unexpected EOF")),
             };
@@ -107,7 +153,7 @@ impl ClientConnection {
         let (method, path, version, headers) = {
             // reading the request line
             let (method, path, version) = {
-                let line = self.read_next_line().map_err(ReadError::ReadIoError)?;
+                let line = self.read_next_line(true).map_err(ReadError::ReadIoError)?;
 
                 parse_request_line(
                     line.as_str().trim(), // TODO: remove this conversion
@@ -118,7 +164,7 @@ impl ClientConnection {
             let headers = {
                 let mut headers = Vec::new();
                 loop {
-                    let line = self.read_next_line().map_err(ReadError::ReadIoError)?;
+                    let line = self.read_next_line(false).map_err(ReadError::ReadIoError)?;
 
                     if line.is_empty() {
                         break;
@@ -164,6 +210,10 @@ impl ClientConnection {
             }
         })?;
 
+        // Holon (PATCHED.md): its response can end the connection
+        let mut request = request;
+        request.closer = Some(self.closer.clone());
+
         // return the request
         Ok(request)
     }
@@ -179,7 +229,7 @@ impl Iterator for ClientConnection {
 
         // the client sent a "connection: close" header in this previous request
         //  or is using HTTP 1.0, meaning that no new request will come
-        if self.no_more_requests {
+        if self.no_more_requests || self.closer.stop.load(Ordering::Acquire) {
             return None;
         }
 
@@ -203,7 +253,15 @@ impl Iterator for ClientConnection {
                                  // se we have to close
                 }
 
-                Err(ReadError::ReadIoError(ref err)) if err.kind() == ErrorKind::TimedOut => {
+                // Holon (PATCHED.md): nothing of a next request within the idle limit: closed
+                // without an answer, as a kept-alive connection a server no longer wants is
+                Err(ReadError::ReadIoError(ref err))
+                    if err.get_ref().map_or(false, |e| e.is::<Idle>()) =>
+                {
+                    return None
+                }
+
+                Err(ReadError::ReadIoError(ref err)) if crate::limits::timed_out(err) => {
                     // request timeout
                     let writer = self.sink.next().unwrap();
                     let response = Response::new_empty(StatusCode(408));

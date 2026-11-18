@@ -71,6 +71,12 @@ impl<W: Write + Send> SequentialWriterBuilder<W> {
             next_trigger: None,
         }
     }
+
+    /// Holon (PATCHED.md): the stream every writer of this builder writes to, for the response
+    /// that ends the connection (`client::Closer`).
+    pub fn shared(&self) -> Arc<Mutex<W>> {
+        self.writer.clone()
+    }
 }
 
 impl<R: Read + Send> Iterator for SequentialReaderBuilder<R> {

@@ -74,6 +74,9 @@ pub struct Request {
 
     // If Some, a message must be sent after responding
     notify_when_responded: Option<Sender<()>>,
+
+    // Holon (PATCHED.md): how a response with `Connection: close` ends its connection
+    pub(crate) closer: Option<std::sync::Arc<crate::client::Closer>>,
 }
 
 struct NotifyOnDrop<R> {
@@ -238,6 +241,7 @@ where
         body_length: content_length,
         must_send_continue: expects_continue,
         notify_when_responded: None,
+        closer: None,
     })
 }
 
@@ -447,6 +451,8 @@ impl Request {
         let mut writer = self.extract_writer_impl();
 
         let do_not_send_body = self.method == Method::Head;
+        // Holon (PATCHED.md): a response that says `Connection: close` is the connection's last
+        let closes = response.headers().iter().any(|h| crate::response::says_close(h));
 
         Self::ignore_client_closing_errors(response.raw_print(
             writer.by_ref(),
@@ -456,7 +462,14 @@ impl Request {
             None,
         ))?;
 
-        Self::ignore_client_closing_errors(writer.flush())
+        let flushed = Self::ignore_client_closing_errors(writer.flush());
+        drop(writer);
+        if closes {
+            if let Some(closer) = &self.closer {
+                closer.close();
+            }
+        }
+        flushed
     }
 
     fn ignore_client_closing_errors(result: io::Result<()>) -> io::Result<()> {

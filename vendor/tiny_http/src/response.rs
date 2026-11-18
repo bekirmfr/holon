@@ -255,7 +255,9 @@ where
         let header = header.into();
 
         // ignoring forbidden headers
-        if header.field.equiv("Connection")
+        // Holon (PATCHED.md): but for `Connection: close`, which ends the connection once the
+        // response is sent (`client::Closer`)
+        if (header.field.equiv("Connection") && !says_close(&header))
             || header.field.equiv("Trailer")
             || header.field.equiv("Transfer-Encoding")
             || header.field.equiv("Upgrade")
@@ -571,4 +573,9 @@ impl Clone for Response<io::Empty> {
             chunked_threshold: self.chunked_threshold,
         }
     }
+}
+
+/// Holon (PATCHED.md): a `Connection: close` header.
+pub(crate) fn says_close(header: &Header) -> bool {
+    header.field.equiv("Connection") && header.value.as_str().trim().eq_ignore_ascii_case("close")
 }

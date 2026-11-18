@@ -86,6 +86,9 @@ pub struct RefinedTcpStream {
     stream: Stream,
     close_read: bool,
     close_write: bool,
+    // Holon (PATCHED.md): the connection's place among those open, given back once both halves
+    // are gone
+    pub(crate) held: Option<std::sync::Arc<crate::limits::Held>>,
 }
 
 impl RefinedTcpStream {
@@ -101,12 +104,14 @@ impl RefinedTcpStream {
             stream: read,
             close_read: true,
             close_write: false,
+            held: None,
         };
 
         let write = RefinedTcpStream {
             stream: write,
             close_read: false,
             close_write: true,
+            held: None,
         };
 
         (read, write)
@@ -120,6 +125,11 @@ impl RefinedTcpStream {
 
     pub(crate) fn peer_addr(&mut self) -> IoResult<Option<SocketAddr>> {
         self.stream.peer_addr()
+    }
+
+    /// Holon (PATCHED.md): no more is sent on this connection; the client reads to its end.
+    pub(crate) fn shutdown_write(&mut self) {
+        self.stream.shutdown(Shutdown::Write).ok();
     }
 }
 

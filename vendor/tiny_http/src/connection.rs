@@ -95,6 +95,15 @@ impl Connection {
         }
     }
 
+    /// Holon (PATCHED.md): the longest each read waits (`limits::Limits::idle`).
+    pub(crate) fn set_read_timeout(&self, limit: Option<std::time::Duration>) -> std::io::Result<()> {
+        match self {
+            Self::Tcp(s) => s.set_read_timeout(limit),
+            #[cfg(unix)]
+            Self::Unix(s) => s.set_read_timeout(limit),
+        }
+    }
+
     pub(crate) fn try_clone(&self) -> std::io::Result<Self> {
         match self {
             Self::Tcp(s) => s.try_clone().map(Self::from),

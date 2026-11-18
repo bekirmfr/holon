@@ -112,6 +112,7 @@ use util::MessagesQueue;
 
 pub use common::{HTTPVersion, Header, HeaderField, Method, StatusCode};
 pub use connection::{ConfigListenAddr, ListenAddr, Listener};
+pub use limits::Limits;
 pub use request::{ReadWrite, Request};
 pub use response::{Response, ResponseBox};
 pub use test::TestRequest;
@@ -119,6 +120,9 @@ pub use test::TestRequest;
 mod client;
 mod common;
 mod connection;
+pub mod limits;
+#[cfg(test)]
+mod limits_tests;
 mod request;
 mod response;
 mod ssl;
@@ -140,6 +144,12 @@ pub struct Server {
 
     // result of TcpListener::local_addr()
     listening_addr: ListenAddr,
+
+    // Holon (PATCHED.md): what the tests count, the connections open and the pool's threads
+    #[cfg(test)]
+    open: Arc<limits::Open>,
+    #[cfg(test)]
+    pool: Arc<util::TaskPool>,
 }
 
 enum Message {
@@ -243,6 +253,16 @@ impl Server {
         listener: L,
         ssl_config: Option<SslConfig>,
     ) -> Result<Server, Box<dyn Error + Send + Sync + 'static>> {
+        Self::from_listener_limited(listener, ssl_config, Limits::default())
+    }
+
+    /// Holon (PATCHED.md): `from_listener`, its connections held to `limits` (every other
+    /// constructor holds them to `Limits::default()`).
+    pub fn from_listener_limited<L: Into<Listener>>(
+        listener: L,
+        ssl_config: Option<SslConfig>,
+        limits: Limits,
+    ) -> Result<Server, Box<dyn Error + Send + Sync + 'static>> {
         let listener = listener.into();
         // building the "close" variable
         let close_trigger = Arc::new(AtomicBool::new(false));
@@ -285,16 +305,34 @@ impl Server {
 
         let inside_close_trigger = close_trigger.clone();
         let inside_messages = messages.clone();
+        // Holon (PATCHED.md): the connections open, counted against `limits`; the pool is made
+        // here so that the tests can count its threads.
+        let open = limits::Open::new(limits);
+        let inside_open = open.clone();
+        let tasks_pool = Arc::new(util::TaskPool::new());
+        let inside_pool = tasks_pool.clone();
         thread::spawn(move || {
             // a tasks pool is used to dispatch the connections into threads
-            let tasks_pool = util::TaskPool::new();
+            let tasks_pool = inside_pool;
+            let open = inside_open;
 
             log::debug!("Running accept thread");
             while !inside_close_trigger.load(Relaxed) {
                 let new_client = match server.accept() {
-                    Ok((sock, _)) => {
+                    Ok((sock, addr)) => {
                         use util::RefinedTcpStream;
-                        let (read_closable, write_closable) = match ssl {
+                        // Holon (PATCHED.md): past a bound, told so and closed at once; inside
+                        // them, counted for as long as any half of it is alive, and each read
+                        // waits no longer than the idle limit.
+                        let held = match open.take(addr.map(|a: std::net::SocketAddr| a.ip())) {
+                            Ok(held) => held,
+                            Err(why) => {
+                                limits::refuse(sock, why);
+                                continue;
+                            }
+                        };
+                        let _ = sock.set_read_timeout(open.limits().idle);
+                        let (mut read_closable, mut write_closable) = match ssl {
                             None => RefinedTcpStream::new(sock),
                             #[cfg(any(feature = "ssl-openssl", feature = "ssl-rustls"))]
                             Some(ref ssl) => {
@@ -310,6 +348,8 @@ impl Server {
                             #[cfg(not(any(feature = "ssl-openssl", feature = "ssl-rustls")))]
                             Some(ref _ssl) => unreachable!(),
                         };
+                        read_closable.held = Some(held.clone());
+                        write_closable.held = Some(held);
 
                         Ok(ClientConnection::new(write_closable, read_closable))
                     }
@@ -353,6 +393,10 @@ impl Server {
             messages,
             close: close_trigger,
             listening_addr: local_addr,
+            #[cfg(test)]
+            open,
+            #[cfg(test)]
+            pool: tasks_pool,
         })
     }
 
