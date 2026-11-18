@@ -8137,6 +8137,39 @@ fn an_answer_is_cut_after_its_values_are_marked() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+/// **Guards:** a step's kind is told the same way whether the run kept it (an `SValue` in its
+/// timeline) or only noted it (a core value, a run that keeps no timeline): a number, a true or
+/// false, a text or bytes under six, and what holds only those, can't hold a part of a secret;
+/// anything else can. **Why:** an unlogged route stored nothing a logged one would, and the other
+/// way round, only while the two agree (R70). **If it fails:** `secrets::may_hold_a_part` and
+/// `may_hold_a_part_of` drifted apart.
+#[test]
+fn a_steps_kind_is_told_the_same_kept_or_only_noted() {
+    use holon_core::Value;
+    let text = |s: &str| Value::Text(s.into());
+    let record = |k: &str, v: Value| Value::Record([(k.to_string(), v)].into_iter().collect());
+    let table: Vec<(Value, bool)> = vec![
+        (Value::Number(12.0), false),
+        (Value::Boolean(true), false),
+        (text("EUR"), false),
+        (text("abcde"), false),
+        (text("abcdef"), true),
+        (text("ééééé"), false),
+        (text("éééééé"), true),
+        (Value::Bytes(vec![1u8; 5]), false),
+        (Value::Bytes(vec![1u8; 6]), true),
+        (Value::List(vec![Value::Number(1.0), text("ok")]), false),
+        (Value::List(vec![Value::Number(1.0), text("longer")]), true),
+        (record("v", Value::Number(1.0)), false),
+        (record("balance", Value::Number(1.0)), true),
+        (record("v", text("longer")), true),
+    ];
+    for (value, holds) in table {
+        assert_eq!(secrets::may_hold_a_part_of(&value), holds, "{value:?}, noted");
+        assert_eq!(secrets::may_hold_a_part(&SValue::from_core(&value)), holds, "{value:?}, kept");
+    }
+}
+
 /// A far side that answers with what it is sent: `/e` the body as it is; `/j` a JSON answer with
 /// the body, its first eight characters, its length, a balance, a name and a currency that are
 /// nobody's secret; `/n`, sent `key|note`, the key and the note in lower case (a service that
@@ -8280,10 +8313,14 @@ fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
         let note = "route.post(\"/note\", async (req) => {\n  const got = await far.post(\"/n\", { body: `${k}|${req.body}` })\n  const said = JSON.parse(got.body)\n  return { note: said.note }\n})\n\n";
         // A WebSocket whose open block answers with a slice of the reply, as a route can.
         let socket = "route.websocket(\"/w\", {\n  open: async () => {\n    const got = await far.post(\"/e\", { body: k })\n    return got.body.slice(8, 20)\n  },\n})\n\n";
+        // Routes whose runs aren't logged write a balance, and a slice, out of the reply: the
+        // same rule as a logged one's, though they keep no timeline. (Each its own route: a run's
+        // writes to a collection are refused together, as the logged ones' are.)
+        let quiet = "route.post(\"/quiet\", async (req) => {\n  const got = await far.post(\"/j\", { body: k })\n  const said = JSON.parse(got.body)\n  seen[\"q\"] = { v: said.balance }\n  return { ok: true }\n}, { log: \"unrecorded\" })\n\nroute.post(\"/quiets\", async (req) => {\n  const got = await far.post(\"/e\", { body: k })\n  seen[\"qs\"] = { v: got.body.slice(8, 20) }\n  return { ok: true }\n}, { log: \"unrecorded\" })\n\n";
         // A flow that may answer with its secret has a route that does: its approval asks.
         let shows = if may_answer { "route.get(\"/shows\", () => ({ k }))\n\n" } else { "" };
         let text = format!(
-            "import {{ flow, route, text_length }} from \"holon\"\nimport k from \"secret:k\"\nimport far from \"host:{far}\"\nimport other from \"host:{other}\"\nimport seen from \"collection:seen\"\n\nflow(\"parts-{side}\", {{ port: {port} }})\n\n{bodies}{note}{socket}{shows}route.get(\"/read\", () => seen.list())\n"
+            "import {{ flow, route, text_length }} from \"holon\"\nimport k from \"secret:k\"\nimport far from \"host:{far}\"\nimport other from \"host:{other}\"\nimport seen from \"collection:seen\"\n\nflow(\"parts-{side}\", {{ port: {port} }})\n\n{bodies}{note}{quiet}{socket}{shows}route.get(\"/read\", () => seen.list())\n"
         );
         let slug = deploy_text_to(&state, &text, &[far, &other]);
         let set = req("POST", &format!("/deployments/{slug}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
@@ -8359,8 +8396,18 @@ fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
         if status != 200 || !body.contains("abc") {
             wrong.push(format!("{side}, /note: a note of three characters is answered {}", said(status, &body)));
         }
-        // The write of a slice doesn't land; of a balance, it does.
+        // Not in the log: the same writes, on routes whose runs keep no timeline.
+        for quiet in ["/quiet", "/quiets"] {
+            let (status, body, _) = data_call(&state, &slug, "POST", quiet, "");
+            if status != 200 {
+                wrong.push(format!("{side}, {quiet}: answered {}", said(status, &body)));
+            }
+        }
+        // The write of a slice doesn't land; of a balance, it does, logged or not.
         let (_, kept, _) = data_call(&state, &slug, "GET", "/read", "");
+        if echoed == kept.contains("\"qs\"") || !kept.contains("\"q\"") {
+            wrong.push(format!("{side}: of the slice and the balance an unlogged run wrote, the store has {}", if holds_a_part(&kept) { "(a part)" } else { kept.as_str() }));
+        }
         if holds_a_part(&kept) {
             wrong.push(format!("{side}: the store keeps a part of the secret"));
         }

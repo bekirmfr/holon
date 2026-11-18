@@ -783,7 +783,13 @@ fn run_attempt(
     let secret_sends = (!secret_fed.is_empty()).then(|| folders::SecretSends { vault: secrets, sent: holon_core::sent_itself(root_unit, resolver) });
 
     let mut host = RecordingHost::new();
-    let mut timer = if waits.unrecorded { recorder::Timer::off() } else { recorder::Timer::new() };
+    // One that keeps nothing notes each step's kind where it may have to follow a reply that
+    // sent a secret back (`secrets::short_steps`): as far as a kept run would, logged or not.
+    let mut timer = match (waits.unrecorded, secret_fed.is_empty()) {
+        (false, _) => recorder::Timer::new(),
+        (true, true) => recorder::Timer::off(),
+        (true, false) => recorder::Timer::off().noting_kinds(),
+    };
     // A step that may hold a secret's value, or what is computed from one, kept when it fits as
     // its record writes it, each such value as its mark: whether it is kept, and so whether the
     // record withholds, doesn't say how long the secret is (R63).
@@ -870,7 +876,7 @@ fn run_attempt(
         true => Echoed::default(),
         false => {
             let (at, names, hosts) = secrets::echoing(prior.iter().chain(&outcome.rounds), secrets);
-            let fed = if at.is_empty() { taint::SecretFed::default() } else { taint::SecretFed::echoed_at(root_unit, resolver, &at, &secrets::short_steps(&timer.timeline)) };
+            let fed = if at.is_empty() { taint::SecretFed::default() } else { taint::SecretFed::echoed_at(root_unit, resolver, &at, &secrets::short_steps(&timer)) };
             Echoed { names, hosts, fed }
         }
     };

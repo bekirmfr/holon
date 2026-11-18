@@ -233,8 +233,10 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
     not caught: that is in the flow's text, for whoever approves it;
   - a reply that holds only a hint of the secret, never the whole (a masked key), is not
     noticed at all;
-  - a step the run's timeline doesn't have (deeper than it records, too large to keep, a run
-    that keeps none) is taken as holding a part: refused, never passed;
+  - a step the run's timeline doesn't have (deeper than it records, too large to keep) is taken
+    as holding a part: refused, never passed. A run that keeps no timeline (an `unrecorded`
+    handler's) notes each step's kind instead (`Timer::kinds`, nothing copied), so it is
+    followed as far as a logged one, and a balance it reads out of such a reply is stored;
   - in the record, a piece changed on the way is not marked (it is refused to callers and to
     storage all the same);
   - **`holon verify` can't tell every step left out of a line from one too large to keep.** A

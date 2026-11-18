@@ -547,6 +547,12 @@ pub struct Timer {
     /// What measures a step whose record writes it another way than the run had it
     /// (`secrets::Measured`): none for a run given no secret, each step counted as it is.
     measure: Option<Box<dyn Measure>>,
+    /// For a run that keeps nothing (`off`) but was granted a secret: each step, as deep as a
+    /// timeline goes, and whether it gave something a part of a secret could sit in
+    /// (`secrets::may_hold_a_part`), noted without copying anything. What such a run reads out
+    /// of a reply that sent its secret back is then followed as far as a kept run's is (R70):
+    /// a balance read out of it is a balance, logged or not. None: not noted.
+    pub(crate) kinds: Option<Vec<(Vec<u32>, bool)>>,
 }
 
 /// Whether a step's outputs fit as its run's record writes them, for a step it writes another
@@ -567,7 +573,7 @@ impl Timer {
     pub const MAX_RECORDED_BYTES: usize = 16 * 1024;
 
     pub fn new() -> Timer {
-        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new(), reason: None, on: true, measure: None }
+        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new(), reason: None, on: true, measure: None, kinds: None }
     }
 
     /// One that keeps nothing: its timeline stays empty.
@@ -578,6 +584,11 @@ impl Timer {
     /// This one, keeping each step `measure` measures when it says the step fits (R63).
     pub(crate) fn measured(self, measure: Box<dyn Measure>) -> Timer {
         Timer { measure: Some(measure), ..self }
+    }
+
+    /// This one, which keeps nothing, noting each step's kind ([`Timer::kinds`]).
+    pub(crate) fn noting_kinds(self) -> Timer {
+        Timer { kinds: Some(Vec::new()), ..self }
     }
 
     fn now_us(&self) -> f64 {
@@ -665,6 +676,12 @@ impl holon_core::Observer for Timer {
         }
     }
     fn produced(&mut self, path: &[u32], outputs: &[holon_core::Slot]) {
+        if !self.on
+            && path.len() <= Self::DEPTH
+            && let Some(kinds) = self.kinds.as_mut()
+        {
+            kinds.push((path.to_vec(), outputs.iter().any(|o| o.value().is_some_and(crate::secrets::may_hold_a_part_of))));
+        }
         if self.on && path.len() <= Self::DEPTH {
             // A pending output (a round still waiting on an answer) is logged as nothing yet.
             // Kept when their JSON fits, as the line will write it: an upper bound settles almost

@@ -1186,19 +1186,37 @@ pub(crate) fn may_hold_a_part(v: &SValue) -> bool {
     }
 }
 
-/// The steps of `timeline` (by path) that gave nothing a part of a secret could sit in
+/// [`may_hold_a_part`] of a value as core gives it, asked without copying it: what a run that
+/// keeps no timeline notes of each step (`Timer::kinds`). The same rule; a test holds the two to
+/// it on one table.
+pub(crate) fn may_hold_a_part_of(v: &holon_core::Value) -> bool {
+    use holon_core::Value;
+    let long = |s: &str| s.chars().nth(PART_LONG - 1).is_some();
+    match v {
+        Value::Number(_) | Value::Boolean(_) => false,
+        Value::Text(s) => long(s),
+        Value::Bytes(b) => b.len() >= PART_LONG,
+        Value::List(items) => items.iter().any(may_hold_a_part_of),
+        Value::Record(fields) => fields.iter().any(|(k, v)| long(k) || may_hold_a_part_of(v)),
+        Value::Effect { payload, .. } | Value::Sum { payload, .. } => may_hold_a_part_of(payload),
+    }
+}
+
+/// The steps of a run (by path) that gave nothing a part of a secret could sit in
 /// ([`may_hold_a_part`]), each time they ran: where what a run read out of a reply that sent a
-/// secret back stops being followed (`SecretFed::echoed_at`). A step whose outputs weren't kept
-/// (too large, or carrying a file) isn't one, nor one the timeline doesn't have (deeper than it
-/// records, or a run that keeps none): what isn't seen is taken as holding a part.
-pub(crate) fn short_steps(timeline: &[crate::recorder::NodeTiming]) -> BTreeSet<Vec<u32>> {
+/// secret back stops being followed (`SecretFed::echoed_at`). Read off its timeline; of a run
+/// that keeps none, off the kind its timer noted of each step (`Timer::kinds`). A step whose
+/// outputs weren't kept (too large, or carrying a file) isn't one, nor one deeper than a
+/// timeline records: what isn't seen is taken as holding a part.
+pub(crate) fn short_steps(timer: &crate::recorder::Timer) -> BTreeSet<Vec<u32>> {
+    let seen: Vec<(&[u32], bool)> = match &timer.kinds {
+        Some(kinds) => kinds.iter().map(|(path, long)| (path.as_slice(), *long)).collect(),
+        None => timer.timeline.iter().map(|node| (node.path.as_slice(), !matches!(&node.outputs, Some(outputs) if !outputs.iter().flatten().any(may_hold_a_part)))).collect(),
+    };
     let mut short: BTreeSet<&[u32]> = BTreeSet::new();
     let mut long: BTreeSet<&[u32]> = BTreeSet::new();
-    for node in timeline {
-        match &node.outputs {
-            Some(outputs) if !outputs.iter().flatten().any(may_hold_a_part) => short.insert(&node.path),
-            _ => long.insert(&node.path),
-        };
+    for (path, holds) in seen {
+        if holds { long.insert(path) } else { short.insert(path) };
     }
     short.difference(&long).map(|path| path.to_vec()).collect()
 }
