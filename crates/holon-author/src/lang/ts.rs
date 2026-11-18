@@ -759,7 +759,7 @@ impl<'s, 't> Reader<'s, 't> {
         }
     }
 
-    /// `flow("chess", { port, keep, browsers, limits, taint, tags })`: the flow's name and deploy settings.
+    /// `flow("chess", { port, keep, browsers, limits, taint, never_keep, tags })`: the flow's name and deploy settings.
     fn kind(&mut self, c: &js::CallExpression) -> R<()> {
         let at = self.span(c.span);
         if std::mem::replace(&mut self.kind_seen, true) {
@@ -777,6 +777,9 @@ impl<'s, 't> Reader<'s, 't> {
         let js::Expression::ObjectExpression(o) = self.unwrap(settings) else {
             return fail(self.span(settings.span()), "a flow's settings are an object: { port: 8080 }");
         };
+        // The keys it taints and those it never keeps, each with its place: one in both is said there.
+        let mut tainted: Vec<(String, Span)> = Vec::new();
+        let mut never_kept: Vec<(String, Span)> = Vec::new();
         for (key, value, span) in self.fields(o)? {
             match key.as_str() {
                 "port" => match self.unwrap(value) {
@@ -800,21 +803,31 @@ impl<'s, 't> Reader<'s, 't> {
                     };
                     self.header(HeaderKind::Browsers(origins), span);
                 }
-                "taint" => {
-                    let shape = "taint lists keys in quotes: taint: [\"x-api-key\", \"number\"]";
+                "taint" | "never_keep" => {
+                    let never = key == "never_keep";
+                    let shape = if never { "never_keep lists keys in quotes: never_keep: [\"cvc\", \"pin\"]" } else { "taint lists keys in quotes: taint: [\"x-api-key\", \"number\"]" };
                     let js::Expression::ArrayExpression(a) = self.unwrap(value) else {
                         return fail(self.span(value.span()), shape);
                     };
-                    let mut keys: Vec<String> = Vec::new();
+                    let mut keys: Vec<(String, Span)> = Vec::new();
                     for item in &a.elements {
                         match item.as_expression().map(|e| self.unwrap(e)) {
-                            Some(js::Expression::StringLiteral(k)) if keys.iter().any(|seen| *seen == k.value.as_str()) => return fail(self.span(k.span), format!("\"{}\" is tainted once", k.value)),
-                            Some(js::Expression::StringLiteral(k)) if is_taint_key(&k.value) => keys.push(k.value.to_string()),
+                            Some(js::Expression::StringLiteral(k)) if keys.iter().any(|(seen, _)| *seen == k.value.as_str()) => {
+                                return fail(self.span(k.span), format!("\"{}\" is {} once", k.value, if never { "listed" } else { "tainted" }));
+                            }
+                            Some(js::Expression::StringLiteral(k)) if is_taint_key(&k.value) => keys.push((k.value.to_string(), self.span(k.span))),
                             Some(js::Expression::StringLiteral(k)) => return fail(self.span(k.span), format!("\"{}\" isn't a key: a name of up to 128 characters, no spaces", k.value)),
                             _ => return fail(self.span(item.span()), shape),
                         }
                     }
-                    self.header(HeaderKind::Taint(keys), span);
+                    let named = keys.iter().map(|(k, _)| k.clone()).collect();
+                    if never {
+                        self.header(HeaderKind::NeverKeep(named), span);
+                        never_kept = keys;
+                    } else {
+                        self.header(HeaderKind::Taint(named), span);
+                        tainted = keys;
+                    }
                 }
                 "tags" => {
                     let shape = "tags are in quotes: tags: [\"payments\"]";
@@ -863,8 +876,13 @@ impl<'s, 't> Reader<'s, 't> {
                         self.header(limit, span);
                     }
                 }
-                other => return fail(span, format!("a flow's settings are port, keep, browsers, limits, taint and tags, not \"{other}\"")),
+                other => return fail(span, format!("a flow's settings are port, keep, browsers, limits, taint, never_keep and tags, not \"{other}\"")),
             }
+        }
+        // A key it never keeps is kept out of its records already, and more strictly: said where
+        // it is tainted, the one to take out.
+        if let Some((key, at)) = tainted.iter().find(|(k, _)| never_kept.iter().any(|(n, _)| n == k)) {
+            return fail(*at, format!("\"{key}\" is never kept, so it needn't be tainted too"));
         }
         Ok(())
     }

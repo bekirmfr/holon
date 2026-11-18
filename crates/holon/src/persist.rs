@@ -294,7 +294,7 @@ pub(crate) fn load_deployments(
         if let Some(why) = &attention {
             eprintln!("holon: deployment {slug:?} is paused: {why}");
         }
-        let permit = Arc::new(Permit::new(unit_hash, &grant, policy));
+        let permit = Arc::new(Permit::new(unit_hash, &grant, policy).never_keeping(server.as_ref()));
 
         // Its state as its head names it (C3 b): no head, none kept yet. No older form is read
         // forward (Holon is in development: a data folder from before heads loads empty).

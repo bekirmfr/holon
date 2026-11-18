@@ -406,12 +406,42 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
         }
     }
     // The keys the flow taints, as its settings hold them: each taints it for every run.
-    let UnitSettings { tags, taint } = settings;
+    let UnitSettings { tags, taint, never_keep } = settings;
     if let Some(bad) = taint.iter().find(|k| !holon_core::is_taint_key(k)) {
         errors.push(format!("\"{bad}\" isn't a key to taint: a name of up to 128 characters, no spaces"));
     }
     if let Some(twice) = taint.iter().enumerate().find_map(|(i, k)| taint[..i].contains(k).then_some(k)) {
         errors.push(format!("\"{twice}\" is tainted once"));
+    }
+    // And those it never keeps: keys as the tainted ones are, none of them tainted too.
+    if let Some(bad) = never_keep.iter().find(|k| !holon_core::is_taint_key(k)) {
+        errors.push(format!("\"{bad}\" isn't a key to never keep: a name of up to 128 characters, no spaces"));
+    }
+    if let Some(twice) = never_keep.iter().enumerate().find_map(|(i, k)| never_keep[..i].contains(k).then_some(k)) {
+        errors.push(format!("\"{twice}\" is listed once"));
+    }
+    if let Some(both) = never_keep.iter().find(|k| taint.contains(k)) {
+        errors.push(format!("\"{both}\" is never kept, so it needn't be tainted too"));
+    }
+    // A handler that waits is stored whole until it goes on, the value with it: not yet.
+    if let Some(key) = never_keep.first() {
+        use holon_core::Resolver as _;
+        let handlers = endpoints
+            .iter()
+            .map(|e| (&e.hash, format!("{} {}", e.method, e.path)))
+            .chain(clocks.iter().map(|c| (&c.hash, c.label.clone())))
+            .chain(files.iter().map(|f| (&f.hash, f.label.clone())))
+            .chain(mails.iter().map(|m| (&m.hash, m.label.clone())))
+            .chain(feeds.iter().map(|f| (&f.hash, f.label.clone())))
+            .chain(queues.iter().map(|q| (&q.hash, q.label.clone())))
+            .chain(websockets.iter().map(|w| (&w.hash, w.label.clone())))
+            .chain(actions.iter().map(|a| (&a.hash, a.label.clone())));
+        for (hash, label) in handlers {
+            let waits = parse_hash(hash).and_then(|h| store.resolve(&h)).is_some_and(|unit| holon_core::capabilities(unit, &*store).iter().any(|c| matches!(c, holon_core::Capability::Await(_) | holon_core::Capability::Approval(_))));
+            if waits {
+                errors.push(format!("{label}: {}", never_keep_waits(key)));
+            }
+        }
     }
     if let Some(bad) = tags.iter().find(|t| !holon_core::is_tag(t)) {
         errors.push(format!("\"{bad}\" isn't a tag: lowercase letters, digits and -, up to 40 of them"));
@@ -441,6 +471,12 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
         _ => None,
     };
     DerivedServer { endpoints, clocks, files, mails, feeds, queues, websockets, actions, errors, server_hash, trace }
+}
+
+/// Why a flow that never keeps `key` can't wait, said where it waits (`await event(…)`, `await
+/// approval(…)`): a current limit, until a waiting run is stored without the value.
+pub fn never_keep_waits(key: &str) -> String {
+    format!("a flow that never keeps \"{key}\" can't wait yet: a waiting run is stored whole until it goes on, and what it holds under the key would be stored with it. A limit for now: wait in another flow, which isn't handed the key, or take never_keep out")
 }
 
 /// What each canvas node does with a secret, for the canvas to mark it: by node id, a line for each
@@ -604,6 +640,9 @@ pub fn flow_unit(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: 
     }
     if !settings.taint.is_empty() {
         return Err("the keys a flow taints are its server's: a flow without handlers has none".into());
+    }
+    if !settings.never_keep.is_empty() {
+        return Err("the keys a flow never keeps are its server's: a flow without handlers has none".into());
     }
     let all: Vec<&Node> = nodes.iter().collect();
     let (children, edges) = group_of(&all, wires, store)?;

@@ -280,6 +280,21 @@ describe("inside a holon", () => {
 });
 
 describe("secrets in a replay", () => {
+  // Each kind of mark the log writes in place of a value it never holds, as it reads in a run's
+  // record: a node fed one is the run's own record, not computed again from the mark.
+  it.each([
+    ["a secret's", "Bearer ‹secret:api_key v3 #a1b2c3d4›"],
+    ["a token's", "‹token:answer access_token #a1b2c3d4›"],
+    ["a value computed from a secret", "Basic ‹derived #7c1e9a02›"],
+    ["a file kept by hash", "‹file:inbox/big.csv, 5104 bytes, kept by hash›"],
+    ["a value its flow never keeps", '{"amount":1737,"cvc":"‹never_keep:cvc›"}'],
+  ])("know %s mark for a placeholder", (_what, text) => {
+    const v: WValue = { type: "Text", value: text };
+    expect(hasPlaceholder(v)).toBe(true);
+    expect(hasPlaceholder({ type: "Record", value: [["deep", list(v)]] })).toBe(true);
+    expect(hasPlaceholder({ type: "Text", value: text.replace("‹", "") })).toBe(false);
+  });
+
   it("stand in as a placeholder: the editor never has the value", () => {
     const nodes = [n("s", "secret", [], ["out"], [frozen("name", "api_key")])];
     const { traces } = replay(nodes, [], { kind: "tick", route: null, request: null, sourced: [], state_before: {} }, evalNode);
