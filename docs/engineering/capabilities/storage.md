@@ -84,8 +84,10 @@ segment, a line whose key is missing, or the segments' listing as the log opened
 each fail `named()` or `sweep()`, and the round removes nothing; a read that fails is no longer
 taken as naming nothing. The server's round says why in the admin's warnings (`sweep:store`,
 `sweep:file texts`) until a round reads everything; an admin's sweep is answered with the error.
-What isn't there (a segment let go of since it was named, a file not written yet) still names
-nothing. Before, a log file unreadable for one round lost the state of every run in it, and
+What couldn't be read as the server started (`Log::unread`, `Packs::unreadable`) is read again
+only as it starts again, so while any is there the warning says to restart once it is readable,
+not that the next round sweeps as before. What isn't there (a segment let go of since it was named,
+a file not written yet) still names nothing. Before, a log file unreadable for one round lost the state of every run in it, and
 restores to them answered 500.
 
 ### Packing long-lived values
@@ -187,7 +189,10 @@ person resumes while the disk is full is paused again at the next look.
 - **`GET /admin/warnings`**, by key: `disk:<path>`, `cache:flows`, `cache:values` (at its size most
   looks of the last hour), `backup` (a log couldn't write to it), `backup-export` (a batch couldn't
   be made an export), `file:<told>:<place>` (a file failing now, `failing::note_file`: a
-  listener's record of what it has seen that doesn't open, say, with where and why), `pack:<path>`,
+  listener's record of what it has seen that doesn't open, say, with where and why; a run log a
+  read of which failed, `recorder::RUNS_UNREAD`, until a read of all it keeps goes through; part of
+  a run log that couldn't be read as the server started, `RUNS_UNREAD_AT_START`, until it starts
+  again), `pack:<path>`,
   `sweep:store` and `sweep:file texts` (the last round removed nothing, as what names what is kept
   couldn't all be read), `sweep-off` (off, with the store past a tenth of its disk). Each says
   what to do.

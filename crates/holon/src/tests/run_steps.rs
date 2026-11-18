@@ -978,10 +978,17 @@ fn no_answer_says_where_or_why_the_data_folder_failed() {
         // for as long as it runs (`Log::unread`: its sealed segments' folder couldn't be listed).
         // What reads every line to tell what a log names fails on it, and a sweep that can't tell
         // removes nothing (release audit R92). So it goes after its round, as its admin would
-        // remove it, and the forgets after it sweep what the others name.
+        // remove it, and the forgets after it sweep what the others name. Nor does a removal keep
+        // its records from it, and it removes nothing, since it would delete the runs it couldn't
+        // read: its admin restarts the server first, as the warnings say, and here its log is
+        // opened again from its files, as a start opens it.
         let logs: Vec<_> = state.deployments.lock().unwrap().iter().map(|(slug, d)| (slug.clone(), std::sync::Arc::clone(&d.log))).collect();
         for (slug, _) in logs.into_iter().filter(|(_, log)| log.each_line(|_| {}).is_err()) {
             let _ = send(&state, &ada, "POST", &format!("/deployments/{slug}/stop"), Value::Null);
+            let reopened = crate::recorder::Log::for_deployment(&state.deployments_path, &slug);
+            if let Some(d) = state.deployments.lock().unwrap().get_mut(&slug) {
+                d.log = std::sync::Arc::new(crate::recorder::LogCell::new(reopened));
+            }
             let (removed, why) = send(&state, &ada, "DELETE", &format!("/deployments/{slug}"), Value::Null);
             if removed != 200 {
                 missed.push(format!("{slug}: its log can't be read whole after the round of {site}, and its removal answered {removed}: {}", around(&why, "")));
@@ -1133,6 +1140,7 @@ const REASONS: &[(&str, &str)] = &[
     ("at_rest.rs: read", START),
     ("at_rest.rs: read_sealed_in", "a mail or a message spooled to be sent, read back as the server starts (mails.rs, queues.rs: recover): what fails is said on stderr; no request reaches it"),
     ("at_rest.rs: Keyring::persist#2", "keys.json written by a keyring with a file, which the tests' own isn't (kept in memory): writers.rs's keys_that_cant_be_written_tell_whoever_rotated_or_forgot_neither_where_nor_why sends a rotation and a forget to one that is, made to fail"),
+    ("at_rest.rs: Keyring::version", "a key opening what was read: each request's read of what it opens goes through at_rest::disk first (a run log's file and segments opened afresh, release audit R92), which fails before it under the same fault; and a key has no path, so a round can't fail it alone without failing every test's keys"),
     ("at_rest.rs: Keyring::keep_copy_in#1", BACKUP_COPY),
     ("at_rest.rs: Keyring::keep_copy_in#2", BACKUP_COPY),
     ("at_rest.rs: Keyring::keep_copy_in#3", BACKUP_COPY),

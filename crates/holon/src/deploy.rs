@@ -1671,7 +1671,8 @@ fn keep_records(
     (log, redactor, events, events_head): (Arc<recorder::LogCell>, crate::secrets::Redactor, Vec<String>, String),
 ) -> Result<Option<PathBuf>, String> {
     let at_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-    let (lines, head) = log.lines_to_head();
+    // Its records whole, or none and nothing removed: the log goes once they are kept.
+    let (lines, head) = log.lines_to_head().map_err(|e| format!("its run log can't all be read: {e}"))?;
     let max_age_ms = log.with(|log| log.max_age_ms());
     let Some(to) = removed_file(deployments_path, slug, at_ms, max_age_ms.map(|age| at_ms.saturating_add(age))) else { return Ok(None) };
     if lines.is_empty() && events.is_empty() {
@@ -1972,7 +1973,10 @@ fn log_page(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, reque
     // from its file with the lock released (R8).
     let (wanted, next, head, breaks) =
         log.with(|log| ((limit > 0).then(|| log.plan(after, limit)), log.next_seq(), log.head().to_string(), log.breaks().to_vec()));
-    let entries = wanted.map(|w| w.read()).unwrap_or_default();
+    let entries = match wanted.map(|w| w.read()).transpose() {
+        Ok(entries) => entries.unwrap_or_default(),
+        Err(_) => return err(500, crate::recorder::runs_unread(slug)),
+    };
     let (entries, tallies) = if whole {
         (serde_json::to_value(entries).unwrap_or_default(), tallies)
     } else {
@@ -2253,7 +2257,7 @@ fn restore_plan(state: &AppState, slug: &str, point: Point, code: bool, with_sta
             return Err(err(409, format!("can't restore {slug:?}'s state: {}", crate::lifecycle::LifecycleError::Stopped.message())));
         }
     }
-    let kept = dep.log.after(None, usize::MAX);
+    let Ok(kept) = dep.log.after(None, usize::MAX) else { return Err(err(500, crate::recorder::runs_unread(slug))) };
     let (version, put_back) = match point {
         Point::Version(n) => {
             let Some(i) = dep.versions.iter().position(|v| v.number == n) else {
@@ -2379,7 +2383,11 @@ fn state_change(state: &AppState, slug: &str, snapshot: &str, label: &str, since
         })
         .unwrap_or_default();
     // Read with the table let go.
-    let before: Vec<LogEntry> = before.map(|(log, first)| log.after(None, usize::MAX).into_iter().filter(|e| e.seq < first).collect()).unwrap_or_default();
+    let before: Vec<LogEntry> = match before.map(|(log, first)| log.after(None, usize::MAX).map(|kept| kept.into_iter().filter(|e| e.seq < first).collect())) {
+        Some(Ok(before)) => before,
+        Some(Err(_)) => return Err(err(500, crate::recorder::runs_unread(slug))),
+        None => Vec::new(),
+    };
     let now = live.as_ref().map(|arc| arc.state.lock().unwrap().refs()).unwrap_or_default();
     let changed: Vec<&String> = back.iter().filter(|(k, h)| now.get(*k).is_some_and(|n| n != *h)).map(|(k, _)| k).collect();
     let added: Vec<&String> = back.keys().filter(|k| !now.contains_key(*k)).collect();

@@ -33,6 +33,8 @@ mod whereabouts;
 mod semantics;
 /// A writer that fails reaches an admin and /health.
 mod writers;
+/// What is there and can't be read is an error at every reader of a deployment's runs (R92).
+mod unread_readers;
 /// Which lines of a source file are a test module's, for the sweeps of the source (R78).
 mod source;
 use source::{in_test_modules, inert, test_files, test_modules};
@@ -1482,7 +1484,7 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
         assert!(report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
         seqs.extend(export.lines.iter().map(|l| serde_json::from_str::<recorder::LogEntry>(l).unwrap().seq));
     }
-    let kept: Vec<u64> = state.deployments.lock().unwrap()["kept"].log.after(None, usize::MAX).iter().map(|e| e.seq).collect();
+    let kept: Vec<u64> = state.deployments.lock().unwrap()["kept"].log.after(None, usize::MAX).unwrap().iter().map(|e| e.seq).collect();
     let file: Vec<u64> = crate::at_rest::testing::open_lines(&std::path::Path::new(&data).join("deployments.logs/kept.jsonl")).iter().map(|l| serde_json::from_str::<recorder::LogEntry>(l).unwrap().seq).collect();
     seqs.extend(file.iter().copied());
     seqs.sort_unstable();
@@ -1715,7 +1717,7 @@ fn the_states_sealed_runs_left_are_kept_by_a_sweep() {
     let swept = sweep::sweep(&state.store, &state.deployments, SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 2 * sweep::SPARES_MS, sweep::SPARES_MS, false, false).unwrap().unwrap();
     assert!(swept.values > 0, "the cut runs' states went: {swept:?}");
     state.store.4.set_budget(0);
-    let kept = state.deployments.lock().unwrap()["kept"].log.after(None, usize::MAX);
+    let kept = state.deployments.lock().unwrap()["kept"].log.after(None, usize::MAX).unwrap();
     assert_eq!(kept.len(), 60);
     for e in &kept {
         let snapshot = e.state_after.as_deref().unwrap_or_else(|| panic!("run {} left a state", e.seq));
@@ -2024,17 +2026,31 @@ fn a_sweep_round_that_removed_nothing_is_warned_of_until_one_can_read() {
     let _ = std::fs::remove_dir_all(&data);
 }
 
-/// What the sweeps read to tell what is kept, each function by its file and the start of its
-/// signature (holon-host's from this crate's folder).
-const SWEEP_READS: &[(&str, &str)] = &[
+/// What is read to tell what is kept and what ran: the sweeps' sources, and the readers of a
+/// deployment's runs and of the store's values; each function by its file and the start of its
+/// signature (holon-host's from this crate's folder). The routes that call them are held by their
+/// class test (tests/unread_readers.rs).
+const KEPT_READS: &[(&str, &str)] = &[
     ("src/sweep.rs", "fn named("),
     ("src/sweep.rs", "pub(crate) fn sweep(store"),
     ("src/sweep.rs", "fn changed_ms("),
     ("src/recorder.rs", "pub fn each_line("),
     ("src/recorder.rs", "pub fn lines_holding("),
     ("src/recorder.rs", "pub fn its_lines("),
-    ("src/recorder.rs", "fn each(self"),
+    ("src/recorder.rs", "fn each(mut self"),
+    ("src/recorder.rs", "fn each_unnoted(self"),
+    ("src/recorder.rs", "fn each_kept(self"),
+    ("src/recorder.rs", "pub fn kept_runs("),
     ("src/recorder.rs", "fn read_segment("),
+    ("src/recorder.rs", "fn noted<"),
+    ("src/recorder.rs", "fn reading("),
+    ("src/recorder.rs", "pub fn plan(&self"),
+    ("src/recorder.rs", "fn read_if(mut self"),
+    ("src/recorder.rs", "fn read_unnoted(self"),
+    ("src/recorder.rs", "pub fn after(&self, after: Option<u64>, limit: usize) -> std::io::Result"),
+    ("src/recorder.rs", "pub fn shows(&self"),
+    ("src/recorder.rs", "fn shows_in("),
+    ("src/recorder.rs", "pub fn lines_to_head("),
     ("src/recorder.rs", "pub fn open_retaining("),
     ("src/events.rs", "pub(crate) fn try_lines("),
     ("src/at_rest.rs", "pub(crate) fn try_read_lines("),
@@ -2044,14 +2060,15 @@ const SWEEP_READS: &[(&str, &str)] = &[
     ("../holon-host/src/packs.rs", "pub fn get(&self"),
     ("../holon-host/src/packs.rs", "pub fn hashes("),
     ("../holon-host/src/lib.rs", "pub fn listed<"),
+    ("../holon-host/src/lib.rs", "fn not_there("),
 ];
 
 /// What would take an error, or a value that isn't there, as none.
 const SWALLOWS: &[&str] = &["unwrap_or_default(", ".ok()", "if let Ok(", "let Ok(", ".flatten()", "Err(_)", "unwrap_or_else(", ".unwrap_or(", "map_or(", "is_ok", "Ok(None) =>", "let _ ="];
 
-/// Each of those in SWEEP_READS that takes no read's error as none: its function, what its line
+/// Each of those in KEPT_READS that takes no read's error as none: its function, what its one line
 /// holds, and why.
-const SWEEP_READS_ALLOWED: &[(&str, &str, &str)] = &[
+const KEPT_READS_ALLOWED: &[(&str, &str, &str)] = &[
     ("fn named(", "let Ok(entry) = crate::wire::read_json", "a line's parse for the file texts it names: its hashes were taken from its text before, and a line that doesn't parse names no text"),
     ("pub(crate) fn sweep(store", "sweeping.lock().unwrap_or_else", "a lock taken back from a panic, not a read"),
     ("pub(crate) fn sweep(store", "metadata().map_or(0", "a value's size, for the counts only"),
@@ -2060,9 +2077,10 @@ const SWEEP_READS_ALLOWED: &[(&str, &str, &str)] = &[
     ("pub(crate) fn sweep(store", ".copied().unwrap_or(0)", "no put of it this process recorded, in memory: not a read"),
     ("fn changed_ms(", "map_or(0, |d| d.as_millis()", "a file whose time can't be read is taken as old: that only lets a value nothing names go, which this time doesn't decide (this process's own puts are spared by what it recorded)"),
     ("pub fn its_lines(", "serde_json::to_string(e).ok()", "a log kept in memory only: its entries made lines, no file read"),
-    ("fn each(self", "strip_suffix(b\"\\n\").unwrap_or", "a line without its newline: not a read"),
-    ("fn each(self", "let Ok(text) = std::str::from_utf8", "bytes that aren't text are damage, as a line that doesn't open: left out, as the log leaves it out as it opens"),
-    ("fn each(self", "Err(_) => {}", "a line cut short or changed: left out, as the log leaves it out as it opens; one whose key is missing is an error before it"),
+    ("fn each_unnoted(self", "strip_suffix(b\"\\n\").unwrap_or", "a line without its newline: not a read"),
+    ("fn each_unnoted(self", "let Ok(text) = std::str::from_utf8", "bytes that aren't text are damage, as a line that doesn't open: left out, as the log leaves it out as it opens"),
+    ("fn each_unnoted(self", "Err(_) => {}", "a line cut short or changed: left out, as the log leaves it out as it opens; one whose key is missing is an error before it"),
+    ("fn each_kept(self", "if let Ok(entry) = crate::wire::read_json", "a line's parse: one that doesn't parse names no run, as the log leaves a damaged line out as it opens"),
     ("fn read_segment(", "map(slug_of).unwrap_or_default()", "a path's folder name: not a read"),
     ("pub fn open_retaining(", "holon_host::listed(crate::at_rest::disk::read_dir(&dir)).unwrap_or_else", "noted as the log's `unread`, which fails every read of all its lines"),
     ("pub fn open_retaining(", "let _ = std::fs::remove_file(&p)", "a crashed cut-back's leftover removed: not a read"),
@@ -2075,25 +2093,35 @@ const SWEEP_READS_ALLOWED: &[(&str, &str, &str)] = &[
     ("fn open(values", "crate::listed(fs::read_dir(&dir)).unwrap_or_else", "noted in the packs' `unreadable`, on which the sweep refuses and the admin is warned"),
     ("pub fn get(&self", "read().unwrap_or_else(PoisonError::into_inner)", "a lock taken back from a panic, not a read"),
     ("pub fn hashes(", "read().unwrap_or_else(PoisonError::into_inner)", "a lock taken back from a panic, not a read"),
+    ("pub fn plan(&self", "nth(n.saturating_sub(limit)).map_or(u64::MAX", "where the newest `limit` begin, in what it keeps in memory: not a read"),
+    ("pub fn plan(&self", "self.entries.front().map_or(u64::MAX", "where its runs in memory begin: not a read"),
+    ("pub fn plan(&self", "if let Ok(i) = s.runs.binary_search_by_key", "a run's place in a segment, from what it keeps of it: not a read"),
+    ("pub fn plan(&self", "binary_search_by_key(seq, |l| l.seq).ok()", "a line's place in its file, from what it keeps of it: not a read"),
+    ("pub fn plan(&self", "self.lines.front().map_or(self.next_seq", "where its file's runs begin, from what it keeps of it: not a read"),
+    ("fn read_unnoted(self", "let Ok(line) = std::str::from_utf8(&buf)", "bytes that aren't text are damage, as a line that doesn't open: left out, as the log leaves it out as it opens"),
+    ("fn read_unnoted(self", "Err(_) => continue", "a line cut short or changed: left out, as the log leaves it out as it opens; one whose key is missing is an error before it"),
 ];
 
-/// Guards: nothing the sweeps read to tell what is kept (the run logs and their segments, the
-/// events, the store's values and packs, and the listings of each) takes a read's error as none:
-/// each function on that path holds none of SWALLOWS but those SWEEP_READS_ALLOWED says why.
+/// Guards: nothing read to tell what is kept and what ran (the run logs and their segments, the
+/// events, the store's values and packs, and the listings of each: what the sweeps read, and what
+/// a page of runs, a history, a restore, an export or a replay reads) takes a read's error as none:
+/// each function on that path holds none of SWALLOWS but those KEPT_READS_ALLOWED says why, one
+/// line each.
 /// Why: a sweep removes what nothing names. A source it couldn't read names nothing, and what only
 /// it named went for good: a run log unreadable for one round lost the state of every run in its
-/// file (release audit R92). The class test above makes each source unreadable in turn; this
-/// keeps a `.ok()` or an `if let Ok` from coming back on a path it doesn't take.
-/// If it fails: an error read on the sweep's path must reach the sweep (`?`, an `Err`), or be
-/// noted where the sweep refuses on it (`Log::unread`, the packs' `unreadable`); if the line reads
-/// nothing (a parse, a lock, a count), add it to SWEEP_READS_ALLOWED with why. A function added to
-/// the path goes in SWEEP_READS.
+/// file; and a reader of a deployment's runs gave fewer of them as if they were all (release audit
+/// R92). The class tests (above, and tests/unread_readers.rs) make each source unreadable in turn;
+/// this keeps a `.ok()` or an `if let Ok` from coming back on a path they don't take.
+/// If it fails: an error read on the path must reach whoever reads (`?`, an `Err`), or be noted
+/// where they fail on it (`Log::unread`, the packs' `unreadable`); if the line reads nothing (a
+/// parse, a lock, a count), add it to KEPT_READS_ALLOWED with why, by enough of it that it is the
+/// only line it names. A function added to the path goes in KEPT_READS.
 #[test]
-fn nothing_a_sweep_reads_to_tell_what_is_kept_takes_an_error_as_none() {
+fn nothing_read_to_tell_what_is_kept_takes_an_error_as_none() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut found = Vec::new();
-    let mut allowed_used = vec![false; SWEEP_READS_ALLOWED.len()];
-    for (file, sig) in SWEEP_READS {
+    let mut allowed_used = vec![0; KEPT_READS_ALLOWED.len()];
+    for (file, sig) in KEPT_READS {
         let text = std::fs::read_to_string(root.join(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
         // Read as every sweep of the source reads it (source.rs): code only, test modules left out.
         let code = inert(&text);
@@ -2101,14 +2129,20 @@ fn nothing_a_sweep_reads_to_tell_what_is_kept_takes_an_error_as_none() {
         let test = in_test_modules(&text);
         let raw: Vec<&str> = text.lines().collect();
         let at: Vec<usize> = (0..code.len()).filter(|&i| !test[i] && code[i].contains(sig)).collect();
-        assert!(!at.is_empty(), "{file} has no {sig}: SWEEP_READS names a function that isn't there");
+        assert!(!at.is_empty(), "{file} has no {sig}: KEPT_READS names a function that isn't there");
         assert_eq!(at.len(), 1, "{file}: {sig} is there twice; name it by more of its signature");
         let (mut depth, mut opened) = (0, false);
         for (code_line, line) in code.iter().zip(&raw).skip(at[0]) {
-            for swallow in SWALLOWS.iter().filter(|s| code_line.contains(*s)) {
-                match SWEEP_READS_ALLOWED.iter().position(|(f, holds, _)| f == sig && line.contains(holds)) {
-                    Some(k) => allowed_used[k] = true,
-                    None => found.push(format!("{file}, {sig}…: {swallow} in `{}`", line.trim())),
+            let swallows: Vec<&str> = SWALLOWS.iter().copied().filter(|s| code_line.contains(*s)).collect();
+            if !swallows.is_empty() {
+                // Once a line, whatever of SWALLOWS it holds; counted against every allowance that
+                // names it, so one widened over a line another names covers two (`wide`, below).
+                let covers: Vec<usize> = (0..KEPT_READS_ALLOWED.len()).filter(|&k| KEPT_READS_ALLOWED[k].0 == *sig && line.contains(KEPT_READS_ALLOWED[k].1)).collect();
+                if covers.is_empty() {
+                    found.push(format!("{file}, {sig}…: {} in `{}`", swallows.join(", "), line.trim()));
+                }
+                for k in covers {
+                    allowed_used[k] += 1;
                 }
             }
             for c in code_line.chars() {
@@ -2123,9 +2157,14 @@ fn nothing_a_sweep_reads_to_tell_what_is_kept_takes_an_error_as_none() {
             }
         }
     }
-    assert!(found.is_empty(), "a read on the sweep's path may take an error as none:\n{}", found.join("\n"));
-    let stale: Vec<_> = SWEEP_READS_ALLOWED.iter().zip(&allowed_used).filter(|(_, used)| !**used).map(|((f, holds, _), _)| format!("{f}: {holds}")).collect();
-    assert!(stale.is_empty(), "SWEEP_READS_ALLOWED names lines no longer there: {stale:?}");
+    assert!(found.is_empty(), "a read of what is kept may take an error as none:
+{}", found.join("
+"));
+    // Each allowance covers the one line it says why of: a second line like it is read anew.
+    let stale: Vec<_> = KEPT_READS_ALLOWED.iter().zip(&allowed_used).filter(|(_, used)| **used == 0).map(|((f, holds, _), _)| format!("{f}: {holds}")).collect();
+    assert!(stale.is_empty(), "KEPT_READS_ALLOWED names lines no longer there: {stale:?}");
+    let wide: Vec<_> = KEPT_READS_ALLOWED.iter().zip(&allowed_used).filter(|(_, used)| **used > 1).map(|((f, holds, _), n)| format!("{f}: {holds} ({n} lines)")).collect();
+    assert!(wide.is_empty(), "an allowance covers more than its one line; name it by more of it: {wide:?}");
     // The scan itself: it sees a swallow in code, and none in a comment or a string.
     let code = inert("let a = x.ok(); // y.ok()\nlet b = \"z.ok()\"; let c = '{';");
     assert_eq!(code.matches(".ok()").count(), 1, "{code}");
@@ -8774,7 +8813,7 @@ route.post(\"/drop\", (req) => \"ok\")
     }
     crate::recorder::sync_logs(&state.deployments).unwrap();
     let log = Arc::clone(&state.deployments.lock().unwrap()["tallied"].log);
-    let runs = || log.after(None, usize::MAX).iter().map(|e| e.seq).collect::<Vec<_>>();
+    let runs = || log.after(None, usize::MAX).unwrap().iter().map(|e| e.seq).collect::<Vec<_>>();
     assert_eq!(runs(), [0, 1, 2, 3, 4]);
     let nothing: [(&str, &str, &[u8], u16); 4] =
         [("POST", "/nowhere?token=x", b"", 404), ("GET", "/drop", b"", 405), ("POST", "/drop/more", b"x", 404), ("POST", "/drop", b"\xff\xfe", 400)];

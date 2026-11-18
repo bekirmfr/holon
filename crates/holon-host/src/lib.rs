@@ -807,6 +807,26 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+impl FileStore {
+    /// A value that is in none of its files it could read: none, unless a pack couldn't be read
+    /// as it opened ([`Packs::unreadable`]), which may hold it. Then it can't be told, and that is
+    /// an error, never none (release audit R92): taken as none, a restore's preview would say a
+    /// key it brings back is absent, a kept text that it is no longer kept.
+    ///
+    /// It costs a read that finds what it asks for nothing: only a hash something names is asked
+    /// for (a state's or a collection's, a document's, a text a run kept), so a key never set, a
+    /// flow's `state.x ?? default`, never comes here. A server whose packs all opened answers none.
+    fn not_there(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
+        match self.packs.unreadable().first() {
+            None => Ok(None),
+            Some((pack, why)) => {
+                let e = io::Error::other(format!("the value {} isn't in a file it could read, and may be in a pack it couldn't read as it opened: {why}", holon_core::hex(key)));
+                Err(StoreError::Io(self.at_rest.failed(pack, e)))
+            }
+        }
+    }
+}
+
 impl Store for FileStore {
     fn put(&mut self, unit: &Unit) -> Result<Hash, StoreError> {
         let (key, bytes) = encode_keyed(unit)?;
@@ -850,7 +870,7 @@ impl Store for FileStore {
             // through `failed` there.
             Err(e) if e.kind() == io::ErrorKind::NotFound => match self.packs.get(key).map_err(StoreError::Io)? {
                 Some(b) => b,
-                None => return Ok(None),
+                None => return self.not_there(key),
             },
             Err(e) => return Err(failed(e)),
         };
@@ -2420,6 +2440,51 @@ mod tests {
         write_atomically(&other, b"new").unwrap();
         assert_eq!(mode(&other), 0o600);
         fs::remove_dir_all(dir.parent().unwrap().parent().unwrap()).unwrap();
+    }
+
+    /// Guards: a value in none of the store's files it could read is none while every pack
+    /// opened, and an error, never none, while a pack it may be in couldn't be read as the store
+    /// opened; a loose value, and another pack's, still read; the pack read again, none again
+    /// (release audit R92).
+    /// Why: taken as none, a restore's preview said a key it would bring back is absent, and a
+    /// text a run kept that it is no longer kept, while their pack was only unreadable.
+    /// If it fails: `FileStore::not_there` answers none past a pack it couldn't read.
+    #[test]
+    fn a_value_not_found_while_a_pack_is_unread_is_an_error_not_none() {
+        let dir = unique_temp_dir().join("unread-pack");
+        let mut store = FileStore::new(&dir, test_seal::sealing()).unwrap();
+        // A value put, then taken out of its file into a pack of its own, as the sweep packs.
+        let packed = |store: &mut FileStore, text: &str| {
+            let hash = store.put_value(&Value::Text(text.into())).unwrap();
+            let sealed = fs::read(store.value_path(&hash)).unwrap();
+            let bytes = store.packs().at_rest().open(role::VALUE, &sealed).unwrap();
+            store.packs().pack(&[(hash, bytes)]).unwrap();
+            fs::remove_file(store.value_path(&hash)).unwrap();
+            hash
+        };
+        let packs = store.values_dir().join("packs");
+        let first = packed(&mut store, "packed first");
+        let first_pack = fs::read_dir(&packs).unwrap().flatten().map(|e| e.path()).next().unwrap();
+        let second = packed(&mut store, "packed second");
+        let loose = store.put_value(&Value::Text("loose".into())).unwrap();
+        let never = [9u8; 32];
+        assert_eq!(store.get_value(&never).unwrap(), None, "never put, every pack read: none");
+        let whole = fs::read(&first_pack).unwrap();
+        fs::write(&first_pack, &whole[..whole.len() - 10]).unwrap();
+        // Dropped, so the store opened again opens its packs again (a process shares them).
+        drop(store);
+        let store = FileStore::new(&dir, test_seal::sealing()).unwrap();
+        assert_eq!(store.packs().unreadable().len(), 1, "the pack cut short, said");
+        assert!(store.get_value(&first).is_err(), "its value, in the pack it couldn't read: an error");
+        assert!(store.get_value(&never).is_err(), "one never put can't be told from those: an error too");
+        assert_eq!(store.get_value(&second).unwrap(), Some(Value::Text("packed second".into())), "another pack's, read");
+        assert_eq!(store.get_value(&loose).unwrap(), Some(Value::Text("loose".into())), "a loose one, read");
+        fs::write(&first_pack, &whole).unwrap();
+        drop(store);
+        let store = FileStore::new(&dir, test_seal::sealing()).unwrap();
+        assert_eq!(store.get_value(&first).unwrap(), Some(Value::Text("packed first".into())), "the pack read again");
+        assert_eq!(store.get_value(&never).unwrap(), None, "and none is none again");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

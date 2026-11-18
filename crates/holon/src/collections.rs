@@ -151,10 +151,13 @@ pub(crate) fn handle_get_collection(state: &AppState, slug: &str, name: &str, re
         };
         (root, Redactor::of(&dep.secrets), check)
     };
-    if let Some((log, hex)) = check
-        && !log.shows(&cell, &hex)
-    {
-        return err(404, format!("{name:?} was never at that root in {slug:?}'s log"));
+    if let Some((log, hex)) = check {
+        match log.shows(&cell, &hex) {
+            Ok(true) => {}
+            Ok(false) => return err(404, format!("{name:?} was never at that root in {slug:?}'s log")),
+            // Never "never there": what it can't read may hold it.
+            Err(_) => return err(500, crate::recorder::runs_unread(slug)),
+        }
     }
     let item = |(k, v): (String, Value)| serde_json::json!([k, SValue::from_core(&v)]);
     let mut reply = if let Some(key) = request.get_param("key") {
