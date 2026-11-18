@@ -72,6 +72,13 @@ pub(crate) fn with_cors(access: &Access, request: &Request, mut response: Respon
                 .with_additional_header("Access-Control-Allow-Origin", origin.to_string())
                 .with_additional_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
                 .with_additional_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+                // A preflight's answer kept ten minutes (unstated, five seconds): a page on
+                // another origin (the editor in development, an --allow-origin console) opens
+                // fewer new connections, each one the server's HTTP library may leave unread
+                // on a busy machine until another closes (the editor gives a read up and asks
+                // again on another: server.ts's ANSWER_WITHIN). Kept per address, as browsers
+                // key it, so a poll whose query moves still asks each time.
+                .with_additional_header("Access-Control-Max-Age", "600")
                 .with_additional_header("Vary", "Origin");
         }
     response

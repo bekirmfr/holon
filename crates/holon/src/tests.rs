@@ -6740,6 +6740,9 @@ fn cors_allows_every_method_this_api_actually_uses() {
     for method in crate::can::ROUTES.iter().map(|r| r.method) {
         assert!(methods.split(", ").any(|m| m == method), "Access-Control-Allow-Methods {methods:?} is missing {method}");
     }
+    // Kept ten minutes, not the five seconds a browser keeps an answer that says nothing (R97).
+    let kept = res.headers.iter().find(|(k, _)| k.as_ref() == "Access-Control-Max-Age").map(|(_, v)| v.as_ref().to_string());
+    assert_eq!(kept.as_deref(), Some("600"));
 }
 
 // ── control-plane request gate ───────────────────────────────────────────────────────

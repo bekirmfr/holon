@@ -96,12 +96,93 @@ function endSession(): void {
   window.dispatchEvent(new Event("holon:session-ended"));
 }
 
-/** Every request to the server, the one `fetch` here: past the browser's HTTP cache. Each answer
- *  is live and the signed-in person's own, never one to keep; and through the cache, Chrome lets
- *  one request for an address go at a time, the next waiting on it: on a busy machine one held
- *  there held every later read of `/auth/me` past the 15 s a test waits, and with them the access
- *  version a page follows (can.tsx). */
-const ask = (url: string, init: RequestInit = {}): Promise<Response> => fetch(url, { ...init, cache: "no-store" });
+/** How long the server is given to answer, by what is asked (ms), in one place. On a busy machine
+ *  the server's HTTP library can leave a new connection unread until another one closes (tiny_http's
+ *  pool of connection threads): a request written into it gets no answer at all, neither a status
+ *  nor an error, and a page waited on it for a minute or more, its buttons disabled (R97). Past its
+ *  time a request is given up and its connection dropped (aborted), so what is asked next goes on
+ *  another:
+ *  - `read`, a read of what the server holds, answered in milliseconds when it is: asked again
+ *    (READ_AGAIN_MS), its first answer never taken if it comes late; meanwhile the page says it
+ *    can't reach the server and is trying again (`askingAgainNow`, can.tsx's UNREACHED);
+ *  - `work`, a read that has the server work first (a version replayed on recent runs, a
+ *    database's tables, a run's export, the logs): not asked again, which would redo the work;
+ *  - `change`, everything else: never sent twice, since it may have been done; given up, it is
+ *    said so (`Unanswered`), and the pages show what the server holds at their next read.
+ *  The host's folder picker waits on a person, as long as they take ("a person"). Changed only by
+ *  tests. */
+export const ANSWER_WITHIN = { read: 8_000, work: 120_000, change: 120_000 };
+/** What a request waits on: the server, as ANSWER_WITHIN has it, or a person. */
+export type Waits = keyof typeof ANSWER_WITHIN | "a person";
+/** After a read ran out, how long before each time it is asked again: twice. */
+export const READ_AGAIN_MS = [1_000, 3_000];
+
+/** A request the server didn't answer within its time (ANSWER_WITHIN). */
+export class Unanswered extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "Unanswered";
+  }
+}
+const took = (ms: number) => (ms < 60_000 ? `${ms / 1000} s` : `${ms / 60_000} minutes`);
+
+/** How many reads ran out and are being asked again now. */
+let askingAgain = 0;
+/** Whether a read is being asked again now, having had no answer: the server can't be reached. */
+export const askingAgainNow = (): boolean => askingAgain > 0;
+function askingAgainBy(n: number): void {
+  askingAgain += n;
+  window.dispatchEvent(new Event("holon:asking-again"));
+}
+
+/** One try, the one `fetch` here: past the browser's HTTP cache, given up after `ms` (none: null)
+ *  and its connection dropped. Each answer is live and the signed-in person's own, never one to
+ *  keep; and through the cache, Chrome lets one request for an address go at a time, the next
+ *  waiting on it: on a busy machine one held there held every later read of `/auth/me` past the
+ *  15 s a test waits, and with them the access version a page follows (can.tsx). */
+function once(url: string, init: RequestInit, ms: number | null): Promise<Response> {
+  const stop = new AbortController();
+  const answered = fetch(url, { ...init, cache: "no-store", signal: stop.signal });
+  if (ms === null) return answered;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      stop.abort();
+      reject(new Unanswered(`the server didn't answer in ${took(ms)}`));
+    }, ms);
+  });
+  return Promise.race([answered, late]).finally(() => clearTimeout(timer));
+}
+
+/** Every request to the server, as `waits` says (by default a GET is a `read`, anything else a
+ *  `change`): each try `once`, a read asked again when it had no answer. */
+async function ask(url: string, init: RequestInit = {}, waits?: Waits): Promise<Response> {
+  const kind = waits ?? ((init.method ?? "GET") === "GET" ? "read" : "change");
+  if (kind === "a person") return once(url, init, null);
+  const ms = ANSWER_WITHIN[kind];
+  if (kind === "change") {
+    return once(url, init, ms).catch((e: unknown) => {
+      throw e instanceof Unanswered ? new Unanswered(`the server didn't answer in ${took(ms)}: it may or may not have been done; the page shows what it holds when it reads it again`) : e;
+    });
+  }
+  if (kind === "work") return once(url, init, ms);
+  let again = false;
+  try {
+    for (let i = 0; ; i++) {
+      try {
+        return await once(url, init, ms);
+      } catch (e) {
+        if (!(e instanceof Unanswered)) throw e;
+        if (i >= READ_AGAIN_MS.length) throw new Unanswered(`the server didn't answer, asked ${i + 1} times, ${took(ms)} each: it may be busy, or not running`);
+        if (!again) askingAgainBy(1);
+        again = true;
+        await new Promise((r) => setTimeout(r, READ_AGAIN_MS[i]));
+      }
+    }
+  } finally {
+    if (again) askingAgainBy(-1);
+  }
+}
 
 /** Whom this tab acts as, as the server is told: the session's token, else the ID token of a
  *  sign-in through the provider; "" for no one. What the buttons follow is kept for it (can.tsx). */
@@ -126,14 +207,16 @@ export const SIGN_IN_FIRST = "sign in first";
  *  reads again when whom the tab acts as moves). A provider's sign-in whose ID token has expired
  *  (`bearer` no longer sends it) has ended, as the server's 401 to the request sent without it
  *  used to say: it ends here, at once. */
-async function api(url: string, init: RequestInit = {}): Promise<Response> {
+async function api(url: string, init: RequestInit = {}, waits?: Waits): Promise<Response> {
   const token = bearer();
   if (!token) {
     if (signInExpired()) endSession();
     return new Response(JSON.stringify({ error: SIGN_IN_FIRST }), { status: 401, statusText: "Unauthorized", headers: { "Content-Type": "application/json" } });
   }
-  const res = await ask(url, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } }).catch((e: unknown) => {
+  const res = await ask(url, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } }, waits).catch((e: unknown) => {
     window.dispatchEvent(new Event("holon:unanswered"));
+    // A change given up may have been made: what the buttons follow is read again.
+    if (e instanceof Unanswered && (init.method ?? "GET") !== "GET") window.dispatchEvent(new Event("holon:can"));
     throw e;
   });
   if (res.status === 401 && token === bearer()) endSession();
@@ -153,8 +236,8 @@ export function mayHaveChanged(url: string, method: string, status: number): boo
   return status === 403 || (status >= 200 && status < 300);
 }
 
-const post = (url: string, body?: unknown) =>
-  api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+const post = (url: string, body?: unknown, waits?: Waits) =>
+  api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }, waits);
 /** A POST to a route the server answers anyone (signing in, setting up, an invite): sent as no
  *  one, whoever the tab acts as. */
 const postOpen = (url: string, body: unknown) => ask(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -402,7 +485,7 @@ export const browseFolders = async (path?: string) =>
   asJson<FolderListing>(await api(`${BASE}/admin/folders/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`));
 /** `POST /admin/folders/pick`: the OS's folder dialog, on the server's machine; the folder chosen,
  *  or null if it was cancelled. */
-export const pickFolder = async (start: string) => asJson<{ path: string | null }>(await post(`${BASE}/admin/folders/pick`, { start }));
+export const pickFolder = async (start: string) => asJson<{ path: string | null }>(await post(`${BASE}/admin/folders/pick`, { start }, "a person"));
 export async function unbindFolder(name: string, deployment: string | null): Promise<void> {
   const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
   await asJson<void>(await api(`${BASE}/admin/folders/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
@@ -434,7 +517,7 @@ export async function unbindDatabase(name: string, deployment: string | null): P
 /** `GET /admin/databases/<name>/tables`: a bound database's tables (a MongoDB's collections), read now, Holon's own left out. */
 export async function listTables(name: string, deployment: string | null): Promise<string[]> {
   const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
-  return (await asJson<{ tables: string[] }>(await api(`${BASE}/admin/databases/${encodeURIComponent(name)}/tables${only}`))).tables;
+  return (await asJson<{ tables: string[] }>(await api(`${BASE}/admin/databases/${encodeURIComponent(name)}/tables${only}`, {}, "work"))).tables;
 }
 /** A mail resource bound (mails.rs): where its SMTP server's URL is read from (env:…, vault:…) and
  *  where it points, without the login; its sender; and every address it may send to (empty when
@@ -1415,7 +1498,7 @@ export type LogLine = { at: number; level: string; unit: string; run: number; te
  *  of one's (`until`), after the time `after` (ms), the newest `limit`. An agent is refused them. */
 export async function getLogs(slug: string, q: { level?: string; run?: number; until?: number; after?: number; limit?: number } = {}): Promise<LogLine[]> {
   const asked = Object.entries(q).filter(([, v]) => v !== undefined).map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`);
-  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/logs${asked.length > 0 ? `?${asked.join("&")}` : ""}`);
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/logs${asked.length > 0 ? `?${asked.join("&")}` : ""}`, {}, "work");
   return (await asJson<{ lines: LogLine[] }>(res)).lines;
 }
 
@@ -1439,7 +1522,7 @@ export type Replayed = { unit: string; replayed: number; same: number; differ: n
 /** `GET /deployments/<slug>/replay?unit=<hash>` — the version `unit` (staged, or a proposal's)
  *  replayed on the deployment's last `runs` runs, offline: nothing is sent or changed. */
 export async function replayVersion(slug: string, unit: string, runs = 20): Promise<Replayed> {
-  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/replay?unit=${encodeURIComponent(unit)}&runs=${runs}`);
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/replay?unit=${encodeURIComponent(unit)}&runs=${runs}`, {}, "work");
   return asJson(res);
 }
 
@@ -1447,7 +1530,7 @@ export async function replayVersion(slug: string, unit: string, runs = 20): Prom
  *  written, and every unit they ran), saved as `<slug>-runs.json` for `holon verify`; with `run`,
  *  that run alone (its line, naming the hash of the one before it), as `<slug>-run-<n>.json`. */
 export async function downloadRuns(slug: string, run?: number): Promise<void> {
-  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/export${run === undefined ? "" : `?run=${run}`}`);
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/export${run === undefined ? "" : `?run=${run}`}`, {}, "work");
   // A server from before exports answers the route with a bare 404 (a missing deployment's has a
   // reason): say which it is.
   if (res.status === 404 && !(await res.clone().text()).trim()) {

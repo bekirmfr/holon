@@ -13,8 +13,29 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import fixture from "./can.fixture.json";
-import { ACTIONS, AGAIN_EVERY_MS, ASKING, BUTTONS, canOf, canOn, checkVersion, Gated, gateOf, hostPagesOf, resetCan, useCan, useHostPages, VERSION_EVERY_MS, type Answers, type Button, type Can, type HostPages } from "./can";
-import { getSession, mayHaveChanged, setSession } from "./server";
+import {
+  ACTIONS,
+  AGAIN_EVERY_MS,
+  ASKING,
+  BUTTONS,
+  canOf,
+  canOn,
+  checkVersion,
+  Gated,
+  gateOf,
+  hostPagesOf,
+  resetCan,
+  RETRY_MS,
+  UNREACHED,
+  useCan,
+  useHostPages,
+  VERSION_EVERY_MS,
+  type Answers,
+  type Button,
+  type Can,
+  type HostPages,
+} from "./can";
+import { ANSWER_WITHIN, getSession, mayHaveChanged, READ_AGAIN_MS, setSession } from "./server";
 import { hostEntries } from "./ui/Shell";
 
 type Caller = keyof typeof fixture.callers;
@@ -168,6 +189,10 @@ let sent: string[] = [];
 let ended = new Set<string>();
 /** How many reads of `/auth/me` to come get no answer: held up, as a busy browser held them. */
 let meHeld = 0;
+/** How many reads of the host's actions (`/auth/me/can` with no flow) to come get no answer, as
+ *  on a connection the server leaves unread; each one's answer can be given late (`late`). */
+let hostHeld = 0;
+let late: ((body: Answers) => void)[] = [];
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
@@ -182,6 +207,8 @@ beforeEach(() => {
   sent = [];
   ended = new Set();
   meHeld = 0;
+  hostHeld = 0;
+  late = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
@@ -194,6 +221,10 @@ beforeEach(() => {
         const flow = u.searchParams.get("flow") ?? "";
         asked.push(flow);
         expect(u.searchParams.get("actions")?.split(",")).toEqual([...ACTIONS]);
+        if (flow === "" && hostHeld > 0) {
+          hostHeld -= 1;
+          return new Promise<Response>((resolve) => late.push((body) => resolve(json(body))));
+        }
         return json(answers[flow] ?? {});
       }
       if (u.pathname === "/auth/me" && meHeld > 0) {
@@ -385,6 +416,33 @@ describe("useCan", () => {
     await settle();
     expect(sent).toEqual(["/auth/me/can as token-of-ada"]);
     expect(shown.d.may("pause")).toBe("ada may not do that: a viewer only reads");
+  });
+
+  // R97: the host's read sent as the page opened got no answer at all (a connection the server
+  // left unread), and the buttons said "a moment" for a minute, until the round moved.
+  it("a read with no answer at all: its buttons say the server can't be reached, it is asked again, and they come alive; a late answer never lands", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const step = async (ms: number) => {
+      await act(async () => void (await vi.advanceTimersByTimeAsync(ms)));
+      await settle();
+    };
+    // Its three tries get none, the fourth is answered.
+    hostHeld = 3;
+    await mount(<Shows flows={[null]} />);
+    expect(shown[""].may("people")).toBe(ASKING);
+    await step(ANSWER_WITHIN.read);
+    expect(shown[""].may("people"), "given up, asked again").toBe(UNREACHED);
+    // The other two tries, and the read given up: still trying, on the read's own time.
+    await step(READ_AGAIN_MS[0] + ANSWER_WITHIN.read + READ_AGAIN_MS[1] + ANSWER_WITHIN.read);
+    expect(asked).toEqual(["", "", ""]);
+    expect(shown[""].may("people")).toBe(UNREACHED);
+    await step(RETRY_MS);
+    expect(asked).toEqual(["", "", "", ""]);
+    expect(shown[""].may("people"), "come alive").toBe(NEEDS_ADMIN);
+    // The tries given up are answered at last, saying otherwise: none of it lands.
+    for (const give of late) give({ "people.view": true });
+    await settle();
+    expect(shown[""].may("people")).toBe(NEEDS_ADMIN);
   });
 });
 
