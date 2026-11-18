@@ -224,6 +224,9 @@ struct Row {
 fn what_is_there_and_cant_be_read_is_an_error_at_every_reader() {
     let temp = std::env::temp_dir().display().to_string();
     let temp = temp.trim_end_matches(['/', '\\']).to_string();
+    // One more row is added on Windows alone (below): elsewhere nothing changes the list, and the
+    // compiler's unused-`mut` warning is an error in the Linux check.
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut rows = vec![
         Row { what: "the run log's file", packed: false, spoil: |k| spoil(&k.logs.join("kept.jsonl")), heal: |k| heal(&k.logs.join("kept.jsonl")), fails: READING_THE_FILE, none: &[], warned: Warned::Now, removal_fails: true },
         Row {
