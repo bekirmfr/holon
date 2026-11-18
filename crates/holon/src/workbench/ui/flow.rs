@@ -16,7 +16,7 @@ use super::{bold, chips, coloured, dim, fit, list, pad, panel, reach, scrollbar,
 use crate::workbench::app::{App, Click, List, Tone};
 use crate::workbench::client::{Detail, Moment};
 use crate::workbench::flow::{access_rows, at_ms, came_in, failed, tabs, took, Access, Held, Row, Section, SECTIONS};
-use crate::workbench::graph::{GraphView, Kind};
+use crate::workbench::graph::{GraphView, Kind, Level};
 
 pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(d) = app.detail.as_ref() else { return };
@@ -63,7 +63,8 @@ fn draw_head(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
 }
 
 fn draw_sections(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
-    let counts = [None, Some(d.runs.len()), None, Some(d.moments().len()), Some(app.flow.cells.len()), None, None];
+    // A count a section, so a section added without one doesn't build (Graph went missing so).
+    let counts: [Option<usize>; SECTIONS.len()] = [None, Some(d.runs.len()), None, Some(d.moments().len()), Some(app.flow.cells.len()), None, None, None];
     let mut x = area.x + 1;
     for ((s, name), n) in SECTIONS.iter().zip(counts) {
         let here = app.flow.section == *s;
@@ -110,6 +111,28 @@ fn percentile(sorted: &[f64], p: f64) -> Option<f64> {
 }
 
 const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// The same from a summary's flow: its runs and failures an hour each, the oldest first.
+pub(super) fn spark_hours(g: &Value, cells: usize) -> Line<'static> {
+    let hours = |k: &str| -> Vec<u64> { g[k].as_array().into_iter().flatten().filter_map(Value::as_u64).collect() };
+    let (runs, bad) = (hours("runs"), hours("failed"));
+    let n = runs.len().max(1);
+    let mut each = vec![(0u64, 0u64); cells];
+    for (h, r) in runs.iter().enumerate() {
+        let c = &mut each[(h * cells / n).min(cells - 1)];
+        c.0 += r;
+        c.1 += bad.get(h).copied().unwrap_or(0);
+    }
+    let top = each.iter().map(|c| c.0).max().unwrap_or(0).max(1);
+    Line::from(
+        each.into_iter()
+            .map(|(n, bad)| {
+                let c = if n == 0 { '·' } else { BARS[((n * 7) / top).min(7) as usize] };
+                Span::styled(c.to_string(), Style::new().fg(if bad > 0 { BAD } else if n == 0 { DIM } else { ACCENT }))
+            })
+            .collect::<Vec<_>>(),
+    )
+}
 
 /// The last 24 hours in `cells` bars, as a list's row draws it: how many runs, red where some
 /// failed, a dot where none ran.
@@ -195,7 +218,15 @@ fn dashboard(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
     // What it holds, in memory and on disk (storage.rs), below what it may do.
     let holds: Vec<String> = if d.holds.is_object() { crate::storage::holds_lines(&d.holds) } else { vec![] };
     let holds_h = if holds.is_empty() { 0 } else { holds.len() as u16 + 2 };
-    let [day, may_area, holds_area] = Layout::vertical([Constraint::Length(5), Constraint::Min(3), Constraint::Length(holds_h)]).areas(left);
+    // What it is connected to: its feeds, queues and channels, and how each is now.
+    let connected = crate::workbench::record::connection_lines(&d.feeds, &d.queues, &d.channels);
+    let connected_h = if connected.is_empty() { 0 } else { connected.len().min(6) as u16 + 2 };
+    let [day, may_area, connected_area, holds_area] = Layout::vertical([Constraint::Length(5), Constraint::Min(3), Constraint::Length(connected_h), Constraint::Length(holds_h)]).areas(left);
+    if connected_h > 0 {
+        let room = connected_area.width.saturating_sub(2) as usize;
+        let lines: Vec<Line> = connected.into_iter().map(|(t, l)| super::fit_line(Line::from(Span::styled(l, tone(t))), room)).collect();
+        f.render_widget(Paragraph::new(lines).block(panel("Connected", false)), connected_area);
+    }
     if holds_h > 0 {
         let room = holds_area.width.saturating_sub(2) as usize;
         f.render_widget(Paragraph::new(holds.into_iter().map(|l| super::fit_line(Line::from(Span::raw(l)), room)).collect::<Vec<_>>()).block(panel("It holds", false)), holds_area);
@@ -239,7 +270,7 @@ fn dashboard(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
     let [wait_area, versions, latest] = Layout::vertical([Constraint::Length(wait_h), Constraint::Length(versions_h), Constraint::Min(3)]).areas(right);
     if wait_h > 0 {
         let mut lines: Vec<Line> = waits.iter().map(|w| Line::from(vec![coloured("● ", WARN), Span::raw(w.clone())])).collect();
-        lines.extend(d.parked.iter().map(|r| Line::from(vec![coloured("◷ ", WARN), Span::raw(format!("a run waits: {} {}", r["kind"].as_str().unwrap_or_default(), r["route"].as_str().unwrap_or_default()))])));
+        lines.extend(d.parked.iter().map(|r| Line::from(vec![coloured("◷ ", WARN), Span::raw(format!("a run waits: {} {}", r["kind"].as_str().unwrap_or_default(), r["route"].as_str().unwrap_or_default())), dim("  (Approvals › Runs waiting decides it)")])));
         f.render_widget(Paragraph::new(lines).block(panel("Waiting", false)), wait_area);
     }
     let block = panel(&format!("Versions ({})", d.versions.len()), true);
@@ -424,7 +455,8 @@ fn access_row(a: &Access, width: usize) -> Line<'static> {
 }
 
 /// A row of a graph: its line, its lanes (the dot green where the newest run reached it), then
-/// the statement as written; a trigger in the accent, heading its band.
+/// the statement as written; a trigger in the accent, heading its band. Grouped, a statement's
+/// frame heads its nodes, which are set in under it.
 pub(super) fn graph_row(g: &GraphView, i: usize, width: usize) -> Line<'static> {
     let (_, _, lanes) = &g.rows[i];
     let Some(row) = g.row(i) else { return Line::default() };
@@ -432,6 +464,22 @@ pub(super) fn graph_row(g: &GraphView, i: usize, width: usize) -> Line<'static> 
     // Its data purple, a call outside teal, a wait amber, wherever they show; what the newest run
     // reached green.
     let kind = kind_colour(row.kind);
+    if g.is_frame(i) {
+        let rest = width.saturating_sub(5 + lanes.chars().count() + 2);
+        let does = format!("  {}", fit(&row.does, 16));
+        let style = match kind {
+            Some(k) => Style::new().fg(k).add_modifier(Modifier::BOLD),
+            None => Style::new().add_modifier(Modifier::BOLD),
+        };
+        let text = format!("▾ {}", row.text);
+        let spans = vec![
+            dim(format!("{:>4} ", row.line)),
+            Span::styled(format!("{lanes}  "), Style::new().fg(Color::Indexed(244))),
+            Span::styled(pad(&fit(&text, rest.saturating_sub(does.chars().count())), rest.saturating_sub(does.chars().count())), if g.dim && !reached { Style::new().fg(DARK) } else { style }),
+            if g.dim && !reached { Span::styled(does, Style::new().fg(DARK)) } else { dim(does) },
+        ];
+        return Line::from(spans);
+    }
     let dot = if reached { GOOD } else if row.head { ACCENT } else if let Some(k) = kind { k } else if row.effect { Color::White } else { Color::Gray };
     let (before, after) = lanes.split_once('●').unwrap_or((lanes, ""));
     let mut spans = vec![dim(format!("{:>4} ", row.line)), Span::styled(before.to_string(), Style::new().fg(Color::Indexed(244))), Span::styled("●", Style::new().fg(dot)), Span::styled(format!("{after}  "), Style::new().fg(Color::Indexed(244)))];
@@ -441,8 +489,10 @@ pub(super) fn graph_row(g: &GraphView, i: usize, width: usize) -> Line<'static> 
         let does = if row.does.is_empty() { String::new() } else { format!("  {}", row.does) };
         spans.push(Span::styled(fit(&row.text, rest.saturating_sub(does.chars().count())), Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)));
         spans.push(dim(does));
-    } else if g.every {
-        spans.push(bold(pad(&row.name, 16)));
+    } else if g.level != Level::Statements {
+        // Grouped, a node is set in under its statement.
+        let name = if g.level == Level::Grouped { format!("  {}", row.name) } else { row.name.clone() };
+        spans.push(bold(pad(&name, 16)));
         spans.push(dim(pad(&row.does, 14)));
         spans.push(dim(fit(&row.text, rest.saturating_sub(30))));
     } else {
@@ -471,18 +521,30 @@ pub(super) fn graph_list(f: &mut Frame, app: &App, area: Rect, g: &GraphView, se
     }
 }
 
-/// A graph's list title: how many rows of how many nodes, and what `a` does.
+/// A graph's list title: its level, and how many statements of how many nodes.
 pub(super) fn graph_title(g: &GraphView) -> String {
-    let rows = g.rows.len().saturating_sub(g.graph.bands.len());
-    if g.every { format!("Every node ({})", g.graph.nodes) } else { format!("Graph: {rows} statements of {} nodes", g.graph.nodes) }
+    let (s, n) = (g.statement_count(), g.graph.nodes);
+    match g.level {
+        Level::Nodes => format!("Nodes: {n} in {s} statements"),
+        Level::Statements => format!("Statements: {s} of {n} nodes"),
+        Level::Grouped => format!("Grouped: {n} nodes in {s} statements"),
+    }
 }
 
-/// The graph's switch, a button at the right of its panel's bottom edge, whether the panel
-/// has the keys or not: a shows every node, or the statements again. The panel's other keys,
-/// when it has them, keep to the left of it.
+/// How wide the graph's switch is in a panel `panel` wide: its key and the three levels' names
+/// where there is room beside the panel's other keys; else its key and the level shown.
+pub(super) fn every_chip_width(panel: u16) -> u16 {
+    let full = (3 + Level::ALL.iter().map(|l| l.name().chars().count() + 2).sum::<usize>()) as u16;
+    let one = (3 + Level::ALL.iter().map(|l| l.name().chars().count() + 2).max().unwrap_or(0)) as u16;
+    if panel >= full + 32 { full } else { one }
+}
+
+/// The graph's levels, a switch at the right of its panel's bottom edge, whether the panel has
+/// the keys or not: the three, the one shown lit, as the web's canvas head has them (in a narrow
+/// panel, the one shown alone); a (or a click) steps to the next. The panel's other keys, when it
+/// has them, keep to the left of it.
 pub(super) fn every_chip(f: &mut Frame, app: &App, panel: Rect, g: &GraphView) {
-    let what = if g.every { " statements " } else { " every node " };
-    let width = (3 + what.chars().count()) as u16;
+    let width = every_chip_width(panel.width);
     if panel.width < width + 12 || panel.height < 3 {
         return;
     }
@@ -490,7 +552,17 @@ pub(super) fn every_chip(f: &mut Frame, app: &App, panel: Rect, g: &GraphView) {
         keys.width -= width + 1;
     }
     let rect = Rect { x: panel.x + panel.width - width - 2, y: panel.y + panel.height - 1, width, height: 1 };
-    f.render_widget(Paragraph::new(Line::from(vec![Span::styled(" a ", Style::new().fg(Color::Black).bg(Color::Gray)), dim(what.to_string())])), rect);
+    let mut spans = vec![Span::styled(" a ", Style::new().fg(Color::Black).bg(Color::Gray))];
+    let lit = |name: String| Span::styled(name, Style::new().fg(ACCENT).add_modifier(Modifier::BOLD));
+    if width == every_chip_width(u16::MAX) {
+        for l in Level::ALL {
+            let name = format!(" {} ", l.name());
+            spans.push(if l == g.level { lit(name) } else { dim(name) });
+        }
+    } else {
+        spans.push(lit(format!(" {} ", g.level.name())));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), rect);
     app.hit(rect, Click::Every);
 }
 
@@ -556,6 +628,7 @@ fn split(f: &mut Frame, app: &mut App, area: Rect) {
         Section::History => ("History, newest first: one chain".to_string(), d.moments().len()),
         Section::State => (format!("Its state ({})", app.flow.cells.len()), app.flow.cells.len()),
         Section::Graph => (app.flow.graph.as_ref().map(graph_title).unwrap_or_else(|| "Graph".into()), app.flow.graph.as_ref().map_or(0, |g| g.rows.len())),
+        Section::Settings => ("Settings".to_string(), crate::workbench::settings::settings_rows(d).len()),
         _ => ("Access".to_string(), access_rows(d).len()),
     };
     let block = panel(&title, focused);
@@ -600,6 +673,17 @@ fn split(f: &mut Frame, app: &mut App, area: Rect) {
                     let c = &cells[i];
                     let value = if c.collection { dim("a collection".to_string()) } else { Span::raw(fit(&agent::show(&c.value), w.saturating_sub(24))) };
                     Line::from(vec![bold(pad(&c.name, 22)), value])
+                });
+            }
+            Section::Settings => {
+                let rows = crate::workbench::settings::settings_rows(d);
+                let status = d.entry["status"].as_str().unwrap_or_default().to_string();
+                list(f, app_ref, inner, List::Section, n, Some(sel), focused, |i, w| {
+                    let (said, what, how) = crate::workbench::settings::setting_line(&rows[i], &status);
+                    match said {
+                        Tone::Head => Line::from(bold(what)),
+                        t => Line::from(vec![Span::styled(pad(&what, 38), tone(t)), dim(fit(&how, w.saturating_sub(39)))]),
+                    }
                 });
             }
             _ => {

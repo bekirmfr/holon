@@ -3,9 +3,10 @@
 //! dialog over them. Whatever can be clicked says where it was drawn (`App::hit`).
 
 mod admin;
+mod approvals;
 mod editor;
 mod flow;
-mod modal;
+pub(crate) mod modal;
 
 use holon_author::samples;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
@@ -293,7 +294,7 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
     }
     if let Some(c) = &app.client {
         right.push((Span::raw(format!("{} deployed", c.deployments.len())), Some(Page::Flows)));
-        let waiting = app.waiting().len();
+        let waiting = app.waiting_total();
         right.push((dim(" · "), None));
         right.push((if waiting > 0 { coloured(format!("● {waiting} waiting for you"), WARN) } else { dim("nothing waiting") }, Some(Page::Approvals)));
         let paused = c.deployments.iter().filter(|d| d["status"] == "paused").count();
@@ -411,7 +412,7 @@ fn clock() -> String {
 /// The pages down the side, in two groups (the work, then the host), each with its count on the
 /// right; under them, how the server is, and the keys that work anywhere.
 fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
-    let waiting = app.waiting().len();
+    let waiting = app.waiting_total();
     let width = area.width.saturating_sub(1) as usize;
     let mut y = area.y + 1;
     let head = |f: &mut Frame, y: u16, name: &str| f.render_widget(Paragraph::new(Span::styled(format!("  {name}"), Style::new().fg(DARK).add_modifier(Modifier::BOLD))), Rect { x: area.x, y, width: area.width.saturating_sub(1), height: 1 });
@@ -449,6 +450,8 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let bottom = area.y + area.height;
     // How the server is, at the foot: what runs, what's paused, what it warns of.
     let mut health = vec![Line::from(Span::styled("  SERVER", Style::new().fg(DARK).add_modifier(Modifier::BOLD)))];
+    // Which of its lines is the "check now" button, when there is one.
+    let mut check_at = None;
     match (&app.client, &app.offline) {
         (Some(c), None) => {
             let running = c.deployments.iter().filter(|d| d["status"] == "running").count();
@@ -471,6 +474,14 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 _ => format!("{:.1}M", on_record as f64 / 1e6),
             };
             health.push(Line::from(dim(format!("    {n} on record"))));
+            if let Some(at) = c.summary["chain"]["checked"]["at_ms"].as_u64() {
+                let broke = c.summary["chain"]["checked"]["breaks"].as_array().map_or(0, Vec::len);
+                health.push(Line::from(if broke == 0 { dim(format!("    checked {}", flow::ago(at))) } else { coloured(format!("    {broke} found {}", flow::ago(at)), BAD) }));
+            }
+            if c.may("host.check", None).is_ok() {
+                check_at = Some(health.len());
+                health.push(Line::from(coloured("    check now", ACCENT)));
+            }
         }
         (Some(_), Some(_)) => health.push(Line::from(vec![coloured("  ● ", BAD), dim("can't reach it")])),
         (None, _) => health.push(Line::from(vec![coloured("  ○ ", WARN), dim("none: files only")])),
@@ -481,6 +492,9 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         let room = area.width.saturating_sub(1) as usize;
         let lines: Vec<Line> = health.into_iter().chain(help).map(|l| fit_line(l, room)).collect();
         f.render_widget(Paragraph::new(lines), Rect { y: bottom - need, height: need, ..area });
+        if let Some(i) = check_at {
+            app.hit(Rect { y: bottom - need + i as u16, height: 1, width: area.width.saturating_sub(1), ..area }, Click::Check);
+        }
     } else if bottom > y + 4 {
         f.render_widget(Paragraph::new(help.to_vec()), Rect { y: y + 1, height: bottom.saturating_sub(y + 1), ..area });
     }
@@ -661,29 +675,49 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
             Page::Flow => match app.flow.section {
                 Section::Status => vec![("← →", "sections", Right, NONE), ("enter", "go back to a version", Enter, NONE), ("c", "call", Char('c'), NONE), ("e", "edit", Char('e'), NONE), ("g p x", "run pause stop", Char('g'), NONE), ("esc", "flows", Esc, NONE)],
                 _ if in_flow_pane => vec![("← →", "tabs", Right, NONE), ("↑↓", "scroll", Down, NONE), ("tab", "next section", Tab, NONE), ("esc", "back to the list", Esc, NONE)],
-                Section::Runs => vec![("↑↓", "pick", Down, NONE), ("→", "its tabs", Right, NONE), ("enter", "step through", Enter, NONE), ("i", "explain", Char('i'), NONE), ("L", "its lines", Char('L'), NONE), ("/", "filter", Char('/'), NONE), ("F", if app.flow.follow { "stop following" } else { "follow" }, Char('F'), NONE), ("o", "export", Char('o'), NONE), ("b", "go back to it", Char('b'), NONE), ("c", "call", Char('c'), NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
+                Section::Runs => vec![("↑↓", "pick", Down, NONE), ("→", "its tabs", Right, NONE), ("enter", "step through", Enter, NONE), ("i", "explain", Char('i'), NONE), ("L", "its lines", Char('L'), NONE), ("/", "filter", Char('/'), NONE), ("F", if app.flow.follow { "stop following" } else { "follow" }, Char('F'), NONE), ("O", "export it", Char('O'), NONE), ("o", "export all", Char('o'), NONE), ("b", "go back to it", Char('b'), NONE), ("c", "call", Char('c'), NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
                 Section::Logs => vec![("↑↓", "pick", Down, NONE), ("→", "its line", Right, NONE), ("w", "level", Char('w'), NONE), ("u", "run's lines", Char('u'), NONE), ("F", if app.flow.log_paused { "follow" } else { "pause" }, Char('F'), NONE), ("enter", "step through", Enter, NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
                 Section::History => vec![("↑↓", "pick", Down, NONE), ("→", "its tabs", Right, NONE), ("enter", "go back to it", Enter, NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
+                Section::State if app.flow.cells.get(app.flow.sel()).is_some_and(|c| c.collection) => vec![("↑↓", "pick", Down, NONE), ("→", "its tabs", Right, NONE), ("enter", "its history", Enter, NONE), ("] [", "pages", Char(']'), NONE), ("i", "an item's history", Char('i'), NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
                 Section::State => vec![("↑↓", "pick", Down, NONE), ("→", "its tabs", Right, NONE), ("enter", "its history", Enter, NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
-                Section::Access => vec![("↑↓", "pick", Down, NONE), ("enter", "change it", Enter, NONE), ("del", "remove a secret", Delete, NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
+                Section::Access => vec![("↑↓", "pick", Down, NONE), ("enter", "change it", Enter, NONE), ("R", "roll a secret back", Char('R'), NONE), ("del", "remove a secret", Delete, NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
+                Section::Settings => vec![("↑↓", "pick", Down, NONE), ("enter", "change it", Enter, NONE), ("→", "about it", Right, NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
                 Section::Graph => vec![("↑↓", "pick", Down, NONE), ("→", "its tabs", Right, NONE), ("enter", "edit it there", Enter, NONE), ("tab", "section", Tab, NONE), ("esc", "flows", Esc, NONE)],
             },
-            Page::Overview => vec![("↑↓", "pick", Down, NONE), ("enter", "open", Enter, NONE), ("e", "edit", Char('e'), NONE), ("c", "call", Char('c'), NONE), ("ctrl+p", "find", Char('p'), CTRL), ("q", "quit", Char('q'), NONE)],
+            Page::Overview => {
+                let mut keys = vec![("↑↓", "pick", Down, NONE), ("enter", "open", Enter, NONE), ("e", "edit", Char('e'), NONE), ("c", "call", Char('c'), NONE)];
+                if app.client.as_ref().is_some_and(|c| c.may("host.check", None).is_ok()) {
+                    keys.push(("C", "check the run logs", Char('C'), NONE));
+                }
+                keys.extend([("ctrl+p", "find", Char('p'), CTRL), ("q", "quit", Char('q'), NONE)]);
+                keys
+            }
             Page::Approvals => vec![("↑↓", "pick", Down, NONE), ("enter", "review and approve", Enter, NONE), ("q", "quit", Char('q'), NONE)],
-            Page::Flows => vec![("↑↓", "pick", Down, NONE), ("enter", "open", Enter, NONE), ("e", "edit", Char('e'), NONE), ("c", "call", Char('c'), NONE), ("/", "filter", Char('/'), NONE), ("f", "live · waiting · paused", Char('f'), NONE), ("q", "quit", Char('q'), NONE)],
+            Page::Flows => vec![("↑↓", "pick", Down, NONE), ("enter", "open", Enter, NONE), ("e", "edit", Char('e'), NONE), ("c", "call", Char('c'), NONE), ("/", "filter", Char('/'), NONE), ("f", "live · waiting · paused", Char('f'), NONE), ("del", "delete saved", Delete, NONE), ("q", "quit", Char('q'), NONE)],
             Page::Library => vec![("↑↓", "pick", Down, NONE), ("enter", "open a copy", Enter, NONE), ("/", "filter", Char('/'), NONE), ("q", "quit", Char('q'), NONE)],
             Page::Admin if app.admin.right => vec![("↑↓", "scroll", Down, NONE), ("tab", "next part", Tab, NONE), ("esc", "back to the list", Esc, NONE)],
             Page::Admin => {
                 use crate::workbench::admin::Part;
                 let mut keys = vec![("↑↓", "pick", Down, NONE)];
                 keys.extend(match app.admin.part {
-                    Part::People => vec![("n", "invite", Char('n'), NONE), ("a", "agent or service", Char('a'), NONE), ("enter", "role", Enter, NONE), ("e", "email", Char('e'), NONE), ("o", "owner", Char('o'), NONE), ("x", "disable", Char('x'), NONE), ("s", "reset link", Char('s'), NONE), ("del", "remove", Delete, NONE)],
+                    Part::People => vec![("n", "invite", Char('n'), NONE), ("a", "agent or service", Char('a'), NONE), ("enter", "role", Enter, NONE), ("b", "bind", Char('b'), NONE), ("e", "email", Char('e'), NONE), ("o", "owner", Char('o'), NONE), ("x", "disable", Char('x'), NONE), ("s", "reset link", Char('s'), NONE), ("del", "remove", Delete, NONE)],
+                    Part::Groups => vec![("n", "new group", Char('n'), NONE), ("+", "add members", Char('+'), NONE), ("-", "take out", Char('-'), NONE), ("del", "remove", Delete, NONE)],
+                    Part::Roles => vec![("n", "define a role", Char('n'), NONE), ("enter", "change it", Enter, NONE), ("del", "remove", Delete, NONE)],
+                    Part::Bindings => vec![("n", "bind a role", Char('n'), NONE), ("del", "unbind", Delete, NONE)],
+                    Part::History => vec![("enter", "approval settings", Enter, NONE)],
+                    Part::Yours => vec![("n", "new key", Char('n'), NONE), ("del", "revoke a key", Delete, NONE)],
                     Part::Keys => vec![("n", "new key", Char('n'), NONE), ("del", "revoke", Delete, NONE)],
-                    Part::Folders => vec![("n", "bind a folder", Char('n'), NONE), ("del", "unbind", Delete, NONE)],
+                    Part::Folders if app.admin.browse.is_some() => vec![("enter", "open", Enter, NONE), ("←", "parent", Left, NONE), ("n", "bind this folder", Char('n'), NONE), ("esc", "stop browsing", Esc, NONE)],
+                    Part::Folders => vec![("n", "bind a folder", Char('n'), NONE), ("b", "browse", Char('b'), NONE), ("del", "unbind", Delete, NONE)],
                     Part::Databases => vec![("n", "bind a database", Char('n'), NONE), ("enter", "tables", Enter, NONE), ("del", "unbind", Delete, NONE)],
-                    Part::Secrets => vec![("enter", "set them", Enter, NONE)],
+                    Part::Mail | Part::Feeds | Part::Queues => vec![("n", "bind", Char('n'), NONE), ("del", "unbind", Delete, NONE)],
+                    Part::Secrets => vec![("n", "new secret", Char('n'), NONE), ("enter", "set again", Enter, NONE), ("t", "where it goes", Char('t'), NONE), ("R", "roll back", Char('R'), NONE), ("del", "remove", Delete, NONE)],
+                    Part::Storage => vec![("enter", "change", Enter, NONE)],
+                    Part::Policy => vec![("enter", "read it again", Enter, NONE)],
                     Part::Server => vec![("enter", "do it", Enter, NONE)],
-                });
+                }
+                .into_iter()
+                .filter(|(_, _, code, _)| app.admin_may(*code)));
                 keys.extend([("tab", "part", Tab, NONE), ("esc", "overview", Esc, NONE)]);
                 keys
             }
@@ -844,12 +878,21 @@ fn deployment_row(c: &Client, d: &Value, width: usize) -> Line<'static> {
     }
     spans.push(Span::raw(" ".repeat(17usize.saturating_sub(used))));
     if width >= 87 {
+        let glance = c.summary["deployments"].as_array().and_then(|all| all.iter().find(|f| f["slug"] == slug));
         let recent = c.recent.get(slug).map(|(_, r)| r.as_slice()).unwrap_or_default();
-        spans.extend(flow::spark(recent, 8).spans);
+        let (spark, last) = match glance {
+            Some(g) => {
+                // Whether its newest run failed, when it is among the host's newest.
+                let newest_failed = c.summary["latest"].as_array().and_then(|l| l.iter().find(|r| r["slug"] == slug)).is_some_and(|r| r["failed"] == true);
+                (flow::spark_hours(g, 8), g["last_ms"].as_u64().map(|at| (at, newest_failed)))
+            }
+            None => (flow::spark(recent, 8), recent.last().map(|r| (r["at_ms"].as_u64().unwrap_or(0), crate::workbench::flow::failed(r)))),
+        };
+        spans.extend(spark.spans);
         spans.push(Span::raw("  "));
-        spans.push(match recent.last() {
-            Some(r) if crate::workbench::flow::failed(r) => coloured(format!("{:<12}", flow::ago(r["at_ms"].as_u64().unwrap_or(0))), BAD),
-            Some(r) => dim(format!("{:<12}", flow::ago(r["at_ms"].as_u64().unwrap_or(0)))),
+        spans.push(match last {
+            Some((at, true)) => coloured(format!("{:<12}", flow::ago(at)), BAD),
+            Some((at, false)) => dim(format!("{:<12}", flow::ago(at))),
             None => dim(format!("{:<12}", "never")),
         });
     }
@@ -876,6 +919,8 @@ struct Day {
     failed: usize,
     p50: Option<f64>,
     p99: Option<f64>,
+    /// Each flow's median, from the summary: the host's isn't said, only theirs.
+    medians: Vec<f64>,
     more: bool,
 }
 
@@ -890,9 +935,17 @@ fn last_day(c: &Client) -> Day {
         failed += day.iter().filter(|r| crate::workbench::flow::failed(r)).count();
         times.extend(day.iter().filter_map(|r| r["duration_ms"].as_f64()));
     }
+    let mut medians = vec![];
+    for f in c.summary["deployments"].as_array().into_iter().flatten() {
+        let sum = |k: &str| f[k].as_array().into_iter().flatten().filter_map(Value::as_u64).sum::<u64>() as usize;
+        count += sum("runs");
+        failed += sum("failed");
+        medians.extend(f["p50_ms"].as_f64());
+    }
     times.sort_by(f64::total_cmp);
+    medians.sort_by(f64::total_cmp);
     let at = |p: f64| (!times.is_empty()).then(|| times[((times.len() - 1) as f64 * p).round() as usize]);
-    Day { runs: count, failed, p50: at(0.5), p99: at(0.99), more }
+    Day { runs: count, failed, p50: at(0.5), p99: at(0.99), medians, more }
 }
 
 fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
@@ -901,6 +954,10 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     }
     let c = app.client.as_ref().unwrap();
     let waiting = app.waiting();
+    // The runs waiting at a step the caller may take, beside the versions and flows that wait.
+    let mine: Vec<Value> = app.runs_waiting().into_iter().filter(|r| crate::workbench::approvals::yours(r).is_some()).collect();
+    let changes = app.changes_yours();
+    let total = waiting.len() + mine.len() + changes;
     let running = c.deployments.iter().filter(|d| d["status"] == "running").count();
     let runs: u64 = c.deployments.iter().filter_map(|d| d["trigger_count"].as_u64()).sum();
     let failed: u64 = c.deployments.iter().filter_map(|d| d["error_count"].as_u64()).sum();
@@ -908,23 +965,28 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     // What the host warns of, then what waits for a person, in one panel.
     let warned: Vec<(String, String)> = c.warnings.iter().map(|w| (w["says"].as_str().unwrap_or_default().to_string(), w["todo"].as_str().unwrap_or_default().to_string())).collect();
     let asked: usize = waiting.iter().take(6).map(|(slug, w)| if w.starts_with("to start") || w.starts_with("to free") { 0 } else { app.asks(slug).len().min(3) }).sum();
-    let wait_height = (waiting.len().clamp(1, 6) + asked + warned.len().min(3) * 2 + 2) as u16;
+    let wait_height = ((waiting.len() + mine.len().min(3) + usize::from(changes > 0)).clamp(1, 9) + asked + warned.len().min(3) * 2 + 2) as u16;
     let [said, tiles, rest] = Layout::vertical([Constraint::Length(1), Constraint::Length(tiles_height), Constraint::Min(3)]).areas(area);
     // The page in a line: who, what waits, what runs, what failed.
     let who = c.me.clone().map(|m| format!("{m}: ")).unwrap_or_default();
     let mut head = vec![Span::raw(" "), bold(who)];
-    head.push(if waiting.is_empty() { coloured("nothing waits for you", GOOD) } else { coloured(format!("{} wait{} for you", waiting.len(), if waiting.len() == 1 { "s" } else { "" }), WARN) });
+    head.push(if total == 0 { coloured("nothing waits for you", GOOD) } else { coloured(format!("{total} wait{} for you", if total == 1 { "s" } else { "" }), WARN) });
     head.push(dim(format!("  ·  {running} of {} running", c.deployments.len())));
     head.push(if failed > 0 { coloured(format!("  ·  {failed} failed of {runs} runs"), BAD) } else { dim(format!("  ·  {runs} runs, none failed")) });
     f.render_widget(Paragraph::new(Line::from(head)), said);
     if tiles_height > 0 {
         let parts = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(tiles);
         tile(f, parts[0], "Deployed", &c.deployments.len().to_string(), &format!("{running} running"), ACCENT);
-        tile(f, parts[1], "Waiting for you", &waiting.len().to_string(), if waiting.is_empty() { "nothing to approve" } else { "2 opens them" }, if waiting.is_empty() { GOOD } else { WARN });
+        tile(f, parts[1], "Waiting for you", &total.to_string(), if total == 0 { "nothing to approve" } else { "2 opens them" }, if total == 0 { GOOD } else { WARN });
         let day = last_day(c);
         let at_least = if day.more { "≥" } else { "" };
-        let times = match (day.p50, day.p99) {
-            (Some(a), Some(b)) => format!("p50 {} · p99 {}", crate::workbench::flow::took(a), crate::workbench::flow::took(b)),
+        let took = crate::workbench::flow::took;
+        let times = match (day.medians.as_slice(), day.p50, day.p99) {
+            // From the summary: one flow's median, or the range of theirs.
+            ([one], None, _) => format!("p50 {}", took(*one)),
+            ([low, .., high], _, _) => format!("p50 {} to {}, by flow", took(*low), took(*high)),
+            ([one], Some(a), _) => format!("p50 {} to {}, by flow", took(one.min(a)), took(one.max(a))),
+            (_, Some(a), Some(b)) => format!("p50 {} · p99 {}", took(a), took(b)),
             _ => format!("{runs} on record"),
         };
         tile(f, parts[2], "Runs, last 24 h", &format!("{at_least}{}", day.runs), &times, Color::White);
@@ -949,7 +1011,14 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let mut lines: Vec<Line> = warned.iter().take(3).flat_map(|(says, todo)| [Line::from(vec![coloured("! ", BAD), Span::raw(says.clone())]), Line::from(dim(format!("  {todo}")))]).collect();
-    if waiting.is_empty() {
+    for r in mine.iter().take(3) {
+        let point = crate::workbench::approvals::yours(r).map(|(w, _)| w["name"].as_str().unwrap_or("?").to_string()).unwrap_or_default();
+        lines.push(Line::from(vec![coloured("◷ ", WARN), bold(format!("{}  ", r["slug"].as_str().unwrap_or("?"))), Span::raw(format!("run {} waits at {point:?} for you ({})", crate::decidecmd::short(r["run_id"].as_str().unwrap_or("?")), crate::workbench::approvals::what(r)))]));
+    }
+    if changes > 0 {
+        lines.push(Line::from(vec![coloured("◆ ", WARN), Span::raw(format!("{changes} access change{} wait{} for you to approve or decline (Approvals › Access changes)", if changes == 1 { "" } else { "s" }, if changes == 1 { "s" } else { "" }))]));
+    }
+    if total == 0 {
         lines.push(Line::from(dim("Nothing waits for a person.")));
     } else {
         // Each wait, then what its version asks that the flow may not do now.
@@ -967,7 +1036,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     }
     let room = waits.width.saturating_sub(2) as usize;
     let lines: Vec<Line> = lines.into_iter().map(|l| fit_line(l, room)).collect();
-    f.render_widget(Paragraph::new(lines).block(panel(&format!("Waiting for you ({})", waiting.len()), false)), waits);
+    f.render_widget(Paragraph::new(lines).block(panel(&format!("Waiting for you ({total})"), false)), waits);
     app.hit(waits, Click::Page(Page::Approvals));
 
     if wide {
@@ -992,6 +1061,13 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
 fn draw_approvals(f: &mut Frame, app: &mut App, area: Rect) {
     if offline(f, app, area, "Approvals") {
         return;
+    }
+    let [bar, area] = Layout::vertical([Constraint::Length(2), Constraint::Min(3)]).areas(area);
+    approvals::draw_parts(f, app, bar);
+    match app.approvals_part {
+        crate::workbench::approvals::Part::Runs => return approvals::draw_runs(f, app, area),
+        crate::workbench::approvals::Part::Access => return approvals::draw_access(f, app, area),
+        crate::workbench::approvals::Part::Deploys => {}
     }
     app.sync_approval();
     let waiting = app.waiting();
@@ -1036,6 +1112,11 @@ fn draw_approvals(f: &mut Frame, app: &mut App, area: Rect) {
         }
         crate::workbench::app::Pending::Said(why) => f.render_widget(Paragraph::new(why.clone()).wrap(Wrap { trim: false }), inner),
         crate::workbench::app::Pending::Failed(why) => f.render_widget(Paragraph::new(vec![Line::from(coloured("It can't be reviewed here:", BAD)), Line::from(why.clone())]).wrap(Wrap { trim: false }), inner),
+        crate::workbench::app::Pending::Proposal(p, why) => {
+            let head = format!("v{} proposed by {}", p["version"].as_u64().unwrap_or(0), p["by"].as_str().unwrap_or("someone"));
+            let lines = vec![Line::from(head), Line::default(), Line::from(coloured("It can't be approved here:", BAD)), Line::from(why.clone()), Line::default(), Line::from(dim("d declines it, saying why: its author reads it."))];
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        }
     }
     let go = match &a.what {
         crate::workbench::app::Pending::Deploy(s) if s.staged.needs.is_empty() => "deploy",
@@ -1043,12 +1124,19 @@ fn draw_approvals(f: &mut Frame, app: &mut App, area: Rect) {
         crate::workbench::app::Pending::Start => "run it",
         _ => "",
     };
+    let proposed = matches!(&a.what, crate::workbench::app::Pending::Proposal(..)) || matches!(&a.what, crate::workbench::app::Pending::Deploy(s) if s.proposal.is_some());
     app.approval = Some(a);
     let mut keys: Vec<(&str, &str, KeyCode, KeyModifiers)> = vec![];
     if !go.is_empty() {
         keys.push(("enter", go, KeyCode::Enter, KeyModifiers::NONE));
     }
-    keys.extend([("]", "next", KeyCode::Char(']'), KeyModifiers::NONE), ("e", "open in the editor", KeyCode::Char('e'), KeyModifiers::NONE)]);
+    if proposed {
+        keys.push(("d", "decline", KeyCode::Char('d'), KeyModifiers::NONE));
+    }
+    if go.starts_with("approve") || go == "deploy" {
+        keys.push(("v", "replay", KeyCode::Char('v'), KeyModifiers::NONE));
+    }
+    keys.extend([("]", "next", KeyCode::Char(']'), KeyModifiers::NONE), ("e", "open in the editor", KeyCode::Char('e'), KeyModifiers::NONE), ("tab", "runs waiting", KeyCode::Tab, KeyModifiers::NONE)]);
     keys.push(if review_keys { ("esc", "back to the list", KeyCode::Esc, KeyModifiers::NONE) } else { ("→", "read it", KeyCode::Right, KeyModifiers::NONE) });
     let bar = Rect { x: right.x + 2, y: right.y + right.height - 1, width: right.width.saturating_sub(4), height: 1 };
     buttons(f, app, bar, &keys);
