@@ -6,8 +6,30 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { acceptInvite, getAuthConfig, getAuthState, getPrefs, getVersion, inviteFor, listDeployments, mayI, setSession, setUp, SIGN_IN_FIRST, signInWith, whoAmI } from "./server";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { held } from "./held.fixture";
+import {
+  acceptInvite,
+  ANSWER_WITHIN,
+  askingAgainNow,
+  getAuthConfig,
+  getAuthState,
+  getPrefs,
+  getVersion,
+  inviteFor,
+  listDeployments,
+  mayI,
+  pickFolder,
+  READ_AGAIN_MS,
+  reloadPermissions,
+  replayVersion,
+  setSession,
+  setUp,
+  SIGN_IN_FIRST,
+  signInWith,
+  Unanswered,
+  whoAmI,
+} from "./server";
 
 /** The editor's own source, its tests left out. */
 const SOURCES = Object.entries(import.meta.glob("./**/*.{ts,tsx}", { query: "?raw", import: "default", eager: true }) as Record<string, string>).filter(
@@ -32,7 +54,7 @@ describe("asking the server", () => {
     const fetches = Object.fromEntries(SOURCES.map(([path, text]) => [path, (text.match(/\bfetch\(/g) ?? []).length] as const).filter(([, n]) => n > 0));
     expect(fetches).toEqual({ ...ELSEWHERE, "./server.ts": 1 });
     const server = SOURCES.find(([path]) => path === "./server.ts")![1];
-    expect(server).toMatch(/const ask = \(url: string, init: RequestInit = \{\}\): Promise<Response> => fetch\(url, \{ \.\.\.init, cache: "no-store" \}\);/);
+    expect(server).toMatch(/const answered = fetch\(url, \{ \.\.\.init, cache: "no-store", signal: stop\.signal \}\);/);
   });
 
   it("what it asks, signed in or not, read or changed, goes past the browser's cache", async () => {
@@ -86,7 +108,7 @@ describe("with no one signed in", () => {
     const open = [...routes.matchAll(/\bopen\("([A-Z]+)", "([^"]+)"\)/g)].map(([, method, path]) => `${method} ${path}`);
     expect(asNoOne.filter((r) => !open.includes(r)), "asked as no one, refused by the server").toEqual([]);
     // Else `ask` is `api`'s, with the bearer, and `postOpen`'s, to those same routes.
-    expect([...server.matchAll(/\bask\((?!`\$\{BASE\})/g)]).toHaveLength(2);
+    expect([...server.matchAll(/(?<!function )\bask\((?!`\$\{BASE\})/g)]).toHaveLength(2);
     expect(server).toMatch(/const postOpen = \(url: string, body: unknown\) => ask\(url, \{ method: "POST", /);
   });
 
@@ -145,5 +167,157 @@ describe("with no one signed in", () => {
       "POST /auth/sign-in as no one",
       "GET /auth/me Bearer t",
     ]);
+  });
+});
+
+// On a busy machine the server's HTTP library can leave a new connection unread until another one
+// closes: a request written into it gets no answer at all, neither a status nor an error, and a
+// page waited on it for a minute or more, its buttons disabled (R97). Every request now has its
+// time, by what it asks (ANSWER_WITHIN): a read past it is given up, its connection dropped, and
+// asked again, the page told meanwhile; a read that has the server work first gets longer, and
+// isn't asked again; a change is never sent twice, and given up it is said as maybe done; the
+// folder picker waits on a person. Each row: what is sent, when, what is dropped, what is said.
+describe("a request the server doesn't answer", () => {
+  /** Each request sent: its method and path, whether it was given up (its connection dropped),
+   *  and its answer, held until given (as a connection the server left unread holds it), or
+   *  given late, after it was given up. Held as a browser's fetch holds it (held.fixture.ts):
+   *  given up, it rejects inside the abort, before the editor's own timer has said so. */
+  type Sent = { method: string; path: string; dropped: () => boolean; answer: (body: unknown) => void };
+  let sent: Sent[];
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    setSession({ token: "t", name: "cy", kind: "person", role: "editor" });
+    sent = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        const h = held(init);
+        sent.push({
+          method: init?.method ?? "GET",
+          path: new URL(url, "http://127.0.0.1:7420").pathname,
+          dropped: h.dropped,
+          answer: (body) => h.answer(new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } })),
+        });
+        return h.answered;
+      }),
+    );
+  });
+  afterEach(() => vi.useRealTimers());
+  const wait = (ms: number) => vi.advanceTimersByTimeAsync(ms);
+  const outcome = (p: Promise<unknown>) => p.then((v) => ({ answered: v }), (e: unknown) => ({ said: e }));
+
+  it("a read with no answer is given up at its time, its connection dropped, and asked again; the page is told meanwhile", async () => {
+    const me = whoAmI();
+    await wait(ANSWER_WITHIN.read - 1);
+    expect(sent.map((s) => s.path)).toEqual(["/auth/me"]);
+    expect(askingAgainNow()).toBe(false);
+    await wait(1);
+    expect(sent[0].dropped(), "its connection dropped").toBe(true);
+    expect(askingAgainNow(), "trying again").toBe(true);
+    await wait(READ_AGAIN_MS[0]);
+    expect(sent.map((s) => s.path)).toEqual(["/auth/me", "/auth/me"]);
+    sent[1].answer({ name: "cy", kind: "person", role: "editor" });
+    expect((await me).name).toBe("cy");
+    expect(askingAgainNow()).toBe(false);
+  });
+
+  it("an answer within its time, however late in it, is taken, and nothing is asked twice", async () => {
+    const me = whoAmI();
+    await wait(ANSWER_WITHIN.read - 1);
+    sent[0].answer({ name: "cy", kind: "person", role: "editor" });
+    expect((await me).name).toBe("cy");
+    await wait(3 * ANSWER_WITHIN.read);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].dropped()).toBe(false);
+  });
+
+  it("a read given up whose answer comes anyway, late: the one asked again is taken, never the late one", async () => {
+    const may = mayI(["flow.view"]);
+    await wait(ANSWER_WITHIN.read + READ_AGAIN_MS[0]);
+    expect(sent).toHaveLength(2);
+    sent[0].answer({ "flow.view": "the late answer, read before" });
+    sent[1].answer({ "flow.view": true });
+    expect(await may).toEqual({ "flow.view": true });
+  });
+
+  it("no answer to any of its three tries is said, and nothing more is sent", async () => {
+    const prefs = outcome(getPrefs());
+    await wait(3 * ANSWER_WITHIN.read + READ_AGAIN_MS[0] + READ_AGAIN_MS[1]);
+    const { said } = (await prefs) as { said: unknown };
+    expect(said).toBeInstanceOf(Unanswered);
+    expect((said as Error).message).toBe(`the server didn't answer, asked 3 times, ${ANSWER_WITHIN.read / 1000} s each: it may be busy, or not running`);
+    expect(sent.map((s) => s.path)).toEqual(["/auth/prefs", "/auth/prefs", "/auth/prefs"]);
+    expect(sent.every((s) => s.dropped())).toBe(true);
+    expect(askingAgainNow()).toBe(false);
+    await wait(60_000);
+    expect(sent).toHaveLength(3);
+  });
+
+  it("a change with no answer is sent once, never again, and said as maybe done; the buttons read again", async () => {
+    const told = vi.fn();
+    window.addEventListener("holon:can", told);
+    const reload = outcome(reloadPermissions());
+    await wait(ANSWER_WITHIN.change);
+    const { said } = (await reload) as { said: unknown };
+    window.removeEventListener("holon:can", told);
+    expect(said).toBeInstanceOf(Unanswered);
+    expect((said as Error).message).toBe(
+      `the server didn't answer in ${ANSWER_WITHIN.change / 60_000} minutes: it may or may not have been done; the page shows what it holds when it reads it again`,
+    );
+    expect(sent.map((s) => `${s.method} ${s.path}`)).toEqual(["POST /permissions/reload"]);
+    expect(sent[0].dropped()).toBe(true);
+    expect(told, "what the buttons follow is read again").toHaveBeenCalledTimes(1);
+    await wait(ANSWER_WITHIN.change);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("a read that has the server work first is given its longer time, and isn't asked again", async () => {
+    const replay = outcome(replayVersion("d", "u"));
+    await wait(3 * ANSWER_WITHIN.read);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].dropped()).toBe(false);
+    await wait(ANSWER_WITHIN.work);
+    expect(((await replay) as { said: unknown }).said).toBeInstanceOf(Unanswered);
+    expect(sent.map((s) => s.path)).toEqual(["/deployments/d/replay"]);
+  });
+
+  // The rows above hold their answers as a browser's fetch does. In Chrome, aborted from a timer
+  // and raced as `once` raced it before, the fetch's own AbortError won over the timer's
+  // `Unanswered`, and the editor took a give-up for another failure: a read wasn't asked again,
+  // a change wasn't said as maybe done. Node's fetch, and a stand-in that only held its answer,
+  // let the timer win. So the stand-ins are held to the browser's order, here, and every one
+  // holds its answer through held.fixture.ts.
+  it("a stand-in's held answer, given up, rejects as a browser's fetch does: inside the abort, with its reason", async () => {
+    const raced = (abort: (stop: AbortController) => void) => {
+      const stop = new AbortController();
+      const h = held({ signal: stop.signal });
+      const timer = new Promise<never>((_, reject) => {
+        abort(stop);
+        reject(new Error("the timer's own, after the abort"));
+      });
+      return Promise.race([h.answered, timer]).then(
+        () => new Error("answered"),
+        (e: unknown) => e as Error,
+      );
+    };
+    const plain = await raced((stop) => stop.abort());
+    expect(plain.name, "the fetch's own, before the timer's").toBe("AbortError");
+    expect(plain).not.toBeInstanceOf(Unanswered);
+    expect(await raced((stop) => stop.abort(new Unanswered("given up"))), "the reason given").toBeInstanceOf(Unanswered);
+    const tests = Object.entries(import.meta.glob("./**/*.test.{ts,tsx}", { query: "?raw", import: "default", eager: true }) as Record<string, string>);
+    const own = new RegExp("new Promise" + "<Response>");
+    expect(
+      tests.filter(([, text]) => own.test(text)).map(([path]) => path),
+      "a stand-in fetch holding its answer otherwise",
+    ).toEqual([]);
+  });
+
+  it("the host's folder picker waits on a person, as long as they take", async () => {
+    const picked = pickFolder("C:/");
+    await wait(10 * 60_000);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].dropped()).toBe(false);
+    sent[0].answer({ path: "C:/data" });
+    expect(await picked).toEqual({ path: "C:/data" });
   });
 });
