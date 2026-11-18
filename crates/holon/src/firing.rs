@@ -74,6 +74,64 @@ impl Host for RecordingHost {
 /// it from there. `perform_effects` already walks every non-`None` slot, so a state-write and
 /// a text response left as two separate exposed outputs are both correctly handled now,
 /// without combining them into anything.
+/// What a run read out of the replies that sent a secret back (R70). A far side that answers
+/// with the secret it was sent hands the flow the secret again, in a reply the walk of the
+/// secret takes as clean. So, once the run is over: the calls whose reply held a secret whole
+/// (`secrets::echoing`), and what the flow read out of those replies (`SecretFed::echoed_at`),
+/// up to each step the run saw give only a number, a true or false or a short text
+/// (`secrets::short_steps`): a balance read out of such a reply is a balance. What is still
+/// on that trail is the secret's: an answer made of it needs the approval an answer with the
+/// secret does, and a write of it is refused. By where a value came from and what kind it is,
+/// never by comparing it with the secret: a caller who chose a text in the run learns nothing
+/// of the secret's characters from a refusal. (Its record alone is written by them:
+/// `secrets::echoed_parts`.)
+#[derive(Clone, Default)]
+pub(crate) struct Echoed {
+    /// The secrets a reply held, by name.
+    pub(crate) names: Vec<String>,
+    /// The hosts whose reply held one.
+    pub(crate) hosts: Vec<String>,
+    /// What the flow read out of those replies.
+    pub(crate) fed: taint::SecretFed,
+}
+
+impl Echoed {
+    /// The secrets the run's output `port` (a request's answer is its first) was read out of a
+    /// reply holding: none where it wasn't read out of one.
+    pub(crate) fn answered(&self, port: usize) -> &[String] {
+        if self.fed.reaches_output(port) { &self.names } else { &[] }
+    }
+
+    /// Why an answer read out of a reply that held the secret `name` isn't given, for the
+    /// flow's author: what happened, and the way on that there is. Only the one: a flow
+    /// approved to answer its callers with that secret (`SecretAnswer`, asked at deploy where a
+    /// route answers with the secret itself) is never refused this, so naming that approval
+    /// here would point at nothing this flow can do.
+    pub(crate) fn refusal(&self, name: &str) -> String {
+        echo_refused(&self.hosts, name)
+    }
+}
+
+/// What a run's record says where its answer, read out of a reply from `hosts` that held the
+/// secret `name`, was refused ([`Echoed::refusal`]): the run's error, as `holon verify` holds a
+/// line to it.
+pub(crate) fn echo_refused(hosts: &[String], name: &str) -> String {
+    let from = match hosts {
+        [] => "the service".to_string(),
+        hosts => hosts.join(" and "),
+    };
+    format!(
+        "refused to answer with what {from} sent back: its reply held the secret {name:?}, and a text of six characters or more read from such a reply is taken as the secret's. Change the flow so this route doesn't answer with what {from} sent back; a number, a true or false, or a text shorter than six characters from it may be answered"
+    )
+}
+
+/// What a run's record says where its answer held the secret `name` and the deployment wasn't
+/// approved to answer its callers with it (`SecretAnswer`): the run's error, on a route and on a
+/// WebSocket, as `holon verify` holds a line to it.
+pub(crate) fn secret_answer_refused(name: &str) -> String {
+    format!("refused to answer with the secret {name:?}: this deployment wasn't approved to answer its callers with it")
+}
+
 /// A fired run: its outputs, the effects performed, the state it read, and when each step ran
 /// (the last two for the flow log).
 pub(crate) struct FiredRun {
@@ -109,6 +167,8 @@ pub(crate) struct FiredRun {
     pub(crate) claims: Vec<claims::ClaimRecord>,
     /// The nodes a secret reaches (taint.rs): what its log entry keeps none of, or withholds.
     pub(crate) secret_fed: taint::SecretFed,
+    /// What it read out of the replies that sent a secret back.
+    pub(crate) echoed: Echoed,
     /// The secrets it was given, by name: the version and fingerprint of each (`v3 #a1b2c3d4`).
     pub(crate) secrets: BTreeMap<String, String>,
     /// What each of those is held to: where it is kept, and a commitment to its value
@@ -726,7 +786,13 @@ fn run_attempt(
     let secret_sends = (!secret_fed.is_empty()).then(|| folders::SecretSends { vault: secrets, sent: holon_core::sent_itself(root_unit, resolver) });
 
     let mut host = RecordingHost::new();
-    let mut timer = if waits.unrecorded { recorder::Timer::off() } else { recorder::Timer::new() };
+    // One that keeps nothing notes each step's kind where it may have to follow a reply that
+    // sent a secret back (`secrets::short_steps`): as far as a kept run would, logged or not.
+    let mut timer = match (waits.unrecorded, secret_fed.is_empty()) {
+        (false, _) => recorder::Timer::new(),
+        (true, true) => recorder::Timer::off(),
+        (true, false) => recorder::Timer::off().noting_kinds(),
+    };
     // A step that may hold a secret's value, or what is computed from one, kept when it fits as
     // its record writes it, each such value as its mark: whether it is kept, and so whether the
     // record withholds, doesn't say how long the secret is (R63).
@@ -811,6 +877,15 @@ fn run_attempt(
     // their value, and out of what is written, as the secret is.
     let answered = secrets::answered_tokens(&outcome.rounds, secrets, &secret_fed);
     let holds_answered = |payload: &Value| answered.iter().find(|(_, v)| secrets::value_holds(payload, &|s: &str| secrets::holds_spelled(s, v.as_str()))).map(|(name, _)| name.clone());
+    // What it read out of the replies that sent a secret back: the secret's again ([`Echoed`]).
+    let echoed = match secret_fed.is_empty() {
+        true => Echoed::default(),
+        false => {
+            let (at, names, hosts) = secrets::echoing(prior.iter().chain(&outcome.rounds), secrets);
+            let fed = if at.is_empty() { taint::SecretFed::default() } else { taint::SecretFed::echoed_at(root_unit, resolver, &at, &secrets::short_steps(&timer)) };
+            Echoed { names, hosts, fed }
+        }
+    };
     // An effect the grant doesn't cover is refused, whatever the graph says; so is a write
     // carrying a secret's value, or something computed from one (taint.rs), which would put it on
     // disk and in every later snapshot, and a copy from a folder the deployment doesn't read (a
@@ -851,6 +926,10 @@ fn run_attempt(
                 eprintln!("holon: refused to store or send in {key:?} what is computed from a secret");
                 return false;
             }
+            if echoed.fed.feeds_effect(cap) {
+                eprintln!("holon: refused to store or send in {key:?} what was read from a reply that sent a secret back: store a number, a true or false, or a text shorter than six characters");
+                return false;
+            }
             if let Some(name) = holds_answered(payload) {
                 eprintln!("holon: refused to store or send in {key:?} the credential a call answered ({name})");
                 return false;
@@ -877,7 +956,7 @@ fn run_attempt(
     // go out as it parks, held to the same grant, secrets and limits as any run's.
     let mut progress = if outcome.waiting.is_empty() || outcome.error.is_some() { Vec::new() } else { channels::settled_sends(&outcome.outputs) };
     progress.retain(|(cap, payload)| {
-        let sends = permit.allows(cap) && secrets::secret_in(payload, secrets).is_none() && !secret_fed.derives_effect(cap) && holds_answered(payload).is_none();
+        let sends = permit.allows(cap) && secrets::secret_in(payload, secrets).is_none() && !secret_fed.derives_effect(cap) && !echoed.fed.feeds_effect(cap) && holds_answered(payload).is_none();
         if !sends {
             eprintln!("holon: refused {cap:?} as the run waits: not granted, or carrying a secret or what is computed from one");
         }
@@ -892,9 +971,39 @@ fn run_attempt(
     // out. And what it computed from its secrets, for its record to mark each by its value, read
     // off them: a step `holon verify` takes from the record (`SecretFed::taken`) left out there
     // makes its record withhold, as one too large to keep does (`secrets::born`, R66).
+    // And the parts of a secret in what it read out of a reply that sent it back (a slice of
+    // the reply, a field of it): each marked by its value too, as a text computed from the
+    // secret is. Looked for where that trail goes: the steps on it, the run's outputs and the
+    // requests it reaches. Without a key no mark can be made, as for what it computed.
+    let parts = match &born_key {
+        Some(_) if !echoed.names.is_empty() => {
+            let on_it = |n: &&recorder::NodeTiming| n.outputs.as_ref().is_some_and(|outputs| (0..outputs.len()).any(|port| echoed.fed.output(&n.path, port) > taint::Taint::Clean));
+            let leaving: Vec<SValue> = outcome
+                .outputs
+                .iter()
+                .enumerate()
+                .filter(|(port, _)| echoed.fed.reaches_output(*port))
+                .filter_map(|(_, output)| output.as_ref())
+                .chain(outcome.rounds.iter().flat_map(|round| &round.exchanges).filter(|x| echoed.fed.fed(&x.path) > taint::Taint::Clean).map(|x| &x.request))
+                .map(SValue::from_core)
+                .collect();
+            let steps = timer.timeline.iter().filter(on_it).filter_map(|n| n.outputs.as_ref()).flatten().flatten();
+            secrets::echoed_parts(steps.chain(&leaving), secrets, &echoed.names)
+        }
+        _ => BTreeSet::new(),
+    };
     let reads = std::mem::take(&mut waits.reads);
     let timeline = without_kept_files(timer.timeline, &reads, &host.performed);
-    let born = secrets::born(&timeline, &secret_fed, born_key.as_ref().map(|k| k.as_slice()), &run_hex, !waits.unrecorded, &permit.never_keep);
+    let mut born = secrets::born(&timeline, &secret_fed, born_key.as_ref().map(|k| k.as_slice()), &run_hex, !waits.unrecorded, &permit.never_keep);
+    // The parts are marked as what it computed is. Not known to the start (`data::start_marks`):
+    // one in what started the run (a caller sent it) is written marked where the run's id hashed
+    // it as it was, and `holon verify` takes the log's id, as for any value computed from a
+    // secret.
+    if let Some(key) = born_key.as_ref().filter(|_| !parts.is_empty()) {
+        born.values.extend(parts.into_iter().map(|part| (secrets::derived_hash(key, &run_hex, &part), part)));
+        born.values.sort();
+        born.values.dedup();
+    }
     let run = FiredRun {
         outputs: outcome.outputs,
         performed: host.performed,
@@ -929,6 +1038,7 @@ fn run_attempt(
         retries: 0,
         claims: waits.claiming.as_ref().map(|c| c.records.clone()).unwrap_or_default(),
         secret_fed,
+        echoed,
         secrets: given,
         committed,
         answered: recorder::AnswerTokens(answered),
@@ -1740,6 +1850,7 @@ impl FiredRun {
             retries: 0,
             claims: vec![],
             secret_fed: taint::SecretFed::default(),
+            echoed: Echoed::default(),
             secrets: BTreeMap::new(),
             committed: BTreeMap::new(),
             answered: recorder::AnswerTokens::default(),

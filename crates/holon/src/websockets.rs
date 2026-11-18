@@ -231,9 +231,12 @@ impl Conn {
             carried.extend(holon_core::answered_secrets(handler, &resolver));
         }
         let unapproved = carried.into_iter().find(|name| !permit.allows(&Capability::SecretAnswer(name.clone())));
-        let mut error = match &unapproved {
-            Some(name) => Some(format!("refused to answer with the secret {name:?}: this deployment wasn't approved to answer its callers with it")),
-            None => run.error.clone(),
+        // Or one read out of a reply that sent a secret back, as a route's (listeners.rs).
+        let read_out = run.echoed.answered(0).iter().find(|name| !permit.allows(&Capability::SecretAnswer((*name).clone()))).cloned();
+        let mut error = match (&unapproved, &read_out) {
+            (Some(name), _) => Some(crate::firing::secret_answer_refused(name)),
+            (None, Some(name)) => Some(run.echoed.refusal(name)),
+            (None, None) => run.error.clone(),
         };
         let mut answer = match on {
             "open" => data::respond(output),

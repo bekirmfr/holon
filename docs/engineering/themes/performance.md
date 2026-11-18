@@ -663,6 +663,67 @@ sync.
   store's is a method of holon-host's `AtRest`, so what ships pays one indirect call per store
   read and write for the seam (StoreKeys's, which returns `Ok(())`), beside the file's own open.
 
+### A reply to a flow fed a secret (R70, 2026-11-18)
+
+A flow fed a secret has each reply it gets looked at for the secret, in each spelling JSON gives
+it (`secrets::echoing`). A call whose reply holds it is followed: what the flow reads out of it is
+the secret's (`SecretFed::echoed_at`), and its parts are marked in the record
+(`secrets::echoed_parts`). A step the walk says is clean but which holds the secret as it is is
+measured as written (`secrets::Measured`, R63), so whether it is kept doesn't say how long the
+secret is. Measured by a test kept out of the tree (`r70_cost`): a payment-shaped flow sends its
+key as a bearer token to a processor on the same machine, parses its answer, writes the payment to
+a collection and answers. The processor answers 1 KB, 200 KB, or 1 KB holding the token it was
+sent. `main` (`11a77da4`) against the tip through `serve_data`, release builds, the test binaries
+run directly, alone in the build queue; 1,000 calls after 50 to warm up.
+
+**Timed piece by piece**, in builds of their own with the same timer in `main` where it has the
+code (the median of four rounds, µs a request):
+
+| | the reply scanned | Measured's scan | the walk from the call | the secret's parts | the write refused | all |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 KB | 0.5 | 5.8 | 0 | 0 | 0 | 6.4 |
+| 200 KB | 12.6 | 56.9 | 0 | 0.1 | 0 | 69.4 |
+| the secret sent back | 1.1 | 5.8 | 44.5 | 308.2 | 13.4 | 372.7 |
+
+Measured's scan is timed at each of a request's 64 steps, and at 1 KB that is about all the timer
+costs: at 200 KB the scan is 51–57 µs. R70 adds about 64 µs to a 2.7 ms request with a 200 KB
+reply (2.4%), most of it the measure looking for the secret in each step that holds the reply's
+text, and next to nothing to a small one. This is the measure the 3% the change was held to rests
+on.
+
+**The requests whole**, six rounds, the order turned each round. Median of the round medians, ms
+(p90):
+
+| | `main` | tip | tip ÷ `main` − 1, round by round |
+|---|---:|---:|---|
+| 1 KB | 0.951 (1.110) | 0.905 (1.011) | +5.2, +3.6, −1.1, −0.5, −7.5, −11.3% |
+| 200 KB | 2.681 (3.706) | 2.725 (3.694) | +6.3, +6.5, +19.9, −5.2, +3.0, −3.7% |
+| the secret sent back | 0.932 (1.147), stored | 1.329 (1.859), refused | +75.4, +49.1, +44.8, +38.6, +39.5, −9.1% |
+
+At 200 KB the rounds straddle 3% (the median of medians +1.6%, the median round +4.6%, a round
+from −5.2 to +19.9%): requests this short can't tell a few percent on this machine. Nor could the
+timed builds' whole runs confirm the pieces' sum: their difference moved −148 to +518 µs a round at
+200 KB, some 650 µs against 69. So nothing is put down to R70 beyond the pieces timed.
+
+- **A refused answer costs more than a stored one:** about 0.40 ms, where the far side sent the
+  secret back. Most of it is the search for the secret's parts in what the flow read from that
+  reply, for the record to mark them (`echoed_parts`, a lookup at each character of each text on
+  the reply's trail: 0.31 ms for a 1 KB reply); then the walk from the call that sent it back,
+  made for each such run (45 µs); then the refused write and its line on stderr (13 µs). Only a
+  run whose reply held the secret pays it.
+- **The harness's dev profile overstates it.** `cargo test` builds at opt-level 0, and there the
+  same flow (300 calls, three rounds, 2026-11-17 19:17–19:22 UTC, beside another session's
+  `cargo test -p holon`: not a quiet machine) gave 74.3 ms against 79.5 at 200 KB (+7.0%) and
+  6.9 against 12.1 for the secret sent back (+5.1 ms): 10 to 80 times what the server as it
+  ships pays.
+- A first release run (300 calls, three rounds, 2026-11-17 23:34 UTC) read +8.9% at 200 KB from
+  rounds of +2.1, +10.3 and −3.4%: why the rounds above are six, longer, and timed piece by piece.
+- **A cut that exists, left out:** where every mark is at least as long as every spelling of each
+  secret in the vault, marking never shortens a text, so a step over the record's limit in clear is
+  over it as written, and Measured needn't look for the secret there. That would save most of the
+  51–57 µs on a large reply. Left out at 2.4%: it is one more rule in Measured, and it holds only
+  under its condition (a long secret, a PEM key, can be longer than its mark).
+
 ### A run's id hashes what its record keeps (R80, 2026-11-18)
 
 A run's id now hashes each started value as its record writes it (`Redactor::logged_value`),

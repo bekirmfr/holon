@@ -43,6 +43,8 @@ use crate::secret_sources::{Reference, Sources};
 use crate::smtp::{self, Failure};
 use crate::{imap, oauth};
 use zeroize::Zeroizing;
+use crate::recorder::KeptRuns;
+use crate::spools::AtStart;
 
 use crate::*;
 
@@ -208,7 +210,12 @@ struct Inner {
     retry: ([Duration; 4], Duration),
     /// The tokens the bindings' `--oauth` gave, in memory only.
     tokens: oauth::Tokens,
+    /// What the server's start kept back, unsent, for the admin's warnings (spools.rs).
+    kept_back: spools::KeptBack,
 }
+
+/// What a mail is called in the admin's warnings (spools.rs).
+const KIND: spools::Kind = spools::Kind { key: "spool:mail", one: "mail", many: "mails", folder: "mail spool" };
 
 impl std::fmt::Debug for Mails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -272,6 +279,7 @@ impl Mails {
             deployments: OnceLock::new(),
             retry,
             tokens: oauth::Tokens::default(),
+            kept_back: spools::KeptBack::default(),
         }))
     }
 
@@ -681,7 +689,15 @@ impl Mails {
             }
             ready
         };
-        for item in ready {
+        for mut item in ready {
+            // Marked landed: a start sends it without asking the log, which may have let its run
+            // go by then (spools.rs).
+            if let Some(file) = &item.file {
+                match spools::mark_landed(file) {
+                    Ok(marked) => item.file = Some(marked),
+                    Err(e) => eprintln!("holon: the spooled mail {} can't be marked landed, so a restart before it is sent asks its run log for it: {e}", file.display()),
+                }
+            }
             self.queue(item);
         }
     }
@@ -696,15 +712,34 @@ impl Mails {
         }
     }
 
-    /// What the spool holds, queued again as the server starts: each mail whose run its
-    /// deployment's log holds, finished (`log`: a deployment's entries, none when it isn't
-    /// deployed), and each unlogged one. Another's run a crash lost before its record was on
-    /// disk: it is removed, never sent.
-    pub(crate) fn recover(&self, mut log: impl FnMut(&str) -> Option<BTreeSet<String>>) {
+    /// What the spool holds, as the server starts (spools.rs): each mail marked landed, and each
+    /// unlogged one, queued again; each other one of a deployment that is `deployed`, by its run
+    /// among the deployment's kept runs (`runs`, read only for one of those): queued, removed, or
+    /// kept unsent and said; one of a deployment that isn't, removed.
+    pub(crate) fn recover(&self, deployed: impl Fn(&str) -> bool, mut runs: impl FnMut(&str) -> KeptRuns) {
         let Some(dir) = &self.0.spool else { return };
-        let Ok(files) = crate::at_rest::disk::read_dir(dir) else { return };
-        let mut logged: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for file in files.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e == "mail")) {
+        let files = match crate::at_rest::disk::read_dir(dir) {
+            Ok(files) => files,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                eprintln!("holon: the mail spool {} can't be listed, so no mail spooled before the server started is sent or removed: {e}", dir.display());
+                self.0.kept_back.folder(format!("{}: {e}", dir.display()));
+                return;
+            }
+        };
+        let mut kept: BTreeMap<String, KeptRuns> = BTreeMap::new();
+        for file in files {
+            let file = match file {
+                Ok(f) => f.path(),
+                Err(e) => {
+                    eprintln!("holon: an entry of the mail spool {} can't be read, so it is neither sent nor removed: {e}", dir.display());
+                    self.0.kept_back.folder(format!("{}: {e}", dir.display()));
+                    continue;
+                }
+            };
+            if file.extension().is_none_or(|e| e != "mail") {
+                continue;
+            }
             let named = crate::at_rest::deployment(file.file_name().and_then(|n| n.to_str()).and_then(|n| n.split('.').next()).unwrap_or_default());
             let bytes = match crate::at_rest::read_sealed_in(&file, &named, crate::at_rest::role::SPOOL_MAIL) {
                 Ok(Some(bytes)) => bytes,
@@ -716,24 +751,50 @@ impl Mails {
                     continue;
                 }
             };
-            let Some(end) = bytes.iter().position(|b| *b == b'\n') else { continue };
-            let Ok(spooled) = serde_json::from_slice::<Spooled>(&bytes[..end]) else {
-                let _ = std::fs::remove_file(&file);
-                continue;
+            // One that opens and doesn't read as a mail (written by another version of holon):
+            // left as it is, said, never sent, as one that doesn't open.
+            let read = bytes
+                .iter()
+                .position(|b| *b == b'\n')
+                .ok_or_else(|| "it has no first line".to_string())
+                .and_then(|end| serde_json::from_slice::<Spooled>(&bytes[..end]).map(|s| (s, end)).map_err(|e| e.to_string()));
+            let (spooled, end) = match read {
+                Ok(read) => read,
+                Err(e) => {
+                    eprintln!("holon: the spooled mail {} doesn't read as one, so it isn't sent; left as it is: {e}", file.display());
+                    continue;
+                }
             };
-            let landed = spooled.unlogged
-                || logged
-                    .entry(spooled.slug.clone())
-                    .or_insert_with(|| log(&spooled.slug).unwrap_or_default())
-                    .contains(&spooled.run);
-            if !landed {
-                let _ = std::fs::remove_file(&file);
-                continue;
+            let at_start = if spooled.unlogged {
+                AtStart::Send
+            } else if !deployed(&spooled.slug) {
+                eprintln!("holon: a mail spooled by {:?}, which isn't deployed, is removed unsent: {:?} through {}", spooled.slug, spooled.subject, spooled.mail);
+                AtStart::Remove
+            } else if spools::is_landed(&file) {
+                AtStart::Send
+            } else {
+                spools::unmarked(kept.entry(spooled.slug.clone()).or_insert_with(|| runs(&spooled.slug)), &spooled.run)
+            };
+            match at_start {
+                AtStart::Send => {
+                    let key = self.resolve_keyed(&spooled.slug, &spooled.mail).map_or_else(|| spooled.mail.clone(), |(k, _)| k);
+                    let message = bytes[end + 1..].to_vec();
+                    self.queue(Queued { key, spooled, message, file: Some(file), tries: 0, not_before: Instant::now() });
+                }
+                AtStart::Remove => {
+                    let _ = std::fs::remove_file(&file);
+                }
+                AtStart::Keep(why) => {
+                    eprintln!("holon: a mail spooled by {:?} is kept unsent: whether its run landed can't be told, since its run log can't all be read ({why}); restart the server once it can", spooled.slug);
+                    self.0.kept_back.item(&spooled.slug, why);
+                }
             }
-            let key = self.resolve_keyed(&spooled.slug, &spooled.mail).map_or_else(|| spooled.mail.clone(), |(k, _)| k);
-            let message = bytes[end + 1..].to_vec();
-            self.queue(Queued { key, spooled, message, file: Some(file), tries: 0, not_before: Instant::now() });
         }
+    }
+
+    /// The admin's warnings of what the server's start kept back, unsent (spools.rs).
+    pub(crate) fn kept_back(&self) -> Vec<crate::storage::Warning> {
+        self.0.kept_back.warnings(&KIND)
     }
 
     /// Start sending: each queue's thread, now and as a queue first has mail, its outcomes noted on
@@ -1155,7 +1216,7 @@ examples:
   --server), or as an agent or a service with its token in HOLON_TOKEN.";
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::smtp::sink;
 
@@ -1326,6 +1387,26 @@ mod tests {
         LogEntry { run_id: run.into(), at_ms: firing::started_now().0, ..Default::default() }
     }
 
+    /// For the spools' class test (spools.rs): a mail spool in `dir`, its binding `ops` to a mail
+    /// server that isn't there, sending nothing until it serves.
+    pub(crate) fn spooling(dir: &Path) -> Mails {
+        let mails = Mails::open(dir.join("mails.json").to_str().unwrap()).unwrap();
+        mails.0.bound.write().unwrap().server.insert("ops".into(), Binding { smtp: "env:HOLON_SECRET_OPS_SMTP".into(), from: "t@acme.com".into(), to: vec!["*".into()], ..Default::default() });
+        mails
+    }
+
+    /// The mail run `run` of `slug` spools.
+    pub(crate) fn spooled(mails: &Mails, slug: &str, run: &str) -> Vec<Queued> {
+        mails.spool_logged(slug, &entry(run), vec![("ops".into(), message(&["a@acme.com"], run))]).unwrap()
+    }
+
+    /// The runs whose mail is queued to send, in order.
+    pub(crate) fn queued(mails: &Mails) -> Vec<String> {
+        let mut runs: Vec<String> = mails.0.queues.lock().unwrap().values().flat_map(|q| q.items.lock().unwrap().iter().map(|i| i.spooled.run.clone()).collect::<Vec<_>>()).collect();
+        runs.sort();
+        runs
+    }
+
     fn wait_for(what: &str, done: impl FnMut() -> bool) {
         assert!(crate::tests::soon(done), "{what}");
     }
@@ -1386,7 +1467,7 @@ mod tests {
         std::fs::write(spool.join("app.plain.0.mail"), &*plain).unwrap();
         // The log holds the first run only: the second's record a crash lost.
         let again = Mails::open(dir.join("mails.json").to_str().unwrap()).unwrap();
-        again.recover(|slug| (slug == "app").then(|| BTreeSet::from(["landed".to_string()])));
+        again.recover(|slug| slug == "app", |_| KeptRuns { runs: BTreeMap::from([("landed".to_string(), true)]), unread: None });
         let mut left: Vec<String> = std::fs::read_dir(&spool).unwrap().flatten().map(|f| f.file_name().to_string_lossy().into_owned()).collect();
         left.sort();
         assert_eq!(left, ["app.landed.0.mail", "app.plain.0.mail", "app.unlogged.0.mail"]);

@@ -617,6 +617,12 @@ pub struct Timer {
     /// What measures a step whose record writes it another way than the run had it
     /// (`secrets::Measured`): none for a run given no secret, each step counted as it is.
     measure: Option<Box<dyn Measure>>,
+    /// For a run that keeps nothing (`off`) but was granted a secret: each step, as deep as a
+    /// timeline goes, and whether it gave something a part of a secret could sit in
+    /// (`secrets::may_hold_a_part`), noted without copying anything. What such a run reads out
+    /// of a reply that sent its secret back is then followed as far as a kept run's is (R70):
+    /// a balance read out of it is a balance, logged or not. None: not noted.
+    pub(crate) kinds: Option<Vec<(Vec<u32>, bool)>>,
 }
 
 /// Whether a step's outputs fit as its run's record writes them, for a step it writes another
@@ -637,7 +643,7 @@ impl Timer {
     pub const MAX_RECORDED_BYTES: usize = 16 * 1024;
 
     pub fn new() -> Timer {
-        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new(), reason: None, on: true, measure: None }
+        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new(), reason: None, on: true, measure: None, kinds: None }
     }
 
     /// One that keeps nothing: its timeline stays empty.
@@ -648,6 +654,11 @@ impl Timer {
     /// This one, keeping each step `measure` measures when it says the step fits (R63).
     pub(crate) fn measured(self, measure: Box<dyn Measure>) -> Timer {
         Timer { measure: Some(measure), ..self }
+    }
+
+    /// This one, which keeps nothing, noting each step's kind ([`Timer::kinds`]).
+    pub(crate) fn noting_kinds(self) -> Timer {
+        Timer { kinds: Some(Vec::new()), ..self }
     }
 
     fn now_us(&self) -> f64 {
@@ -735,6 +746,12 @@ impl holon_core::Observer for Timer {
         }
     }
     fn produced(&mut self, path: &[u32], outputs: &[holon_core::Slot]) {
+        if !self.on
+            && path.len() <= Self::DEPTH
+            && let Some(kinds) = self.kinds.as_mut()
+        {
+            kinds.push((path.to_vec(), outputs.iter().any(|o| o.value().is_some_and(crate::secrets::may_hold_a_part_of))));
+        }
         if self.on && path.len() <= Self::DEPTH {
             // A pending output (a round still waiting on an answer) is logged as nothing yet.
             // Kept when their JSON fits, as the line will write it: an upper bound settles almost
@@ -1408,6 +1425,14 @@ fn split(sealed: &[Sealed], hot: &[(&[u8], &LineAt)], keep: usize, hot_keep: usi
 /// lines in memory, bounded by no cache's size).
 pub(crate) const IN_MEMORY: usize = 32;
 
+/// The runs a log keeps, by id, each with whether it finished (no error, not waiting); and,
+/// when they couldn't all be read, why: then a run not among them may be one it couldn't read.
+#[derive(Debug, Default)]
+pub struct KeptRuns {
+    pub runs: BTreeMap<String, bool>,
+    pub unread: Option<String>,
+}
+
 /// What reading a log's lines a line at a time needs, taken under its lock (`Log::its_lines`) and
 /// read with it released: its file opened, its sealed segments named, how its lines are sealed,
 /// and the first run it keeps. A log kept in memory only, its lines.
@@ -1722,24 +1747,18 @@ impl LogCell {
         (lines, head)
     }
 
-    /// Each run it keeps, oldest first (`Log::each_kept`), read with the lock released.
-    pub fn each_kept(&self, f: impl FnMut(LogEntry)) {
-        if let Err(e) = self.with(|log| log.its_lines()).each_kept(f) {
-            eprintln!("holon: a run log's runs can't all be read, what reads them has those it could: {e}");
-        }
-    }
-
-    /// The ids of the runs it keeps that finished: no error, not waiting. What a mail or a
-    /// queue's message spooled by one is sent again for, as a server starts (mails.rs,
-    /// queues.rs), read a run at a time.
-    pub fn landed_runs(&self) -> BTreeSet<String> {
-        let mut landed = BTreeSet::new();
-        self.each_kept(|e| {
-            if e.error.is_none() && e.parked.is_empty() {
-                landed.insert(e.run_id);
-            }
+    /// The runs it keeps, read a run at a time, and whether they could all be read: what a
+    /// server starting asks of a mail or a queue's message a run spooled that isn't marked
+    /// landed (spools.rs).
+    pub fn kept_runs(&self) -> KeptRuns {
+        let mut kept = KeptRuns::default();
+        let read = self.with(|log| log.its_lines()).each_kept(|e| {
+            kept.runs.insert(e.run_id, e.error.is_none() && e.parked.is_empty());
         });
-        landed
+        if let Err(e) = read {
+            kept.unread = Some(e.to_string());
+        }
+        kept
     }
 
     /// The runs it keeps after `after`, the newest `limit` of them, oldest first (`Log::after`):
@@ -3700,14 +3719,15 @@ mod tests {
                 // runs, its file holding more than it keeps (until the next cut-back) or not.
                 let want = lines(in_memory.after(None, usize::MAX));
                 let (mut from_cell, mut from_held, mut from_memory) = (Vec::new(), Vec::new(), Vec::new());
-                cell.each_kept(|e| from_cell.push(e));
+                cell.with(|l| l.its_lines()).each_kept(|e| from_cell.push(e)).unwrap();
                 held.each_kept(|e| from_held.push(e));
                 in_memory.each_kept(|e| from_memory.push(e));
                 assert_eq!(lines(from_cell), want, "the cell's, a run at a time, at run {i}");
                 assert_eq!(lines(from_held), want, "held, a run at a time, at run {i}");
                 assert_eq!(lines(from_memory), want, "in memory, a run at a time, at run {i}");
-                let landed: BTreeSet<String> = in_memory.after(None, usize::MAX).into_iter().map(|e| e.run_id).collect();
-                assert_eq!(cell.landed_runs(), landed);
+                let kept: BTreeMap<String, bool> = in_memory.after(None, usize::MAX).into_iter().map(|e| (e.run_id, true)).collect();
+                let read = cell.kept_runs();
+                assert!(read.runs == kept && read.unread.is_none(), "{read:?}");
             }
         }
         let (segments, sealed_runs, sealed_bytes) = cell.with(|l| l.sealed_holds());

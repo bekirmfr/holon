@@ -327,6 +327,12 @@ enum Follow {
     Answers,
     /// A hash or a signature made of the secret whole.
     Made,
+    /// What was answered by the calls a run found to have sent the secret back, and by those
+    /// alone: a host knows which did once the run is over, by the secret's text in the reply. An
+    /// answer to a call fed one of those is not followed in turn (it would be found the same way
+    /// if it held the secret), and the leaves that compute from such a reply are kept, as the
+    /// walk of the secret itself keeps them: what they give may be a part of the secret.
+    Echoed,
 }
 
 impl SecretFed {
@@ -370,6 +376,65 @@ impl SecretFed {
         SecretFed::walk_from(root, resolver, Some(name), Some((&asked, Follow::Answers)), visits)
     }
 
+    /// What `root` reads out of the replies to the calls at `echoed` (by path): the calls a run
+    /// found to have sent a secret back, which only the run can say. Each such reply is taken as
+    /// holding the secret as it is, but for its status; what a leaf computes from one is computed
+    /// from the secret ([`SecretFed::computes`], [`SecretFed::taken`]), a slice of it being a part
+    /// of the secret. The secret itself is taken as clean here, as when following what is
+    /// answered: [`SecretFed::with`] puts the two together. Nothing, where no call echoed.
+    ///
+    /// `ends`: the nodes the run saw give nothing a part of a secret could sit in (a number, a
+    /// true or false, a text shorter than a secret may be), which again only the run can say.
+    /// What such a node gives is clean, whatever it was fed: a balance read out of a reply that
+    /// also held the secret is a balance. Decided by the kind of value and never by comparing
+    /// one with the secret, so that what a host does with the answer (refuse a caller, refuse
+    /// a write) says nothing of the secret's characters to whoever chose a text in the run.
+    pub fn echoed_at(root: &Unit, resolver: &impl Resolver, echoed: &BTreeSet<Vec<u32>>, ends: &BTreeSet<Vec<u32>>) -> SecretFed {
+        if echoed.is_empty() {
+            return SecretFed::default();
+        }
+        let mut fed = SecretFed::default();
+        let visits = Visits::default();
+        let mut walk = Walk { resolver, only: None, from: Some((echoed, Follow::Echoed)), ends: Some(ends), holds_secret: HashMap::new(), visits: &visits, capabilities: HashMap::new() };
+        let inputs = vec![Taint::Clean; root.inputs.len()];
+        walk.unit(root, &inputs, &mut Vec::new(), &mut fed);
+        fed
+    }
+
+    /// This and `other` together: each node at the most either says of it, and everything either
+    /// found. For a run's own walk and what it read out of the replies that sent the secret back.
+    pub fn with(mut self, other: SecretFed) -> SecretFed {
+        for (path, (inputs, outputs)) in other.nodes {
+            let most = |mine: &mut Vec<Taint>, theirs: Vec<Taint>| {
+                if mine.len() < theirs.len() {
+                    mine.resize(theirs.len(), Taint::Clean);
+                }
+                for (m, t) in mine.iter_mut().zip(theirs) {
+                    *m = (*m).max(t);
+                }
+            };
+            let at = self.nodes.entry(path).or_default();
+            most(&mut at.0, inputs);
+            most(&mut at.1, outputs);
+        }
+        for path in other.opaque {
+            if !self.opaque.contains(&path) {
+                self.opaque.push(path);
+            }
+        }
+        self.effects.extend(other.effects);
+        self.sent.extend(other.sent);
+        self.sinks.extend(other.sinks);
+        self.asked.extend(other.asked);
+        self.computing.extend(other.computing);
+        self.taken.extend(other.taken);
+        self.made.extend(other.made);
+        self.chosen.extend(other.chosen);
+        self.deciders.extend(other.deciders);
+        self.own_reads.extend(other.own_reads);
+        self
+    }
+
     /// Follow what is made with the secret `name` and is clean: each hash or signature of it
     /// whole ([`MAKES`]), from where it is made on; the secret itself is taken as clean. A hash of
     /// such a hash is followed too (a signing key derived in steps, as AWS's is). A Boolean ends
@@ -397,7 +462,7 @@ impl SecretFed {
 
     fn walk_from(root: &Unit, resolver: &impl Resolver, only: Option<&str>, from: Option<(&BTreeSet<Vec<u32>>, Follow)>, visits: &Visits) -> SecretFed {
         let mut fed = SecretFed::default();
-        let mut walk = Walk { resolver, only, from, holds_secret: HashMap::new(), visits, capabilities: HashMap::new() };
+        let mut walk = Walk { resolver, only, from, ends: None, holds_secret: HashMap::new(), visits, capabilities: HashMap::new() };
         let inputs = vec![Taint::Clean; root.inputs.len()];
         walk.unit(root, &inputs, &mut Vec::new(), &mut fed);
         fed
@@ -415,6 +480,13 @@ impl SecretFed {
     /// Whether a secret reaches nothing in the run.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty() && self.opaque.is_empty()
+    }
+
+    /// Whether an effect with `capability` may be made with what this walk follows at all, as it
+    /// is or computed from it: a sink it reaches ([`SecretFed::sinks`]), or what a node whose
+    /// insides aren't followed could do.
+    pub fn feeds_effect(&self, capability: &Capability) -> bool {
+        self.effects.contains(capability) || self.sinks.iter().any(|(_, c)| c == capability)
     }
 
     /// Whether an effect with `capability` may carry something computed from a secret.
@@ -562,6 +634,9 @@ struct Walk<'r, R> {
     /// what is made with it ([`SecretFed::made_of`]), from the nodes where that begins. The secret
     /// leaves are clean then.
     from: Option<(&'r BTreeSet<Vec<u32>>, Follow)>,
+    /// Following the replies that sent the secret back: the nodes whose outputs are clean
+    /// whatever they were fed ([`SecretFed::echoed_at`]).
+    ends: Option<&'r BTreeSet<Vec<u32>>>,
     /// Whether a unit (by hash) reads a followed secret anywhere in its closure.
     holds_secret: HashMap<Hash, bool>,
     /// What the walk may still visit.
@@ -622,7 +697,8 @@ impl<R: Resolver> Walk<'_, R> {
         }
         // Following what is answered, a request's answer carries it: where it starts, and an
         // answer to a request fed it (an API echoing it back, a token exchanged for another).
-        let answering = follows == Some(Follow::Answers) && (begins || most > Taint::Clean);
+        // Following the replies that sent the secret back, only those: where it starts.
+        let answering = (follows == Some(Follow::Answers) && (begins || most > Taint::Clean)) || (follows == Some(Follow::Echoed) && begins);
         // Following what is made, a hash or a signature carries it: where it starts, and a hash
         // of one (a key derived in steps is still made with the secret).
         let making = follows == Some(Follow::Made) && (begins || most > Taint::Clean);
@@ -702,13 +778,15 @@ impl<R: Resolver> Walk<'_, R> {
                     let moves = PASSES_LITERALLY.contains(&name.as_str()) && !ORDERS.contains(&name.as_str()) && chose == Taint::Clean;
                     // (The secret spelled another way is its own too: `base64` of it is no
                     // longer the text redaction finds. Only the walk of the secret itself keeps
-                    // these: one that follows an answer or a hash marks nothing.)
-                    if self.from.is_none() && outputs.iter().any(|t| t.is_derived()) && !moves {
+                    // these, and the one of a reply that sent it back, which is the secret again:
+                    // one that follows an answer or a hash for an approval marks nothing.)
+                    let keeps = self.from.is_none_or(|(_, follow)| follow == Follow::Echoed);
+                    if keeps && outputs.iter().any(|t| t.is_derived()) && !moves {
                         fed.computing.insert(path.clone());
                     }
                     // What a check running the run again on marks takes from its record: all a
                     // secret reaches but a call and a leaf that only moves it ([`SecretFed::taken`]).
-                    if self.from.is_none() && most > Taint::Clean && !ANSWERED.contains(&name.as_str()) && (!moves || name == "as_text") {
+                    if keeps && most > Taint::Clean && !ANSWERED.contains(&name.as_str()) && (!moves || name == "as_text") {
                         fed.taken.insert(path.clone());
                     }
                     outputs
@@ -729,6 +807,12 @@ impl<R: Resolver> Walk<'_, R> {
         // each of several, as Stripe's), and a route that answers only that hands out none.
         let outputs = match follows {
             Some(Follow::Made) => outputs.into_iter().zip(&unit.outputs).map(|(t, port)| if port.ty == Type::Boolean { Taint::Clean } else { t }).collect(),
+            _ => outputs,
+        };
+        // Following a reply that sent the secret back, a node the run saw give nothing a part of
+        // the secret could sit in ends it: by what kind of value it gave, not by what it holds.
+        let outputs = match self.ends {
+            Some(ends) if !begins && ends.contains(path.as_slice()) => vec![Taint::Clean; outputs.len()],
             _ => outputs,
         };
         if most > Taint::Clean || outputs.iter().any(|t| *t > Taint::Clean) {
@@ -772,7 +856,7 @@ impl<R: Resolver> Walk<'_, R> {
             return derived;
         };
         let mut outs: Vec<Option<Vec<Taint>>> = vec![None; children.len()];
-        let follows_answers = self.from.is_some_and(|(_, follow)| follow == Follow::Answers);
+        let follows_answers = self.from.is_some_and(|(_, follow)| follow == Follow::Answers || follow == Follow::Echoed);
         // Each choice among the children, and the taint of each of its inputs.
         let mut choices: Vec<Option<(&'static str, Vec<Taint>)>> = vec![None; children.len()];
         for ci in order {
@@ -1692,6 +1776,76 @@ mod tests {
         assert_eq!(own, vec![vec![3]]);
     }
 
+    /// Guards: what a run reads out of a reply that sent the secret back is followed from that
+    /// call alone ([`SecretFed::echoed_at`]). The secret is posted to a host; a run finds that
+    /// host's reply held it. The reply holds the secret as it is, its body too, and a slice of
+    /// the body is computed from it: a part of the secret, kept as a leaf that computes, which
+    /// a check takes from its record. Its status is a number the far side chose. A second call
+    /// fed the slice is where the part goes, and what THAT call answers is not followed in
+    /// turn. The secret itself is clean in this walk; put together with the run's own walk
+    /// ([`SecretFed::with`]), each node is at the most either says. No call echoed: nothing.
+    /// Why: a reply is clean to the walk of the secret, so a part read out of one that held the
+    /// secret reached a caller and the record unmarked (R70).
+    /// If it fails: `Follow::Echoed` starts elsewhere than at the calls given, follows an answer
+    /// to a call fed a part (`answering`), or drops the leaves that compute from the reply.
+    #[test]
+    fn what_is_read_out_of_a_reply_that_sent_the_secret_back_is_followed_from_that_call() {
+        let mut r = MapResolver::new();
+        let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
+        let request = |r: &mut MapResolver, host: &str| leaf(r, "http_request", vec![Param::frozen("method", "POST"), Param::frozen("host", host)]);
+        let echo = request(&mut r, "echo.example.com");
+        let body = leaf(&mut r, "field", vec![Param::frozen("name", "body")]);
+        let status = leaf(&mut r, "field", vec![Param::frozen("name", "status")]);
+        let slice = leaf(&mut r, "slice", vec![]);
+        let again = request(&mut r, "other.example.com");
+        let said = leaf(&mut r, "field", vec![Param::frozen("name", "body")]);
+        let root = Unit {
+            body: UnitBody::Composite {
+                // 0 secret → 1 the call's body; 1's reply → 2 its body → 4 a slice → the answer,
+                // and → 5 another call, whose reply → 6 its body; 1's reply → 3 its status.
+                children: vec![secret, echo, body, status, slice, again, said],
+                edges: vec![e(0, 0, 1, 2), e(1, 0, 2, 0), e(1, 0, 3, 0), e(2, 0, 4, 0), e(4, 0, 5, 2), e(5, 0, 6, 0), e(4, 0, BOUNDARY, 0), e(3, 0, BOUNDARY, 1), e(6, 0, BOUNDARY, 2)],
+            },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "part".into(), ty: Type::Any }, Port { name: "status".into(), ty: Type::Any }, Port { name: "said".into(), ty: Type::Any }],
+        };
+        // The run's own walk: the reply is clean, and so is all that is read out of it.
+        let own = SecretFed::of(&root, &r);
+        assert_eq!((own.output(&[1], 0), own.output(&[4], 0), own.derives_output(0)), (Taint::Clean, Taint::Clean, false));
+        // The call at [1] sent the secret back.
+        let none = BTreeSet::new();
+        let echoed = SecretFed::echoed_at(&root, &r, &BTreeSet::from([vec![1]]), &none);
+        assert_eq!(echoed.output(&[0], 0), Taint::Clean, "the secret itself isn't followed from the reply");
+        assert_eq!((echoed.output(&[1], 0), echoed.output(&[2], 0)), (Taint::Literal, Taint::Literal), "the reply holds it, and its body");
+        assert_eq!(echoed.output(&[3], 0), Taint::Clean, "its status is the far side's number");
+        assert_eq!(echoed.output(&[4], 0), Taint::Derived, "a slice of it is a part of the secret");
+        assert!(echoed.computes(&[4]) && echoed.taken(&[4]), "kept as a leaf that computes, taken from its record by a check");
+        assert!(!echoed.computes(&[2]), "a field read only moves it");
+        assert!(echoed.derives_output(0) && !echoed.derives_output(1), "the part is answered; the status is not one");
+        let sinks: Vec<_> = echoed.sinks().map(|(p, c)| (p.to_vec(), c.clone())).collect();
+        assert_eq!(sinks, vec![(vec![5], Capability::HttpRequest("other.example.com".into()))], "where the part goes");
+        assert_eq!((echoed.output(&[5], 0), echoed.derives_output(2)), (Taint::Clean, false), "what that call answers isn't followed in turn");
+        // Together with the run's own walk.
+        let both = own.with(echoed);
+        assert_eq!((both.output(&[0], 0), both.output(&[1], 0), both.output(&[4], 0)), (Taint::Literal, Taint::Literal, Taint::Derived));
+        assert!(both.derives_output(0) && both.computes(&[4]));
+        // No call echoed, or one that isn't there.
+        assert!(SecretFed::echoed_at(&root, &r, &BTreeSet::new(), &none).is_empty());
+        assert!(!SecretFed::echoed_at(&root, &r, &BTreeSet::from([vec![9]]), &none).derives_output(0));
+        // The run saw the slice give nothing a part could sit in (a short text, a number): it
+        // ends there, and neither the answer nor the next call is fed it. Where the run saw
+        // that of the reply's body, nothing is read out of it at all; the call itself, which
+        // gave the secret, isn't one such whatever is said of it.
+        let short = SecretFed::echoed_at(&root, &r, &BTreeSet::from([vec![1]]), &BTreeSet::from([vec![4]]));
+        assert_eq!((short.output(&[2], 0), short.output(&[4], 0)), (Taint::Literal, Taint::Clean));
+        assert!(!short.reaches_output(0) && short.sinks().next().is_none());
+        let unread = SecretFed::echoed_at(&root, &r, &BTreeSet::from([vec![1]]), &BTreeSet::from([vec![2]]));
+        assert_eq!((unread.output(&[1], 0), unread.output(&[2], 0), unread.output(&[4], 0)), (Taint::Literal, Taint::Clean, Taint::Clean));
+        let itself = SecretFed::echoed_at(&root, &r, &BTreeSet::from([vec![1]]), &BTreeSet::from([vec![1]]));
+        assert!(itself.reaches_output(0), "the call that sent it back is where it begins");
+    }
+
     /// A secret in a database read's parameters goes to that database: `db:shop`, and the read is
     /// a sink the canvas marks. A read fed nothing secret sends nothing.
     #[test]
@@ -2045,6 +2199,7 @@ mod tests {
                     let walk = match follow {
                         Follow::Made => SecretFed::made_of(&root, &r, "k"),
                         Follow::Answers => SecretFed::answers_of(&root, &r, "k"),
+                        Follow::Echoed => unreachable!("followed from a run's calls, not from a secret's name"),
                     };
                     let sinks: BTreeSet<Capability> = walk.sinks().filter(|(path, _)| *path == [2]).map(|(_, c)| c.clone()).collect();
                     assert_eq!(sinks, expected, "{name}.{}, fed what {through} gave", unit.inputs[port].name);
