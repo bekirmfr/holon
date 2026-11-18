@@ -18691,7 +18691,7 @@ fn a_change_the_deployments_file_didnt_take_is_never_answered_as_done() {
         ("arrivals.rs fire_one_arrival", "a file's arrival parked a run: no one asked"),
         ("dequeue.rs fire_one_queue", "a queue's message parked a run: no one asked"),
         ("durable.rs end_unresumable", "a run past its deadline ended: no one asked"),
-        ("grants.rs handle_post_permissions_reload", "nothing is lost: a restart reads the policy again and holds each deployment to it"),
+        ("grants.rs reload_policy", "the policy reloaded, by its route or a storage setting written into the policy file: nothing is lost, a restart reads the policy again and holds each deployment to it"),
         ("inbox.rs fire_one_mail", "a mail parked a run: no one asked"),
         ("main.rs serve", "the server starting, its runs a crash cut off ended: a start that doesn't save ends them again"),
         ("scheduler.rs fire_one_clock_tick", "a tick parked a run: no one asked"),
