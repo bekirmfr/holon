@@ -1052,7 +1052,7 @@ pub(crate) fn spellings(value: &str) -> Vec<String> {
 /// as `\"`). Not a parse: the text needn't be JSON, and an escape is undone inside or outside
 /// a string.
 fn unspelled(s: &str) -> Option<String> {
-    if !s.contains('\\') {
+    if !s.contains(ESCAPE) {
         return None;
     }
     let chars: Vec<char> = s.chars().collect();
@@ -1063,28 +1063,23 @@ fn unspelled(s: &str) -> Option<String> {
     let mut out = String::with_capacity(s.len());
     let (mut i, mut changed) = (0, false);
     while i < chars.len() {
-        if chars[i] != '\\' {
+        if chars[i] != ESCAPE {
             out.push(chars[i]);
             i += 1;
             continue;
         }
         let plain = match chars.get(i + 1) {
-            Some(c @ ('"' | '\\' | '/')) => Some((*c, 2)),
-            Some('n') => Some(('\n', 2)),
-            Some('r') => Some(('\r', 2)),
-            Some('t') => Some(('\t', 2)),
-            Some('b') => Some(('\u{8}', 2)),
-            Some('f') => Some(('\u{c}', 2)),
             Some('u') => match hex4(i + 2) {
                 // A pair of surrogates is one character.
-                Some(high @ 0xD800..=0xDBFF) if chars.get(i + 6) == Some(&'\\') && chars.get(i + 7) == Some(&'u') => hex4(i + 8)
+                Some(high @ 0xD800..=0xDBFF) if chars.get(i + 6) == Some(&ESCAPE) && chars.get(i + 7) == Some(&'u') => hex4(i + 8)
                     .filter(|low| (0xDC00..=0xDFFF).contains(low))
                     .and_then(|low| char::from_u32(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)))
                     .map(|c| (c, 12)),
                 Some(code) => char::from_u32(code).map(|c| (c, 6)),
                 None => None,
             },
-            _ => None,
+            Some(letter) => SHORT_ESCAPES.iter().find(|(short, _)| short == letter).map(|(_, plain)| (*plain, 2)),
+            None => None,
         };
         match plain {
             Some((c, took)) => {
@@ -1093,13 +1088,26 @@ fn unspelled(s: &str) -> Option<String> {
                 changed = true;
             }
             None => {
-                out.push('\\');
+                out.push(ESCAPE);
                 i += 1;
             }
         }
     }
     changed.then_some(out)
 }
+
+/// What leads every escape [`unspelled`] undoes. JSON's escapes are the only spellings of a value
+/// the record knows besides those it writes itself ([`spellings`]): a text without this holds a
+/// value as it is or not at all, which is all [`Redactor::respelled`] and the look for a value
+/// whole before its parts are marked ([`Redactor::whole_first`]) count on. A spelling learnt
+/// that isn't led by it must widen both, and joins
+/// `a_secret_echoed_in_any_spelling_is_withheld_whole_before_its_parts_are_marked` (the tests).
+pub(crate) const ESCAPE: char = '\\';
+
+/// JSON's short escapes: the letter after [`ESCAPE`], and the character it stands for. With `u`
+/// and four hex digits (two of those, a surrogate pair, for a character past the basic plane),
+/// every escape [`unspelled`] undoes.
+pub(crate) const SHORT_ESCAPES: [(char, char); 8] = [('"', '"'), ('\\', '\\'), ('/', '/'), ('n', '\n'), ('r', '\r'), ('t', '\t'), ('b', '\u{8}'), ('f', '\u{c}')];
 
 /// Whether `s` satisfies `found`, as it is or with its JSON escapes undone, once, again, and so on
 /// until none is left ([`unspelled`]): each time a text is written out as JSON it gains a level,
@@ -1562,7 +1570,7 @@ impl Redactor {
     /// still holds a value once its escapes are undone: that value's [`RESPELLED`], the whole
     /// text. None: it holds none, and stays as written.
     fn respelled(&self, written: &str) -> Option<&str> {
-        if !written.contains('\\') {
+        if !written.contains(ESCAPE) {
             return None;
         }
         // The first it holds, by the order the values came in: a secret before a token.
@@ -1572,6 +1580,27 @@ impl Redactor {
             held.get().is_some()
         });
         held.get()
+    }
+
+    /// The whole before its parts: what `s` is written as if, with every value marked but what a
+    /// run computed from a secret ([`Redactor::born`]), it still holds a value in a spelling no
+    /// pair has ([`Redactor::respelled`]): the whole text, withheld. Always looked for before
+    /// those are marked, and the one place it is: one of them may be a part of a secret a far side
+    /// sent back (R70), and marked first, with the secret whole around it in a spelling no mark is
+    /// put into, it would leave the rest of the secret, as that writer spelled it, in the clear
+    /// (a letter past ASCII written `é` between two parts). A text without [`ESCAPE`] holds
+    /// no value in a spelling no pair has, and is passed over as `respelled` passes it.
+    fn whole_first(&self, s: &str) -> Option<&str> {
+        if !s.contains(ESCAPE) {
+            return None;
+        }
+        let mut kept = s.to_string();
+        for (value, mark) in self.pairs.iter().filter(|(_, mark)| !mark.starts_with(DERIVED_MARK)) {
+            if kept.contains(value.as_str()) {
+                kept = kept.replace(value.as_str(), mark);
+            }
+        }
+        self.respelled(&kept)
     }
 
     /// Whether it has nothing to replace.
@@ -1585,16 +1614,16 @@ impl Redactor {
     }
 
     pub(crate) fn text(&self, s: &str) -> String {
+        if let Some(whole) = self.whole_first(s) {
+            return whole.to_string();
+        }
         let mut out = s.to_string();
         for (value, mark) in &self.pairs {
             if out.contains(value.as_str()) {
                 out = out.replace(value.as_str(), mark);
             }
         }
-        match self.respelled(&out) {
-            Some(whole) => whole.to_string(),
-            None => out,
-        }
+        out
     }
 
     pub(crate) fn svalue(&self, v: &mut SValue) {
@@ -1638,10 +1667,11 @@ impl Redactor {
         // (interpreter-path-L4.md, step 2).
         if !s.contains('‹') && self.pairs.iter().all(|(value, _)| value.is_empty() || !s.contains(value.as_str())) {
             // Unless it holds one in a spelling no pair has: then it is withheld whole.
-            return self.respelled(s).map(|whole| write_marked(&[(whole, true)]));
+            return self.whole_first(s).map(|whole| write_marked(&[(whole, true)]));
         }
         // JSON holding a tainted number as a number (a body's `"number": 4111…`): its mark, a
-        // text, goes where the number was, and the text stays JSON, so what reads it reads the rest.
+        // text, goes where the number was, and the text stays JSON, so what reads it reads the rest
+        // (each text in it written as here, the whole of each looked for first).
         let t = s.trim_start();
         if (t.starts_with('{') || t.starts_with('['))
             && self.pairs.iter().any(|(value, mark)| mark.starts_with(TAINT_MARK) && value.parse::<f64>().is_ok() && s.contains(value.as_str()))
@@ -1650,6 +1680,9 @@ impl Redactor {
             let mut escaped = false;
             self.logged_json(&mut json, &mut escaped);
             return Some((json.to_string(), escaped));
+        }
+        if let Some(whole) = self.whole_first(s) {
+            return Some(write_marked(&[(whole, true)]));
         }
         let mut next: Vec<Option<usize>> = self.pairs.iter().map(|(value, _)| (!value.is_empty()).then(|| s.find(value.as_str())).flatten()).collect();
         let mut pieces = Vec::new();
@@ -1667,10 +1700,6 @@ impl Redactor {
             at = p + self.pairs[k].0.len();
         }
         pieces.push((&s[at..], false));
-        // What is left between the marks may still hold a value, spelled as no pair has it.
-        if let Some(whole) = pieces.iter().filter(|(_, mark)| !mark).find_map(|(text, _)| self.respelled(text)) {
-            return Some(write_marked(&[(whole, true)]));
-        }
         Some(write_marked(&pieces))
     }
 
@@ -2490,6 +2519,68 @@ mod tests {
         assert_eq!(e.request, Some(SValue::Text(format!("‹{mark} {mark}"))), "a look-alike the run wrote itself is escaped, as a secret's is");
         assert!(e.escaped);
         assert_eq!(read_marked(&format!("‹{mark} {mark}"), true), vec![(format!("{mark} "), false), (mark.clone(), true), (String::new(), false)]);
+    }
+
+    /// **Guards:** a secret a far side sends back in any spelling the record knows besides its own
+    /// (JSON's escapes, each led by [`ESCAPE`]: every short one, `\uXXXX` for a letter past ASCII,
+    /// a quote, a backslash, a solidus or a control character, a surrogate pair, and several in one
+    /// secret) is withheld whole, though what is either side of each character so spelled is long
+    /// enough for `echoed_parts` to take as a part (R70): the whole is looked for before the parts
+    /// are marked ([`Redactor::whole_first`]), in a text and in the log. Where the spelling is one
+    /// a pair has (JSON's own, as `serde_json` writes it), the secret is marked in place. Either
+    /// way nothing of the secret is left outside a mark.
+    ///
+    /// **Why:** marked first, the parts left the rest of the secret between them as that writer
+    /// spelled it: an `ensure_ascii` far side's `é`, in the clear in the log (main's R67 test,
+    /// `a_far_sides_spelling_says_whether_a_secret_has_a_letter_past_ascii`, met R70 there).
+    ///
+    /// **If it fails:** a row's text keeps something of the secret outside a mark: the parts were
+    /// marked before the whole was looked for. A spelling [`unspelled`] learns joins the rows; one
+    /// not led by [`ESCAPE`] fails the first check until `whole_first` and `respelled` look for it.
+    #[test]
+    fn a_secret_echoed_in_any_spelling_is_withheld_whole_before_its_parts_are_marked() {
+        use crate::wire::SValue;
+        // (what the secret holds, as the far side spells it): every short escape, then `\uXXXX`
+        // (an `ensure_ascii` writer's, or one escaping a quote, a solidus or a control character
+        // so), a surrogate pair, and three in one secret, each spelled its own way.
+        let mut rows: Vec<Vec<(String, String)>> = SHORT_ESCAPES.iter().map(|(letter, plain)| vec![(plain.to_string(), format!("{ESCAPE}{letter}"))]).collect();
+        for c in ['é', 'ß', '"', '\\', '/', '\n', '\u{1}'] {
+            rows.push(vec![(c.to_string(), format!("{ESCAPE}u{:04x}", c as u32))]);
+        }
+        rows.push(vec![("😀".to_string(), format!("{ESCAPE}ud83d{ESCAPE}ude00"))]);
+        rows.push(vec![("é".to_string(), format!("{ESCAPE}u00e9")), ("/".to_string(), format!("{ESCAPE}/")), ("\n".to_string(), format!("{ESCAPE}u000a"))]);
+        let mut residues = Vec::new();
+        for row in &rows {
+            for (plain, spelled) in row {
+                assert!(spelled.starts_with(ESCAPE), "{spelled:?} isn't led by ESCAPE: whole_first and respelled must look for it");
+                assert_eq!(unspelled(spelled).as_deref(), Some(plain.as_str()), "{spelled:?}: a spelling the record knows");
+            }
+            // The secret: each character the row spells between stretches long enough to be parts.
+            let stretches = ["live_alpha-k", "kq7zxw", "wm4tn8", "pq2-91"];
+            let mut secret = stretches[0].to_string();
+            let mut echoed = stretches[0].to_string();
+            for ((plain, spelled), after) in row.iter().zip(&stretches[1..]) {
+                secret += &format!("{plain}{after}");
+                echoed += &format!("{spelled}{after}");
+            }
+            let echoed = format!("{{\"v\":\"{echoed}\"}}");
+            let vault: Vault = Arc::new(Mutex::new(Resolved { current: BTreeMap::from([("k".to_string(), Zeroizing::new(secret.clone()))]), ..Resolved::default() }));
+            let parts = echoed_parts(std::iter::once(&SValue::Text(echoed.clone())), &vault, &["k".to_string()]);
+            let born = crate::recorder::Born { values: parts.iter().enumerate().map(|(n, part)| (format!("{n:064x}"), part.clone())).collect(), whole: true };
+            let redactor = Redactor::of(&vault).and(Redactor::born(&born));
+            let in_place = spellings(&secret).iter().any(|spelling| echoed.contains(spelling.as_str()));
+            // A spelling no pair has: the parts are there to be marked, and the whole is found first.
+            if !in_place && parts.is_empty() {
+                residues.push(format!("{echoed:?}: no part taken, so the row shows nothing"));
+            }
+            let whole = format!("{RESPELLED}secret:k›");
+            let expected = if in_place { "{\"v\":\"‹secret:k›\"}".to_string() } else { whole };
+            let (text, logged) = (redactor.text(&echoed), redactor.logged_text(echoed.clone()).0);
+            if text != expected || logged != expected {
+                residues.push(format!("{echoed:?}: written {text:?}, logged {logged:?}, not {expected:?}"));
+            }
+        }
+        assert!(residues.is_empty(), "{}", residues.join("\n"));
     }
 
     /// Guards: every text a log entry holds goes through the redactor ([`Redactor::entry`]), or is
