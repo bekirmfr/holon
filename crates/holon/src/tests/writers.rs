@@ -1,6 +1,6 @@
 //! A writer whose failure the server can't simply go on from reaches an admin and `/health`
 //! (failing.rs): audit R39. And whoever asked is told that it failed, never where the file is
-//! or the error's own text: audit R71.
+//! or the error's own text: audit R71. A run's record names a file only as its flow does: R72; and a database: R82.
 
 use super::*;
 
@@ -129,7 +129,9 @@ fn answered(port: u16, request: &str) -> String {
 /// flow calling the action; the accounts file not written, to a setup, a sign-in, an invite
 /// taken, a password or preferences changed, a sign-out, and a token made or revoked; the policy
 /// file not read, or not TOML holon reads, to an editor reloading it (told the line and column,
-/// not the line, which can name a secret's source). The deployments file's eleven answers are
+/// not the line, which can name a secret's source); a slug's keys not made, or its run log or
+/// events there and not read, to whoever deploys it first; and a deployment's run records not
+/// kept, to whoever removes it. The deployments file's eleven answers are
 /// `what_isnt_saved_isnt_answered_as_kept`'s rows (tests.rs), held the same way.
 /// Why: each answered the file's whole path on the server's disk and the OS error's text: a
 /// flow's outside caller, and someone signing in, among those told. Where the server keeps its
@@ -243,6 +245,248 @@ fn a_file_that_fails_tells_whoever_asked_neither_where_nor_why() {
         assert!(code == 400 && text.contains(crate::permissions::UNPARSED) && text.contains("(line 2, column "), "{what}: {code} {text}");
         neither_where_nor_why(what, &text, &dir, &[canary]);
     }
+    std::fs::remove_file(&policy).unwrap();
+
+    // A first deploy of a slug: its keys not made (as keys.json not written would), and its run
+    // log or its events there and not read (a folder where each goes).
+    let writer = stage_writer(&state, "k");
+    let ack = json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
+    let deploy = |slug: &str| {
+        let r = deploy_json(&state, slug, writer, ack.clone());
+        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    // A slug no other test deploys: the tests share one keyring, and a scope another test made
+    // first has its keys already, so nothing would be made to fail.
+    crate::faults::fail("a scope's key", false);
+    let (code, text) = deploy("keys-never-made");
+    crate::faults::heal();
+    assert!(code == 503 && text.contains("keys couldn't be made"), "{code} {text}");
+    neither_where_nor_why("a deploy whose keys can't be made", &text, &dir, &["made to fail", "keys.json"]);
+    assert!(!state.deployments.lock().unwrap().contains_key("keys-never-made"), "not deployed");
+    // Where the server keeps a deployment's run log and events (recorder.rs `file_for`).
+    let logs = std::path::PathBuf::from(state.deployments_path.beside("logs").unwrap());
+    for (slug, file, what) in [("logless", "logless.jsonl", "a deploy onto a run log that can't be read"), ("eventless", "eventless.events.jsonl", "a deploy onto events that can't be read")] {
+        unwritable(&logs.join(file));
+        let (code, text) = deploy(slug);
+        assert!(code == 409 && (text.contains("is there and can't be opened") || text.contains("are there and can't be opened")), "{what}: {code} {text}");
+        neither_where_nor_why(what, &text, &dir, &["can't be read"]);
+        assert!(!state.deployments.lock().unwrap().contains_key(slug), "{what}: not deployed");
+    }
+
+    // A removal whose run records can't be kept (a file where their folder goes).
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{calling}/stop"), vec![])).status_code, 200);
+    let removed = logs.join("removed");
+    let _ = std::fs::remove_dir_all(&removed);
+    std::fs::write(&removed, "").unwrap();
+    let r = route(&state, &req("DELETE", &format!("/deployments/{calling}"), vec![]));
+    let (code, text) = (r.status_code, String::from_utf8(body_bytes(r)).unwrap());
+    assert!(code == 500 && text.contains("run records couldn't be kept, so nothing was removed"), "a removal whose run records can't be kept: {code} {text}");
+    neither_where_nor_why("a removal whose run records can't be kept", &text, &dir, &[]);
+    assert!(state.deployments.lock().unwrap().contains_key(&calling), "nothing removed");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Guards: a run whose read or write of a file fails says so in its record, naming a folder and a
+/// file only as the flow names them, by every source of such an error: the state's head that
+/// can't be written (its action's run), the server's store of texts that can't keep a big file's
+/// text (a route reading it), a bound folder gone (a route listing it), and a capped folder whose
+/// size can't be read (`folders::usage`, what a write to it asks first). The whole log entry is
+/// held, so its error, decide's `run_error` and an unrecorded run's `last_failure` (the same
+/// text) with it. The server's own files are held as R71's are (`neither_where_nor_why`: no OS
+/// error's text either); a bound folder's place, wherever it is.
+/// Why: each named the server's data folder or a bound folder's whole path, and the run's record
+/// is read by whoever may read or decide that flow's runs; where a resource is goes only to
+/// whoever may bind it (R51), why the server's own file failed to the admin (audit R72).
+/// If it fails: the row says which source put a place in the record: name the folder as the flow
+/// does, or give the server's own error to the admin (`failing::Failed`).
+#[test]
+fn a_run_whose_file_fails_names_it_only_as_the_flow_does() {
+    use serde_json::json;
+    // Apart: a folder inside the server's data can't be bound.
+    let data = std::env::temp_dir().join(format!("holon-r72-{}-{}", std::process::id(), rand::random::<u32>()));
+    let bound = data.with_extension("bound");
+    for d in [data.clone(), bound.join("inbox"), bound.join("reports")] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let mut state = test_state_at(Place::parse(&data.join("deployments.json").to_string_lossy()));
+    state.folders = std::sync::Arc::new(crate::folders::Folders::memory().with_blobs(crate::blobs::Blobs::at(data.join("blobs"))));
+    for name in ["inbox", "reports"] {
+        let body = json!({ "name": name, "path": bound.join(name).display().to_string(), "access": "read-write", "keep": "bytes" });
+        assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200, "{name}");
+    }
+    let slug = deploy_plain_text(
+        &state,
+        "import { action, flow, route } from \"holon\"\nimport state from \"state\"\nimport inbox from \"folder:inbox\"\nimport reports from \"folder:reports\"\n\nflow(\"leaky\", { port: 8372 })\n\nroute.get(\"/read\", () => inbox[\"big.txt\"])\n\nroute.get(\"/list\", () => reports.list())\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n",
+    );
+    // Where neither may be: the bound folders' place, as written or as JSON escapes it.
+    let nowhere = |what: &str, text: &str| {
+        for at in [&bound, &bound.join("inbox"), &bound.join("reports")] {
+            let at = at.display().to_string();
+            for part in [at.clone(), at.replace('\\', "\\\\")] {
+                assert!(!text.contains(&part), "{what}: where a bound folder is ({part:?}), in the run's record: {text}");
+            }
+        }
+    };
+    let last = || {
+        let entry = log_entries(&state, &slug).last().cloned().unwrap();
+        (entry["error"].as_str().unwrap_or("").to_string(), serde_json::to_string(&entry).unwrap())
+    };
+
+    // The state's head, a folder in the way of the file.
+    let head = crate::persist::state_head_for(&state.deployments_path, &slug).unwrap();
+    let _ = std::fs::remove_file(&head);
+    std::fs::create_dir_all(&head).unwrap();
+    run_action_named(&state, &slug, "bump", json!({}));
+    let (error, entry) = last();
+    assert!(error.starts_with(crate::folders::WRITE_FAILED) && error.contains("the state it left"), "the head's row ran: {error}");
+    neither_where_nor_why("the state's head", &entry, &data, &[]);
+    nowhere("the state's head", &entry);
+
+    // The store of texts, a file in the way of its folder: a read too big for its log line.
+    let _ = std::fs::remove_dir_all(data.join("blobs"));
+    std::fs::write(data.join("blobs"), b"in the way").unwrap();
+    std::fs::write(bound.join("inbox").join("big.txt"), "x".repeat(2 * crate::folders::LOG_INLINE_BYTES as usize)).unwrap();
+    let (status, _, _) = data_call(&state, &slug, "GET", "/read", "");
+    let (error, entry) = last();
+    assert!(status == 500 && error.starts_with(crate::folders::READ_FAILED) && error.contains("inbox/big.txt"), "the store's row ran ({status}): {error}");
+    neither_where_nor_why("the store of texts", &entry, &data, &[]);
+    nowhere("the store of texts", &entry);
+
+    // A bound folder gone, listed.
+    std::fs::remove_dir_all(bound.join("reports")).unwrap();
+    let (status, _, _) = data_call(&state, &slug, "GET", "/list", "");
+    let (error, entry) = last();
+    assert!(status == 500 && error.starts_with(crate::folders::READ_FAILED) && error.contains("\"reports\" can't be listed"), "the listing's row ran ({status}): {error}");
+    nowhere("a folder listed", &entry);
+    assert!(!entry.contains(&data.display().to_string().replace('\\', "\\\\")), "a folder listed: the data folder, in the run's record: {entry}");
+
+    // A capped folder whose size can't be read: what a write to it is told.
+    let said = crate::folders::usage("reports", &bound.join("reports")).unwrap_err();
+    assert!(said.contains("\"reports\" can't be read"), "the size's row ran: {said}");
+    nowhere("a capped folder's size", &said);
+
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&bound);
+}
+
+/// Guards: a run whose database can't be opened or reached says so in its record by the binding's
+/// name only, on every engine, each failing for real with no server: SQLite with its file gone;
+/// Postgres, MySQL and MongoDB at a closed port on this machine (MongoDB told to give up in
+/// 300 ms); and a connection whose source isn't set. First use (the database opened then), by a
+/// run's read and its commit; and a database reached before and gone since, by each engine's
+/// read and a Postgres and MySQL commit's begin. The whole log entry is held: no address, file,
+/// source, password or driver's words.
+/// Why: the record is read by whoever may read or decide that flow's runs; where a database is
+/// goes only to whoever may bind it (R51), and why it failed to the admin (audit R82).
+/// If it fails: the row names the engine and the way that put where, or the driver's words, in
+/// the record: give them to the admin (`failing::Failed`), and the run the binding's name.
+#[test]
+fn a_run_whose_database_fails_names_it_only_as_the_flow_does() {
+    use crate::databases::{Bound, Database, Databases, READ_FAILED, UNREACHED, WRITE_FAILED};
+    use std::time::Duration;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let dir = std::env::temp_dir().join(format!("holon-r82-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let gone = dir.join("shop.db");
+    let pw = "s3cretpw";
+    let pg = format!("postgres://holon:{pw}@127.0.0.1:{closed}/shop?sslmode=disable");
+    let my = format!("mysql://holon:{pw}@127.0.0.1:{closed}/shop");
+    let mongo = format!("mongodb://holon:{pw}@127.0.0.1:{closed}/notes?serverSelectionTimeoutMS=300&connectTimeoutMS=300&directConnection=true");
+    let remote = |engine: &str, address: String| Database {
+        engine: engine.into(),
+        path: None,
+        connection: Some("env:HOLON_SECRET_SHOP_URL".into()),
+        address: Some(address),
+        access: crate::folders::FolderAccess::ReadWrite,
+        lock: crate::locks::Setting::Commit,
+    };
+    // What none may hold: where, the source, the password, and the drivers' words.
+    let gone_at = gone.display().to_string();
+    let banned: Vec<String> = [
+        "127.0.0.1", "localhost", "postgres://", "mysql://", "mongodb://", pw, "HOLON_SECRET_SHOP_URL", "os error",
+        "actively refused", "Connection refused", "Server selection", "Topology", "error connecting", "Could not connect", "shop.db",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .chain([gone_at.clone(), gone_at.replace('\\', "\\\\")])
+    .collect();
+    let held = |what: &str, text: &str| {
+        for b in &banned {
+            assert!(!text.contains(b.as_str()), "{what}: {b:?} in what a run is told: {text}");
+        }
+    };
+
+    // First use: each engine, through a run.
+    let rows = [
+        (
+            "SQLite, its file gone",
+            Database {
+                engine: "sqlite".into(),
+                path: Some(crate::paths::HostPath::new(&gone)),
+                connection: None,
+                address: None,
+                access: crate::folders::FolderAccess::ReadWrite,
+                lock: crate::locks::Setting::Commit,
+            },
+            None,
+            "shop",
+        ),
+        ("Postgres, its port closed", remote("postgres", format!("postgres://127.0.0.1:{closed}/shop")), Some(pg.as_str()), "shop"),
+        ("MySQL, its port closed", remote("mysql", format!("mysql://127.0.0.1:{closed}/shop")), Some(my.as_str()), "shop"),
+        ("MongoDB, its port closed", remote("mongodb", format!("mongodb://127.0.0.1:{closed}/notes")), Some(mongo.as_str()), "notes"),
+        ("a source not set", remote("postgres", format!("postgres://127.0.0.1:{closed}/shop")), None, "shop"),
+    ];
+    for (what, database, url, name) in rows {
+        let file = dir.join(format!("databases-{}.json", rand::random::<u32>()));
+        let bound = Bound { deployments: Default::default(), server: [(name.to_string(), database)].into() };
+        crate::at_rest::write_table(&file, crate::at_rest::role::DATABASES, &serde_json::to_vec(&bound).unwrap()).unwrap();
+        let vars: Vec<(&str, &str)> = url.map(|u| ("HOLON_SECRET_SHOP_URL", u)).into_iter().collect();
+        let databases = Databases::open(file.to_str().unwrap(), &[]).unwrap().with_sources(crate::secret_sources::Sources::of(&vars));
+        let mut state = claims_state("");
+        state.folders = std::sync::Arc::new(crate::folders::Folders::memory().with_databases(databases));
+        let (text, calls): (&str, &[(&str, &str, &str, &str)]) = match name {
+            "notes" => (include_str!("../../../holon-author/samples/atlas-notes.holon.ts"), &[("GET", "/notes/ada", "", READ_FAILED)]),
+            _ => (
+                include_str!("../../../holon-author/samples/orders-api.holon.ts"),
+                &[("GET", "/orders/ada", "", READ_FAILED), ("POST", "/orders", r#"{"customer":"ada","total":"1.00"}"#, WRITE_FAILED)],
+            ),
+        };
+        let slug = deploy_text(&state, text, "");
+        for (method, path, body, failed) in calls {
+            let (status, _, _) = data_call(&state, &slug, method, path, body);
+            let entry = log_entries(&state, &slug).last().cloned().unwrap();
+            let error = entry["error"].as_str().unwrap_or("").to_string();
+            let told = format!("the database {name:?} couldn't be opened");
+            assert!(status >= 500 && error.starts_with(failed) && error.contains(&told), "{what}, {method} {path} ({status}): {error}");
+            held(&format!("{what}, {method} {path}"), &serde_json::to_string(&entry).unwrap());
+        }
+    }
+
+    // Reached before and gone since: what each engine tells a run, its handle open.
+    let gather = || crate::databases::Gather::new("select 1", false, 10, 1000);
+    for (what, url) in [("Postgres", &pg), ("MySQL", &my)] {
+        let remote = crate::engines::Remote::open(zeroize::Zeroizing::new(url.clone())).unwrap();
+        let read = remote.read("select 1", &[], &mut gather(), Duration::from_secs(5)).unwrap_err();
+        let begin = remote.begin(Duration::from_secs(1), Duration::from_secs(1)).err().map(|f| f.why).unwrap_or_default();
+        for (how, said) in [("read", read), ("begin", begin)] {
+            assert_eq!(said, UNREACHED, "{what}, gone since, {how}");
+        }
+    }
+    let notes = crate::mongo::Mongo::open(zeroize::Zeroizing::new(mongo.clone())).unwrap();
+    let request = holon_core::Value::Record(
+        [
+            ("database".to_string(), holon_core::Value::Text("notes".into())),
+            ("find".to_string(), holon_core::Value::Text("notes".into())),
+            ("filter".to_string(), holon_core::Value::Text("{}".into())),
+            ("params".to_string(), holon_core::Value::List(vec![])),
+        ]
+        .into(),
+    );
+    let found = crate::mongo::found(&request).unwrap();
+    let said = notes.read(&found, &mut gather(), Duration::from_secs(5)).unwrap_err();
+    assert!(said.ends_with(UNREACHED), "MongoDB, gone since, read: {said}");
+    held("MongoDB, gone since, read", &said);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

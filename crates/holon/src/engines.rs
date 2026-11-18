@@ -38,7 +38,7 @@ use postgres::types::{FromSql, Format, IsNull, Kind, ToSql, Type, to_sql_checked
 use zeroize::Zeroizing;
 
 use crate::claims::ClaimKey;
-use crate::databases::{COMMITS_TABLE, Gather};
+use crate::databases::{COMMITS_TABLE, Gather, UNREACHED};
 
 /// The table on a MySQL database whose rows' locks are the claims several servers hold (and the
 /// collection on a MongoDB one whose documents are: mongo.rs).
@@ -206,12 +206,19 @@ pub(crate) fn pg_tls() -> tokio_postgres_rustls::MakeRustlsConnect {
 }
 
 impl Remote {
-    /// The database at `url`, reached once now, so a binding that can't connect says so.
+    /// The database at `url`, reached on first use: a binding reaches it at once
+    /// ([`check`](Self::check)).
     pub(crate) fn open(url: Zeroizing<String>) -> Result<Remote, String> {
         let (engine, address) = address_of(&url)?;
-        let remote = Remote { engine, address, url, idle: Mutex::new(Vec::new()), sessions: Mutex::new(BTreeMap::new()) };
-        drop(remote.conn()?);
-        Ok(remote)
+        Ok(Remote { engine, address, url, idle: Mutex::new(Vec::new()), sessions: Mutex::new(BTreeMap::new()) })
+    }
+
+    /// Reach it now, so a binding that can't connect says why, to whoever binds it (they may see
+    /// where it is): the connection is kept for the first run.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        let conn = self.connect()?;
+        self.put_back(conn);
+        Ok(())
     }
 
     fn connect(&self) -> Result<Conn, String> {
@@ -244,7 +251,8 @@ impl Remote {
     }
 
     /// A connection: an idle one (asked whether it is still there if it has been idle a while),
-    /// else a new one.
+    /// else a new one. `Err`: that it couldn't be reached, as a run is told it ([`UNREACHED`]):
+    /// where it is and the driver's text go to the admin, on stderr (audit R82).
     fn conn(&self) -> Result<Pooled<'_>, String> {
         loop {
             let next = self.idle.lock().unwrap().pop();
@@ -258,7 +266,8 @@ impl Remote {
                 return Ok(Pooled { remote: self, conn: Some(conn), broken: false });
             }
         }
-        Ok(Pooled { remote: self, conn: Some(self.connect()?), broken: false })
+        let conn = self.connect().map_err(|why| crate::failing::Failed::new(UNREACHED, why).said())?;
+        Ok(Pooled { remote: self, conn: Some(conn), broken: false })
     }
 
     fn put_back(&self, conn: Conn) {
@@ -1095,7 +1104,7 @@ mod tests {
             }
         });
         for (url, told) in rows {
-            let said = Remote::open(Zeroizing::new(url.clone())).err().unwrap_or_default();
+            let said = Remote::open(Zeroizing::new(url.clone())).and_then(|r| r.check()).err().unwrap_or_default();
             assert!(said.contains("server does not support TLS"), "{url}: {said}");
             assert_eq!(said.contains("?sslmode=disable in it is yours to write"), told, "{url}: {said}");
             assert!(!said.contains("s3cret"), "{url}: {said}");
