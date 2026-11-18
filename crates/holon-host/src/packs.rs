@@ -208,6 +208,7 @@ impl Packs {
                 return Ok(b);
             }
         }
+        self.at_rest.data_folder(path)?;
         let mut file = fs::File::open(path)?;
         file.seek(SeekFrom::Start(at.block))?;
         let mut sealed = vec![0; at.block_len as usize];
@@ -254,6 +255,7 @@ impl Packs {
             kept.next - 1
         };
         let path = self.dir.join(format!("{:016x}-{:08x}.pack", now_ns(), n));
+        self.at_rest.data_folder(&path)?;
         crate::write_atomically(&path, &bytes)?;
         for (_, at) in entries.iter_mut() {
             at.pack = n;

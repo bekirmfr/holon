@@ -74,6 +74,13 @@ fn a_writer_that_fails_is_a_warning_and_health_says_not_ok_until_it_writes_again
 /// the error's own text: `whys`, and any OS error's "(os error N)". Those are an admin's alone
 /// (the warnings, stderr: `failing::Failed`).
 pub(super) fn neither_where_nor_why(what: &str, text: &str, dir: &std::path::Path, whys: &[&str]) {
+    let found = where_or_why(text, dir, whys);
+    assert!(found.is_empty(), "{what}: where on the server's disk or why ({found:?}), to whoever asked: {text}");
+}
+
+/// Each part of where on the server's disk `dir` is, or of why a file there failed, that `text`
+/// holds ([`neither_where_nor_why`]): none, if it says neither.
+pub(super) fn where_or_why(text: &str, dir: &std::path::Path, whys: &[&str]) -> Vec<String> {
     let path = dir.display().to_string();
     let temp = std::env::temp_dir().display().to_string().trim_end_matches(['\\', '/']).to_string();
     let mut parts = vec![path.clone(), path.replace('\\', "\\\\"), dir.file_name().unwrap().to_string_lossy().to_string(), temp.clone(), temp.replace('\\', "\\\\")];
@@ -91,12 +98,10 @@ pub(super) fn neither_where_nor_why(what: &str, text: &str, dir: &std::path::Pat
             }
         }
     }
-    for part in parts.iter().filter(|p| !p.is_empty()) {
-        assert!(!text.contains(part.as_str()), "{what}: where on the server's disk ({part:?}), to whoever asked: {text}");
-    }
-    for why in whys.iter().copied().chain(["os error"]) {
-        assert!(!text.contains(why), "{what}: why ({why:?}), to whoever asked: {text}");
-    }
+    let mut found: Vec<String> = parts.into_iter().filter(|p| !p.is_empty() && text.contains(p.as_str())).collect();
+    found.extend(whys.iter().copied().chain(["os error"]).filter(|why| text.contains(why)).map(String::from));
+    found.dedup();
+    found
 }
 
 /// An answer read off `port` once it is whole (by its Content-Length), the connection left open
@@ -255,14 +260,15 @@ fn a_file_that_fails_tells_whoever_asked_neither_where_nor_why() {
         let r = deploy_json(&state, slug, writer, ack.clone());
         (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
     };
-    // A slug no other test deploys: the tests share one keyring, and a scope another test made
-    // first has its keys already, so nothing would be made to fail.
-    crate::faults::fail("a scope's key", false);
-    let (code, text) = deploy("keys-never-made");
+    // Its scope made first, as another test sharing the keyring may have made it: the data
+    // folder failing fails a first deploy's keys however the keyring stands.
+    crate::at_rest::keys().make_scope(&crate::at_rest::deployment("keys-fail")).unwrap();
+    crate::faults::fail(crate::at_rest::FAILING, false);
+    let (code, text) = deploy("keys-fail");
     crate::faults::heal();
     assert!(code == 503 && text.contains("keys couldn't be made"), "{code} {text}");
     neither_where_nor_why("a deploy whose keys can't be made", &text, &dir, &["made to fail", "keys.json"]);
-    assert!(!state.deployments.lock().unwrap().contains_key("keys-never-made"), "not deployed");
+    assert!(!state.deployments.lock().unwrap().contains_key("keys-fail"), "not deployed");
     // Where the server keeps a deployment's run log and events (recorder.rs `file_for`).
     let logs = std::path::PathBuf::from(state.deployments_path.beside("logs").unwrap());
     for (slug, file, what) in [("logless", "logless.jsonl", "a deploy onto a run log that can't be read"), ("eventless", "eventless.events.jsonl", "a deploy onto events that can't be read")] {

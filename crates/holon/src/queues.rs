@@ -528,7 +528,7 @@ impl Queues {
     /// disk: it is removed, never sent.
     pub(crate) fn recover(&self, mut log: impl FnMut(&str) -> Option<BTreeSet<String>>) {
         let Some(dir) = &self.0.spool else { return };
-        let Ok(files) = std::fs::read_dir(dir) else { return };
+        let Ok(files) = crate::at_rest::disk::read_dir(dir) else { return };
         let mut logged: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut found: Vec<(Spooled, String, PathBuf)> = Vec::new();
         for file in files.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e == "msg")) {

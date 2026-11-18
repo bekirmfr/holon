@@ -525,6 +525,15 @@ pub trait AtRest: Send + Sync {
     /// What the unit or value hashed `hash` is named on disk: 64 lowercase hex, keyed, so what
     /// recognises a store file by its name's shape still does.
     fn name(&self, hash: &Hash) -> String;
+    /// Asked before the store reads or writes its file at `path` on a request's path: an error
+    /// fails that read or write as the disk's own would. `Ok(())` but where the server's tests
+    /// make its data folder fail (holon's at_rest.rs, audit R87); nothing here keeps a fault. What
+    /// is kept above the disk (the server's value cache, a pack's blocks in memory) isn't read
+    /// from it, so it doesn't fail, as with a real disk's fault; nor the packs' listing and
+    /// indexes, read once as the store opens.
+    fn data_folder(&self, _path: &Path) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// What each of the store's files is, bound into it as it is sealed: one renamed to another role
@@ -782,11 +791,13 @@ impl Store for FileStore {
     fn put(&mut self, unit: &Unit) -> Result<Hash, StoreError> {
         let (key, bytes) = encode_keyed(unit)?;
         let sealed = self.at_rest.seal(role::UNIT, &bytes).map_err(StoreError::Io)?;
-        write_atomically(&self.path(&key), &sealed).map_err(StoreError::Io)?;
+        let path = self.path(&key);
+        self.at_rest.data_folder(&path).and_then(|()| write_atomically(&path, &sealed)).map_err(StoreError::Io)?;
         Ok(key)
     }
     fn get(&self, key: &Hash) -> Result<Option<Unit>, StoreError> {
-        let bytes = match fs::read(self.path(key)) {
+        let path = self.path(key);
+        let bytes = match self.at_rest.data_folder(&path).and_then(|()| fs::read(&path)) {
             Ok(b) => b,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(StoreError::Io(e)),
@@ -800,6 +811,7 @@ impl Store for FileStore {
         // Content-addressed: a file already there, or the value packed, holds these very bytes (a
         // read verifies it).
         if !path.exists() && !self.packs.contains(&key) {
+            self.at_rest.data_folder(&path).map_err(StoreError::Io)?;
             create_private_dir(&self.values_dir()).map_err(StoreError::Io)?;
             let sealed = self.at_rest.seal(role::VALUE, &bytes).map_err(StoreError::Io)?;
             write_atomically(&path, &sealed).map_err(StoreError::Io)?;
@@ -807,7 +819,8 @@ impl Store for FileStore {
         Ok(key)
     }
     fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
-        let bytes = match fs::read(self.value_path(key)) {
+        let path = self.value_path(key);
+        let bytes = match self.at_rest.data_folder(&path).and_then(|()| fs::read(&path)) {
             Ok(b) => self.at_rest.open(role::VALUE, &b).map_err(StoreError::Io)?,
             // Not a file of its own: packed, or not there.
             Err(e) if e.kind() == io::ErrorKind::NotFound => match self.packs.get(key).map_err(StoreError::Io)? {

@@ -145,7 +145,7 @@ fn is_export(name: &str) -> bool {
 /// Count `dir`'s files that `keep` names (none for a folder that isn't there), removing each one a
 /// write made aside left more than `LEFTOVER_AFTER` before `now` (added to `left`).
 fn count_dir(dir: &Path, keep: impl Fn(&str) -> bool, now: SystemTime, left: &mut Count) -> Option<Count> {
-    let entries = std::fs::read_dir(dir).ok()?;
+    let entries = crate::at_rest::disk::read_dir(dir).ok()?;
     let mut count = Count::default();
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -634,7 +634,7 @@ impl Sweeps {
                 "logs" | "state heads" | "data" => {
                     count_dir(&dir, |_| false, now, &mut left);
                     // And beside each log, its sealed segments' folder.
-                    for sealed in std::fs::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".sealed")) {
+                    for sealed in crate::at_rest::disk::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".sealed")) {
                         count_dir(&sealed.path(), |_| false, now, &mut left);
                     }
                 }
@@ -776,7 +776,7 @@ impl Sweeps {
             // (their bytes, not more logs); its console lines apart (logs.rs). What crashes left is
             // removed by the census only.
             let mut lines = Count::default();
-            logs = std::fs::read_dir(&dir).ok().map(|entries| {
+            logs = crate::at_rest::disk::read_dir(&dir).ok().map(|entries| {
                 let mut c = Count::default();
                 for e in entries.flatten() {
                     let name = e.file_name();
@@ -785,7 +785,7 @@ impl Sweeps {
                         (Some(n), Ok(m)) if m.is_file() && n.ends_with(".jsonl") => c.add(&m),
                         (Some(n), Ok(m)) if m.is_file() && is_aside(n) => left.add(&m),
                         (Some(n), Ok(m)) if m.is_dir() && n.ends_with(".sealed") => {
-                            for f in std::fs::read_dir(e.path()).into_iter().flatten().flatten() {
+                            for f in crate::at_rest::disk::read_dir(e.path()).into_iter().flatten().flatten() {
                                 match (f.file_name().to_str(), f.metadata()) {
                                     (Some(n), Ok(m)) if m.is_file() && n.ends_with(".jsonl.gz") => c.add_bytes(&m),
                                     (Some(n), Ok(m)) if m.is_file() && is_aside(n) => left.add(&m),
@@ -1249,13 +1249,13 @@ pub(crate) fn archive(state: &AppState, now_ms: u64) {
         }
         failed.get_or_insert(e);
     }
-    let Ok(slugs) = std::fs::read_dir(&dir) else {
+    let Ok(slugs) = crate::at_rest::disk::read_dir(&dir) else {
         *state.sweeps.backup_error.lock().unwrap() = failed;
         return;
     };
     for slug_dir in slugs.flatten().filter(|e| e.path().is_dir()) {
         let slug = slug_dir.file_name().to_string_lossy().into_owned();
-        let Ok(batches) = std::fs::read_dir(slug_dir.path()) else { continue };
+        let Ok(batches) = crate::at_rest::disk::read_dir(slug_dir.path()) else { continue };
         // Only the batches a log wrote: whatever else the folder holds is left as it is.
         let mut batches: Vec<PathBuf> = batches.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.file_name().and_then(|n| n.to_str()).is_some_and(is_batch)).collect();
         batches.sort();
@@ -1282,7 +1282,7 @@ pub(crate) fn archive(state: &AppState, now_ms: u64) {
 /// tried again at the next look (release audit R41).
 fn expire_removed(state: &AppState, backup: Option<&Path>, now_ms: u64) -> Result<(), String> {
     let Some(dir) = state.deployments_path.beside("logs").map(|l| l.join("removed")) else { return Ok(()) };
-    let Ok(entries) = std::fs::read_dir(&dir) else { return Ok(()) };
+    let Ok(entries) = crate::at_rest::disk::read_dir(&dir) else { return Ok(()) };
     let mut failed = Ok(());
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -1292,7 +1292,7 @@ fn expire_removed(state: &AppState, backup: Option<&Path>, now_ms: u64) -> Resul
         }
         if let Some(backup) = backup {
             let to = backup.join(slug).join(removed_export_name(slug, at_ms));
-            let copied = std::fs::read(entry.path()).and_then(|bytes| {
+            let copied = crate::at_rest::disk::read(entry.path()).and_then(|bytes| {
                 std::fs::create_dir_all(backup.join(slug))?;
                 crate::sealing::write_private(&to, &bytes)
             });
@@ -1334,8 +1334,8 @@ fn archive_one(state: &AppState, slug: &str, batch: &Path) -> Result<(), String>
 fn backup_view(state: &AppState) -> serde_json::Value {
     let Some(dir) = state.policy().storage.backup.clone() else { return serde_json::Value::Null };
     let (mut exports, mut bytes, mut waiting) = (0u64, 0u64, 0u64);
-    for slug_dir in std::fs::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.path().is_dir()) {
-        for f in std::fs::read_dir(slug_dir.path()).into_iter().flatten().flatten() {
+    for slug_dir in crate::at_rest::disk::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.path().is_dir()) {
+        for f in crate::at_rest::disk::read_dir(slug_dir.path()).into_iter().flatten().flatten() {
             let name = f.file_name().to_string_lossy().into_owned();
             if is_export(&name) {
                 exports += 1;
@@ -1424,7 +1424,7 @@ pub(crate) fn route(state: &AppState, request: &rouille::Request, by: &str) -> O
 fn set_storage(state: &AppState, set: &[(&str, &str)], by: &str) -> Response {
     let Some(policy_path) = state.policy_path.at() else { return err(409, "this server reads its policy from no file, so there is none to write it into") };
     let file = state.hold_policy_file();
-    let mut text = match std::fs::read_to_string(policy_path) {
+    let mut text = match crate::at_rest::disk::read_to_string(policy_path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return err(500, format!("could not read {policy_path:?}: {e}")),

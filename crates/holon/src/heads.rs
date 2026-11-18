@@ -204,7 +204,7 @@ impl Exporter {
             return Err(format!("--export-heads needs an https:// URL (or http:// to this machine), not {url:?}"));
         }
         let mut pending = VecDeque::new();
-        if let Some(text) = dir.as_ref().and_then(|d| std::fs::read_to_string(d.join("pending.jsonl")).ok()) {
+        if let Some(text) = dir.as_ref().and_then(|d| crate::at_rest::disk::read_to_string(d.join("pending.jsonl")).ok()) {
             // A line a crash cut short is dropped; the heads after it carry the chain anyway.
             pending.extend(text.lines().filter_map(|l| serde_json::from_str::<Head>(l).ok()));
         }

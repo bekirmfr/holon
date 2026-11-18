@@ -206,7 +206,7 @@ impl Logs {
                 let mut lines = Vec::new();
                 let seal = crate::at_rest::LineSeal::of(slug, crate::at_rest::role::CONSOLE);
                 for n in (0..self.0.caps.files).rev() {
-                    let Ok(text) = std::fs::read_to_string(file_of(dir, slug, n)) else { continue };
+                    let Ok(text) = crate::at_rest::disk::read_to_string(file_of(dir, slug, n)) else { continue };
                     lines.extend(seal.open_lines(&text).filter_map(|l| serde_json::from_str::<Line>(&l).ok()));
                 }
                 lines

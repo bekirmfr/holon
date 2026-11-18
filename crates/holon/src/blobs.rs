@@ -227,7 +227,7 @@ impl Blobs {
                 (manifest.clone(), parts)
             }
             Some(dir) => {
-                let manifest: Manifest = match std::fs::read(dir.join(file_of(id))) {
+                let manifest: Manifest = match crate::at_rest::disk::read(dir.join(file_of(id))) {
                     Ok(bytes) => {
                         let plain = open(role::BLOB_TEXT, &bytes).map_err(|e| format!("the kept text {id} is damaged: {e}"))?;
                         serde_json::from_slice(&plain).map_err(|e| format!("the kept text {id} is damaged: {e}"))?
@@ -236,7 +236,7 @@ impl Blobs {
                     Err(e) => return Err(format!("can't read the kept text {id}: {e}")),
                 };
                 // A chunk read but not opened is damaged: it fails its hash below.
-                let parts = manifest.chunks.iter().map(|c| if is_id(c) { std::fs::read(dir.join("chunks").join(file_of(c))).ok().map(|b| open(role::BLOB_CHUNK, &b).unwrap_or_default()) } else { None }).collect();
+                let parts = manifest.chunks.iter().map(|c| if is_id(c) { crate::at_rest::disk::read(dir.join("chunks").join(file_of(c))).ok().map(|b| open(role::BLOB_CHUNK, &b).unwrap_or_default()) } else { None }).collect();
                 (manifest, parts)
             }
         };
@@ -263,7 +263,7 @@ impl Blobs {
             return mem.texts.values().any(|(_, at)| *at < before_ms) || mem.chunks.values().any(|(_, at)| *at < before_ms);
         };
         let old = |d: &Path| {
-            std::fs::read_dir(d).is_ok_and(|entries| entries.flatten().any(|e| e.file_name().to_str().is_some_and(is_id) && changed_ms(&e.path()) < before_ms))
+            crate::at_rest::disk::read_dir(d).is_ok_and(|entries| entries.flatten().any(|e| e.file_name().to_str().is_some_and(is_id) && changed_ms(&e.path()) < before_ms))
         };
         old(dir) || old(&dir.join("chunks"))
     }
@@ -289,7 +289,7 @@ impl Blobs {
             }
             return Ok(swept);
         };
-        let Ok(entries) = std::fs::read_dir(dir) else { return Ok(swept) };
+        let Ok(entries) = crate::at_rest::disk::read_dir(dir) else { return Ok(swept) };
         let live: BTreeSet<String> = live.iter().filter(|id| is_id(id)).map(|id| file_of(id)).collect();
         let mut used = BTreeSet::new();
         for entry in entries.flatten() {
@@ -301,12 +301,12 @@ impl Blobs {
                 continue;
             }
             // A text that can't be read names chunks no one can tell: keep them all.
-            match std::fs::read(&path).ok().and_then(|b| open(role::BLOB_TEXT, &b).ok()).and_then(|b| serde_json::from_slice::<Manifest>(&b).ok()) {
+            match crate::at_rest::disk::read(&path).ok().and_then(|b| open(role::BLOB_TEXT, &b).ok()).and_then(|b| serde_json::from_slice::<Manifest>(&b).ok()) {
                 Some(m) => used.extend(m.chunks.iter().filter(|c| is_id(c)).map(|c| file_of(c))),
                 None => return Ok(swept),
             }
         }
-        let Ok(entries) = std::fs::read_dir(dir.join("chunks")) else { return Ok(swept) };
+        let Ok(entries) = crate::at_rest::disk::read_dir(dir.join("chunks")) else { return Ok(swept) };
         for entry in entries.flatten() {
             let Some(name) = entry.file_name().to_str().filter(|n| is_id(n)).map(str::to_string) else { continue };
             let path = entry.path();
@@ -328,7 +328,7 @@ impl Blobs {
             return Held { texts: mem.texts.len(), chunks: mem.chunks.len(), bytes: mem.chunks.values().map(|(b, _)| b.len() as u64).sum() };
         };
         let ids = |d: &Path| -> Vec<std::fs::DirEntry> {
-            std::fs::read_dir(d).map(|e| e.flatten().filter(|e| e.file_name().to_str().is_some_and(is_id)).collect()).unwrap_or_default()
+            crate::at_rest::disk::read_dir(d).map(|e| e.flatten().filter(|e| e.file_name().to_str().is_some_and(is_id)).collect()).unwrap_or_default()
         };
         let chunks = ids(&dir.join("chunks"));
         Held { texts: ids(dir).len(), chunks: chunks.len(), bytes: chunks.iter().map(|e| e.metadata().map_or(0, |m| m.len())).sum() }

@@ -605,7 +605,7 @@ pub(crate) fn history(path: &Path) -> PathBuf {
 
 /// The history at `at` as it is on disk, a sealed version a line: empty if there is none.
 fn read_history(at: &Path) -> Result<String, String> {
-    match std::fs::read_to_string(at) {
+    match crate::at_rest::disk::read_to_string(at) {
         Ok(text) => Ok(text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(e) => Err(format!("the access history {at:?}: {e}")),

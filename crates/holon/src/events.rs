@@ -138,7 +138,7 @@ impl Events {
         // Refused, as a run log is (recorder.rs, `Log::refused`): in memory only, so nothing of
         // its file is numbered over or written, and who opens it doesn't run the deployment.
         let refuse = |why: String| Events { refused: Some(why), ..Events::default() };
-        let bytes = match std::fs::read(path) {
+        let bytes = match crate::at_rest::disk::read(path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return events,
             Err(e) => return refuse(format!("its file {} can't be read: {e}", path.display())),

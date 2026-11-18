@@ -77,6 +77,75 @@ mod faults {
     }
 }
 
+/// The data folder made to fail (audit R87). Every way into this file that touches the disk or a
+/// key asks [`data_folder`] first, or goes through one that does, and every read of the data
+/// folder elsewhere goes through [`disk`], which asks it too (the guards: tests/at_rest.rs,
+/// `every_way_into_at_rest_can_be_made_to_fail` and `no_reader_under_the_data_folder_bypasses_the_hook`).
+/// So a test fails them all on its thread, every file and every key ([`FAILING`] in
+/// crate::faults).
+/// For the tests alone: in any other build `data_folder` is `Ok(())` and there is nothing to set,
+/// no error to make and no text saying one (`the_data_folder_fails_in_tests_alone`).
+#[cfg(test)]
+pub(crate) const FAILING: &str = "the data folder";
+
+/// What a failure made in the data folder says: an answer that passes it on is seen, whatever it
+/// wraps it in.
+#[cfg(test)]
+pub(crate) const MADE_TO_FAIL: &str = "the data folder made to fail";
+
+/// Whether the data folder is made to fail, on this thread: its error if it is.
+#[cfg(test)]
+#[track_caller]
+fn data_folder(_path: Option<&Path>) -> std::io::Result<()> {
+    if crate::faults::failing(FAILING).is_some() {
+        return Err(std::io::Error::other(MADE_TO_FAIL));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn data_folder(_path: Option<&Path>) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// The data folder read below what this file seals: a run log's lines, a listing, a file another
+/// reads whole. Each asks [`data_folder`] for its path, then reads as `std::fs` does, so a read of
+/// the data folder anywhere can be made to fail with the rest (R87). Every read under the data
+/// folder outside this file is one of these: what may read past them, and why, is the guard's
+/// READERS (tests/at_rest.rs).
+pub(crate) mod disk {
+    use std::path::Path;
+
+    /// `std::fs::read`, asking first.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn read(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
+        super::data_folder(Some(path.as_ref()))?;
+        std::fs::read(path)
+    }
+
+    /// `std::fs::read_to_string`, asking first.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn read_to_string(path: impl AsRef<Path>) -> std::io::Result<String> {
+        super::data_folder(Some(path.as_ref()))?;
+        std::fs::read_to_string(path)
+    }
+
+    /// `std::fs::File::open`, asking first.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn open(path: impl AsRef<Path>) -> std::io::Result<std::fs::File> {
+        super::data_folder(Some(path.as_ref()))?;
+        std::fs::File::open(path)
+    }
+
+    /// `std::fs::read_dir`, asking first.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn read_dir(path: impl AsRef<Path>) -> std::io::Result<std::fs::ReadDir> {
+        super::data_folder(Some(path.as_ref()))?;
+        std::fs::read_dir(path)
+    }
+}
+
 /// A 256-bit key, wiped from memory when dropped.
 pub(crate) type Key = Zeroizing<[u8; 32]>;
 
@@ -607,13 +676,13 @@ impl Keyring {
 
     /// `keys.json` written, owner-only; nothing for a keyring in memory.
     fn persist(&self, file: &KeysFile) -> Result<(), String> {
-        let Some(path) = &self.path else { return Ok(()) };
+        let Some(path) = &self.path else { return data_folder(None).map_err(|e| format!("could not write keys.json: {e}")) };
         if self.read_only {
             return Err(format!("{} was opened to read only, and isn't written", path.display()));
         }
         faults::write("keys.json")?;
         let bytes = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
-        crate::sealing::write_private(path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        data_folder(Some(path)).and_then(|()| crate::sealing::write_private(path, &bytes)).map_err(|e| format!("could not write {}: {e}", path.display()))?;
         // The backup's copy follows at once. Left to the archiver's next look, for a second or
         // so after a forget the copy still opened the forgotten deployment's archives with the
         // old root. One that can't be written is the archiver's to retry and to say.
@@ -659,12 +728,12 @@ impl Keyring {
     /// so never half of a write. `Ok(false)`: the copy was the same, or this keyring is kept in
     /// memory only and has no file.
     pub(crate) fn keep_copy_in(&self, dir: &Path) -> Result<bool, String> {
-        let Some(path) = &self.path else { return Ok(false) };
+        let Some(path) = &self.path else { return data_folder(None).map(|()| false).map_err(|e| format!("could not read keys.json: {e}")) };
         let _held = self.inner.read().unwrap();
         *self.backup.lock().unwrap() = Some(dir.to_path_buf());
-        let bytes = std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+        let bytes = disk::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
         let to = dir.join(BACKUP_KEYS);
-        if std::fs::read(&to).is_ok_and(|kept| kept == bytes) {
+        if disk::read(&to).is_ok_and(|kept| kept == bytes) {
             return Ok(false);
         }
         faults::write("the backup's copy of keys.json")?;
@@ -701,6 +770,7 @@ impl Keyring {
     /// new. A forgotten scope is made anew from the version after the last one forgotten (its slug
     /// deployed again), so what was sealed before stays forgotten.
     fn current(&self, scope: &str) -> Result<(u32, Key), String> {
+        data_folder(None).map_err(|e| format!("{scope:?}'s key: {e}"))?;
         {
             let inner = self.inner.read().unwrap();
             if let Some(keys) = inner.open.get(scope) {
@@ -718,7 +788,9 @@ impl Keyring {
 
     /// `scope`'s keys made now if it has none (`keys.json` written): a deployment's, before it goes
     /// live, so that nothing it runs is the first to need the root, and none fails to be sealed
-    /// for a root that can't be read then (release audit F17).
+    /// for a root that can't be read then (release audit F17). The tests fail it through the data
+    /// folder's hook, which `current` asks first: whether the scope was made before or not, so a
+    /// test doesn't lean on the shared keyring's state (audit R87).
     pub(crate) fn make_scope(&self, scope: &str) -> Result<(), String> {
         self.current(scope).map(|_| ())
     }
@@ -726,9 +798,6 @@ impl Keyring {
     /// A new data key for `scope` at `version`, made its current: written to `keys.json` before it
     /// is used, so nothing is sealed under a key keys.json doesn't keep.
     fn add_version(&self, inner: &mut Inner, scope: &str, version: u32) -> Result<Key, String> {
-        if crate::faults::failing("a scope's key").is_some() {
-            return Err(crate::faults::error("a scope's key").to_string());
-        }
         let root = self.root(inner)?;
         let (wrapped, data) = Keyring::new_version(&root, &inner.file.key_id, scope, version);
         let mut file = inner.file.clone();
@@ -746,6 +815,8 @@ impl Keyring {
 
     /// The key of `scope` at `version`, or why there is none.
     fn version(&self, scope: &str, version: u32) -> Result<Key, Unreadable> {
+        // As a key that isn't there fails: what a caller takes for a lost key (key_missing).
+        data_folder(None).map_err(|e| Unreadable::NoVersion { scope: format!("{scope} ({e})"), version })?;
         let inner = self.inner.read().unwrap();
         if let Some(key) = inner.open.get(scope).and_then(|k| k.versions.get(&version)) {
             return Ok(key.clone());
@@ -1128,13 +1199,14 @@ fn promote(file: &mut KeysFile, next: Staged) {
 
 /// `bytes` sealed under `scope` for `role` and written to `path` atomically, owner-only.
 pub(crate) fn write_private(keys: &Keyring, path: &Path, scope: &str, role: &str, bytes: &[u8]) -> std::io::Result<()> {
+    data_folder(Some(path))?;
     let sealed = keys.seal_file(scope, role, bytes).map_err(std::io::Error::other)?;
     crate::sealing::write_private(path, &sealed)
 }
 
 /// The file at `path`, sealed for `role`, opened: `Ok(None)` if there is none.
 pub(crate) fn read(keys: &Keyring, path: &Path, role: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
-    match std::fs::read(path) {
+    match disk::read(path) {
         Ok(bytes) => keys.open_file(role, &bytes).map(Some).map_err(|e| format!("{}: {e}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("could not read {}: {e}", path.display())),
@@ -1206,6 +1278,9 @@ impl holon_host::AtRest for StoreKeys {
     }
     fn name(&self, hash: &holon_core::Hash) -> String {
         self.0.name(hash)
+    }
+    fn data_folder(&self, path: &Path) -> std::io::Result<()> {
+        data_folder(Some(path))
     }
 }
 
@@ -1411,7 +1486,7 @@ impl LineSeal {
 
     /// The file at `path`'s lines that open, opened: none if there is no file.
     pub(crate) fn read_lines(&self, path: &Path) -> Vec<String> {
-        std::fs::read_to_string(path).map(|t| self.open_lines(&t).collect()).unwrap_or_default()
+        disk::read_to_string(path).map(|t| self.open_lines(&t).collect()).unwrap_or_default()
     }
 
     /// The file at `path`'s lines that open, opened: none if there is no file. An error if it is
@@ -1419,7 +1494,7 @@ impl LineSeal {
     /// they name (the sweep) fails rather than take them as none (release audit R92). A line cut
     /// short or changed is left out, as [`LineSeal::open_lines`] leaves it.
     pub(crate) fn try_read_lines(&self, path: &Path) -> std::io::Result<Vec<String>> {
-        let text = match std::fs::read_to_string(path) {
+        let text = match disk::read_to_string(path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(std::io::Error::new(e.kind(), format!("its file can't be read: {e}"))),
@@ -1438,6 +1513,7 @@ impl LineSeal {
     /// `plain` (one line) sealed and appended to the file at `path`, owner-only.
     pub(crate) fn append(&self, path: &Path, plain: &str) -> std::io::Result<()> {
         use std::io::Write;
+        data_folder(Some(path))?;
         let line = self.seal(plain)? + "\n";
         crate::sealing::append_private(path)?.write_all(line.as_bytes())
     }
@@ -1475,7 +1551,7 @@ pub(crate) fn read_sealed(path: &Path, role: &str) -> Result<Option<Zeroizing<Ve
 /// [`read_sealed`], refused unless it was sealed under `scope` ([`Keyring::open_file_in`]): for a
 /// file of one deployment's, in a folder that holds every deployment's.
 pub(crate) fn read_sealed_in(path: &Path, scope: &str, role: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
-    match std::fs::read(path) {
+    match disk::read(path) {
         Ok(bytes) => keys().open_file_in(Some(scope), role, &bytes).map(Some).map_err(|e| format!("{}: {e}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("could not read {}: {e}", path.display())),

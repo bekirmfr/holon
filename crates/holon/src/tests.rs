@@ -2064,7 +2064,7 @@ const SWEEP_READS_ALLOWED: &[(&str, &str, &str)] = &[
     ("fn each(self", "let Ok(text) = std::str::from_utf8", "bytes that aren't text are damage, as a line that doesn't open: left out, as the log leaves it out as it opens"),
     ("fn each(self", "Err(_) => {}", "a line cut short or changed: left out, as the log leaves it out as it opens; one whose key is missing is an error before it"),
     ("fn read_segment(", "map(slug_of).unwrap_or_default()", "a path's folder name: not a read"),
-    ("pub fn open_retaining(", "holon_host::listed(std::fs::read_dir(&dir)).unwrap_or_else", "noted as the log's `unread`, which fails every read of all its lines"),
+    ("pub fn open_retaining(", "holon_host::listed(crate::at_rest::disk::read_dir(&dir)).unwrap_or_else", "noted as the log's `unread`, which fails every read of all its lines"),
     ("pub fn open_retaining(", "let _ = std::fs::remove_file(&p)", "a crashed cut-back's leftover removed: not a read"),
     ("pub fn open_retaining(", "std::fs::metadata(&p).map_or(0", "a segment's size, for the counts only"),
     ("pub fn open_retaining(", "first_prev.unwrap_or_default()", "a segment holding no run names no prev: not a read"),
@@ -11343,7 +11343,10 @@ route.post(
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
     }
     let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
-    crate::faults::fail("a scope's key", false);
+    // Its scope made first, as another test sharing the keyring may have: the data folder failing
+    // fails a first deploy's keys however the keyring stands.
+    crate::at_rest::keys().make_scope(&crate::at_rest::deployment(&plan.name)).unwrap();
+    crate::faults::fail(crate::at_rest::FAILING, false);
     let refused = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] }));
     crate::faults::heal();
     let (status, said) = (refused.status_code, String::from_utf8_lossy(&body_bytes(refused)).into_owned());
