@@ -62,6 +62,7 @@ fn seen_dir(deployments_path: &Place, slug: &str) -> Option<PathBuf> {
 pub(crate) fn forget(deployments_path: &Place, slug: &str, queues: &Queues) {
     queues.forget_held(slug);
     if let Some(dir) = seen_dir(deployments_path, slug) {
+        crate::at_rest::seen_forgotten(deployments_path, &dir);
         let _ = std::fs::remove_dir_all(dir);
     }
 }
@@ -80,7 +81,7 @@ struct Kept {
 impl Kept {
     /// The ids kept: none yet if nothing is. One kept that doesn't open is an error (at_rest.rs,
     /// `read_seen`): the listener doesn't start, rather than run again what it ran.
-    fn read(&self) -> Result<Seen, String> {
+    fn read(&self) -> Result<Seen, crate::failing::Failed> {
         match &self.file {
             Some(f) => Ok(crate::at_rest::read_seen(f, &crate::at_rest::deployment_of(&self.key), crate::at_rest::role::QUEUE_SEEN)?.unwrap_or_default()),
             None => Ok(self.memory.lock().unwrap().get(&self.key).and_then(|b| serde_json::from_slice(b).ok()).unwrap_or_default()),
@@ -263,11 +264,13 @@ fn client(shared: &Shared, binding: &Binding) -> Result<Arc<sqs::Queue>, String>
 fn listen(shared: &Arc<Shared>, store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: &Place, binding: &Binding, kept: &Kept) {
     let queue = &shared.queue;
     let visibility = binding.visibility as u32;
-    let mut recent = match kept.read() {
+    let read = kept.read().map_err(|e| crate::at_rest::seen_held(&format!("the queue {queue}"), e));
+    crate::at_rest::note_seen(deployments_path, kept.file.as_deref(), read.as_ref().map(|_| ()));
+    let mut recent = match read {
         Ok(seen) => seen.recent,
-        Err(e) => {
+        Err(held) => {
             // Held: it receives nothing, so nothing is run twice or lost (at_rest.rs, `read_seen`).
-            let why = crate::at_rest::seen_held(&format!("the queue {queue}"), &e);
+            let why = held.said();
             shared.note(deployments, why.clone());
             shared.queues.set_live(&shared.slug, queue, |l| {
                 (l.status, l.since) = ("unreadable", feeds::now_ms());

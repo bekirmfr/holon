@@ -103,10 +103,10 @@ impl Watch {
         }
         let file: Option<PathBuf> = deployments_path.beside("arrivals").map(|dir| dir.join(format!("{slug}.json")).into());
         let read = file.as_ref().map_or(Ok(None), |f| crate::at_rest::read_seen::<BTreeMap<String, Seen>>(f, &crate::at_rest::deployment(slug), crate::at_rest::role::ARRIVALS));
-        let held = read.as_ref().err().filter(|_| !folders.is_empty()).map(|e| crate::at_rest::seen_held("its folders", e));
-        if let Some(why) = &held {
-            eprintln!("holon: {slug:?} watches no folder: {why}");
-        }
+        let held = read.as_ref().err().filter(|_| !folders.is_empty()).map(|e| crate::at_rest::seen_held("its folders", e.clone()));
+        crate::at_rest::note_seen(deployments_path, file.as_deref(), held.as_ref().map_or(Ok(()), Err));
+        // Held, it watches no folder: where and why on stderr (the file is named by the slug).
+        let held = held.map(crate::failing::Failed::said);
         let mut seen = read.ok().flatten().unwrap_or_default();
         seen.retain(|f, _| folders.contains(f));
         Watch { folders, triggers, seen: Mutex::new(seen), file, scope: crate::at_rest::deployment(slug), held }
@@ -122,8 +122,10 @@ impl Watch {
         !self.folders.is_empty()
     }
 
-    /// Forget what it saw (the deployment is deleted).
-    pub(crate) fn forget(&self) {
+    /// Forget what it saw (the deployment is deleted), for the server whose deployments file is
+    /// `at`, with its warning if it was held.
+    pub(crate) fn forget(&self, at: &Place) {
+        crate::at_rest::note_seen(at, self.file.as_deref(), Ok(()));
         if let Some(f) = &self.file {
             let _ = std::fs::remove_file(f);
         }

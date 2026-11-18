@@ -303,9 +303,9 @@ pub(crate) struct Warning {
 }
 
 /// What the host should warn of now: a writer that fails (the deployments file, the logs' sync,
-/// the witness); each disk past `[storage] warn_at`, with the flow that grew most since the store
-/// was last counted; a cache at its size for most of the last hour; sweeping off with the store
-/// past a tenth of its disk.
+/// the witness); a file failing now, with where and why (failing::note_file); each disk past
+/// `[storage] warn_at`, with the flow that grew most since the store was last counted; a cache at
+/// its size for most of the last hour; sweeping off with the store past a tenth of its disk.
 pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
     let policy = state.policy();
     let at = policy.storage.warn_at;
@@ -373,6 +373,13 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
             key: "backup-export".into(),
             says: format!("a batch of runs in the backup can't be made an export: {e}"),
             todo: "its runs are in the batch still, as the log wrote them, and the other batches are made exports all the same; check the drive or folder is writable and the batch is whole, it is tried again every ten seconds".into(),
+        });
+    }
+    for (told, place, why) in crate::failing::files_now(&state.deployments_path) {
+        out.push(Warning {
+            key: format!("file:{told}:{place}"),
+            says: format!("{told}: {place} ({why})"),
+            todo: "make it readable (or writable) again, or restore it from a copy of the data folder; the warning goes when it next reads or writes".into(),
         });
     }
     {

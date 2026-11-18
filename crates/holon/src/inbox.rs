@@ -76,7 +76,7 @@ fn seen_dir(deployments_path: &Place, slug: &str) -> Option<PathBuf> {
 
 /// What was seen of a mailbox: none yet if nothing is kept. One kept that doesn't open is an
 /// error (at_rest.rs, `read_seen`): the look stops there, and nothing is run or marked seen.
-fn read_seen(file: Option<&PathBuf>, memory: &Mutex<BTreeMap<PathBuf, Vec<u8>>>, key: &Path) -> Result<Seen, String> {
+fn read_seen(file: Option<&PathBuf>, memory: &Mutex<BTreeMap<PathBuf, Vec<u8>>>, key: &Path) -> Result<Seen, crate::failing::Failed> {
     match file {
         Some(f) => Ok(crate::at_rest::read_seen(f, &crate::at_rest::deployment_of(key), crate::at_rest::role::MAIL_SEEN)?.unwrap_or_default()),
         None => Ok(memory.lock().unwrap().get(key).and_then(|b| serde_json::from_slice(b).ok()).unwrap_or_default()),
@@ -98,6 +98,7 @@ fn keep_seen(file: Option<&PathBuf>, memory: &Mutex<BTreeMap<PathBuf, Vec<u8>>>,
 /// Forget what `slug` saw of its mailboxes (it is deleted).
 pub(crate) fn forget(deployments_path: &Place, slug: &str) {
     if let Some(dir) = seen_dir(deployments_path, slug) {
+        crate::at_rest::seen_forgotten(deployments_path, &dir);
         let _ = std::fs::remove_dir_all(dir);
     }
 }
@@ -259,11 +260,13 @@ fn look_once(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deploymen
     let uids = session.uids().map_err(why)?;
     let key = PathBuf::from(slug).join(format!("{mail}.json"));
     let file = seen_dir(deployments_path, slug).map(|d| d.join(format!("{mail}.json")));
-    let mut seen = match read_seen(file.as_ref(), memory, &key) {
+    let read = read_seen(file.as_ref(), memory, &key).map_err(|e| crate::at_rest::seen_held(&format!("the mailbox of {mail}"), e));
+    crate::at_rest::note_seen(deployments_path, file.as_deref(), read.as_ref().map(|_| ()));
+    let mut seen = match read {
         Ok(seen) => seen,
-        Err(e) => {
+        Err(held) => {
             session.logout();
-            return Err(crate::at_rest::seen_held(&format!("the mailbox of {mail}"), &e));
+            return Err(held.said());
         }
     };
     let keep = |seen: &Seen| keep_seen(file.as_ref(), memory, &key, seen);

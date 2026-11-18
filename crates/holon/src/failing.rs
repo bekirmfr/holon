@@ -156,6 +156,11 @@ impl Failed {
         &self.why
     }
 
+    /// The same failure told in other words, made from what it told: why is kept as it was.
+    pub(crate) fn retold(self, told: impl FnOnce(&str) -> String) -> Failed {
+        Failed { told: told(&self.told), ..self }
+    }
+
     /// What whoever asked is told, where the admin hears why another way (a writer's warning).
     pub(crate) fn told(self) -> String {
         self.told
@@ -168,6 +173,33 @@ impl Failed {
         }
         self.told
     }
+}
+
+/// The files failing now, by the deployments file's place, what whoever asked was told, and where
+/// (an admin's words: a path): why ([`note_file`]).
+static FILES: Mutex<BTreeMap<(PathBuf, String, String), String>> = Mutex::new(BTreeMap::new());
+
+/// A file the server reads or writes, failing now: kept, with why, until the same (told, place)
+/// goes through. Listed in the admin's warnings (storage.rs), never /health's 503. `place` is
+/// admin-only (a path, "deployment X's seen file"). `told` is the caller's fixed sentence, passed
+/// again with Ok: the key is it, not `Failed`'s own told, so a Failed told in other words still
+/// clears. Two places under one told (two packs, two deployments' seen files) never clear each
+/// other. A server whose deployments file is kept nowhere notes nothing, as [`note`] doesn't.
+pub(crate) fn note_file(at: &Place, told: &str, place: &str, result: Result<(), &Failed>) {
+    let Some(path) = at.at() else { return };
+    let key = (PathBuf::from(path.clone()), told.to_string(), place.to_string());
+    let mut files = FILES.lock().unwrap();
+    match result {
+        Ok(()) => drop(files.remove(&key)),
+        Err(f) => drop(files.insert(key, f.why.clone())),
+    }
+}
+
+/// What fails now for the server whose deployments file is `at`: (told, place, why).
+pub(crate) fn files_now(at: &Place) -> Vec<(String, String, String)> {
+    let Some(path) = at.at() else { return Vec::new() };
+    let path = PathBuf::from(path.clone());
+    FILES.lock().unwrap().iter().filter(|((p, _, _), _)| *p == path).map(|((_, told, place), why)| (told.clone(), place.clone(), why.clone())).collect()
 }
 
 /// Where in `text` byte `at` is: its line and column, from 1.

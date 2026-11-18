@@ -790,7 +790,6 @@ fn no_writer_under_the_data_folder_bypasses_at_rest() {
 /// The ways into at_rest.rs that don't ask `data_folder` themselves and touch the disk or a key:
 /// each goes through the one named, which does or goes on through another that does (R87).
 const THROUGH: &[(&str, &str)] = &[
-    ("read_seen", "read_sealed_in"),
     ("read_sealed", "read"),
     ("write_table", "write_private"),
     ("write_sealed", "write_private"),
@@ -839,6 +838,7 @@ const PURE: &[(&[&str], &str)] = &[
     (&["deployment", "deployment_of", "role::state_head", "role::segment", "role::batch", "role::export"], "a scope's or a role's name, made from a slug or a path"),
     (&["seen_held", "key_missing_in", "Unreadable::fmt", "Unreadable::key_missing", "LineSeal::fmt"], "words, or which error one is"),
     (&["StoreKeys::failed"], "a store's error made into what whoever asked may be told (failing::Failed): nothing read or written"),
+    (&["note_seen", "seen_forgotten"], "a listener's held record noted in the admin's warnings, or taken back (failing::note_file): nothing read or written"),
     (&["is_sealed", "decimal", "rejoin", "Framed::of", "Framed::line", "Framed::text", "LineSeal::number"], "bytes already in hand, looked at or framed"),
     (&["LineSeal::new", "LineSeal::with", "LineSeal::of", "keys", "store", "Keyring::memory"], "a sealer or a keyring made or handed on, nothing sealed or opened yet (memory: random keys, kept nowhere)"),
     (&["Keyring::key_id", "Keyring::source", "Keyring::made", "Keyring::no_backup", "Keyring::status"], "what the keyring was opened with, held in memory: never a key"),

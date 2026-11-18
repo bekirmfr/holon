@@ -230,19 +230,65 @@ pub(crate) const RESTORE_KEYS: &str = "keys.json is older than the data, or isn'
 /// watch's), read: none if there is no file yet. One that is there but doesn't open (a key
 /// missing, damage) or doesn't parse is an error, never none: taken as none, the listener would
 /// run again on what it ran, or mark as seen what waits unrun, then write over the file.
-pub(crate) fn read_seen<T: serde::de::DeserializeOwned>(path: &Path, scope: &str, role: &str) -> Result<Option<T>, String> {
-    match read_sealed_in(path, scope, role)? {
-        Some(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("{}: {e}", path.display())),
-        None => Ok(None),
+/// Its error tells what to do, in fixed words: restore keys.json when a key is missing, and
+/// otherwise make the file readable or remove it. Where and why are the admin's alone (audit R91):
+/// the deployment's events and its live status, which say it, are read by whoever may view the
+/// deployment.
+pub(crate) fn read_seen<T: serde::de::DeserializeOwned>(path: &Path, scope: &str, role: &str) -> Result<Option<T>, crate::failing::Failed> {
+    // Why begins with where, once: `<path>: <why>`, as stderr says it ([`note_seen`] leaves where
+    // to the warning's place).
+    let unseen = |key_missing: bool, why: String| {
+        let todo = if key_missing { format!("A key it was sealed under is missing: {RESTORE_KEYS}") } else { SEEN_TODO.to_string() };
+        crate::failing::Failed::reason(todo, why)
+    };
+    let here = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let bytes = match disk::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // disk's error: why, for the admin, is the Failed's it holds, which says where already.
+        Err(e) => return Err(unseen(false, crate::failing::Failed::in_io(&e).map_or_else(|| here(&e), |f| f.for_the_admin().to_string()))),
+    };
+    let opened = keys().open_file_in(Some(scope), role, &bytes).map_err(|u| unseen(u.key_missing(), here(&u)))?;
+    serde_json::from_slice(&opened).map(Some).map_err(|e| unseen(false, here(&e)))
+}
+
+/// What to do about a listener's record that doesn't open, but for a key missing.
+const SEEN_TODO: &str = "The server's warnings say which file and why: make it readable again, or remove it to start over, \
+     which takes what is there now as seen";
+
+/// What a listener says when what it has seen doesn't open ([`read_seen`]): it is held, in fixed
+/// words; why is kept for stderr and the warnings ([`note_seen`]).
+pub(crate) fn seen_held(what: &str, e: crate::failing::Failed) -> crate::failing::Failed {
+    e.retold(|todo| format!("what it has seen of {what} can't be read: it runs nothing and marks nothing seen until it can. {todo}"))
+}
+
+/// What the admin's warnings say of a listener's record of what it has seen that doesn't open
+/// (failing::note_file), its file's path the place.
+pub(crate) const SEEN_UNREAD: &str = "a listener's record of what it has seen can't be read";
+
+/// Note in the admin's warnings how `file`'s read went, for the server whose deployments file is
+/// `at`: held, or read (the warning goes). The file's path is the warning's place, so why goes
+/// without it ([`read_seen`]'s begins with it). A record kept in memory has nothing to note.
+pub(crate) fn note_seen(at: &crate::paths::Place, file: Option<&Path>, result: Result<(), &crate::failing::Failed>) {
+    let Some(file) = file else { return };
+    let place = file.display().to_string();
+    match result {
+        Ok(()) => crate::failing::note_file(at, SEEN_UNREAD, &place, Ok(())),
+        Err(held) => {
+            let why = held.for_the_admin();
+            let why = why.strip_prefix(&format!("{place}: ")).unwrap_or(why);
+            crate::failing::note_file(at, SEEN_UNREAD, &place, Err(&crate::failing::Failed::new(SEEN_UNREAD, why)));
+        }
     }
 }
 
-/// What a listener says when what it has seen doesn't open ([`read_seen`]): it is held.
-pub(crate) fn seen_held(what: &str, why: &str) -> String {
-    format!(
-        "what it has seen of {what} can't be read ({why}): it runs nothing and marks nothing seen until it can. \
-         A key missing means {RESTORE_KEYS}. Otherwise remove that file to start over, which takes what is there now as seen"
-    )
+/// The records under `dir` are gone (their deployment is): their warnings go with them.
+pub(crate) fn seen_forgotten(at: &crate::paths::Place, dir: &Path) {
+    for (told, place, _) in crate::failing::files_now(at) {
+        if told == SEEN_UNREAD && Path::new(&place).starts_with(dir) {
+            crate::failing::note_file(at, &told, &place, Ok(()));
+        }
+    }
 }
 
 /// `keys.json`: the data keys, wrapped by the root, and nothing that opens them without it.

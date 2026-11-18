@@ -3009,7 +3009,7 @@ mod tests {
         assert!(crate::at_rest::read_seen::<serde_json::Value>(&seen, &crate::at_rest::deployment("keyless"), crate::at_rest::role::MAIL_SEEN).unwrap().is_none(), "none yet");
         std::fs::write(&seen, file_of_missing_key(&crate::at_rest::deployment("keyless"))).unwrap();
         let read = crate::at_rest::read_seen::<serde_json::Value>(&seen, &crate::at_rest::deployment("keyless"), crate::at_rest::role::MAIL_SEEN);
-        assert!(read.as_ref().is_err_and(|e| e.contains("version 999")), "{read:?}");
+        assert!(read.as_ref().is_err_and(|e| e.for_the_admin().contains("version 999")), "{read:?}");
         std::fs::write(&seen, b"{}").unwrap();
         assert!(crate::at_rest::read_seen::<serde_json::Value>(&seen, &crate::at_rest::deployment("keyless"), crate::at_rest::role::MAIL_SEEN).is_err(), "plain where sealed belongs: not none");
 

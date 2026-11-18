@@ -1,6 +1,8 @@
 //! A writer whose failure the server can't simply go on from reaches an admin and `/health`
 //! (failing.rs): audit R39. And whoever asked is told that it failed, never where the file is
 //! or the error's own text: audit R71. A run's record names a file only as its flow does: R72; and a database: R82.
+//! A file failing is an admin's warning until it goes through, and a listener held on what it
+//! has seen says what to do, never where or why: R91.
 
 use super::*;
 
@@ -494,5 +496,131 @@ fn a_run_whose_database_fails_names_it_only_as_the_flow_does() {
     assert!(said.ends_with(UNREACHED), "MongoDB, gone since, read: {said}");
     held("MongoDB, gone since, read", &said);
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Guards: a file of the server's that fails (failing::note_file) is an admin's warning, saying
+/// where and why, until the same told and place goes through; two places under one told are each
+/// their own, so the Ok of one leaves the other; a Failed told in other words still clears, by the
+/// told it was noted under; another server in the process sees none of them; and `/health` stays
+/// "ok" through it.
+/// Why: a file a reader couldn't read (a listener's record of what it has seen, a pack, a
+/// segment) was said on stderr once, or nowhere, and the admin's page showed nothing (audit R91,
+/// R92).
+/// If it fails: a file's warning is lost, outlives its fix, or one place's Ok takes another's.
+#[test]
+fn a_file_that_fails_is_a_warning_until_it_reads_or_writes_again() {
+    use crate::failing::{files_now, note_file, Failed};
+    let dir = std::path::PathBuf::from(unique_temp_path("files-failing"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let state = test_state_at(Place::parse(&dir.join("deployments.json").to_string_lossy()));
+    let at = &state.deployments_path;
+    let told = "the server couldn't read a test's file";
+    let (one, two) = (dir.join("one.json").display().to_string(), dir.join("two.json").display().to_string());
+    let failed = || Failed::new("a test's file failed", "a read a test failed");
+    let warned = |state: &AppState| -> Vec<(String, String)> {
+        crate::storage::warnings(state).into_iter().filter(|w| w.key.starts_with("file:")).map(|w| (w.key, w.says)).collect()
+    };
+    let health = |state: &AppState| {
+        let r = route(state, &req("GET", "/health", vec![]));
+        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+    };
+
+    note_file(at, told, &one, Err(&failed()));
+    note_file(at, told, &two, Err(&failed().retold(|t| format!("in other words: {t}"))));
+    let warnings = warned(&state);
+    assert_eq!(warnings.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(), [format!("file:{told}:{one}"), format!("file:{told}:{two}")]);
+    for ((_, says), place) in warnings.iter().zip([&one, &two]) {
+        assert!(says.starts_with(told) && says.contains("a read a test failed"), "where and why, to the admin: {says}");
+        assert_eq!(says.matches(place.as_str()).count(), 1, "where, once, as the place: {says}");
+    }
+    assert_eq!(health(&state), (200, "ok".into()), "a file failing is a warning, never /health's 503");
+    let other = Place::parse(&dir.join("other.json").to_string_lossy());
+    assert_eq!(files_now(&other), [], "another server in the process isn't told of these");
+
+    note_file(at, told, &one, Ok(()));
+    assert_eq!(files_now(at).into_iter().map(|(_, place, _)| place).collect::<Vec<_>>(), std::slice::from_ref(&two), "one place's Ok leaves the other");
+    note_file(at, told, &two, Ok(()));
+    assert_eq!(files_now(at), [], "told in other words, it clears by the told it was noted under");
+    assert_eq!(warned(&state), []);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Guards: a listener's record of what it has seen that doesn't open, by each way one doesn't (a
+/// key missing, sealed under another deployment, changed, plain where sealed belongs, not a record
+/// once opened, the data folder failing), holds the listener in fixed words
+/// (at_rest::seen_held): what it holds, and what to do, keys.json restored for a key missing and
+/// otherwise the file made readable or removed; neither where nor why. The admin's warnings say
+/// where and why (at_rest::note_seen) until it reads. And a folder watch deployed on one that
+/// doesn't open is a warning, taken back as its deployment is removed.
+/// Why: a queue's, a feed's and a mailbox's events and live status said the record's path on the
+/// server's disk and the error's own text, to whoever may view the deployment (audit R91).
+/// If it fails: the row names what was said where: give where and why to the warnings and stderr
+/// (`note_seen`, `Failed::said`), and the deployment `seen_held`'s words.
+#[test]
+fn a_listener_held_on_what_it_has_seen_says_what_to_do_and_neither_where_nor_why() {
+    use crate::at_rest::{deployment, keys, read_seen, role, seen_held, note_seen, RESTORE_KEYS, SEEN_UNREAD};
+    let dir = std::path::PathBuf::from(unique_temp_path("seen-held"));
+    std::fs::create_dir_all(dir.join("seen")).unwrap();
+    let state = test_state_at(Place::parse(&dir.join("deployments.json").to_string_lossy()));
+    let at = &state.deployments_path;
+    let scope = deployment("watching");
+    let sealed = |scope: &str, plain: &[u8]| keys().seal_file(scope, role::QUEUE_SEEN, plain).unwrap();
+    let mut changed = sealed(&scope, b"{}");
+    *changed.last_mut().unwrap() ^= 1;
+    // Each way, with what it says, which only the admin is told.
+    let rows: [(&str, Vec<u8>, bool, &str); 6] = [
+        ("a key missing", crate::at_rest::testing::file_of_missing_key(&scope), true, "version 999"),
+        ("sealed under another deployment", sealed(&deployment("other"), b"{}"), false, "moved from another"),
+        ("changed", changed, false, "doesn't open"),
+        ("plain where sealed belongs", b"{}".to_vec(), false, "not sealed"),
+        ("not a record once opened", sealed(&scope, b"[1, 2"), false, "EOF"),
+        ("the data folder failing", sealed(&scope, b"{}"), false, crate::at_rest::MADE_TO_FAIL),
+    ];
+    let whys: Vec<&str> = rows.iter().map(|r| r.3).collect();
+    for (how, bytes, key_missing, why) in rows {
+        let file = dir.join("seen").join(format!("{}.json", how.replace(' ', "-")));
+        std::fs::write(&file, bytes).unwrap();
+        if how == "the data folder failing" {
+            crate::faults::fail(crate::at_rest::FAILING, false);
+        }
+        let read = read_seen::<serde_json::Value>(&file, &scope, role::QUEUE_SEEN);
+        crate::faults::heal();
+        let held = seen_held("the queue orders", read.expect_err(how));
+        let told = held.to_string();
+        assert!(told.starts_with("what it has seen of the queue orders can't be read: it runs nothing and marks nothing seen until it can. "), "{how}: {told}");
+        assert_eq!(told.contains(RESTORE_KEYS), key_missing, "{how}: keys.json restored only for a key missing: {told}");
+        assert_eq!(told.contains("remove it to start over"), !key_missing, "{how}: {told}");
+        assert_eq!(format!("{held:?}"), told, "{how}: its Debug says no more");
+        neither_where_nor_why(how, &told, &dir, &whys);
+
+        note_seen(at, Some(file.as_path()), Err(&held));
+        let key = format!("file:{SEEN_UNREAD}:{}", file.display());
+        let warning = crate::storage::warnings(&state).into_iter().find(|w| w.key == key).unwrap_or_else(|| panic!("{how}: no warning {key}"));
+        assert_eq!(warning.says.matches(&*file.display().to_string()).count(), 1, "{how}: where, to the admin, once: {}", warning.says);
+        assert!(warning.says.contains(why), "{how}: why, to the admin: {}", warning.says);
+        note_seen(at, Some(file.as_path()), Ok(()));
+        assert!(!crate::storage::warnings(&state).iter().any(|w| w.key == key), "{how}: read again, the warning goes");
+        let _ = std::fs::remove_file(&file);
+    }
+
+    // A folder watch deployed on a record that doesn't open: warned of, and the warning taken
+    // back as the deployment is removed.
+    let inbox = dir.join("inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    let body = serde_json::json!({ "name": "inbox", "path": inbox.display().to_string(), "access": "read-write" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
+    let record = std::path::PathBuf::from(at.beside("arrivals").unwrap()).join("watching.json");
+    std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+    std::fs::write(&record, crate::at_rest::testing::file_of_missing_key(&scope)).unwrap();
+    let slug = deploy_plain_text(&state, "import { flow, on } from \"holon\"\nimport inbox from \"folder:inbox\"\n\nflow(\"watching\")\n\non.file.created(inbox, (f) => {\n  inbox[`done/${f.name}`] = \"seen\"\n})\n");
+    assert_eq!(slug, "watching");
+    let key = format!("file:{SEEN_UNREAD}:{}", record.display());
+    let warnings = crate::storage::warnings(&state);
+    let warning = warnings.iter().find(|w| w.key == key).unwrap_or_else(|| panic!("the folder watch held: no warning {key}: {:?}", warnings.iter().map(|w| &w.key).collect::<Vec<_>>()));
+    assert!(warning.says.contains("version 999"), "why, to the admin: {}", warning.says);
+    assert_eq!(route(&state, &req("POST", "/deployments/watching/stop", vec![])).status_code, 200);
+    assert_eq!(route(&state, &req("DELETE", "/deployments/watching", vec![])).status_code, 200);
+    assert!(!crate::storage::warnings(&state).iter().any(|w| w.key == key), "removed, its warning goes with it");
     let _ = std::fs::remove_dir_all(&dir);
 }
