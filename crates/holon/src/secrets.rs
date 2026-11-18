@@ -312,7 +312,10 @@ impl crate::recorder::Measure for Measured {
                 self.marks = marks.and(Redactor::born(&crate::recorder::Born { values, whole: true }));
             }
         }
-        if !self.fed.holds(path) {
+        // One the walk says is clean may hold a secret as it is all the same: a far side sent it
+        // back (R70). It is measured as written too, so `holon verify`, which has the step with
+        // the secret's mark, tells a step left out of a line from one too large to keep.
+        if !self.fed.holds(path) && !outputs.iter().flatten().any(|v| svalue_holds(v, &|s| self.marks.holds(s))) {
             return None;
         }
         let mut written = outputs.to_vec();
@@ -1308,6 +1311,19 @@ pub(crate) fn value_holds(v: &holon_core::Value, found: &dyn Fn(&str) -> bool) -
         Value::Effect { payload, .. } | Value::Sum { payload, .. } => value_holds(payload, found),
         Value::Bytes(b) => bytes_hold(b, found),
         Value::Number(_) | Value::Boolean(_) => false,
+    }
+}
+
+/// Whether a text in `v`, a record's keys included, satisfies `found`: [`value_holds`] of a value
+/// as a step's record has it, whose bytes it writes as they are.
+pub(crate) fn svalue_holds(v: &SValue, found: &dyn Fn(&str) -> bool) -> bool {
+    match v {
+        SValue::Text(s) => found(s),
+        SValue::List(xs) => xs.iter().any(|x| svalue_holds(x, found)),
+        SValue::Record(fields) => fields.iter().any(|(k, x)| found(k) || svalue_holds(x, found)),
+        SValue::Effect { sink, payload } => found(sink) || svalue_holds(payload, found),
+        SValue::Sum { payload, .. } => svalue_holds(payload, found),
+        SValue::Number(_) | SValue::Boolean(_) | SValue::Bytes(_) => false,
     }
 }
 

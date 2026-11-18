@@ -1735,11 +1735,39 @@ fn rerun(
     // differs. But where a step on the way can't be told long from short (its outputs withheld,
     // or written as a mark that may stand for a short text; a node that couldn't be computed):
     // then a write the line doesn't have may have been refused, and the run isn't checked.
-    let holds_a_secret = |v: &Value| !marks.secrets_in(v).is_empty() || marks.rest_of(&secrets::RESPELLED['‹'.len_utf8()..], v).iter().any(|of| of.starts_with("secret:"));
-    let echoed: BTreeSet<Vec<u32>> =
-        if fed.is_empty() { BTreeSet::new() } else { prior.iter().chain(sent).flat_map(|r| &r.exchanges).filter(|x| holds_a_secret(&x.response)).map(|x| x.path.clone()).collect() };
+    // The secrets a recorded reply holds, by name: by their marks, and those it held in a spelling
+    // no mark stands for (`secrets::RESPELLED`).
+    let secrets_held = |v: &Value| -> BTreeSet<String> {
+        let mut names = marks.secrets_in(v);
+        let respelled = marks.rest_of(&secrets::RESPELLED['‹'.len_utf8()..], v);
+        names.extend(respelled.iter().filter_map(|of| of.strip_prefix("secret:")).map(|rest| rest[..rest.find(' ').unwrap_or(rest.len())].to_string()));
+        names
+    };
+    // The calls whose reply held one, in the order the server reads them (`secrets::echoing`):
+    // their paths, the secrets, and the hosts they went to.
+    let (mut echoed, mut echo_names, mut echo_hosts): (BTreeSet<Vec<u32>>, BTreeSet<String>, Vec<String>) = Default::default();
+    for x in prior.iter().chain(sent).flat_map(|r| &r.exchanges).filter(|_| !fed.is_empty()) {
+        let held = secrets_held(&x.response);
+        if held.is_empty() {
+            continue;
+        }
+        echoed.insert(x.path.clone());
+        echo_names.extend(held);
+        let url = match &x.request {
+            Value::Record(fields) => fields.get("url"),
+            _ => None,
+        };
+        if let Some(Value::Text(url)) = url
+            && let Some(host) = crate::outbound::authority_of(url)
+            && !echo_hosts.contains(&host)
+        {
+            echo_hosts.push(host);
+        }
+    }
     // Whether a write or a send with this capability was refused there.
     let mut refused: Box<dyn Fn(&Capability) -> bool> = Box::new(|_| false);
+    // The trail from those calls as far as it may have gone there, and as far as it went for sure.
+    let mut trail: Option<(taint::SecretFed, taint::SecretFed)> = None;
     if !echoed.is_empty() {
         // Each step run again: short for sure, or perhaps (the server may have seen it either way).
         let unsure = |v: &SValue| {
@@ -1764,13 +1792,21 @@ fn rerun(
         // The trail as far as it may have gone there, and as far as it went for sure.
         let most = taint::SecretFed::echoed_at(root, resolver, &echoed, &sure);
         let least = taint::SecretFed::echoed_at(root, resolver, &echoed, &ends(&[&short, &perhaps]));
+        // A step on the trail the line leaves out was run again here all the same: one the run
+        // computes again gave what it gives here, and one taken from the line (it reads on a
+        // mark) gave nothing, so it is long, as the server takes a step its record doesn't keep
+        // (`secrets::short_steps`). Left out of a line that should keep it, it differs as any
+        // step does (`steps_of`: the server keeps a step holding a secret when it fits as its
+        // record writes it, `secrets::Measured`).
         let waiting = if outcome.waiting.is_empty() { Vec::new() } else { channels::settled_sends(&outcome.outputs) };
         let logged = |c: &Capability| entry.performed.iter().chain(&entry.progress).any(|l| l.capability == format!("{c:?}"));
         if host.performed.iter().chain(&waiting).any(|(c, _)| keeps(c) && most.feeds_effect(c) && !least.feeds_effect(c) && !logged(c)) {
             return Rerun::Skipped("it wrote what it read out of a reply that sent a secret back, past a step whose outputs its line doesn't keep: whether the server refused that write can't be told, so it isn't run again".into());
         }
         host.performed.retain(|(c, _)| !(keeps(c) && least.feeds_effect(c)));
-        refused = Box::new(move |c| keeps(c) && least.feeds_effect(c));
+        let writes = least.clone();
+        refused = Box::new(move |c| keeps(c) && writes.feeds_effect(c));
+        trail = Some((most, least));
     }
 
     // What is left of its writes: one of those is refused there by its value.
@@ -1827,6 +1863,7 @@ fn rerun(
         &|path| whole && fed.holds(path) && !fed.taken(path),
         &kept,
         !observer.unrecorded.is_empty(),
+        !fed.is_empty(),
         marks,
         entry.escaped,
     );
@@ -1860,6 +1897,51 @@ fn rerun(
         };
         listeners::served_status(answer.status, file, if_none_match, entry.error.as_deref())
     };
+    // Whether the server refused to answer: with a secret the answer holds, or with what the run
+    // read out of a reply that sent one back, where the deployment wasn't approved to answer its
+    // callers with that secret (listeners.rs, websockets.rs). Run again, the check decides it as
+    // the server did, and holds the line to it: a refused run's error says why, and its caller
+    // was told the plain sentence; one that wasn't refused says no such thing. Another failure is
+    // held as any failed run's is (below): the server may have stopped before it answered.
+    // As deployed and approved: what its graph derives, and `SecretAnswer` for each secret its
+    // routes may answer with (the server's permit holds the same).
+    let approved = holon_core::deployed_capabilities(deployed, resolver);
+    let may_answer = |name: &String| approved.contains(Capability::SecretAnswer(name.clone()));
+    let answers = matches!(entry.kind.as_str(), "request" | "websocket");
+    let mut holding: BTreeSet<String> = outcome.outputs.first().and_then(Option::as_ref).filter(|_| answers && !fed.is_empty()).map(|a| marks.secrets_in(a)).unwrap_or_default();
+    if answers && fed.reaches_output(0) {
+        holding.extend(holon_core::answered_secrets(root, resolver));
+    }
+    let mut refusals: Vec<(String, String)> = holding.into_iter().filter(|n| !may_answer(n)).map(|n| (firing::secret_answer_refused(&n), n)).collect();
+    if refusals.is_empty()
+        && answers
+        && let Some((most, least)) = &trail
+    {
+        let unapproved: Vec<&String> = echo_names.iter().filter(|n| !may_answer(n)).collect();
+        if !unapproved.is_empty() && least.reaches_output(0) {
+            refusals = unapproved.into_iter().map(|n| (firing::echo_refused(&echo_hosts, n), n.clone())).collect();
+        } else if !unapproved.is_empty() && most.reaches_output(0) {
+            return Rerun::Skipped("its answer was read out of a reply that sent a secret back, past a step whose outputs its line doesn't keep: whether the server refused it can't be told, so it isn't run again".into());
+        }
+    }
+    let says_refused = |e: &str| e.starts_with("refused to answer with the secret ") || e.starts_with("refused to answer with what ");
+    // Refused here, or said to be refused there: the server's error is then the refusal, whatever
+    // else stopped the run (it is put in place of the run's own), so the line is held to it, and
+    // nothing excuses a difference as a limit's (below).
+    let refusal_held = !refusals.is_empty() || entry.error.as_deref().is_some_and(says_refused);
+    if refusal_held {
+        let said = entry.error.as_deref();
+        match refusals.iter().find(|(e, _)| Some(e.as_str()) == said) {
+            Some((_, name)) => {
+                let told = recorder::body_text(&data::DataResponse::json_error(500, &listeners::told_refused(name)).body);
+                let body_as_told = entry.response_body.as_ref().is_some_and(|b| *b == told || (fed.derives_output(0) && b == taint::WITHHELD));
+                if entry.kind == "request" && (entry.status != Some(500) || !body_as_told) {
+                    differs.push("what its caller was told when its answer was refused");
+                }
+            }
+            None => differs.push("whether its answer was refused (the server refuses one holding a secret it may not answer with, and only such a one)"),
+        }
+    }
     if entry.kind == "request"
         && entry.error.is_none()
         && let Some(status) = entry.status
@@ -1947,8 +2029,11 @@ fn rerun(
         // its entry may say less than the run again does, never other: the same run, each output
         // it keeps as computed, what it did and sent the start of what it does again, and the
         // status it answered either that or a failure's. A changed line can take away, not change.
-        false if let Some(e) = &entry.error => {
-            let starts = |logged: &[PerformedEntry], again: &[PerformedEntry]| logged.len() <= again.len() && json(&logged) == json(&&again[..logged.len()]);
+        // A refused run's error is the refusal, never a limit's: it isn't one a limit stopped.
+        false if let Some(e) = &entry.error
+            && !refusal_held =>
+        {
+            let starts =|logged: &[PerformedEntry], again: &[PerformedEntry]| logged.len() <= again.len() && json(&logged) == json(&&again[..logged.len()]);
             let failure = |status: u16| status >= 500 || (status == 409 && e.starts_with(databases::UNMET));
             let less = id_matches
                 && entry.outputs.len() <= outputs.len()
@@ -2171,6 +2256,7 @@ fn steps_of(
     moved: &dyn Fn(&[u32]) -> bool,
     kept: &[String],
     short: bool,
+    measured: bool,
     marks: &Marks,
     escaped: bool,
 ) -> Steps {
@@ -2206,9 +2292,17 @@ fn steps_of(
                 };
                 !recorder::fits(&written) || a.iter().flatten().any(unknown)
             }
-            // A step holding a mark: too large to keep as the run had it (the mark is shorter
-            // than the value). Where the walk says clean, a mark is a copy a caller sent or a
-            // host echoed, and explains it.
+            // One holding only a secret's marks, in a run given one (`measured`): the server
+            // measured it as its record writes it, each secret as its mark, wherever the walk says
+            // it is clean too (a far side that sent the secret back, R70; `secrets::Measured`).
+            // Kept unless too large so: whether it is kept doesn't say how long the secret is.
+            (None, Some(a)) if measured && a.iter().flatten().all(|v| marks.only_secrets(&v.clone().into_core())) && a.iter().flatten().any(|v| marks.carried(&v.clone().into_core())) => {
+                let written: Vec<Option<SValue>> = a.iter().map(|o| o.clone().map(|v| marks.write(v))).collect();
+                !recorder::fits(&written)
+            }
+            // A step holding another mark: too large to keep as the run had it (the mark is
+            // shorter than the value). Where the walk says clean, a mark is a copy a caller sent or
+            // a host echoed, and explains it.
             (None, Some(a)) => a.iter().flatten().any(|v| marks.carried(&v.clone().into_core())),
             (Some(l), None) => l.iter().flatten().any(|v| marks.carried(&marks.read(v, escaped))),
         };
@@ -2528,6 +2622,32 @@ impl Observer for Asserting {
                 _ => return Some(gave),
             }
         }
+        // A leaf that reads a value out of a text (`READS_ON_A_MARK`), fed one with a mark in it,
+        // is taken from the log, as below: the record marks a value, and a part of one, each
+        // where it finds it, in the text and in what is read out of it, so read here it may hold
+        // other marks than the log's. But it is held to the text it was fed up to its marks:
+        // the same shape, every key, number and true or false the same, and each text the same
+        // around as many marks. Else the rest of what the log says it read (a name, a code
+        // beside the part a reply sent back, R70) would be the line's say-so. Where the text
+        // doesn't read here (a mark that cut an escape in two), it is taken as it was.
+        if let holon_core::UnitBody::Primitive { name } = &unit.body
+            && READS_ON_A_MARK.contains(&name.as_str())
+            && !unit.params.iter().any(|p| p.name() == "fn" && p.value().is_some_and(|f| !f.is_empty()))
+            && self.unrecorded.is_empty()
+        {
+            let fed: Vec<Option<Value>> = inputs.iter().map(|v| v.cloned()).collect();
+            let read = holon_core::eval(unit, &fed, &holon_core::MapResolver::new()).into_vec();
+            let belies = match self.at(path) {
+                Ok(Some(recorded)) => {
+                    read.len() == recorded.len()
+                        && read.iter().all(Option::is_some)
+                        && !read.iter().flatten().chain(recorded.iter().flatten()).any(|v| self.marks.in_a_key(v))
+                        && !read.iter().zip(recorded).all(|(r, l)| matches!((r, l), (Some(r), Some(l)) if self.marks.alike(r, l)))
+                }
+                _ => false,
+            };
+            self.belied |= belies;
+        }
         let Ok(at) = self.at(path) else { return None };
         match at.cloned() {
             Some(outputs) => {
@@ -2578,6 +2698,10 @@ impl Observer for Asserting {
         }
     }
 }
+
+/// The leaves that read a value out of a text, fed one with a mark in it: what they read is held
+/// to it up to its marks (`Marks::alike`), as no other leaf the log stands in for is.
+const READS_ON_A_MARK: &[&str] = &["json_parse"];
 
 /// The placeholders of values the log never holds, as a run being checked has them. Each mark the
 /// log wrote (`‹secret:name v3 #a1b2c3d4›`, `‹token:name›`) stands in as
@@ -2637,6 +2761,13 @@ impl Marks {
     /// reads, `answer access_token #a1b2c3d4`, so one token is told from another by its print.
     fn tokens_in(&self, v: &Value) -> BTreeSet<String> {
         self.rest_of("token:", v)
+    }
+
+    /// Whether every placeholder in `v` is a secret's (none a token's, a tainted value's, or a
+    /// mark of what was computed from one).
+    fn only_secrets(&self, v: &Value) -> bool {
+        let secret = format!("{}secret:", self.start);
+        !secrets::value_holds(v, &|s: &str| s.matches(self.start.as_str()).count() != s.matches(secret.as_str()).count())
     }
 
     /// What follows `kind` in each placeholder of that kind in `v`, up to the placeholder's end.
@@ -2798,6 +2929,35 @@ impl Marks {
             *t = out;
         });
         v.into_core()
+    }
+
+    /// Whether `a` and `b` are one value but for their placeholders: the same shape, every key,
+    /// number, true or false and bytes the same, and each text the same around as many
+    /// placeholders (which may stand for different values: what one placeholder is, the other
+    /// may hold as another's mark).
+    fn alike(&self, a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Text(x), Value::Text(y)) => self.around(x) == self.around(y),
+            (Value::List(x), Value::List(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| self.alike(x, y)),
+            (Value::Record(x), Value::Record(y)) => x.len() == y.len() && x.iter().zip(y).all(|((k, x), (l, y))| k == l && self.alike(x, y)),
+            (Value::Sum { arm: i, payload: x }, Value::Sum { arm: j, payload: y }) => i == j && self.alike(x, y),
+            _ => a == b,
+        }
+    }
+
+    /// The text of `t` around its placeholders, a placeholder each a break.
+    fn around<'t>(&self, t: &'t str) -> Vec<&'t str> {
+        let mut out = Vec::new();
+        let mut rest = t;
+        while let Some(at) = rest.find(self.start.as_str()) {
+            out.push(&rest[..at]);
+            rest = match rest[at..].find('›') {
+                Some(end) => &rest[at + end + '›'.len_utf8()..],
+                None => "",
+            };
+        }
+        out.push(rest);
+        out
     }
 
     /// Whether a record's key anywhere in `v` carries a placeholder.

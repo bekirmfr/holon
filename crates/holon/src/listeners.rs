@@ -89,6 +89,13 @@ struct Ran {
     entry: Option<LogEntry>,
 }
 
+/// What a caller is told where the run's answer was refused for the secret `name` (the run's
+/// error says why: `firing::secret_answer_refused`, `firing::echo_refused`): the plain sentence,
+/// nothing of where the answer came from. `holon verify` holds a refused run's answer to it.
+pub(crate) fn told_refused(name: &str) -> String {
+    format!("this deployment may not answer its callers with the secret {name:?}")
+}
+
 /// A request's entry, from its run: as the run made it, with its route, its request, and its
 /// error.
 /// Its timeline is moved out of the run: nothing reads the run's after.
@@ -206,7 +213,7 @@ fn serve_flow(
             // (`firing::Echoed`, R70).
             let read_out = run.echoed.answered(0).iter().find(|name| !permit.allows(&Capability::SecretAnswer((*name).clone()))).cloned();
             let error = match (&unapproved, &read_out) {
-                (Some(name), _) => Some(format!("refused to answer with the secret {name:?}: this deployment wasn't approved to answer its callers with it")),
+                (Some(name), _) => Some(crate::firing::secret_answer_refused(name)),
                 (None, Some(name)) => Some(run.echoed.refusal(name)),
                 (None, None) => run.error.clone(),
             };
@@ -226,7 +233,7 @@ fn serve_flow(
         answer = data::DataResponse::json_error(503, e);
     }
     if let Some(name) = &unapproved {
-        answer = data::DataResponse::json_error(500, &format!("this deployment may not answer its callers with the secret {name:?}"));
+        answer = data::DataResponse::json_error(500, &told_refused(name));
     }
     // A subscription to a channel the deployment wasn't granted to let callers subscribe to.
     if let Some(s) = &answer.subscribe

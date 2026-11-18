@@ -210,7 +210,19 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   another host is not refused: every host the trail can reach is already on the secret's
   approval line ("what is answered to it goes to …"), which is drawn from the wider walk.
   `holon verify` refuses the same writes, by the same trail read off the run again, and says a
-  line differs that drops a write that landed or adds one that was refused.
+  line differs that drops a write that landed or adds one that was refused. It decides the
+  answer the same way too: a refused run's error must say why (this refusal, or the one for
+  answering with the secret itself), its status be 500 and its caller have been told the plain
+  sentence (`listeners::told_refused`); a run that wasn't refused says no such thing, and no
+  limit's error excuses a refused run's difference (the refusal is put in place of any other
+  error). A step on the trail that the line leaves out is long to it, as the server takes a
+  step its record doesn't keep. A step holding the secret whole as it came back (the reply,
+  the text read out of it) is kept by the server when it fits as its record writes it, the
+  secret as its mark, as a step the walk follows is (`secrets::Measured`, R63): a line that
+  leaves one out differs, and whether it was kept doesn't say how long the secret is. And a
+  reply read as JSON, which it takes from the line (the record marks a piece where it finds
+  it, in the text and in what is read out of it, so the two may hold other marks), is held to
+  the text it was read from up to those marks: every key, number and other text the same.
   **In the record** such a run's pieces are found by their text: each stretch of six or more of
   the secret's characters in what the trail's steps gave is marked `‹derived #…›` wherever the
   record holds it (`secrets::echoed_parts`), and ordinary data stays readable. Limits, each
@@ -225,6 +237,22 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
     that keeps none) is taken as holding a part: refused, never passed;
   - in the record, a piece changed on the way is not marked (it is refused to callers and to
     storage all the same);
+  - **`holon verify` can't tell every step left out of a line from one too large to keep.** A
+    step holding the mark of a piece (the twelve characters a flow cut out of the reply, what
+    it built around them, or a reply holding a piece beside the whole secret) is kept by the
+    server as the run had it: while the run goes on the piece is ordinary text, known as the
+    secret's only once the run is over. So a line that leaves out such a step's outputs reads
+    as one too large to keep, and passes as checked. A line with its timeline taken out whole,
+    or with the path of the step that read the reply as JSON or cut the piece changed, or the
+    sink of a write of the piece, can't be run again (the check takes what those steps gave
+    from the line) and says so: checked less, not changed. Nothing the check holds such a run
+    to depends on those steps (its answer, its writes and whether it was refused are computed
+    again), so the line says less about them, never other. Closed by stage B: the server
+    measures each such step as its record writes it once the run is over, and keeps it or
+    withholds, as it does a step the check takes from the record (R66); the check then holds
+    them as it holds those. A class-test row (`a step that read the reply taken out of its
+    line`) asserts today's verdict, and the forged-line sweep counts these changes on their
+    own, on the echoing flow only;
   - **the record tells a right guess from a wrong one, to someone who may read that flow's runs
     and can also call its route.** In the email flow above, a guess that comes back as six of
     the secret's characters is marked in the run's record and a wrong one is not. Before this

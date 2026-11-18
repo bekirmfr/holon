@@ -8473,21 +8473,57 @@ fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
         }
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
         let report = verify::check(&export, None, &BTreeMap::new());
-        // A line changed and chained again, in the two ways the refused write opens: a write
-        // that landed taken out of its line, and a write the server refused put into its line.
-        // Each reads as changed: the check refuses just what the server refused.
+        // A line changed and chained again, in the ways a refusal opens: a write that landed
+        // taken out of its line, and a write the server refused put into its line; a refused
+        // answer's error, status or answer changed; the reply, holding the secret whole, taken
+        // out of its line; a name in the reply as read changed, where nothing after uses it.
+        // Each reads as changed: the check refuses just what the server refused, holds a step
+        // holding the secret to the size its record writes it at, and holds what it takes from
+        // the line to the reply. And the stated limit (secrets.md §4, closed by stage B): the
+        // reply as read, holding a piece of the secret beside the whole, taken out of its line,
+        // reads as too large to keep and passes as checked. Asserted as it is today, so the
+        // change that closes it turns this row on purpose.
+        #[derive(PartialEq, Debug)]
+        enum Says {
+            Differs,
+            Matched,
+        }
         if side == "echoes" {
             let values: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
             let at = |route: &str| calls.iter().position(|(path, _)| path == route).unwrap();
             let landed = values[at("kept")]["performed"].clone();
             let written = &values[at("written")]["performed"];
             assert!(landed.as_array().is_some_and(|p| !p.is_empty()) && written.as_array().is_none_or(|p| p.is_empty()), "{side}: the balance's line has its write and the slice's has none: {landed} {written}");
-            for (what, line, performed) in [("a write that landed taken out", at("kept"), serde_json::json!([])), ("a write the server refused put in", at("written"), landed.clone())] {
+            // The kept run's step that read the reply as JSON: the one that holds the name.
+            let name = r#"["name",{"type":"Text","value":"Alice Example"}]"#;
+            let read = values[at("kept")]["timeline"].as_array().unwrap().iter().position(|t| t["outputs"].to_string().contains(name)).expect("the kept run's line keeps the reply as read");
+            // The written run's reply: a step the walk says is clean, holding the secret whole.
+            let whole = values[at("written")]["timeline"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|t| {
+                    let outputs = t["outputs"].to_string();
+                    outputs.contains(r#"["body",{"type":"Text","value":"‹secret:k "#) && outputs.contains(r#"["headers","#)
+                })
+                .expect("the written run's line keeps the reply");
+            type Change = Box<dyn Fn(&mut serde_json::Value)>;
+            let changes: Vec<(&str, usize, Change, Says)> = vec![
+                ("a write that landed taken out", at("kept"), Box::new(|v| v["performed"] = serde_json::json!([])), Says::Differs),
+                ("a write the server refused put in", at("written"), Box::new(move |v| v["performed"] = landed.clone()), Says::Differs),
+                ("a refused answer's error taken out", at("slice"), Box::new(|v| v["error"] = serde_json::Value::Null), Says::Differs),
+                ("a refused answer's status changed", at("slice"), Box::new(|v| v["status"] = 200.into()), Says::Differs),
+                ("what a refused caller was told changed", at("slice"), Box::new(|v| v["response_body"] = "{}".into()), Says::Differs),
+                ("the reply, holding the secret whole, taken out of its line", at("written"), Box::new(move |v| v["timeline"][whole]["outputs"] = serde_json::Value::Null), Says::Differs),
+                ("a step that read the reply taken out of its line", at("kept"), Box::new(move |v| v["timeline"][read]["outputs"] = serde_json::Value::Null), Says::Matched),
+                ("a name in the reply as read changed", at("kept"), Box::new(move |v| v["timeline"][read]["outputs"] = serde_json::from_str(&v["timeline"][read]["outputs"].to_string().replace("Alice Example", "Bob Example")).unwrap()), Says::Differs),
+            ];
+            for (what, line, change, says) in changes {
                 let mut lines: Vec<String> = Vec::new();
                 for (j, v) in values.iter().enumerate() {
                     let mut v = v.clone();
                     if j == line {
-                        v["performed"] = performed.clone();
+                        change(&mut v);
                     }
                     if let Some(before) = lines.last() {
                         v["prev"] = recorder::line_hash(before).into();
@@ -8498,8 +8534,15 @@ fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
                 let forged = verify::Export { lines, head, ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
                 let report = verify::check(&forged, None, &BTreeMap::new());
                 let seq = values[line]["seq"].as_u64().unwrap();
-                if !report.reruns.iter().any(|(s, r)| *s == seq && matches!(r, verify::Rerun::Differs(_))) {
-                    wrong.push(format!("{side}: {what}, and holon verify doesn't say its run differs:\n{}", verify::describe(&report, None)));
+                let said = report.reruns.iter().find(|(s, _)| *s == seq).map(|(_, r)| r);
+                let as_said = match said {
+                    Some(verify::Rerun::Differs(_)) => Some(Says::Differs),
+                    Some(verify::Rerun::Matched) => Some(Says::Matched),
+                    _ => None,
+                };
+                if as_said.as_ref() != Some(&says) {
+                    let stated = if says == Says::Matched { " (the stated limit's row: if stage B closed it, make this row say Differs)" } else { "" };
+                    wrong.push(format!("{side}: {what}, and holon verify says {said:?}, not {says:?}{stated}:\n{}", verify::describe(&report, None)));
                 }
             }
         }
@@ -10845,7 +10888,9 @@ fn changes_of(line: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
 /// log keeps by its hash ("sized", R66); and calls, reads and a claim with no secret ("calls",
 /// "reads"); and a call whose reply sends the secret back, what the flow reads out of it
 /// answered (refused), written (refused, so its line has no write) and, a balance, written
-/// ("echoed", R70). Not, and so where to look next: a step that computes from a secret past that size
+/// ("echoed", R70); on that flow, a change to a step holding the mark of a piece read out of the
+/// reply, or its whole timeline taken out, is R70's stated limit (secrets.md §4, closed by stage
+/// B), counted on its own and asserted to be found on that flow only. Not, and so where to look next: a step that computes from a secret past that size
 /// or carrying such a file (withheld, its record held by the "computed" row of
 /// `a_runs_record_reads_the_same_whatever_its_secret`); a mark as a record's key (its "keyed"
 /// row); a value computed from a secret answered to the caller; a resume token or a tainted value (a caller's key) in a call; a secret JSON spells
@@ -11005,7 +11050,10 @@ route.post("/kept", async (req) => {
         assert_eq!(status, 200, "{body}");
         let (status, body, _) = data_call(&state, &sized, "POST", "/upload", n);
         assert_eq!(status, 200, "{body}");
-        for (path, answers) in [("/slice", 500), ("/written", 200), ("/kept", 200)] {
+        // The balance's route first: the newest run's state, changed, is said unchecked where it
+        // wrote a collection and no run began from what it left (R62), which this sweep would
+        // count as saying less; a newest run that wrote none breaks.
+        for (path, answers) in [("/kept", 200), ("/slice", 500), ("/written", 200)] {
             let (status, body, _) = data_call(&state, &echoed, "POST", path, n);
             assert_eq!(status, answers, "{path}: {body}");
         }
@@ -11057,9 +11105,10 @@ export const pay = action(async (order) => {
     let mut by_field: BTreeMap<String, usize> = BTreeMap::new();
     let mut marks = 0;
     // Per flow: tried, passing without the head, passing with it, as checked, saying less, on a
-    // run not re-run, a call's answer changed.
-    let mut per_flow: BTreeMap<String, [usize; 7]> = BTreeMap::new();
+    // run not re-run, a call's answer changed, a piece's step left out (R70's stated limit).
+    let mut per_flow: BTreeMap<String, [usize; 8]> = BTreeMap::new();
     let (mut unrun, mut answered, mut flips) = (0, 0, Vec::new());
+    let mut pieces: Vec<String> = Vec::new();
     for slug in ["c", "seen", calls.as_str(), signed.as_str(), counted.as_str(), large.as_str(), sized.as_str(), reads.as_str(), echoed.as_str(), "payouts"] {
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req_as(&ada, "GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
         let honest = verify::check(&export, None, &BTreeMap::new());
@@ -11171,6 +11220,19 @@ export const pay = action(async (order) => {
                     counts[6] += 1;
                     continue;
                 }
+                // R70's stated limit (secrets.md §4, closed by stage B): in a run whose far side
+                // sent a secret back, a step holding the mark of a piece read out of the reply,
+                // changed or left out, or the run's whole timeline taken out. The server keeps
+                // such a step as the run had it, so verify can't tell one left out from one too
+                // large to keep, and takes those it can't compute from the line. Counted on its
+                // own, and asserted below to be found on the echoing flow only.
+                let echoing = line["rounds"].to_string().contains("\u{2039}secret:");
+                let piece_at = |n: &str| n.parse::<usize>().is_ok_and(|n| line["timeline"][n]["outputs"].to_string().contains("\u{2039}derived #"));
+                if echoing && (at == "timeline/out" || (parts.len() > 2 && parts[0] == "timeline" && piece_at(parts[1]))) {
+                    counts[7] += 1;
+                    pieces.push(format!("{slug} run {seq}: {at}"));
+                    continue;
+                }
                 match account(&report) == account(&honest) {
                     true => {
                         counts[3] += 1;
@@ -11265,10 +11327,16 @@ export const pay = action(async (order) => {
         less_state.len(),
         ends_0.len()
     );
-    for (slug, [tried, passed, witnessed, checked, less, unrun, answered]) in &per_flow {
-        eprintln!("  {slug}: {tried} tried, {passed} pass without the head, {witnessed} with it; {checked} as checked, {less} saying less, {unrun} on a run not re-run, {answered} a call's answer");
+    for (slug, [tried, passed, witnessed, checked, less, unrun, answered, piece]) in &per_flow {
+        eprintln!("  {slug}: {tried} tried, {passed} pass without the head, {witnessed} with it; {checked} as checked, {less} saying less, {unrun} on a run not re-run, {answered} a call's answer, {piece} a piece's step left out");
     }
-    eprintln!("{unrun} pass on a run not re-run, {answered} change what a call was answered");
+    eprintln!("{unrun} pass on a run not re-run, {answered} change what a call was answered, {} a piece's step left out:\n{}", pieces.len(), pieces.join("\n"));
+    // The stated limit stays where it is: no flow but the echoing one has a change of its kind.
+    let spread: Vec<&String> = per_flow.iter().filter(|(slug, c)| **slug != echoed && c[7] > 0).map(|(slug, _)| slug).collect();
+    assert!(spread.is_empty(), "a piece's step left out passes on a flow other than the echoing one: {spread:?}");
+    if !leaks.is_empty() || !said_less.is_empty() {
+        eprintln!("as checked:\n{}\nsaying less:\n{}", leaks.join("\n"), said_less.join("\n"));
+    }
     assert!(flips.is_empty(), "a line that says whether it withholds, changed, passes: {flips:?}");
     assert!(witnessed.is_empty(), "{} of {tried} changes pass with the witnessed head:\n{}", witnessed.len(), witnessed.join("\n"));
     assert!(leaks.is_empty(), "{} of {tried} changes pass as checked:\n{}", leaks.len(), leaks.join("\n"));

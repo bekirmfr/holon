@@ -108,14 +108,28 @@ impl Echoed {
     /// route answers with the secret itself) is never refused this, so naming that approval
     /// here would point at nothing this flow can do.
     pub(crate) fn refusal(&self, name: &str) -> String {
-        let from = match self.hosts.as_slice() {
-            [] => "the service".to_string(),
-            hosts => hosts.join(" and "),
-        };
-        format!(
-            "refused to answer with what {from} sent back: its reply held the secret {name:?}, and a text of six characters or more read from such a reply is taken as the secret's. Change the flow so this route doesn't answer with what {from} sent back; a number, a true or false, or a text shorter than six characters from it may be answered"
-        )
+        echo_refused(&self.hosts, name)
     }
+}
+
+/// What a run's record says where its answer, read out of a reply from `hosts` that held the
+/// secret `name`, was refused ([`Echoed::refusal`]): the run's error, as `holon verify` holds a
+/// line to it.
+pub(crate) fn echo_refused(hosts: &[String], name: &str) -> String {
+    let from = match hosts {
+        [] => "the service".to_string(),
+        hosts => hosts.join(" and "),
+    };
+    format!(
+        "refused to answer with what {from} sent back: its reply held the secret {name:?}, and a text of six characters or more read from such a reply is taken as the secret's. Change the flow so this route doesn't answer with what {from} sent back; a number, a true or false, or a text shorter than six characters from it may be answered"
+    )
+}
+
+/// What a run's record says where its answer held the secret `name` and the deployment wasn't
+/// approved to answer its callers with it (`SecretAnswer`): the run's error, on a route and on a
+/// WebSocket, as `holon verify` holds a line to it.
+pub(crate) fn secret_answer_refused(name: &str) -> String {
+    format!("refused to answer with the secret {name:?}: this deployment wasn't approved to answer its callers with it")
 }
 
 /// A fired run: its outputs, the effects performed, the state it read, and when each step ran
