@@ -49,6 +49,9 @@ pub(crate) struct Watch {
     file: Option<PathBuf>,
     /// Its deployment's scope, what is kept is sealed under (at_rest.rs).
     scope: String,
+    /// Why what it has seen didn't open, if it didn't: held, it looks at nothing and writes
+    /// nothing, rather than take every file there as new or as seen (at_rest.rs, `read_seen`).
+    held: Option<String>,
 }
 
 /// What happened to a file that starts a run.
@@ -99,10 +102,14 @@ impl Watch {
             }
         }
         let file: Option<PathBuf> = deployments_path.beside("arrivals").map(|dir| dir.join(format!("{slug}.json")).into());
-        let mut seen: BTreeMap<String, Seen> =
-            file.as_ref().and_then(|f| crate::at_rest::read_sealed(f, crate::at_rest::role::ARRIVALS).ok().flatten()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let read = file.as_ref().map_or(Ok(None), |f| crate::at_rest::read_seen::<BTreeMap<String, Seen>>(f, &crate::at_rest::deployment(slug), crate::at_rest::role::ARRIVALS));
+        let held = read.as_ref().err().filter(|_| !folders.is_empty()).map(|e| crate::at_rest::seen_held("its folders", e));
+        if let Some(why) = &held {
+            eprintln!("holon: {slug:?} watches no folder: {why}");
+        }
+        let mut seen = read.ok().flatten().unwrap_or_default();
         seen.retain(|f, _| folders.contains(f));
-        Watch { folders, triggers, seen: Mutex::new(seen), file, scope: crate::at_rest::deployment(slug) }
+        Watch { folders, triggers, seen: Mutex::new(seen), file, scope: crate::at_rest::deployment(slug), held }
     }
 
     /// Whether a change to file `name` of `folder` starts a run.
@@ -123,7 +130,8 @@ impl Watch {
     }
 
     fn keep(&self, seen: &BTreeMap<String, Seen>) {
-        let Some(file) = &self.file else { return };
+        // Held: never over a file that didn't open.
+        let Some(file) = self.file.as_ref().filter(|_| self.held.is_none()) else { return };
         let written = serde_json::to_vec(seen).map_err(|e| e.to_string()).and_then(|bytes| {
             std::fs::create_dir_all(file.parent().expect("a file in a folder")).map_err(|e| e.to_string())?;
             crate::at_rest::write_sealed(file, &self.scope, crate::at_rest::role::ARRIVALS, &bytes).map_err(|e| e.to_string())
@@ -137,6 +145,9 @@ impl Watch {
     /// later starts a run, though the watcher hasn't looked yet. A folder it saw before keeps
     /// what it saw (a redeploy), and one not bound yet is seen at the first look that finds it.
     pub(crate) fn baseline(&self, files: &folders::Scoped) {
+        if self.held.is_some() {
+            return;
+        }
         files.watch(&self.folders);
         let mut seen = self.seen.lock().unwrap();
         let mut changed = false;
@@ -158,6 +169,10 @@ impl Watch {
     /// may have changed, it was never looked at, or files there are settling: the files that start
     /// a run now, and what happened to each, by folder, in name order, at most `max`.
     fn look(&self, files: &folders::Scoped, max: usize, may_have_changed: impl Fn(&str) -> bool) -> Vec<(String, String, Event)> {
+        // Held: no file starts a run, nor is any taken as seen, until what it saw opens.
+        if self.held.is_some() {
+            return Vec::new();
+        }
         files.watch(&self.folders);
         let mut seen = self.seen.lock().unwrap();
         let mut due = Vec::new();

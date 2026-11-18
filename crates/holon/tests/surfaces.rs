@@ -671,7 +671,8 @@ fn each_surface_calls_its_routes_and_shows_only_what_its_caller_holds() {
     assert!(found.refused >= 20, "the sweep's callers without a grant were refused only {} times\n{}", found.refused, found.wrong.join("\n"));
     everything_else(&world, &callers, &mut found);
 
-    const NOT_RUN: [(&str, &str); 2] = [
+    const NOT_RUN: [(&str, &str); 3] = [
+        ("key export", "it copies the root key out of a data folder on the machine it runs on, the server's own: at_rest.rs's keys_are_rotated_and_forgotten_on_the_real_server runs it against a server"),
         ("editor", "the terminal editor: workbench/tests.rs drives it, the_editor_shows_what_the_server_keeps_only_to_its_grants"),
         ("mcp setup", "it writes an agent host's settings and makes the user's agent: mcphosts.rs's tests"),
     ];
@@ -805,7 +806,7 @@ fn everything_else(world: &World, callers: &[Caller], found: &mut Found) {
     run(ada, "run", &["run", "kept"], "");
     run(ada, "stop", &["stop", "logged"], "");
     run(ada, "remove", &["remove", "logged", "--yes", "--forget"], "");
-    run(ada, "key forget", &["key", "forget", "logged"], "");
+    run(ada, "key forget", &["key", "forget", "logged", "--yes"], "");
     for (row, args, input) in [("logout", vec!["logout"], String::new()), ("login", vec!["login", "--name", "wes"], format!("{PW}\n"))] {
         let out = world.holon(wes, &args, &input, None);
         assert_eq!(out.code, 0, "holon {args:?} as wes: {}", out.said);

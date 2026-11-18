@@ -244,13 +244,14 @@ value is set for the deployment (the flow's Settings, `holon secret set`), or on
   `a_value_has_one_salt_drawn_once_sealed_and_kept_across_restarts`,
   `what_a_run_records_of_a_secret_is_where_it_is_kept_and_a_commitment_under_its_salt`,
   `a_store_keeps_values_sealed_and_survives_a_restart`,
-  `a_missing_or_wrong_key_refuses_instead_of_starting_empty`, `versions_are_kept_and_old_values_still_redacted`,
+  `a_value_opens_only_under_its_keys_and_for_its_place`, `versions_are_kept_and_old_values_still_redacted`,
   `a_mark_names_the_version_and_a_fingerprint_of_the_value`, `a_vault_value_follows_its_source_and_outlives_an_outage_only_briefly`,
   `a_rollback_restores_an_older_version_as_a_new_one_and_everything_is_audited`,
   `redaction_replaces_every_literal_occurrence`, `a_look_alike_of_a_mark_is_escaped_and_reads_back_as_text`,
   `with_nothing_to_mark_a_text_without_a_mark_sign_stays_as_it_is`,
   `the_servers_secret_is_read_where_a_deployment_has_none_and_keeps_its_cap`.
-- sealing.rs: `a_sealed_value_opens_only_where_it_was_sealed`; secret_sources.rs:
+- at_rest.rs: `a_keyring_opens_only_under_its_root`, `what_is_sealed_opens_only_where_it_was_sealed`;
+  secret_sources.rs:
   `references_parse_and_only_holon_variables_can_be_named`, `a_dotenv_file_reads_like_the_usual_tools`.
 - tests.rs: `a_runs_record_reads_the_same_whatever_its_secret` (one flow run with two secrets:
   the two records read the same but for marks, hashes and commitments, in each way a flow

@@ -1027,12 +1027,12 @@ pub(crate) fn run_id_of(
 pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, entry: LogEntry, tokens: Redactor, declared: holon_core::LogLevel) -> Option<Logged> {
     // Held while it writes, so a server stopping never cuts its line (stopping.rs).
     let _writing = stopping::hold();
-    let Some(Pushed { log, seq, level, channels, permit, folders }) = push_run(deployments, slug, entry, tokens, declared)? else {
-        return Some(Logged { seq: None, kept: Ok(()) });
+    let Some(Pushed { log, seq, level, channels, permit, folders, unsent }) = push_run(deployments, slug, entry, tokens, declared)? else {
+        return Some(Logged { seq: None, kept: Ok(()), unsent: None });
     };
     let kept = match level {
         holon_core::LogLevel::Strict => log.sync_through(seq),
-        holon_core::LogLevel::Lazy | holon_core::LogLevel::Unrecorded => return Some(Logged { seq: Some(seq), kept: Ok(()) }),
+        holon_core::LogLevel::Lazy | holon_core::LogLevel::Unrecorded => return Some(Logged { seq: Some(seq), kept: Ok(()), unsent }),
     };
     if kept.is_ok() {
         channels.release(seq + 1, &permit.channels);
@@ -1040,8 +1040,13 @@ pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
         folders.all.feeds.release(slug, seq + 1);
         folders.all.queues.release(slug, seq + 1);
     }
-    Some(Logged { seq: Some(seq), kept })
+    Some(Logged { seq: Some(seq), kept, unsent })
 }
+
+/// The tally a request that ran nothing is counted in (no route took it, or its body wasn't
+/// text): such a request is never logged (release audit D10). Not a route's label, which starts
+/// with its method.
+pub(crate) const RAN_NOTHING: &str = "(ran nothing)";
 
 /// What counting an unrecorded run takes: its route (none: no route took it), when it ran, how
 /// long it took, its answer's status and its error, if any: it failed with an error, or a 5xx.
@@ -1100,12 +1105,12 @@ pub(crate) fn log_or_count(
         } else if sends {
             Some((Arc::clone(&dep.channels), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), tainted_keys(dep)))
         } else {
-            return Some(Logged { seq: None, kept: Ok(()) });
+            return Some(Logged { seq: None, kept: Ok(()), unsent: None });
         }
     };
     if let Some((channels, secrets, folders, taint)) = sending {
         send_unlogged(&channels, &folders, entry(), |e| redactor_of(e, &[], tokens(), &secrets, &taint));
-        return Some(Logged { seq: None, kept: Ok(()) });
+        return Some(Logged { seq: None, kept: Ok(()), unsent: None });
     }
     log_run(deployments, slug, entry(), tokens(), declared)
 }
@@ -1175,7 +1180,9 @@ fn count_if_unrecorded(dep: &mut Deployment, counted: &Counted, declared: holon_
     }
     let failure = counted.failed().then(|| wire::Failure {
         at_ms: counted.at_ms,
-        status: counted.status.max(if counted.error.is_some() { 500 } else { 0 }),
+        // A request that ran nothing keeps the status it was answered (404, 405, 400), its path
+        // said in its error.
+        status: if counted.route == Some(RAN_NOTHING) { counted.status } else { counted.status.max(if counted.error.is_some() { 500 } else { 0 }) },
         error: counted.error.map(|e| {
             const MOST: usize = 300;
             let e = Redactor::of(&dep.secrets).text(&run(e));
@@ -1196,6 +1203,9 @@ fn count_if_unrecorded(dep: &mut Deployment, counted: &Counted, declared: holon_
 pub(crate) struct Logged {
     pub(crate) seq: Option<u64>,
     pub(crate) kept: Result<(), String>,
+    /// Why what the run sends isn't sent, if it isn't (`Pushed::unsent`): its caller is told it
+    /// failed, as for a record not kept.
+    pub(crate) unsent: Option<String>,
 }
 
 impl Logged {
@@ -1204,6 +1214,9 @@ impl Logged {
     pub(crate) fn said(self, slug: &str) {
         if let Err(e) = &self.kept {
             eprintln!("holon: {slug:?}: a run's record may not be on disk: {e}");
+        }
+        if let Some(e) = &self.unsent {
+            eprintln!("holon: {slug:?}: a run failed, as what it sends couldn't be spooled: {e}");
         }
     }
 }
@@ -1218,6 +1231,9 @@ struct Pushed {
     channels: Arc<channels::Channels>,
     permit: Arc<Permit>,
     folders: Arc<folders::Scoped>,
+    /// Why what it sends (a mail, a queue's message) isn't sent, if it isn't: one couldn't be
+    /// spooled, and the run failed.
+    unsent: Option<String>,
 }
 
 /// `log_run`'s write: the run's level as its grant holds it, and, unless it is an unrecorded run
@@ -1244,34 +1260,81 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
     }
     // Its mails spooled before its record is written, and held with it (mails.rs): a restart
     // sends one whose record is on disk, and drops one whose record a crash lost.
+    // One that can't be spooled fails the run, as a send past its limits does, so its record
+    // never says it sent what it never will, and nothing else it sends goes out (release audit
+    // O3): its caller is told so.
+    let mut unsent = None;
     let mails = std::mem::take(&mut entry.mails);
-    let spooled = folders.all.mails.spool_logged(slug, &entry, mails);
+    let mut spooled = folders.all.mails.spool_logged(slug, &entry, mails).unwrap_or_else(|e| {
+        unsent = Some(format!("{}{e}", mails::SEND_FAILED));
+        Vec::new()
+    });
+    entry.error = entry.error.take().or(unsent.clone());
     let (at_ms, unit) = (entry.at_ms, entry.unit.clone());
     // Its queues' messages likewise (queues.rs).
     let queued = std::mem::take(&mut entry.queued);
-    let queued = folders.all.queues.spool_logged(slug, &entry, queued);
+    let queued = folders.all.queues.spool_logged(slug, &entry, queued).unwrap_or_else(|e| {
+        unsent = Some(format!("{}{e}", queues::SEND_FAILED));
+        Vec::new()
+    });
+    if let Some(e) = &unsent
+        && entry.error.is_none()
+    {
+        entry.error = Some(e.clone());
+        folders.all.mails.drop_spooled(slug, std::mem::take(&mut spooled), "a message its run sends couldn't be spooled");
+    }
     entry.answered = Default::default();
     entry.born = Default::default();
     entry.session = session;
+    keep_body_by_hash(&mut entry, &redactor, &folders.all.blobs);
     // Its line made before the lock is taken, so runs of one deployment don't wait while another
     // run's is: under the lock only its seq and the line before's hash go in.
     // And its body sealed, for the same reason (at_rest.rs).
     let made = log.seal_ahead(redacted_line(&redactor, &mut entry));
-    let seq = log.with(|log| {
+    let (seq, unwritten) = log.with(|log| {
         // Its packs are held in the log's order, to go out once its record is on disk: the run is
         // over and its writes have landed, and what a subscriber gets is what the log holds, after
         // a power loss too, so no pack's id is given twice (channels.rs).
         let packs = channels.packs_of(&entry, log.next_seq());
         let seq = log.push_made(entry, made);
+        // Its line not written (a full disk), nothing of it goes out: as after a crash that lost
+        // its line, the log holds none of it (release audit D9).
+        if !log.wrote(seq) {
+            return (seq, Some((spooled, queued)));
+        }
         channels.hold(seq, packs);
         folders.all.mails.hold(slug, seq, spooled);
         folders.all.queues.hold_sends(slug, seq, queued);
-        seq
+        (seq, None)
     });
+    if let Some((spooled, queued)) = unwritten {
+        folders.all.mails.drop_spooled(slug, spooled, "its run's record couldn't be written");
+        folders.all.queues.drop_spooled(slug, queued, "its run's record couldn't be written");
+    }
     // Each line redacted as its record is: a secret's value, or a tainted one, is not written.
     let lines: Vec<(String, String)> = lines.iter().map(|(level, v)| (level.clone(), redactor.text(&crate::logs::text_of(v)))).collect();
     folders.all.logs.write(slug, seq, &unit, at_ms, &lines);
-    Some(Some(Pushed { log, seq, level, channels, permit, folders }))
+    Some(Some(Pushed { log, seq, level, channels, permit, folders, unsent }))
+}
+
+/// A request body longer than [`recorder::BODY_INLINE`] taken out of `entry` and kept by hash in
+/// `blobs`, redacted as the entry is (`Redactor::logged_text`): the entry names it
+/// (`LogEntry::body`). A caller decides how big a body is, and the log holds none of it: a line is
+/// as big as what the flow made of it (release audit D1). One that can't be kept is named by its
+/// hash alone, and said on the console: the run is provable, not re-runnable.
+fn keep_body_by_hash(entry: &mut LogEntry, redactor: &Redactor, blobs: &crate::blobs::Blobs) {
+    let Some(body) = entry.take_body() else { return };
+    let (body, escaped) = redactor.logged_text(body);
+    entry.escaped |= escaped;
+    let hash = blake3::hash(body.as_bytes()).to_hex().to_string();
+    let blob = match blobs.put(body.as_bytes()) {
+        Ok(blob) => Some(blob),
+        Err(e) => {
+            eprintln!("holon: warning: a request body ({} bytes) couldn't be kept, and its run is logged by its hash alone: {e}", body.len());
+            None
+        }
+    };
+    entry.body = Some(recorder::LoggedFile { hash, size: body.len() as u64, blob, range: None });
 }
 
 /// `entry` redacted by `redactor`, and its line. With nothing to mark, redacting can only escape a
@@ -1454,6 +1517,7 @@ fn entry_with(
         url: None,
         status: None,
         request: None,
+        body: None,
         sourced: sourced.iter().map(|(c, v)| (format!("{c:?}"), SValue::from_core(v))).collect(),
         state_before: run.start_state.iter().flat_map(State::iter).map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
         state_after: run.state_after.clone(),
@@ -1888,7 +1952,7 @@ mod commit_checks {
             let said = run.error.clone().unwrap_or_default();
             assert_eq!(said.starts_with(folders::WRITE_FAILED) && said.contains("the state it left"), fails, "{head:?}, changed: {}: {said:?}", !std::ptr::eq(live, &start));
             if !fails && std::ptr::eq(live, &changed) {
-                assert_eq!(std::fs::read_to_string(head).ok(), run.state_after, "its head names the snapshot it left");
+                assert_eq!(crate::persist::read_state_head(head).ok().flatten(), run.state_after, "its head names the snapshot it left");
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -1944,7 +2008,7 @@ mod commit_checks {
                 run.start_state = Some(start);
                 keep_state(&cell, &mut run, &live, &store);
                 full.store(false, std::sync::atomic::Ordering::SeqCst);
-                let Ok(hex) = std::fs::read_to_string(&head) else { continue };
+                let Ok(Some(hex)) = crate::persist::read_state_head(&head) else { continue };
                 let loaded = crate::restore::load_snapshot(&hex, &store).unwrap_or_else(|e| panic!("failing {failing:05b}, after step {i}: the head doesn't load: {e}"));
                 if run.error.is_none() {
                     assert_eq!(crate::restore::snapshot_hash(&loaded), crate::restore::snapshot_hash(&live), "failing {failing:05b}, step {i}: the head names the state it left");

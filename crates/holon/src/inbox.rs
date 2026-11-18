@@ -74,12 +74,13 @@ fn seen_dir(deployments_path: &Place, slug: &str) -> Option<PathBuf> {
     deployments_path.beside("mail-seen").map(|dir| PathBuf::from(dir).join(slug))
 }
 
-fn read_seen(file: Option<&PathBuf>, memory: &Mutex<BTreeMap<PathBuf, Vec<u8>>>, key: &Path) -> Seen {
-    let bytes = match file {
-        Some(f) => crate::at_rest::read_sealed(f, crate::at_rest::role::MAIL_SEEN).ok().flatten().map(|b| b.to_vec()),
-        None => memory.lock().unwrap().get(key).cloned(),
-    };
-    bytes.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+/// What was seen of a mailbox: none yet if nothing is kept. One kept that doesn't open is an
+/// error (at_rest.rs, `read_seen`): the look stops there, and nothing is run or marked seen.
+fn read_seen(file: Option<&PathBuf>, memory: &Mutex<BTreeMap<PathBuf, Vec<u8>>>, key: &Path) -> Result<Seen, String> {
+    match file {
+        Some(f) => Ok(crate::at_rest::read_seen(f, &crate::at_rest::deployment_of(key), crate::at_rest::role::MAIL_SEEN)?.unwrap_or_default()),
+        None => Ok(memory.lock().unwrap().get(key).and_then(|b| serde_json::from_slice(b).ok()).unwrap_or_default()),
+    }
 }
 
 fn keep_seen(file: Option<&PathBuf>, memory: &Mutex<BTreeMap<PathBuf, Vec<u8>>>, key: &Path, seen: &Seen) {
@@ -258,7 +259,13 @@ fn look_once(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deploymen
     let uids = session.uids().map_err(why)?;
     let key = PathBuf::from(slug).join(format!("{mail}.json"));
     let file = seen_dir(deployments_path, slug).map(|d| d.join(format!("{mail}.json")));
-    let mut seen = read_seen(file.as_ref(), memory, &key);
+    let mut seen = match read_seen(file.as_ref(), memory, &key) {
+        Ok(seen) => seen,
+        Err(e) => {
+            session.logout();
+            return Err(crate::at_rest::seen_held(&format!("the mailbox of {mail}"), &e));
+        }
+    };
     let keep = |seen: &Seen| keep_seen(file.as_ref(), memory, &key, seen);
     let at = format!("{} {}", mailbox.address, mailbox.folder);
     if seen.at != at || seen.validity != validity {

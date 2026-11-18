@@ -43,6 +43,9 @@ pub(crate) fn serve_data_forwarding(
     forward: Option<outbound::Forwarder>,
     allowed: Option<String>,
 ) -> DataResponse {
+    if let Some(refused) = websockets::without_upgrade(deployments, slug, &request.method, &request.url) {
+        return refused;
+    }
     if request.method == "OPTIONS"
         && let Some(origin) = &allowed
     {
@@ -270,12 +273,19 @@ fn serve_flow(
         (answer, file_error) = serve_file(answer, &permit, waits.folders.as_deref(), &request.headers);
     }
     record_trigger(deployments, slug, answer.status >= 500);
-    // Every request is logged, routed or not; an unrouted one (404, 405) never ran a handler. Its
-    // entry is made only where it is logged: an unrecorded run that didn't fail is counted.
+    // A request that ran a handler is logged, as its level says; its entry is made only where it
+    // is logged: an unrecorded run that didn't fail is counted. One that ran nothing (no route
+    // took it, 404 or 405, or its body wasn't text) is counted under `RAN_NOTHING`, never logged:
+    // anyone who reaches the port could push the deployment's runs out of its log with them
+    // (release audit D10). Its tally keeps the last one's status and path.
     let route = ran.as_ref().map(|r| r.route.clone());
     let error = match &parked {
         Err(e) => Some(e.clone()),
         Ok(_) => file_error.clone().or_else(|| ran.as_ref().and_then(|r| r.error.clone())),
+    };
+    let (route, error, level) = match &ran {
+        Some(_) => (route, error, level),
+        None => (Some(crate::firing::RAN_NOTHING.to_string()), Some(format!("{method} {path}")), holon_core::LogLevel::Unrecorded),
     };
     let parked_any = matches!(&parked, Ok(names) if !names.is_empty());
     // Whether an unrecorded run sent packs or mail, which go out even though it isn't logged.
@@ -319,8 +329,16 @@ fn serve_flow(
     // A strict run answers once its record is on disk; one whose record may not be isn't
     // answered as done (C2 e).
     let counted = Counted { route: route.as_deref(), at_ms: started.0, duration_ms: started.1.elapsed().as_secs_f64() * 1000.0, status: answer.status, error: error.as_deref() };
-    if let Some(Logged { kept: Err(e), .. }) = log_or_count(deployments, slug, counted, entry, tokens, level, sends) {
-        answer = data::DataResponse::json_error(500, &format!("the request ran, but {e}"));
+    match log_or_count(deployments, slug, counted, entry, tokens, level, sends) {
+        Some(Logged { kept: Err(e), .. }) => answer = data::DataResponse::json_error(500, &format!("the request ran, but {e}")),
+        // What it sends couldn't be spooled: none of it is sent, and its record says it failed.
+        Some(Logged { unsent: Some(_), .. }) => {
+            answer = data::DataResponse::json_error(500, "the request ran, but what it sends couldn't be kept to send, so none of it is sent: its run log says why")
+        }
+        // Its deployment removed while it ran: a strict run's record is kept nowhere (release
+        // audit R41).
+        None if level == holon_core::LogLevel::Strict => answer = data::DataResponse::json_error(500, &format!("the request ran, but {slug:?} was removed meanwhile, so its record isn't kept")),
+        _ => {}
     }
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.

@@ -28,8 +28,9 @@ agents or by people. Before a flow runs, and every time it runs:
   elsewhere, a run changed or taken out afterwards shows; without one, an export checks against
   itself, and whoever holds the server's data could rewrite it whole. Everything it keeps is
   encrypted at rest under keys you hold apart from the data (a root key in the OS key store, a
-  file or an environment variable), and a removed deployment's keys can be forgotten, so nothing
-  it left opens again.
+  file or an environment variable), and a removed deployment's keys can be forgotten, so its log,
+  records and backups open nowhere again (its code and the values it shares stay in the content
+  store).
 
 > **Status:** pre-release (0.1.0 release candidates). It runs on one machine for one team; see
 > [Status](#status).
@@ -283,18 +284,21 @@ asking (`--yes` skips that).
   `gh attestation verify holon-x86_64-unknown-linux-gnu.tar.xz --repo bekirmfr/holon`.
 - Releases up to 0.1.0-rc.3 installed it as `holon-server`. `holon-server update` installs
   `holon` in its place and keeps a `holon-server` beside it that runs `holon serve`.
-- Releases before 0.1.0-rc.17 kept a server's state as `.holon-*` files in the folder it was
-  started from. `holon migrate` (run there, or with `--from DIR`) moves them into
-  `~/.holon/data`; `holon serve` says so when it sees them.
+- This release seals its data folder at rest, and doesn't read one written in clear by 0.1.0-rc.35
+  or earlier (nor the `.holon-*` files releases before 0.1.0-rc.17 kept in the folder they were
+  started from): `holon serve` refuses it, saying so, and changes nothing in it. Keep running
+  the release that wrote it on it, or start over.
 
 </details>
 
 ### Where it keeps things
 
 Everything is in one folder, `~/.holon` (`%USERPROFILE%\.holon` on Windows), or `HOLON_HOME`:
-`bin/` the program, `data/` the server's state (the one folder to back up), `keys/` root keys
-where there's no OS key store, `run/` a file per running server, `tokens.json` and
-`mcp-hosts.toml`.
+`bin/` the program, `data/` the server's state, `keys/` root keys where there's no OS key store,
+`run/` a file per running server, `tokens.json` and `mcp-hosts.toml`. Back up `data/` and, apart
+from it, the root key that opens it: `holon key export --to file:PATH` copies the root out of the
+OS key store or `keys/` (without it a copy of `data/` opens nothing), and again after a forget,
+which rotates it.
 
 ## Running a server
 

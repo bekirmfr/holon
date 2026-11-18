@@ -152,11 +152,12 @@ impl Channels {
     /// The channels as the log left them: each one's newest packs kept.
     pub(crate) fn from_log(log: &Log, limits: &ChannelLimits) -> Channels {
         let channels = Channels::default();
-        for entry in log.after(None, usize::MAX) {
+        // A run at a time: a log's runs aren't held whole as a server starts (release audit D11).
+        log.each_kept(|entry| {
             for (name, pack) in channels.packs_of(&entry, entry.seq) {
                 channels.send(&name, pack, limits);
             }
-        }
+        });
         channels
     }
 

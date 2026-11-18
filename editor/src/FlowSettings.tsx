@@ -601,7 +601,7 @@ function Lifecycle({ entry, onAction, can }: { entry: DeploymentEntry; onAction:
  *  host, written as an export `holon verify` checks (the server's DELETE). Asked by typing its
  *  name, once it is stopped, by whoever may delete it (`flow.delete`). And its keys forgotten,
  *  if asked, by whoever may operate the host too (`host.operate`, `POST /admin/keys/forget`):
- *  then nothing it left opens again. */
+ *  then its log, records and backups open nowhere again (its code stays in the content store). */
 function Remove({ slug, stopped, onRemove, may }: { slug: string; stopped: boolean; onRemove: (forget: boolean) => Promise<void>; may: Answer }) {
   const [typed, setTyped] = useState("");
   const [forget, setForget] = useState(false);
@@ -617,7 +617,8 @@ function Remove({ slug, stopped, onRemove, may }: { slug: string; stopped: boole
       {operate === true && (
         <label className="hl-flow__note">
           <input type="checkbox" checked={forget} disabled={!stopped} onChange={(e) => setForget(e.target.checked)} /> Forget its keys too: its kept run records, its
-          backups and every other file it left can&apos;t be opened again, here or in a copy of the data folder taken before (the root key is rotated where it is kept).
+          backups and every other file it left can&apos;t be opened again, here or in a copy of the data folder taken before. The root key is rotated where it is
+          kept: back up the new one after.
         </label>
       )}
       <div className="hl-flow__bar">

@@ -110,9 +110,67 @@ impl KeySource {
         Ok(())
     }
 
-    /// Drop the key (`uninstall --purge`). `Ok(false)`: there was none here, or it is an
-    /// environment variable, which only the operator can unset.
+    /// Whether `other` names the same place: a key file however its path is spelled (relative or
+    /// not, `.` and `..`, a link, a drive letter's case), else the same entry or variable. What a
+    /// rotation in place and `--forget-old` decide by: told apart by spelling, a rotation `--to`
+    /// the file in use, written another way, would forget the new root it just kept there.
+    /// The `--root-key` that names this place, as [`KeySource::parse`] reads it: what `holon key
+    /// status` gives, so `holon key export --server` reads the root where the server does.
+    pub(crate) fn arg(&self) -> String {
+        match self {
+            KeySource::Os { .. } => "os".to_string(),
+            KeySource::Env(var) => format!("env:{var}"),
+            KeySource::File(path) => format!("file:{}", path.display()),
+        }
+    }
+
+    pub(crate) fn same_place(&self, other: &KeySource) -> bool {
+        match (self, other) {
+            (KeySource::File(a), KeySource::File(b)) => a == b || matches!((resolved(a), resolved(b)), (Some(a), Some(b)) if a == b),
+            _ => self == other,
+        }
+    }
+
+    /// The keys files opened under the root kept here, as the file system resolves them: kept
+    /// beside the root (`<key file>.keyrings`, or `<account>-keyrings` in the OS key store), so a
+    /// rotation in place can tell when another data folder still opens under this root
+    /// ([`crate::at_rest`]). None for a variable, which the server can't write. Not a key: paths.
+    pub(crate) fn keyrings(&self) -> Result<Vec<PathBuf>, String> {
+        let text: Option<String> = match self {
+            KeySource::Os { account } => os_store::read(&format!("{account}-keyrings"))?.map(|t| t.to_string()),
+            KeySource::Env(_) => return Ok(Vec::new()),
+            KeySource::File(path) => match std::fs::read_to_string(keyrings_file(path)) {
+                Ok(t) => Some(t),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(format!("could not read {}: {e}", keyrings_file(path).display())),
+            },
+        };
+        Ok(text.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default())
+    }
+
+    /// [`KeySource::keyrings`] kept as `keyrings`.
+    pub(crate) fn keep_keyrings(&self, keyrings: &[PathBuf]) -> Result<(), String> {
+        let text = serde_json::to_string(keyrings).map_err(|e| e.to_string())?;
+        match self {
+            KeySource::Os { account } => os_store::write(&format!("{account}-keyrings"), &text),
+            KeySource::Env(_) => Ok(()),
+            KeySource::File(path) => write_private(&keyrings_file(path), text.as_bytes()).map_err(|e| format!("could not write {}: {e}", keyrings_file(path).display())),
+        }
+    }
+
+    /// Drop the key (`uninstall --purge`), and the list of keyrings kept beside it. `Ok(false)`: there was
+    /// none here, or it is an environment variable, which only the operator can unset.
     pub(crate) fn forget(&self) -> Result<bool, String> {
+        // The list goes with its key; one left behind would only name folders.
+        match self {
+            KeySource::Os { account } => {
+                let _ = os_store::delete(&format!("{account}-keyrings"));
+            }
+            KeySource::Env(_) => {}
+            KeySource::File(path) => {
+                let _ = std::fs::remove_file(keyrings_file(path));
+            }
+        }
         match self {
             KeySource::Os { account } => os_store::delete(account),
             KeySource::Env(_) => Ok(false),
@@ -123,6 +181,88 @@ impl KeySource {
             },
         }
     }
+}
+
+/// Where a release from before the server sealed its data (0.1.0-rc.35 and earlier) kept the key
+/// of the secrets file at `secrets`, as it chose it with no `--secrets-key`: under the id the file
+/// records (written in clear then), else a hash of the file's absolute path; in the OS key store
+/// as `secrets-key-<id>`, else as `~/.holon/keys/<id>.key`. None for a file this release sealed,
+/// or none there. What `uninstall --purge` removes with the folder, so it isn't left behind.
+pub(crate) fn old_secrets_key(secrets: &Path) -> Option<KeySource> {
+    let bytes = std::fs::read(secrets).ok()?;
+    if crate::at_rest::is_sealed(&bytes) {
+        return None;
+    }
+    let id = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|v| v.get("key_id")?.as_str().map(str::to_string))
+        .filter(|id| !id.is_empty() && id.len() <= 64 && id.bytes().all(|c| c.is_ascii_hexdigit()))
+        .unwrap_or_else(|| {
+            let absolute = std::path::absolute(secrets).unwrap_or_else(|_| secrets.to_path_buf());
+            blake3::hash(absolute.to_string_lossy().as_bytes()).to_hex()[..16].to_string()
+        });
+    if cfg!(any(windows, target_os = "macos")) {
+        Some(KeySource::Os { account: format!("secrets-key-{id}") })
+    } else {
+        crate::local::holon_home().map(|h| KeySource::File(h.join("keys").join(format!("{id}.key"))))
+    }
+}
+
+/// Where a key file's keyrings are listed ([`KeySource::keyrings`]): beside it.
+fn keyrings_file(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".keyrings");
+    PathBuf::from(name)
+}
+
+/// Whether `path` is in `dir` or below it, as the file system resolves both: a root key file in
+/// the data folder is refused, since a copy of the folder would then open itself.
+pub(crate) fn inside(path: &Path, dir: &Path) -> bool {
+    match (resolved(path), std::fs::canonicalize(dir)) {
+        (Some(p), Ok(d)) => p.starts_with(d),
+        _ => false,
+    }
+}
+
+/// `path` as the file system will resolve it once it is made, as the key's write makes it
+/// (`create_dir_all` of its folder, then the file): a part at a time from its root, each part
+/// that is there resolved (a link followed, its case the disk's), each that isn't yet kept as
+/// written, and a `..` the folder before it. So `DATA/x/../root.key`, with no `x`, is
+/// `DATA/root.key`, as the write would put it. Resolving the folder whole, as before, failed on
+/// Linux and macOS while `x` wasn't there (their kernel walks `x` for real), and a key so spelled
+/// was let into the data folder.
+///
+/// Each OS's rule for `..`: Unix's is the link's, so `LINK/..` is the folder of what `LINK` points
+/// at, and the walk follows the link before it pops. Windows takes `..` out by text before it
+/// follows anything, so `JUNCTION\..` is the folder the junction is in: `std::path::absolute`
+/// (GetFullPathNameW, as `holon_host::verbatim` gives every write) drops it so first, and the
+/// walk meets no `..` there.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let path = std::path::absolute(path).ok()?;
+    let mut parts = path.components().peekable();
+    let mut root = PathBuf::new();
+    while let Some(part) = parts.next_if(|p| matches!(p, Component::Prefix(_) | Component::RootDir)) {
+        root.push(part);
+    }
+    let mut at = std::fs::canonicalize(&root).ok()?;
+    for part in parts {
+        match part {
+            Component::CurDir => {}
+            // `at` is resolved wherever it is there, so the folder before it is its parent.
+            Component::ParentDir => {
+                at.pop();
+            }
+            Component::Normal(name) => {
+                at.push(name);
+                if let Ok(there) = std::fs::canonicalize(&at) {
+                    at = there;
+                }
+            }
+            Component::Prefix(_) | Component::RootDir => return None,
+        }
+    }
+    Some(at)
 }
 
 impl std::fmt::Display for KeySource {
@@ -293,6 +433,66 @@ mod tests {
         assert_eq!(v(r"\\nas\runs\a.jsonl"), r"\\?\UNC\nas\runs\a.jsonl");
         assert_eq!(v(r"\\?\C:\data\a.jsonl"), r"\\?\C:\data\a.jsonl");
         assert!(v("relative.jsonl").starts_with(r"\\?\") && v("relative.jsonl").ends_with(r"\relative.jsonl"));
+    }
+
+    /// Guards: a key file's path is in a folder however it is spelled, as the write that makes it
+    /// would place it: through a `..` past a part that isn't there yet (one level or two), through
+    /// `.`, and (where a link can be made) through a link to the folder, before or after the
+    /// part that isn't there. A path beside the folder, or above it, isn't.
+    /// Why: `--root-key file:DATA/x/../root.key` was let into the data folder on Linux and macOS
+    /// (PR #111's native check): the folder, resolved whole, wasn't there, so nothing compared,
+    /// and the write's `create_dir_all` then made `x` and put the key in `DATA`.
+    /// If it fails: a root key spelled one of these ways is kept with the data it opens.
+    #[test]
+    fn a_key_path_is_in_a_folder_however_it_is_spelled() {
+        let base = std::env::temp_dir().join(format!("holon-inside-{}-{}", std::process::id(), to_hex(&rand::random::<[u8; 4]>())));
+        let data = base.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(base.join("other")).unwrap();
+        let rows: Vec<(PathBuf, bool)> = vec![
+            (data.join("root.key"), true),
+            (data.join("x").join("..").join("root.key"), true),
+            (data.join("x").join("y").join("..").join("..").join("root.key"), true),
+            (data.join(".").join("keys").join("root.key"), true),
+            (data.join("x").join("..").join("..").join("root.key"), false),
+            (data.join("..").join("other").join("root.key"), false),
+            (base.join("other").join("x").join("..").join("root.key"), false),
+            (base.join("root.key"), false),
+        ];
+        for (path, expected) in &rows {
+            assert_eq!(inside(path, &data), *expected, "{}", path.display());
+        }
+        // A link into the folder's own `sub`: what `LINK/..` is tells each OS's rule apart.
+        std::fs::create_dir_all(data.join("sub")).unwrap();
+        let through = base.join("into-sub").join("..").join("root.key");
+        #[cfg(unix)]
+        {
+            // A link to the folder, before a part that isn't there, and after a `..` past one.
+            std::os::unix::fs::symlink(&data, base.join("link")).unwrap();
+            assert!(inside(&base.join("link").join("x").join("..").join("root.key"), &data));
+            assert!(inside(&base.join("other").join("x").join("..").join("..").join("link").join("root.key"), &data));
+            assert!(!inside(&base.join("link").join("..").join("other").join("root.key"), &data), "a link's `..` is its target's folder's");
+            // `into-sub/..` is `sub`'s folder, the data folder, where the write would put the key.
+            std::os::unix::fs::symlink(data.join("sub"), base.join("into-sub")).unwrap();
+            assert!(inside(&through, &data), "on Unix a link's `..` is its target's folder");
+        }
+        #[cfg(windows)]
+        {
+            // A junction (made without the right a symbolic link takes): `into-sub\..` is taken out
+            // by text, so the key would go beside the junction, not in the data folder.
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(base.join("into-sub"))
+                .arg(data.join("sub"))
+                .output()
+                .is_ok_and(|o| o.status.success());
+            if made {
+                assert!(base.join("into-sub").join("..").join("other").exists(), "Windows takes `..` out by text");
+                assert!(!inside(&through, &data), "on Windows a junction's `..` is the folder it is in");
+            }
+        }
+        assert!(!data.join("x").exists() && !base.join("other").join("x").exists(), "nothing made");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
