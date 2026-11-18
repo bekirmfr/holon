@@ -6,7 +6,7 @@ mod admin;
 mod approvals;
 mod editor;
 mod flow;
-mod modal;
+pub(crate) mod modal;
 
 use holon_author::samples;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
@@ -693,7 +693,7 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
                 keys
             }
             Page::Approvals => vec![("↑↓", "pick", Down, NONE), ("enter", "review and approve", Enter, NONE), ("q", "quit", Char('q'), NONE)],
-            Page::Flows => vec![("↑↓", "pick", Down, NONE), ("enter", "open", Enter, NONE), ("e", "edit", Char('e'), NONE), ("c", "call", Char('c'), NONE), ("/", "filter", Char('/'), NONE), ("f", "live · waiting · paused", Char('f'), NONE), ("q", "quit", Char('q'), NONE)],
+            Page::Flows => vec![("↑↓", "pick", Down, NONE), ("enter", "open", Enter, NONE), ("e", "edit", Char('e'), NONE), ("c", "call", Char('c'), NONE), ("/", "filter", Char('/'), NONE), ("f", "live · waiting · paused", Char('f'), NONE), ("del", "delete saved", Delete, NONE), ("q", "quit", Char('q'), NONE)],
             Page::Library => vec![("↑↓", "pick", Down, NONE), ("enter", "open a copy", Enter, NONE), ("/", "filter", Char('/'), NONE), ("q", "quit", Char('q'), NONE)],
             Page::Admin if app.admin.right => vec![("↑↓", "scroll", Down, NONE), ("tab", "next part", Tab, NONE), ("esc", "back to the list", Esc, NONE)],
             Page::Admin => {

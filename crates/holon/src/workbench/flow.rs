@@ -24,6 +24,12 @@ pub(crate) enum Section {
     Graph,
 }
 
+/// An export (`…/export`, of every run or one) written where a person asked, as `holon export`
+/// writes it: the one place the terminal app writes one.
+fn write_export(to: &std::path::Path, export: &Value) -> Result<(), String> {
+    std::fs::write(to, serde_json::to_vec_pretty(export).unwrap_or_default()).map_err(|e| e.to_string())
+}
+
 pub(crate) const SECTIONS: [(Section, &str); 8] = [
     (Section::Status, "Status"),
     (Section::Runs, "Runs"),
@@ -614,7 +620,7 @@ impl App {
             (Section::Runs, KeyCode::Char('o')) => {
                 let Some(c) = self.client.as_ref() else { return };
                 let to = std::path::PathBuf::from(format!("{slug}-runs.json"));
-                let written = c.get(&format!("/deployments/{}/export", crate::mcp::seg(slug))).and_then(|e| std::fs::write(&to, serde_json::to_vec_pretty(&e).unwrap_or_default()).map_err(|e| e.to_string()));
+                let written = c.get(&format!("/deployments/{}/export", crate::mcp::seg(slug))).and_then(|e| write_export(&to, &e));
                 match written {
                     Ok(()) => self.say(format!("wrote {}: holon verify {} checks it offline", to.display(), to.display())),
                     Err(e) => self.fail(format!("not exported: {e}")),
@@ -625,7 +631,7 @@ impl App {
                 let Some(seq) = d.shown_runs(self.filter_of(Page::Flow)).get(sel).and_then(|&i| d.runs[i]["seq"].as_u64()) else { return };
                 let Some(c) = self.client.as_ref() else { return };
                 let to = std::path::PathBuf::from(format!("{slug}-run-{seq}.json"));
-                let written = c.get(&format!("/deployments/{}/export?run={seq}", crate::mcp::seg(slug))).and_then(|e| std::fs::write(&to, serde_json::to_vec_pretty(&e).unwrap_or_default()).map_err(|e| e.to_string()));
+                let written = c.get(&format!("/deployments/{}/export?run={seq}", crate::mcp::seg(slug))).and_then(|e| write_export(&to, &e));
                 match written {
                     Ok(()) => self.say(format!("wrote {}: holon verify {} checks it offline", to.display(), to.display())),
                     Err(e) => self.fail(format!("not exported: {e}")),
@@ -908,6 +914,38 @@ impl App {
     }
 
     // ── doing ──────────────────────────────────────────────────────────────────────────────
+
+    /// Ask before a saved flow is deleted, as the web's Flows page does; or say why it can't be.
+    pub(crate) fn ask_delete_saved(&mut self, name: &str) {
+        let Some(c) = self.client.as_ref() else { return };
+        if c.saved(name).is_none() {
+            return self.fail(format!("\"{name}\" isn't saved on the server: it is only deployed (D on the flow removes it)"));
+        }
+        if let Err(why) = c.may("flow.delete", Some(name)) {
+            return self.fail(format!("not deleted: {why}"));
+        }
+        let mut lines = vec!["Its saved text goes, for good: this can't be undone.".to_string()];
+        if c.deployment(name).is_some() {
+            lines.push("Its deployment stays and keeps running: D on the flow removes that.".into());
+        }
+        if self.tabs.iter().any(|t| t.name == name) {
+            lines.push("Its tab stays open: saving it again saves it anew.".into());
+        }
+        self.modal = Some(Modal::Confirm { title: format!("Delete the saved flow \"{name}\"?"), lines, then: Then::DeleteSaved(name.to_string()) });
+    }
+
+    pub(crate) fn delete_saved(&mut self, name: &str) {
+        let Some(c) = self.client.as_ref() else { return };
+        match c.delete_saved(name) {
+            Ok(()) => {
+                self.refresh();
+                let n = self.flow_names().len();
+                self.sel[2] = self.sel[2].min(n.saturating_sub(1));
+                self.say(format!("deleted the saved flow \"{name}\""));
+            }
+            Err(e) => self.fail(e),
+        }
+    }
 
     pub(crate) fn remove(&mut self, slug: &str) {
         let Some(c) = self.client.as_ref() else { return };

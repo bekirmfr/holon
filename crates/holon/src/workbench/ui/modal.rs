@@ -23,9 +23,9 @@ fn centred(area: Rect, width: u16, height: u16) -> Rect {
     Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h }
 }
 
-const HELP: &[(&str, &str)] = &[
+pub(crate) const HELP: &[(&str, &str)] = &[
     ("Anywhere", ""),
-    ("ctrl+p", "find anything: a flow, a page, a sample, a command"),
+    ("ctrl+p", "find anything: a flow, a page, a sample, a command, what waits for you, a run (type its number)"),
     ("1 … 7", "overview, approvals, flows, the open flow, the editor, the library, admin"),
     ("ctrl+t", "a new tab with a draft in it (ctrl+n too, the tab bar's + too); its first save asks for a file"),
     ("↑ ↓  enter", "pick a row, and open it; a click picks, a second click opens"),
@@ -35,22 +35,42 @@ const HELP: &[(&str, &str)] = &[
     ("! or ctrl+`", "the shell line (bottom right): a command runs in this terminal, then its prompt"),
     ("", "stays for more, until esc; cd stays; ↑ the commands before; :!<command> starts at once"),
     ("", ""),
+    ("Overview", ""),
+    ("enter  e  c", "open the flow picked, edit it, call it"),
+    ("C", "check every run log now (as the sidebar's check now): each run changed outside holon, enter opens it"),
+    ("", ""),
+    ("Flows", ""),
+    ("enter  e  c", "open the flow picked (a saved one: edit it), edit it, call it"),
+    ("f  /", "which flows: all, live, waiting, paused; filter by name"),
+    ("del", "delete the saved flow picked (asked first); its deployment stays"),
+    ("", ""),
     ("A flow", ""),
-    ("← →", "the dashboard: its sections; elsewhere: the list, then the tabs beside it"),
-    ("tab", "the next section: status, runs, history, state, access, graph"),
-    ("enter", "a run: step through it; history: go back to it (options, a dry run, then it)"),
-    ("", "graph: edit the statement picked; a (or its switch on the graph) steps it through nodes, statements and the nodes grouped by statement"),
-    ("b", "go back to the run or version picked"),
-    ("i  o  F  /", "runs: explain the one picked; export them to <slug>-runs.json for holon verify; follow the newest; filter"),
+    ("← →", "the list, then the tabs beside it (t T go round them)"),
+    ("tab", "the next section: status, runs, logs, history, state, access, settings, graph"),
     ("c  e", "call it; edit its text"),
-    ("g  p  x  D", "run, pause, stop or remove it"),
+    ("g  p  x  D", "run, pause, stop or remove it (its runs and history stay)"),
+    ("enter", "status: go back to an earlier version"),
+    ("", "runs: step through the one picked; i explain it; L its log lines; b go back to the version it ran"),
+    ("", "runs: O export it alone, o all of them, for holon verify; F follow the newest; / filter"),
+    ("", "logs: w the level shown; u the picked line's run (up to its end, then its own lines); F pause or follow; enter its run"),
+    ("", "history: go back to the version picked (options, a dry run, then it); b too"),
+    ("", "state: the cell's history; a collection: ] [ its pages of 100, i one item's history"),
+    ("", "access: grant or take back what is picked, or set a secret; R roll a secret back; del remove it"),
+    ("", "settings: change the one picked (→ says what it means)"),
+    ("", "graph: edit the statement picked; a (or its switch on the graph) steps it through nodes, statements and the nodes grouped by statement"),
     ("", ""),
     ("Admin", ""),
-    ("tab", "the next part: people, API keys, folders, databases, secrets, the server"),
-    ("n", "invite someone, make an API key, bind a folder or a database (holon's own flags)"),
-    ("enter", "people: the role (e the email, x disable, s a reset link); databases: their tables;"),
-    ("", "secrets: the flow's access; server: reload holon.toml, sign-in, sweep the store or folders"),
-    ("del", "remove a person, revoke a key, unbind a folder or a database"),
+    ("tab", "the next part: people, groups, roles, bindings, access history, your agents, API keys,"),
+    ("", "folders, databases, mail, feeds, queues, secrets, storage, policy, the server"),
+    ("n", "invite someone, a group, a role, a binding, a key; bind a folder, a database, mail, a feed or a queue;"),
+    ("", "a server secret (holon's own flags)"),
+    ("enter", "people: the role (a an agent or service, b bind, e the email, o the owner, x disable, s a reset link);"),
+    ("", "roles: change one; access history: the approval settings; databases: their tables;"),
+    ("", "secrets: set it again (t where it may go, R roll it back); storage: change it;"),
+    ("", "policy: read holon.toml again; server: reload it, sign-in, sweep the store or folders"),
+    ("+  -", "groups: add members, take one out"),
+    ("b", "folders: browse the server's folders (enter opens, ← the parent, n binds the one open)"),
+    ("del", "remove a person, a group, a role or a secret; unbind; revoke a key"),
     ("", ""),
     ("Editor", ""),
     ("esc / i", "leave the text for the page keys, and come back to it"),
@@ -74,6 +94,7 @@ const HELP: &[(&str, &str)] = &[
     ("", ""),
     ("Approvals", ""),
     ("tab", "deploys waiting, runs waiting at an approval (await approval(…)), access changes"),
+    ("] [", "runs and access changes: the next or the one before"),
     ("a  d", "a run's step or an access change: approve it, decline it (with why); its author withdraws it"),
     ("enter", "a deploy: review and deploy it; a run: its flow"),
     ("", ""),
@@ -89,6 +110,24 @@ const HELP: &[(&str, &str)] = &[
     ("click", "a page, a tab, a row, a button; in the text, the cursor (shift+click selects)"),
     ("wheel", "scrolls what is under it"),
 ];
+
+/// `text` in lines of at most `room` letters, broken between words (a word longer than that
+/// alone on its line).
+pub(crate) fn wrapped(text: &str, room: usize) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut line = String::new();
+    for word in text.split(' ') {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > room {
+            out.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    out.push(line);
+    out
+}
 
 /// A dialog's frame: cleared, bordered, its buttons along the bottom; the space inside.
 fn frame(f: &mut Frame, app: &App, rect: Rect, title: &str, buttons: &[(&str, &str, KeyCode, KeyModifiers)]) -> Rect {
@@ -305,7 +344,19 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), body);
         }
         Modal::Help { scroll } => {
-            let lines: Vec<Line> = HELP.iter().map(|(k, what)| if what.is_empty() && !k.is_empty() { Line::from(bold(k.to_string())) } else { Line::from(vec![coloured(format!("  {k:<16}"), ACCENT), Span::raw(what.to_string())]) }).collect();
+            // A line longer than the dialog goes on under itself, past its key, never cut.
+            let room = (96.min(area.width.saturating_sub(4)) as usize).saturating_sub(2 + 18 + 2).max(20);
+            let mut lines: Vec<Line> = vec![];
+            for (k, what) in HELP {
+                if what.is_empty() && !k.is_empty() {
+                    lines.push(Line::from(bold(k.to_string())));
+                    continue;
+                }
+                for (i, part) in wrapped(what, room).into_iter().enumerate() {
+                    let key = if i == 0 { format!("  {k:<16}") } else { " ".repeat(18) };
+                    lines.push(Line::from(vec![coloured(key, ACCENT), Span::raw(part)]));
+                }
+            }
             let rect = centred(area, 96, lines.len() as u16 + 4);
             let body = frame(f, app, rect, "Keys", &[("esc", "close", KeyCode::Esc, NONE)]);
             app.hit(body, crate::workbench::app::Click::Scroll(List::Dialog));

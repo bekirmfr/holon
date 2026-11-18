@@ -338,6 +338,8 @@ pub(crate) enum Then {
     Quit,
     Close(usize),
     Remove(String),
+    /// A saved flow deleted, by its name.
+    DeleteSaved(String),
     Grant { slug: String, item: String, back: bool },
     RemoveSecret(String, String),
     Admin(super::admin::AdminDo),
@@ -1961,6 +1963,7 @@ impl App {
                     KeyCode::Enter if deployed => self.open_flow(&name),
                     KeyCode::Enter | KeyCode::Char('e') => self.edit(&name),
                     KeyCode::Char('c') if deployed => self.call(&name),
+                    KeyCode::Delete | KeyCode::Char('D') => self.ask_delete_saved(&name),
                     _ => {}
                 }
             }
@@ -2348,6 +2351,7 @@ impl App {
             Then::Close(i) => self.close_tab(i),
             Then::Lifecycle(slug, action, from) => self.lifecycle(&slug, action, from),
             Then::Remove(slug) => self.remove(&slug),
+            Then::DeleteSaved(name) => self.delete_saved(&name),
             Then::Grant { slug, item, back } => self.change_grant(&slug, &item, back),
             Then::RemoveSecret(slug, name) => self.remove_secret(&slug, &name),
             Then::Admin(d) => self.admin_do(d),

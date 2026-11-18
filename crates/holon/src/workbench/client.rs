@@ -387,6 +387,11 @@ impl Client {
         self.post(&format!("/deployments/{}/{action}", seg(slug)), body).map(|_| ())
     }
 
+    /// A saved flow deleted (`DELETE /flows/{name}`, flow.delete): its deployment, if any, stays.
+    pub(crate) fn delete_saved(&self, name: &str) -> Result<(), String> {
+        self.delete(&format!("/flows/{}", seg(name))).map(|_| ())
+    }
+
     pub(crate) fn remove(&self, slug: &str) -> Result<(), String> {
         self.delete(&format!("/deployments/{}", seg(slug))).map(|_| ())
     }

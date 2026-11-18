@@ -552,6 +552,105 @@ fn the_palette_finds_a_flows_history_and_the_call_form_sends_an_action() {
     assert_eq!(app.detail.as_ref().unwrap().runs.len(), 1, "the call ran, and the page shows it");
 }
 
+/// The palette finds a run by its number (`1`, `#1`, `run 1`), first; the latest runs the
+/// server's summary names; and what waits for a person, each opening where it is decided.
+#[test]
+fn the_palette_finds_a_run_by_its_number_the_latest_runs_and_what_waits() {
+    let (mut app, _) = bumped(2);
+    press(&mut app, KeyCode::Esc);
+    let plan = holon_author::agent::plan(BEATS).unwrap();
+    app.client.as_ref().unwrap().save("beats", &plan, BEATS, None).unwrap();
+    app.refresh();
+
+    let labels = |app: &App, q: &str| super::palette::items(app, q).into_iter().map(|i| (i.label, i.kind)).collect::<Vec<_>>();
+    let all = labels(&app, "");
+    assert!(all.contains(&("run #1 of bump".into(), "run")) && all.contains(&("run #0 of bump".into(), "run")), "the summary's latest runs: {all:?}");
+    assert!(all.iter().any(|(l, k)| l.starts_with("beats waits to deploy it for the first time") && *k == "approvals"), "{all:?}");
+    for q in ["1", "#1", "run 1"] {
+        let found = labels(&app, q);
+        assert_eq!(found[0], ("run #1 of bump".into(), "run"), "{q}: {found:?}");
+        assert_eq!(found.iter().filter(|(l, _)| l == "run #1 of bump").count(), 1, "not twice: {found:?}");
+    }
+
+    ctrl(&mut app, 'p');
+    typed(&mut app, "#1");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!((app.page, app.flow.section), (Page::Flow, Section::Runs));
+    let d = app.detail.as_ref().unwrap();
+    assert_eq!(d.shown_runs("").get(app.flow.sel()).map(|&i| d.runs[i]["seq"].as_u64()), Some(Some(1)), "run #1 picked");
+
+    // A run no flow has: the flow opens on its runs, and says where that run is.
+    ctrl(&mut app, 'p');
+    typed(&mut app, "run 99");
+    press(&mut app, KeyCode::Enter);
+    assert!(note(&app).contains("run #99 isn't among the newest runs read"), "{}", note(&app));
+
+    ctrl(&mut app, 'p');
+    typed(&mut app, "beats waits");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!((app.page, app.approvals_part), (Page::Approvals, super::approvals::Part::Deploys));
+    assert_eq!(app.waiting()[app.sel[1]].0, "beats");
+}
+
+/// The keys dialog says every line of the help whole: a long one goes on under itself, none cut.
+#[test]
+fn the_keys_dialog_cuts_no_line() {
+    let (mut app, _) = app();
+    press(&mut app, KeyCode::Esc);
+    app.modal = Some(Modal::Help { scroll: 0 });
+    let mut seen = String::new();
+    for scroll in (0..200).step_by(20) {
+        app.modal = Some(Modal::Help { scroll });
+        seen += &screen(&mut app, 140, 45);
+    }
+    let words: std::collections::HashSet<&str> = seen.split_whitespace().collect();
+    for (_, what) in super::ui::modal::HELP {
+        for word in what.split_whitespace() {
+            assert!(words.contains(word), "{word:?} of {what:?} isn't shown whole");
+        }
+    }
+}
+
+/// A saved flow is deleted from Flows, asked first, as the web's Flows page does: n keeps it, enter
+/// deletes it. A flow that is deployed and not saved says there is nothing saved to delete.
+#[test]
+fn a_saved_flow_is_deleted_from_flows_once_confirmed() {
+    let (mut app, _) = bumped(0);
+    press(&mut app, KeyCode::Esc);
+    let plan = holon_author::agent::plan(BEATS).unwrap();
+    app.client.as_ref().unwrap().save("beats", &plan, BEATS, None).unwrap();
+    app.refresh();
+    press(&mut app, KeyCode::Char('3'));
+    let at = |app: &App, name: &str| app.flow_names().iter().position(|n| n == name).unwrap();
+    app.sel[2] = at(&app, "beats");
+
+    press(&mut app, KeyCode::Delete);
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("Delete the saved flow \"beats\"?") && shown.contains("can't be undone"), "{shown}");
+    press(&mut app, KeyCode::Char('n'));
+    assert!(app.modal.is_none() && app.client.as_ref().unwrap().saved("beats").is_some(), "n keeps it");
+
+    press(&mut app, KeyCode::Delete);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.client.as_ref().unwrap().saved("beats").is_none(), "{}", note(&app));
+    assert!(!app.flow_names().contains(&"beats".to_string()));
+    assert!(note(&app).contains("deleted the saved flow \"beats\""), "{}", note(&app));
+
+    // bump: deployed; its saved record, if its deploy kept one, goes, and its deployment stays.
+    app.sel[2] = at(&app, "bump");
+    let saved = app.client.as_ref().unwrap().saved("bump").is_some();
+    press(&mut app, KeyCode::Char('D'));
+    if saved {
+        let shown = screen(&mut app, 120, 30);
+        assert!(shown.contains("Its deployment stays and keeps running"), "{shown}");
+        press(&mut app, KeyCode::Enter);
+    } else {
+        assert!(app.modal.is_none() && note(&app).contains("isn't saved on the server"), "{}", note(&app));
+    }
+    assert!(app.client.as_ref().unwrap().saved("bump").is_none());
+    assert!(app.client.as_ref().unwrap().deployment("bump").is_some(), "its deployment stays");
+}
+
 /// Click where something was drawn, as the mouse would.
 #[test]
 fn a_flows_graph_is_its_statements_wired_and_what_its_newest_run_reached() {
@@ -3386,4 +3485,70 @@ fn live_record() {
     keep("Overview, after the check", &mut app);
     let written = std::fs::read_to_string(&out).unwrap();
     assert!(!written.contains("srv_live"), "never the value");
+}
+
+/// Step 9 against a live server (`holon serve`, set up with `HOLON_SETUP_CODE=HOLON-LIVE`): the
+/// palette opens a run by its number and a deploy waiting by its name; `?` lists the keys page by
+/// page; a saved flow is deleted from Flows, asked first, and the server no longer has it. Each
+/// page it passes is written to `HOLON_SCREENS`.
+#[test]
+#[ignore = "drives a live server: HOLON_LIVE=http://127.0.0.1:7591 HOLON_SCREENS=pages.txt"]
+fn live_small() {
+    let server = std::env::var("HOLON_LIVE").expect("HOLON_LIVE: the server's address");
+    let out = std::env::var("HOLON_SCREENS").expect("HOLON_SCREENS: where to write the pages");
+    let open = |token: Option<&str>| Client::new(Box::new(crate::mcp::Http::new(&server, token)));
+    let ok = |said: Result<serde_json::Value, String>, what: &str| said.unwrap_or_else(|e| panic!("{what}: {e}"));
+    let ada = ok(open(None).post("/auth/setup", serde_json::json!({ "code": "HOLON-LIVE", "name": "ada", "password": "correct horse battery" })), "setup")["token"].as_str().unwrap().to_string();
+    let as_ada = open(Some(&ada));
+    let mut pages = String::new();
+    let mut keep = |name: &str, app: &mut App| {
+        pages += &format!("\n===== {name} =====\n{}\nnote: {}\n", screen(app, 140, 40), note(app));
+        std::fs::write(&out, &pages).unwrap();
+    };
+    let mut app = App::new(None);
+    app.attach(open(Some(&ada)));
+    app.refresh();
+    tab_with(&mut app, BUMP);
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Enter);
+    for _ in 0..3 {
+        ok(as_ada.post("/trigger/bump/bump", serde_json::json!({})), "bump");
+    }
+    let plan = holon_author::agent::plan(BEATS).unwrap();
+    as_ada.save("beats", &plan, BEATS, None).unwrap();
+    app.refresh();
+    press(&mut app, KeyCode::Esc);
+
+    ctrl(&mut app, 'p');
+    keep("ctrl+p, nothing typed", &mut app);
+    typed(&mut app, "#2");
+    keep("ctrl+p #2", &mut app);
+    press(&mut app, KeyCode::Enter);
+    keep("bump, run #2", &mut app);
+    let d = app.detail.as_ref().unwrap();
+    assert_eq!(d.shown_runs("").get(app.flow.sel()).and_then(|&i| d.runs[i]["seq"].as_u64()), Some(2), "{}", note(&app));
+
+    ctrl(&mut app, 'p');
+    typed(&mut app, "beats waits");
+    press(&mut app, KeyCode::Enter);
+    keep("Approvals, beats picked", &mut app);
+    assert_eq!(app.waiting()[app.sel[1]].0, "beats");
+
+    press(&mut app, KeyCode::Char('?'));
+    keep("the keys", &mut app);
+    for _ in 0..3 {
+        press(&mut app, KeyCode::PageDown);
+    }
+    keep("the keys, further down", &mut app);
+    press(&mut app, KeyCode::Esc);
+
+    press(&mut app, KeyCode::Char('3'));
+    app.sel[2] = app.flow_names().iter().position(|n| n == "beats").unwrap();
+    press(&mut app, KeyCode::Delete);
+    keep("Flows: delete beats?", &mut app);
+    press(&mut app, KeyCode::Enter);
+    keep("Flows: beats deleted", &mut app);
+    assert!(note(&app).contains("deleted the saved flow \"beats\""), "{}", note(&app));
+    let gone = as_ada.get("/flows/beats");
+    assert!(gone.as_ref().is_err_and(|e| e.contains("no flow saved")), "{gone:?}");
 }

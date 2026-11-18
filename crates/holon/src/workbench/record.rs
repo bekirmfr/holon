@@ -158,7 +158,7 @@ pub(crate) fn secret_lines(r: &Value) -> Vec<(Tone, String)> {
         .collect()
 }
 
-fn cut(s: &str, n: usize) -> String {
+pub(crate) fn cut(s: &str, n: usize) -> String {
     if s.chars().count() > n { format!("{}…", s.chars().take(n - 1).collect::<String>()) } else { s.to_string() }
 }
 
