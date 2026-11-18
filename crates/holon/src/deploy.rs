@@ -1569,9 +1569,10 @@ pub(crate) fn handle_get_state(deployments: &Mutex<BTreeMap<String, Deployment>>
 ///
 /// Its run records stay (web console L4 §8.4): its log and its timeline, with the units its runs
 /// ran and the file texts they read, are written first as an export `holon verify` checks
-/// (`removed_file`), and the answer's `records` says where. Only then do its live files go, so
-/// the slug deployed again starts a new chain, and the old one stays readable beside it. If they
-/// can't be written, nothing is removed.
+/// (`removed_file`), and the answer's `records` says where: in full for `sees_data` (whoever views
+/// the host, whose page says where its data is), else within the data folder (audit R51). Only
+/// then do its live files go, so the slug deployed again starts a new chain, and the old one stays
+/// readable beside it. If they can't be written, nothing is removed.
 ///
 /// Its log is closed first: a run still in flight (a stop doesn't wait for one) writes no line
 /// after the records are taken, so they hold every run its log does, and a strict one is answered
@@ -1583,6 +1584,7 @@ pub(crate) fn handle_delete_deployment(
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     deployments_path: &Place,
     slug: &str,
+    sees_data: bool,
 ) -> Response {
     // What its records are read from, with the table's lock released while they are written.
     let held = match deployments.lock().unwrap().get(slug) {
@@ -1630,7 +1632,12 @@ pub(crate) fn handle_delete_deployment(
                 return err(500, format!("{slug:?} is deleted, but {e}: after a restart it is deployed again"));
             }
             let mut answer = serde_json::to_value(deployment_entry(slug, &dep)).unwrap_or_default();
-            answer["records"] = serde_json::json!(records.map(|p| p.display().to_string()));
+            let data_folder = deployments_path.at().and_then(HostPath::parent);
+            let records = records.map(|p| match data_folder.as_deref().and_then(|d| p.strip_prefix(d).ok()).filter(|_| !sees_data) {
+                Some(within) => within.display().to_string(),
+                None => p.display().to_string(),
+            });
+            answer["records"] = serde_json::json!(records);
             Response::json(&answer)
         }
         None => err(404, format!("no deployment {slug:?}")),

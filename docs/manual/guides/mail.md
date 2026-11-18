@@ -224,7 +224,10 @@ arrival: one a sender wrote further down, or under another name, is never believ
   marked read), oldest first, 20 a look at most, and starts one run; once its run is over, it is
   moved to `--done`. A run that failed is moved too: its record says why.
 - What the folder holds when the flow is deployed isn't run on: the deployment's timeline says
-  `listens to the mailbox of remit (…): what it holds now (3 messages) isn't run on`.
+  `listens to the mailbox of remit (its folder INBOX), what it holds now (3 messages) isn't run on`.
+  The timeline names the mail, never where its servers are: those, and the sources their URLs are
+  read from, go only to whoever may bind resources (`holon mail list`, the Resources page), and
+  anyone else is told whom it sends as and to, and the folders it reads and moves to.
 - Each mailbox is looked at on its own: a server that doesn't answer (30 seconds a step), a
   long message or a long run hold back that mailbox's next look, and no other's.
 - Never twice: a message is noted before it is moved, so one whose move a crash cut off is moved

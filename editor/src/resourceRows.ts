@@ -1,8 +1,9 @@
 // Resources' tables (web-console-L4.md §9.1): each folder, database, mail, feed and queue bound is
 // a row of the same table (ResourceViews.tsx's ResourceTable), the resource, its details and who
 // uses it. What a row says of its binding is read here, one kind at a time: where it is (null when
-// the caller isn't shown it: a folder's path and a database's whereabouts go only to whoever may
-// bind resources, L4 Q4), and what else the binding says, in a few words each.
+// the caller isn't shown it: a folder's path, a database's whereabouts and a mail server's, a
+// feed's or a queue's address go only to whoever may bind resources, L4 Q4, and the server leaves
+// them out for anyone else), and what else the binding says, in a few words each.
 
 import type { DatabaseEntry, FeedEntry, FolderEntry, MailEntry, QueueEntry } from "./server";
 import type { Kind } from "./holdings";
@@ -34,22 +35,26 @@ export function databaseLine(d: DatabaseEntry, seesWhere: boolean): ResourceLine
   return { kind: "database", name: d.name, deployment: d.deployment, where, notes: [d.engine, access(d.access), ...heldForRuns(d.lock)] };
 }
 
-/** A mail: the server it sends through, as whom and to whom; the mailbox it receives in. */
+/** A mail: the server it sends through (to whoever may bind), as whom and to whom; the mailbox it
+ *  receives in (its server, to whoever may bind). */
 export function mailLine(m: MailEntry): ResourceLine {
+  const box = m.mailbox;
   const parts = [
-    ...(m.smtp ? [`${m.address} (from ${m.smtp}) · as ${m.from} · to ${m.to.join(", ")}`] : []),
-    ...(m.mailbox
-      ? [`receives in ${m.mailbox.address} ${m.mailbox.folder} (from ${m.mailbox.imap}), moved to ${m.mailbox.done} · ${m.mailbox.verdict_from ? `${m.mailbox.verdict_from}'s verdict` : "no verdict believed"}`]
+    ...(m.smtp ? [`${m.address} (from ${m.smtp}) · as ${m.from} · to ${m.to.join(", ")}`] : m.sends ? [`sends as ${m.from} · to ${m.to.join(", ")}`] : []),
+    ...(box
+      ? [`receives in ${box.imap ? `${box.address} ${box.folder} (from ${box.imap})` : box.folder}, moved to ${box.done} · ${box.verdict_from ? `${box.verdict_from}'s verdict` : "no verdict believed"}`]
       : []),
   ];
   return { kind: "mail", name: m.name, deployment: m.deployment, where: parts.join(" · ") || null, notes: m.oauth ? [`logs in with OAuth (${m.oauth.address} from ${m.oauth.source})`] : [] };
 }
 
-/** A feed: where it is, what each request sends, what a WebSocket is sent, how much may wait. */
+/** A feed: where it is and what each request sends (to whoever may bind), what a WebSocket is
+ *  sent, how much may wait. */
 export function feedLine(f: FeedEntry): ResourceLine {
+  const headers = Object.entries(f.headers ?? {});
   const said = [
-    f.database ? `listens on ${f.address} (the database ${f.database})` : `${f.address} (from ${f.url})`,
-    ...(Object.keys(f.headers).length > 0 ? [`sends ${Object.entries(f.headers).map(([h, s]) => `${h} from ${s}`).join(", ")}`] : []),
+    ...(f.database ? [f.address ? `listens on ${f.address} (the database ${f.database})` : `listens on the database ${f.database}`] : f.address ? [`${f.address} (from ${f.url})`] : []),
+    ...(headers.length > 0 ? [`sends ${headers.map(([h, s]) => `${h} from ${s}`).join(", ")}`] : []),
     ...((f.subscribe ?? []).length > 0 ? [`subscribes with ${(f.subscribe ?? []).join(", ")}`] : []),
     ...(f.heartbeat ? [`sends ${f.heartbeat} every ${f.every ?? 30}s`] : []),
     ...(f.only ? [`runs only ${Object.entries(f.only).map(([k, vs]) => `${k} ${vs.join(" or ")}`).join(" and ")}`] : []),
@@ -64,9 +69,10 @@ export function feedLine(f: FeedEntry): ResourceLine {
   return { kind: "feed", name: f.name, deployment: f.deployment, where: said.join(" · "), notes: [] };
 }
 
-/** A queue: where it is, FIFO or not, its largest message, how long a message is out of sight. */
+/** A queue: where it is (to whoever may bind), FIFO or not, its largest message, how long a
+ *  message is out of sight. */
 export function queueLine(q: QueueEntry): ResourceLine {
-  const said = [`${q.address} (from ${q.url})`, ...(q.fifo ? ["FIFO"] : []), `${Math.round(q.largest / 1024)} KiB at most`, `out of sight for ${q.visibility}s`, ...(q.keep_failed ? ["a failed run's message is left for the redrive"] : [])];
+  const said = [...(q.address ? [`${q.address} (from ${q.url})`] : []), ...(q.fifo ? ["FIFO"] : []), `${Math.round(q.largest / 1024)} KiB at most`, `out of sight for ${q.visibility}s`, ...(q.keep_failed ? ["a failed run's message is left for the redrive"] : [])];
   return { kind: "queue", name: q.name, deployment: q.deployment, where: said.join(" · "), notes: [] };
 }
 

@@ -215,8 +215,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return response;
     }
 
+    // "ok", or 503 "not ok: " and what fails, without an error's text, to anyone (failing.rs).
     if method == "GET" && url == "/health" {
-        return Response::text("ok");
+        let (status, says) = crate::failing::health(&state.deployments_path);
+        return Response::text(says).with_status_code(status);
     }
 
     // The version this host runs, for the console's host card.
@@ -277,7 +279,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return crate::summary::handle_get_summary(state, request, &caller);
     }
     if method == "POST" && url == "/summary/check" {
-        return crate::summary::handle_post_check(state);
+        return crate::summary::handle_post_check(state, &caller);
     }
 
     if method == "GET" && url.split('?').next() == Some("/activity") {
@@ -329,12 +331,12 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         if let Some(slug) = rest.strip_suffix("/feeds")
             && method == "GET"
         {
-            return feeds::handle_get_feeds(state, slug);
+            return feeds::handle_get_feeds(state, slug, crate::can::sees_where(&caller));
         }
         if let Some(slug) = rest.strip_suffix("/queues")
             && method == "GET"
         {
-            return queues::handle_get_queues(state, slug);
+            return queues::handle_get_queues(state, slug, crate::can::sees_where(&caller));
         }
         if let Some(slug) = rest.strip_suffix("/channels")
             && method == "GET"
@@ -437,7 +439,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
                 return scheduler::handle_post_tick(state, slug, request, &caller);
             }
         } else if method == "DELETE" {
-            let response = handle_delete_deployment(&state.store, &state.folders, &state.deployments, &state.deployments_path, rest);
+            let response = handle_delete_deployment(&state.store, &state.folders, &state.deployments, &state.deployments_path, rest, crate::can::sees_data(&caller));
             // Deleted, it is on no tag.
             if response.status_code == 200
                 && let Some(accounts) = state.access.accounts()

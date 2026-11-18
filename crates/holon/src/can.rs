@@ -359,6 +359,19 @@ pub(crate) fn holding<'a>(who: &'a Caller, role: Option<&str>, on: &Resource) ->
     })
 }
 
+/// Whether `who` is shown where the host's resources are: a folder's path, a database's, a mail
+/// server's, a feed's and a queue's address, and the sources their URLs are read from. Whoever may
+/// bind one (web console L4, Q4); everyone else sees what each does, not where it is (audit R51).
+pub(crate) fn sees_where(who: &Caller) -> bool {
+    can(who, ResourceBind, &Resource::Host).is_ok()
+}
+
+/// Whether `who` is shown where the server keeps its data: whoever views the host, whose page says
+/// so (`/admin/host`).
+pub(crate) fn sees_data(who: &Caller) -> bool {
+    can(who, HostView, &Resource::Host).is_ok()
+}
+
 /// Whether `who` may do `action` to every flow, those no one has named yet included: as a binding
 /// on the host holds it. No binding names the empty slug (bindings.rs), so only the host covers it.
 pub(crate) fn everywhere(who: &Caller, action: Action) -> bool {

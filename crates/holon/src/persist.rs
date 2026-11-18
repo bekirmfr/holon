@@ -21,10 +21,15 @@ use crate::*;
 /// was held throughout, so one deployment mid-fire (holding its state lock) or one slow disk
 /// write stalled every endpoint and the clock scheduler. `PERSIST` serializes whole
 /// snapshot-and-write passes, so an older snapshot can never land on disk after a newer one.
+///
+/// How it went is noted for the admin's warnings and `/health` (failing.rs): a write that fails,
+/// or a waiting run left out, until a write keeps everything.
 pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<(), String> {
     static PERSIST: Mutex<()> = Mutex::new(());
+    let place = path;
     let Some(path) = path.at() else { return Ok(()) };
     let _persist = PERSIST.lock().unwrap();
+    let mut left_out: Vec<String> = Vec::new();
     let records: Vec<DeploymentRecord> = deployments
         .lock()
         .unwrap()
@@ -79,6 +84,7 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
                                     }
                                     Err(e) => {
                                         eprintln!("warning: waiting run {} of {slug:?} not kept: it can't be sealed: {e}", p.run_id);
+                                        left_out.push(format!("waiting run {} of {slug:?} isn't kept: it can't be sealed: {e}", p.run_id));
                                         return None;
                                     }
                                 },
@@ -92,7 +98,7 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
             }
         })
         .collect();
-    let saved = match serde_json::to_vec_pretty(&records) {
+    let written = match serde_json::to_vec_pretty(&records) {
         // Sealed under the server's keys, owner-only: it holds the flows' documents, grants and
         // what their waiting runs need. A test makes it fail where the disk would
         // (`crate::faults`).
@@ -100,14 +106,21 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
             Some(_) => Err(crate::faults::error("the deployments file")),
             None => crate::at_rest::write_table(path, crate::at_rest::role::DEPLOYMENTS, &bytes),
         }
-        .map_err(|e| format!("the deployments file couldn't be written to {path:?}: {e}")),
-        Err(e) => Err(format!("the deployments couldn't be serialized: {e}")),
+        .map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) => Err(format!("it can't be made: {e}")),
     };
-    if let Err(e) = &saved {
-        eprintln!("warning: {e}");
-    }
-    saved
+    // The admin's warnings and `/health` (failing.rs): a write that fails, or a waiting run left
+    // out, until a write keeps everything.
+    let kept = written.clone().and_then(|()| if left_out.is_empty() { Ok(()) } else { Err(left_out.join("; ")) });
+    crate::failing::note(place, crate::failing::Writer::Deployments, &kept);
+    // Where and why go to the admin (that warning, and stderr), never to whoever asked for the
+    // write: a route's or an action's caller, a flow's caller among them (audit R71).
+    written.map_err(|why| crate::failing::Failed::new(UNWRITTEN, why).said())
 }
+
+/// What whoever asked for a write of the deployments file is told when it fails: that, and no
+/// more (`persist_deployments`).
+pub(crate) const UNWRITTEN: &str = "the deployments file couldn't be written";
 
 /// A waiting run's part that may hold a secret (its inputs, sourced values, requests, tokens,
 /// events and what its points show: `ParkedRun::plain_part`), sealed once under its deployment's

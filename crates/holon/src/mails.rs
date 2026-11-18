@@ -895,8 +895,25 @@ pub(crate) fn loggable(payload: &Value) -> Value {
 
 // ── admin ──
 
-fn shown(name: &str, deployment: Option<&str>, b: &Binding) -> serde_json::Value {
-    serde_json::json!({ "name": name, "deployment": deployment, "smtp": b.smtp, "address": b.address, "from": b.from, "to": b.to, "mailbox": b.mailbox, "oauth": b.oauth })
+/// A binding as the admin panel and `holon mail list` show it. Where its servers are (their
+/// addresses, the sources their URLs are read from, and the token request's) only for
+/// `sees_where`: whoever may bind (web console L4, Q4). Whom it sends as and to, and the folders it
+/// reads and moves to, are what it does, shown as a database's access is.
+fn shown(name: &str, deployment: Option<&str>, b: &Binding, sees_where: bool) -> serde_json::Value {
+    let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "smtp": b.smtp, "address": b.address, "from": b.from, "to": b.to, "mailbox": b.mailbox, "oauth": b.oauth });
+    if !sees_where {
+        for (at, key) in [(None, "smtp"), (None, "address"), (None, "oauth"), (Some("mailbox"), "imap"), (Some("mailbox"), "address")] {
+            let within = match at {
+                Some(at) => shown.get_mut(at),
+                None => Some(&mut shown),
+            };
+            if let Some(o) = within.and_then(serde_json::Value::as_object_mut) {
+                o.remove(key);
+            }
+        }
+        shown["sends"] = serde_json::json!(!b.smtp.is_empty());
+    }
+    shown
 }
 
 fn labelled(name: &str, deployment: Option<&str>) -> String {
@@ -904,9 +921,10 @@ fn labelled(name: &str, deployment: Option<&str>) -> String {
 }
 
 /// `/admin/mails` (list, bind), `/admin/mails/<name>` (unbind; `?deployment=<slug>` for a
-/// deployment's own), or None for any other path. Only an admin gets this far (can.rs); what
-/// they do goes in the activity log.
-pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Response> {
+/// deployment's own), or None for any other path. The gate (can.rs) let the caller this far;
+/// `sees_where` says whether they may bind, and so see where each mail's servers are. What they do
+/// goes in the activity log.
+pub(crate) fn route(state: &AppState, request: &Request, by: &str, sees_where: bool) -> Option<Response> {
     let url = request.url();
     let method = request.method();
     let all = &state.folders.mails;
@@ -914,8 +932,8 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
         return Some(match method {
             "GET" => {
                 let bound = all.all();
-                let server = bound.server.iter().map(|(n, b)| shown(n, None, b));
-                let own = bound.deployments.iter().flat_map(|(s, bs)| bs.iter().map(move |(n, b)| shown(n, Some(s), b)));
+                let server = bound.server.iter().map(|(n, b)| shown(n, None, b, sees_where));
+                let own = bound.deployments.iter().flat_map(|(s, bs)| bs.iter().map(move |(n, b)| shown(n, Some(s), b, sees_where)));
                 Response::json(&server.chain(own).collect::<Vec<_>>())
             }
             "POST" => {
@@ -941,7 +959,7 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                             let detail = crate::events::Detail { name: Some(b.name.clone()), ..Default::default() };
                             crate::events::note(&state.deployments, slug, "binding", format!("bound the mail {}", b.name), Some(by), detail);
                         }
-                        Response::json(&shown(&b.name, b.deployment.as_deref(), &m))
+                        Response::json(&shown(&b.name, b.deployment.as_deref(), &m, sees_where))
                     }
                     Err(e) => e,
                 }
@@ -1027,14 +1045,22 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         let only = m["deployment"].as_str().map_or(String::new(), |s| format!(", for {s} only"));
         let to: Vec<&str> = m["to"].as_array().into_iter().flatten().filter_map(|t| t.as_str()).collect();
         let mut said = vec![m["name"].as_str().unwrap_or("").to_string()];
-        if m["smtp"].as_str().is_some_and(|s| !s.is_empty()) {
-            said.push(format!("sends through {} (from {})  as {}  to {}", m["address"].as_str().unwrap_or(""), m["smtp"].as_str().unwrap_or(""), m["from"].as_str().unwrap_or(""), to.join(", ")));
+        // Where its servers are, to whoever may bind (web console L4, Q4): `sends` says it does to
+        // anyone else.
+        match m["smtp"].as_str().filter(|s| !s.is_empty()) {
+            Some(smtp) => said.push(format!("sends through {} (from {smtp})  as {}  to {}", m["address"].as_str().unwrap_or(""), m["from"].as_str().unwrap_or(""), to.join(", "))),
+            None if m["sends"] == true => said.push(format!("sends as {}  to {}", m["from"].as_str().unwrap_or(""), to.join(", "))),
+            None => {}
         }
         let b = &m["mailbox"];
-        if let Some(imap) = b["imap"].as_str() {
+        if b.is_object() {
             let verdict = b["verdict_from"].as_str().map_or("nobody's verdict".to_string(), |v| format!("{v}'s verdict"));
             let every = folders::span_text(b["every"].as_u64().unwrap_or(60));
-            said.push(format!("receives in {} {} (from {imap}), moved to {}  {verdict}  every {every}", b["address"].as_str().unwrap_or(""), b["folder"].as_str().unwrap_or(""), b["done"].as_str().unwrap_or("")));
+            let at = match b["imap"].as_str() {
+                Some(imap) => format!("{} {} (from {imap})", b["address"].as_str().unwrap_or(""), b["folder"].as_str().unwrap_or("")),
+                None => b["folder"].as_str().unwrap_or("").to_string(),
+            };
+            said.push(format!("receives in {at}, moved to {}  {verdict}  every {every}", b["done"].as_str().unwrap_or("")));
         }
         if let Some(source) = m["oauth"]["source"].as_str() {
             said.push(format!("logs in with OAuth ({} from {source})", m["oauth"]["address"].as_str().unwrap_or("")));

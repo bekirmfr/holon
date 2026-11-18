@@ -170,11 +170,13 @@ fn run_files(dir: &Path) -> Vec<(PathBuf, RunFile)> {
     files
 }
 
-/// Whether a holon answers at `server`: `Some(true)` it does, `Some(false)` nothing listens
-/// there (the run file is stale), `None` something else is in the way (it may be busy).
+/// Whether a holon answers at `server`: `Some(true)` it does (a 503 "not ok" is one that can't
+/// write something, failing.rs), `Some(false)` nothing listens there (the run file is stale),
+/// `None` something else is in the way (it may be busy).
 fn answers(server: &str) -> Option<bool> {
     match ureq::get(&format!("{server}/health")).timeout(Duration::from_secs(3)).call() {
         Ok(r) => Some(r.into_string().is_ok_and(|b| b.trim() == "ok")),
+        Err(ureq::Error::Status(503, r)) => r.into_string().is_ok_and(|b| b.starts_with(crate::failing::NOT_OK)).then_some(true),
         Err(ureq::Error::Transport(t)) if t.kind() == ureq::ErrorKind::ConnectionFailed => Some(false),
         Err(_) => None,
     }

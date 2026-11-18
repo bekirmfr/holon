@@ -1,6 +1,8 @@
 //! Stopping `holon serve`: told to (ctrl+c, SIGTERM, or its console closing), the server starts
 //! no more runs, finishes those it started, each to its log line, syncs the logs and the witness's
-//! queue, and exits. Told twice, it exits at once.
+//! queue, and exits. Told twice, it exits at once. It waits for the runs going on at most
+//! `--stop-within` ([`STOP_WITHIN`] unless said): past it, it syncs what is written and exits
+//! without the mark of a clean stop, so the next start takes the runs it cut off as a crash's.
 //!
 //! Its triggers ask `Deployment::takes_runs` before they start a run, as they ask whether its
 //! deployment is paused, and its requests are answered 503 (`admitted`, `serve_flow`): the
@@ -25,6 +27,31 @@ use crate::paths::Place;
 
 /// What a request to a server stopping is answered, 503.
 pub(crate) const REFUSED: &str = "the server is stopping: try again once it is back";
+
+/// How long a stop waits for the runs going on, unless `--stop-within` says: a run may take
+/// longer (a step waiting on a slow answer), and a service manager kills a server that takes
+/// longer than its own wait (systemd's is 90 s; Docker's 10 s, which the manual's service guide
+/// says to raise past this).
+pub(crate) const STOP_WITHIN: Duration = Duration::from_secs(60);
+
+/// `--stop-within` as written: seconds or minutes, `30s`, `2m`; `0s` doesn't wait.
+pub(crate) fn parse_within(text: &str) -> Result<Duration, String> {
+    let text = text.trim();
+    let bad = || format!("{text:?} isn't how long to wait: write it as 30s or 2m (0s doesn't wait)");
+    let (n, unit) = text.split_at(text.len().saturating_sub(1));
+    let n: u64 = n.trim().parse().map_err(|_| bad())?;
+    match unit {
+        "s" => Ok(Duration::from_secs(n)),
+        "m" => Ok(Duration::from_secs(n.saturating_mul(60))),
+        _ => Err(bad()),
+    }
+}
+
+/// A wait as `--stop-within` writes it: minutes when whole, else seconds.
+pub(crate) fn within_text(within: Duration) -> String {
+    let s = within.as_secs();
+    if s > 0 && s.is_multiple_of(60) { format!("{}m", s / 60) } else { format!("{s}s") }
+}
 
 /// What holds the door open (the runs, the requests being answered, the lines being written),
 /// with whether it is closed in the top bit; and the runs alone, to say how many go on.
@@ -114,16 +141,22 @@ pub(crate) fn wait_until_told() {
 }
 
 /// Wait until nothing holds `door` open, then close it, saying how many runs are left every
-/// `every`.
-pub(crate) fn drain(door: &Door, every: Duration, say: impl Fn(usize)) {
-    let mut said = Instant::now();
+/// `every`: whether it closed. Past `within` it stops waiting, the door left open, and the runs
+/// going on are cut off as the process exits.
+pub(crate) fn drain(door: &Door, every: Duration, within: Duration, say: impl Fn(usize)) -> bool {
+    let started = Instant::now();
+    let mut said = started;
     while !door.close_if_empty() {
+        if started.elapsed() >= within {
+            return false;
+        }
         if said.elapsed() >= every {
             say(door.runs());
             said = Instant::now();
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+    true
 }
 
 /// Where the mark of a clean stop is kept for the deployments file at `at`: beside it. None for one
@@ -262,7 +295,7 @@ mod tests {
                 })
                 .collect();
             start.wait();
-            drain(&RACED, Duration::from_secs(60), |_| {});
+            assert!(drain(&RACED, Duration::from_secs(60), Duration::from_secs(60), |_| {}));
             for r in runners {
                 r.join().unwrap();
             }
@@ -279,15 +312,46 @@ mod tests {
         let running = DOOR.enter(true).unwrap();
         let said = Arc::new(crate::sync::Mutex::new(vec![]));
         let heard = Arc::clone(&said);
-        let drained = std::thread::spawn(move || drain(&DOOR, Duration::from_millis(20), |n| heard.lock().unwrap().push(n)));
+        let drained = std::thread::spawn(move || drain(&DOOR, Duration::from_millis(20), Duration::from_secs(60), |n| heard.lock().unwrap().push(n)));
         // Once it has said how many are left (not after a sleep it may not have run in).
         assert!(crate::tests::soon(|| !said.lock().unwrap().is_empty()), "it says how many are left while it waits");
         assert!(!drained.is_finished());
         drop(running);
-        drained.join().unwrap();
+        assert!(drained.join().unwrap(), "closed");
         let said = said.lock().unwrap();
         assert!(!said.is_empty() && said.iter().all(|n| *n == 1), "{said:?}");
         assert!(DOOR.enter(true).is_none());
+    }
+
+    /// Guards: a stop waits for the runs going on no longer than it was given, and says it didn't
+    /// close the door; one that ends in time closes it.
+    /// Why: a run may take minutes, and a service manager kills a server that outwaits its own
+    /// wait, with no sync and no word (audit R39). Past its wait the server syncs what is written
+    /// and leaves no mark of a clean stop, so the next start takes what it cut off as a crash's.
+    /// If it fails: a stop held by one long run until it is killed, or one that gives up while
+    /// nothing holds it.
+    #[test]
+    fn a_stop_waits_no_longer_than_it_was_given() {
+        static DOOR: Door = Door::new();
+        let running = DOOR.enter(true).unwrap();
+        let started = Instant::now();
+        let draining = std::thread::spawn(|| drain(&DOOR, Duration::from_millis(20), Duration::from_millis(300), |_| {}));
+        while !draining.is_finished() && started.elapsed() < crate::tests::EVENTUALLY {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(draining.is_finished(), "it gave up waiting");
+        assert!(!draining.join().unwrap(), "a run goes on past the wait");
+        let waited = started.elapsed();
+        // It gave up while the run still held the door (above): what a bound from above held.
+        assert!(waited >= Duration::from_millis(300), "it waited what it was given: {waited:?}");
+        assert!(DOOR.enter(true).is_some(), "the door is left open: nothing was closed on the run");
+        drop(running);
+        assert!(drain(&DOOR, Duration::from_millis(20), Duration::ZERO, |_| {}), "nothing holds it: closed at once");
+
+        for (text, within) in [("30s", Some(30)), ("2m", Some(120)), (" 0s ", Some(0)), ("90", None), ("1h", None), ("s", None), ("-1s", None)] {
+            assert_eq!(parse_within(text).ok(), within.map(Duration::from_secs), "{text:?}");
+        }
+        assert_eq!((within_text(STOP_WITHIN), within_text(Duration::from_secs(90)), within_text(Duration::ZERO)), ("1m".into(), "90s".into(), "0s".into()));
     }
 
     /// Guards: the mark a clean stop leaves, which the next start alone takes away.
