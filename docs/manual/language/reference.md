@@ -821,10 +821,13 @@ route.get("/seen/:name", (req) => seen[req.params.name])
   ([Actions](../guides/actions.md)).
 
 A file starts a run once it stops changing: the server looks at the folder every second, and a
-file that is the same at two looks in a row is new. Files already there when the flow is first
-deployed aren't new; files that arrive while the server is down or the deployment is paused start
-their runs when it is back; a file the flow's own runs wrote into the folder doesn't start it
-again.
+file that is the same at two looks in a row is new. A file whose writing pauses for a second or
+more is read part way, and the rest starts a second run, `changed`, with the whole file: write a
+file under a name the handler doesn't take (or elsewhere on the same disk) and rename it in once
+it is complete ([Files](../guides/files.md#a-run-per-new-file)). Files already there when the flow
+is first deployed aren't new; files that arrive while the server is down or the deployment is
+paused start their runs when it is back; a file the flow's own runs wrote into the folder doesn't
+start it again.
 
 **How runs are recorded.** Every handler is *strict* unless its options say otherwise: each run
 is a line of the deployment's log, which is what the runs table, replay, revert and explain read.

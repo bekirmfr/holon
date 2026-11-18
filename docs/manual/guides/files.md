@@ -215,6 +215,12 @@ It asks to "run on each file new, changed or removed in the folder "drop" (as it
 
 - A file is new once it stops changing: the server looks at the folder every second, and a file
   with the same size and time at two looks in a row starts a run.
+- A file that pauses for a second or more while it is being written is read part way: its run
+  gets what was written so far, and when the rest lands a second run starts, with the event
+  `changed` and the whole file. To hand a file over whole, write it under another name (or
+  elsewhere on the same disk) and rename it into the folder when it is complete. A temporary name
+  in the folder starts a run of its own if the handler takes it: give it one the handler's
+  `matching` leaves out, such as `report.csv.part` beside `{ matching: "*.csv" }`.
 - Files already in the folder when the flow is first deployed aren't new.
 - Files that arrive while the server is down, or the deployment paused, start their runs when it
   is back.

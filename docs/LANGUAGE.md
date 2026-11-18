@@ -813,12 +813,14 @@ on.file.created(drop, async (f) => {
 `on.file.created(drop, (f) => { … })` makes the flow run once for each file new or changed in the
 folder `drop`, once the file stops changing: the server looks every second at a folder the OS says
 changed, and at every folder each 30 seconds, by each file's size and time, and a file the same at
-two looks in a row starts a run. In that run `f` is the
-file's handle, `{folder, name, size, hash, modified, event}`: the `file` output of the handler's
-trigger node, `on_file{folder: drop}`, and the deployment asks to run on the folder's files, its
-trigger. Files already there when it is first deployed aren't new; files that arrive while the
-server is down, or the deployment is paused, start their runs when it is back; one its own runs
-wrote into the folder doesn't start it again (unless it changes).
+two looks in a row starts a run. A file whose writing pauses for a second or more is read part
+way, and the rest starts a second run, `changed`, with the whole file: write a file under a name
+the handler doesn't take (or elsewhere on the same disk) and rename it in once it is complete. In
+each run `f` is the file's handle, `{folder, name, size, hash, modified, event}`: the `file`
+output of the handler's trigger node, `on_file{folder: drop}`, and the deployment asks to run on
+the folder's files, its trigger. Files already there when it is first deployed aren't new; files
+that arrive while the server is down, or the deployment is paused, start their runs when it is
+back; one its own runs wrote into the folder doesn't start it again (unless it changes).
 
 `file: h` in place of `body:` sends a file as the request's body, by handle:
 `http_upload{method, host}(path, headers, h)`. The server streams the bytes from the folder, never
