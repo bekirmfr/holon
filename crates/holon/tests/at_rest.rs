@@ -954,7 +954,8 @@ fn touches_disk(body: &str) -> bool {
 /// can be made to fail where it touches the disk or a key: it asks `data_folder` itself (or reads
 /// through `disk`, which does), or goes through one that does (THROUGH), or never runs on a
 /// request (OUTSIDE, with why), or touches neither (PURE, with why, and checked: nothing it calls
-/// in the file does). So the data folder made to fail reaches everything a request does there
+/// in the file does). So the data folder made to fail reaches everything a request does there,
+/// and `no_answer_says_where_or_why_the_data_folder_failed` sees what each answer says then
 /// (audit R87).
 /// Why: answers passed on where a server's file failed and why (R71, R85, R91), each found by
 /// reading; the sweep sees only the ways in that ask the fault, and one added that doesn't would
@@ -1045,6 +1046,7 @@ fn every_way_into_at_rest_can_be_made_to_fail() {
     for name in ["StoreKeys::seal", "StoreKeys::open", "LineSeal::open", "LineSeal::read_lines", "disk::open"] {
         assert!(fns.iter().any(|f| f.name == name && f.way_in), "{name} is a way in: the scan doesn't see it");
     }
+    assert!(!named.contains_key("fail_folder") && !named.contains_key("failing_folder"), "the fault's own, gated by cfg, are left out");
     assert!(touch.contains("Keyring::open_line") && !touch.contains("Keyring::name"), "{touch:?}");
     assert!(fns.iter().filter(|f| f.way_in).count() > 60, "the scan finds at_rest.rs's ways in");
 }
@@ -1227,7 +1229,7 @@ fn the_data_folder_fails_in_tests_alone() {
     let test = "#[cfg(test)]";
     let mut wrong = Vec::new();
     for (file, text, items) in [
-        ("at_rest.rs", &at_rest, &["FAILING", "MADE_TO_FAIL", "fail_at", "AT"][..]),
+        ("at_rest.rs", &at_rest, &["FAILING", "MADE_TO_FAIL", "FAILING_FOLDERS", "fail_folder", "heal_folder", "failing_folder", "FAILING_SITES", "fail_sites", "heal_sites", "Fired", "FIRED", "fired", "fail_at", "AT"][..]),
         ("faults.rs", &faults, &["FAILING", "fail", "heal"][..]),
     ] {
         for item in items {
@@ -1290,4 +1292,51 @@ fn the_data_folder_fails_in_tests_alone() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The functions of the server that read why one of its files failed (`Failed::for_the_admin`:
+/// where it is on the server's disk and the error's own text), each with where it sends it: none
+/// builds an answer with it (audit R87).
+const FOR_THE_ADMIN: &[(&str, &str)] = &[
+    ("main.rs: serve", "the policy file that doesn't load as the server starts: refuse_to_start says why on stderr, and nothing answers"),
+    ("at_rest.rs: read_seen", "disk's own error (a Failed already) made the why of the Failed it gives, whose Display says only what to do"),
+    ("at_rest.rs: note_seen", "the admin's warnings (failing::note_file), the record's path the warning's place"),
+];
+
+/// Guards: why a file of the server's failed (`Failed::for_the_admin`) is read only where
+/// FOR_THE_ADMIN says: every call of it in the server's sources, outside the tests, is in a
+/// function it lists (by file and function, source.rs's `fn_spans`), and each it lists still calls
+/// it (audit R87).
+/// Why: a Failed's Display and Debug say only what whoever asked is told, so a route that formats
+/// one can't pass where or why on; one that read why by name could, and only reading would find it.
+/// If it fails: send why to stderr or the admin's warnings (`Failed::said`, `failing::note_file`)
+/// and answer with what Display says; a function that only does so goes in FOR_THE_ADMIN, saying
+/// where it sends it.
+#[test]
+fn only_what_is_for_the_admin_reads_why_a_file_failed() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    files_under(&src, &mut files);
+    files.retain(|f| f.extension().is_some_and(|e| e == "rs"));
+    let tests = source::test_files(&files);
+    let mut found = std::collections::BTreeSet::new();
+    for f in files.iter().filter(|f| !tests.contains(*f)) {
+        let name = f.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
+        if name.ends_with("tests.rs") || name.contains("/tests/") || name.starts_with("tests/") {
+            continue;
+        }
+        let code = source::inert(&std::fs::read_to_string(f).unwrap());
+        let spans = source::fn_spans(&code);
+        for (n, (line, test)) in code.lines().zip(source::test_modules(&code)).enumerate() {
+            if !test && line.contains("for_the_admin(") && !line.contains("fn for_the_admin(") {
+                found.insert(format!("{name}: {}", source::fn_at(&spans, n).unwrap_or("(no function)")));
+            }
+        }
+    }
+    let listed: std::collections::BTreeSet<String> = FOR_THE_ADMIN.iter().map(|(f, _)| f.to_string()).collect();
+    assert_eq!(found, listed, "why a file failed read where FOR_THE_ADMIN doesn't say, or listed and read no more");
+    // The scan names a call by the function it is in, a method by its type.
+    let code = "impl Failed {\n    fn why(&self) -> &str {\n        self.for_the_admin()\n    }\n}\nfn f() {}\n";
+    let spans = source::fn_spans(code);
+    assert_eq!((source::fn_at(&spans, 2), source::fn_at(&spans, 5)), (Some("Failed::why"), Some("f")));
 }

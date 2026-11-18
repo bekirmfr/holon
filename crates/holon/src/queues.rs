@@ -356,7 +356,7 @@ impl Queues {
     fn save(&self, bound: &Bound) -> Result<(), String> {
         let Some(file) = &self.0.file else { return Ok(()) };
         let bytes = serde_json::to_vec_pretty(bound).map_err(|e| e.to_string())?;
-        crate::at_rest::write_table(file, crate::at_rest::role::QUEUES, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
+        crate::at_rest::write_table(file, crate::at_rest::role::QUEUES, &bytes).map_err(|e| format!("the queues weren't saved: {e}"))
     }
 
     /// Why a deployment asking for `manifest` can't run here, if it can't: a queue it sends to or

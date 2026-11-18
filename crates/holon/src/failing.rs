@@ -80,7 +80,7 @@ pub(crate) fn health(at: &Place) -> (u16, String) {
 /// Its Display and its Debug both say what whoever asked is told and no more, so a route that
 /// formats it (`{e}`, `{e:?}`), or an io::Error or a store error holding it, can't pass where or
 /// why on (audit R87). Why is had by name alone ([`Failed::for_the_admin`]): for stderr, the
-/// warnings and the tests, never an answer (tests/run_steps.rs holds every call of it to a list).
+/// warnings and the tests, never an answer (tests/at_rest.rs holds every call of it to a list).
 /// Don't widen the Debug back to why: that is what this guards.
 #[derive(Clone, PartialEq)]
 pub(crate) struct Failed {
@@ -110,6 +110,10 @@ pub(crate) const STORE_FAILED: &str = "the server couldn't read or write its sto
 
 /// What a file the server reads under its data folder (at_rest::disk) says when it fails.
 pub(crate) const FILE_UNREAD: &str = "the server couldn't read one of its files";
+
+/// What a file the server seals and writes under its data folder (at_rest::write_private) says
+/// when it fails.
+pub(crate) const FILE_UNWRITTEN: &str = "the server couldn't write one of its files";
 
 impl Failed {
     /// `told` to whoever asked, `why` to the admin.

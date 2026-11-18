@@ -1434,7 +1434,8 @@ fn set_storage(state: &AppState, set: &[(&str, &str)], by: &str) -> Response {
     let mut text = match crate::at_rest::disk::read_to_string(policy_path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return err(500, format!("could not read {policy_path:?}: {e}")),
+        // disk's error, where and why on stderr already.
+        Err(e) => return err(500, format!("the policy file wasn't changed: {e}")),
     };
     // Each key written, then the whole checked: two set at once may only make sense together.
     let mut doc: toml_edit::DocumentMut = match text.parse() {
@@ -1452,7 +1453,7 @@ fn set_storage(state: &AppState, set: &[(&str, &str)], by: &str) -> Response {
         return err(400, e);
     }
     if let Err(e) = holon_host::write_atomically(policy_path, text.as_bytes()) {
-        return err(500, format!("could not write {policy_path:?}: {e}"));
+        return err(500, crate::failing::Failed::new("the policy file couldn't be written", format!("{policy_path:?}: {e}")).said());
     }
     let reloaded = crate::grants::reload_policy(state, &file);
     drop(file);

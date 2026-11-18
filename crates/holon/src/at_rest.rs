@@ -81,8 +81,12 @@ mod faults {
 /// key asks [`data_folder`] first, or goes through one that does, and every read of the data
 /// folder elsewhere goes through [`disk`], which asks it too (the guards: tests/at_rest.rs,
 /// `every_way_into_at_rest_can_be_made_to_fail` and `no_reader_under_the_data_folder_bypasses_the_hook`).
-/// So a test fails them all on its thread, every file and every key ([`FAILING`] in
-/// crate::faults).
+/// So one test fails them all and holds what every route answers, and what a listener notes, to
+/// saying neither where nor why (R71's rule: whoever asked is told what failed; where and why go
+/// to the admin): tests/run_steps.rs, `no_answer_says_where_or_why_the_data_folder_failed`. Three
+/// ways: on a thread, every file and every key ([`FAILING`] in crate::faults); a folder, every
+/// file under it, on every thread ([`fail_folder`]): a listener reads what it has seen on a
+/// thread of its own; or places alone, for the files under a folder ([`fail_sites`]).
 /// For the tests alone: in any other build `data_folder` is `Ok(())` and there is nothing to set,
 /// no error to make and no text saying one (`the_data_folder_fails_in_tests_alone`).
 #[cfg(test)]
@@ -93,20 +97,106 @@ pub(crate) const FAILING: &str = "the data folder";
 #[cfg(test)]
 pub(crate) const MADE_TO_FAIL: &str = "the data folder made to fail";
 
-/// Whether the data folder is made to fail, on this thread: its error if it is.
+/// Whether the data folder is made to fail for `path` (none: a key, on this thread alone): its
+/// error if it is, noted where it was asked from ([`fired`]).
 #[cfg(test)]
 #[track_caller]
-fn data_folder(_path: Option<&Path>) -> std::io::Result<()> {
-    if crate::faults::failing(FAILING).is_some() {
+fn data_folder(path: Option<&Path>) -> std::io::Result<()> {
+    let at = std::panic::Location::caller();
+    let place = || {
+        let file = at.file().replace('\\', "/");
+        format!("{}:{}", file.rsplit_once("/src/").map_or(file.as_str(), |(_, f)| f), at.line())
+    };
+    let alone = |p: &Path| {
+        let sites = FAILING_SITES.lock().unwrap();
+        !sites.is_empty() && {
+            let here = place();
+            sites.iter().any(|(dir, site)| *site == here && p.starts_with(dir))
+        }
+    };
+    if crate::faults::failing(FAILING).is_some() || path.is_some_and(failing_folder) || path.is_some_and(alone) {
+        let what = path.map_or_else(
+            || "a key".to_string(),
+            |p| {
+                let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let folder = p.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let name = if name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit()) { format!("{folder}/<hash>") } else { name };
+                format!("{name}, {}", if p.exists() { "there" } else { "new" })
+            },
+        );
+        let on = std::thread::current().name().unwrap_or("a thread of its own").to_string();
+        FIRED.lock().unwrap().push(Fired { at: place(), what, on });
         return Err(std::io::Error::other(MADE_TO_FAIL));
     }
     Ok(())
+}
+
+/// A failure made in the data folder: where the hook was asked from (`file:line`, through disk's
+/// readers to their caller), what of (a file's name, or a key), and on which thread.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct Fired {
+    pub(crate) at: String,
+    pub(crate) what: String,
+    pub(crate) on: String,
+}
+
+/// The failures made since [`fired`] was last asked, on every thread.
+#[cfg(test)]
+static FIRED: Mutex<Vec<Fired>> = Mutex::new(Vec::new());
+
+/// The failures made in the data folder since this was last asked, oldest first: what lets a
+/// sweep say which hook each answer came from, and which hook no answer did.
+#[cfg(test)]
+pub(crate) fn fired() -> Vec<Fired> {
+    std::mem::take(&mut *FIRED.lock().unwrap())
 }
 
 #[cfg(not(test))]
 #[inline(always)]
 fn data_folder(_path: Option<&Path>) -> std::io::Result<()> {
     Ok(())
+}
+
+/// The folders whose files are made to fail, on every thread ([`fail_folder`]).
+#[cfg(test)]
+static FAILING_FOLDERS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Every file under `dir` fails to be read or written through this file, on every thread, until
+/// [`heal_folder`]: each test's data folder is its own, so no other test's is touched.
+#[cfg(test)]
+pub(crate) fn fail_folder(dir: &Path) {
+    FAILING_FOLDERS.lock().unwrap().push(dir.to_path_buf());
+}
+
+/// `dir`'s files are read and written again.
+#[cfg(test)]
+pub(crate) fn heal_folder(dir: &Path) {
+    FAILING_FOLDERS.lock().unwrap().retain(|d| d != dir);
+}
+
+#[cfg(test)]
+fn failing_folder(path: &Path) -> bool {
+    FAILING_FOLDERS.lock().unwrap().iter().any(|d| path.starts_with(d))
+}
+
+/// Places made to fail alone, each `file:line` as [`fired`] notes it, for the files under a
+/// folder, on every thread, until [`heal_sites`]: a read kept in memory, failed from before it is
+/// read, or one behind another hook that passes (the sweep's second pass). Only under the folder,
+/// so no other test's files fail with them.
+#[cfg(test)]
+static FAILING_SITES: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
+
+/// Each of `sites` fails for the files under `dir`, on every thread.
+#[cfg(test)]
+pub(crate) fn fail_sites(dir: &Path, sites: &[String]) {
+    FAILING_SITES.lock().unwrap().extend(sites.iter().map(|s| (dir.to_path_buf(), s.clone())));
+}
+
+/// `dir`'s sites are read and written again.
+#[cfg(test)]
+pub(crate) fn heal_sites(dir: &Path) {
+    FAILING_SITES.lock().unwrap().retain(|(d, _)| d != dir);
 }
 
 /// The data folder read below what this file seals: a run log's lines, a listing, a file another
@@ -221,6 +311,14 @@ impl Unreadable {
 pub(crate) fn key_missing_in(e: &std::io::Error) -> bool {
     e.get_ref().and_then(|i| i.downcast_ref::<Unreadable>()).is_some_and(Unreadable::key_missing)
 }
+
+/// What whoever made keys.json be written (a rotation, a forget, a scope made) is told when it
+/// isn't: where and why go to stderr (audit R87).
+pub(crate) const KEYS_UNWRITTEN: &str = "the server couldn't write its keys";
+
+/// What whoever needed a scope's key (to seal a line, a secret, a unit) is told when it can't be
+/// read or made.
+pub(crate) const KEY_UNREAD: &str = "the server couldn't read or make one of its keys";
 
 /// What to do about a record whose key is missing, said once wherever one is found.
 pub(crate) const RESTORE_KEYS: &str = "keys.json is older than the data, or isn't the one that goes with this data folder: \
@@ -728,13 +826,14 @@ impl Keyring {
 
     /// `keys.json` written, owner-only; nothing for a keyring in memory.
     fn persist(&self, file: &KeysFile) -> Result<(), String> {
-        let Some(path) = &self.path else { return data_folder(None).map_err(|e| format!("could not write keys.json: {e}")) };
+        let unwritten = |why: String| crate::failing::Failed::new(KEYS_UNWRITTEN, why).said();
+        let Some(path) = &self.path else { return data_folder(None).map_err(|e| unwritten(format!("keys.json: {e}"))) };
         if self.read_only {
             return Err(format!("{} was opened to read only, and isn't written", path.display()));
         }
         faults::write("keys.json")?;
         let bytes = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
-        data_folder(Some(path)).and_then(|()| crate::sealing::write_private(path, &bytes)).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        data_folder(Some(path)).and_then(|()| crate::sealing::write_private(path, &bytes)).map_err(|e| unwritten(format!("{}: {e}", path.display())))?;
         // The backup's copy follows at once. Left to the archiver's next look, for a second or
         // so after a forget the copy still opened the forgotten deployment's archives with the
         // old root. One that can't be written is the archiver's to retry and to say.
@@ -822,7 +921,10 @@ impl Keyring {
     /// new. A forgotten scope is made anew from the version after the last one forgotten (its slug
     /// deployed again), so what was sealed before stays forgotten.
     fn current(&self, scope: &str) -> Result<(u32, Key), String> {
-        data_folder(None).map_err(|e| format!("{scope:?}'s key: {e}"))?;
+        // What fails here reaches whoever sealed (a run's line, a secret, a unit stored): told
+        // in fixed words, where and why on stderr (audit R87).
+        let unread = |why: String| crate::failing::Failed::new(KEY_UNREAD, format!("{scope:?}'s key: {why}")).said();
+        data_folder(None).map_err(|e| unread(e.to_string()))?;
         {
             let inner = self.inner.read().unwrap();
             if let Some(keys) = inner.open.get(scope) {
@@ -834,7 +936,7 @@ impl Keyring {
             return Ok((keys.current, keys.versions[&keys.current].clone()));
         }
         let version = inner.file.forgotten.get(scope).map_or(1, |f| f.through + 1);
-        let key = self.add_version(&mut inner, scope, version)?;
+        let key = self.add_version(&mut inner, scope, version).map_err(unread)?;
         Ok((version, key))
     }
 
@@ -1249,19 +1351,24 @@ fn promote(file: &mut KeysFile, next: Staged) {
     file.root_check = next.root_check;
 }
 
-/// `bytes` sealed under `scope` for `role` and written to `path` atomically, owner-only.
+/// `bytes` sealed under `scope` for `role` and written to `path` atomically, owner-only. Its
+/// error says only [`crate::failing::FILE_UNWRITTEN`]: where and why go to stderr (audit R87).
 pub(crate) fn write_private(keys: &Keyring, path: &Path, scope: &str, role: &str, bytes: &[u8]) -> std::io::Result<()> {
-    data_folder(Some(path))?;
-    let sealed = keys.seal_file(scope, role, bytes).map_err(std::io::Error::other)?;
-    crate::sealing::write_private(path, &sealed)
+    data_folder(Some(path))
+        .and_then(|()| keys.seal_file(scope, role, bytes).map_err(std::io::Error::other))
+        .and_then(|sealed| crate::sealing::write_private(path, &sealed))
+        .map_err(|e| crate::failing::Failed::of_file(crate::failing::FILE_UNWRITTEN, path, e))
 }
 
-/// The file at `path`, sealed for `role`, opened: `Ok(None)` if there is none.
+/// The file at `path`, sealed for `role`, opened: `Ok(None)` if there is none. A file that
+/// doesn't open says why in holon's own words ([`Unreadable`]: not sealed, sealed for another
+/// role, its key gone), never where: the path goes to stderr (audit R87).
 pub(crate) fn read(keys: &Keyring, path: &Path, role: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     match disk::read(path) {
-        Ok(bytes) => keys.open_file(role, &bytes).map(Some).map_err(|e| format!("{}: {e}", path.display())),
+        Ok(bytes) => keys.open_file(role, &bytes).map(Some).map_err(|e| crate::failing::Failed::reason(format!("{}: {e}", crate::failing::FILE_UNREAD), format!("{}: {e}", path.display())).said()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("could not read {}: {e}", path.display())),
+        // disk's error, where and why on stderr already.
+        Err(e) => Err(e.to_string()),
     }
 }
 

@@ -863,7 +863,7 @@ allow_private_addresses = true
 
     // Forgotten now: everything is new, so the sweep spares it, and says so.
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-    let said = crate::keys::forget(&state, "gone", "ada", now);
+    let said = crate::keys::forget(&state, crate::at_rest::keys(), "gone", "ada", now);
     assert_eq!(said["forgotten"], true, "{said}");
     assert!(said["store"]["spared"].as_u64().unwrap() > 0 && said["store"]["swept"] == 0, "{said}");
     assert_eq!(files(), before);
@@ -873,7 +873,7 @@ allow_private_addresses = true
     deploy("gone", "only the forgotten one holds this");
     assert_eq!(route(&state, &req("POST", "/deployments/gone/stop", vec![])).status_code, 200);
     assert_eq!(route(&state, &req("DELETE", "/deployments/gone", vec![])).status_code, 200);
-    let said = crate::keys::forget(&state, "gone", "ada", later);
+    let said = crate::keys::forget(&state, crate::at_rest::keys(), "gone", "ada", later);
     assert!(said["store"]["swept"].as_u64().unwrap() >= 3, "at least its three states: {said}");
     assert!(files() < before, "{said}");
     for snapshot in &gone {

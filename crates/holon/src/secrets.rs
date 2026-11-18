@@ -1025,7 +1025,7 @@ impl SecretStore {
             },
         };
         let bytes = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
-        at_rest::write_private(&self.keys, Path::new(&self.path), at_rest::SERVER, at_rest::role::SECRETS, &bytes).map_err(|e| format!("could not write {:?}: {e}", self.path))
+        at_rest::write_private(&self.keys, Path::new(&self.path), at_rest::SERVER, at_rest::role::SECRETS, &bytes).map_err(|e| format!("the secrets weren't saved: {e}"))
     }
 }
 

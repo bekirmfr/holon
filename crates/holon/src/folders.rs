@@ -448,7 +448,7 @@ impl Folders {
     fn save(&self, bound: &Bound) -> Result<(), String> {
         let Some(file) = &self.file else { return Ok(()) };
         let bytes = serde_json::to_vec_pretty(bound).map_err(|e| e.to_string())?;
-        crate::at_rest::write_table(file, crate::at_rest::role::FOLDERS, &bytes).map_err(|e| format!("can't write {}: {e}", file.display()))
+        crate::at_rest::write_table(file, crate::at_rest::role::FOLDERS, &bytes).map_err(|e| format!("the folders weren't saved: {e}"))
     }
 }
 

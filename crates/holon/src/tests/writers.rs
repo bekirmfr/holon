@@ -624,3 +624,40 @@ fn a_listener_held_on_what_it_has_seen_says_what_to_do_and_neither_where_nor_why
     assert!(!crate::storage::warnings(&state).iter().any(|w| w.key == key), "removed, its warning goes with it");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Guards: keys.json that can't be written tells whoever rotated a key, or forgot a removed
+/// deployment's keys, that the server couldn't write its keys, through their routes, and neither
+/// where it is nor why: a keyring over a real keys.json in a folder of its own, the folder made to
+/// fail (`Keyring::persist`'s write, which the sweep of every route can't reach: the tests' own
+/// keyring is kept in memory, run_steps.rs's REASONS). And the next rotation, the folder well
+/// again, goes through.
+/// Why: a rotation answered 409 with keys.json's whole path and the OS error's text (audit R87).
+/// If it fails: give `Keyring::persist`'s error to the admin (failing::Failed) and whoever asked
+/// at_rest::KEYS_UNWRITTEN.
+#[test]
+fn keys_that_cant_be_written_tell_whoever_rotated_or_forgot_neither_where_nor_why() {
+    let dir = std::path::PathBuf::from(unique_temp_path("keys-unwritten"));
+    std::fs::create_dir_all(&dir).unwrap();
+    // The root outside the folder made to fail: what fails is keys.json alone.
+    let root = format!("file:{}", dir.with_extension("root").display());
+    let keys = crate::at_rest::Keyring::open(&dir.join("keys.json"), Some(&root), &[]).unwrap();
+    // A scope to rotate, and a removed deployment's to forget.
+    let scope = crate::at_rest::deployment("gone");
+    keys.seal_file(&scope, crate::at_rest::role::LOG, b"gone's").unwrap();
+    let state = test_state_at(Place::parse(&dir.join("deployments.json").to_string_lossy()));
+    let send = |path: &str, body: serde_json::Value| {
+        let r = crate::keys::route_with(&state, &req("POST", path, serde_json::to_vec(&body).unwrap()), "ada", &keys).expect("a keys route");
+        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    crate::at_rest::fail_folder(&dir);
+    let rotated = send("/admin/keys/rotate", serde_json::json!({ "scope": scope }));
+    let forgot = send("/admin/keys/forget", serde_json::json!({ "slug": "gone" }));
+    crate::at_rest::heal_folder(&dir);
+    for (what, (code, said)) in [("a rotation", rotated), ("a forget", forgot)] {
+        assert!(said.contains(crate::at_rest::KEYS_UNWRITTEN), "{what} ({code}): {said}");
+        neither_where_nor_why(what, &said, &dir, &[crate::at_rest::MADE_TO_FAIL]);
+    }
+    assert_eq!(send("/admin/keys/rotate", serde_json::json!({ "scope": scope })).0, 200, "written again");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(dir.with_extension("root"));
+}
