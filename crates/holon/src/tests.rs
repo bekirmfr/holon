@@ -7989,7 +7989,15 @@ fn a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline() {
     // ...and each gives it back, their connections still open: only the deadline lets them go.
     until("a stopped body held its place past the deadline", &|| slots.taken() == 0);
     // Each is told 408, and its connection ends there (the answer's `Connection: close`, which
-    // tiny_http used to drop: vendor/tiny_http/PATCHED.md), not left open behind the body.
+    // tiny_http used to drop: vendor/tiny_http/PATCHED.md), not left open behind the body. The 408
+    // is written once the body's reader lets go of the connection (rouille holds it for each
+    // read), and a reader waiting on a body that stopped lets go when tiny_http's idle limit ends
+    // its read: so the answer comes at the idle limit, not at the deadline, and these wait past
+    // that limit. Waiting only EVENTUALLY, which is as long as the limit, the answer came 0.6 s
+    // before the wait ran out here and a moment after it on a loaded Linux runner.
+    for s in stopped.iter_mut() {
+        s.set_read_timeout(Some(tiny_http::limits::IDLE + EVENTUALLY)).unwrap();
+    }
     for (s, path) in stopped.iter_mut().zip(paths) {
         assert_eq!(status(s), "408", "{path}: a stopped body is told");
         let mut rest = Vec::new();
