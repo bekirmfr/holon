@@ -254,6 +254,11 @@ pub fn check(file: &str, source: &str) -> Report {
     let mut unrecorded: Vec<String> = unrecorded.filter(|(_, log)| log.as_str() == "unrecorded").map(|(label, _)| format!("  {}", describe_item(&format!("Unrecorded({label:?})")))).collect();
     unrecorded.sort();
     out.extend(unrecorded);
+    // The keys it never keeps, as its settings name them: no permission, so said apart from "it may".
+    let never_keep = c.doc.unit_settings().never_keep;
+    if !never_keep.is_empty() {
+        out.push(format!("it never keeps: {}", never_keep.join(", ")));
+    }
     out.extend(with_its_secrets(&c, &mut store));
     out.extend(while_it_runs(&caps));
     // Where a lazy feed handler is moves once its record is on disk: a crash runs again what the
@@ -501,6 +506,21 @@ mod tests {
     /// the canvas.
     /// If it fails: `check` no longer prints from `flow::secret_lines`, which the canvas's marks
     /// are made of, or drops or rewords a line: say there what both show.
+    /// Guards: `check` says the keys a flow never keeps, once, after what it may do, as its
+    /// settings name them; a flow that never keeps none says nothing of it.
+    /// Why: no permission says it (it asks nothing), and an agent or a person at a terminal
+    /// should read it as the deploy settings show it.
+    /// If it fails: `check` no longer prints the line, or prints it for a flow without the setting.
+    #[test]
+    fn check_says_the_keys_a_flow_never_keeps() {
+        let r = check("card-check.holon.ts", include_str!("../samples/card-check.holon.ts"));
+        assert_eq!(r.code, 0, "{r:?}");
+        let at = r.out.iter().position(|l| l == "it never keeps: cvc").unwrap_or_else(|| panic!("{:?}", r.out));
+        assert!(r.out.iter().position(|l| l == "it may:").is_some_and(|may| may < at), "{:?}", r.out);
+        let r = check("card-vault.holon.ts", include_str!("../samples/card-vault.holon.ts"));
+        assert!(!r.out.iter().any(|l| l.starts_with("it never keeps")), "{:?}", r.out);
+    }
+
     #[test]
     fn check_says_of_a_flows_secrets_what_the_canvas_marks() {
         // The lines check prints after "with its secrets:", each without its place.

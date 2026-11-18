@@ -79,7 +79,7 @@ notes-api: 42 runs, runs 1 to 42
   3 runs: 4, 17, 30 checked given what the log kept for 3 nodes fed a secret, a token or a tainted value (not computed again):
     hmac_sha256 fed the secret stripe_key v3 #a1b2c3d4: 3 nodes in 3 runs: 4, 17, 30, as recorded
   40 runs: 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, … called out: what each call was answered is as recorded, held by the chain alone (and a witnessed head)
-  2 runs: 9, 31 checked given the run id the log kept (made from a secret or a resume token the run received; not computed again)
+  2 runs: 9, 31 checked given the run id the log kept (it hashed a value the run found only as it went, as it was: a resume token, or a guarded value a call answered or a row held; not computed again)
   secrets: 38 outbound requests carried one, each to a host its approval shows it going to
   tokens: 12 outbound requests carried what a call answered to a secret, each to a host its approval shows that going to
   state: run 1 began from nothing, as a log's first does; 41 runs began from the state the run before them left, 42 left what their writes make of the one they began with
@@ -93,7 +93,11 @@ ok
    the server couldn't write (a full disk) isn't a break: the line after it says so, and the
    report lists it, `run 17 isn't in the file: the server couldn't write its line, and the line
    after says so`. The server numbers runs one after another, so runs missing that no line says
-   were lost were removed, and the lines after them chained again: `runs 5 to 7 MISSING`;
+   were lost were removed, and the lines after them chained again: `runs 5 to 7 MISSING`. The
+   deployment's events are checked the same way: an event the server couldn't write is said
+   lost by the next (`event 3 isn't in the file`), and one missing that none says was lost was
+   removed. A run whose line couldn't be written sends nothing: no pack, queue message or mail
+   of it goes out, so what its subscribers and queues got is what the log holds;
 2. every line is one the server writes: a kind of run there is, with that kind's fields (a
    request's method, URL and status; what was delivered only on a resumed part's), each value one
    a run holds, each commit numbered once, and a numbered commit naming the state it left. One
@@ -234,9 +238,13 @@ A node fed a secret, a resume token or a tainted value (a caller's API key:
 was: the log never holds it. A node that only moves the value (into a text, a record, a list) is
 computed with the placeholder, and so is a `secure_equals` of it, since a caller's token is the
 secret exactly when the log shows it as the secret's mark; what the log recorded for such a node
-is held to what it gives, and a record that says other differs. A node that computes with what
-the value holds (a signature, a hash, an encoding) can't be computed again, nor can a check of a
-token that isn't the secret, of which the log keeps only that it came. What the log kept for that
+is held to what it gives, and a record that says other differs. A value a flow never keeps is a
+placeholder too, `‹never_keep:cvc›` where it stood: as a tainted value's, it tells no value from
+another, so a node that only moves it is computed with it and one that compares it is taken from
+the log (the report names it as fed "the request's cvc, which its flow never keeps"); a write that
+held it was refused when the run ran, and is refused again when the run is checked. A node that computes with what the value holds
+(a signature, a hash, an encoding) can't be computed again, nor can a check of a token that isn't
+the secret, of which the log keeps only that it came. What the log kept for that
 node stands in, as in the editor's replay, and the rest of the run is checked against it: the
 answer built from a signature, the effects, the status. The report says which runs were checked
 that way, and names each such step: its leaf, the secret or token it was fed (a secret by its
@@ -251,11 +259,29 @@ The line that counts the runs that matched says how many matched given such a st
 node produced is taken from the log, not checked: a run whose signature check the log says passed
 is checked as if it had, and the named line is where the report says so.
 
-A run's id is made from what it received. When that held a secret or a token (a bearer token
-equal to a secret, a resume link's token in its path), the id can't be made again either: the log
-keeps the run id it has, and the report lists those runs. That is taken from the log too, but
-nothing is lost: the id binds nothing a forger couldn't compute, and the chain and the head are
-what catch an entry that was changed.
+A run's id is made from what it received, as its record keeps it: a secret a caller sent, a
+tainted key's value (a credential header's among them) and a value its flow never keeps are
+hashed as their marks, so the id beside the nonce in the record says nothing a guess at them could
+check, and `verify` makes it again from the record. When what it received held something the
+server finds only as the run goes (a resume link's token in its path, or a tainted value it met
+first in a call's answer or a database row, such as an email it looked up as `?q=`), the id hashed
+it as it was, and can't be made again: the log keeps the run id it has, and the report lists
+those runs. That is taken from the log too, but nothing is lost: the id binds nothing a forger
+couldn't compute, and the chain and the head are what catch an entry that was changed.
+
+That case is also the limit of the first: there the id still hashes the value as it was, so a
+guess at it can be checked against the id and the nonce beside it. The record marks the email in
+`?q=` once the run's call answers it under `email`; the id was made before the run knew that.
+A value under its own key (a tainted field, a credential header, a key never kept) and a secret
+are always hashed as their marks. A secret added while a run goes is the other case the start
+can't know: the run's record marks it, but its id hashed it as it was, so that run reads "its run
+id differs".
+
+A record made before run ids hashed what the record keeps, of a run whose request carried a
+credential header or a guarded key's value under its key, now reads "its run id differs": its id
+hashed that value as it was. `verify` can't tell such a record from one whose id was forged and
+the chain made again, so it doesn't take that id as given. A run with no mark in what started it
+hashed the same either way, and still checks.
 
 Only placeholders the server wrote are taken that way. A caller who sends text that looks like
 one (`‹token:paid›` in a body) gets it logged escaped (`‹‹token:paid›`, with `"escaped": true` on
@@ -363,9 +389,11 @@ that read a file whose text the export doesn't hold, and a run that wrote a secr
 one computed from it (which the server refused). A failed run's entry may say less than the run does again, never other: the
 same run id, each output it keeps as computed, what it did and sent the start of what it does
 again, and the status it answered either that or a failure's (a 5xx, or 409 for an unmet
-`expect:`). One that says other differs, as a run that didn't fail would. A request no route took, and a run turned away before it began (a resource
-an admin set to `run` was held), ran nothing: their entries are checked to say they did nothing,
-and neither counts.
+`expect:`). One that says other differs, as a run that didn't fail would. A run turned away before it began (a resource
+an admin set to `run` was held) ran nothing: its entry is checked to say it did nothing, and it
+doesn't count; neither does a request no route took in a log from before such requests were only
+counted. A run whose request body its entry keeps by hash is run again with the body the export
+holds, checked against its hash; an export without it (`--without-files`) skips the run.
 
 ### Files
 
@@ -394,10 +422,13 @@ HOLON_EXPORT_HEADS_TOKEN=… holon serve --export-heads https://witness.example.
 ```
 
 Every five seconds it sends the new heads (`{batch, heads: [{deployment, kind, seq, head, at_ms}]}`,
-`kind` `run`, or `event` for the events' chain) with `Authorization: Bearer` the token. Only hashes leave the server: nothing a run read or
+`kind` `run`, `event` for the events' chain, `trim` when a log is cut back, or `removed` when the
+deployment is removed, its last run's head: the slug deployed again starts a new chain at 0) with
+`Authorization: Bearer` the token. Only hashes leave the server: nothing a run read or
 answered. If the witness can't be reached, the heads wait in a queue and are sent later. Past
-10,000 waiting, each deployment's newest head stands for the ones before it: it pins every run
-before it, so the witness is given fewer heads, and loses no run.
+10,000 waiting, each deployment's newest head stands for the ones before it (of each of its lives
+apart: a `removed` head ends one): it pins every run before it, so the witness is given fewer
+heads, and loses no run.
 
 A witness can be any service that keeps what it is sent. The **witness** sample is one, written as
 a flow: deploy it on another machine, set its `witness_key` secret to the same token, and point
@@ -425,12 +456,16 @@ changed or removed`.
 An export `holon export` writes is plain: whoever holds the file reads every run in it, and you
 decide how to keep it. The ones the server keeps on disk itself, a backup's archives and a removed
 deployment's records, are sealed under its keys, as everything in its data folder is. `holon
-verify` opens one with the server's root key; on another machine, give it the data folder's
-`keys.json` and where the root key is:
+verify` opens one with the server's root key. A backup folder keeps a copy of `keys.json` beside
+its archives, which `holon verify` finds there, so on another machine, the data folder lost, the
+backup and the root key are enough:
 
 ```sh
-holon verify holon-archive-notes-api-runs-…json.gz --data /srv/holon/data --root-key file:/etc/holon/root.key
+holon verify /mnt/backup/notes-api/holon-archive-notes-api-runs-…json.gz --root-key file:/media/usb/root.key
 ```
+
+For a removed deployment's records, give it the data folder they are in (`--data
+/srv/holon/data`).
 
 A run the server couldn't write is said lost in the next line, whose head the witness holds.
 Someone who removes a run and rewrites the lines after it to say it was lost makes a log that

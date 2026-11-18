@@ -88,8 +88,8 @@ Each faster path is tested against the one it stands in for, on many inputs.
   found the pass-through step answering absent instead of handing over),
   `a_run_whose_scratch_is_taken_uses_one_of_its_own` (S4), `a_composite_with_a_choice_is_walked`.
 - `has_cycle_is_exactly_where_topo_order_finds_no_order`,
-  `the_flat_index_finds_what_a_map_of_the_edges_finds`: the evaluator's indexes against the
-  eager evaluator's.
+  `the_edge_table_reads_as_a_map_of_its_edges_and_takes_no_more_room`: the evaluator's edge
+  table, in both its forms, against a map of the edges.
 - `lazy_and_eager_agree_on_generated_graphs`, `every_samples_routes_give_what_the_eager_evaluator_gives`.
 - `keeping_each_composites_shape_changes_nothing_the_evaluator_gives` (step 1b).
 - `a_cut_back_keeps_its_lines_byte_for_byte_without_parsing_them`: the indexed cut-back against the

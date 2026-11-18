@@ -114,6 +114,38 @@ pub(crate) fn seconds_of(span: &str) -> Option<u64> {
     Some(n.checked_mul(unit)?).filter(|&s| s > 0 && s <= 100 * 365 * 86_400)
 }
 
+/// `text` with each place of `places` (an address or a path, and the words said in its stead) said
+/// as those words: the place whole, and for an address its scheme and authority, and its
+/// authority alone, as a connection's error names it. Longest first, so a place inside another
+/// isn't said twice.
+pub(crate) fn unplaced(text: &str, places: &[(String, String)]) -> String {
+    let mut forms: Vec<(String, &str)> = Vec::new();
+    for (place, instead) in places.iter().filter(|(p, _)| !p.is_empty()) {
+        forms.push((place.clone(), instead));
+        if let Some((scheme, rest)) = place.split_once("://") {
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+            if !host.is_empty() {
+                forms.push((format!("{scheme}://{authority}"), instead));
+                forms.push((host.to_string(), instead));
+            }
+        }
+    }
+    forms.sort_by_key(|f| std::cmp::Reverse(f.0.len()));
+    forms.into_iter().fold(text.to_string(), |text, (form, instead)| text.replace(&form, instead))
+}
+
+/// A connection's listing (`/deployments/<slug>/feeds`, `/queues`) as a caller who may not bind is
+/// shown it: without its address, and its error with each place of `places` said otherwise.
+pub(crate) fn left_where(shown: &mut serde_json::Value, places: &[(String, String)]) {
+    if let Some(o) = shown.as_object_mut() {
+        o.remove("address");
+        if let Some(error) = o.get("error").and_then(serde_json::Value::as_str).map(|e| unplaced(e, places)) {
+            o.insert("error".into(), serde_json::json!(error));
+        }
+    }
+}
+
 /// A while in seconds, in the largest unit that says it exactly.
 pub(crate) fn span_text(secs: u64) -> String {
     match secs {
@@ -300,6 +332,35 @@ impl Folders {
     /// Every folder bound: the server's, and each deployment's.
     pub(crate) fn all(&self) -> Bound {
         self.bound.read().unwrap().clone()
+    }
+
+    /// Where each folder, database, mail, feed and queue deployment `slug` may use (its own and the
+    /// server's) is, with the binding said in its stead: for `unplaced`, so what every viewer of a
+    /// flow reads names a binding, never where it is, which goes to whoever may bind (web console
+    /// L4, Q4).
+    pub(crate) fn whereabouts(&self, slug: &str) -> Vec<(String, String)> {
+        fn of<B: Clone>(server: &BTreeMap<String, B>, deployments: &BTreeMap<String, BTreeMap<String, B>>, slug: &str) -> Vec<(String, B)> {
+            server.iter().chain(deployments.get(slug).into_iter().flatten()).map(|(n, b)| (n.clone(), b.clone())).collect()
+        }
+        let mut places = Vec::new();
+        let bound = self.all();
+        for (name, f) in of(&bound.server, &bound.deployments, slug) {
+            places.push((f.path.to_string(), format!("the folder {name}")));
+        }
+        let bound = self.databases.all();
+        for (name, d) in of(&bound.server, &bound.deployments, slug) {
+            places.extend(d.address.into_iter().chain(d.path.map(|p| p.to_string())).map(|at| (at, format!("the database {name}"))));
+        }
+        let bound = self.mails.all();
+        for (name, m) in of(&bound.server, &bound.deployments, slug) {
+            let at = [Some(m.address), m.mailbox.map(|b| b.address), m.oauth.map(|o| o.address)];
+            places.extend(at.into_iter().flatten().map(|at| (at, format!("the mail {name}"))));
+        }
+        let bound = self.feeds.all();
+        places.extend(of(&bound.server, &bound.deployments, slug).into_iter().map(|(name, b)| (b.address, format!("the feed {name}"))));
+        let bound = self.queues.all();
+        places.extend(of(&bound.server, &bound.deployments, slug).into_iter().map(|(name, b)| (b.address, format!("the queue {name}"))));
+        places
     }
 
     /// The folder deployment `deployment` sees as `name`: its own binding, else the server's.
@@ -1911,6 +1972,8 @@ pub(crate) fn sweep(folders: &Folders, deployments: &Mutex<BTreeMap<String, Depl
     for (slug, log) in &cells {
         // A line naming a kept text holds its key, as written: one that doesn't names none.
         for entry in log.lines_holding(BLOB_KEY).iter().filter_map(|l| crate::wire::read_json::<LogEntry>(l.as_bytes()).ok()) {
+            // A request body kept by hash (`LogEntry::body`): for as long as its run is kept.
+            live.extend(entry.body.as_ref().and_then(|b| b.blob.clone()));
             for read in &entry.reads {
                 let Some(blob) = read.file.as_ref().and_then(|f| f.blob.as_ref()) else { continue };
                 let folder = match &read.request {

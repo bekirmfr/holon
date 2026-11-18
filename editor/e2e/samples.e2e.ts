@@ -1563,7 +1563,7 @@ test("remittance-mail settles an invoice from an authenticated mail, refuses one
   const port = await deploy(page);
   expect((await request.post(`http://127.0.0.1:${port}/invoices`, { data: { id: invoice, amount: "100.00", customer: "customer.example" } })).status()).toBe(201);
   // Once it listens, what the mailbox held then isn't run on; what comes after is.
-  await expect.poll(async () => (await said()).some((w) => w.startsWith("listens to the mailbox of remit (imap://127.0.0.1:")), { timeout: 15_000 }).toBe(true);
+  await expect.poll(async () => (await said()).some((w) => w.startsWith("listens to the mailbox of remit (its folder INBOX)")), { timeout: 15_000 }).toBe(true);
   writeFileSync(join(mailbox, "INBOX", `${id}.eml`), remittance(id, "mx.acme.com", `${invoice},100.00`));
   writeFileSync(join(mailbox, "INBOX", `${id}-forged.eml`), remittance(`${id}-forged`, "evil.example", `${invoice},100.00`));
 
@@ -1612,7 +1612,7 @@ test("price-feed runs on each event its feed sends, and opens the feed again fro
 
   await openSample(page, "Price feed (server-sent events, each event a run)");
   const port = await deploy(page);
-  await expect.poll(async () => (await said()).some((w) => w.startsWith("listens to the feed prices (http://127.0.0.1:")), { timeout: 15_000 }).toBe(true);
+  await expect.poll(async () => (await said()).some((w) => w === "listens to the feed prices"), { timeout: 15_000 }).toBe(true);
   // Its key never shown.
   expect((await said()).some((w) => w.includes("e2e-not-a-key"))).toBe(false);
   writeFileSync(join(feed, `${symbol}-1.json`), JSON.stringify({ symbol, price: 10.5 }));
@@ -1664,7 +1664,7 @@ test("payout-events runs each message its queue holds once, and sends a failed p
 
   await openSample(page, "Payout events (an SQS queue in, a FIFO queue of retries out)");
   const port = await deploy(page);
-  await expect.poll(async () => (await said()).some((w) => w.startsWith("listens to the queue payout_events (http://127.0.0.1:")), { timeout: 15_000 }).toBe(true);
+  await expect.poll(async () => (await said()).some((w) => w === "listens to the queue payout_events"), { timeout: 15_000 }).toBe(true);
   // Its key never shown.
   expect((await said()).some((w) => w.includes("e2e-not-a-secret"))).toBe(false);
   writeFileSync(join(sqs, "payout-events", `${stamp}-1.json`), event("payout.paid", 1));
@@ -1737,7 +1737,7 @@ test("ledger-watch keeps each account's balance from its ledger's channel, and r
   await expect.poll(async () => (await feed())?.status, { timeout: 15_000 }).toBe("connected");
   await write(4, "2.25");
   await expect.poll(balance, { timeout: 15_000 }).toEqual({ balance: "111.75", entries: 4, read: 1, last: 4 });
-  expect((await said()).some((w) => w.startsWith("listens to the feed entries (postgres://127.0.0.1:"))).toBe(true);
+  expect((await said()).some((w) => w === "listens to the feed entries")).toBe(true);
   // Its login never shown.
   const login = `:${new URL(process.env.HOLON_TEST_POSTGRES ?? "").password}@`;
   expect((await said()).some((w) => w.includes(login))).toBe(false);

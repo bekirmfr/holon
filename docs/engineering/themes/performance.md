@@ -578,6 +578,18 @@ compute on a worker. `nothing_a_run_computes_holds_up_the_data_plane`
 (`crates/holon/tests/data_plane.rs`, against the real server) fails, with a single long run, if
 anything does.
 
+**Nor does a worker wait on a lock whose holders do I/O** (release audit R45, D5). A worker took
+the deployments table's lock for each request (the origins a deployment answers, whether its path
+is a websocket's, a subscription's channel), and the table's holders write and seal (an event's
+line, a deploy). One slow holder caught every worker that reached it, and the server went deaf
+just as with a long run inline. What a request needs of the table is now read on the blocking
+pool, with its run: the origin before the run starts (a streamed answer's head needs it), a
+subscription's channel after it ends, a GET on a websocket's path that isn't a handshake refused
+426 there; a handshake's websocket is looked up on the pool before it is switched. No hop is
+added: the run's own carries them. `no_data_plane_worker_waits_on_the_deployments_table`
+(`tests.rs`) holds the table with twice as many requests waiting on it as there are cores, and
+fails if the server then takes no connection.
+
 ### Encryption at rest (2026-11-14)
 
 Everything the server keeps is sealed (docs/L4s/at-rest-encryption-L4.md): a run log a line at a
@@ -601,9 +613,12 @@ measured against a control build that writes the log in clear (lazy 24,878–25,
   deployment, and the seal held it. So a line's body (everything after its `seq` and `prev`) is
   sealed before the lock is taken, beside where the line is made (`Made::sealed`, firing.rs), and
   under it only `r1.<seq>.<prev>.` goes in front (`LineSeal::number`). Seq and prev are in clear
-  on disk; the chain hashes the line as made, so one changed breaks it at the next line
-  (`a_line_sealed_ahead_opens_to_the_line_that_was_made`). This is §7's fallback, and it took lazy
-  back to 21,618–22,440.
+  on disk; the chain hashes the line as made, so one changed breaks it at the next line. This is
+  §7's fallback, and it took lazy back to 21,618–22,440. Since release audit R37 the front is
+  `r2.<seq>.<prev>.<place>.`: the place, a keyed BLAKE3 of the seq, the prev and the body's nonce
+  and tag (begun ahead, so under the lock it hashes at most 84 bytes), binds the body to its line,
+  which the chain alone left open for the last line (`what_is_sealed_opens_only_where_it_was_sealed`).
+  Not measured on its own: a hash of that size is well under the 6 µs the lock's hold moved by.
 - **A line leaving the log opened for nothing:** a cut-back opened each line it let go of to keep
   aside for the backup, with no backup set too: one decrypt a run. Now only with a backup.
 - **The core's base64 decoder** looks each character up in its alphabet: 1.75 µs to write 1.5 KB,
@@ -620,7 +635,8 @@ again with its newline to be written), 1.3 the write a third longer (base64).
 
 - **Nothing made or copied under the lock but the prefix:** a body sealed ahead is framed
   (`at_rest::Framed`): its sealed text and newline after room for what goes in front of it, the
-  newline after a cut-back too, so under the lock `r1.<seq>.<prev>.` (at most 89 bytes) is written
+  newline after a cut-back too, so under the lock `r1.<seq>.<prev>.` (at most 89 bytes; with its
+  place since R37, `r2.<seq>.<prev>.<place>.`, 112) is written
   into that room and the buffer written as it is. And the line as made, which the chain hashes, is
   no longer made again under the lock to be hashed: `chain_hash` hashes its seq and prev, then its
   body, held to `line_hash` of the line made whole by
@@ -641,7 +657,34 @@ busy. The write itself, 20–22 µs of each hold before encryption as after, is 
 look, for every log: a lazy log could keep its newest lines in memory and write them with its
 sync.
 
-### Limits
+### A run's id hashes what its record keeps (R80, 2026-11-18)
+
+A run's id now hashes each started value as its record writes it (`Redactor::logged_value`),
+with the marks known at the start (`data::start_marks`): a run looks for guarded keys in what
+started it and writes those values as marks before it takes a step, and its record does the same
+again at its end. Measured in release, a route that uses no secret and is sent an `Authorization`
+header, a body of 1 KiB and 200 KiB, 300 requests each after 30 to warm, one kept-alive
+connection, main (`9d45cb07`) against the tip, a fresh server each, the order turned each round,
+eight rounds; the turn ran alone (`running/` held only its own ticket at its start and its end),
+the machine's screen off, no sleep in the window (no Kernel-Power 42, 506 or 507 in it).
+
+| | 1 KiB | 200 KiB |
+|---|---|---|
+| main | 2,707 µs (2,636–2,779) | 3,570 µs (3,532–3,721) |
+| R80 as first written (`f526100a`, beside another session's vitest: indicative) | +1.2% | +53% (+45 to +59) |
+| the start's key search gated as the record's, one pass for all keys; `logged_value` one walk; the start's marks made once | +0.9% (−4.4 to +5.8) | +5.5% (−6.1 to +9.2) |
+| and a value past 32 bytes looked for by its first 32 first (no gain: taken out again) | +3.2% (−0.6 to +6.5) | +5.6% (−1.7 to +8.3) |
+
+Medians of the round medians (their range); each row's percentages are the tip against main in
+that round. Most of the first cost was the start's search for a key: it compared every place of
+every text against each key, byte by byte, where the record's own search reads only a text that
+is JSON or holds a form's `=` (`data::names_a_key`, `text_names_a_key`,
+`contains_any_either_case`). What is left at 200 KiB, about 200 µs, is the start writing the
+request as its record does: its texts read once more against each value a credential gives (the
+header's whole, its rest, a Basic one's text and password), and the body copied beside the
+marked header. Not yet cut, and over the 3% asked of it: one pass for every value at once (a
+multi-pattern search), or the record reusing what the start wrote of the request, would take it;
+the long-value prefilter didn't (its row), and the code is as the row before it measured.
 
 - **Strict is the disk's pace.** About 60% of a strict request is the fsync; any service keeping
   such a record pays it (IP §5). An fsync of an appended file costs about 0.6 ms on ext4, against
@@ -691,7 +734,11 @@ sync.
 - **The timeline is 63% of a line** and stays: the log holds what each step gave (Q16, below).
 - **The throughput check leaves out hyper and the hop**; at 64 connections hyper and the client
   bound `/health`.
-- **The witness export** costs 4–13%; its `pending.jsonl` is synced with the logs, once a second.
+- **The witness export** costs 4–13%; its `pending.jsonl` is written and synced with the logs,
+  once a second. A run queues its head in memory under the queue's lock and does nothing else
+  there: before release audit R45 (D15) it appended to the file under it, and after each batch the
+  witness took, the file was written afresh and synced under it, every deployment's runs waiting,
+  each under its own log's lock (`a_head_is_queued_in_memory_and_written_by_the_sync_which_no_run_waits_on`).
 
 ### Tried and left
 

@@ -36,6 +36,11 @@ pub(crate) use holon_author::LIMIT_NAMES;
 pub(crate) const MODULE_FUEL_CEILING: u64 = 100 * holon_core::DEFAULT_MODULE_FUEL;
 pub(crate) const MODULE_MEMORY_CEILING: u64 = 16 * holon_core::DEFAULT_MODULE_MEMORY;
 
+/// What an editor reloading the policy is told when its file can't be read (`Policy::load`).
+pub(crate) const UNREAD: &str = "the policy file couldn't be read";
+/// ... and when it isn't TOML holon reads, with where in it.
+pub(crate) const UNPARSED: &str = "the policy file doesn't parse";
+
 /// Limits on durable runs (§4.3): how long one waiting point may wait, and how many runs may wait
 /// at once; and how deep a chain of flows calling flows may go. The host's, like the request
 /// limits; not part of a run (`holon_host::Limits`).
@@ -43,6 +48,10 @@ pub(crate) const MODULE_MEMORY_CEILING: u64 = 16 * holon_core::DEFAULT_MODULE_ME
 pub(crate) struct DurableLimits {
     pub(crate) max_await_seconds: u64,
     pub(crate) max_waiting_runs: u64,
+    /// How many bytes its waiting runs may keep, in all (what each keeps sealed: its inputs,
+    /// requests and events): past it a run that would wait fails as one past `max_waiting_runs`
+    /// does, and one parking again waits on as it was (release audit D4).
+    pub(crate) max_waiting_bytes: u64,
     /// How many flows a run may call down a chain (`shop` calls `billing` calls `ledger` is two
     /// deep): past it a call answers `too_deep` (docs/L4s/triggers-L4.md §9).
     pub(crate) max_call_depth: u64,
@@ -57,13 +66,14 @@ impl DurableLimits {
     /// What a deployment gets without asking: a month's wait (a 7-day `await` fits), and as many
     /// waiting runs as before this was a limit.
     pub(crate) fn defaults() -> DurableLimits {
-        DurableLimits { max_await_seconds: 30 * 24 * 3600, max_waiting_runs: 10_000, max_call_depth: 3, max_concurrent_runs: 64 }
+        DurableLimits { max_await_seconds: 30 * 24 * 3600, max_waiting_runs: 10_000, max_waiting_bytes: 64 << 20, max_call_depth: 3, max_concurrent_runs: 64 }
     }
 
     /// What no grant can exceed: core's longest wait, ten times the default number of waiting
-    /// runs, and the data plane's runs at once, every deployment's together.
+    /// runs, 1 GiB of what they keep, and the data plane's runs at once, every deployment's
+    /// together.
     pub(crate) fn ceilings() -> DurableLimits {
-        DurableLimits { max_await_seconds: holon_core::MAX_AWAIT_SECONDS, max_waiting_runs: 100_000, max_call_depth: 8, max_concurrent_runs: crate::dataplane::MAX_RUNS }
+        DurableLimits { max_await_seconds: holon_core::MAX_AWAIT_SECONDS, max_waiting_runs: 100_000, max_waiting_bytes: 1 << 30, max_call_depth: 8, max_concurrent_runs: crate::dataplane::MAX_RUNS }
     }
 }
 
@@ -210,6 +220,7 @@ fn limits_to_numbers(
         ("max_memory".into(), request.max_memory),
         ("max_await_seconds".into(), durable.max_await_seconds),
         ("max_waiting_runs".into(), durable.max_waiting_runs),
+        ("max_waiting_bytes".into(), durable.max_waiting_bytes),
         ("max_concurrent_runs".into(), durable.max_concurrent_runs),
         ("max_call_depth".into(), durable.max_call_depth),
         ("inline_file_bytes".into(), files.inline_file_bytes),
@@ -273,6 +284,7 @@ fn numbers_to_durable(base: &DurableLimits, numbers: &BTreeMap<String, u64>) -> 
     DurableLimits {
         max_await_seconds: numbers.get("max_await_seconds").copied().unwrap_or(base.max_await_seconds),
         max_waiting_runs: numbers.get("max_waiting_runs").copied().unwrap_or(base.max_waiting_runs),
+        max_waiting_bytes: numbers.get("max_waiting_bytes").copied().unwrap_or(base.max_waiting_bytes),
         max_call_depth: numbers.get("max_call_depth").copied().unwrap_or(base.max_call_depth),
         max_concurrent_runs: numbers.get("max_concurrent_runs").copied().unwrap_or(base.max_concurrent_runs),
     }
@@ -731,14 +743,30 @@ impl Policy {
     /// The policy in `path`, or the defaults when there is no such file. A file that exists but
     /// doesn't parse, names an unknown limit, or sets a default above its ceiling is an error:
     /// the server refuses to start rather than run under a policy nobody wrote.
-    pub(crate) fn load(path: &crate::paths::Place) -> Result<Policy, String> {
+    ///
+    /// Why it isn't (where the file is, the read's error, TOML's message) is for whoever runs
+    /// the server; an editor reloading it is told what is wrong without where the file is or the
+    /// error's text, and, for a file that isn't TOML holon reads, the line and column alone:
+    /// TOML's message can quote a line of the file or a value in it, which can name a secret's
+    /// source (audit R71).
+    pub(crate) fn load(path: &crate::paths::Place) -> Result<Policy, crate::failing::Failed> {
+        use crate::failing::{line_and_column, Failed};
         let Some(path) = path.at() else { return Ok(Policy::default()) };
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Policy::default()),
-            Err(e) => return Err(format!("could not read {path:?}: {e}")),
+            Err(e) => return Err(Failed::new(UNREAD, format!("could not read {path:?}: {e}"))),
         };
-        let policy = Policy::parse(&text).map_err(|e| format!("{path:?}: {e}"))?;
+        let policy = Policy::parse(&text).map_err(|e| {
+            let why = format!("{path:?}: {e}");
+            match toml::from_str::<PolicyFile>(&text) {
+                Err(not_toml) => {
+                    let (line, column) = line_and_column(&text, not_toml.span().map_or(0, |s| s.start));
+                    Failed::at(UNPARSED, line, column, why)
+                }
+                Ok(_) => Failed::reason(e, why),
+            }
+        })?;
         Ok(Policy { text: Some(text), ..policy })
     }
 
@@ -1122,6 +1150,13 @@ pub(crate) struct Permit {
     /// The names inside its items, by kind (`CollectionRead("notes")` → `notes` under
     /// `CollectionRead`), worked out once: every run asks (docs/L4s/request-path-plan.md, 12.4).
     names: BTreeMap<String, BTreeSet<String>>,
+    /// The keys its flow never keeps (`holon_core::Server::never_keep`, `never_keep.rs`): a write
+    /// or a send that holds one under its key is refused. Not the grant's: its server's, set by
+    /// whoever makes the permit of a deployment ([`Permit::never_keeping`]).
+    pub(crate) never_keep: Vec<String>,
+    /// The keys its flow taints (`holon_core::Server::taint`), set with `never_keep`: what a run's
+    /// id hashes as its record marks it (`data::start_marks`).
+    pub(crate) taint: Vec<String>,
 }
 
 impl Permit {
@@ -1184,7 +1219,15 @@ impl Permit {
                 names.entry(kind.to_string()).or_default().insert(name.to_string());
             }
         }
-        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, sockets, log, outbound, grant: to_hex(&grant.hash()), unrecorded, names }
+        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, sockets, log, outbound, grant: to_hex(&grant.hash()), unrecorded, names, never_keep: Vec::new(), taint: Vec::new() }
+    }
+
+    /// This permit, for a deployment whose flow never keeps `server`'s keys and taints its tainted
+    /// ones (none: no server).
+    pub(crate) fn never_keeping(mut self, server: Option<&holon_core::Server>) -> Permit {
+        self.never_keep = server.map(|s| s.never_keep.clone()).unwrap_or_default();
+        self.taint = server.map(|s| s.taint.clone()).unwrap_or_default();
+        self
     }
 
     /// How a run of the handler labelled `label`, declared `declared`, is recorded: as declared,
@@ -1192,7 +1235,8 @@ impl Permit {
     /// strict otherwise.
     pub(crate) fn log_level(&self, label: Option<&str>, declared: holon_core::LogLevel) -> holon_core::LogLevel {
         match declared {
-            holon_core::LogLevel::Unrecorded if !label.is_some_and(|l| self.unrecorded.contains(l)) => holon_core::LogLevel::Strict,
+            // A request that ran nothing is only ever counted (`firing::RAN_NOTHING`).
+            holon_core::LogLevel::Unrecorded if !label.is_some_and(|l| self.unrecorded.contains(l) || l == crate::firing::RAN_NOTHING) => holon_core::LogLevel::Strict,
             level => level,
         }
     }

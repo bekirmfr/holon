@@ -406,9 +406,11 @@ impl Queues {
 
     /// The messages a logged run sent (`messages`: to which queue, and the message, as it
     /// performed them), spooled before its record is written. One whose queue isn't bound now is
-    /// noted and dropped.
-    fn spool(&self, slug: &str, run: &str, at_ms: u64, messages: Vec<(String, Value)>, unlogged: bool) -> Vec<Queued> {
+    /// noted and dropped. With them, why one couldn't be spooled, if one couldn't: it is noted and
+    /// dropped too.
+    fn spool(&self, slug: &str, run: &str, at_ms: u64, messages: Vec<(String, Value)>, unlogged: bool) -> (Vec<Queued>, Option<String>) {
         let mut out = Vec::new();
+        let mut unspooled = None;
         for (n, (queue, message)) in messages.into_iter().enumerate() {
             let Some((key, _)) = self.resolve_keyed(slug, &queue) else {
                 self.note(slug, &queue, format!("didn't send a message to {queue}: it isn't bound now"));
@@ -424,29 +426,55 @@ impl Queues {
             };
             let spooled = Spooled { slug: slug.to_string(), queue, run: run.to_string(), n, at_ms, group, unlogged };
             let file = self.0.spool.as_ref().map(|dir| dir.join(format!("{slug}.{run}.{n}.msg")));
-            if let (Some(dir), Some(file)) = (&self.0.spool, &file) {
-                let mut kept = serde_json::to_vec(&spooled).unwrap_or_default();
-                kept.push(b'\n');
-                kept.extend_from_slice(body.as_bytes());
-                // Sealed under the deployment's keys (at_rest.rs, §5.5): the message as it is sent.
-                let scope = crate::at_rest::deployment(slug);
-                if let Err(e) = holon_host::create_private_dir(dir).and_then(|_| crate::at_rest::write_sealed(file, &scope, crate::at_rest::role::SPOOL_QUEUE, &kept)) {
-                    self.note(slug, &spooled.queue, format!("didn't send a message to {}: it couldn't be spooled ({e})", spooled.queue));
-                    continue;
+            // Sealed under the deployment's keys (at_rest.rs, §5.5): the message as it is sent.
+            let written = match (&self.0.spool, &file) {
+                _ if crate::faults::failing("a spooled message").is_some() => Err(crate::faults::error("a spooled message")),
+                (Some(dir), Some(file)) => {
+                    let mut kept = serde_json::to_vec(&spooled).unwrap_or_default();
+                    kept.push(b'\n');
+                    kept.extend_from_slice(body.as_bytes());
+                    let scope = crate::at_rest::deployment(slug);
+                    holon_host::create_private_dir(dir).and_then(|_| crate::at_rest::write_sealed(file, &scope, crate::at_rest::role::SPOOL_QUEUE, &kept))
                 }
+                _ => Ok(()),
+            };
+            if let Err(e) = written {
+                self.note(slug, &spooled.queue, format!("didn't send a message to {}: it couldn't be spooled ({e})", spooled.queue));
+                unspooled.get_or_insert(format!("a message to {} couldn't be spooled: {e}", spooled.queue));
+                continue;
             }
             out.push(Queued { key, spooled, body, file, tries: 0, not_before: Instant::now() });
         }
-        out
+        (out, unspooled)
     }
 
     /// Spool a logged run's messages (`entry` is its record, about to be written), before its
-    /// record is: what [`hold`](Self::hold) holds. A run that failed or parked sent none.
-    pub(crate) fn spool_logged(&self, slug: &str, entry: &LogEntry, messages: Vec<(String, Value)>) -> Vec<Queued> {
+    /// record is: what [`hold`](Self::hold) holds. A run that failed or parked sent none. `Err`:
+    /// one couldn't be spooled, so none is sent (those spooled are dropped), and why: the run's
+    /// record says it, never that it sent what it never will (release audit O3).
+    pub(crate) fn spool_logged(&self, slug: &str, entry: &LogEntry, messages: Vec<(String, Value)>) -> Result<Vec<Queued>, String> {
         if messages.is_empty() || entry.error.is_some() || !entry.parked.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        self.spool(slug, &entry.run_id, entry.at_ms, messages, false)
+        match self.spool(slug, &entry.run_id, entry.at_ms, messages, false) {
+            (spooled, None) => Ok(spooled),
+            (spooled, Some(why)) => {
+                self.drop_spooled(slug, spooled, "another of its run's messages couldn't be spooled");
+                Err(why)
+            }
+        }
+    }
+
+    /// Messages spooled for a run and never to be sent (`why` not), their files removed and each
+    /// noted: one of the run's couldn't be spooled, or its record couldn't be written. What a
+    /// queue gets is what the log holds (release audit D9).
+    pub(crate) fn drop_spooled(&self, slug: &str, spooled: Vec<Queued>, why: &str) {
+        for q in spooled {
+            if let Some(file) = &q.file {
+                let _ = std::fs::remove_file(file);
+            }
+            self.note(slug, &q.spooled.queue, format!("didn't send a message to {}: {why}", q.spooled.queue));
+        }
     }
 
     /// Hold the messages spooled for entry `seq`, just written, until it is on disk
@@ -489,7 +517,7 @@ impl Queues {
         if messages.is_empty() || entry.error.is_some() || !entry.parked.is_empty() {
             return;
         }
-        for q in self.spool(slug, &entry.run_id, entry.at_ms, messages, true) {
+        for q in self.spool(slug, &entry.run_id, entry.at_ms, messages, true).0 {
             self.queue(q);
         }
     }
@@ -498,13 +526,14 @@ impl Queues {
     /// deployment's log holds, finished (`log`: a deployment's entries, none when it isn't
     /// deployed), and each unlogged one. Another's run a crash lost before its record was on
     /// disk: it is removed, never sent.
-    pub(crate) fn recover(&self, mut log: impl FnMut(&str) -> Option<Vec<LogEntry>>) {
+    pub(crate) fn recover(&self, mut log: impl FnMut(&str) -> Option<BTreeSet<String>>) {
         let Some(dir) = &self.0.spool else { return };
         let Ok(files) = std::fs::read_dir(dir) else { return };
         let mut logged: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut found: Vec<(Spooled, String, PathBuf)> = Vec::new();
         for file in files.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e == "msg")) {
-            let bytes = match crate::at_rest::read_sealed(&file, crate::at_rest::role::SPOOL_QUEUE) {
+            let named = crate::at_rest::deployment(file.file_name().and_then(|n| n.to_str()).and_then(|n| n.split('.').next()).unwrap_or_default());
+            let bytes = match crate::at_rest::read_sealed_in(&file, &named, crate::at_rest::role::SPOOL_QUEUE) {
                 Ok(Some(bytes)) => bytes,
                 Ok(None) => continue,
                 // One that doesn't open (changed, plain, or sealed by another folder's keys): left
@@ -522,7 +551,7 @@ impl Queues {
             let landed = spooled.unlogged
                 || logged
                     .entry(spooled.slug.clone())
-                    .or_insert_with(|| log(&spooled.slug).unwrap_or_default().into_iter().filter(|e| e.error.is_none() && e.parked.is_empty()).map(|e| e.run_id).collect())
+                    .or_insert_with(|| log(&spooled.slug).unwrap_or_default())
                     .contains(&spooled.run);
             if !landed {
                 let _ = std::fs::remove_file(&file);
@@ -727,8 +756,10 @@ pub(crate) fn past_limit(performed: &[(Capability, Value)], largest: impl Fn(&st
 }
 
 /// `GET /deployments/<slug>/queues`: each queue its handlers listen to, and what its listener is
-/// doing; and each queue it sends to, and what its messages came to.
-pub(crate) fn handle_get_queues(state: &AppState, slug: &str) -> Response {
+/// doing; and each queue it sends to, and what its messages came to. Where each is, and an error as
+/// it names it, only for `sees_where` (whoever may bind, web console L4, Q4); anyone else is told
+/// the error with the queue named in its place.
+pub(crate) fn handle_get_queues(state: &AppState, slug: &str, sees_where: bool) -> Response {
     let (listened, sends): (Vec<(String, String)>, Vec<String>) = match state.deployments.lock().unwrap().get(slug) {
         Some(d) => (
             d.server.as_ref().map(|s| s.queues.iter().map(|q| (q.queue.clone(), q.label.clone())).collect()).unwrap_or_default(),
@@ -737,6 +768,7 @@ pub(crate) fn handle_get_queues(state: &AppState, slug: &str) -> Response {
         None => return err(404, format!("no deployment {slug:?}")),
     };
     let queues = &state.folders.queues;
+    let places = if sees_where { Vec::new() } else { state.folders.whereabouts(slug) };
     let listening: Vec<serde_json::Value> = listened
         .into_iter()
         .map(|(queue, label)| {
@@ -750,6 +782,9 @@ pub(crate) fn handle_get_queues(state: &AppState, slug: &str) -> Response {
                 l["label"] = serde_json::json!(label);
                 shown = l;
             }
+            if !sees_where {
+                folders::left_where(&mut shown, &places);
+            }
             shown
         })
         .collect();
@@ -760,7 +795,7 @@ pub(crate) fn handle_get_queues(state: &AppState, slug: &str) -> Response {
             let mut shown = serde_json::to_value(&sent).unwrap_or_default();
             shown["queue"] = serde_json::json!(queue);
             shown["waiting"] = serde_json::json!(waiting);
-            if let Some(address) = queues.resolve(slug, &queue).map(|b| b.address) {
+            if let Some(address) = queues.resolve(slug, &queue).map(|b| b.address).filter(|_| sees_where) {
                 shown["address"] = serde_json::json!(address);
             }
             shown
@@ -771,8 +806,14 @@ pub(crate) fn handle_get_queues(state: &AppState, slug: &str) -> Response {
 
 // ── admin ──
 
-fn shown(name: &str, deployment: Option<&str>, b: &Binding) -> serde_json::Value {
-    serde_json::json!({ "name": name, "deployment": deployment, "url": b.url, "address": b.address, "fifo": b.fifo, "largest": b.largest, "visibility": b.visibility, "keep_failed": b.keep_failed })
+/// A binding as the admin panel and `holon queue list` show it. Where it is (its address, and the
+/// source its URL is read from) only for `sees_where`: whoever may bind (web console L4, Q4).
+fn shown(name: &str, deployment: Option<&str>, b: &Binding, sees_where: bool) -> serde_json::Value {
+    let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "fifo": b.fifo, "largest": b.largest, "visibility": b.visibility, "keep_failed": b.keep_failed });
+    if sees_where {
+        (shown["url"], shown["address"]) = (serde_json::json!(b.url), serde_json::json!(b.address));
+    }
+    shown
 }
 
 fn labelled(name: &str, deployment: Option<&str>) -> String {
@@ -780,9 +821,10 @@ fn labelled(name: &str, deployment: Option<&str>) -> String {
 }
 
 /// `/admin/queues` (list, bind), `/admin/queues/<name>` (unbind; `?deployment=<slug>` for a
-/// deployment's own), or None for any other path. Only an admin gets this far (can.rs); what
-/// they do goes in the activity log.
-pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Response> {
+/// deployment's own), or None for any other path. The gate (can.rs) let the caller this far;
+/// `sees_where` says whether they may bind, and so see where each queue is. What they do goes in
+/// the activity log.
+pub(crate) fn route(state: &AppState, request: &Request, by: &str, sees_where: bool) -> Option<Response> {
     let url = request.url();
     let method = request.method();
     let all = &state.folders.queues;
@@ -790,8 +832,8 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
         return Some(match method {
             "GET" => {
                 let bound = all.all();
-                let server = bound.server.iter().map(|(n, b)| shown(n, None, b));
-                let own = bound.deployments.iter().flat_map(|(s, bs)| bs.iter().map(move |(n, b)| shown(n, Some(s), b)));
+                let server = bound.server.iter().map(|(n, b)| shown(n, None, b, sees_where));
+                let own = bound.deployments.iter().flat_map(|(s, bs)| bs.iter().map(move |(n, b)| shown(n, Some(s), b, sees_where)));
                 Response::json(&server.chain(own).collect::<Vec<_>>())
             }
             "POST" => {
@@ -817,7 +859,7 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                             let detail = crate::events::Detail { name: Some(b.name.clone()), ..Default::default() };
                             crate::events::note(&state.deployments, slug, "binding", format!("bound the queue {}", b.name), Some(by), detail);
                         }
-                        Response::json(&shown(&b.name, b.deployment.as_deref(), &q))
+                        Response::json(&shown(&b.name, b.deployment.as_deref(), &q, sees_where))
                     }
                     Err(e) => e,
                 }
@@ -883,7 +925,12 @@ pub(crate) fn add_body(name: &str, read: &crate::cmdline::BindArgs) -> Result<se
 
 /// A queue binding as `holon queue list` prints it.
 pub(crate) fn line(q: &serde_json::Value) -> String {
-    let mut said = vec![q["name"].as_str().unwrap_or("").to_string(), format!("{} (from {})", q["address"].as_str().unwrap_or(""), q["url"].as_str().unwrap_or(""))];
+    // Where it is, to whoever may bind (web console L4, Q4).
+    let at = match q["address"].as_str() {
+        Some(at) => format!("{at} (from {})", q["url"].as_str().unwrap_or("")),
+        None => "where, to whoever may bind".to_string(),
+    };
+    let mut said = vec![q["name"].as_str().unwrap_or("").to_string(), at];
     if q["fifo"].as_bool() == Some(true) {
         said.push("FIFO".into());
     }
@@ -1071,7 +1118,7 @@ mod tests {
         q.bind("retries", &asked("env:HOLON_SECRET_R"), None).unwrap();
         q.serve(Arc::default());
         let sent = vec![("payouts".to_string(), message("one", None)), ("payouts".to_string(), message("two", None)), ("retries".to_string(), message("again", Some("acct_1"))), ("retries".to_string(), message("mine", None))];
-        let spooled = q.spool_logged("app", &entry("r1"), sent);
+        let spooled = q.spool_logged("app", &entry("r1"), sent).unwrap();
         q.hold_sends("app", 4, spooled);
         std::thread::sleep(Duration::from_millis(200));
         assert!(sqs.messages("payouts").is_empty(), "held until its record is on disk");
@@ -1086,7 +1133,7 @@ mod tests {
         assert_eq!(fifo.iter().map(|m| (m.body.as_str(), m.group.as_deref())).collect::<Vec<_>>(), [("again", Some("acct_1")), ("mine", Some("app"))], "its group, else the deployment's");
         assert_eq!(q.sent("app", "payouts"), (Sent { sent: 2, ..Sent::default() }, 0));
         // A failed or parked run sends nothing.
-        assert!(q.spool_logged("app", &LogEntry { error: Some("x".into()), ..entry("r2") }, vec![("payouts".into(), message("no", None))]).is_empty());
+        assert!(q.spool_logged("app", &LogEntry { error: Some("x".into()), ..entry("r2") }, vec![("payouts".into(), message("no", None))]).unwrap().is_empty());
     }
 
     #[test]
@@ -1119,8 +1166,8 @@ mod tests {
         let first = Queues::open(file.to_str().unwrap()).unwrap().with_sources(Sources::of(&vars));
         first.bind("payouts", &asked("env:HOLON_SECRET_P"), None).unwrap();
         // Two runs spooled, neither sent: one whose record landed, one a crash lost.
-        first.hold_sends("app", 1, first.spool_logged("app", &entry("landed"), vec![("payouts".into(), message("kept", None))]));
-        first.hold_sends("app", 2, first.spool_logged("app", &entry("lost"), vec![("payouts".into(), message("gone", None))]));
+        first.hold_sends("app", 1, first.spool_logged("app", &entry("landed"), vec![("payouts".into(), message("kept", None))]).unwrap());
+        first.hold_sends("app", 2, first.spool_logged("app", &entry("lost"), vec![("payouts".into(), message("gone", None))]).unwrap());
         // Each sealed under the deployment's keys (at_rest.rs §5.5): no message in clear. One written
         // plain (the landed run's, as it was before it was sealed) is left as it is, never sent.
         let spool = dir.join("queue-spool");
@@ -1131,7 +1178,7 @@ mod tests {
         let plain = crate::at_rest::read_sealed(&spool.join("app.landed.0.msg"), crate::at_rest::role::SPOOL_QUEUE).unwrap().unwrap();
         std::fs::write(spool.join("app.plain.0.msg"), &*plain).unwrap();
         let again = Queues::open(file.to_str().unwrap()).unwrap().with_sources(Sources::of(&vars));
-        again.recover(|slug| (slug == "app").then(|| vec![LogEntry { run_id: "landed".into(), ..Default::default() }]));
+        again.recover(|slug| (slug == "app").then(|| BTreeSet::from(["landed".to_string()])));
         again.serve(Arc::default());
         until(|| sqs.messages("payouts").len() == 1);
         assert_eq!(sqs.messages("payouts")[0].body, "kept");

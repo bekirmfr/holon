@@ -584,9 +584,11 @@ impl Mails {
     /// The mails a logged run sent (`mails`: through which, and the message, as it performed
     /// them), spooled before its record is written: its place in the run, the time it began
     /// (`at_ms`, its `Date`) and its id give each its `Message-ID`. One whose mail isn't bound now
-    /// is noted and dropped.
-    fn spool(&self, slug: &str, run: &str, at_ms: u64, mails: Vec<(String, Value)>, unlogged: bool) -> Vec<Queued> {
+    /// is noted and dropped. With them, why one couldn't be spooled, if one couldn't: it is noted
+    /// and dropped too.
+    fn spool(&self, slug: &str, run: &str, at_ms: u64, mails: Vec<(String, Value)>, unlogged: bool) -> (Vec<Queued>, Option<String>) {
         let mut out = Vec::new();
+        let mut unspooled = None;
         for (n, (mail, message)) in mails.into_iter().enumerate() {
             let Some((key, binding)) = self.resolve_keyed(slug, &mail).filter(|(_, b)| !b.smtp.is_empty()) else {
                 self.note(slug, &mail, format!("didn't mail through {mail}: it isn't bound to send now"));
@@ -608,29 +610,55 @@ impl Mails {
             let subject = field("subject").pop().unwrap_or_default();
             let spooled = Spooled { slug: slug.to_string(), mail, run: run.to_string(), n, at_ms, to, subject, unlogged };
             let file = self.0.spool.as_ref().map(|dir| dir.join(format!("{slug}.{run}.{n}.mail")));
-            if let (Some(dir), Some(file)) = (&self.0.spool, &file) {
-                let mut kept = serde_json::to_vec(&spooled).unwrap_or_default();
-                kept.push(b'\n');
-                kept.extend_from_slice(&bytes);
-                // Sealed under the deployment's keys (at_rest.rs, §5.5): what it mails, to whom.
-                let scope = crate::at_rest::deployment(slug);
-                if let Err(e) = holon_host::create_private_dir(dir).and_then(|_| crate::at_rest::write_sealed(file, &scope, crate::at_rest::role::SPOOL_MAIL, &kept)) {
-                    self.note(slug, &spooled.mail, format!("didn't mail {:?} through {}: it couldn't be spooled ({e})", spooled.subject, spooled.mail));
-                    continue;
+            // Sealed under the deployment's keys (at_rest.rs, §5.5): what it mails, to whom.
+            let written = match (&self.0.spool, &file) {
+                _ if crate::faults::failing("a spooled mail").is_some() => Err(crate::faults::error("a spooled mail")),
+                (Some(dir), Some(file)) => {
+                    let mut kept = serde_json::to_vec(&spooled).unwrap_or_default();
+                    kept.push(b'\n');
+                    kept.extend_from_slice(&bytes);
+                    let scope = crate::at_rest::deployment(slug);
+                    holon_host::create_private_dir(dir).and_then(|_| crate::at_rest::write_sealed(file, &scope, crate::at_rest::role::SPOOL_MAIL, &kept))
                 }
+                _ => Ok(()),
+            };
+            if let Err(e) = written {
+                self.note(slug, &spooled.mail, format!("didn't mail {:?} through {}: it couldn't be spooled ({e})", spooled.subject, spooled.mail));
+                unspooled.get_or_insert(format!("a mail through {} couldn't be spooled: {e}", spooled.mail));
+                continue;
             }
             out.push(Queued { key, spooled, message: bytes, file, tries: 0, not_before: Instant::now() });
         }
-        out
+        (out, unspooled)
     }
 
     /// Spool a logged run's mails (`entry` is its record, about to be written), before its record
-    /// is: what [`hold`](Self::hold) holds. A run that failed or parked sent none.
-    pub(crate) fn spool_logged(&self, slug: &str, entry: &LogEntry, mails: Vec<(String, Value)>) -> Vec<Queued> {
+    /// is: what [`hold`](Self::hold) holds. A run that failed or parked sent none. `Err`: one
+    /// couldn't be spooled, so none is sent (those spooled are dropped), and why: the run's record
+    /// says it, never that it sent what it never will (release audit O3).
+    pub(crate) fn spool_logged(&self, slug: &str, entry: &LogEntry, mails: Vec<(String, Value)>) -> Result<Vec<Queued>, String> {
         if mails.is_empty() || entry.error.is_some() || !entry.parked.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        self.spool(slug, &entry.run_id, entry.at_ms, mails, false)
+        match self.spool(slug, &entry.run_id, entry.at_ms, mails, false) {
+            (spooled, None) => Ok(spooled),
+            (spooled, Some(why)) => {
+                self.drop_spooled(slug, spooled, "another of its run's mails couldn't be spooled");
+                Err(why)
+            }
+        }
+    }
+
+    /// Mails spooled for a run and never to be sent (`why` not), their files removed and each
+    /// noted: one of the run's couldn't be spooled, or its record couldn't be written. What a
+    /// mail's recipient gets is what the log holds (release audit D9).
+    pub(crate) fn drop_spooled(&self, slug: &str, spooled: Vec<Queued>, why: &str) {
+        for q in spooled {
+            if let Some(file) = &q.file {
+                let _ = std::fs::remove_file(file);
+            }
+            self.note(slug, &q.spooled.mail, format!("didn't mail {:?} through {}: {why}", q.spooled.subject, q.spooled.mail));
+        }
     }
 
     /// Hold the mails spooled for entry `seq`, just written, until it is on disk
@@ -663,7 +691,7 @@ impl Mails {
         if mails.is_empty() || entry.error.is_some() || !entry.parked.is_empty() {
             return;
         }
-        for q in self.spool(slug, &entry.run_id, entry.at_ms, mails, true) {
+        for q in self.spool(slug, &entry.run_id, entry.at_ms, mails, true).0 {
             self.queue(q);
         }
     }
@@ -672,12 +700,13 @@ impl Mails {
     /// deployment's log holds, finished (`log`: a deployment's entries, none when it isn't
     /// deployed), and each unlogged one. Another's run a crash lost before its record was on
     /// disk: it is removed, never sent.
-    pub(crate) fn recover(&self, mut log: impl FnMut(&str) -> Option<Vec<LogEntry>>) {
+    pub(crate) fn recover(&self, mut log: impl FnMut(&str) -> Option<BTreeSet<String>>) {
         let Some(dir) = &self.0.spool else { return };
         let Ok(files) = std::fs::read_dir(dir) else { return };
         let mut logged: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for file in files.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e == "mail")) {
-            let bytes = match crate::at_rest::read_sealed(&file, crate::at_rest::role::SPOOL_MAIL) {
+            let named = crate::at_rest::deployment(file.file_name().and_then(|n| n.to_str()).and_then(|n| n.split('.').next()).unwrap_or_default());
+            let bytes = match crate::at_rest::read_sealed_in(&file, &named, crate::at_rest::role::SPOOL_MAIL) {
                 Ok(Some(bytes)) => bytes,
                 Ok(None) => continue,
                 // One that doesn't open (changed, plain, or sealed by another folder's keys): left
@@ -695,7 +724,7 @@ impl Mails {
             let landed = spooled.unlogged
                 || logged
                     .entry(spooled.slug.clone())
-                    .or_insert_with(|| log(&spooled.slug).unwrap_or_default().into_iter().filter(|e| e.error.is_none() && e.parked.is_empty()).map(|e| e.run_id).collect())
+                    .or_insert_with(|| log(&spooled.slug).unwrap_or_default())
                     .contains(&spooled.run);
             if !landed {
                 let _ = std::fs::remove_file(&file);
@@ -791,7 +820,11 @@ impl Mails {
                 return Some(item);
             }
             Err(f) => {
-                eprintln!("holon: {}: gave up mailing {what}: {}", s.slug, f.why());
+                // The console says which deployment, run and binding; its subject, its recipients
+                // and the server's answer (which names a recipient it refused) are run data, kept
+                // in the deployment's events, which are sealed, not in what the console's
+                // collector (journald, docker logs) keeps in clear (release audit, at rest).
+                eprintln!("holon: {}: gave up a mail of run {} through {}: the deployment's events say why", s.slug, s.run, s.mail);
                 self.note(&s.slug, &s.mail, format!("gave up mailing {what}: {}", f.why()));
             }
         }
@@ -825,7 +858,8 @@ pub(crate) fn ungranted(mail: &str, message: &Value, granted: &BTreeSet<String>)
     for r in recipients {
         let Value::Text(r) = r else { return Some("a recipient isn't an address".into()) };
         if !granted.iter().any(|g| g.split_once('/').is_some_and(|(m, a)| m == mail && a.eq_ignore_ascii_case(&r))) {
-            return Some(format!("{r} isn't a recipient it was granted"));
+            // Not named: a recipient is run data, and this is said on the console, in clear.
+            return Some("a recipient isn't one it was granted".into());
         }
     }
     None
@@ -861,8 +895,25 @@ pub(crate) fn loggable(payload: &Value) -> Value {
 
 // ── admin ──
 
-fn shown(name: &str, deployment: Option<&str>, b: &Binding) -> serde_json::Value {
-    serde_json::json!({ "name": name, "deployment": deployment, "smtp": b.smtp, "address": b.address, "from": b.from, "to": b.to, "mailbox": b.mailbox, "oauth": b.oauth })
+/// A binding as the admin panel and `holon mail list` show it. Where its servers are (their
+/// addresses, the sources their URLs are read from, and the token request's) only for
+/// `sees_where`: whoever may bind (web console L4, Q4). Whom it sends as and to, and the folders it
+/// reads and moves to, are what it does, shown as a database's access is.
+fn shown(name: &str, deployment: Option<&str>, b: &Binding, sees_where: bool) -> serde_json::Value {
+    let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "smtp": b.smtp, "address": b.address, "from": b.from, "to": b.to, "mailbox": b.mailbox, "oauth": b.oauth });
+    if !sees_where {
+        for (at, key) in [(None, "smtp"), (None, "address"), (None, "oauth"), (Some("mailbox"), "imap"), (Some("mailbox"), "address")] {
+            let within = match at {
+                Some(at) => shown.get_mut(at),
+                None => Some(&mut shown),
+            };
+            if let Some(o) = within.and_then(serde_json::Value::as_object_mut) {
+                o.remove(key);
+            }
+        }
+        shown["sends"] = serde_json::json!(!b.smtp.is_empty());
+    }
+    shown
 }
 
 fn labelled(name: &str, deployment: Option<&str>) -> String {
@@ -870,9 +921,10 @@ fn labelled(name: &str, deployment: Option<&str>) -> String {
 }
 
 /// `/admin/mails` (list, bind), `/admin/mails/<name>` (unbind; `?deployment=<slug>` for a
-/// deployment's own), or None for any other path. Only an admin gets this far (can.rs); what
-/// they do goes in the activity log.
-pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Response> {
+/// deployment's own), or None for any other path. The gate (can.rs) let the caller this far;
+/// `sees_where` says whether they may bind, and so see where each mail's servers are. What they do
+/// goes in the activity log.
+pub(crate) fn route(state: &AppState, request: &Request, by: &str, sees_where: bool) -> Option<Response> {
     let url = request.url();
     let method = request.method();
     let all = &state.folders.mails;
@@ -880,8 +932,8 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
         return Some(match method {
             "GET" => {
                 let bound = all.all();
-                let server = bound.server.iter().map(|(n, b)| shown(n, None, b));
-                let own = bound.deployments.iter().flat_map(|(s, bs)| bs.iter().map(move |(n, b)| shown(n, Some(s), b)));
+                let server = bound.server.iter().map(|(n, b)| shown(n, None, b, sees_where));
+                let own = bound.deployments.iter().flat_map(|(s, bs)| bs.iter().map(move |(n, b)| shown(n, Some(s), b, sees_where)));
                 Response::json(&server.chain(own).collect::<Vec<_>>())
             }
             "POST" => {
@@ -907,7 +959,7 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                             let detail = crate::events::Detail { name: Some(b.name.clone()), ..Default::default() };
                             crate::events::note(&state.deployments, slug, "binding", format!("bound the mail {}", b.name), Some(by), detail);
                         }
-                        Response::json(&shown(&b.name, b.deployment.as_deref(), &m))
+                        Response::json(&shown(&b.name, b.deployment.as_deref(), &m, sees_where))
                     }
                     Err(e) => e,
                 }
@@ -973,14 +1025,22 @@ pub(crate) fn line(m: &serde_json::Value) -> String {
     let only = m["deployment"].as_str().map_or(String::new(), |s| format!(", for {s} only"));
     let to: Vec<&str> = m["to"].as_array().into_iter().flatten().filter_map(|t| t.as_str()).collect();
     let mut said = vec![m["name"].as_str().unwrap_or("").to_string()];
-    if m["smtp"].as_str().is_some_and(|s| !s.is_empty()) {
-        said.push(format!("sends through {} (from {})  as {}  to {}", m["address"].as_str().unwrap_or(""), m["smtp"].as_str().unwrap_or(""), m["from"].as_str().unwrap_or(""), to.join(", ")));
+    // Where its servers are, to whoever may bind (web console L4, Q4): `sends` says it does to
+    // anyone else.
+    match m["smtp"].as_str().filter(|s| !s.is_empty()) {
+        Some(smtp) => said.push(format!("sends through {} (from {smtp})  as {}  to {}", m["address"].as_str().unwrap_or(""), m["from"].as_str().unwrap_or(""), to.join(", "))),
+        None if m["sends"] == true => said.push(format!("sends as {}  to {}", m["from"].as_str().unwrap_or(""), to.join(", "))),
+        None => {}
     }
     let b = &m["mailbox"];
-    if let Some(imap) = b["imap"].as_str() {
+    if b.is_object() {
         let verdict = b["verdict_from"].as_str().map_or("nobody's verdict".to_string(), |v| format!("{v}'s verdict"));
         let every = folders::span_text(b["every"].as_u64().unwrap_or(60));
-        said.push(format!("receives in {} {} (from {imap}), moved to {}  {verdict}  every {every}", b["address"].as_str().unwrap_or(""), b["folder"].as_str().unwrap_or(""), b["done"].as_str().unwrap_or("")));
+        let at = match b["imap"].as_str() {
+            Some(imap) => format!("{} {} (from {imap})", b["address"].as_str().unwrap_or(""), b["folder"].as_str().unwrap_or("")),
+            None => b["folder"].as_str().unwrap_or("").to_string(),
+        };
+        said.push(format!("receives in {at}, moved to {}  {verdict}  every {every}", b["done"].as_str().unwrap_or("")));
     }
     if let Some(source) = m["oauth"]["source"].as_str() {
         said.push(format!("logs in with OAuth ({} from {source})", m["oauth"]["address"].as_str().unwrap_or("")));
@@ -1243,7 +1303,8 @@ mod tests {
     fn a_grant_covers_the_recipients_it_names_or_any_for_a_star() {
         let granted: BTreeSet<String> = ["ops/approvals@acme.com".to_string()].into();
         assert_eq!(ungranted("ops", &message(&["Approvals@acme.com"], "s"), &granted), None);
-        assert!(ungranted("ops", &message(&["approvals@acme.com", "x@acme.com"], "s"), &granted).unwrap().contains("x@acme.com"));
+        let refused = ungranted("ops", &message(&["approvals@acme.com", "x@acme.com"], "s"), &granted).unwrap();
+        assert!(refused.contains("isn't one it was granted") && !refused.contains("x@acme.com"), "{refused}");
         assert!(ungranted("alerts", &message(&["approvals@acme.com"], "s"), &granted).is_some());
         assert_eq!(ungranted("ops", &message(&["anyone@acme.com"], "s"), &["ops/*".to_string()].into()), None);
         let many: Vec<(Capability, Value)> = (0..101).map(|_| (Capability::MailSend("ops".into()), Value::Boolean(true))).collect();
@@ -1279,7 +1340,7 @@ mod tests {
             .with_retry([Duration::from_millis(50); 4], Duration::from_secs(5));
         mails.bind("ops", &send("env:HOLON_SECRET_OPS_SMTP", "Treasury <treasury@acme.com>", "*@acme.com"), None).unwrap();
         mails.serve(Arc::new(Mutex::new(BTreeMap::new())));
-        mails.hold("app", 7, mails.spool_logged("app", &entry("r1"), vec![("ops".into(), message(&["a@acme.com"], "first")), ("ops".into(), message(&["b@acme.com"], "second"))]));
+        mails.hold("app", 7, mails.spool_logged("app", &entry("r1"), vec![("ops".into(), message(&["a@acme.com"], "first")), ("ops".into(), message(&["b@acme.com"], "second"))]).unwrap());
         // Spooled, not sent: its record isn't on disk.
         assert_eq!(std::fs::read_dir(dir.join("mail-spool")).unwrap().count(), 2);
         std::thread::sleep(Duration::from_millis(100));
@@ -1295,7 +1356,7 @@ mod tests {
         assert_eq!(got[0].from, "treasury@acme.com");
         wait_for("spool emptied", || std::fs::read_dir(dir.join("mail-spool")).unwrap().count() == 0);
         // A failed run's, or a parked one's: nothing.
-        mails.hold("app", 9, mails.spool_logged("app", &LogEntry { error: Some("x".into()), ..entry("r2") }, vec![("ops".into(), message(&["a@acme.com"], "failed"))]));
+        mails.hold("app", 9, mails.spool_logged("app", &LogEntry { error: Some("x".into()), ..entry("r2") }, vec![("ops".into(), message(&["a@acme.com"], "failed"))]).unwrap());
         assert_eq!(std::fs::read_dir(dir.join("mail-spool")).unwrap().count(), 0);
         // A recipient put off is tried again; one refused is given up, the rest still going.
         mails.send_unlogged("app", &entry("r3"), vec![("ops".into(), message(&["later@acme.com"], "deferred")), ("ops".into(), message(&["reject@acme.com"], "refused")), ("ops".into(), message(&["c@acme.com"], "third"))]);
@@ -1310,8 +1371,8 @@ mod tests {
         let mails = Mails::open(dir.join("mails.json").to_str().unwrap()).unwrap().with_sources(sources("smtp://127.0.0.1:1"));
         // Bound to a server that isn't there: spooled, and kept.
         mails.0.bound.write().unwrap().server.insert("ops".into(), Binding { smtp: "env:HOLON_SECRET_OPS_SMTP".into(), from: "t@acme.com".into(), to: vec!["*".into()], ..Default::default() });
-        mails.hold("app", 1, mails.spool_logged("app", &entry("landed"), vec![("ops".into(), message(&["a@acme.com"], "landed"))]));
-        mails.hold("app", 2, mails.spool_logged("app", &entry("lost"), vec![("ops".into(), message(&["a@acme.com"], "lost"))]));
+        mails.hold("app", 1, mails.spool_logged("app", &entry("landed"), vec![("ops".into(), message(&["a@acme.com"], "landed"))]).unwrap());
+        mails.hold("app", 2, mails.spool_logged("app", &entry("lost"), vec![("ops".into(), message(&["a@acme.com"], "lost"))]).unwrap());
         mails.send_unlogged("app", &entry("unlogged"), vec![("ops".into(), message(&["a@acme.com"], "unlogged"))]);
         assert_eq!(std::fs::read_dir(&spool).unwrap().count(), 3);
         // Each sealed under the deployment's keys (at_rest.rs §5.5): no recipient, no subject in
@@ -1325,7 +1386,7 @@ mod tests {
         std::fs::write(spool.join("app.plain.0.mail"), &*plain).unwrap();
         // The log holds the first run only: the second's record a crash lost.
         let again = Mails::open(dir.join("mails.json").to_str().unwrap()).unwrap();
-        again.recover(|slug| (slug == "app").then(|| vec![LogEntry { run_id: "landed".into(), ..Default::default() }]));
+        again.recover(|slug| (slug == "app").then(|| BTreeSet::from(["landed".to_string()])));
         let mut left: Vec<String> = std::fs::read_dir(&spool).unwrap().flatten().map(|f| f.file_name().to_string_lossy().into_owned()).collect();
         left.sort();
         assert_eq!(left, ["app.landed.0.mail", "app.plain.0.mail", "app.unlogged.0.mail"]);

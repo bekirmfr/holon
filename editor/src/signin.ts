@@ -133,7 +133,12 @@ let tabSignedIn: SignedIn | null = storedSignIn();
 
 /** Take the ID token a pop-up this tab opened just kept (SIGNED_IN_MESSAGE). */
 export function adoptSignIn(): SignedIn | null {
+  const was = tabSignedIn?.idToken;
   tabSignedIn = storedSignIn();
+  // Signed in anew, maybe as someone else: who listens is told, as server.ts's setSession tells
+  // it (can.tsx forgets what the buttons followed). Not when nothing was taken: the console,
+  // signed out, would go back to its sign-in, and the open flows with it.
+  if (signedIn() && tabSignedIn?.idToken !== was) window.dispatchEvent(new Event("holon:session"));
   return signedIn();
 }
 

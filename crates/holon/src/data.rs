@@ -237,7 +237,8 @@ pub fn request_record(
 /// wherever the entry holds what its run had ([`LogEntry::values_mut`]), whatever started it: a
 /// record's field (a request's header, query or path parameter, a message's, an input's, an
 /// answer's, a row's), a header's `[name, value]` pair, a JSON text at any depth (a body, a call's
-/// answer), and a query or a form's `name=value` (a URL, a form body); all of it when it holds
+/// answer), and a query or a form's `name=value` (a URL, a form body), either of these two inside a
+/// JSON text's string too (a host's echo of a request's body); all of it when it holds
 /// more than one value. What a credential holds is tainted with it: what follows its scheme
 /// (`Bearer …`), what a Basic one decodes to and its password alone, each cookie's value, a set
 /// cookie's. A value shorter than a secret may be can't be told apart from ordinary text, so it
@@ -245,6 +246,115 @@ pub fn request_record(
 /// that.
 pub(crate) fn tainted(declared: &[String], entry: &mut crate::recorder::LogEntry, lines: &[(String, Value)], marked: &crate::secrets::Redactor) -> Vec<(String, String)> {
     let keys: Vec<&str> = holon_core::ALWAYS_TAINTED.iter().copied().chain(declared.iter().map(String::as_str)).collect();
+    found_at(&keys, entry, lines, marked)
+}
+
+/// The values of the keys a flow never keeps (`never_keep`) wherever a run's entry or its lines hold
+/// them, found as [`tainted`] finds a tainted key's, each with its key: those as long as a secret
+/// may be, which the host keeps out of what it records by their text too (`Redactor::never_kept`),
+/// besides where each stands under its key, at any length (`never_keep.rs`).
+pub(crate) fn never_kept(never_keep: &[String], entry: &mut crate::recorder::LogEntry, lines: &[(String, Value)], marked: &crate::secrets::Redactor) -> Vec<(String, String)> {
+    if never_keep.is_empty() {
+        return Vec::new();
+    }
+    let keys: Vec<&str> = never_keep.iter().map(String::as_str).collect();
+    found_at(&keys, entry, lines, marked)
+}
+
+/// What a run's record keeps out of what started it, as far as it is known before the run takes
+/// a step: its secrets by their text (`Redactor::of`), and the values its inputs, its sourced
+/// values and its state hold under the keys its flow taints, those every run does and those it
+/// never keeps, found as [`tainted`] and [`never_kept`] find them in its entry. What its id hashes
+/// each such value as (`firing::run_id_of`, audit R80), and what its timer measures a step as
+/// (`secrets::Measured`).
+///
+/// Its record is redacted of more, found only as the run goes (its tokens, what it computed from a
+/// secret, a guarded value met first in a call's answer or a row):
+/// an input holding one of those is written marked where the id hashed it as it was. `holon
+/// verify` then can't make the id again from the record, and takes the log's id as given, saying
+/// so, where what started the run carries a mark this couldn't have written
+/// ([`keyed_at_start`]).
+///
+/// A limit, not closed here: for such a value the id still hashes what the record marks, so it
+/// can be guessed from the id and the nonce beside it (a short tainted value a call answered, held
+/// in the request under another key: an email looked up as `q`, whose key `email` the start never
+/// saw). Closing it takes an id the record can't recompute alone (a salted one), the owner's call.
+///
+/// And a secret added to the vault while a run goes: its record marks it, but this, made before,
+/// didn't know it, so the id hashed it as it was, and that run's id reads as differing.
+pub(crate) fn start_marks<'v>(
+    secrets: &crate::secrets::Vault,
+    taint: &[String],
+    never_keep: &[String],
+    started: impl IntoIterator<Item = &'v Value> + Clone,
+) -> crate::secrets::Redactor {
+    use crate::secrets::Redactor;
+    let marked = Redactor::of(secrets);
+    let tainted: Vec<&str> = holon_core::ALWAYS_TAINTED.iter().copied().chain(taint.iter().map(String::as_str)).collect();
+    let found = found_in(&tainted, started.clone(), &marked);
+    let never: Vec<&str> = never_keep.iter().map(String::as_str).collect();
+    let never = match never.is_empty() {
+        true => Vec::new(),
+        false => found_in(&never, started, &marked),
+    };
+    marked.and(Redactor::tainted(&found)).and(Redactor::never_kept(crate::never_keep::Places::new(never_keep), &never))
+}
+
+/// The texts under a key the start guards by its place, in `started` (a run's started values as its
+/// record writes them, as verify reads them): each found as [`start_marks`] finds a value by its
+/// key (a key the flow taints, the four credential headers, a key it never keeps), one a place it
+/// stands, the credential's whole. A guarded key's mark inside one of them is where the start
+/// wrote it too; the same mark elsewhere may stand for another value, met as the run went (a
+/// guarded key's mark names its key, not its value).
+pub(crate) fn keyed_at_start<'v>(taint: &[String], never_keep: &[String], started: impl IntoIterator<Item = &'v Value>) -> Vec<String> {
+    let keys: Vec<&str> = holon_core::ALWAYS_TAINTED.iter().copied().chain(taint.iter().map(String::as_str)).chain(never_keep.iter().map(String::as_str)).collect();
+    let mut found: Vec<(String, String)> = Vec::new();
+    for v in started {
+        if names_a_key(v, &keys) {
+            svalue_tainted(&crate::wire::SValue::from_core(v), &keys, &mut found);
+        }
+    }
+    found.into_iter().map(|(_, value)| value).filter(|value| value.contains('‹')).collect()
+}
+
+/// The values under `keys` in `values`, found as [`tainted`] finds them in an entry. A value that
+/// names none of them, either case, is passed by uncopied.
+fn found_in<'v>(keys: &[&str], values: impl IntoIterator<Item = &'v Value>, marked: &crate::secrets::Redactor) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    for v in values {
+        if names_a_key(v, keys) {
+            svalue_tainted(&crate::wire::SValue::from_core(v), keys, &mut found);
+        }
+    }
+    held_with_parts(found, marked)
+}
+
+/// Whether [`svalue_tainted`] would find anything under `keys` in `v`, looked at as it looks: a
+/// record's field or a header's name that is one of them, a text it reads for keys
+/// ([`text_names_a_key`]). Not a text's every byte: a 200 KiB body that is neither JSON nor a form
+/// is passed by, as the record's own search passes it by (R80's cost, performance.md).
+fn names_a_key(v: &Value, keys: &[&str]) -> bool {
+    match v {
+        Value::Text(s) => text_names_a_key(s, keys),
+        Value::Record(fields) => fields.iter().any(|(k, x)| key_of(keys, k).is_some() || names_a_key(x, keys)),
+        Value::List(xs) => {
+            matches!(xs.as_slice(), [Value::Text(name), _] if key_of(keys, name).is_some()) || xs.iter().any(|x| names_a_key(x, keys))
+        }
+        Value::Effect { payload, .. } | Value::Sum { payload, .. } => names_a_key(payload, keys),
+        Value::Number(_) | Value::Boolean(_) | Value::Bytes(_) => false,
+    }
+}
+
+/// Whether [`text_tainted`] reads `s` for keys: it is JSON or holds a form's `=`, and names one
+/// of `keys`, either case.
+fn text_names_a_key(s: &str, keys: &[&str]) -> bool {
+    let t = s.trim_start();
+    (t.starts_with('{') || t.starts_with('[') || s.contains('=')) && contains_any_either_case(s, keys)
+}
+
+/// [`tainted`]'s finding, for `keys`.
+fn found_at(keys: &[&str], entry: &mut crate::recorder::LogEntry, lines: &[(String, Value)], marked: &crate::secrets::Redactor) -> Vec<(String, String)> {
+    let keys = keys.to_vec();
     let mut found: Vec<(String, String)> = Vec::new();
     entry.values_mut(&mut |v| svalue_tainted(v, &keys, &mut found));
     for s in entry.texts_mut() {
@@ -253,6 +363,13 @@ pub(crate) fn tainted(declared: &[String], entry: &mut crate::recorder::LogEntry
     for (_, line) in lines {
         svalue_tainted(&crate::wire::SValue::from_core(line), &keys, &mut found);
     }
+    held_with_parts(found, marked)
+}
+
+/// The values `found` under keys, with what each credential among them holds (what follows its
+/// scheme, a Basic one's text and its password alone, each cookie's value), each as long as a
+/// secret may be and not one `marked` marks already.
+fn held_with_parts(mut found: Vec<(String, String)>, marked: &crate::secrets::Redactor) -> Vec<(String, String)> {
     let mut held = Vec::new();
     for (key, value) in &found {
         if let Some((scheme, rest)) = value.trim().split_once(' ')
@@ -332,7 +449,7 @@ fn leaves(key: &str, v: &crate::wire::SValue, found: &mut Vec<(String, String)>)
 fn text_tainted(s: &str, keys: &[&str], found: &mut Vec<(String, String)>) {
     let t = s.trim_start();
     let json = t.starts_with('{') || t.starts_with('[');
-    if !(json || s.contains('=')) || !keys.iter().any(|k| contains_either_case(s, k)) {
+    if !text_names_a_key(s, keys) {
         return;
     }
     if json && let Ok(json) = serde_json::from_str::<serde_json::Value>(t) {
@@ -351,9 +468,17 @@ fn text_tainted(s: &str, keys: &[&str], found: &mut Vec<(String, String)>) {
     }
 }
 
-/// Whether `s` holds `key`, either case.
-fn contains_either_case(s: &str, key: &str) -> bool {
-    s.as_bytes().windows(key.len()).any(|w| w.eq_ignore_ascii_case(key.as_bytes()))
+/// Whether `s` holds any of `keys`, either case: one pass over it for them all, each place
+/// compared only where one of them could begin (an ASCII key's first letter, either case), not a
+/// pass a key comparing every place (R80's cost, performance.md).
+fn contains_any_either_case(s: &str, keys: &[&str]) -> bool {
+    let mut begins = [false; 256];
+    for k in keys.iter().filter_map(|k| k.as_bytes().first()) {
+        begins[k.to_ascii_lowercase() as usize] = true;
+        begins[k.to_ascii_uppercase() as usize] = true;
+    }
+    let b = s.as_bytes();
+    b.iter().enumerate().any(|(i, c)| begins[*c as usize] && keys.iter().any(|k| b.get(i..i + k.len()).is_some_and(|w| !k.is_empty() && w.eq_ignore_ascii_case(k.as_bytes()))))
 }
 
 /// The values under tainted keys anywhere in JSON: a text as it is, a number as it is written,
@@ -378,6 +503,8 @@ fn json_tainted(json: &serde_json::Value, keys: &[&str], found: &mut Vec<(String
             }
         }
         serde_json::Value::Array(items) => items.iter().for_each(|v| json_tainted(v, keys, found)),
+        // A JSON text or a query inside a string: a host that echoes a request answers so.
+        serde_json::Value::String(t) => text_tainted(t, keys, found),
         _ => {}
     }
 }

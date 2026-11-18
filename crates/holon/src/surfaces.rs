@@ -230,6 +230,13 @@ pub(crate) const COMMANDS: &[Surface] = &[
         &[],
     ),
     routes("key forget", &["POST /admin/keys/forget"], &[]),
+    both(
+        "key export",
+        &["GET /admin/keys"],
+        "the data folder's keys.json, and the root key where it is kept (with --server and no --root-key, where that server says it reads it), copied to a file of the user's",
+        "the OS's permissions on the data folder, and the root key",
+        &[],
+    ),
     routes("host", &["GET /admin/host", "GET /deployments/{slug}/holds"], &[]),
     local("pick-folder", "a folder dialog on the server's machine, for the admin page's browse", "the OS: it runs as the user who runs holon serve"),
     both(

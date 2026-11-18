@@ -113,6 +113,14 @@ pub struct LogEntry {
     pub status: Option<u16>,
     /// The request record the endpoint received.
     pub request: Option<SValue>,
+    /// Its body, when it was longer than [`BODY_INLINE`]: kept by hash in the blob store (blobs.rs),
+    /// as a file text is, and not in the entry. Its places here (`request`'s `body`, the sourced
+    /// `NetworkIngress`) then hold an empty text, and what runs it again puts it back
+    /// ([`LogEntry::put_body`]). A caller decides how big a body is, and the log's lines, the
+    /// entries a log keeps in memory and what reads them hold none of it (release audit D1).
+    /// Its `blob` is absent when it couldn't be kept: the run stays provable by its hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<LoggedFile>,
     /// The sourced values the run saw, by capability (`"Clock"`, `"Random"`, `"NetworkIngress"`).
     pub sourced: Vec<(String, SValue)>,
     /// The deployment's state when the run began: what every `store_read` saw.
@@ -307,7 +315,69 @@ pub struct Commit {
     pub n: Option<u64>,
 }
 
+/// The longest request body a log entry holds itself, as its line writes it (`json_len`): a longer
+/// one is kept by hash ([`LogEntry::body`]).
+pub(crate) const BODY_INLINE: usize = 64 * 1024;
+
+/// How many bytes `s` takes in a JSON string, its quotes left out: a quote, a backslash and the
+/// control characters with a short escape two, the other control characters six. Counted, not
+/// written; past `BODY_INLINE` it stops counting.
+pub(crate) fn json_len(s: &str) -> usize {
+    let mut n = 0;
+    for b in s.bytes() {
+        n += match b {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 2,
+            0..0x20 => 6,
+            _ => 1,
+        };
+        if n > BODY_INLINE {
+            break;
+        }
+    }
+    n
+}
+
 impl LogEntry {
+    /// The places its request's body is in: `request`'s `body` and the sourced `NetworkIngress`,
+    /// each a text.
+    fn body_places(&mut self) -> Vec<&mut String> {
+        let mut places = Vec::new();
+        if let Some(SValue::Record(fields)) = &mut self.request
+            && let Some((_, SValue::Text(body))) = fields.iter_mut().find(|(k, _)| k == "body")
+        {
+            places.push(body);
+        }
+        for (name, value) in &mut self.sourced {
+            if name == "NetworkIngress"
+                && let SValue::Text(body) = value
+            {
+                places.push(body);
+            }
+        }
+        places
+    }
+
+    /// Its request's body taken out, when it is longer than [`BODY_INLINE`] as the log writes it
+    /// (`json_len`: a control character is six bytes there) and every place holds it: each place
+    /// left an empty text. None: it stays where it is.
+    pub(crate) fn take_body(&mut self) -> Option<String> {
+        let mut places = self.body_places();
+        let first = places.first()?;
+        if json_len(first) <= BODY_INLINE || places.iter().any(|p| **p != **first) {
+            return None;
+        }
+        let body = std::mem::take(*places.first_mut()?);
+        places.iter_mut().skip(1).for_each(|p| p.clear());
+        Some(body)
+    }
+
+    /// `body` put back in each of its places ([`LogEntry::take_body`]).
+    pub(crate) fn put_body(&mut self, body: &str) {
+        for place in self.body_places() {
+            *place = body.to_string();
+        }
+    }
+
     /// Each value the entry holds of what its run had, whatever started it: its request (a
     /// message, an input), what it read and was given, each node's outputs, what it performed and
     /// sent, each call it made and its answer. What a redactor goes over (`Redactor::entry`), and
@@ -758,6 +828,11 @@ pub struct Log {
     /// The seqs of the recent entries whose line couldn't be written to the file, so a strict run
     /// isn't told its record is on disk (`LogCell::sync_through`). The newest few.
     unkept: VecDeque<u64>,
+    /// Its deployment is being removed (deploy.rs): no line is written from then on, so the
+    /// records kept of it hold every line its file will (release audit R41). A run still in flight
+    /// is told its record couldn't be written, as on a full disk: a strict one isn't answered as
+    /// done.
+    closed: bool,
     /// A test's: the next lines' writes fail, as a full disk fails them.
     #[cfg(test)]
     pub(crate) fail_writes: bool,
@@ -766,7 +841,16 @@ pub struct Log {
     fail_partway: bool,
     /// A test's: the next syncs of its file fail, as a disk that can't flush fails them.
     #[cfg(test)]
-    fail_syncs: bool,
+    pub(crate) fail_syncs: bool,
+    /// Cut-backs begun holding the lock (`cut_back`), counted for a test.
+    #[cfg(test)]
+    cuts_holding_lock: usize,
+    /// A test's: the next cut-back made holding the lock fails to write its file.
+    #[cfg(test)]
+    fail_cut_write: bool,
+    /// The trims the witness was told of (`seq`), for a test.
+    #[cfg(test)]
+    trims: Vec<u64>,
     /// Entries let go of from memory, to be freed once the log's lock is released
     /// (`LogCell::with`): freeing one, its timeline and all, took a quarter of the time a run held
     /// the lock.
@@ -788,10 +872,18 @@ pub struct Log {
     backup: Option<(PathBuf, bool)>,
     /// Why the last cut-back couldn't write them there (and so didn't cut), if it couldn't.
     backup_error: Option<String>,
+    /// Cut-backs made with the lock released that failed in a row (the backup unwritable, the
+    /// disk full): the next waits twice as long as the last, up to [`CUT_PAUSE_MAX_MS`].
+    cut_failures: u32,
+    /// No cut-back is begun before this (ms since the epoch): the pause after one failed.
+    cut_paused_until: u64,
     /// Its sealed segments, oldest first: the runs it keeps older than the newest `hot`.
     sealed: Vec<Sealed>,
     /// How many of its newest runs it keeps in its file as written (`HOT`).
     hot: usize,
+    /// Why its file isn't read or written: a line or segment whose key `keys.json` doesn't have,
+    /// or a file that couldn't be read ([`Log::refused`]).
+    refused: Option<String>,
 }
 
 /// A cut-back to be made with the log's lock released: the file as it was when it was planned
@@ -865,7 +957,7 @@ impl CutPlan {
         let mut bytes = Vec::with_capacity(self.file_len as usize);
         std::fs::File::open(&self.path)?.take(self.file_len).read_to_end(&mut bytes)?;
         if bytes.len() as u64 != self.file_len {
-            return Err(std::io::Error::other("the file is shorter than when its cut was planned"));
+            return Err(std::io::Error::other(FileMoved));
         }
         let in_file = |at: &LineAt| bytes.get(at.offset as usize..at.offset as usize + at.len);
         let lines: Vec<(&[u8], &LineAt)> = self.lines.iter().filter_map(|at| in_file(at).map(|b| (b, at))).collect();
@@ -877,7 +969,7 @@ impl CutPlan {
         // What it lets go of, written to the backup first: if it can't be, the cut fails, and the
         // cut made holding the lock instead finds the same and doesn't cut (`cut_back`).
         // Opened only for a backup to keep: with none, a line leaving is let go of as it is (a
-        // decrypt a run, for nothing: docs/engineering/performance.md, encryption at rest).
+        // decrypt a run, for nothing: docs/engineering/themes/performance.md, encryption at rest).
         let gone = if self.backup.is_some() { opened(self.line_seal.as_ref(), split.gone.iter().map(|i| &lines[*i])) } else { Vec::new() };
         keep_aside(self.backup.as_ref(), &self.path, &gone)?;
         let dropped: Vec<&Sealed> = split.drop.iter().map(|j| &self.sealed[*j]).collect();
@@ -901,13 +993,15 @@ impl CutPlan {
 }
 
 /// Write the lines a cut-back lets go of (`gone`, the file at `path`'s, opened) to `backup`, when
-/// there is one: `<backup>/<slug>/holon-archive-<first seq>-<last seq>.jsonl`, the lines sealed
-/// together as one file under the deployment's keys (at_rest.rs §5.5), written whole then renamed
-/// in, so the same cut made again writes the same runs; the housekeeping turns it into an export
-/// `holon verify` checks, gzipped and sealed (storage.rs). An error if it can't be written, unless
+/// there is one: `<backup>/<slug>/holon-archive-<first seq>-<last seq>-<head>.jsonl`, the lines
+/// sealed together as one file under the deployment's keys (at_rest.rs §5.5), written whole then
+/// renamed in, so the same cut made again writes the same runs; the housekeeping turns it into an
+/// export `holon verify` checks, gzipped and sealed (storage.rs). `<head>` is of the last line's
+/// hash: a slug deployed again numbers its runs from 0 again, and its batches never take the
+/// place of the removed deployment's (release audit R41). An error if it can't be written, unless
 /// the cut may go on without (`backup`'s flag).
 fn keep_aside(backup: Option<&(PathBuf, bool)>, path: &Path, gone: &[(Vec<u8>, &LineAt)]) -> std::io::Result<()> {
-    let (Some((dir, may_drop)), Some((_, first)), Some((_, last))) = (backup, gone.first(), gone.last()) else { return Ok(()) };
+    let (Some((dir, may_drop)), Some((_, first)), Some((last_line, last))) = (backup, gone.first(), gone.last()) else { return Ok(()) };
     let written = (|| {
         let slug = path.file_stem().and_then(|s| s.to_str()).ok_or_else(|| std::io::Error::other("a log file without a name"))?;
         let dir = dir.join(slug);
@@ -917,13 +1011,50 @@ fn keep_aside(backup: Option<&(PathBuf, bool)>, path: &Path, gone: &[(Vec<u8>, &
             bytes.extend_from_slice(b);
             bytes.push(b'\n');
         }
-        crate::at_rest::write_sealed(&dir.join(crate::storage::batch_name(first.seq, last.seq)), &crate::at_rest::deployment(slug), &crate::at_rest::role::batch(slug), &bytes)
+        let head = line_hash(&String::from_utf8_lossy(last_line));
+        crate::at_rest::write_sealed(&dir.join(crate::storage::batch_name(first.seq, last.seq, &head)), &crate::at_rest::deployment(slug), &crate::at_rest::role::batch(slug), &bytes)
     })();
     match written {
-        Err(e) if !*may_drop => Err(std::io::Error::other(format!("the runs it lets go of couldn't be written to the backup {}: {e}", dir.display()))),
+        Err(e) if !*may_drop => Err(std::io::Error::other(BackupUnwritten(format!("the runs it lets go of couldn't be written to the backup {}: {e}", dir.display())))),
         _ => Ok(()),
     }
 }
+
+/// A cut-back made with the lock released found the file shorter than when it was planned
+/// (changed outside holon): it is made holding the lock instead, from the file read afresh.
+#[derive(Debug)]
+struct FileMoved;
+
+impl std::fmt::Display for FileMoved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the file is shorter than when its cut was planned")
+    }
+}
+
+impl std::error::Error for FileMoved {}
+
+/// A cut-back's error that is the backup's: what it lets go of couldn't be written there. The log
+/// keeps it as its `backup_error`, which the host warns of (storage.rs).
+#[derive(Debug)]
+struct BackupUnwritten(String);
+
+impl std::fmt::Display for BackupUnwritten {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for BackupUnwritten {}
+
+/// The pause after a cut-back made with the lock released fails, doubled with each failure in a
+/// row, up to [`CUT_PAUSE_MAX_MS`] (release audit R46): with the backup unwritable or the disk
+/// full, a cut tried each second read the whole file each second, holding the log's lock, and
+/// said so each second.
+pub const CUT_PAUSE_MS: u64 = 1_000;
+
+/// The longest pause between cut-backs that fail: how long the file may go on growing past what
+/// it keeps once what failed is put right (a backup set again starts afresh, `set_backup`).
+pub const CUT_PAUSE_MAX_MS: u64 = 5 * 60 * 1_000;
 
 /// After a cut that `split` made (of `sealed` then the file's lines, `seal` the segment it seals,
 /// `stay` the lines left in the file): the oldest run it keeps, when runs before it went (`went`)
@@ -964,6 +1095,9 @@ fn keep_segments_aside(backup: Option<&(PathBuf, bool)>, path: &Path, segments: 
 /// at most (docs/L4s/request-path-L4.md, C2 d).
 pub const SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// What a strict run's caller is told when its record's sync fails (`Log::sync_through`).
+pub(crate) const UNSYNCED: &str = "its record couldn't be synced to disk";
+
 /// Sync the directory holding `path`, so a file just renamed into it stays renamed after a crash
 /// (where the system has directories to sync; a failure is only said: the file itself is synced).
 fn sync_dir_of(path: &Path) {
@@ -973,7 +1107,7 @@ fn sync_dir_of(path: &Path) {
 }
 
 /// Write `bytes` to `file` as `write_all` does, and how many went in, a failed write's too.
-fn write_counted(file: &mut std::fs::File, bytes: &[u8]) -> (usize, std::io::Result<()>) {
+pub(crate) fn write_counted(file: &mut std::fs::File, bytes: &[u8]) -> (usize, std::io::Result<()>) {
     use std::io::Write;
     let mut put = 0;
     while put < bytes.len() {
@@ -1114,22 +1248,32 @@ pub fn ran_failed(entry: &LogEntry) -> bool {
     entry.error.is_some() || entry.status.is_some_and(|s| s >= 500)
 }
 
+/// A line of a log file as [`lines_of`] reads it: its length, it opened with its entry, where it
+/// is, and why it doesn't open when its key is missing.
+type LineOf<'a> = (usize, Option<(Cow<'a, str>, LogEntry)>, u64, Option<String>);
+
 /// The lines of a log file's `text`, as `open_retaining` reads them: each line's length on disk
 /// (as `str::lines` splits them), the line opened with its entry when it opens and parses, and
-/// where it is. Opened under `seal`, or taken as it is for none (a segment's, opened whole).
-fn lines_of<'a>(text: &'a str, seal: Option<&'a LineSeal>) -> impl Iterator<Item = (usize, Option<(Cow<'a, str>, LogEntry)>, u64)> + 'a {
+/// where it is, and why it doesn't open when its key is missing ([`Unreadable::key_missing`]): a
+/// line whole on disk that nothing may skip, number over or cut. Opened under `seal`, or taken as
+/// it is for none (a segment's, opened whole).
+///
+/// [`Unreadable::key_missing`]: crate::at_rest::Unreadable::key_missing
+fn lines_of<'a>(text: &'a str, seal: Option<&'a LineSeal>) -> impl Iterator<Item = LineOf<'a>> + 'a {
     let mut offset = 0u64;
     // One line parsed at a time: a log opened holds one entry more than it keeps, not its file's.
     text.split_inclusive('\n').map(move |raw| {
         let at = offset;
         offset += raw.len() as u64;
         let line = raw.strip_suffix('\n').map_or(raw, |l| l.strip_suffix('\r').unwrap_or(l));
-        let plain = match seal {
-            Some(seal) => seal.open(line).map(Cow::Owned),
-            None => Some(Cow::Borrowed(line)),
+        let (plain, missing) = match seal.map(|s| s.read(line)) {
+            Some(Ok(p)) => (Some(Cow::Owned(p)), None),
+            Some(Err(e)) if e.key_missing() => (None, Some(e.to_string())),
+            Some(Err(_)) => (None, None),
+            None => (Some(Cow::Borrowed(line)), None),
         };
         let read = plain.and_then(|p| crate::wire::read_json::<LogEntry>(p.as_bytes()).ok().map(|e| (p, e)));
-        (line.len(), read, at)
+        (line.len(), read, at, missing)
     })
 }
 
@@ -1253,6 +1397,68 @@ fn split(sealed: &[Sealed], hot: &[(&[u8], &LineAt)], keep: usize, hot_keep: usi
 /// lines in memory, bounded by no cache's size).
 pub(crate) const IN_MEMORY: usize = 32;
 
+/// What reading a log's lines a line at a time needs, taken under its lock (`Log::its_lines`) and
+/// read with it released: its file opened, its sealed segments named, how its lines are sealed,
+/// and the first run it keeps. A log kept in memory only, its lines.
+pub struct Lines {
+    file: Option<std::io::Result<std::fs::File>>,
+    segments: Vec<PathBuf>,
+    seal: Option<LineSeal>,
+    memory: Vec<String>,
+    first_kept: Option<u64>,
+}
+
+impl Lines {
+    /// Each line, oldest first, opened, to `f`: a segment's, then the file's, a line at a time; one
+    /// that doesn't open (being written, cut short) isn't whole, and is left out.
+    fn each(self, mut f: impl FnMut(&str)) {
+        use std::io::BufRead;
+        let Some(file) = self.file else {
+            return self.memory.iter().for_each(|l| f(l));
+        };
+        for p in self.segments {
+            if let Ok(text) = read_segment(&p) {
+                text.lines().for_each(&mut f);
+            }
+        }
+        let Ok(file) = file else { return };
+        let mut reader = std::io::BufReader::with_capacity(64 << 10, file);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let bytes = line.strip_suffix(b"\n").unwrap_or(&line);
+            let Ok(text) = std::str::from_utf8(bytes.strip_suffix(b"\r").unwrap_or(bytes)) else { continue };
+            match &self.seal {
+                Some(seal) => {
+                    if let Some(plain) = seal.open(text) {
+                        f(&plain);
+                    }
+                }
+                None => f(text),
+            }
+        }
+    }
+
+    /// Each run it keeps, oldest first, read and parsed a line at a time: none of the others held
+    /// meanwhile (release audit D11: read into lists, a server starting held a log's runs whole,
+    /// three times over). A line its file holds past what it keeps (until the next cut-back) is
+    /// left out, as `Log::after` leaves it.
+    fn each_kept(self, mut f: impl FnMut(LogEntry)) {
+        let Some(first) = self.first_kept else { return };
+        self.each(|line| {
+            if let Ok(entry) = crate::wire::read_json::<LogEntry>(line.as_bytes())
+                && entry.seq >= first
+            {
+                f(entry);
+            }
+        })
+    }
+}
+
 /// What a read of a log's runs needs, planned under its lock (`Log::plan`) and read with it
 /// released (`Wanted::read`): the runs it keeps in memory, cloned, and where in its file the
 /// older ones are, the file opened. A file is only ever replaced whole, renamed over, so the one
@@ -1374,10 +1580,14 @@ impl LogCell {
     /// run's before it: a sync puts what was written on disk, and says nothing of an entry that
     /// wasn't. With no line lost lately, which is the usual case, the log's lock isn't taken to
     /// ask (`lost`).
+    ///
+    /// The error is said to the run's caller, a flow's caller among them: that the record isn't
+    /// on disk, not where its file is or the sync's own error (audit R71). The admin hears both
+    /// from the syncer's `sync` (failing.rs), which fails the same way within a second.
     pub fn sync_through(&self, seq: u64) -> Result<(), String> {
         let mut synced = self.synced.lock().unwrap();
         if *synced <= seq {
-            self.sync_locked(&mut synced)?;
+            self.sync_locked(&mut synced).map_err(|why| crate::failing::Failed::new(UNSYNCED, why).told())?;
         }
         if self.lost.load(Ordering::Acquire) && self.with(|log| log.unkept.contains(&seq)) {
             return Err(format!("its record (entry {seq}) couldn't be written to the log's file"));
@@ -1440,42 +1650,46 @@ impl LogCell {
     /// over, by a cut-back), so what is read is one file's lines; the newest may be one being
     /// written, cut short, which `f` finds isn't whole. A log kept in memory only is read under
     /// the lock.
-    pub fn each_line(&self, mut f: impl FnMut(&str)) {
-        use std::io::BufRead;
+    pub fn each_line(&self, f: impl FnMut(&str)) {
         // Its file opened and its segments named under the lock, so they agree: a cut sealing lines
         // after this leaves them in the file opened, and one letting a segment go drops runs no
         // longer kept.
-        let (file, segments, seal) = self.with(|log| (log.file.as_ref().map(std::fs::File::open), log.sealed.iter().map(|s| s.path.clone()).collect::<Vec<_>>(), log.line_seal.clone()));
-        let Some(file) = file else {
-            let lines: Vec<String> = self.with(|log| log.entries.iter().filter_map(|e| serde_json::to_string(e).ok()).collect());
-            return lines.iter().for_each(|l| f(l));
-        };
-        for p in segments {
-            if let Ok(text) = read_segment(&p) {
-                text.lines().for_each(&mut f);
-            }
+        self.with(|log| log.its_lines()).each(f)
+    }
+
+    /// The log's lines as `Log::lines` has them, and the head they end at: the head taken with
+    /// the file under the lock, the lines read with it released ([`each_line`](LogCell::each_line)),
+    /// so an export, a replay or a removal's records of a big sealed log, each line opened, holds
+    /// up none of its runs (release audit R45). Lines written after the head was taken are left
+    /// out: the lines end at the head, as they did read under the lock. Lines that don't reach it
+    /// (the file changed outside holon) are given as read, for the check to say so.
+    pub fn lines_to_head(&self) -> (Vec<String>, String) {
+        let (its, head) = self.with(|log| (log.its_lines(), log.head().to_string()));
+        let mut lines = Vec::new();
+        its.each(|l| lines.push(l.to_string()));
+        // From the newest: the head is the last line, or one of the few written since.
+        if let Some(at) = lines.iter().rposition(|l| line_hash(l) == head) {
+            lines.truncate(at + 1);
         }
-        let Ok(file) = file else { return };
-        let mut reader = std::io::BufReader::with_capacity(64 << 10, file);
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            match reader.read_until(b'\n', &mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
+        (lines, head)
+    }
+
+    /// Each run it keeps, oldest first (`Log::each_kept`), read with the lock released.
+    pub fn each_kept(&self, f: impl FnMut(LogEntry)) {
+        self.with(|log| log.its_lines()).each_kept(f)
+    }
+
+    /// The ids of the runs it keeps that finished: no error, not waiting. What a mail or a
+    /// queue's message spooled by one is sent again for, as a server starts (mails.rs,
+    /// queues.rs), read a run at a time.
+    pub fn landed_runs(&self) -> BTreeSet<String> {
+        let mut landed = BTreeSet::new();
+        self.each_kept(|e| {
+            if e.error.is_none() && e.parked.is_empty() {
+                landed.insert(e.run_id);
             }
-            let bytes = line.strip_suffix(b"\n").unwrap_or(&line);
-            let Ok(text) = std::str::from_utf8(bytes.strip_suffix(b"\r").unwrap_or(bytes)) else { continue };
-            // Each line opened: one that doesn't (being written, cut short) isn't whole.
-            match &seal {
-                Some(seal) => {
-                    if let Some(plain) = seal.open(text) {
-                        f(&plain);
-                    }
-                }
-                None => f(text),
-            }
-        }
+        });
+        landed
     }
 
     /// The runs it keeps after `after`, the newest `limit` of them, oldest first (`Log::after`):
@@ -1585,21 +1799,31 @@ impl Log {
             file_len: 0,
             dirty: false,
             unkept: VecDeque::new(),
+            closed: false,
             #[cfg(test)]
             fail_writes: false,
             #[cfg(test)]
             fail_partway: false,
             #[cfg(test)]
             fail_syncs: false,
+            #[cfg(test)]
+            cuts_holding_lock: 0,
+            #[cfg(test)]
+            fail_cut_write: false,
+            #[cfg(test)]
+            trims: Vec::new(),
             gone: Vec::new(),
             defer_cuts: false,
             cut_wanted: false,
             cutting: false,
+            cut_failures: 0,
+            cut_paused_until: 0,
             generation: 0,
             backup: None,
             backup_error: None,
             sealed: Vec::new(),
             hot: HOT,
+            refused: None,
         };
         let Some(path) = log.file.clone() else { return log };
         let mut chained = false;
@@ -1620,6 +1844,9 @@ impl Log {
         for p in segments {
             let text = match read_segment(&p) {
                 Ok(t) => t,
+                Err(e) if crate::at_rest::key_missing_in(&e) => {
+                    return log.refuse(format!("its sealed segment {} is {e}: {}", p.display(), crate::at_rest::RESTORE_KEYS));
+                }
                 Err(e) => {
                     eprintln!("holon: the sealed segment {} can't be read, its runs are missing from the log: {e}", p.display());
                     continue;
@@ -1628,7 +1855,7 @@ impl Log {
             let size = std::fs::metadata(&p).map_or(0, |m| m.len());
             let mut runs = Vec::new();
             let mut first_prev = None;
-            for (_, read, _) in lines_of(&text, None) {
+            for (_, read, _, _) in lines_of(&text, None) {
                 if let Some((line, entry)) = read {
                     if entry.seq < log.next_seq {
                         continue;
@@ -1642,14 +1869,27 @@ impl Log {
                 log.sealed.push(Sealed { path: p, runs, first_prev: first_prev.unwrap_or_default(), size });
             }
         }
-        let Ok(text) = std::fs::read_to_string(&path) else { return log.opened() };
+        // None yet: a new log. One that is there but can't be read is refused, not taken as
+        // empty: its runs would be numbered again from 0, over the ones it holds.
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return log.opened(),
+            Err(e) => return log.refuse(format!("its file {} can't be read: {e}", path.display())),
+        };
+        // Bytes that aren't text (damage) are read as the lines around them: such a line doesn't
+        // open, as a changed one doesn't.
+        let text = String::from_utf8_lossy(&bytes);
         log.cut = !text.is_empty() && !text.ends_with('\n');
-        log.file_len = text.len() as u64;
+        log.file_len = bytes.len() as u64;
         let sealed_up_to = log.next_seq;
         let mut twice = false;
         let seal = log.line_seal.clone();
-        for (len, read, offset) in lines_of(&text, seal.as_ref()) {
+        for (len, read, offset, missing) in lines_of(&text, seal.as_ref()) {
             log.written += 1;
+            if let Some(why) = missing {
+                let why = format!("line {} of {} is {why}: {}", log.written, path.display(), crate::at_rest::RESTORE_KEYS);
+                return log.refuse(why);
+            }
             // A line a crash cut short is skipped, not fatal: the others still replay, and the
             // chain goes on from the line before it. So is one that doesn't open (changed
             // outside holon), and the chain says so at the next.
@@ -1689,6 +1929,23 @@ impl Log {
             }
         }
         log.opened()
+    }
+
+    /// Refused, for `why`: a log in memory only, so nothing of its file is read, numbered over,
+    /// cut or written, and [`Log::refused`] says why. Who opens a deployment's log asks that
+    /// first, and doesn't run it (persist.rs, deploy.rs).
+    fn refuse(self, why: String) -> Log {
+        let mut log = Log::open_retaining(None, self.keep, self.max_age_ms);
+        log.refused = Some(why);
+        log
+    }
+
+    /// Why its file isn't read or written, if it isn't: a line or segment whose key `keys.json`
+    /// doesn't have (`keys.json` older than the log, or not the one that goes with the folder),
+    /// or a file that couldn't be read. Taken as empty, it would be numbered again from 0, with a
+    /// new key minted at a version already used, and the next cut-back would drop what it holds.
+    pub fn refused(&self) -> Option<&str> {
+        self.refused.as_deref()
     }
 
     /// The last of opening it: what it keeps pruned, the file cut back when it is past its age; and
@@ -1763,6 +2020,12 @@ impl Log {
     /// Where the runs it lets go of are written first, and whether a cut may go on without
     /// (storage.rs keeps it as `[storage] backup` says).
     pub fn set_backup(&mut self, backup: Option<(PathBuf, bool)>) {
+        // Another backup, or one a cut may now go on without: a cut that failed for the last is
+        // tried again at once, not after its pause. The host sets it on each look, the same.
+        if backup != self.backup {
+            self.cut_failures = 0;
+            self.cut_paused_until = 0;
+        }
         self.backup = backup;
     }
 
@@ -1933,6 +2196,12 @@ impl Log {
         seq
     }
 
+    /// Whether entry `seq`, the newest pushed, has its line written: not when its write failed
+    /// (`unkept`), whatever its level. What it sends goes out only if it has.
+    pub fn wrote(&self, seq: u64) -> bool {
+        self.unkept.back() != Some(&seq)
+    }
+
     /// Entry `seq`'s line isn't in the file: a strict run is told so, and the next line written
     /// says so.
     fn unkept(&mut self, seq: u64) {
@@ -1948,6 +2217,9 @@ impl Log {
     /// file would hold twice what the log keeps or its oldest line is past the age it keeps, the
     /// file cut back to what it keeps.
     fn keep_line(&mut self, line: &mut Framed, mut at: LineAt) -> std::io::Result<()> {
+        if self.closed {
+            return Err(std::io::Error::other("its deployment is being removed"));
+        }
         let Some(path) = self.file.clone() else { return Ok(()) };
         #[cfg(test)]
         if self.fail_writes {
@@ -2016,7 +2288,7 @@ impl Log {
     /// The cut-back wanted, as the file is now, to be made with the lock released: none if none is
     /// wanted, one is being made, or the log keeps no file.
     fn plan_cut(&mut self) -> Option<CutPlan> {
-        if !self.cut_wanted || self.cutting {
+        if !self.cut_wanted || self.cutting || now_ms() < self.cut_paused_until {
             return None;
         }
         let path = self.file.clone()?;
@@ -2034,20 +2306,17 @@ impl Log {
 
     /// Swap in a cut-back made with the lock released (`CutPlan::make`): the lines written since
     /// it was planned copied after the kept ones and synced, then the file replaced. One the file
-    /// moved under (changed outside holon), or one that failed, is made here instead, as it always
-    /// was.
+    /// moved under (changed outside holon), or whose swap failed, is made here instead, from the
+    /// file read afresh. One that failed as it was made (the backup unwritable, the disk full) is
+    /// tried again after a pause (`cut_failed`), not here: made holding the lock it failed the same
+    /// way, each second, reading the whole file as the runs waited (release audit R46).
     fn finish_cut(&mut self, made: std::io::Result<Option<CutMade>>) {
         self.cutting = false;
         let mut made = match made {
             Ok(Some(made)) => made,
-            Ok(None) => return,
-            Err(e) => {
-                eprintln!("holon: the flow log {:?} is cut back holding its lock: {e}", self.file);
-                if let Err(e) = self.cut_back(None) {
-                    eprintln!("holon: could not cut back the flow log in {:?}: {e}", self.file);
-                }
-                return;
-            }
+            Ok(None) => return self.cut_done(),
+            Err(e) if e.get_ref().is_some_and(|r| r.is::<FileMoved>()) => return self.cut_here(),
+            Err(e) => return self.cut_failed(&e),
         };
         // A log no longer kept in that file (deleted, or moved) has nothing to cut.
         if self.file.as_deref() != Some(made.path.as_path()) || !made.path.exists() {
@@ -2095,9 +2364,9 @@ impl Log {
         match swapped {
             Ok(true) => {
                 // What it let go of was written to the backup (`CutPlan::make`): it can be again.
-                self.backup_error = None;
+                self.cut_done();
                 if let Some((seq, prev)) = &made.trimmed {
-                    self.export("trim", *seq, prev, now_ms());
+                    self.trimmed(*seq, prev);
                 }
             }
             other => {
@@ -2110,14 +2379,51 @@ impl Log {
                         let _ = std::fs::remove_file(path);
                     }
                 }
+                // The swap failed, or the file moved under the cut: made here, from the file read
+                // afresh; paused, as any, if that fails too.
                 if let Err(e) = other {
                     eprintln!("holon: the flow log {:?} is cut back holding its lock: {e}", self.file);
                 }
-                if let Err(e) = self.cut_back(None) {
-                    eprintln!("holon: could not cut back the flow log in {:?}: {e}", self.file);
-                }
+                self.cut_here();
             }
         }
+    }
+
+    /// A cut made with the lock released whose swap failed, or that the file moved under (changed
+    /// outside holon): made here, from the file read afresh, as it always was; a pause after it,
+    /// if it fails too (`cut_failed`).
+    fn cut_here(&mut self) {
+        match self.cut_back(None) {
+            Ok(true) => self.cut_done(),
+            Ok(false) => {
+                let why = self.backup_error.clone().unwrap_or_default();
+                self.cut_failed(&std::io::Error::other(BackupUnwritten(why)));
+            }
+            Err(e) => self.cut_failed(&e),
+        }
+    }
+
+    /// A cut-back was made, or found nothing to cut: the next is begun when a run wants one.
+    fn cut_done(&mut self) {
+        self.backup_error = None;
+        self.cut_failures = 0;
+        self.cut_paused_until = 0;
+    }
+
+    /// A cut-back failed: still wanted, and begun again after a pause, twice the last one's while
+    /// it fails, up to [`CUT_PAUSE_MAX_MS`]; said once, as it starts failing. A backup that
+    /// couldn't be written is the log's `backup_error`, which the host warns of while it lasts.
+    fn cut_failed(&mut self, e: &std::io::Error) {
+        if e.get_ref().is_some_and(|r| r.is::<BackupUnwritten>()) {
+            self.backup_error = Some(e.to_string());
+        }
+        if self.cut_failures == 0 {
+            eprintln!("holon: could not cut back the flow log in {:?}, tried again after a pause, longer while it fails: {e}", self.file);
+        }
+        let pause = CUT_PAUSE_MS.saturating_mul(1 << self.cut_failures.min(16)).min(CUT_PAUSE_MAX_MS);
+        self.cut_failures = self.cut_failures.saturating_add(1);
+        self.cut_paused_until = now_ms().saturating_add(pause);
+        self.cut_wanted = true;
     }
 
     /// Rewrite the file as the lines it keeps, byte for byte, then `line` (the newest entry's,
@@ -2125,6 +2431,10 @@ impl Log {
     /// line, which carries the numbering and the chain on.
     fn cut_back(&mut self, line: Option<(&str, LineAt)>) -> std::io::Result<bool> {
         let Some(path) = self.file.clone() else { return Ok(true) };
+        #[cfg(test)]
+        {
+            self.cuts_holding_lock += 1;
+        }
         // Closed before the file is replaced: a handle would go on writing to the old one (and
         // Windows won't replace an open file). The next line opens the new one.
         self.handle = None;
@@ -2135,9 +2445,17 @@ impl Log {
         if bytes.len() as u64 != self.file_len {
             let text = String::from_utf8_lossy(&bytes);
             let seal = self.line_seal.clone();
-            self.lines = lines_of(&text, seal.as_ref())
-                .filter_map(|(len, read, offset)| read.map(|(_, e)| LineAt { offset, len, at_ms: e.at_ms, seq: e.seq, prev: e.prev }))
-                .collect();
+            let mut lines = VecDeque::new();
+            for (len, read, offset, missing) in lines_of(&text, seal.as_ref()) {
+                // A line whose key is missing is whole, and only the file holds it: never cut.
+                if let Some(why) = missing {
+                    return Err(std::io::Error::other(format!("{} holds a line {why}: not cut back. {}", path.display(), crate::at_rest::RESTORE_KEYS)));
+                }
+                if let Some((_, e)) = read {
+                    lines.push_back(LineAt { offset, len, at_ms: e.at_ms, seq: e.seq, prev: e.prev });
+                }
+            }
+            self.lines = lines;
         }
         // Each line it could keep, oldest first: the file's that parsed, then the newest entry's.
         let in_file = |at: &LineAt| bytes.get(at.offset as usize..at.offset as usize + at.len);
@@ -2152,7 +2470,7 @@ impl Log {
         // What it lets go of, written to the backup first; if it can't be, no cut: the file
         // holds them until it can, and the host warns (storage.rs).
         // Opened only for a backup to keep: with none, a line leaving is let go of as it is (a
-        // decrypt a run, for nothing: docs/engineering/performance.md, encryption at rest).
+        // decrypt a run, for nothing: docs/engineering/themes/performance.md, encryption at rest).
         let gone = if self.backup.is_some() { opened(self.line_seal.as_ref(), split.gone.iter().map(|i| &lines[*i])) } else { Vec::new() };
         let dropped: Vec<Sealed> = split.drop.iter().map(|j| self.sealed[*j].clone()).collect();
         let aside = keep_aside(self.backup.as_ref(), &path, &gone).and_then(|()| keep_segments_aside(self.backup.as_ref(), &path, &dropped.iter().collect::<Vec<_>>()));
@@ -2180,15 +2498,15 @@ impl Log {
             all.extend_from_slice(b);
             all.push(b'\n');
         }
-        // The witness hears that the runs before the oldest kept are gone by the host's choice.
         let (trimmed, oldest_ms) = oldest_kept(&self.sealed, &split, seal.as_ref().map(|s| &s.2), &kept, !split.gone.is_empty() || !split.drop.is_empty());
-        if let Some((seq, prev)) = trimmed {
-            self.export("trim", seq, &prev, now_ms());
-        }
-        self.file_oldest_ms = oldest_ms;
         // Written whole and synced (write_private), the newest line with it. If it can't be, the
         // segment sealed goes again: its runs are in the file still.
-        if let Err(e) = crate::sealing::write_private(&path, &all) {
+        #[cfg(test)]
+        let fault = std::mem::take(&mut self.fail_cut_write);
+        #[cfg(not(test))]
+        let fault = false;
+        let written = if fault { Err(std::io::Error::other("a write made to fail")) } else { crate::sealing::write_private(&path, &all) };
+        if let Err(e) = written {
             if let Some((final_path, _, _)) = &seal
                 && !self.sealed.iter().any(|s| s.path == *final_path)
             {
@@ -2197,10 +2515,18 @@ impl Log {
             return Err(e);
         }
         sync_dir_of(&path);
+        // Only now, the cut on disk, does the witness hear that the runs before the oldest kept
+        // are gone by the host's choice, as the cut made outside the lock tells it after its swap.
+        // Told before, a write that failed left the witness told of a trim the log never made, and
+        // the runs it named still there (release audit C11).
         self.generation += 1;
         self.written = kept.len();
         self.file_len = all.len() as u64;
         self.lines = index;
+        if let Some((seq, prev)) = trimmed {
+            self.trimmed(seq, &prev);
+        }
+        self.file_oldest_ms = oldest_ms;
         self.cut = false;
         self.dirty = false;
         if let Some((_, _, sealed)) = seal {
@@ -2233,6 +2559,14 @@ impl Log {
     }
 
     /// Queue a head for the witness (heads.rs), when this is a deployment's log.
+    /// The witness told that the runs before `seq` (whose `prev` is `prev`) are gone by the
+    /// host's choice: only once the cut that let them go is on disk.
+    fn trimmed(&mut self, seq: u64, prev: &str) {
+        #[cfg(test)]
+        self.trims.push(seq);
+        self.export("trim", seq, prev, now_ms());
+    }
+
     fn export(&self, kind: &str, seq: u64, head: &str, at_ms: u64) {
         if let Some(slug) = &self.slug {
             crate::heads::note(crate::heads::Head { deployment: slug.clone(), kind: kind.into(), seq, head: head.into(), at_ms });
@@ -2247,7 +2581,9 @@ impl Log {
 
     /// The log's lines exactly as written, oldest first, so a copy checks against the chain: the
     /// file's (every line it holds, a cut one too), or, kept in memory only, each entry as it was
-    /// written.
+    /// written. Read under the lock: what the server reads is read with it released
+    /// (`LogCell::lines_to_head`); the tests hold that to this.
+    #[cfg(test)]
     pub fn lines(&self) -> Vec<String> {
         if let Some(path) = &self.file {
             // Its sealed segments' first, oldest first, then its file's.
@@ -2276,6 +2612,25 @@ impl Log {
         &self.breaks[self.breaks.partition_point(|seq| *seq < oldest)..]
     }
 
+    /// Write no line from now on: its deployment is being removed, and what is kept of it is
+    /// taken next (`closed`). Undone by [`reopen`](Log::reopen) if the removal doesn't go through.
+    pub fn close(&mut self) {
+        self.closed = true;
+    }
+
+    /// Write lines again: its deployment's removal didn't go through. The lines refused meanwhile
+    /// are said lost by the next one written.
+    pub fn reopen(&mut self) {
+        self.closed = false;
+    }
+
+    /// Tell the witness its deployment is removed (heads.rs, `"removed"`): `seq` the run it would
+    /// have numbered next, `head` the hash of its last line. The slug deployed again starts a new
+    /// chain at 0, and what the witness holds of the old one stays apart from it.
+    pub fn note_removed(&self) {
+        self.export(crate::heads::REMOVED, self.next_seq, &self.head, now_ms());
+    }
+
     /// Delete the file: its deployment was deleted.
     pub fn delete_file(&mut self) {
         self.handle = None;
@@ -2293,8 +2648,29 @@ impl Log {
     /// (the newest `limit`, when there are more): those in memory, and the older ones read from
     /// its file. Read here, with whatever lock it is under held; a `LogCell`'s `after` reads them
     /// with its lock released.
+    #[cfg(test)]
     pub fn after(&self, after: Option<u64>, limit: usize) -> Vec<LogEntry> {
         self.plan(after, limit).read()
+    }
+
+    /// What reading its lines needs (`Lines`), taken here, with whatever lock it is under held.
+    pub fn its_lines(&self) -> Lines {
+        let file = self.file.as_ref().map(std::fs::File::open);
+        let memory = if file.is_none() { self.entries.iter().filter_map(|e| serde_json::to_string(e).ok()).collect() } else { Vec::new() };
+        Lines {
+            file,
+            segments: self.sealed.iter().map(|s| s.path.clone()).collect(),
+            seal: self.line_seal.clone(),
+            memory,
+            first_kept: self.kept.front().map(|(seq, ..)| *seq),
+        }
+    }
+
+    /// Each run it keeps, oldest first, read a line at a time (`Lines::each_kept`): what a
+    /// server starting rebuilds from its log (channels.rs, mails.rs, queues.rs), with no more
+    /// than a run held at once.
+    pub fn each_kept(&self, f: impl FnMut(LogEntry)) {
+        self.its_lines().each_kept(f)
     }
 
     /// What reading the runs it keeps after `after`, the newest `limit` of them, needs (`Wanted`).
@@ -2410,7 +2786,7 @@ fn shows_in(wanted: Wanted, key: &str, text: &str) -> bool {
 }
 
 /// Now, in milliseconds since the epoch.
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
@@ -2456,6 +2832,7 @@ mod tests {
             url: None,
             status: None,
             request: None,
+            body: None,
             sourced: vec![],
             state_before: BTreeMap::new(),
             state_after: None,
@@ -2504,6 +2881,83 @@ mod tests {
         assert_eq!(log.after(None, 3).iter().map(|e| e.seq).collect::<Vec<_>>(), vec![22, 23, 24], "the newest 3");
     }
 
+    /// Guards: a record whose key `keys.json` doesn't have (one older than the data, or another
+    /// folder's) is never taken as gone. A run log or events holding a line under it refuse to
+    /// open, say why, and leave their file byte for byte; a cut-back of a file that gained one
+    /// cuts nothing; a log file that is there but can't be read refuses too, rather than open
+    /// empty (D14); a listener's record of what it has seen is an error, never none; the access
+    /// history refuses. A line cut short as it was written is still skipped.
+    /// Why: taken as torn or empty, the runs were numbered again from 0 under a key minted again
+    /// at a version already used, the next cut-back dropped the old lines unbacked, and a
+    /// mailbox, queue, feed or folder ran again what it ran, or marked seen what waited (R6).
+    #[test]
+    fn a_record_whose_key_is_missing_is_never_taken_as_gone() {
+        use crate::at_rest::testing::{file_of_missing_key, line_of_missing_key};
+        use std::io::Write;
+        let dir = temp_dir("key-missing");
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        let place = Place::from(dir.join("deployments.json").to_string_lossy().into_owned());
+        let append = |path: &Path, text: &str| std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap().write_all(text.as_bytes()).unwrap();
+
+        // A run log of three runs, then a line under a version the keys lack (as a key rotated
+        // after this keys.json was copied would seal), then the log as it was cuts back.
+        let path = file_for(&place, "keyless").unwrap();
+        let mut log = Log::open_keeping(Some(path.clone()), 3);
+        for _ in 0..3 {
+            log.push(entry());
+        }
+        assert_eq!(Log::open_keeping(Some(path.clone()), 3).next_seq(), 3, "it opens while its keys are there");
+        append(&path, &(line_of_missing_key(Some((3, log.head()))) + "\n"));
+        let before = std::fs::read(&path).unwrap();
+        let cut = log.cut_back(None).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(cut.contains("not cut back"), "{cut}");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "nothing cut");
+        drop(log);
+        let opened = Log::open_keeping(Some(path.clone()), 3);
+        let why = opened.refused().unwrap_or_else(|| panic!("opened with next seq {}", opened.next_seq()));
+        assert!(why.contains("version 999") && why.contains("keys.json") && why.contains("line 4"), "{why}");
+        drop(opened);
+        assert_eq!(std::fs::read(&path).unwrap(), before, "nothing of it written");
+
+        // A line cut short as it was written is still skipped: that log opens.
+        let torn = file_for(&place, "torn").unwrap();
+        let mut log = Log::open_keeping(Some(torn.clone()), 3);
+        log.push(entry());
+        log.push(entry());
+        drop(log);
+        let whole = crate::at_rest::testing::sealed(&torn, &serde_json::to_string(&entry()).unwrap());
+        append(&torn, &whole[..whole.len() / 2]);
+        let opened = Log::open_keeping(Some(torn), 3);
+        assert!(opened.refused().is_none() && opened.next_seq() == 2, "a torn line: {:?}", opened.refused());
+
+        // A file there that can't be read (here a folder) refuses, rather than open empty (D14).
+        let unreadable = file_for(&place, "unreadable").unwrap();
+        std::fs::create_dir_all(&unreadable).unwrap();
+        assert!(Log::open_keeping(Some(unreadable), 3).refused().is_some_and(|w| w.contains("can't be read")));
+
+        // Events: the same.
+        let events = path.with_extension("events.jsonl");
+        append(&events, &(line_of_missing_key(None) + "\n"));
+        let opened = crate::events::Events::for_deployment(&place, "keyless");
+        assert!(opened.refused().is_some_and(|w| w.contains("version 999")), "{:?}", opened.refused());
+
+        // What a mailbox, queue, feed or folder watch has seen: an error, never none.
+        let seen = dir.join("seen.json");
+        assert!(crate::at_rest::read_seen::<serde_json::Value>(&seen, &crate::at_rest::deployment("keyless"), crate::at_rest::role::MAIL_SEEN).unwrap().is_none(), "none yet");
+        std::fs::write(&seen, file_of_missing_key(&crate::at_rest::deployment("keyless"))).unwrap();
+        let read = crate::at_rest::read_seen::<serde_json::Value>(&seen, &crate::at_rest::deployment("keyless"), crate::at_rest::role::MAIL_SEEN);
+        assert!(read.as_ref().is_err_and(|e| e.contains("version 999")), "{read:?}");
+        std::fs::write(&seen, b"{}").unwrap();
+        assert!(crate::at_rest::read_seen::<serde_json::Value>(&seen, &crate::at_rest::deployment("keyless"), crate::at_rest::role::MAIL_SEEN).is_err(), "plain where sealed belongs: not none");
+
+        // The access history: a version under a missing key is an error, never passed over.
+        let access = dir.join("access.json");
+        append(&crate::bindings::history(&access), &(line_of_missing_key(None) + "\n"));
+        let said = crate::bindings::Bindings::open(access).err().unwrap_or_default();
+        assert!(said.contains("version 999"), "{said}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A fresh directory for one test's log files.
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("holon-log-{name}-{}", std::process::id()));
@@ -2520,7 +2974,7 @@ mod tests {
             log.push(entry());
         }
         // Each line sealed on disk (at_rest.rs); the chain is over the lines as made.
-        assert!(std::fs::read_to_string(&path).unwrap().lines().all(|l| l.starts_with("a1.") || l.starts_with("r1.")), "sealed");
+        assert!(std::fs::read_to_string(&path).unwrap().lines().all(|l| l.starts_with("a1.") || l.starts_with("r2.")), "sealed");
         let lines = open_lines(&path);
         let first: LogEntry = serde_json::from_str(&lines[0]).unwrap();
         assert_eq!(first.prev, "", "the first entry has nothing before it");
@@ -2817,6 +3271,100 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// **Guards:** the witness is told of a trim only by a cut that is on disk, whichever way it
+    /// is made: holding the lock or outside it, a cut whose write or swap fails tells it nothing,
+    /// and the cut made after tells it once (release audit C11).
+    ///
+    /// **Why:** the cut made holding the lock told the witness before writing its file: a write
+    /// that failed left the witness told the runs before a seq were gone, with every one of them
+    /// still in the log.
+    ///
+    /// **If it fails:** a witness's record says runs were let go of that a copy of the log still
+    /// holds, and an operator comparing the two is told the log is not what the witness heard.
+    #[test]
+    fn the_witness_hears_of_a_trim_only_once_the_cut_is_on_disk() {
+        let dir = temp_dir("trim-order");
+        let path = dir.join("slug.jsonl");
+        let mut log = Log::open_keeping(Some(path.clone()), 3);
+        log.defer_cuts = true;
+        let push = |log: &mut Log, n: usize| {
+            for _ in 0..n {
+                log.push(entry());
+            }
+        };
+        let on_disk = || Log::open_keeping(Some(path.clone()), 1000).after(None, 1000).len();
+        push(&mut log, 8);
+        // Holding the lock, its write failing: nothing told, every run on disk still.
+        log.fail_cut_write = true;
+        log.cut_here();
+        assert!(log.trims.is_empty(), "told of a trim never made: {:?}", log.trims);
+        assert_eq!(on_disk(), 8);
+        // Made again (the pause past): written, then told, once.
+        log.cut_paused_until = 0;
+        log.cut_here();
+        assert_eq!((log.trims.len(), on_disk()), (1, 3));
+        // Outside the lock, its swap failing: the cut made instead holding the lock tells once.
+        push(&mut log, 4);
+        let made = log.plan_cut().expect("a cut wanted").make().unwrap().expect("something to cut");
+        std::fs::remove_file(&made.tmp).unwrap();
+        log.finish_cut(Ok(Some(made)));
+        assert_eq!((log.trims.len(), on_disk()), (2, 3));
+        // Outside the lock, swapped: told once.
+        push(&mut log, 4);
+        let made = log.plan_cut().expect("a cut wanted").make().unwrap().expect("something to cut");
+        log.finish_cut(Ok(Some(made)));
+        assert_eq!((log.trims.len(), on_disk()), (3, 3));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Guards:** a cut-back that fails (the backup unwritable, the disk full) is not made again
+    /// holding the log's lock: it is still wanted, and tried again after a pause that doubles
+    /// while it fails, up to [`CUT_PAUSE_MAX_MS`]; a backup set again cuts at once (release audit
+    /// R46, D7).
+    ///
+    /// **Why:** a cut made with the lock released that failed was made again under the lock, and
+    /// failed the same way: each second, the whole file read with every run waiting, and said.
+    ///
+    /// **If it fails:** with the backup unwritable, a busy flow's runs wait each second on a read
+    /// of its whole log, and the console fills with the same line.
+    #[test]
+    fn a_cut_back_that_fails_waits_longer_each_time_and_is_never_made_holding_the_lock() {
+        let dir = temp_dir("cut-pause");
+        let path = dir.join("slug.jsonl");
+        let blocked = dir.join("blocked");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&blocked, "a file where the folder would be").unwrap();
+        let cell = LogCell::new(Log::open_keeping(Some(path.clone()), 3));
+        cell.with(|l| l.set_backup(Some((blocked.clone(), false))));
+        for _ in 0..8 {
+            cell.with(|l| l.push(entry()));
+        }
+        for failed in 0..12u32 {
+            let before = now_ms();
+            cell.cut_if_planned();
+            // Asked again at once, as the next second's sync does: paused, nothing begun.
+            cell.cut_if_planned();
+            let (until, failures, wanted, error, held) = cell.with(|l| (l.cut_paused_until, l.cut_failures, l.cut_wanted, l.backup_error.clone(), l.cuts_holding_lock));
+            assert_eq!((failures, held), (failed + 1, 0), "tried once, never holding the lock");
+            assert!(wanted, "still wanted");
+            assert!(error.is_some_and(|e| e.contains("backup")), "the backup's error, for the host to warn of");
+            let pause = until.saturating_sub(before);
+            let expected = (CUT_PAUSE_MS << failed).min(CUT_PAUSE_MAX_MS);
+            assert!(pause >= expected.saturating_sub(5) && pause <= expected + 1_000, "failure {}: paused {pause} ms, not {expected}", failed + 1);
+            // As if the pause had run out.
+            cell.with(|l| l.cut_paused_until = 0);
+        }
+        assert!(cell.with(|l| l.holds().3) > 6, "nothing let go of unbacked");
+        // Put right: a backup that can be written to cuts at the next sync, the pause let go.
+        cell.with(|l| l.cut_paused_until = u64::MAX);
+        let backup = dir.join("backup");
+        cell.with(|l| l.set_backup(Some((backup.clone(), false))));
+        cell.cut_if_planned();
+        assert_eq!(cell.with(|l| (l.holds().3, l.cut_failures, l.backup_error.clone(), l.cuts_holding_lock)), (3, 0, None, 0), "cut back, with the lock released");
+        assert!(std::fs::read_dir(backup.join("slug")).unwrap().count() > 0, "what it let go of is there");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Keeping fewer runs then more again keeps again what the file holds, and forgets nothing
     /// the log was doing: that its newest line isn't synced yet, its backup, the breaks in what
     /// it keeps again (docs/L4s/storage-L4.md, the review of steps 1 to 10).
@@ -3085,6 +3633,18 @@ mod tests {
                     assert_eq!(lines(cell.after(after, limit)), want, "the cell, after {after:?}, the newest {limit}, at run {i}");
                     assert_eq!(lines(held.after(after, limit)), want, "held, after {after:?}, the newest {limit}, at run {i}");
                 }
+                // Read a run at a time, as a server starting rebuilds from them (D11): the same
+                // runs, its file holding more than it keeps (until the next cut-back) or not.
+                let want = lines(in_memory.after(None, usize::MAX));
+                let (mut from_cell, mut from_held, mut from_memory) = (Vec::new(), Vec::new(), Vec::new());
+                cell.each_kept(|e| from_cell.push(e));
+                held.each_kept(|e| from_held.push(e));
+                in_memory.each_kept(|e| from_memory.push(e));
+                assert_eq!(lines(from_cell), want, "the cell's, a run at a time, at run {i}");
+                assert_eq!(lines(from_held), want, "held, a run at a time, at run {i}");
+                assert_eq!(lines(from_memory), want, "in memory, a run at a time, at run {i}");
+                let landed: BTreeSet<String> = in_memory.after(None, usize::MAX).into_iter().map(|e| e.run_id).collect();
+                assert_eq!(cell.landed_runs(), landed);
             }
         }
         let (segments, sealed_runs, sealed_bytes) = cell.with(|l| l.sealed_holds());
@@ -3206,6 +3766,7 @@ mod tests {
                 read.push(l.to_string());
             });
             assert_eq!(read, cell.with(|log| log.lines()));
+            assert_eq!(cell.lines_to_head(), cell.with(|log| (log.lines(), log.head().to_string())), "as read under the lock (release audit R45)");
             assert_eq!(cell.lines_holding("\"at_ms\":1003").len(), 1);
         }
         let _ = std::fs::remove_file(&path);
@@ -3230,6 +3791,11 @@ mod tests {
             let whole = lines.len().saturating_sub(1);
             let seqs: Vec<u64> = lines[..whole].iter().map(|l| serde_json::from_str::<LogEntry>(l).expect("a line before the last is whole").seq).collect();
             assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "in order, none missing: {seqs:?}");
+            // Read to the head taken with them: every line whole, the last the head's.
+            let (lines, head) = cell.lines_to_head();
+            let seqs: Vec<u64> = lines.iter().map(|l| serde_json::from_str::<LogEntry>(l).expect("every line to the head is whole").seq).collect();
+            assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "in order, none missing: {seqs:?}");
+            assert_eq!(lines.last().map_or(String::new(), |l| line_hash(l)), head, "ending at the head (none before the first run)");
             reads += 1;
         }
         for w in writers {
@@ -3482,7 +4048,7 @@ mod tests {
                 let told = sync(cell, fail, &|cell| cell.sync_through(seq));
                 // A sync of its own unless one since it was written went through; then its line.
                 let synced = model.synced > seq || model.sync(cell.next_seq(), fail);
-                let want = if !synced { Some("could not sync") } else if failed { Some("couldn't be written") } else { None };
+                let want = if !synced { Some(UNSYNCED) } else if failed { Some("couldn't be written") } else { None };
                 match (&told, want) {
                     (Ok(()), None) => {
                         kept.insert(seq);

@@ -75,7 +75,8 @@ schedule or a file starts has no starter, and can be decided. A row marked **+**
 it. A row that is ready says what the server has for it: a secret's version and where it comes from (`set, v3
 (env:HOLON_SECRET_SIGNING_KEY)`), a folder or a database bound. Below the rows, **Its settings**
 lists the deploy settings that change: how often it runs, the sites whose pages it answers, the
-keys it keeps out of its records (`taint`), its port, each handler's log level.
+keys it keeps out of its records (`taint`) and those it never keeps (`never_keep`), its port, each
+handler's log level.
 `holon editor`, `holon deploy` (when it needs approval), `holon restore --dry-run` and the agent
 tools show the same rows, worked out by the server.
 
@@ -100,6 +101,8 @@ isn't the sites it sends.
 | agents may run | for a flow with actions, a box for each: ticked, an agent may run it, which asks for `AgentRuns("name")` ([Who may run an action](../reference/permissions.md#who-may-run-an-action)) |
 | agents may read its logs | for a flow that writes lines with `console.log`: ticked, an agent may read them, which asks for `AgentReadsLogs` ([Who may read a flow's log lines](../reference/permissions.md#who-may-read-a-flows-log-lines)) |
 | secrets | the secrets it reads, each set, replaced or removed |
+| keeps out of its records | the keys it taints, beside the four every flow does; the text's `taint` line ([Tainted keys](../language/reference.md#imports-and-settings)) |
+| never keeps | the keys it never keeps, guarded where they stand; the text's `never_keep` line ([Keys never kept](../language/reference.md#imports-and-settings)) |
 
 A limit above the host's default needs approval; one above the host's ceiling can't be granted.
 [Permissions](../reference/permissions.md#limits) lists the limits, their defaults and ceilings.
@@ -114,7 +117,7 @@ A flow imports the secrets it reads (`import stripe_webhook_secret from
 "secret:stripe_webhook_secret"`); their values are set per deployment, by an admin, under **Settings →
 secrets**. The flow must have a name first. Each secret has a source:
 
-- **value**: typed in, sealed on the server (XChaCha20-Poly1305, under keys whose root is in the OS key store by default).
+- **value**: typed in, sealed on the server (XChaCha20-Poly1305, under keys whose root is in the OS key store by default on Windows and macOS, in `~/.holon/keys` elsewhere).
   It is never shown again.
 - **env**: read from an environment variable of the server, `HOLON_SECRET_<NAME>`, or from a
   `.env` file the server reads (see [Secrets from a `.env` file](#secrets-from-a-env-file)).

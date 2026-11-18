@@ -22,6 +22,7 @@ import { feedStates, queueStates, sendRequest, ServerError, tickNow, tickSaid, t
 import { gateOf, type Answer } from "./can";
 import type { ActionDraft, ClockDraft, FeedDraft, FileDraft, MailDraft, QueueDraft, SocketDraft } from "./canvasOps";
 import { ActionRows } from "./ActionRows";
+import { useCovered } from "./covered";
 
 const field: CSSProperties = {
   font: "inherit",
@@ -153,10 +154,13 @@ export function TryRequest({
   const [result, setResult] = useState<TesterResult | null>(null);
   const [sending, setSending] = useState(false);
   const [ticked, setTicked] = useState("");
-  // What the running deployment's connection to each feed is doing, read every few seconds.
+  // What the running deployment's connection to each feed is doing, read every few seconds while
+  // another page doesn't cover it (covered.tsx): covered, it keeps what it read last.
+  const covered = useCovered();
   const [feedState, setFeedState] = useState<FeedState[]>([]);
   const listens = feeds.length > 0;
   useEffect(() => {
+    if (covered) return;
     if (!tickSlug || !listens) {
       setFeedState([]);
       return;
@@ -172,12 +176,13 @@ export function TryRequest({
       on = false;
       clearInterval(every);
     };
-  }, [tickSlug, listens]);
+  }, [tickSlug, listens, covered]);
   // What the running deployment's listener to each queue is doing, and what its messages to each
   // came to, read every few seconds.
   const [queueState, setQueueState] = useState<{ listening: QueueListening[]; sending: QueueSending[] }>({ listening: [], sending: [] });
   const queued = queues.length + sendsTo.length > 0;
   useEffect(() => {
+    if (covered) return;
     if (!tickSlug || !queued) {
       setQueueState({ listening: [], sending: [] });
       return;
@@ -193,7 +198,7 @@ export function TryRequest({
       on = false;
       clearInterval(every);
     };
-  }, [tickSlug, queued]);
+  }, [tickSlug, queued, covered]);
 
   const tick = (clock: string) => {
     setTicked(`${clock}: ticking…`);

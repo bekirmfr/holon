@@ -103,20 +103,24 @@ function endSession(): void {
  *  version a page follows (can.tsx). */
 const ask = (url: string, init: RequestInit = {}): Promise<Response> => fetch(url, { ...init, cache: "no-store" });
 
+/** Whom this tab acts as, as the server is told: the session's token, else the ID token of a
+ *  sign-in through the provider; "" for no one. What the buttons follow is kept for it (can.tsx). */
+export const bearer = (): string => getSession()?.token ?? signedIn()?.idToken ?? "";
+
 /** `fetch` against the server, carrying who is signed in: the session's token, else the ID
  *  token of a sign-in through the server's identity provider (signin.ts). A 401 to what this tab
  *  is signed in with (not a token since replaced), or to none since its ID token expired, means
  *  the sign-in has ended: it is forgotten, and the editor asks to sign in again over what is open.
  *  A request that gets no answer is told (the host card reads the host again). */
 async function api(url: string, init: RequestInit = {}): Promise<Response> {
-  const token = getSession()?.token ?? signedIn()?.idToken;
+  const token = bearer() || undefined;
   const res = await ask(url, token ? { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } } : init).catch(
     (e: unknown) => {
       window.dispatchEvent(new Event("holon:unanswered"));
       throw e;
     },
   );
-  if (res.status === 401 && (token ? token === (getSession()?.token ?? signedIn()?.idToken) : signInExpired())) endSession();
+  if (res.status === 401 && (token ? token === bearer() : signInExpired())) endSession();
   if (mayHaveChanged(url, init.method ?? "GET", res.status)) window.dispatchEvent(new Event("holon:can"));
   return res;
 }
@@ -416,19 +420,21 @@ export async function listTables(name: string, deployment: string | null): Promi
 /** A mail resource bound (mails.rs): where its SMTP server's URL is read from (env:…, vault:…) and
  *  where it points, without the login; its sender; and every address it may send to (empty when
  *  it only receives); the mailbox it receives in, if it does; and where its token comes from, for
- *  a server whose URL names a user and no password (OAuth: Microsoft 365, Google Workspace). */
-export type MailEntry = { name: string; deployment: string | null; smtp: string; address: string; from: string; to: string[]; mailbox: Mailbox | null; oauth?: OAuthSource | null };
+ *  a server whose URL names a user and no password (OAuth: Microsoft 365, Google Workspace).
+ *  Where its servers are (`smtp`, `address`, `oauth`, the mailbox's `imap` and `address`) goes only
+ *  to whoever may bind; anyone else is told `sends`. */
+export type MailEntry = { name: string; deployment: string | null; smtp?: string; address?: string; sends?: boolean; from: string; to: string[]; mailbox: Mailbox | null; oauth?: OAuthSource | null };
 /** Where a mail's token comes from: where the token request is read from, and where it is sent
  *  (without the client's login or the query). */
 export type OAuthSource = { source: string; address: string };
 /** A mailbox a mail receives in: where its IMAP server's URL is read from, where it points, the
  *  folder read, where each message is moved after its run, whose verdict counts, and how often
  *  (seconds) it is looked at. */
-export type Mailbox = { imap: string; address: string; folder: string; done: string; verdict_from?: string; every: number };
+export type Mailbox = { imap?: string; address?: string; folder: string; done: string; verdict_from?: string; every: number };
 /** A mail to bind: `to` as addresses, `*@domain` or `*`, with commas; `imap` (with its folder,
  *  done and verdict_from, empty for the defaults) to receive; `oauth`, where its token request is
  *  read from. */
-export type MailBinding = Pick<MailEntry, "name" | "deployment" | "smtp" | "from"> & { to: string; imap?: string; folder?: string; done?: string; verdict_from?: string; oauth?: string };
+export type MailBinding = Pick<MailEntry, "name" | "deployment" | "from"> & { smtp: string; to: string; imap?: string; folder?: string; done?: string; verdict_from?: string; oauth?: string };
 export const listMails = async () => asJson<MailEntry[]>(await api(`${BASE}/admin/mails`));
 export const bindMail = async (m: MailBinding) => asJson<MailEntry>(await post(`${BASE}/admin/mails`, m));
 export async function unbindMail(name: string, deployment: string | null): Promise<void> {
@@ -450,9 +456,10 @@ export type OnFull = "wait" | "skip" | "latest";
 export type FeedEntry = {
   name: string;
   deployment: string | null;
-  url: string;
-  address: string;
-  headers: Record<string, string>;
+  /** Where it is, and the sources its URL and headers are read from: only to whoever may bind. */
+  url?: string;
+  address?: string;
+  headers?: Record<string, string>;
   buffer: number;
   idle: number;
   on_full: OnFull;
@@ -524,8 +531,9 @@ export async function feedStates(slug: string): Promise<FeedState[]> {
 export type QueueEntry = {
   name: string;
   deployment: string | null;
-  url: string;
-  address: string;
+  /** Where it is, and the source its URL is read from: only to whoever may bind. */
+  url?: string;
+  address?: string;
   fifo: boolean;
   largest: number;
   visibility: number;
@@ -598,6 +606,8 @@ export type HostView = {
     store: { values: number; bytes: number; on_disk: number; put_since: number } | null;
     logs: Counted3 | null;
     console: Counted3 | null;
+    /** Removed deployments' records, kept beside the logs until their retention's time is up. */
+    removed_deployments?: Counted3 | null;
     file_texts: { texts: number; chunks: number; bytes: number } | null;
     leftovers: { removed: Counted3; waiting: Counted3 };
   };
@@ -910,8 +920,9 @@ export type Summary = {
   chain: {
     on_record: number;
     breaks: number;
-    /** Where the heads go, when it last took a batch (since the server started), and how many wait. */
-    witness: { address: string; taken_ms: number | null; waiting: number } | null;
+    /** Where the heads go (to whoever views the host), when it last took a batch (since the server
+     *  started), and how many wait. */
+    witness: { address?: string; taken_ms: number | null; waiting: number } | null;
     checked: ChainCheck | null;
   };
 };
@@ -1281,6 +1292,10 @@ export type LogEntry = {
   url: string | null;
   status: number | null;
   request: WValue | null;
+  /** Its request's body, when longer than 64 KiB as the log writes it: kept by hash (its BLAKE3,
+   *  size, and where its text is kept, if it is), its places in `request` and `NetworkIngress`
+   *  then empty. */
+  body?: { hash: string; size: number; blob?: string };
   /** By capability: "Clock", "Random", "NetworkIngress". */
   sourced: [string, WValue][];
   state_before: Record<string, WValue>;
@@ -1641,9 +1656,21 @@ export async function deleteDeployment(slug: string): Promise<DeploymentEntry & 
 /** What forgetting a removed deployment's keys did (`POST /admin/keys/forget`, keys.rs): whether
  *  anything was sealed under them, and whether the root key was rotated where it is kept (not when
  *  it is in an environment variable, `why` says). */
-export type Forgotten = { slug: string; forgotten: boolean; root: { rotated: boolean; why?: string }; error?: string };
+/** What a forget did. `root.rotated`: the root key was rotated where it is kept, so backups and
+ *  copies of the data folder taken before need the old one (`pending`: rotated, `keys.json`'s last
+ *  write left to the next start). `store`: the content store swept as it was forgotten, the values
+ *  nothing else names removed (`swept`) and those written in the last hour left to the next sweep
+ *  (`spared`), or why it wasn't. */
+export type Forgotten = {
+  slug: string;
+  forgotten: boolean;
+  root: { rotated: boolean; why?: string; pending?: string };
+  store?: { swept?: number; spared?: number; why?: string };
+  error?: string;
+};
 
-/** `POST /admin/keys/forget` — a removed deployment's keys forgotten: nothing it left opens again. */
+/** `POST /admin/keys/forget` — a removed deployment's keys forgotten: its log, records and backups
+ *  open nowhere again, and the content store's values nothing else names are swept. */
 export async function forgetKeys(slug: string): Promise<Forgotten> {
   const res = await api(`${BASE}/admin/keys/forget`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) });
   return asJson<Forgotten>(res);
@@ -1738,7 +1765,7 @@ export type FlowDocument = {
   names?: Record<string, string>;
   /** The flow's deploy settings (DeploySettings.tsx): the port for a flow with routes. Absent in older
    *  flows; `endpoints`, from flows saved before routes were derived, is ignored. */
-  server?: { port: string; endpoints?: EndpointDraft[]; requirements?: Requirements; browsers?: string; tags?: string[]; taint?: string[] };
+  server?: { port: string; endpoints?: EndpointDraft[]; requirements?: Requirements; browsers?: string; tags?: string[]; taint?: string[]; never_keep?: string[] };
   /** For a deployed flow: which canvas node each step of a run is, by route (`"*"` for a flow
    *  deployed whole), so the log's timings land on the canvas (replay.ts's `nodeTimings`). */
   trace?: Record<string, string[]>;

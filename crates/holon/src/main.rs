@@ -78,8 +78,12 @@ mod editor;
 mod durable;
 mod engines;
 mod events;
+mod failing;
+mod faults;
 mod mongo;
 mod firing;
+// The test unit the tests stage.
+#[cfg(test)]
 mod fixtures;
 mod grantcmd;
 mod grants;
@@ -110,6 +114,7 @@ mod permissions;
 mod persist;
 mod proposals;
 mod pick;
+mod never_keep;
 mod ranges;
 mod recorder;
 mod restore;
@@ -148,9 +153,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use holon_core::{
     capabilities, child_refs, decode_preimage, encode_preimage, hash_unit, hash_value, parse_hash, run_id,
     state_root,
-    read_server, Capability, Server, Hash, MapResolver, Param, Port, Resolver, Type, Unit, UnitBody,
+    read_server, Capability, Server, Hash, MapResolver, Param, Resolver, Unit, UnitBody,
     Value,
 };
+// The tests' units (fixtures.rs, tests.rs), through `use crate::*`.
+#[cfg(test)]
+use holon_core::{Port, Type};
 use holon_host::{
     is_storable, FileStore, Host, InsertError, MemStore,
     run_rounds, Waiting, Round, State, Store, StoreError,
@@ -164,6 +172,7 @@ use serde::{Deserialize, Serialize};
 // one file (each module does `use crate::*` for the same reason).
 use deploy::*;
 use firing::*;
+#[cfg(test)]
 use fixtures::*;
 use flows::*;
 use http::*;
@@ -305,6 +314,11 @@ struct AppState {
     policy: crate::sync::RwLock<Arc<Policy>>,
     /// Where the policy is read from: nowhere, the defaults (the tests).
     policy_path: Place,
+    /// Held from reading the policy file to putting what it says in force, so a setting written
+    /// into it (storage.rs's `set_storage`) and a reload go one at a time (R75): two admins'
+    /// settings each kept, and what is in force what the file says. Taken as
+    /// [`AppState::hold_policy_file`].
+    policy_file: Mutex<()>,
     /// Every deployment's secrets (`--secrets`, secrets.rs): written over the control plane,
     /// never returned.
     secrets: Arc<SecretStore>,
@@ -320,6 +334,22 @@ struct AppState {
     checked: Mutex<Option<summary::Check>>,
     /// The replays running, how many at once and for how long (verify/replay.rs).
     replays: verify::Replays,
+}
+
+/// The policy file held (R75). Only [`AppState::hold_policy_file`] makes one, and a reload
+/// (grants.rs's `reload_policy`) asks for one: it can't be written to hold a lock of its own, and
+/// so put a policy it read before a setting's write in force after it.
+mod policy_file {
+    pub(crate) struct Held<'a> {
+        _file: std::sync::MutexGuard<'a, ()>,
+    }
+
+    impl crate::AppState {
+        /// The policy file, held until what is returned is dropped (`AppState::policy_file`).
+        pub(crate) fn hold_policy_file(&self) -> Held<'_> {
+            Held { _file: self.policy_file.lock().unwrap() }
+        }
+    }
 }
 
 impl AppState {
@@ -522,8 +552,8 @@ const USAGE: &str = "usage: holon <command>
   feed add|list|remove               bind a name flows listen to to a feed of server-sent events (admin)
   queue add|list|remove              bind a name flows send to and listen to to an SQS queue (admin)
   store sweep [--dry-run]            clear the stored states no kept run, version or state names
-  key status|rotate|forget           the keys the server seals its data under: where the root is,
-                                     a new data key, the root rotated (admin)
+  key status|rotate|forget|export    the keys the server seals its data under: where the root is,
+                                     a new data key, the root rotated, a copy of it (admin)
   host                               what the host holds: memory, its disks, what it keeps (admin)
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
                                      call and explain flows; it never approves what they may do
@@ -571,9 +601,13 @@ const SERVE_USAGE: &str = "usage: holon serve [options]
                            container's) [HOLON_MAX_MEMORY]
   --export-heads URL       send each run's head to a witness [HOLON_EXPORT_HEADS; its token in
                            HOLON_EXPORT_HEADS_TOKEN]
+  --stop-within TIME       how long a stop waits for the runs going on, 30s or 2m (default 1m):
+                           past it, they are cut off as a crash cuts them [HOLON_STOP_WITHIN]
   --root-key SOURCE        where the root key is kept, which opens everything the server seals
-                           in its data folder (keys.json): os, the OS key store (the default);
-                           env:VAR; or file:PATH. Never in the data folder; keep a copy apart
+                           in its data folder (keys.json): os, the OS key store (the default on
+                           Windows and macOS); env:VAR; or file:PATH (the default elsewhere:
+                           ~/.holon/keys/<id>.key). Never in the data folder; back it up apart
+                           (holon key export)
   --new-root-key           print a fresh key for --root-key env:VAR, and exit
   --dotenv FILE            a .env file HOLON_SECRET_* values are also read from
   --editor DIR             serve the editor from DIR instead of the built-in one
@@ -713,11 +747,6 @@ fn serve(args: Vec<String>) {
     // `--deployments <path>` for where the deployments table is persisted (write-through, on
     // every deploy/delete); `--deployments :memory:` opts out entirely, same convention as
     // `--store`. Defaults to `deployments.json` in the data folder.
-    //
-    // `--emit-test-unit <path>` is a dev-only escape hatch, not a server flag: it writes a
-    // trivial unit's canonical preimage bytes to `path` and exits *without* starting the
-    // server, so the `/unit` round trip can be checked with plain `curl` + a file diff — no
-    // HTTP client dependency needed just to generate a valid test payload.
     let mut args = args.into_iter();
     let mut store_arg = ".holon-store".to_string();
     let mut deployments_arg = ".holon-deployments.json".to_string();
@@ -743,6 +772,8 @@ fn serve(args: Vec<String>) {
     let mut data_limits = dataplane::DataLimits::default();
     // How many runs each deployment's log keeps (`--keep-runs N`, or HOLON_KEEP_RUNS; recorder.rs).
     let mut keep_runs: Option<String> = std::env::var("HOLON_KEEP_RUNS").ok().filter(|v| !v.trim().is_empty());
+    // How long a stop waits for the runs going on (`--stop-within`, or HOLON_STOP_WITHIN; stopping.rs).
+    let mut stop_within: Option<String> = std::env::var("HOLON_STOP_WITHIN").ok().filter(|v| !v.trim().is_empty());
     // What the flows' log lines are kept and said as (`--log-stdout`, `--log-size`, `--log-files`,
     // `--log-rate`, or HOLON_LOG_*; logs.rs).
     let mut log_stdout = std::env::var("HOLON_LOG_STDOUT").is_ok_and(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"));
@@ -779,6 +810,12 @@ fn serve(args: Vec<String>) {
             keep_runs = args.next();
             if keep_runs.is_none() {
                 eprintln!("--keep-runs needs a number of runs (at least 1)");
+                std::process::exit(2);
+            }
+        } else if a == "--stop-within" {
+            stop_within = args.next();
+            if stop_within.is_none() {
+                eprintln!("--stop-within needs how long a stop waits for the runs going on: 30s or 2m");
                 std::process::exit(2);
             }
         } else if a == "--log-stdout" {
@@ -852,8 +889,12 @@ fn serve(args: Vec<String>) {
         } else if a == "--root-key" {
             // Where the root key is kept: `os` (the OS key store, the default where there is
             // one), `env:VAR` or `file:PATH` (sealing.rs, at_rest.rs).
-            if let Some(v) = args.next() {
-                root_key_arg = Some(v);
+            match args.next() {
+                Some(v) => root_key_arg = Some(v),
+                None => {
+                    eprintln!("holon: --root-key needs a SOURCE: os, env:VAR or file:PATH");
+                    std::process::exit(2);
+                }
             }
         } else if a == "--data" || a == "--editor" {
             if let Some(v) = args.next() {
@@ -909,15 +950,14 @@ fn serve(args: Vec<String>) {
             if let Some(v) = args.next() {
                 flows_arg = v;
             }
-        } else if a == "--emit-test-unit" {
-            let Some(path) = args.next() else {
-                eprintln!("--emit-test-unit needs a path");
-                std::process::exit(1);
-            };
-            let bytes = encode_preimage(&test_unit()).expect("test_unit() is a fixed, valid unit");
-            std::fs::write(&path, &bytes).unwrap_or_else(|e| panic!("write {path}: {e}"));
-            println!("wrote {} bytes to {path}", bytes.len());
-            return;
+        } else if a == "--secrets-key" || a == "--new-secrets-key" || a.starts_with("--secrets-key=") {
+            // Gone with 0.1.0-rc.35: said, not just refused, since a start script from then has it.
+            eprintln!(
+                "holon serve: {a} is gone: this release seals its whole data folder, under a root key (--root-key, \
+                 --new-root-key), not the secrets alone. It doesn't read a folder written by 0.1.0-rc.35 or earlier, \
+                 which kept its secrets under that key: keep running that release on such a folder, or start over"
+            );
+            std::process::exit(2);
         } else {
             eprintln!("holon serve: no option {a:?}
 
@@ -941,6 +981,13 @@ fn serve(args: Vec<String>) {
             }
         }
     }
+    let stop_within = match stop_within {
+        None => stopping::STOP_WITHIN,
+        Some(v) => stopping::parse_within(&v).unwrap_or_else(|e| {
+            eprintln!("holon: --stop-within (or HOLON_STOP_WITHIN): {e}");
+            std::process::exit(2);
+        }),
+    };
 
     let mut log_caps = logs::Caps { stdout: log_stdout, ..logs::Caps::default() };
     if let Some(v) = log_size {
@@ -1046,7 +1093,13 @@ fn serve(args: Vec<String>) {
     });
     let refuse_to_start = |e: String| -> ! {
         eprintln!("holon: {e}");
-        eprintln!("holon: refusing to start rather than overwrite it — fix the file or move it aside");
+        // A key missing is fixed by the key file that goes with the data, never by moving the file
+        // aside, which loses what it holds (the run log's runs).
+        if e.contains(at_rest::RESTORE_KEYS) {
+            eprintln!("holon: refusing to start rather than overwrite it — restore the key file that goes with the data");
+        } else {
+            eprintln!("holon: refusing to start rather than overwrite it — fix the file or move it aside");
+        }
         std::process::exit(1);
     };
     // The keys everything the server seals is sealed under (at_rest.rs), opened before anything
@@ -1062,12 +1115,28 @@ fn serve(args: Vec<String>) {
             eprintln!("holon: {e}");
             std::process::exit(1);
         }
+        // A root key file kept in the folder it opens: a copy of the folder would open itself.
+        if let Some(path) = root_key_arg.as_deref().and_then(|a| a.strip_prefix("file:"))
+            && sealing::inside(Path::new(path), &dir)
+        {
+            eprintln!("holon: --root-key {path} is in the data folder {}: a root kept with what it opens protects nothing. Keep it apart (holon key rotate --root --to file:PATH moves it)", dir.display());
+            std::process::exit(1);
+        }
         let sealed: Vec<&Path> = [&secrets_arg, &host_key_arg, &deployments_arg].into_iter().filter(|a| a.as_str() != ":memory:").map(|a| Path::new(a.as_str())).collect();
         // Its refusal says what to do itself: moving `keys.json` aside would lose everything.
-        at_rest::Keyring::open(&keys_path, root_key_arg.as_deref(), &sealed).unwrap_or_else(|e| {
+        let keys = at_rest::Keyring::open(&keys_path, root_key_arg.as_deref(), &sealed).unwrap_or_else(|e| {
             eprintln!("holon: {e}");
             std::process::exit(1);
-        })
+        });
+        // Said once, when the root is made: it is never in the data folder, and without it a
+        // copy of the folder opens nothing.
+        if keys.made()
+            && let Some(source) = keys.source()
+        {
+            println!("holon: a new root key, which opens everything this server seals in {}, is kept in {source}", dir.display());
+            println!("holon: back it up apart from the data folder, which it is never in: holon key export --to file:PATH");
+        }
+        keys
     } else {
         at_rest::Keyring::memory()
     });
@@ -1119,7 +1188,7 @@ fn serve(args: Vec<String>) {
     }
     data_limits.max_connections_total = bounds::max_connections_total();
     data_limits.connections = Arc::new(tokio::sync::Semaphore::new(data_limits.max_connections_total));
-    let policy = Arc::new(Policy::load(&policy_at).unwrap_or_else(|e| refuse_to_start(e)));
+    let policy = Arc::new(Policy::load(&policy_at).unwrap_or_else(|e| refuse_to_start(e.why().to_string())));
     let dotenv_path = dotenv_arg.clone().map(std::path::PathBuf::from);
     let sources = secret_sources::Sources::new(dotenv_path.clone()).unwrap_or_else(|e| refuse_to_start(e));
     let secrets = Arc::new(SecretStore::open(&secrets_arg, Arc::clone(&keys), sources).unwrap_or_else(|e| refuse_to_start(e)));
@@ -1188,13 +1257,14 @@ fn serve(args: Vec<String>) {
                 eprintln!("holon: waiting run {} of {slug:?} can't be opened: {e}", run.run_id);
             }
         }
+        persist::seal_opened(slug, dep);
         dep.folders = Arc::new(folders::Scoped::new(Arc::clone(&folders), slug));
     }
     // The mail its runs sent that wasn't delivered when the server stopped, sent now: what its
     // deployment's log holds of it (mails.rs).
-    folders.mails.recover(|slug| initial_deployments.get(slug).map(|dep| dep.log.after(None, usize::MAX)));
+    folders.mails.recover(|slug| initial_deployments.get(slug).map(|dep| dep.log.landed_runs()));
     // And the messages to its queues (queues.rs).
-    folders.queues.recover(|slug| initial_deployments.get(slug).map(|dep| dep.log.after(None, usize::MAX)));
+    folders.queues.recover(|slug| initial_deployments.get(slug).map(|dep| dep.log.landed_runs()));
     let flows = Mutex::new(load_flows(&flows_at).unwrap_or_else(|e| refuse_to_start(e)));
     let proposals = proposals::Proposals::beside(&flows_at).unwrap_or_else(|e| refuse_to_start(e));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
@@ -1265,6 +1335,7 @@ fn serve(args: Vec<String>) {
         data_limits,
         policy: crate::sync::RwLock::new(policy),
         policy_path: policy_at,
+        policy_file: Mutex::new(()),
         secrets,
         folders,
         activity,
@@ -1300,9 +1371,23 @@ fn serve(args: Vec<String>) {
     stopping::wait_until_told();
     let state = state_cell.get().expect("set above");
     state.store.1.stop();
-    println!("holon: stopping: no new runs, {} going on (ctrl+c again stops at once)", stopping::DOOR.runs());
-    stopping::drain(&stopping::DOOR, Duration::from_secs(5), |left| println!("holon: stopping: {left} run(s) still going on"));
+    println!(
+        "holon: stopping: no new runs, {} going on, waited for up to {} (ctrl+c again stops at once)",
+        stopping::DOOR.runs(),
+        stopping::within_text(stop_within)
+    );
+    let drained = stopping::drain(&stopping::DOOR, Duration::from_secs(5), stop_within, |left| println!("holon: stopping: {left} run(s) still going on"));
     match sync_to_disk(&state.deployments, &state.deployments_path) {
+        // Runs went on past the wait: what is written is on disk, and no mark is left, so the
+        // next start takes the runs cut off as a crash's (stopping.rs).
+        Ok(()) if !drained => {
+            eprintln!(
+                "holon: stopped after {}: {} run(s) still going on were cut off, as a crash cuts them; the next start says which deployments they may have left part-done (--stop-within waits longer)",
+                stopping::within_text(stop_within),
+                stopping::DOOR.runs()
+            );
+            std::process::exit(1);
+        }
         Ok(()) => {
             // Every line on disk: the next start takes this for a stop, not a crash.
             if let Err(e) = stopping::mark_stopped(&state.deployments_path) {
@@ -1327,7 +1412,10 @@ fn sync_to_disk(deployments: &Mutex<BTreeMap<String, Deployment>>, kept_at: &Pla
         counted |= std::mem::take(&mut d.tallies_changed);
     }
     let saved = if counted { persist_deployments(kept_at, deployments) } else { Ok(()) };
-    recorder::sync_logs(deployments).and_then(|()| heads::sync()).and(saved)
+    let synced = recorder::sync_logs(deployments).and_then(|()| heads::sync());
+    // A warning to an admin, and /health "not ok", until a sync goes through (failing.rs).
+    failing::note(kept_at, failing::Writer::Logs, &synced);
+    synced.and(saved)
 }
 
 /// Why the data folder `dir` is a warning, if it is: other users of this machine may read it

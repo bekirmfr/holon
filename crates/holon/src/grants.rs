@@ -43,7 +43,7 @@ pub(crate) fn recheck(dep: &mut Deployment, caps: &Capabilities, policy: &Policy
         }
         _ => {}
     }
-    dep.permit = Arc::new(Permit::new(dep.unit, &dep.grant, policy));
+    dep.permit = Arc::new(Permit::new(dep.unit, &dep.grant, policy).never_keeping(dep.server.as_ref()));
     let (keep, age) = (dep.permit.log.keep_runs as usize, dep.permit.log.max_age_ms());
     dep.log.with(|log| log.retain(keep, age));
 }
@@ -138,9 +138,17 @@ pub(crate) fn change_grant(state: &AppState, slug: &str, change: &ChangeRequest,
 /// lowered ceiling or a withdrawn exception applies at once. A file that doesn't parse changes
 /// nothing. Answers with the policy and each deployment's attention.
 pub(crate) fn handle_post_permissions_reload(state: &AppState) -> Response {
+    let file = state.hold_policy_file();
+    reload_policy(state, &file)
+}
+
+/// A reload, with the policy file held (`AppState::hold_policy_file`) by whoever asked for it: no
+/// setting is written into the file between this reading it and putting it in force, so a reload
+/// that read it before a write never puts the policy before that write back after it (R75).
+pub(crate) fn reload_policy(state: &AppState, _file: &crate::policy_file::Held<'_>) -> Response {
     let policy = match Policy::load(&state.policy_path) {
         Ok(p) => Arc::new(p),
-        Err(e) => return err(400, format!("the policy wasn't reloaded: {e}")),
+        Err(e) => return err(400, format!("the policy wasn't reloaded: {}", e.said())),
     };
     let units: Vec<(String, Hash)> = state.deployments.lock().unwrap().iter().map(|(s, d)| (s.clone(), d.unit)).collect();
     let mut derived = BTreeMap::new();

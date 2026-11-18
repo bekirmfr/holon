@@ -100,10 +100,22 @@ struct Chain {
     /// The runs every log holds, and how many breaks they found as they were read and written.
     on_record: usize,
     breaks: usize,
-    /// Where the logs' heads go, and when it last took a batch, if heads are exported.
-    witness: Option<crate::heads::Witness>,
+    /// Where the logs' heads go (to whoever views the host), and when it last took a batch, if
+    /// heads are exported.
+    witness: Option<WitnessShown>,
     /// The last check, if there was one since the server started.
     checked: Option<Check>,
+}
+
+/// The witness as the summary says it: where it is only to whoever views the host (`host.view`),
+/// as where the server keeps its data is; anyone else is told that one is set, when it last took
+/// the heads and how many wait.
+#[derive(Serialize)]
+struct WitnessShown {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address: Option<String>,
+    taken_ms: Option<u64>,
+    waiting: usize,
 }
 
 /// What a check found (`POST /summary/check`).
@@ -116,6 +128,25 @@ pub(crate) struct Check {
     breaks: Vec<Break>,
     /// Each log's head as it read it: the hash of its newest line.
     heads: Vec<(String, String)>,
+    /// The lines it read of each log, by its deployment: what `runs` adds up, for a caller who may
+    /// see only some.
+    #[serde(skip)]
+    each: Vec<(String, u64)>,
+}
+
+impl Check {
+    /// What it found of the logs whose deployments `sees` says a caller may see the runs of: no
+    /// other deployment's name, head or count goes to them (audit R51).
+    fn seen(&self, sees: impl Fn(&str) -> bool) -> Check {
+        let each: Vec<(String, u64)> = self.each.iter().filter(|(slug, _)| sees(slug)).cloned().collect();
+        Check {
+            at_ms: self.at_ms,
+            runs: each.iter().map(|(_, n)| n).sum(),
+            breaks: self.breaks.iter().filter(|b| sees(&b.slug)).cloned().collect(),
+            heads: self.heads.iter().filter(|(slug, _)| sees(slug)).cloned().collect(),
+            each,
+        }
+    }
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -132,10 +163,10 @@ fn now_ms() -> u64 {
 pub(crate) fn handle_get_summary(state: &AppState, request: &Request, who: &crate::access::Caller) -> Response {
     let hours = request.get_param("hours").and_then(|h| h.parse::<usize>().ok()).unwrap_or(24).clamp(1, MAX_HOURS);
     let sees = |slug: &str| crate::can::can(who, crate::can::Action::RunView, &crate::can::Resource::Flow(slug)).is_ok();
-    Response::json(&summary(state, now_ms(), hours, sees))
+    Response::json(&summary(state, now_ms(), hours, sees, crate::can::sees_data(who)))
 }
 
-fn summary(state: &AppState, at_ms: u64, hours: usize, sees: impl Fn(&str) -> bool) -> Summary {
+fn summary(state: &AppState, at_ms: u64, hours: usize, sees: impl Fn(&str) -> bool, sees_host: bool) -> Summary {
     // The table only to find each log, so a summary never holds up a deployment's runs.
     let found: Vec<(String, Status, Unrecorded, Arc<LogCell>)> = state
         .deployments
@@ -181,26 +212,28 @@ fn summary(state: &AppState, at_ms: u64, hours: usize, sees: impl Fn(&str) -> bo
     let chain = Chain {
         on_record: deployments.iter().map(|d| d.on_record).sum(),
         breaks: deployments.iter().map(|d| d.breaks.len()).sum(),
-        witness: crate::heads::witness(),
-        checked: state.checked.lock().unwrap().clone(),
+        witness: crate::heads::witness().map(|w| WitnessShown { address: sees_host.then_some(w.address), taken_ms: w.taken_ms, waiting: w.waiting }),
+        checked: state.checked.lock().unwrap().as_ref().map(|c| c.seen(&sees)),
     };
     Summary { at_ms, hours, totals, deployments, latest, chain }
 }
 
 /// `POST /summary/check`: every log's chain checked again now, line by line; what it found is
-/// answered and kept for the summary.
-pub(crate) fn handle_post_check(state: &AppState) -> Response {
+/// kept for the summary, and answered of the deployments `who` may see the runs of.
+pub(crate) fn handle_post_check(state: &AppState, who: &crate::access::Caller) -> Response {
     let check = check_all(state, now_ms());
     *state.checked.lock().unwrap() = Some(check.clone());
-    Response::json(&check)
+    let sees = |slug: &str| crate::can::can(who, crate::can::Action::RunView, &crate::can::Resource::Flow(slug)).is_ok();
+    Response::json(&check.seen(sees))
 }
 
 fn check_all(state: &AppState, at_ms: u64) -> Check {
     let logs: Vec<(String, Arc<LogCell>)> = state.deployments.lock().unwrap().iter().map(|(slug, dep)| (slug.clone(), Arc::clone(&dep.log))).collect();
-    let mut check = Check { at_ms, runs: 0, breaks: Vec::new(), heads: Vec::with_capacity(logs.len()) };
+    let mut check = Check { at_ms, runs: 0, breaks: Vec::new(), heads: Vec::with_capacity(logs.len()), each: Vec::with_capacity(logs.len()) };
     for (slug, log) in logs {
         let (runs, breaks, head) = check_log(&log);
         check.runs += runs;
+        check.each.push((slug.clone(), runs));
         check.breaks.extend(breaks.into_iter().map(|seq| Break { slug: slug.clone(), seq }));
         check.heads.push((slug, head));
     }

@@ -52,6 +52,8 @@ pub(crate) const MIN_PASSWORD: usize = 10;
 /// Wrong passwords in a row before a name is locked, and for how long.
 const MAX_FAILURES: u32 = 5;
 const LOCKED_FOR: Duration = Duration::from_secs(60);
+/// What whoever asked for a change is told when the accounts file can't be written.
+pub(crate) const UNWRITTEN: &str = "the accounts file couldn't be written";
 
 /// A ceiling on a name's wrong passwords from every address together: past `NAME_MAX_WRONG` in
 /// `NAME_WINDOW`, it is refused from each address it hasn't signed in from, until the window
@@ -870,8 +872,12 @@ impl Accounts {
             let _ = gate.recv_timeout(Duration::from_secs(10));
         }
         let Some(path) = &self.path else { return Ok(()) };
-        let text = serde_json::to_vec_pretty(book).map_err(|e| e.to_string())?;
-        crate::at_rest::write_table(Path::new(path), crate::at_rest::role::ACCOUNTS, &text).map_err(|e| format!("the accounts file {path:?}: {e}"))
+        // Whoever asked is told it wasn't kept, and the admin where and why (stderr): a sign-in's
+        // caller among them, who isn't anyone yet (audit R71).
+        let written = serde_json::to_vec_pretty(book)
+            .map_err(|e| format!("it can't be made: {e}"))
+            .and_then(|text| crate::at_rest::write_table(Path::new(path), crate::at_rest::role::ACCOUNTS, &text).map_err(|e| format!("{path:?}: {e}")));
+        written.map_err(|why| crate::failing::Failed::new(UNWRITTEN, why).said())
     }
 
     /// Change the book, and keep it; expired sessions and invites go at the same time. Made on a

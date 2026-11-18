@@ -202,7 +202,9 @@ exceptions are ever granted. At deploy (deploy.rs):
    withheld if optional (`approval_needed`), an `Unrecorded` whose handler's code changed is
    withheld (its runs logged) until a person grants it back, and a new `Browser(origin)` needs a
    person too, as does a taint key the deployment has and the version drops (`Untaint(key)`,
-   `deploy::untainted`): the values under it would be recorded, where an agent may read them.
+   `deploy::untainted`): the values under it would be recorded, where an agent may read them;
+   and a key it never keeps that the version drops (`KeepAgain(key)`, `deploy::kept_again`),
+   moved from `taint` to `never_keep` asking nothing.
    Nor does an agent's changed code send out of the flow what a person let the old code send
    (`deploy::resent`, the launch review's H9): each handler whose code changed, and each fed by
    one (a key, collection, table or folder one writes and the other reads, an action of its own
@@ -263,13 +265,17 @@ going to isn't sent (`folders::SecretSends`: `blocked_secret`).
 
 ### 2.6 Secrets (secrets.rs, sealing.rs, secret_sources.rs, taint.rs)
 
-- **Kept sealed**: each value AES-256-GCM under a master key, a fresh nonce each, the slug, name
-  and version as associated data (`sealing::context`), so a value moved elsewhere fails to open.
-  The key is kept apart from the data (`--secrets-key`, `KeySource`): `os` (the OS key store, the
-  default on Windows and macOS), `env:VAR`, or `file:PATH` (owner-only; the default elsewhere, in
-  `~/.holon/keys`). The file records a `key_check`, so a wrong key refuses to start rather than open
-  an empty store over the real one. A value can instead be a reference (`env:…`, `vault:…`),
-  read again every `REFRESH`.
+- **Kept sealed**: each value sealed as a line (XChaCha20-Poly1305, a fresh 192-bit nonce each)
+  under the keyring's `secrets` scope, the slug, name and version as associated data
+  (`secrets::context`), so a value moved elsewhere fails to open; the file as a whole is sealed
+  again under the `server` scope, as every file the server writes is (encryption at rest,
+  docs/L4s/at-rest-encryption-L4.md). The keyring's data keys (`keys.json`) are kept only wrapped
+  by the root key, which is kept apart from the data (`--root-key`, `KeySource`): `os` (the OS key
+  store, the default on Windows and macOS), `env:VAR`, or `file:PATH` (owner-only; the default
+  elsewhere, `~/.holon/keys/<id>.key`), never in the data folder. `keys.json` records a
+  `root_check`, so a wrong or missing root refuses to start rather than open an empty store over
+  the real one. A value can instead be a reference (`env:…`, `vault:…`), read again every
+  `REFRESH`.
 - **Written, never read back**, over the control plane, by an admin: listing gives names,
   versions and sources. At least `MIN_SECRET_LEN` (6) characters; `MAX_VERSIONS` (5) kept; every
   change audited beside the file (`<secrets>.audit.jsonl`), never a value.
@@ -294,7 +300,7 @@ going to isn't sent (`folders::SecretSends`: `blocked_secret`).
   and `texts_mut`, the list `Redactor::entry` walks: the request or input, the outputs, the
   effects, the events, the reads, the timeline and a call's rounds) and from its lines: a record's
   field, a header's `[name, value]` pair, a JSON text at any depth, a query's or a form's
-  `name=value` (decoded and as sent), with a credential's parts (after its scheme, a Basic
+  `name=value` (decoded and as sent), either inside a JSON text's string too, with a credential's parts (after its scheme, a Basic
   credential decoded and its password, each cookie's value, a set cookie's), at least
   `MIN_SECRET_LEN` long. `firing::redactor_of` adds `Redactor::tainted` to the run's tokens and
   secrets, so each value is marked `‹taint:key›` wherever it is in the entry, the lines, the packs
@@ -302,6 +308,25 @@ going to isn't sent (`folders::SecretSends`: `blocked_secret`).
   JSON). `taint:` is a mark kind of its own, so `holon verify` reads it as a placeholder (a node
   computed from one is taken from the log) without counting a forwarded credential as a token
   sent out.
+- **What a flow never keeps is redacted by place, and refused**: the flow's `never_keep` keys
+  (`Settings.never_keep`, frozen on its server unit, `Server.never_keep`; none in `taint` too).
+  `never_keep::Places` replaces each value under one where it stands, at any length, in what
+  `Redactor::entry` walks and in each line (`Redactor::text`): a record's field, a `[name, value]`
+  pair, a JSON text's field (spliced over the value's bytes: `never_keep::Scan`), a query's or a
+  form's value, and either inside a JSON text's string (that string written again). It writes a stand-in no run can write (a private-use character around a random
+  nonce), which the redactor then writes as the mark `‹never_keep:key›`, a mark of its own
+  (`MARKED`), so a run's look-alike is escaped. A value of `MIN_SECRET_LEN` or more is removed by
+  its text too (`data::never_kept`, `Redactor::never_kept`). A write or a send that holds a key
+  in those forms is refused (`never_keep::refused`, in `firing.rs` for every effect that keeps
+  what it is given and for each line, `calls.rs` for another flow's action; `verify` and replay
+  refuse it again), a request to a host isn't. A flow with it doesn't wait (the language, at the
+  wait; `deploy.rs` for a unit made by hand), since a waiting run is stored whole. An agent's
+  version that drops a key asks `KeepAgain(key)` (`deploy::kept_again`). Beside S8's marks, it
+  sits in their one pass: the stand-ins go into the entry before it (structure first, as the run
+  had it), their (stand-in, mark) pairs joined to the same `Redactor` with `and`; and
+  `secrets::born` lists no hash of a computed text that holds a key's value (`never_keep::in_text`:
+  a CVC's would be a thousand tries from it), so such a run is withheld by the graph (`withheld`)
+  and `holon verify` says why it isn't run again.
 
 ### 2.7 What a flow can reach
 
@@ -365,7 +390,8 @@ effect, and an answer with no JSON form fails the call (`a_flow_call_sends_and_h
 `write_private` writes a file aside created with mode `0o600` (a protected owner-and-SYSTEM DACL on
 Windows, `restrict_to_owner`), syncs it and renames it over. It keeps the accounts, the deployments
 file, the secrets file and key file, the host key, the folders' and databases' bindings, the run
-files and `~/.holon/tokens.json`, each state head, and each log as a cut-back rewrites it.
+files and `~/.holon/tokens.json`, each state head (sealed, bound to its slug: a plain hash of a
+small state let a guess of it be checked offline), and each log as a cut-back rewrites it.
 Logs, events and the secrets audit are opened `0o600` when created; sealed log segments go through
 `write_aside`. holon-host's `write_atomically` creates its file `0o600` too, so the content store
 (units and every state and value), the packs, the kept file texts, the flows file, the policy as
@@ -431,6 +457,12 @@ What is not defended, or only partly:
   another key logs it; a waiting run's sealed request holds it, to resume with; and the flow's
   state, collections, databases and files hold what it writes. Unlike a secret's, a tainted
   value's write isn't refused: it is the caller's, and the flow decides what to keep.
+- **A key never kept is guarded by place only, for now**: its value is replaced and its writes
+  refused where it stands under its key; a value read out of its key into a plain value (`const c
+  = req.json.cvc`) and then written, sent to another flow or logged is not caught (following it is
+  the next stage). A JSON text or a query inside a JSON text's string (a host's echo of the
+  request) is looked into, a text in another encoding (base64, a form inside a header) isn't. The
+  value is in the server's memory while the run goes on.
 - **What a secret chooses is derived from it**: a true or false computed from it (`startsWith`,
   `===`, `has`), and what a leaf gives when a secret is its condition, position or key (`c ? a :
   b`, `list[i]`, `rec[k]`), is withheld in the log, answered or sent only where approved, and
@@ -493,6 +525,15 @@ What is not defended, or only partly:
   writing in the folder can swap a link between the check and the open (on Linux, without
   `/proc`, too). On Linux no link in a folder is followed, even one to inside it.
 - **Secrets in memory are in the clear** (`Resolved`, wiped when dropped), as is any process's.
+- **A sealed file rolled back**: a seal binds a file to its scope, key version and role
+  (at_rest.rs), not to its age, so an older sealed copy of a table (`deployments.json`,
+  `accounts.json`, `access.json`) put back in its place opens and is read. Only a log's chain,
+  against a witness's later head, shows one going back. An older `keys.json` opens only under
+  the root that wrapped it, which a forget rotates where it can (server.md).
+- **Forgetting doesn't reach the content store**: a deployment's state values there are sealed
+  under the server's keys, which a forget doesn't change. The sweep removes those nothing names
+  any more, but a copy of the store taken before the forget still opens beside the folder's
+  `keys.json`.
 - **Plain HTTP** to the server and data plane unless an ingress ends TLS in front.
 
 ## 5. What the tests hold
@@ -504,10 +545,12 @@ What is not defended, or only partly:
   text/plain or JSON POST from another site, `Origin: null`, a look-alike origin, a rebinding or
   wrong-port Host, a form POST; none saves anything, the editor and curl still do);
   `oversized_body_is_refused` (one byte past `MAX_BODY_BYTES` is a 413).
-- **Roles and accounts**: `each_role_does_what_it_may`, `an_agent_proposes_and_calls_and_does_nothing_else`
-  (15 paths refused it; the header lowers, never raises), `a_new_server_answers_only_its_setup`,
+- **Roles and accounts**: `the_built_in_roles_are_the_designs`,
+  `the_admin_holds_everything_and_an_agent_its_own` (a role holding an action only on its own
+  holds it on what it saved and nothing else), `every_route_is_reached_and_asks_of_what_it_names`
+  (`can.rs`), `a_new_server_answers_only_its_setup`,
   `wrong_passwords_sent_at_once_lock_a_name_as_soon`, `an_unknown_name_is_checked_like_a_wrong_password`,
-  `an_admin_is_always_left`, `kept_as_hashes_and_read_back` (no token or password in the file),
+  `no_change_leaves_no_admin`, `kept_as_hashes_and_read_back` (no token or password in the file),
   `wrong_setup_codes_lock_setting_up_for_a_while_where_they_came_from` (and `HOLON_SETUP_CODE` in
   any case), `every_way_in_that_takes_a_secret_counts_its_wrong_guesses` (each from an address,
   and in from another),
@@ -523,8 +566,8 @@ What is not defended, or only partly:
   person named as the OS user owns nothing it made),
   `a_binding_at_a_flow_lets_its_holder_act_there_and_nowhere_else` (a unit only another flow
   places is answered 404),
-  `the_control_plane_admits_so_many_requests_at_once`,
-  `a_token_for_another_client_issuer_expired_or_forged_is_refused`,
+  `the_control_plane_admits_so_many_requests_at_once_and_so_many_from_one_client`,
+  `which_id_tokens_are_taken` (another audience, party, issuer, expiry, signature or key),
   `a_token_the_provider_signed_for_this_client_says_who` and
   `signed_in_through_a_provider_is_matched_by_email_then_by_subject` (an email not said to be
   verified signs no one in; another subject with a matched email is no one),
@@ -553,8 +596,10 @@ What is not defended, or only partly:
   dry run never show it; the log shows its mark), `a_secret_computed_into_something_else_stays_out_of_the_log`,
   `a_token_a_call_answers_with_a_secret_is_kept_out_of_the_log_and_out_of_state`,
   `a_secret_goes_only_where_its_approval_shows_it_going`, `a_waiting_runs_record_is_sealed_on_disk`
-  (and `0o600`), `a_missing_or_wrong_key_refuses_instead_of_starting_empty`,
-  `a_sealed_value_opens_only_where_it_was_sealed` (another slug, name, version or key fails),
+  (and `0o600`), `a_keyring_opens_only_under_its_root` (a wrong or missing root, or `keys.json`
+  missing beside sealed files, refuses and writes nothing),
+  `a_value_opens_only_under_its_keys_and_for_its_place` (another slug, name, version or keyring
+  fails), `what_is_sealed_opens_only_where_it_was_sealed`,
   `an_approval_shows_its_deciders_what_the_run_names_or_its_input_as_the_log_keeps_it` (a
   tainted field redacted, a number made from a secret withheld, past 16 KiB cut down, and past it
   still its size, sealed on disk and listed again after a reload),
@@ -567,6 +612,11 @@ What is not defended, or only partly:
   log, the listing, the lines, the export, verify's report or a replay, and the runs check as
   themselves), and `an_unrecorded_failure_is_kept_redacted_and_cut_short` (a tally's failure, of
   secrets, tainted values and resume tokens).
+- **Values never kept**: `a_value_never_kept_is_replaced_where_it_stands_in_every_form_and_place_at_any_length`
+  (every form, every place of the entry, lengths 1 to 40, the entry otherwise as it was),
+  `every_effect_that_keeps_what_it_is_given_refuses_a_value_never_kept` (every leaf's effect,
+  classified), `a_flow_never_keeps_what_its_writes_would_keep` (a deployed flow's writes, line and
+  call refused, its request sent, its runs checking and replaying as themselves).
 - **Reach**: `a_name_stays_inside_its_folder`, `a_link_out_of_the_folder_is_never_followed`,
   `a_write_through_a_link_makes_nothing_outside_and_links_arent_followed`,
   `a_folder_swapped_for_a_link_after_the_check_leads_nowhere` (a write and a read checked, the

@@ -177,7 +177,8 @@ pub(crate) fn handle_get_replay(
     if read_server(loaded.resolve(&unit).expect("resolved above"), &resolver).is_err() {
         return err(400, "this unit isn't a flow's version: it has no routes, clocks or actions to replay");
     }
-    let lines = log.with(|log| log.lines());
+    // Read with the log's lock released: its runs go on meanwhile (release audit R45).
+    let (lines, _) = log.lines_to_head();
     // The file texts its runs read, as an export ships them (none holding a secret).
     let export = match export_of(store, folders, Some(&redactor), slug, lines, String::new(), Vec::new(), String::new(), u64::MAX) {
         Ok(export) => export,
@@ -251,6 +252,12 @@ enum Replay {
 
 #[allow(clippy::too_many_arguments)]
 fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash, resolver: &impl holon_core::Resolver, marks: &Marks, limits: &Limits, cut_short: bool, plain_http: &BTreeSet<String>) -> Replay {
+    let filled = match texts.with_body(entry) {
+        Ok(filled) => filled,
+        Err(Rerun::Skipped(why) | Rerun::Differs(why)) => return Replay::CantTell(why),
+        Err(_) => return Replay::CantTell("its request's body can't be put back".into()),
+    };
+    let entry = filled.as_ref().unwrap_or(entry);
     if let Some(e) = &entry.error {
         return Replay::CantTell(format!("it failed then: {e}"));
     }
@@ -361,6 +368,9 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
             "it computes with a secret, a token or a tainted value more than a replay does in a round ({steps} steps, {fuel} instructions of js and module code, {memory} bytes of memory)"
         ));
     }
+    // As the server has it: what holds a value the version never keeps, under its key, is refused
+    // (never_keep.rs).
+    host.performed.retain(|(c, p)| crate::never_keep::refused(c, p, &server.never_keep).is_none());
     // As `rerun` has it: the server refuses a write of a secret's value.
     let keeps = |c: &Capability| matches!(c, Capability::StateWrite(_) | Capability::CollectionWrite(_) | Capability::DbWrite(_) | Capability::ChannelSend(_) | Capability::FileWrite(_));
     if host.performed.iter().any(|(c, p)| keeps(c) && marks.carries_secret(p)) {
