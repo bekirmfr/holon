@@ -1474,6 +1474,16 @@ impl Slots {
 static IN_FLIGHT: Slots = Slots::new(MAX_IN_FLIGHT, MAX_FROM_ONE);
 const MAX_IN_FLIGHT: usize = 512;
 const MAX_FROM_ONE: usize = MAX_IN_FLIGHT / 8;
+// Under these, the connections (vendor/tiny_http, limits.rs): each request needs one, so there
+// are at least as many in all, and from one address too, since behind a proxy it trusts every
+// request comes from the proxy's (each client it forwarded for counted as itself). A connection
+// waits for its client no longer than the idle limit, which is past a body's deadline, so a body
+// that stops is told 408 by the deadline, not cut by the limit.
+const _: () = assert!(
+    tiny_http::limits::CONNECTIONS >= MAX_IN_FLIGHT && tiny_http::limits::FROM_ONE >= MAX_IN_FLIGHT,
+    "the connections let in hold every request let in"
+);
+const _: () = assert!(tiny_http::limits::IDLE.as_secs() > http::BODY_DEADLINE.as_secs(), "a body is cut off by its deadline, not by the idle limit");
 
 /// A control-plane request, answered if it is admitted. Each has a thread of its own (rouille's):
 /// past what `slots` admit at once, in all or from its client, one more is told to try again

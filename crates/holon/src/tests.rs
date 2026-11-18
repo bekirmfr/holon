@@ -7983,11 +7983,27 @@ fn a_body_that_stops_or_trickles_gives_its_place_back_by_the_deadline() {
     // (A body of 1 KiB or less tiny_http reads itself before handing the request on, holding no
     // place: these say they are longer.)
     let long = 100_000;
-    let stopped: Vec<TcpStream> = paths.iter().map(|path| send(path, b"{\"a\"", long)).collect();
+    let mut stopped: Vec<TcpStream> = paths.iter().map(|path| send(path, b"{\"a\"", long)).collect();
     until("every route reads its body", &|| slots.taken() == most);
     assert_eq!(status(&mut send("/unit", b"{}", 2)), "503", "every place is held");
     // ...and each gives it back, their connections still open: only the deadline lets them go.
     until("a stopped body held its place past the deadline", &|| slots.taken() == 0);
+    // Each is told 408, and its connection ends there (the answer's `Connection: close`, which
+    // tiny_http used to drop: vendor/tiny_http/PATCHED.md), not left open behind the body. The 408
+    // is written once the body's reader lets go of the connection (rouille holds it for each
+    // read), and a reader waiting on a body that stopped lets go when tiny_http's idle limit ends
+    // its read: so the answer comes at the idle limit, not at the deadline, and these wait past
+    // that limit. Waiting only EVENTUALLY, which is as long as the limit, the answer came 0.6 s
+    // before the wait ran out here and a moment after it on a loaded Linux runner.
+    for s in stopped.iter_mut() {
+        s.set_read_timeout(Some(tiny_http::limits::IDLE + EVENTUALLY)).unwrap();
+    }
+    for (s, path) in stopped.iter_mut().zip(paths) {
+        assert_eq!(status(s), "408", "{path}: a stopped body is told");
+        let mut rest = Vec::new();
+        assert!(s.read_to_end(&mut rest).is_ok(), "{path}: the connection ends after the 408");
+        assert!(String::from_utf8_lossy(&rest).to_ascii_lowercase().contains("connection: close"), "{path}: the 408 says it");
+    }
 
     // A body that trickles in, a byte every 100ms for as long as it isn't answered, is told 408
     // at the deadline: bytes still coming don't keep it.
@@ -19854,6 +19870,35 @@ fn a_client_is_whom_a_trusted_proxy_forwarded_for_and_otherwise_its_address() {
         let request = Request::fake_http_from(from.parse().unwrap(), "POST", "/auth/sign-in", [vec![host_header()], headers.clone()].concat(), b"{}".to_vec());
         assert_eq!(access.client(&request), expected, "from {from} with {headers:?}, trusting {:?}", access.proxies);
     }
+}
+
+/// The control port, made as `serve` makes it (rouille over tiny_http, every request through
+/// `admitted`), answers every connection of a burst that comes in together, each kept open as a
+/// browser opening a page keeps its sockets: tiny_http's pool used to leave some of such a burst
+/// unread until another connection closed (vendor/tiny_http/PATCHED.md), and a page's reads went
+/// unanswered. Each burst comes while the last one's threads are idle, as a page's do.
+#[test]
+fn the_control_port_answers_every_connection_of_a_burst() {
+    use std::io::Write as _;
+    use std::net::TcpStream;
+    let slots: &'static crate::Slots = Box::leak(Box::new(crate::Slots::new(crate::MAX_IN_FLIGHT, crate::MAX_FROM_ONE)));
+    let state: &'static AppState = Box::leak(Box::new(test_state()));
+    let server = rouille::Server::new("127.0.0.1:0", move |request| admitted(state, request, slots)).unwrap();
+    let at = server.server_addr();
+    let (_, stop) = server.stoppable();
+    for trial in 0..20 {
+        let mut burst: Vec<TcpStream> = (0..12).map(|_| TcpStream::connect(at).unwrap()).collect();
+        for s in &mut burst {
+            s.set_read_timeout(Some(EVENTUALLY)).unwrap();
+            write!(s, "GET /health HTTP/1.1\r\nHost: 127.0.0.1:{TEST_PORT}\r\n\r\n").unwrap();
+        }
+        for (i, s) in burst.iter_mut().enumerate() {
+            let mut head = [0u8; 12];
+            s.read_exact(&mut head).unwrap_or_else(|e| panic!("trial {trial}: connection {i} of the burst was never answered: {e}"));
+            assert_eq!(String::from_utf8_lossy(&head[9..]), "200", "trial {trial}: connection {i}");
+        }
+    }
+    let _ = stop.send(());
 }
 
 /// Behind a proxy the server trusts, each client it forwards for is counted as itself: its

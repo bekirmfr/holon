@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/holon-core", "crates/holon-module", "crates/holon-author", "crates/holon-host", "crates/holon-wasm", "crates/holon"]
+members = ["crates/holon-core", "crates/holon-module", "crates/holon-author", "crates/holon-host", "crates/holon-wasm", "crates/holon", "vendor/tiny_http"]
+
+# The control port's HTTP server under rouille, patched where it lost connections and held a
+# thread for every socket for ever: vendor/tiny_http/PATCHED.md. A member, so `cargo test
+# --workspace` runs its tests and clippy builds it.
+[patch.crates-io]
+tiny_http = { path = "vendor/tiny_http" }
 
 # The profile that 'dist' will build with
 [profile.dist]

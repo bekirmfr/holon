@@ -1,0 +1,47 @@
+[package]
+name = "tiny_http"
+version = "0.12.0"
+authors = ["pierre.krieger1708@gmail.com",
+           "Corey Farwell <coreyf@rwell.org>"]
+description = "Low level HTTP server library (Holon's patched copy: PATCHED.md)"
+documentation = "https://tiny-http.github.io/tiny-http/tiny_http/index.html"
+keywords = ["http", "server", "web"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tiny-http/tiny-http"
+edition = "2018"
+publish = false
+
+# Holon: upstream's doc examples are left as written and not run (one needs rustc-serialize, a
+# dependency the copy doesn't carry); its tests are upstream's (tests/) and Holon's (src/).
+[lib]
+doctest = false
+
+# Holon: the SSL features keep their names, which rouille's own features name, but not their
+# dependencies (openssl, rustls 0.20): Holon's control port is plain HTTP, TLS is a proxy's.
+# Turning one on fails to build. Upstream's dev-dependencies (rustc-serialize, sha1, fdlimit)
+# are dropped with the benches/ and examples/ that need them; its tests/ need none.
+[features]
+default = []
+ssl = ["ssl-openssl"]
+ssl-openssl = []
+ssl-rustls = []
+
+[dependencies]
+ascii = "1.0"
+chunked_transfer = "1"
+log = "0.4.4"
+httpdate = "1.0.2"
+
+# Holon: clippy's advice on upstream's code is upstream's to take, so the workspace's
+# `clippy -- -D warnings` doesn't fail on it. Of rustc's, upstream's code as published has two
+# unused imports and a never-used trait (today's compiler); every other warning still fails.
+[lints.clippy]
+all = { level = "allow", priority = -1 }
+
+[lints.rust]
+unused_imports = "allow"
+dead_code = "allow"
+
+[package.metadata.docs.rs]
+# Enable just one SSL implementation
+features = ["ssl-openssl"]

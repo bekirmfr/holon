@@ -20,6 +20,19 @@
   characters, a number worked out from a piece, a flow that compares the reply with its
   caller's text itself, and a reply holding only a hint of the secret. `holon verify` refuses
   the same writes when it runs such a run again.
+- **The editor's first reads are always answered.** Opening a page sends a burst of requests,
+  and the browser opens several new connections to the server at once for them; now and then
+  some of those connections were never read, so their requests waited without an answer until
+  another connection closed (minutes, on a quiet server), and a button that waits for one stayed
+  disabled. The server's HTTP library (tiny_http, under rouille) queued them for threads already
+  busy. Holon now carries a patched copy of it (`vendor/tiny_http`, what changed and why in its
+  `PATCHED.md`), which also closes a connection that is owed no answer and has sent nothing for
+  60 seconds since its last one, answers one past 1,024 open (512 from one address, room for
+  every request the server answers at once behind a proxy) with a 503 at once rather than giving
+  every socket a thread for ever (a refused one is kept up to 2 s for its client to read the
+  503, at most 256 at once, so the control port holds at most 1,280 connections however many come), and
+  closes the connection after an answer that says
+  `Connection: close` (the 408 for a body that stopped, which used to leave it open).
 - **A flow can never keep a key, however short its value.** `flow("charge", { taint:
   ["number"], never_keep: ["cvc"] })`: a value under a key it never keeps is replaced where it
   stands, by `‹never_keep:cvc›`, at any length, in every form a run's record holds it (a record's
