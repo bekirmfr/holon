@@ -132,6 +132,14 @@ that the current one is kept (`POST …/secrets/<name>/rollback` with `"dry_run"
 changes nothing). Its **diff** tells the two values apart by their fingerprints, as the log marks
 them (`v2 #a1b2c3d4 → v4 #e5f6a7b8`). The history says who changed what, never the values.
 
+Change a secret when no run waits. A run that waits (`await event`, `await approval`) and goes on
+after its secret changed sends again, with the new value, the requests it made before the wait
+that carried the secret: it runs again from its start, and no longer recognises them as sent. For
+example, a flow that posted "authorize" with the key in a header, then waited, posts "authorize"
+a second time, then "capture". This is so for a value set with `holon secret set`, and for an env
+or vault secret whose value changes while the run waits. `holon runs <slug> --waiting` lists the
+runs that wait.
+
 A secret's value never appears in the run log, the editor, an export or a replay: wherever it
 would, it shows as `‹secret:name v3 #a1b2c3d4›`: the name, the version the value is of, and a
 fingerprint of it (keyed by the server's master key, so a guess can't be checked against the log).
