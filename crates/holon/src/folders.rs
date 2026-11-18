@@ -1983,7 +1983,9 @@ pub(crate) fn sweep(folders: &Folders, deployments: &Mutex<BTreeMap<String, Depl
     let mut live = BTreeSet::new();
     for (slug, log) in &cells {
         // A line naming a kept text holds its key, as written: one that doesn't names none.
-        for entry in log.lines_holding(BLOB_KEY).iter().filter_map(|l| crate::wire::read_json::<LogEntry>(l.as_bytes()).ok()) {
+        // Lines it couldn't read would name no text: none is removed this time (release audit R92).
+        let lines = log.lines_holding(BLOB_KEY).map_err(|e| format!("{slug:?}'s run log can't be read for the file texts it names: {e}"))?;
+        for entry in lines.iter().filter_map(|l| crate::wire::read_json::<LogEntry>(l.as_bytes()).ok()) {
             // A request body kept by hash (`LogEntry::body`): for as long as its run is kept.
             live.extend(entry.body.as_ref().and_then(|b| b.blob.clone()));
             for read in &entry.reads {
