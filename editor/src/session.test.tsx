@@ -13,6 +13,7 @@
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { held } from "./held.fixture";
 
 type Server = typeof import("./server");
 type SignIn = typeof import("./signin");
@@ -110,7 +111,14 @@ describe("a sign-in that ends", () => {
     localStorage.setItem(SESSION_KEY, JSON.stringify(session("ada")));
     const { server } = await load();
     let answer!: (r: Response) => void;
-    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((r) => (answer = r))));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        const h = held(init);
+        answer = h.answer;
+        return h.answered;
+      }),
+    );
     const before = server.whoAmI().catch(() => undefined);
     server.setSession({ ...session("ada"), token: "token-again" } as Parameters<Server["setSession"]>[0]);
     answer(new Response("{}", { status: 401 }));

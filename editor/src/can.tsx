@@ -23,10 +23,13 @@
 // slow machine a viewer was shown Save enabled for the 15 s the e2e waited (accounts.e2e.ts): a
 // button said she may do what she may not. Now those who may see it enabled a moment later.
 // A read that gets no answer is asked again shortly, not a round later: a minute of buttons
-// waiting on an answer is too long.
+// waiting on an answer is too long. One that gets none at all (a connection the server left
+// unread, R97) is given up after server.ts's ANSWER_WITHIN and asked again on another; meanwhile
+// the buttons say the server can't be reached and they are trying again (UNREACHED), not that
+// they are asking: "a moment" for a minute was all a person saw.
 
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
-import { bearer, listOwned, mayI, whoAmI, type Kind } from "./server";
+import { askingAgainNow, bearer, listOwned, mayI, ServerError, whoAmI, type Kind } from "./server";
 
 /** The catalogue (can.rs's `Action::ALL`), in its order; can.test.tsx holds it to the server's. */
 export const ACTIONS = [
@@ -195,16 +198,18 @@ export type Can = {
 /** What a button says while the server hasn't answered what whoever is signed in may do: it is
  *  disabled until it has (fails closed; the file's head says why). */
 export const ASKING = "a moment: asking the server what you may do";
+/** What it says instead while the server hasn't answered at all, and it is asked again. */
+export const UNREACHED = "couldn't reach the server: trying again";
 
-/** A `Can` from the server's answers (null while it hasn't answered). */
-export function canOf(answers: Answers | null): Can {
+/** A `Can` from the server's answers (null while it hasn't answered, each button saying `waiting`). */
+export function canOf(answers: Answers | null, waiting: string = ASKING): Can {
   // Each action the button's route asks, the first refused saying why.
   const asked = (button: Button): Action[] => {
     const b: { action: Action; also?: Action } = BUTTONS[button];
     return b.also ? [b.action, b.also] : [b.action];
   };
   const may = (button: Button): Answer =>
-    answers === null ? ASKING : (asked(button).map((a) => answers[a] ?? true).find((said) => said !== true) ?? true);
+    answers === null ? waiting : (asked(button).map((a) => answers[a] ?? true).find((said) => said !== true) ?? true);
   return { may, holds: (button) => asked(button).every((a) => answers?.[a] === true), gate: (button, own) => gateOf(may(button), own), known: answers !== null };
 }
 
@@ -253,6 +258,8 @@ export function forgetCan(wholly = false): void {
 export const RETRY_MS = 1_000;
 /** Each flow's wait before it is read again, while its reads get no answer. */
 const retries = new Map<string, number>();
+/** The flows whose last read had no answer from the server (not one it answered refusing). */
+const unreached = new Set<string>();
 
 function read(flow: string): void {
   const as = bearer();
@@ -266,6 +273,7 @@ function read(flow: string): void {
     .then(
       (answers) => {
         retries.delete(flow);
+        if (unreached.delete(flow)) tell();
         // Read for a round since passed, or for whom the tab no longer acts as: dropped.
         if (at !== round || as !== bearer()) return;
         kept.set(flow, { answers: answers as Answers, as, round: at, asked });
@@ -273,7 +281,11 @@ function read(flow: string): void {
       },
       // Not read: kept as it was (asking, before a first answer), and asked again shortly while
       // a button follows it and nothing has read it since.
-      () => {
+      (e: unknown) => {
+        if (!(e instanceof ServerError) && !unreached.has(flow)) {
+          unreached.add(flow);
+          tell();
+        }
         const wait = retries.get(flow) ?? RETRY_MS;
         retries.set(flow, Math.min(wait * 2, VERSION_EVERY_MS));
         setTimeout(() => {
@@ -326,6 +338,7 @@ function subscribe(listener: () => void): () => void {
     window.addEventListener("focus", onFocus);
     window.addEventListener("holon:can", onChanged);
     window.addEventListener("holon:session", onSession);
+    window.addEventListener("holon:asking-again", tell);
   }
   return () => {
     listeners.delete(listener);
@@ -335,6 +348,7 @@ function subscribe(listener: () => void): () => void {
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("holon:can", onChanged);
       window.removeEventListener("holon:session", onSession);
+      window.removeEventListener("holon:asking-again", tell);
     }
   };
 }
@@ -347,8 +361,10 @@ export function useCan(flow?: string | null): Can {
   // The round, and whom the tab acts as: either moved, it is read again.
   const at = useSyncExternalStore(subscribe, () => `${round}:${bearer()}`);
   const answers = useSyncExternalStore(subscribe, () => keptNow(key)?.answers ?? null);
+  // Before it has answered: asking, or, no answer at all, trying again.
+  const waiting = useSyncExternalStore(subscribe, () => (askingAgainNow() || unreached.has(key) ? UNREACHED : ASKING));
   useEffect(() => read(key), [key, at]);
-  return useMemo(() => canOf(answers), [answers]);
+  return useMemo(() => canOf(answers, waiting), [answers, waiting]);
 }
 
 /** What whoever is signed in may do on `flow` now, outside a render (deploying under a name just
@@ -378,6 +394,7 @@ export function resetCan(): void {
   kept.clear();
   asking.clear();
   retries.clear();
+  unreached.clear();
   round = 0;
   sent = 0;
   accessVersion = null;
