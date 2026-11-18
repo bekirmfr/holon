@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use super::app::{App, Ask, List, Modal, Page, Said, Then, Tone};
 use super::client::{Client, Detail, Moment, Point};
-use super::graph::{GraphView, Kind};
+use super::graph::{GraphView, Kind, Level};
 use super::review::{self, Review};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -20,11 +20,26 @@ pub(crate) enum Section {
     History,
     State,
     Access,
+    Settings,
     Graph,
 }
 
-pub(crate) const SECTIONS: [(Section, &str); 7] =
-    [(Section::Status, "Status"), (Section::Runs, "Runs"), (Section::Logs, "Logs"), (Section::History, "History"), (Section::State, "State"), (Section::Access, "Access"), (Section::Graph, "Graph")];
+/// An export (`…/export`, of every run or one) written where a person asked, as `holon export`
+/// writes it: the one place the terminal app writes one.
+fn write_export(to: &std::path::Path, export: &Value) -> Result<(), String> {
+    std::fs::write(to, serde_json::to_vec_pretty(export).unwrap_or_default()).map_err(|e| e.to_string())
+}
+
+pub(crate) const SECTIONS: [(Section, &str); 8] = [
+    (Section::Status, "Status"),
+    (Section::Runs, "Runs"),
+    (Section::Logs, "Logs"),
+    (Section::History, "History"),
+    (Section::State, "State"),
+    (Section::Access, "Access"),
+    (Section::Settings, "Settings"),
+    (Section::Graph, "Graph"),
+];
 
 /// The right pane's tabs, by section.
 pub(crate) fn tabs(s: Section) -> &'static [&'static str] {
@@ -35,6 +50,7 @@ pub(crate) fn tabs(s: Section) -> &'static [&'static str] {
         Section::History => &["Detail", "Code", "State"],
         Section::State => &["Value", "History"],
         Section::Access => &["Detail", "History"],
+        Section::Settings => &["Detail"],
         Section::Graph => &["Statement", "Newest run"],
     }
 }
@@ -147,9 +163,9 @@ pub(crate) enum Held {
 pub(crate) struct FlowView {
     pub(crate) section: Section,
     /// The row picked, by section.
-    pub(crate) sel: [usize; 7],
+    pub(crate) sel: [usize; 8],
     /// The right pane's tab, by section.
-    pub(crate) tab: [usize; 7],
+    pub(crate) tab: [usize; 8],
     /// The right pane has the arrows: they scroll it.
     pub(crate) right: bool,
     pub(crate) scroll: usize,
@@ -158,8 +174,9 @@ pub(crate) struct FlowView {
     pub(crate) cells: Vec<Cell>,
     /// The graph of the text deployed, once its section has been opened.
     pub(crate) graph: Option<GraphView>,
-    /// The graph shows every node, not only the statements (as it does unless a says otherwise).
-    pub(crate) every: bool,
+    /// The graph's level: every node a row (as it is unless a steps on), the statements, or the
+    /// nodes grouped by statement.
+    pub(crate) level: Level,
     /// Runs follows the newest: as runs come in, the newest is picked.
     pub(crate) follow: bool,
     /// The log lines of the Logs section, oldest first (logs.rs): read again with the deployment.
@@ -172,20 +189,24 @@ pub(crate) struct FlowView {
     pub(crate) log_paused: bool,
     /// Why the lines couldn't be read, if they couldn't.
     pub(crate) log_error: Option<String>,
+    /// The State section's collection, a page at a time: the key each page shown so far starts
+    /// after (empty on its first page), and the collection they are of.
+    pub(crate) page: Vec<String>,
+    pub(crate) page_of: String,
 }
 
 impl App {
-    /// The flow page's graph: every node a row, or the statements with their nodes under
-    /// each. The same statement stays picked, as its first node or as the statement.
+    /// The flow page's graph at its next level: every node a row, the statements, or the nodes
+    /// grouped by statement. The same statement stays picked, as its first node or as the statement.
     pub(crate) fn flow_every(&mut self) {
         let line = self.flow.graph.as_ref().and_then(|g| g.row(self.flow.sel[Section::Graph as usize])).map(|r| r.line);
-        self.flow.every = !self.flow.every;
+        self.flow.level = self.flow.level.next();
         self.flow_load();
         if let (Some(line), Some(g)) = (line, self.flow.graph.as_ref()) {
             self.flow.sel[Section::Graph as usize] = g.row_at(line);
             self.flow_load();
         }
-        self.tell(if self.flow.every { "every node, each a row: a again for the statements" } else { "the statements, their nodes under each: a again for every node" });
+        self.tell(self.flow.level.said());
     }
 }
 
@@ -284,6 +305,7 @@ impl App {
             Section::History => d.moments().len(),
             Section::State => self.flow.cells.len(),
             Section::Access => access_rows(d).len(),
+            Section::Settings => super::settings::settings_rows(d).len(),
             Section::Graph => self.flow.graph.as_ref().map_or(0, |g| g.rows.len()),
         }
     }
@@ -339,7 +361,7 @@ impl App {
                     self.flow.pane = None;
                     return;
                 };
-                key = format!("run {} {tab}", r["seq"]);
+                key = format!("run {} {tab} {}", r["seq"], c.summary["chain"]["witness"]);
                 make = Box::new(move || run_pane(c, d, r, tab));
             }
             Section::Logs => {
@@ -363,8 +385,15 @@ impl App {
                     self.flow.pane = None;
                     return;
                 };
-                key = format!("cell {} {tab} {}", cell.name, cell.value);
-                make = Box::new(move || state_pane(c, d, &cell, tab));
+                // Another collection opens on its first page.
+                if self.flow.page_of != cell.name {
+                    self.flow.page.clear();
+                    self.flow.page_of = cell.name.clone();
+                }
+                let after = self.flow.page.last().cloned();
+                key = format!("cell {} {tab} {} {after:?}", cell.name, cell.value);
+                let page = self.flow.page.len();
+                make = Box::new(move || state_pane(c, d, &cell, tab, after.as_deref(), page));
             }
             Section::Access => {
                 let Some(row) = access_rows(d).get(sel).cloned() else {
@@ -374,14 +403,22 @@ impl App {
                 key = format!("{row:?} {tab} {}", d.grant["hash"]);
                 make = Box::new(move || access_pane(c, d, &row, tab));
             }
+            Section::Settings => {
+                let Some(row) = super::settings::settings_rows(d).get(sel).cloned() else {
+                    self.flow.pane = None;
+                    return;
+                };
+                key = format!("setting {row:?} {} {} {}", d.grant["hash"], d.entry, d.sessions.len());
+                make = Box::new(move || super::settings::settings_pane(d, &row));
+            }
             Section::Graph => {
-                // Built again for a new version, a new run (what it reached), or every node.
-                let built = format!("{} {} {}", d.entry["unit"], self.flow.every, d.runs.len());
+                // Built again for a new version, a new run (what it reached), or another level.
+                let built = format!("{} {:?} {}", d.entry["unit"], self.flow.level, d.runs.len());
                 if self.flow.graph.as_ref().map(|g| &g.key) != Some(&built) {
                     let mut g = match c.text(&d.slug, None) {
-                        Ok(text) => GraphView::build(built, &text, self.flow.every),
+                        Ok(text) => GraphView::build(built, &text, self.flow.level),
                         Err(e) => {
-                            let mut g = GraphView::build(built, "", false);
+                            let mut g = GraphView::build(built, "", Level::Statements);
                             g.error = Some(e);
                             g
                         }
@@ -583,7 +620,18 @@ impl App {
             (Section::Runs, KeyCode::Char('o')) => {
                 let Some(c) = self.client.as_ref() else { return };
                 let to = std::path::PathBuf::from(format!("{slug}-runs.json"));
-                let written = c.get(&format!("/deployments/{}/export", crate::mcp::seg(slug))).and_then(|e| std::fs::write(&to, serde_json::to_vec_pretty(&e).unwrap_or_default()).map_err(|e| e.to_string()));
+                let written = c.get(&format!("/deployments/{}/export", crate::mcp::seg(slug))).and_then(|e| write_export(&to, &e));
+                match written {
+                    Ok(()) => self.say(format!("wrote {}: holon verify {} checks it offline", to.display(), to.display())),
+                    Err(e) => self.fail(format!("not exported: {e}")),
+                }
+            }
+            // This run alone, as `holon export --run N` writes it, for `holon verify`.
+            (Section::Runs, KeyCode::Char('O')) => {
+                let Some(seq) = d.shown_runs(self.filter_of(Page::Flow)).get(sel).and_then(|&i| d.runs[i]["seq"].as_u64()) else { return };
+                let Some(c) = self.client.as_ref() else { return };
+                let to = std::path::PathBuf::from(format!("{slug}-run-{seq}.json"));
+                let written = c.get(&format!("/deployments/{}/export?run={seq}", crate::mcp::seg(slug))).and_then(|e| write_export(&to, &e));
                 match written {
                     Ok(()) => self.say(format!("wrote {}: holon verify {} checks it offline", to.display(), to.display())),
                     Err(e) => self.fail(format!("not exported: {e}")),
@@ -654,6 +702,34 @@ impl App {
                 }
             }
             (Section::State, KeyCode::Enter) => self.flow_detail_tab(1),
+            // A collection a page at a time: ] the next, [ the one before.
+            (Section::State, KeyCode::Char(']')) => {
+                let Some(cell) = self.flow.cells.get(sel).filter(|c| c.collection).cloned() else { return };
+                let Some(c) = self.client.as_ref() else { return };
+                match c.collection(slug, &cell.name, self.flow.page.last().map(String::as_str)) {
+                    Ok((_, Some(next))) => {
+                        self.flow.page.push(next);
+                        self.flow.tab[Section::State as usize] = 0;
+                        self.flow_load();
+                    }
+                    Ok((_, None)) => self.tell(format!("the last page of {}", cell.name)),
+                    Err(e) => self.fail(e),
+                }
+            }
+            (Section::State, KeyCode::Char('[')) => {
+                if self.flow.page.pop().is_some() {
+                    self.flow.tab[Section::State as usize] = 0;
+                    self.flow_load();
+                } else {
+                    self.tell("the first page");
+                }
+            }
+            // One item's history: the runs that changed it.
+            (Section::State, KeyCode::Char('i')) => {
+                let Some(cell) = self.flow.cells.get(sel).filter(|c| c.collection).cloned() else { return };
+                let lines = vec![format!("The runs that changed one item of {}: its key.", cell.name)];
+                self.modal = Some(Modal::input(format!("An item of {}", cell.name), lines, String::new(), false, Ask::ItemHistory { slug: slug.to_string(), name: cell.name }));
+            }
             (Section::Graph, KeyCode::Enter) => {
                 if let Some(line) = self.flow.graph.as_ref().and_then(|g| g.row(sel)).map(|r| r.line) {
                     self.edit_at(slug, line);
@@ -684,6 +760,18 @@ impl App {
                 }
                 _ => {}
             },
+            (Section::Settings, KeyCode::Enter) => {
+                if let Some(row) = super::settings::settings_rows(d).get(sel).cloned() {
+                    self.setting_enter(slug, row);
+                }
+            }
+            // A secret rolled back to an earlier version: which, typed; then its dry run.
+            (Section::Access, KeyCode::Char('R')) => {
+                if let Some(Access::Secret { name, set: true }) = access_rows(d).get(sel).cloned() {
+                    let lines = vec!["Which version: its History tab lists them. A dry run says what it would do, before anything changes.".into()];
+                    self.modal = Some(Modal::input(format!("Roll {name} back to"), lines, String::new(), false, Ask::Rollback { slug: slug.to_string(), name }));
+                }
+            }
             (Section::Access, KeyCode::Delete | KeyCode::Char('-')) => {
                 if let Some(Access::Secret { name, set: true }) = access_rows(d).get(sel).cloned() {
                     self.modal = Some(Modal::Confirm {
@@ -701,7 +789,16 @@ impl App {
         let (title, line) = match action {
             "run" => (format!("Run {slug}?"), "It takes calls and runs its clocks again, as you.".to_string()),
             "pause" => (format!("Pause {slug}?"), "Calls get 503 until it runs again; runs in flight finish. Its state stays.".to_string()),
-            _ => (format!("Stop {slug}?"), "It stops and frees its port. Running it again starts a new session.".to_string()),
+            _ => {
+                // A stop ends the runs that wait.
+                let waiting = self.client.as_ref().and_then(|c| c.deployment(slug)).and_then(|d| d["waiting"].as_u64()).unwrap_or(0);
+                let ends = match waiting {
+                    0 => String::new(),
+                    1 => " It ends the run that waits.".into(),
+                    n => format!(" It ends the {n} runs that wait."),
+                };
+                (format!("Stop {slug}?"), format!("It stops and frees its port. Running it again starts a new session.{ends}"))
+            }
         };
         self.modal = Some(Modal::Confirm { title, lines: vec![format!("\"{slug}\" is {} now.", self.status_of(slug)), line], then: Then::Lifecycle(slug.to_string(), action, None) });
     }
@@ -818,6 +915,38 @@ impl App {
 
     // ── doing ──────────────────────────────────────────────────────────────────────────────
 
+    /// Ask before a saved flow is deleted, as the web's Flows page does; or say why it can't be.
+    pub(crate) fn ask_delete_saved(&mut self, name: &str) {
+        let Some(c) = self.client.as_ref() else { return };
+        if c.saved(name).is_none() {
+            return self.fail(format!("\"{name}\" isn't saved on the server: it is only deployed (D on the flow removes it)"));
+        }
+        if let Err(why) = c.may("flow.delete", Some(name)) {
+            return self.fail(format!("not deleted: {why}"));
+        }
+        let mut lines = vec!["Its saved text goes, for good: this can't be undone.".to_string()];
+        if c.deployment(name).is_some() {
+            lines.push("Its deployment stays and keeps running: D on the flow removes that.".into());
+        }
+        if self.tabs.iter().any(|t| t.name == name) {
+            lines.push("Its tab stays open: saving it again saves it anew.".into());
+        }
+        self.modal = Some(Modal::Confirm { title: format!("Delete the saved flow \"{name}\"?"), lines, then: Then::DeleteSaved(name.to_string()) });
+    }
+
+    pub(crate) fn delete_saved(&mut self, name: &str) {
+        let Some(c) = self.client.as_ref() else { return };
+        match c.delete_saved(name) {
+            Ok(()) => {
+                self.refresh();
+                let n = self.flow_names().len();
+                self.sel[2] = self.sel[2].min(n.saturating_sub(1));
+                self.say(format!("deleted the saved flow \"{name}\""));
+            }
+            Err(e) => self.fail(e),
+        }
+    }
+
     pub(crate) fn remove(&mut self, slug: &str) {
         let Some(c) = self.client.as_ref() else { return };
         match c.remove(slug) {
@@ -864,6 +993,14 @@ impl App {
         let (slug, name, from) = match then {
             Ask::Admin(a) => return self.admin_answer(a, value),
             Ask::SaveAs(i) => return self.save_as(i, &value),
+            Ask::Decide(d) => return self.decide(d, value),
+            Ask::Decline(p) => return self.decline(p, value),
+            Ask::AccessDecline { id, .. } => return self.decide_change(id, false, value),
+            Ask::DeployNote(deploy) => return self.noted(*deploy, value),
+            Ask::Lower { slug, name, now } => return self.lower_limit(slug, name, now, value),
+            Ask::Remove { slug, forget } => return self.remove_typed(slug, forget, value),
+            Ask::Rollback { slug, name } => return self.rollback_typed(slug, name, value),
+            Ask::ItemHistory { slug, name } => return self.item_history(&slug, &name, value.trim()),
             Ask::Secret(slug, name) => (slug, name, None),
             Ask::SecretFrom(slug, name, kind) => (slug, name, Some(kind)),
         };
@@ -873,6 +1010,18 @@ impl App {
         match from {
             None => self.set_secret(&slug, &name, Err(&value)),
             Some(kind) => self.set_secret(&slug, &name, Ok(&format!("{kind}:{}", value.trim()))),
+        }
+    }
+
+    /// The runs that changed one item of a collection, as `holon history --cell NAME --item KEY`.
+    fn item_history(&mut self, slug: &str, name: &str, key: &str) {
+        if key.is_empty() {
+            return self.fail("no item: its key, as the collection lists it");
+        }
+        let Some(c) = self.client.as_ref() else { return };
+        match c.changes(slug, name, Some(key)) {
+            Ok(lines) => self.modal = Some(Modal::Lines { title: format!("{name}[{key:?}] of {slug}: the runs that changed it"), lines: lines.into_iter().enumerate().map(|(i, l)| (if i == 0 { Tone::Head } else { Tone::Plain }, l)).collect(), scroll: 0 }),
+            Err(e) => self.fail(e),
         }
     }
 
@@ -1147,7 +1296,7 @@ impl CallForm {
 
 fn run_pane(c: &Client, d: &Detail, r: &Value, tab: usize) -> Vec<Row> {
     match tab {
-        0 => run_detail(d, r),
+        0 => run_detail(d, r, &c.summary),
         1 => match c.run_view(&d.slug, r) {
             Ok(v) => {
                 let mut rows = vec![text(Tone::Dim, v.head.clone())];
@@ -1201,7 +1350,7 @@ fn run_pane(c: &Client, d: &Detail, r: &Value, tab: usize) -> Vec<Row> {
     }
 }
 
-fn run_detail(d: &Detail, r: &Value) -> Vec<Row> {
+fn run_detail(d: &Detail, r: &Value, summary: &Value) -> Vec<Row> {
     let mut rows = vec![];
     let seq = r["seq"].as_u64().unwrap_or_default();
     rows.push(Row::Field("Run".into(), format!("#{seq}"), if failed(r) { Tone::Bad } else { Tone::Plain }));
@@ -1253,6 +1402,23 @@ fn run_detail(d: &Detail, r: &Value) -> Vec<Row> {
         rows.push(text(Tone::Head, "What it called"));
         rows.extend(calls.iter().map(|x| text(Tone::Plain, format!("{} → {}", agent::show(&x["request"]), agent::show(&x["response"])))));
     }
+    // Who decided each approval it waited at; the secrets it was given, and where they went; what
+    // it read from outside its text.
+    let parts = [
+        ("Decided", super::record::decided(r), None),
+        ("Secrets it read", super::record::secret_lines(r), Some("Never a value: its record keeps which version each was, and where its requests took it.")),
+        ("What it read", super::record::read_lines(r), None),
+    ];
+    for (head, lines, after) in parts {
+        if lines.is_empty() {
+            continue;
+        }
+        rows.push(text(Tone::Head, head));
+        rows.extend(lines.into_iter().map(|(t, l)| text(t, l)));
+        if let Some(after) = after {
+            rows.push(text(Tone::Dim, after));
+        }
+    }
     // On record: its line's hash on the chain, the one before it, and how to check it offline.
     rows.push(text(Tone::Head, "On record"));
     let (hash, prev, follows) = d.on_record(r);
@@ -1260,9 +1426,13 @@ fn run_detail(d: &Detail, r: &Value) -> Vec<Row> {
     rows.push(field("Hash", hash.as_deref().map(short).unwrap_or_else(|| "–".into())));
     rows.push(field("After", if prev.is_empty() { "the first line of its log".into() } else { short(&prev) }));
     rows.push(if follows { Row::Field("Chain".into(), "follows the run before it".into(), Tone::Good) } else { Row::Field("Chain".into(), "breaks here: the log was changed outside holon".into(), Tone::Bad) });
+    let (tone, said) = super::record::witnessed(r, summary);
+    rows.push(Row::Field("Witnessed".into(), said, tone));
     rows.push(text(Tone::Dim, "Check it anywhere, offline:"));
+    rows.push(text(Tone::Plain, format!("  holon export {} --run {seq} && holon verify {}-run-{seq}.json", d.slug, d.slug)));
+    rows.push(text(Tone::Dim, "or every run kept, with the chain between them:"));
     rows.push(text(Tone::Plain, format!("  holon export {} && holon verify {}-runs.json", d.slug, d.slug)));
-    rows.push(text(Tone::Dim, "enter: step through it in the editor · b: go back to it · i: explain it · o: export the runs"));
+    rows.push(text(Tone::Dim, "enter: step through it in the editor · b: go back to it · i: explain it · O: export this run · o: export the runs"));
     rows
 }
 
@@ -1283,7 +1453,7 @@ fn history_pane(c: &Client, d: &Detail, m: Moment, tab: usize) -> Vec<Row> {
     match tab {
         0 => {
             let mut rows = match m {
-                Moment::Run(i) => run_detail(d, &d.runs[i]).into_iter().filter(|r| matches!(r, Row::Field(..))).collect(),
+                Moment::Run(i) => run_detail(d, &d.runs[i], &c.summary).into_iter().filter(|r| matches!(r, Row::Field(..))).collect(),
                 Moment::Event(i) => {
                     let e = &d.events[i];
                     let mut rows = vec![
@@ -1334,7 +1504,7 @@ fn history_pane(c: &Client, d: &Detail, m: Moment, tab: usize) -> Vec<Row> {
     }
 }
 
-fn state_pane(c: &Client, d: &Detail, cell: &Cell, tab: usize) -> Vec<Row> {
+fn state_pane(c: &Client, d: &Detail, cell: &Cell, tab: usize, after: Option<&str>, page: usize) -> Vec<Row> {
     if tab == 1 {
         return match c.changes(&d.slug, &cell.name, None) {
             Ok(lines) => lines.into_iter().enumerate().map(|(i, l)| text(if i == 0 { Tone::Head } else { Tone::Plain }, l)).collect(),
@@ -1342,13 +1512,25 @@ fn state_pane(c: &Client, d: &Detail, cell: &Cell, tab: usize) -> Vec<Row> {
         };
     }
     if cell.collection {
-        return match c.collection(&d.slug, &cell.name) {
-            Ok((items, more)) => {
-                let mut rows = vec![text(Tone::Dim, format!("the collection {}, {} item{} shown", cell.name, items.len(), if items.len() == 1 { "" } else { "s" }))];
+        return match c.collection(&d.slug, &cell.name, after) {
+            Ok((items, next)) => {
+                let first = page * super::client::PAGE + 1;
+                let shown = match items.len() {
+                    0 => format!("the collection {}: no items here", cell.name),
+                    n => format!("the collection {}: items {first} to {}", cell.name, first + n - 1),
+                };
+                let mut rows = vec![text(Tone::Dim, shown)];
                 rows.extend(items.into_iter().map(|(k, v)| Row::Field(k, agent::show(&v), Tone::Plain)));
-                if more {
-                    rows.push(text(Tone::Dim, format!("and more: holon state {} --collection {}", d.slug, cell.name)));
+                let mut keys = vec![];
+                if next.is_some() {
+                    keys.push("]: the next page");
                 }
+                if page > 0 {
+                    keys.push("[: the page before");
+                }
+                keys.push("i: one item's history");
+                rows.push(text(Tone::Dim, if next.is_some() { "and more after these" } else { "the last of them" }));
+                rows.push(text(Tone::Dim, keys.join(" · ")));
                 rows
             }
             Err(e) => vec![text(Tone::Bad, e)],
@@ -1399,7 +1581,7 @@ fn access_pane(c: &Client, d: &Detail, row: &Access, tab: usize) -> Vec<Row> {
             }
             let reads = d.secrets["reads"].as_array().is_some_and(|r| r.iter().any(|n| n == name));
             rows.push(field("Read", if reads { "by the version deployed now" } else { "not by the version deployed now" }));
-            rows.push(text(Tone::Dim, if *set { "enter: change it (a value, a name the server reads, or Vault) · del: remove it" } else { "enter: set it (a value, a name the server reads, or Vault)" }));
+            rows.push(text(Tone::Dim, if *set { "enter: change it (a value, a name the server reads, or Vault) · R: roll it back · del: remove it" } else { "enter: set it (a value, a name the server reads, or Vault)" }));
             rows
         }
         (Access::Secret { name, .. }, _) => match c.secret_history(&d.slug, name) {

@@ -156,7 +156,8 @@ fn draw_graph_beside(f: &mut Frame, app: &App, area: Rect, what: &str) {
     f.render_widget(block, area);
     super::flow::every_chip(f, app, area, &g.view);
     if !keys && app.tabs[app.tab].runs.is_none() && area.height >= 3 {
-        let edge = Rect { x: area.x + 1, y: area.y + area.height - 1, width: area.width.saturating_sub(20), height: 1 };
+        // Left of the graph's switch.
+        let edge = Rect { x: area.x + 1, y: area.y + area.height - 1, width: area.width.saturating_sub(super::flow::every_chip_width(area.width) + 4), height: 1 };
         super::chips(f, app, edge, &[("alt+g", "its keys", KeyCode::Char('g'), KeyModifiers::ALT)]);
     }
     super::flow::graph_list(f, app, inner, &g.view, g.sel, true, List::Graph);

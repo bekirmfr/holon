@@ -3,14 +3,20 @@
 //! with what it may do beside it; deployed from here as the person signed in, who approves what
 //! it asks for by deploying it. With no server, it still edits, checks and formats files.
 
+mod access;
 mod admin;
 mod app;
+mod approvals;
 mod client;
 mod diff;
 mod flow;
 mod graph;
+mod host;
+mod record;
 mod palette;
+mod policy;
 mod review;
+mod settings;
 mod shell;
 mod text;
 mod ui;

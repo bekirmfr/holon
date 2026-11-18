@@ -107,6 +107,10 @@ isn't the sites it sends.
 A limit above the host's default needs approval; one above the host's ceiling can't be granted.
 [Permissions](../reference/permissions.md#limits) lists the limits, their defaults and ceilings.
 
+In `holon editor`, the terminal one, a flow's page has the same settings: its **Settings**
+section lists them, **enter** changes the one picked and **→** says what it means; its **Access**
+section has the permissions, granted or taken back, and the secrets.
+
 ## Secrets
 
 A flow imports the secrets it reads (`import stripe_webhook_secret from
@@ -422,6 +426,10 @@ wrote a file.
 - **delete** (once stopped, on the deployed page) removes the deployment and its stored state.
   It can't be undone. `holon export` its runs first if you need them.
 
+In `holon editor`, the terminal one, `g`, `p` and `x` on a flow's page run, pause and stop it,
+and its **Settings** removes it once stopped. A saved flow that was never deployed (or the saved
+text of one that was) is deleted from the **Flows** page with `del`, asked first.
+
 ## Changing a grant
 
 On the deployed page, a deployment's **permissions ▸** shows what is granted. While it runs, you
@@ -514,7 +522,10 @@ reads further back.
 
 In the editor, **⧗** beside a cell or a collection's item in view mode's **Flow state** (and in
 its full state) opens the same history, newest first; a run's row opens that run. The sample
-**balance-trail** walks through it.
+**balance-trail** walks through it. In `holon editor`, the terminal one, a flow's **State**
+section does the same: **enter** on a cell or a collection opens its history, a collection shows
+100 items at a time (`]` and `[` page through them), and `i` asks for an item's key and shows
+its history.
 
 Events are **recorded, never restored**: [going back](#going-back-to-an-earlier-version) puts back
 code and state only, and the grant, secrets and bindings stay as they are now. They are kept for

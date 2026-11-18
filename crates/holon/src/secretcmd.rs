@@ -172,7 +172,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
 }
 
 /// `HOST,HOST,db:NAME` as where a secret may go; none of them empty.
-fn destinations(list: &str) -> Result<Vec<String>, String> {
+pub(crate) fn destinations(list: &str) -> Result<Vec<String>, String> {
     let to: Vec<String> = list.split(',').map(|d| d.trim().to_string()).collect();
     match to.iter().find(|d| !crate::secrets::is_destination(d)) {
         Some(bad) => Err(format!("{bad:?} isn't where a secret goes: a host (api.stripe.com, with :port if not 443) or a database (db:shop)")),
@@ -181,7 +181,7 @@ fn destinations(list: &str) -> Result<Vec<String>, String> {
 }
 
 /// Where the server's secret may go, as `to` (a list, or null) says it.
-fn may_go(to: &Value) -> String {
+pub(crate) fn may_go(to: &Value) -> String {
     match to.as_array() {
         Some(to) if to.is_empty() => "may go nowhere".into(),
         Some(to) => {

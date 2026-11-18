@@ -575,7 +575,7 @@ fn words(v: &Value) -> Vec<String> {
 }
 
 /// Where `--flow`, `--tag` or `--approval` says a binding holds: the host when none does.
-fn scope(flow: Option<&str>, tag: Option<&str>, approval: Option<&str>) -> Result<Value, String> {
+pub(crate) fn scope(flow: Option<&str>, tag: Option<&str>, approval: Option<&str>) -> Result<Value, String> {
     match (flow, tag, approval) {
         (None, None, None) => Ok(json!("host")),
         (Some(slug), None, None) => Ok(json!({ "flows": { "slug": slug } })),
@@ -590,7 +590,7 @@ fn scope(flow: Option<&str>, tag: Option<&str>, approval: Option<&str>) -> Resul
 
 /// When `--until` says, in seconds since 1970, from `now`: a date in UTC (`2026-12-01`,
 /// `2026-12-01T09:00`, `2026-12-01T09:00:30`), or a while (`30m`, `12h`, `7d`, `2w`).
-fn until(text: &str, now: u64) -> Result<u64, String> {
+pub(crate) fn until(text: &str, now: u64) -> Result<u64, String> {
     let wrong = || format!("--until is a date in UTC (2026-12-01, 2026-12-01T09:00) or a while (30m, 12h, 7d, 2w), not {text:?}");
     if let Some(unit) = text.chars().last().filter(|c| c.is_ascii_alphabetic()) {
         let n: u64 = text[..text.len() - 1].parse().map_err(|_| wrong())?;
@@ -625,7 +625,7 @@ fn until(text: &str, now: u64) -> Result<u64, String> {
 }
 
 /// Whom a binding is to, as a sentence says it: `bob`, `the group payments`.
-fn subject(who: &Value) -> String {
+pub(crate) fn subject(who: &Value) -> String {
     match (who["principal"].as_str(), who["group"].as_str()) {
         (Some(name), _) => name.into(),
         (_, Some(group)) => format!("the group {group}"),
@@ -747,7 +747,7 @@ fn approval_lines(v: &Value) -> Vec<String> {
 /// Where an access change `p` stands, as `holon access proposals` lists it: "waits, 1 of 2
 /// approved (bob)", "made as version 12 (approved by bob)", "declined by bob: not this week",
 /// "withdrawn by ada: the wrong flow", "stale: …".
-fn proposal_state(p: &Value) -> String {
+pub(crate) fn proposal_state(p: &Value) -> String {
     let approved = words(&p["approvals"].as_array().map(|a| a.iter().map(|a| a["who"].clone()).collect()).unwrap_or(Value::Null));
     let who = |s: &str| if approved.is_empty() { String::new() } else { format!(" ({s}{})", approved.join(", ")) };
     let reason = p["reason"].as_str().unwrap_or_default();
@@ -787,7 +787,7 @@ fn proposal_lines(v: &Value) -> Vec<String> {
 }
 
 /// What deciding the access change `p` did, as the server answers it.
-fn decided_line(p: &Value) -> String {
+pub(crate) fn decided_line(p: &Value) -> String {
     let (id, what) = (&p["id"], p["what"].as_str().unwrap_or_default());
     match p["state"].as_str().unwrap_or_default() {
         "waiting" => {

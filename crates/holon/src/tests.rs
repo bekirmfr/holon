@@ -47,7 +47,7 @@ fn test_state_with(store: SharedStore) -> AppState {
 }
 
 /// One whose deployments file is at `at`: a run a flow's start parks is kept there too.
-fn test_state_at(at: Place) -> AppState {
+pub(crate) fn test_state_at(at: Place) -> AppState {
     test_state_in(SharedStore::new(Box::new(MemStore::new())), at)
 }
 
@@ -167,7 +167,7 @@ fn body_json(response: Response) -> serde_json::Value {
 /// (persistence) rather than the `:memory:` isolation every other test uses. Not a
 /// directory or file by itself — `FileStore::new` creates the directory it needs;
 /// `std::fs::write` creates the file it needs.
-fn unique_temp_path(label: &str) -> String {
+pub(crate) fn unique_temp_path(label: &str) -> String {
     // Two tests started in the same tick of a coarse clock (Windows') got the same path, and wrote
     // and removed each other's files: a count tells them apart.
     static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -215,7 +215,7 @@ const COUNTER: &str = "import { action, flow } from \"holon\"\nimport state from
 const TICKER: &str = "import { every, flow } from \"holon\"\nimport state from \"state\"\nimport { now } from \"holon:clock\"\n\nflow(\"tick\")\n\nevery(\"5s\", () => {\n  state.last_tick = now\n})\n";
 
 /// `text` compiled with the language and its units staged: its unit, to deploy under any slug.
-fn stage_text(state: &AppState, text: &str) -> Hash {
+pub(crate) fn stage_text(state: &AppState, text: &str) -> Hash {
     let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
     for u in &plan.units {
         assert_eq!(route(state, &req("POST", "/unit", u.clone())).status_code, 200);
@@ -244,7 +244,7 @@ fn stage_writer(state: &AppState, key: &str) -> Hash {
 }
 
 /// Run `slug`'s action `name`, sending `value` as its JSON.
-fn run_action_named(state: &AppState, slug: &str, name: &str, value: serde_json::Value) -> Response {
+pub(crate) fn run_action_named(state: &AppState, slug: &str, name: &str, value: serde_json::Value) -> Response {
     route(state, &req("POST", &format!("/trigger/{slug}/{name}"), serde_json::to_vec(&value).unwrap()))
 }
 
@@ -615,7 +615,7 @@ fn a_deployed_request_is_performed_between_rounds_and_logged() {
 
 // ── permissions: the manifest asks, the host grants ─────────────────────────────────
 
-fn deploy_json(state: &AppState, slug: &str, unit: Hash, extra: serde_json::Value) -> Response {
+pub(crate) fn deploy_json(state: &AppState, slug: &str, unit: Hash, extra: serde_json::Value) -> Response {
     let mut body = serde_json::json!({ "slug": slug, "unit": to_hex(&unit) });
     for (k, v) in extra.as_object().unwrap() {
         body[k] = v.clone();
@@ -9398,13 +9398,13 @@ fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
 
 /// A local HTTP server that counts hits per path: `/slow` answers after 400 ms, the rest at once.
 /// Lives as long as the test process.
-fn counting_server() -> (String, Hits) {
+pub(crate) fn counting_server() -> (String, Hits) {
     let (host, hits, _) = gated_counting_server();
     (host, hits)
 }
 
 /// A counting server's hits: path → how many requests came for it.
-type Hits = Arc<Mutex<BTreeMap<String, usize>>>;
+pub(crate) type Hits = Arc<Mutex<BTreeMap<String, usize>>>;
 
 /// The longest a test waits for what it expects to happen soon (a thread to wait, a place to be
 /// given back, a connection to close): a guard against a hang, not a measure, so long that no
@@ -11097,7 +11097,7 @@ route.get("/paid/:token", () => "ok", {{ resumes: "paid" }})
 }
 
 /// A test state whose policy lets a flow call a local plain-HTTP host, with `extra` policy lines.
-fn claims_state(extra: &str) -> AppState {
+pub(crate) fn claims_state(extra: &str) -> AppState {
     let state = test_state();
     let policy = format!("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n{extra}");
     *state.policy.write().unwrap() = Arc::new(Policy::parse(&policy).unwrap());
@@ -11111,7 +11111,7 @@ fn deploy_text(state: &AppState, text: &str, host: &str) -> String {
 }
 
 /// The same, for a flow that calls several local hosts.
-fn deploy_text_to(state: &AppState, text: &str, hosts: &[&str]) -> String {
+pub(crate) fn deploy_text_to(state: &AppState, text: &str, hosts: &[&str]) -> String {
     let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
     for u in &plan.units {
         assert_eq!(route(state, &req("POST", "/unit", u.clone())).status_code, 200);
@@ -11130,7 +11130,7 @@ fn deploy_text_to(state: &AppState, text: &str, hosts: &[&str]) -> String {
 }
 
 /// A data-plane request to `slug`: its status, body and how long it took.
-fn data_call(state: &AppState, slug: &str, method: &str, url: &str, body: &str) -> (u16, String, Duration) {
+pub(crate) fn data_call(state: &AppState, slug: &str, method: &str, url: &str, body: &str) -> (u16, String, Duration) {
     let t0 = std::time::Instant::now();
     let r = serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &fake_data(method, url, body.as_bytes().to_vec()));
     (r.status, String::from_utf8(r.body).unwrap(), t0.elapsed())
