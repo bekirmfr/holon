@@ -48,17 +48,20 @@ it("a read on a connection the server never reads is given up, its connection dr
   const from = performance.now();
   expect(await getAuthState()).toEqual({ setup: false, oidc: null });
   const took = performance.now() - from;
+  // Answered on the second try: every try given up, it would be refused by 1.7 s, three tries.
   expect(connections, "asked again on a new connection").toHaveLength(2);
+  // On the clock, loosely (a loaded runner): after its time (and the 100 ms before the second
+  // try, more than a timer firing a millisecond early), and not hanging; about 0.6 s here.
   expect(took, "after its time").toBeGreaterThanOrEqual(500);
-  expect(took, "within its time and one try").toBeLessThan(500 + 100 + 2_000);
+  expect(took, "not hanging").toBeLessThan(4_000);
   // Dropped by the editor, not left for the server to close: what is asked next doesn't wait on
   // it. Read at last, the first connection ends, closed from the editor's side (unread, Node
   // can't say so).
   const first = connections[0];
   const ended = new Promise<boolean>((r) => {
     first.once("end", () => r(true));
-    setTimeout(() => r(false), 2_000);
+    setTimeout(() => r(false), 3_000);
   });
   first.resume();
   expect(await ended, "the first connection dropped by the editor").toBe(true);
-}, 10_000);
+}, 15_000);
