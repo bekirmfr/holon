@@ -4,7 +4,7 @@
 // time left to answer a click (the e2e's ticker test ran out of its time on the hosted runner).
 // Here every poller the bottom panes hold is drawn under a page: covered, none reads the server and
 // the editor's renders don't reach them; shown again, each reads again, and the log reads on from
-// where it was, never with a hole in it.
+// where it was, never with a hole in it. Signed out, none reads either, covered or not.
 
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -12,6 +12,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { Coverable } from "./covered";
 import { useHistory } from "./HistoryPane";
 import type { Evaluator } from "./holon";
+import { setSession } from "./server";
 import { TryRequest } from "./TryRequest";
 import { useFlowLog } from "./useFlowLog";
 
@@ -75,6 +76,8 @@ beforeEach(() => {
   server.runs = 10;
   server.asked = [];
   log = { seqs: [], drawn: 0, said: "" };
+  // The panes are the signed-in editor's (with no one, nothing is asked: server.ts's `api`).
+  setSession({ token: "t", name: "cy", kind: "person", role: "editor" });
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => new Response(JSON.stringify(answer(url)), { status: 200 })),
@@ -88,6 +91,7 @@ afterEach(() => {
   container.remove();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  setSession(null);
 });
 
 const draw = (covered: boolean, said = "") => act(async () => root.render(<Panes covered={covered} said={said} />));
@@ -112,6 +116,19 @@ describe("what another page covers does no work", () => {
     await draw(false);
     await wait(0);
     expect(read(), "shown again, each reads at once").toEqual(EVERY);
+  });
+
+  // No one signed in (a sign-in that ended, the editor kept under "sign in again"), every poller
+  // asked the server on, refused each time: server.ts's `api` sends nothing without a sign-in
+  // (R89). Signed in again, each reads on.
+  it("signed out, none reads, a minute on; signed in again, each reads", async () => {
+    act(() => setSession(null));
+    await draw(false);
+    await wait(60_000);
+    expect(read(), "signed out, none asks").toEqual([]);
+    act(() => setSession({ token: "t", name: "cy", kind: "person", role: "editor" }));
+    await wait(30_000);
+    expect(read(), "signed in again, each reads").toEqual(EVERY);
   });
 
   it("isn't drawn again by the editor while covered, and shows what it was last given once shown", async () => {

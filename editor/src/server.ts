@@ -107,20 +107,36 @@ const ask = (url: string, init: RequestInit = {}): Promise<Response> => fetch(ur
  *  sign-in through the provider; "" for no one. What the buttons follow is kept for it (can.tsx). */
 export const bearer = (): string => getSession()?.token ?? signedIn()?.idToken ?? "";
 
+/** What the server answers a request that needs a sign-in and comes with none (access.rs's
+ *  `signed_in`), 401. */
+export const SIGN_IN_FIRST = "sign in first";
+
 /** `fetch` against the server, carrying who is signed in: the session's token, else the ID
  *  token of a sign-in through the server's identity provider (signin.ts). A 401 to what this tab
- *  is signed in with (not a token since replaced), or to none since its ID token expired, means
- *  the sign-in has ended: it is forgotten, and the editor asks to sign in again over what is open.
- *  A request that gets no answer is told (the host card reads the host again). */
+ *  is signed in with (not a token since replaced) means the sign-in has ended: it is forgotten,
+ *  and the editor asks to sign in again over what is open. A request that gets no answer is told
+ *  (the host card reads the host again).
+ *
+ *  With no one signed in, nothing is sent: the server would answer it SIGN_IN_FIRST, and it is
+ *  answered that here. What is asked of no one goes through `ask` (`postOpen`), to the routes the
+ *  server answers anyone (can.rs's `open`): signing in, setting up, an invite. Before, the pages
+ *  that read every few seconds (the deployments and approvals lists, a run's log, the history,
+ *  what the buttons follow) went on asking while the editor waited under "sign in again", each
+ *  read refused, from every tab left open; now the first goes once someone has signed in (can.tsx
+ *  reads again when whom the tab acts as moves). A provider's sign-in whose ID token has expired
+ *  (`bearer` no longer sends it) has ended, as the server's 401 to the request sent without it
+ *  used to say: it ends here, at once. */
 async function api(url: string, init: RequestInit = {}): Promise<Response> {
-  const token = bearer() || undefined;
-  const res = await ask(url, token ? { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } } : init).catch(
-    (e: unknown) => {
-      window.dispatchEvent(new Event("holon:unanswered"));
-      throw e;
-    },
-  );
-  if (res.status === 401 && (token ? token === bearer() : signInExpired())) endSession();
+  const token = bearer();
+  if (!token) {
+    if (signInExpired()) endSession();
+    return new Response(JSON.stringify({ error: SIGN_IN_FIRST }), { status: 401, statusText: "Unauthorized", headers: { "Content-Type": "application/json" } });
+  }
+  const res = await ask(url, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } }).catch((e: unknown) => {
+    window.dispatchEvent(new Event("holon:unanswered"));
+    throw e;
+  });
+  if (res.status === 401 && token === bearer()) endSession();
   if (mayHaveChanged(url, init.method ?? "GET", res.status)) window.dispatchEvent(new Event("holon:can"));
   return res;
 }
@@ -139,6 +155,9 @@ export function mayHaveChanged(url: string, method: string, status: number): boo
 
 const post = (url: string, body?: unknown) =>
   api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+/** A POST to a route the server answers anyone (signing in, setting up, an invite): sent as no
+ *  one, whoever the tab acts as. */
+const postOpen = (url: string, body: unknown) => ask(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
 /** `GET /version`: the version the host runs, for the host card. */
 export async function getVersion(): Promise<string> {
@@ -163,11 +182,11 @@ const keep = async (res: Response) => {
   return s;
 };
 /** The first admin, with the code the server printed; signed in. */
-export const setUp = (code: string, name: string, password: string) => post(`${BASE}/auth/setup`, { code, name, password }).then(keep);
-export const signInWith = (name: string, password: string) => post(`${BASE}/auth/sign-in`, { name, password }).then(keep);
+export const setUp = (code: string, name: string, password: string) => postOpen(`${BASE}/auth/setup`, { code, name, password }).then(keep);
+export const signInWith = (name: string, password: string) => postOpen(`${BASE}/auth/sign-in`, { name, password }).then(keep);
 /** Whose invite link `token` is. */
 export const inviteFor = async (token: string) => asJson<{ name: string }>(await ask(`${BASE}/auth/invite?token=${encodeURIComponent(token)}`));
-export const acceptInvite = (token: string, password: string) => post(`${BASE}/auth/invite`, { token, password }).then(keep);
+export const acceptInvite = (token: string, password: string) => postOpen(`${BASE}/auth/invite`, { token, password }).then(keep);
 /** Whether whoever is signed in may do each of `actions` (`run.decide`…), as the server's `can`
  *  answers it: true, or the words it would refuse in. On a flow, or one of its approval points. */
 export async function mayI(actions: string[], at: { flow?: string; approval?: string } = {}): Promise<Record<string, true | string>> {
