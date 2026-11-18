@@ -286,14 +286,28 @@ export function asksHostPrimitives(): Set<string> {
 /**
  * What is wrong with `key` as one more of a flow's taint keys (`taint: [...]`), beside `listed`,
  * or null when nothing is: core's rule (`is_taint_key`), and a key every flow keeps out already
- * (`alwaysTainted`) or one listed, named either case, as the host matches them. Call after
- * {@link ensureReady}.
+ * (`alwaysTainted`) or one listed, named either case, as the host matches them, or one it never
+ * keeps (`neverKept`), which is kept out already, more strictly. Call after {@link ensureReady}.
  */
-export function taintKeyProblem(key: string, listed: string[]): string | null {
+export function taintKeyProblem(key: string, listed: string[], neverKept: string[] = []): string | null {
   if (!is_taint_key(key)) return "a key is one word, at most 128 characters, without ‹ or ›";
   const same = (k: string) => k.toLowerCase() === key.toLowerCase();
   if (alwaysTainted().some(same)) return `every flow keeps "${key}" out already`;
   if (listed.some(same)) return `"${key}" is listed already`;
+  if (neverKept.includes(key)) return `"${key}" is never kept, so it needn't be tainted too`;
+  return null;
+}
+
+/**
+ * What is wrong with `key` as one more of the keys a flow never keeps (`never_keep: [...]`),
+ * beside `listed`, or null when nothing is: core's rule (`is_taint_key`), one listed (either
+ * case), or one it taints (`tainted`): a key is in one list, and moving it here is stricter, so
+ * take it out there first. Call after {@link ensureReady}.
+ */
+export function neverKeepKeyProblem(key: string, listed: string[], tainted: string[] = []): string | null {
+  if (!is_taint_key(key)) return "a key is one word, at most 128 characters, without ‹ or ›";
+  if (listed.some((k) => k.toLowerCase() === key.toLowerCase())) return `"${key}" is listed already`;
+  if (tainted.includes(key)) return `"${key}" is tainted: take it out there to never keep it`;
   return null;
 }
 

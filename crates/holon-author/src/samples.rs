@@ -155,6 +155,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/card-vault.holon.ts"),
     },
     Sample {
+        name: "card-check",
+        title: "A CVC never kept",
+        description: "Send a card to the payment processor and never keep its CVC: the flow taints the card's number and never keeps the CVC, whose value its runs' records show as ‹never_keep:cvc› where it stood under its key, however short (an amount of 1737 beside a CVC of 737 stays as it is); a write or a send that holds it is refused, and the request to the processor is sent.",
+        shows: &["never_keep", "taint", "http_request"],
+        port: Some("8202"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -d '{"number":"4111111111111111","cvc":"737","amount":1737}' http://127.0.0.1:8202/check answers {"last4":"1111","processor":200}; holon runs card-check --run 0 shows ‹never_keep:cvc› where the CVC was, ‹taint:number› where the number was, and the amount 1737 as it was sent"#,
+        text: include_str!("../samples/card-check.holon.ts"),
+    },
+    Sample {
         name: "slugs",
         title: "A flow inside a flow (holon)",
         description: "Two holons, each a whole flow placed as one node: slugify (lowercase, split, join with -) only computes, placed twice; publish reads and writes outside (the clock, a collection, state, an optional secret) and its manifest, permissions, replay and flow state count all of it. A saved flow without routes is placed the same way, from the palette's flows.",

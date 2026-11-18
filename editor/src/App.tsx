@@ -556,7 +556,7 @@ function Canvas({
     return deriveServer(ns, es, ev, settings.port, settings);
     // live.current is read on purpose: canvasKey changes exactly when the structure does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint]);
+  }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint, settings.never_keep]);
 
   // What the canvas's flow would ask for, by consent name (null while it doesn't derive): the
   // deploy settings offer each one but its trigger as something it can run without.
@@ -571,7 +571,7 @@ function Canvas({
     }
     // live.current is read on purpose, as `derived` above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint]);
+  }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint, settings.never_keep]);
   const flowCapabilities = useMemo(() => flowCaps ?? [], [flowCaps]);
   // Where the canvas's flow sends each secret it reads, and what is made with it (core's
   // `sent_secrets`): the It may strip says it beside the secret, as the approval will.
@@ -585,7 +585,7 @@ function Canvas({
     }
     // live.current is read on purpose, as `flowCaps` above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint]);
+  }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint, settings.never_keep]);
   // The queues it sends to, by name: Try a request says what their messages came to.
   const sendsTo = useMemo(() => flowCapabilities.flatMap((c) => /^QueueSend\("(.*)"\)$/.exec(c)?.[1] ?? []), [flowCapabilities]);
   // What each node does with a secret (a request it is sent in, a write the host refuses, the
@@ -599,7 +599,7 @@ function Canvas({
     }
     // live.current is read on purpose, as `derived` above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint]);
+  }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint, settings.never_keep]);
   // Nothing would start a run: no route, clock, file, mail, feed or queue handler or action (docs/L4s/triggers-L4.md
   // fork 14). Deploy is greyed, saying what to add. Not said of a canvas that doesn't derive: that
   // has its own error.

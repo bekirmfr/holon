@@ -43,7 +43,7 @@ pub(crate) fn recheck(dep: &mut Deployment, caps: &Capabilities, policy: &Policy
         }
         _ => {}
     }
-    dep.permit = Arc::new(Permit::new(dep.unit, &dep.grant, policy));
+    dep.permit = Arc::new(Permit::new(dep.unit, &dep.grant, policy).never_keeping(dep.server.as_ref()));
     let (keep, age) = (dep.permit.log.keep_runs as usize, dep.permit.log.max_age_ms());
     dep.log.with(|log| log.retain(keep, age));
 }

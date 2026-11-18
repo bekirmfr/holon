@@ -282,6 +282,10 @@ pub struct Server {
     /// what the host keeps of any of its runs, wherever a run has them, nor do those of
     /// [`ALWAYS_TAINTED`].
     pub taint: Vec<String>,
+    /// The keys its flow never keeps (its `never_keep` param, joined by spaces): a value under
+    /// one is kept out of what the host records by where it stands, whatever its length, and a
+    /// write or a send that holds one is refused. None is in `taint` too.
+    pub never_keep: Vec<String>,
     /// Its flow's tags (its `tags` param, joined by spaces), sorted, once each ([`is_tag`]): a
     /// binding on one covers the flow while it is deployed with it.
     pub tags: Vec<String>,
@@ -456,6 +460,9 @@ pub enum DeclError {
     BadLogLevel { child: u32, value: String },
     /// A key its `taint` param names isn't one ([`is_taint_key`]).
     BadTaintKey(String),
+    /// A key its `never_keep` param names isn't one ([`is_taint_key`]), comes again, or is one
+    /// its `taint` param names too.
+    BadNeverKeepKey(String),
     /// A tag its `tags` param names isn't one ([`is_tag`]), or comes again or out of order.
     BadTag(String),
 }
@@ -606,11 +613,15 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
     if let Some(bad) = taint.iter().find(|k| !is_taint_key(k)) {
         return Err(DeclError::BadTaintKey(bad.clone()));
     }
+    let never_keep: Vec<String> = frozen(unit, "never_keep").unwrap_or("").split_whitespace().map(str::to_string).collect();
+    if let Some((_, bad)) = never_keep.iter().enumerate().find(|&(i, k)| !is_taint_key(k) || never_keep[..i].contains(k) || taint.contains(k)) {
+        return Err(DeclError::BadNeverKeepKey(bad.clone()));
+    }
     let tags: Vec<String> = frozen(unit, "tags").unwrap_or("").split_whitespace().map(str::to_string).collect();
     if let Some((_, bad)) = tags.iter().enumerate().find(|&(i, t)| !is_tag(t) || (i > 0 && tags[i - 1] >= *t)) {
         return Err(DeclError::BadTag(bad.clone()));
     }
-    Ok(Server { port, taint, tags, routes, clocks, files, mails, feeds, queues, websockets, actions })
+    Ok(Server { port, taint, never_keep, tags, routes, clocks, files, mails, feeds, queues, websockets, actions })
 }
 
 /// Why a unit is not a well-formed endpoint.
@@ -852,6 +863,27 @@ mod tests {
         }
         for (tag, is) in [("payments", true), ("ops-2", true), ("", false), ("A", false), ("a b", false), (&"x".repeat(40), true), (&"x".repeat(41), false)] {
             assert_eq!(is_tag(tag), is, "{tag:?}");
+        }
+    }
+
+    /// Guards: the keys a server never keeps are read as its `never_keep` param writes them, and a
+    /// param that names what isn't a key, a key twice, or a key its `taint` param names too is
+    /// refused whole.
+    /// Why: the host guards a run's record and its writes by this list; a unit made by hand (not
+    /// by the language, which says each mistake at its place) must not deploy with a list the host
+    /// would read another way than its author meant.
+    /// If it fails: `read_server` reads `never_keep` loosely; a deployed unit's list is no longer
+    /// what `holon check` and the approval said.
+    #[test]
+    fn a_servers_never_kept_keys_are_read_as_written_and_checked() {
+        let mut r = MapResolver::new();
+        let e = endpoint(&mut r, "GET", "/a");
+        let with = |params: &[(&str, &str)]| Unit { params: [server("80", vec![e]).params, params.iter().map(|(n, v)| Param::frozen(*n, *v)).collect()].concat(), ..server("80", vec![e]) };
+        assert_eq!(read_server(&server("80", vec![e]), &r).unwrap().never_keep, Vec::<String>::new());
+        let read = read_server(&with(&[("taint", "number"), ("never_keep", "cvc pin")]), &r).unwrap();
+        assert_eq!((read.taint, read.never_keep), (vec!["number".to_string()], vec!["cvc".to_string(), "pin".to_string()]));
+        for (taint, never_keep, bad) in [("", "cvc cvc", "cvc"), ("cvc", "pin cvc", "cvc"), ("", "a‹b", "a‹b"), ("", &"x".repeat(129), &"x".repeat(129))] {
+            assert_eq!(read_server(&with(&[("taint", taint), ("never_keep", never_keep)]), &r), Err(DeclError::BadNeverKeepKey(bad.to_string())), "{taint:?} {never_keep:?}");
         }
     }
 
