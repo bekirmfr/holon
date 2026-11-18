@@ -129,7 +129,9 @@ fn answered(port: u16, request: &str) -> String {
 /// flow calling the action; the accounts file not written, to a setup, a sign-in, an invite
 /// taken, a password or preferences changed, a sign-out, and a token made or revoked; the policy
 /// file not read, or not TOML holon reads, to an editor reloading it (told the line and column,
-/// not the line, which can name a secret's source). The deployments file's eleven answers are
+/// not the line, which can name a secret's source); a slug's keys not made, or its run log or
+/// events there and not read, to whoever deploys it first; and a deployment's run records not
+/// kept, to whoever removes it. The deployments file's eleven answers are
 /// `what_isnt_saved_isnt_answered_as_kept`'s rows (tests.rs), held the same way.
 /// Why: each answered the file's whole path on the server's disk and the OS error's text: a
 /// flow's outside caller, and someone signing in, among those told. Where the server keeps its
@@ -243,6 +245,44 @@ fn a_file_that_fails_tells_whoever_asked_neither_where_nor_why() {
         assert!(code == 400 && text.contains(crate::permissions::UNPARSED) && text.contains("(line 2, column "), "{what}: {code} {text}");
         neither_where_nor_why(what, &text, &dir, &[canary]);
     }
+    std::fs::remove_file(&policy).unwrap();
+
+    // A first deploy of a slug: its keys not made (as keys.json not written would), and its run
+    // log or its events there and not read (a folder where each goes).
+    let writer = stage_writer(&state, "k");
+    let ack = json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
+    let deploy = |slug: &str| {
+        let r = deploy_json(&state, slug, writer, ack.clone());
+        (r.status_code, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    // A slug no other test deploys: the tests share one keyring, and a scope another test made
+    // first has its keys already, so nothing would be made to fail.
+    crate::faults::fail("a scope's key", false);
+    let (code, text) = deploy("keys-never-made");
+    crate::faults::heal();
+    assert!(code == 503 && text.contains("keys couldn't be made"), "{code} {text}");
+    neither_where_nor_why("a deploy whose keys can't be made", &text, &dir, &["made to fail", "keys.json"]);
+    assert!(!state.deployments.lock().unwrap().contains_key("keys-never-made"), "not deployed");
+    // Where the server keeps a deployment's run log and events (recorder.rs `file_for`).
+    let logs = std::path::PathBuf::from(state.deployments_path.beside("logs").unwrap());
+    for (slug, file, what) in [("logless", "logless.jsonl", "a deploy onto a run log that can't be read"), ("eventless", "eventless.events.jsonl", "a deploy onto events that can't be read")] {
+        unwritable(&logs.join(file));
+        let (code, text) = deploy(slug);
+        assert!(code == 409 && (text.contains("is there and can't be opened") || text.contains("are there and can't be opened")), "{what}: {code} {text}");
+        neither_where_nor_why(what, &text, &dir, &["can't be read"]);
+        assert!(!state.deployments.lock().unwrap().contains_key(slug), "{what}: not deployed");
+    }
+
+    // A removal whose run records can't be kept (a file where their folder goes).
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{calling}/stop"), vec![])).status_code, 200);
+    let removed = logs.join("removed");
+    let _ = std::fs::remove_dir_all(&removed);
+    std::fs::write(&removed, "").unwrap();
+    let r = route(&state, &req("DELETE", &format!("/deployments/{calling}"), vec![]));
+    let (code, text) = (r.status_code, String::from_utf8(body_bytes(r)).unwrap());
+    assert!(code == 500 && text.contains("run records couldn't be kept, so nothing was removed"), "a removal whose run records can't be kept: {code} {text}");
+    neither_where_nor_why("a removal whose run records can't be kept", &text, &dir, &[]);
+    assert!(state.deployments.lock().unwrap().contains_key(&calling), "nothing removed");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
