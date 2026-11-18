@@ -208,7 +208,7 @@ route.get("/done/:token", () => "done", {{ resumes: "done" }})
     }
     for f in &line_logs {
         let text = std::fs::read_to_string(f).unwrap();
-        assert!(!text.is_empty() && text.lines().all(|l| l.starts_with("a1.") || l.starts_with("r1.")), "{} holds a line not sealed", f.display());
+        assert!(!text.is_empty() && text.lines().all(|l| l.starts_with("a1.") || l.starts_with("r2.")), "{} holds a line not sealed", f.display());
     }
     let segments: Vec<&PathBuf> = files.iter().filter(|f| f.to_string_lossy().ends_with(".jsonl.gz")).collect();
     assert!(!segments.is_empty() && segments.iter().all(|f| std::fs::read(f).unwrap().starts_with(b"HLA1")), "segments sealed whole: {segments:#?}");

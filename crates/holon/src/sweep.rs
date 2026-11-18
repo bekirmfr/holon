@@ -218,7 +218,7 @@ fn named(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<Vec<Names>
             if line.contains("\"blob\":")
                 && let Ok(entry) = crate::wire::read_json::<crate::recorder::LogEntry>(line.as_bytes())
             {
-                for file in entry.reads.iter().filter_map(|r| r.file.as_ref()) {
+                for file in entry.reads.iter().filter_map(|r| r.file.as_ref()).chain(&entry.body) {
                     if let Some(blob) = &file.blob {
                         file_texts.insert(blob.clone(), file.size);
                     }

@@ -2506,7 +2506,9 @@ fn parse_bool(s: &str) -> Option<bool> {
 /// (`1e+21`, `1.5e-7`). `-0` is `0`: the two are equal, and the canonical value encoding folds
 /// them. No leaf answers a number that isn't finite, but a module may (a `js` function's
 /// `1 / 0`), and one is written as JavaScript writes it too: `NaN`, `Infinity`, `-Infinity`.
-pub(crate) fn number_text(n: f64) -> String {
+/// The language lowers a number literal to this spelling of its value, whatever the text wrote
+/// (`0.10` is `0.1`, `1e3` is `1000`), so its spelling is never part of a unit.
+pub fn number_text(n: f64) -> String {
     if n == 0.0 {
         return "0".to_string();
     }

@@ -295,9 +295,21 @@ impl Conn {
         let tokens = || Redactor::tokens(&waits.tokens).and(Redactor::handed(&handed));
         // A strict run's answer goes out once its record is on disk; one whose record may not be
         // isn't answered as done (C2 e).
-        if let Some(Logged { kept: Err(e), .. }) = log_or_count(deployments, slug, counted, entry, tokens, block.log, sends) {
-            eprintln!("holon: {slug:?} {}: the run's record may not be on disk: {e}", block.label);
-            return Some(DataResponse::json_error(500, &format!("the block ran, but {e}")));
+        match log_or_count(deployments, slug, counted, entry, tokens, block.log, sends) {
+            Some(Logged { kept: Err(e), .. }) => {
+                eprintln!("holon: {slug:?} {}: the run's record may not be on disk: {e}", block.label);
+                return Some(DataResponse::json_error(500, &format!("the block ran, but {e}")));
+            }
+            // What it sends couldn't be spooled: none of it is sent, and its record says it failed.
+            Some(Logged { unsent: Some(e), .. }) => {
+                eprintln!("holon: {slug:?} {}: the run failed, as what it sends couldn't be spooled: {e}", block.label);
+                return Some(DataResponse::json_error(500, "the block ran, but what it sends couldn't be kept to send, so none of it is sent: its run log says why"));
+            }
+            // Its deployment removed while it ran: a strict run's record is kept nowhere.
+            None if block.log == holon_core::LogLevel::Strict => {
+                return Some(DataResponse::json_error(500, &format!("the block ran, but {slug:?} was removed meanwhile, so its record isn't kept")));
+            }
+            _ => {}
         }
         Some(answer)
     }
@@ -344,25 +356,30 @@ fn same_origin(origin: &str, host: Option<&str>) -> bool {
 /// The answer to a request on one of `slug`'s websocket paths: the refusal, or the 101 that
 /// switches its connection to a WebSocket, served from then on. None for a request on any other
 /// path, or not a GET, which the routes answer.
+///
+/// Only a request asking to be switched (`Upgrade: websocket`) is looked at here, and its
+/// websocket looked up on the blocking pool: no data-plane worker takes the deployments table's
+/// lock (release audit R45, D5). A GET on a websocket's path without it is refused with a 426 by
+/// the run that answers it ([`without_upgrade`]).
 pub(crate) async fn open(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>, slug: &str, share: &dataplane::Share, parts: &mut Parts) -> Option<DataResponse> {
-    if parts.method != hyper::Method::GET {
+    let header = |name: &str| parts.headers.get(name).and_then(|v| v.to_str().ok());
+    let lists = |name: &str, token: &str| header(name).is_some_and(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case(token)));
+    if parts.method != hyper::Method::GET || !lists("upgrade", "websocket") {
         return None;
     }
     let url = parts.uri.path_and_query().map_or("/", |p| p.as_str()).to_string();
     let (path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
-    let (declared, raw_params, status, browsers, limits, sockets, has_open) = {
-        let table = deployments.lock().unwrap();
-        let dep = table.get(slug)?;
-        let (websocket, params) = holon_core::match_websocket(dep.server.as_ref()?, path)?;
-        (websocket.path.clone(), params, dep.life.status, dep.browsers.clone(), dep.permit.sockets.clone(), Arc::clone(&dep.sockets), websocket.open.is_some())
-    };
-    let header = |name: &str| parts.headers.get(name).and_then(|v| v.to_str().ok());
-    let lists = |name: &str, token: &str| header(name).is_some_and(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case(token)));
+    let (table, at, wanted) = (Arc::clone(deployments), slug.to_string(), path.to_string());
+    let found = tokio::task::spawn_blocking(move || {
+        let table = table.lock().unwrap();
+        let dep = table.get(&at)?;
+        let (websocket, params) = holon_core::match_websocket(dep.server.as_ref()?, &wanted)?;
+        Some((websocket.path.clone(), params, dep.life.status, dep.browsers.clone(), dep.permit.sockets.clone(), Arc::clone(&dep.sockets), websocket.open.is_some()))
+    });
+    let (declared, raw_params, status, browsers, limits, sockets, has_open) = found.await.ok().flatten()?;
     let key = header("sec-websocket-key").map(str::to_string);
-    let Some(key) = key.filter(|_| lists("upgrade", "websocket") && lists("connection", "upgrade") && header("sec-websocket-version") == Some("13")) else {
-        let mut refused = DataResponse::json_error(426, &format!("{declared} is a WebSocket: open it with new WebSocket(…)"));
-        refused.headers.extend([("upgrade".to_string(), "websocket".to_string()), ("sec-websocket-version".to_string(), "13".to_string())]);
-        return Some(refused);
+    let Some(key) = key.filter(|_| lists("connection", "upgrade") && header("sec-websocket-version") == Some("13")) else {
+        return Some(upgrade_required(&declared));
     };
     let host = header("host").map(str::to_string).or_else(|| parts.uri.authority().map(|a| a.to_string()));
     if let Some(origin) = header("origin")
@@ -400,25 +417,31 @@ pub(crate) async fn open(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<S
         share: share.clone(),
     });
 
-    // Without an open block, a connection is accepted as it is.
+    // Without an open block, a connection is accepted as it is. A subscription's channel is read
+    // with its run, off the worker.
     let ran = Arc::clone(&conn);
-    let answer = if has_open {
+    let (answer, channel) = if has_open {
         // Its open block is a request's run: refused to try again past the deployment's share.
         match conn.share.try_admit() {
-            Ok(admitted) => tokio::task::spawn_blocking(move || {
-                let _admitted = admitted;
-                ran.run("open", opening)
-            })
-            .await
-            .unwrap_or_else(|_| Some(DataResponse::json_error(500, "the WebSocket's open block failed"))),
+            Ok(admitted) => {
+                let (table, at) = (Arc::clone(deployments), slug.to_string());
+                tokio::task::spawn_blocking(move || {
+                    let _admitted = admitted;
+                    let answer = ran.run("open", opening);
+                    let channel = answer.as_ref().and_then(|a| a.subscribe.as_ref()).and_then(|_| table.lock().unwrap().get(&at).map(|d| (Arc::clone(&d.channels), d.permit.channels.clone())));
+                    (answer, channel)
+                })
+                .await
+                .unwrap_or_else(|_| (Some(DataResponse::json_error(500, "the WebSocket's open block failed")), None))
+            }
             Err(why) => {
                 let mut busy = DataResponse::json_error(503, &why);
                 busy.headers.push(("retry-after".into(), "1".into()));
-                Some(busy)
+                (Some(busy), None)
             }
         }
     } else {
-        None
+        (None, None)
     };
     let answer = answer.unwrap_or(DataResponse { status: 204, headers: Vec::new(), body: Vec::new(), subscribe: None, file: None });
     let refuse = |answer: DataResponse| {
@@ -446,7 +469,6 @@ pub(crate) async fn open(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<S
     let subscription = match &answer.subscribe {
         None => None,
         Some(ask) => {
-            let channel = deployments.lock().unwrap().get(slug).map(|d| (Arc::clone(&d.channels), d.permit.channels.clone()));
             let Some((channels, channel_limits)) = channel else {
                 return dropped(503, format!("{slug:?} is not deployed as a server")).await;
             };
@@ -474,6 +496,29 @@ pub(crate) async fn open(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<S
         subscribe: None,
         file: None,
     })
+}
+
+/// The 426 a request on the websocket at `declared` gets when it isn't a WebSocket's handshake.
+fn upgrade_required(declared: &str) -> DataResponse {
+    let mut refused = DataResponse::json_error(426, &format!("{declared} is a WebSocket: open it with new WebSocket(…)"));
+    refused.headers.extend([("upgrade".to_string(), "websocket".to_string()), ("sec-websocket-version".to_string(), "13".to_string())]);
+    refused
+}
+
+/// A GET on one of `slug`'s websocket paths that doesn't ask to be switched ([`open`] takes those):
+/// a 426, saying how to open it. None for any other request, which the routes answer. On the
+/// blocking pool, with the request's run.
+pub(crate) fn without_upgrade(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, method: &str, url: &str) -> Option<DataResponse> {
+    if method != "GET" {
+        return None;
+    }
+    let path = url.split_once('?').map_or(url, |(p, _)| p);
+    let declared = {
+        let table = deployments.lock().unwrap();
+        let dep = table.get(slug)?;
+        holon_core::match_websocket(dep.server.as_ref()?, path)?.0.path.clone()
+    };
+    Some(upgrade_required(&declared))
 }
 
 /// Serve one accepted connection once it is switched: its messages run by `message` in order, as

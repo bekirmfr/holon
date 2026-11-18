@@ -14,7 +14,7 @@
 //!   shows them no canary; to a holder, it shows the canary.
 //! - src/tests/run_steps.rs: every route a row names is a route of can.rs's ROUTES, the table
 //!   that sweep holds to its grants, and the tools are `holon mcp`'s.
-//! - docs/manual/guides/surfaces.md is written from this table (HOLON_BLESS=1).
+//! - docs/manual/reference/surfaces.md is written from this table (HOLON_BLESS=1).
 
 /// What of a server's keeping a surface reads for its caller, and so which grant it takes: what it
 /// shows of it, or what follows from it (a replay says which runs answer otherwise).
@@ -224,6 +224,13 @@ pub(crate) const COMMANDS: &[Surface] = &[
         &[],
     ),
     routes("key forget", &["POST /admin/keys/forget"], &[]),
+    both(
+        "key export",
+        &["GET /admin/keys"],
+        "the data folder's keys.json, and the root key where it is kept (with --server and no --root-key, where that server says it reads it), copied to a file of the user's",
+        "the OS's permissions on the data folder, and the root key",
+        &[],
+    ),
     routes("host", &["GET /admin/host", "GET /deployments/{slug}/holds"], &[]),
     local("pick-folder", "a folder dialog on the server's machine, for the admin page's browse", "the OS: it runs as the user who runs holon serve"),
     both(

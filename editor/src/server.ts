@@ -103,20 +103,24 @@ function endSession(): void {
  *  version a page follows (can.tsx). */
 const ask = (url: string, init: RequestInit = {}): Promise<Response> => fetch(url, { ...init, cache: "no-store" });
 
+/** Whom this tab acts as, as the server is told: the session's token, else the ID token of a
+ *  sign-in through the provider; "" for no one. What the buttons follow is kept for it (can.tsx). */
+export const bearer = (): string => getSession()?.token ?? signedIn()?.idToken ?? "";
+
 /** `fetch` against the server, carrying who is signed in: the session's token, else the ID
  *  token of a sign-in through the server's identity provider (signin.ts). A 401 to what this tab
  *  is signed in with (not a token since replaced), or to none since its ID token expired, means
  *  the sign-in has ended: it is forgotten, and the editor asks to sign in again over what is open.
  *  A request that gets no answer is told (the host card reads the host again). */
 async function api(url: string, init: RequestInit = {}): Promise<Response> {
-  const token = getSession()?.token ?? signedIn()?.idToken;
+  const token = bearer() || undefined;
   const res = await ask(url, token ? { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` } } : init).catch(
     (e: unknown) => {
       window.dispatchEvent(new Event("holon:unanswered"));
       throw e;
     },
   );
-  if (res.status === 401 && (token ? token === (getSession()?.token ?? signedIn()?.idToken) : signInExpired())) endSession();
+  if (res.status === 401 && (token ? token === bearer() : signInExpired())) endSession();
   if (mayHaveChanged(url, init.method ?? "GET", res.status)) window.dispatchEvent(new Event("holon:can"));
   return res;
 }
@@ -598,6 +602,8 @@ export type HostView = {
     store: { values: number; bytes: number; on_disk: number; put_since: number } | null;
     logs: Counted3 | null;
     console: Counted3 | null;
+    /** Removed deployments' records, kept beside the logs until their retention's time is up. */
+    removed_deployments?: Counted3 | null;
     file_texts: { texts: number; chunks: number; bytes: number } | null;
     leftovers: { removed: Counted3; waiting: Counted3 };
   };
@@ -1281,6 +1287,10 @@ export type LogEntry = {
   url: string | null;
   status: number | null;
   request: WValue | null;
+  /** Its request's body, when longer than 64 KiB as the log writes it: kept by hash (its BLAKE3,
+   *  size, and where its text is kept, if it is), its places in `request` and `NetworkIngress`
+   *  then empty. */
+  body?: { hash: string; size: number; blob?: string };
   /** By capability: "Clock", "Random", "NetworkIngress". */
   sourced: [string, WValue][];
   state_before: Record<string, WValue>;
@@ -1641,9 +1651,21 @@ export async function deleteDeployment(slug: string): Promise<DeploymentEntry & 
 /** What forgetting a removed deployment's keys did (`POST /admin/keys/forget`, keys.rs): whether
  *  anything was sealed under them, and whether the root key was rotated where it is kept (not when
  *  it is in an environment variable, `why` says). */
-export type Forgotten = { slug: string; forgotten: boolean; root: { rotated: boolean; why?: string }; error?: string };
+/** What a forget did. `root.rotated`: the root key was rotated where it is kept, so backups and
+ *  copies of the data folder taken before need the old one (`pending`: rotated, `keys.json`'s last
+ *  write left to the next start). `store`: the content store swept as it was forgotten, the values
+ *  nothing else names removed (`swept`) and those written in the last hour left to the next sweep
+ *  (`spared`), or why it wasn't. */
+export type Forgotten = {
+  slug: string;
+  forgotten: boolean;
+  root: { rotated: boolean; why?: string; pending?: string };
+  store?: { swept?: number; spared?: number; why?: string };
+  error?: string;
+};
 
-/** `POST /admin/keys/forget` — a removed deployment's keys forgotten: nothing it left opens again. */
+/** `POST /admin/keys/forget` — a removed deployment's keys forgotten: its log, records and backups
+ *  open nowhere again, and the content store's values nothing else names are swept. */
 export async function forgetKeys(slug: string): Promise<Forgotten> {
   const res = await api(`${BASE}/admin/keys/forget`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) });
   return asJson<Forgotten>(res);

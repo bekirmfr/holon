@@ -14,6 +14,7 @@ import { isCollectionCell } from "./replay";
 import { getDeploymentState, getEvents, getVersions, restoreDeployment, type DeploymentEvent, type RestoreDone, type RestorePoint, type RestorePreview, type VersionEntry } from "./server";
 import { runLabel } from "./runs";
 import { useFlowLog } from "./useFlowLog";
+import { useCovered } from "./covered";
 import {
   buildTimeline,
   filterOf,
@@ -190,13 +191,15 @@ function CellOverTime({ slug, mark }: { slug: string; mark: number | null }) {
   );
 }
 
-/** The deployment's events and versions, polled. */
+/** The deployment's events and versions, polled while another page doesn't cover them. */
 export function useHistory(slug: string) {
+  const covered = useCovered();
   const [events, setEvents] = useState<DeploymentEvent[]>([]);
   const [versions, setVersions] = useState<VersionEntry[]>([]);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
   useEffect(() => {
+    if (covered) return;
     let stopped = false;
     const poll = () =>
       Promise.all([getEvents(slug), getVersions(slug)])
@@ -213,7 +216,7 @@ export function useHistory(slug: string) {
       stopped = true;
       clearInterval(timer);
     };
-  }, [slug, tick]);
+  }, [slug, tick, covered]);
   const refresh = useCallback(() => setTick((t) => t + 1), []);
   return { events, versions, error, refresh };
 }

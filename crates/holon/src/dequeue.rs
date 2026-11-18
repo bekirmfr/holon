@@ -78,18 +78,26 @@ struct Kept {
 }
 
 impl Kept {
-    fn read(&self) -> Seen {
-        let bytes = match &self.file {
-            Some(f) => crate::at_rest::read_sealed(f, crate::at_rest::role::QUEUE_SEEN).ok().flatten().map(|b| b.to_vec()),
-            None => self.memory.lock().unwrap().get(&self.key).cloned(),
-        };
-        bytes.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    /// The ids kept: none yet if nothing is. One kept that doesn't open is an error (at_rest.rs,
+    /// `read_seen`): the listener doesn't start, rather than run again what it ran.
+    fn read(&self) -> Result<Seen, String> {
+        match &self.file {
+            Some(f) => Ok(crate::at_rest::read_seen(f, &crate::at_rest::deployment_of(&self.key), crate::at_rest::role::QUEUE_SEEN)?.unwrap_or_default()),
+            None => Ok(self.memory.lock().unwrap().get(&self.key).and_then(|b| serde_json::from_slice(b).ok()).unwrap_or_default()),
+        }
     }
 
-    /// Add `id` to the ids kept, the oldest past [`RECENT`] forgotten.
+    /// Add `id` to the ids kept, the oldest past [`RECENT`] forgotten. Never over a file that
+    /// doesn't open: what it held would be lost.
     fn add(&self, id: &str) {
         let _held = self.lock.lock().unwrap();
-        let mut seen = self.read();
+        let mut seen = match self.read() {
+            Ok(seen) => seen,
+            Err(e) => {
+                eprintln!("holon: {id} isn't kept as run: {e}");
+                return;
+            }
+        };
         if seen.recent.iter().any(|r| r == id) {
             return;
         }
@@ -255,7 +263,19 @@ fn client(shared: &Shared, binding: &Binding) -> Result<Arc<sqs::Queue>, String>
 fn listen(shared: &Arc<Shared>, store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: &Place, binding: &Binding, kept: &Kept) {
     let queue = &shared.queue;
     let visibility = binding.visibility as u32;
-    let mut recent = kept.read().recent;
+    let mut recent = match kept.read() {
+        Ok(seen) => seen.recent,
+        Err(e) => {
+            // Held: it receives nothing, so nothing is run twice or lost (at_rest.rs, `read_seen`).
+            let why = crate::at_rest::seen_held(&format!("the queue {queue}"), &e);
+            shared.note(deployments, why.clone());
+            shared.queues.set_live(&shared.slug, queue, |l| {
+                (l.status, l.since) = ("unreadable", feeds::now_ms());
+                l.error = Some(why);
+            });
+            return;
+        }
+    };
     let (mut wait, mut failing, mut listened) = (FIRST_WAIT, false, false);
     // A server stopping (stopping.rs) receives no more: its runs are what it already took.
     while !shared.stopped() && !store.1.stopping() {
@@ -495,12 +515,12 @@ mod tests {
     #[test]
     fn the_ids_run_on_are_kept_the_oldest_forgotten() {
         let kept = Kept { file: None, key: Path::new("app").join("payouts.json"), memory: Arc::default(), lock: Arc::default() };
-        assert_eq!(kept.read(), Seen::default());
+        assert_eq!(kept.read().unwrap(), Seen::default());
         for n in 0..RECENT + 2 {
             kept.add(&format!("m-{n}"));
         }
         kept.add("m-5");
-        let seen = kept.read();
+        let seen = kept.read().unwrap();
         assert_eq!((seen.recent.len(), seen.recent.front().map(String::as_str), seen.recent.back().map(String::as_str)), (RECENT, Some("m-2"), Some("m-1001")));
     }
 }

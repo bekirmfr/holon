@@ -47,7 +47,8 @@ const UNINSTALL_USAGE: &str = "usage: holon uninstall [--purge [--data DIR]] [--
   unless --purge. It says what it will remove, and asks first.
 
   --purge                  remove your data too, and the rest of ~/.holon: keys, run files,
-                           tokens, the MCP host list
+                           tokens, the MCP host list; and the root key the server kept in the
+                           OS key store (or the secrets key an older release kept there)
   --data DIR               the data folder --purge removes, if not ~/.holon/data [HOLON_DATA]
   --yes                    go ahead without asking (also -y)
 
@@ -254,6 +255,15 @@ fn uninstall(args: &[String]) -> Result<(), String> {
                 Ok((key, true)) => println!("removed the root key from {key}"),
                 Ok(_) => {}
                 Err(e) => eprintln!("holon: the root key: {e} (remove it by hand)"),
+            }
+        }
+        // A folder an older release wrote (0.1.0-rc.35 or earlier): the key it kept its secrets
+        // under, which nothing else removes.
+        if let Some(key) = crate::sealing::old_secrets_key(&d.join("secrets.json")) {
+            match key.forget() {
+                Ok(true) => println!("removed an older release's secrets key from {key}"),
+                Ok(false) => {}
+                Err(e) => eprintln!("holon: an older release's secrets key: {e} (remove it by hand)"),
             }
         }
         std::fs::remove_dir_all(d).map_err(|e| format!("could not remove {}: {e}", d.display()))?;
