@@ -34,7 +34,10 @@
   record says; one that received a value the run finds only as it goes still is: a resume link's
   token, or a tainted value it meets first in a call's answer or a database row (an email it
   looked up as `?q=`, answered under `email`). For that value the id still hashes it as it was,
-  so a guess at it can be checked against the id: a limit, which a salted id would close.
+  so a guess at it can be checked against the id: a limit, which a salted id would close. A
+  record made before this change, of a run whose request carried a credential header or a guarded
+  key's value under its key, now reads "its run id differs" (its id hashed the value as it was);
+  a run with no mark in what started it still checks.
 - **A change to a deployment that isn't saved says so, and a crash doesn't run a part twice.** A
   deploy, a removal, a grant or a revoke, a pause, a stop or a run, a deployment's settings, its
   state put back, a decision on a waiting run and a run that waits (its token) each answered 200

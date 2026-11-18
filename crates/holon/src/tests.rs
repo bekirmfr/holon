@@ -2480,6 +2480,9 @@ fn a_run_id_is_recomputable_from_its_log_entry() {
 /// meets first in a call's answer, and in a row, the request holding it under another key. The
 /// record writes the request's value as its mark; the id hashed it as it was (a limit, said in
 /// checking-runs.md), so verify takes the log's id as given, says why, and never that it differs.
+/// And a row of stated behaviour: a record made before this change (its id over a Basic credential
+/// as it was, its record marking it under its key) reads "its run id differs", never given, as a
+/// forged id on such a run would; one with no mark checks.
 ///
 /// **Why:** the id was a hash of the inputs as the run had them, and the record keeps it beside
 /// its nonce and everything else it hashes: a value it leaves out was a few guesses away (a CVC a
@@ -2566,6 +2569,66 @@ fn a_runs_id_hashes_what_its_record_keeps() {
     let report = verify::check(&export, None, &BTreeMap::new());
     if !report.ids_given.is_empty() || !report.ok() || report.reruns.iter().any(|(_, r)| *r != verify::Rerun::Matched) {
         wrong.push(format!("holon verify: {}", verify::describe(&report, None)));
+    }
+
+    // STATED BEHAVIOUR, not a bug to loosen: a record made before a run's id hashed what its record
+    // keeps (as servers made them until this change) reads "its run id differs". Its request
+    // carried a guarded value under its key (here a Basic credential), and its id hashed that value
+    // as it was. The record marks it where the start would have, so verify can't tell that old
+    // record from one whose id or nonce was forged and the chain made again: taking such an id as
+    // given would pass the forgery (the line-change sweep's zero). The dev phase keeps no old
+    // formats, and a run id is one. A run with no mark in what started it hashed the same either
+    // way, and still checks.
+    let send = |headers: Vec<(String, String)>, body: &str| {
+        let request = data::DataRequest { headers, ..fake_data("POST", "/p", body.as_bytes().to_vec()) };
+        assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &request).status, 200);
+        log_entries(&state, &slug).last().unwrap()["seq"].as_u64().unwrap()
+    };
+    let credential = basic("ada:pw1234-weak");
+    let (marked, plain) = (send(vec![("authorization".into(), credential.clone())], "{}"), send(vec![], "{\"note\":\"plain\"}"));
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let sv = |v: &serde_json::Value| serde_json::from_value::<SValue>(v.clone()).unwrap().into_core();
+    // The id a run's record is given over `request`, the rest of what started it as the record has
+    // it: with its state and without (as verify takes a run with none), in that order.
+    let ids_over = |e: &serde_json::Value, request: Value| -> [String; 2] {
+        let sourced: Vec<(Capability, Value)> = e["sourced"].as_array().unwrap().iter().map(|p| (crate::durable::capability_named(p[0].as_str().unwrap()).unwrap(), sv(&p[1]))).collect();
+        let state_before = State::from_values(e["state_before"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), sv(v))).collect()).unwrap_or_default()).unwrap();
+        let hex = e["nonce"].as_str().unwrap();
+        let nonce: [u8; 16] = (0..16).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect::<Vec<_>>().try_into().unwrap();
+        let unit = parse_hash(e["unit"].as_str().unwrap()).unwrap();
+        [Some(&state_before), None].map(|s| to_hex(&run_id_of(unit, &[Some(request.clone())], s, &sourced, &nonce, None)))
+    };
+    let mut values: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+    for v in values.iter_mut().filter(|v| [marked, plain].contains(&v["seq"].as_u64().unwrap())) {
+        // As main made it: over the request as the run had it, the credential where its mark is.
+        let logged = ids_over(v, sv(&v["request"]));
+        let raw_request = v["request"].to_string().replace("‹taint:authorization›", &credential);
+        let raw = ids_over(v, sv(&serde_json::from_str(&raw_request).unwrap()));
+        let Some(which) = logged.iter().position(|id| v["run_id"] == *id) else {
+            wrong.push(format!("run {}: its id isn't made from its record", v["seq"]));
+            continue;
+        };
+        if (v["seq"] == marked) == (raw[which] == logged[which]) {
+            wrong.push(format!("run {}: the id over the request as it was is {} the record's", v["seq"], if raw[which] == logged[which] { "the same as" } else { "other than" }));
+        }
+        v["run_id"] = raw[which].clone().into();
+    }
+    let mut lines: Vec<String> = Vec::new();
+    for mut v in values {
+        if let Some(before) = lines.last() {
+            v["prev"] = recorder::line_hash(before).into();
+        }
+        lines.push(serde_json::to_string(&v).unwrap());
+    }
+    let head = recorder::line_hash(lines.last().unwrap());
+    let older = verify::Export { lines, head, ..export };
+    let report = verify::check(&older, None, &BTreeMap::new());
+    let said = verify::describe(&report, None);
+    if !said.contains(&format!("run {marked} DIFFERS: its run id")) || report.ids_given.contains(&marked) {
+        wrong.push(format!("a record made before, with a credential: its run id doesn't read as differing: {said}"));
+    }
+    if !report.reruns.iter().any(|(s, r)| *s == plain && *r == verify::Rerun::Matched) {
+        wrong.push(format!("a record made before, with no mark: it doesn't check: {said}"));
     }
 
     // A guarded value a run meets first as it goes, in a call's answer or a row, under its key:

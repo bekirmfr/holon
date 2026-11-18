@@ -269,7 +269,7 @@ pub(crate) fn never_kept(never_keep: &[String], entry: &mut crate::recorder::Log
 /// (`secrets::Measured`).
 ///
 /// Its record is redacted of more, found only as the run goes (its tokens, what it computed from a
-/// secret, a guarded value met first in a call's answer or a row, and a secret set while it ran):
+/// secret, a guarded value met first in a call's answer or a row):
 /// an input holding one of those is written marked where the id hashed it as it was. `holon
 /// verify` then can't make the id again from the record, and takes the log's id as given, saying
 /// so, where what started the run carries a mark this couldn't have written
@@ -279,6 +279,9 @@ pub(crate) fn never_kept(never_keep: &[String], entry: &mut crate::recorder::Log
 /// can be guessed from the id and the nonce beside it (a short tainted value a call answered, held
 /// in the request under another key: an email looked up as `q`, whose key `email` the start never
 /// saw). Closing it takes an id the record can't recompute alone (a salted one), the owner's call.
+///
+/// And a secret added to the vault while a run goes: its record marks it, but this, made before,
+/// didn't know it, so the id hashed it as it was, and that run's id reads as differing.
 pub(crate) fn start_marks<'v>(
     secrets: &crate::secrets::Vault,
     taint: &[String],

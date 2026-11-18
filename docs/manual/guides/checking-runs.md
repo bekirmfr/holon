@@ -273,7 +273,15 @@ That case is also the limit of the first: there the id still hashes the value as
 guess at it can be checked against the id and the nonce beside it. The record marks the email in
 `?q=` once the run's call answers it under `email`; the id was made before the run knew that.
 A value under its own key (a tainted field, a credential header, a key never kept) and a secret
-are always hashed as their marks.
+are always hashed as their marks. A secret added while a run goes is the other case the start
+can't know: the run's record marks it, but its id hashed it as it was, so that run reads "its run
+id differs".
+
+A record made before run ids hashed what the record keeps, of a run whose request carried a
+credential header or a guarded key's value under its key, now reads "its run id differs": its id
+hashed that value as it was. `verify` can't tell such a record from one whose id was forged and
+the chain made again, so it doesn't take that id as given. A run with no mark in what started it
+hashed the same either way, and still checks.
 
 Only placeholders the server wrote are taken that way. A caller who sends text that looks like
 one (`‹token:paid›` in a body) gets it logged escaped (`‹‹token:paid›`, with `"escaped": true` on
