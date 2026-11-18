@@ -3,7 +3,8 @@
 // plain ws:// on loopback, at /ws, written by hand (the handshake and its frames), since Node has
 // no WebSocket server of its own. Its messages are files dropped in `dir`: each .json file is one
 // text message, sent to every connection open once it is seen (the folder is looked at every
-// 200ms, new files in the order of their names); a connection gets what comes once it is open.
+// 200ms, new files in the order of their names), each read once, so put in whole: written under
+// another name and renamed (fixtures.ts, dropWhole); a connection gets what comes once it is open.
 //
 // What a connection sends it, its subscription, is a line of `heard.log` in `dir`, where the tests
 // read it, and what each asked for when it opened (its path and query) a line of `asked.log`; a

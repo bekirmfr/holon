@@ -10,7 +10,7 @@
 // `holon deploy` (no browser), so pointer-event layout changes can't break them.
 
 import { appendFileSync, readFileSync } from "node:fs";
-import { expect, FOLDERS, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
+import { dropWhole, expect, FOLDERS, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
 import { enter, flowRow, gotoPage, navLink, newFlow, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun, expectVerified } from "./helpers";
 
 const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
@@ -1615,7 +1615,7 @@ test("price-feed runs on each event its feed sends, and opens the feed again fro
   await expect.poll(async () => (await said()).some((w) => w === "listens to the feed prices"), { timeout: 15_000 }).toBe(true);
   // Its key never shown.
   expect((await said()).some((w) => w.includes("e2e-not-a-key"))).toBe(false);
-  writeFileSync(join(feed, `${symbol}-1.json`), JSON.stringify({ symbol, price: 10.5 }));
+  dropWhole(feed, `${symbol}-1.json`, JSON.stringify({ symbol, price: 10.5 }));
   type Price = { price: number; at: number };
   const prices = async () => (await (await request.get(`http://127.0.0.1:${port}/prices`)).json()) as Record<string, Price>;
   await expect.poll(async () => (await prices())[symbol]?.price, { timeout: 15_000 }).toBe(10.5);
@@ -1626,7 +1626,7 @@ test("price-feed runs on each event its feed sends, and opens the feed again fro
   const before = opened().length;
   writeFileSync(join(feed, "cut"), "");
   await expect.poll(() => opened().slice(before), { timeout: 15_000 }).toEqual([`${symbol}-1`]);
-  writeFileSync(join(feed, `${symbol}-2.json`), JSON.stringify({ symbol, price: 11 }));
+  dropWhole(feed, `${symbol}-2.json`, JSON.stringify({ symbol, price: 11 }));
   await expect.poll(async () => (await prices())[symbol]?.price, { timeout: 15_000 }).toBe(11);
 
   // The admin's resources show the feed without its query; permissions, that price-feed listens.
@@ -1640,7 +1640,7 @@ test("price-feed runs on each event its feed sends, and opens the feed again fro
 });
 
 test("payout-events runs each message its queue holds once, and sends a failed payout's retry to the FIFO queue", async ({ page, request, adminToken }) => {
-  const { existsSync, writeFileSync } = await import("node:fs");
+  const { existsSync } = await import("node:fs");
   const { join } = await import("node:path");
   // The e2e server's SQS (sqs-server.mjs): a message is a file dropped in its queue's folder;
   // sent.log and deleted.log say what the host sent and deleted.
@@ -1667,8 +1667,8 @@ test("payout-events runs each message its queue holds once, and sends a failed p
   await expect.poll(async () => (await said()).some((w) => w === "listens to the queue payout_events"), { timeout: 15_000 }).toBe(true);
   // Its key never shown.
   expect((await said()).some((w) => w.includes("e2e-not-a-secret"))).toBe(false);
-  writeFileSync(join(sqs, "payout-events", `${stamp}-1.json`), event("payout.paid", 1));
-  writeFileSync(join(sqs, "payout-events", `${stamp}-2.json`), event("payout.failed", 2));
+  dropWhole(join(sqs, "payout-events"), `${stamp}-1.json`, event("payout.paid", 1));
+  dropWhole(join(sqs, "payout-events"), `${stamp}-2.json`, event("payout.failed", 2));
   type Payout = { status: string; event: string; account: string };
   const payouts = async () => (await (await request.get(`http://127.0.0.1:${port}/payouts`)).json()) as Record<string, Payout>;
   await expect.poll(async () => [(await payouts())[id(1)]?.status, (await payouts())[id(2)]?.status], { timeout: 15_000 }).toEqual(["paid", "failed"]);

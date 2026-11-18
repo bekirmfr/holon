@@ -3,7 +3,7 @@
 // session in the browser, as signing in leaves it (server.ts's holon.session). Ports, and the
 // folder of run files, are the run's slot's (ports.mjs).
 
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,6 +46,15 @@ export const ISSUER = `http://127.0.0.1:${PORTS.oidc}`;
 /** The folders the main test server binds (server.mjs) for the inbox-report and log-archive samples: outside its
  *  data, as an admin binds them. */
 export const FOLDERS = join(tmpdir(), `holon-e2e-folders-${PORTS.server}`);
+/** A message for a stand-in that reads each file in its folder once, when it next looks (the
+ *  queue's sqs-server.mjs, the feeds' sse-server.mjs and ws-server.mjs, every 200ms): written
+ *  under a name they pass over, then renamed to `name`. Written in place, a look between the file
+ *  made and its text written takes an empty message, for good. */
+export function dropWhole(folder: string, name: string, text: string) {
+  const aside = join(folder, `.${name}.part`);
+  writeFileSync(aside, text);
+  renameSync(aside, join(folder, name));
+}
 export const ADMIN = { name: "e2e", password: "e2e-password-0123" };
 
 /** How long the editor may take to load in a page: its core (the wasm, built unoptimized for the
