@@ -268,13 +268,17 @@ pub(crate) fn never_kept(never_keep: &[String], entry: &mut crate::recorder::Log
 /// each such value as (`firing::run_id_of`, audit R80), and what its timer measures a step as
 /// (`secrets::Measured`).
 ///
-/// Its record is redacted of more, found only as the run goes (its tokens, what its calls
-/// answered, what it computed from a secret, a guarded value met first in a call's answer and
-/// held again in a request's text): an input holding one of those is written marked where the id
-/// hashed it as it was. `holon verify` then can't make the id again from the record, and takes
-/// it as the record says, as it does for any run whose inputs carry a mark it can't account for.
-/// No worse than the record: what the id hashed that the record marks is still a value guessed
-/// only with the rest of what started the run, never one the record leaves out by key.
+/// Its record is redacted of more, found only as the run goes (its tokens, what it computed from a
+/// secret, a guarded value met first in a call's answer or a row, and a secret set while it ran):
+/// an input holding one of those is written marked where the id hashed it as it was. `holon
+/// verify` then can't make the id again from the record, and takes the log's id as given, saying
+/// so, where what started the run carries a mark this couldn't have written
+/// ([`keyed_at_start`]).
+///
+/// A limit, not closed here: for such a value the id still hashes what the record marks, so it
+/// can be guessed from the id and the nonce beside it (a short tainted value a call answered, held
+/// in the request under another key: an email looked up as `q`, whose key `email` the start never
+/// saw). Closing it takes an id the record can't recompute alone (a salted one), the owner's call.
 pub(crate) fn start_marks<'v>(
     secrets: &crate::secrets::Vault,
     taint: &[String],
@@ -293,6 +297,23 @@ pub(crate) fn start_marks<'v>(
     marked.and(Redactor::tainted(&found)).and(Redactor::never_kept(crate::never_keep::Places::new(never_keep), &never))
 }
 
+/// The texts under a key the start guards by its place, in `started` (a run's started values as its
+/// record writes them, as verify reads them): each found as [`start_marks`] finds a value by its
+/// key (a key the flow taints, the four credential headers, a key it never keeps), one a place it
+/// stands, the credential's whole. A guarded key's mark inside one of them is where the start
+/// wrote it too; the same mark elsewhere may stand for another value, met as the run went (a
+/// guarded key's mark names its key, not its value).
+pub(crate) fn keyed_at_start<'v>(taint: &[String], never_keep: &[String], started: impl IntoIterator<Item = &'v Value>) -> Vec<String> {
+    let keys: Vec<&str> = holon_core::ALWAYS_TAINTED.iter().copied().chain(taint.iter().map(String::as_str)).chain(never_keep.iter().map(String::as_str)).collect();
+    let mut found: Vec<(String, String)> = Vec::new();
+    for v in started {
+        if names_a_key(v, &keys) {
+            svalue_tainted(&crate::wire::SValue::from_core(v), &keys, &mut found);
+        }
+    }
+    found.into_iter().map(|(_, value)| value).filter(|value| value.contains('‹')).collect()
+}
+
 /// The values under `keys` in `values`, found as [`tainted`] finds them in an entry. A value that
 /// names none of them, either case, is passed by uncopied.
 fn found_in<'v>(keys: &[&str], values: impl IntoIterator<Item = &'v Value>, marked: &crate::secrets::Redactor) -> Vec<(String, String)> {
@@ -305,16 +326,27 @@ fn found_in<'v>(keys: &[&str], values: impl IntoIterator<Item = &'v Value>, mark
     held_with_parts(found, marked)
 }
 
-/// Whether any text of `v`, a record's field names included, holds one of `keys`, either case.
+/// Whether [`svalue_tainted`] would find anything under `keys` in `v`, looked at as it looks: a
+/// record's field or a header's name that is one of them, a text it reads for keys
+/// ([`text_names_a_key`]). Not a text's every byte: a 200 KiB body that is neither JSON nor a form
+/// is passed by, as the record's own search passes it by (R80's cost, performance.md).
 fn names_a_key(v: &Value, keys: &[&str]) -> bool {
-    let text = |s: &str| keys.iter().any(|k| contains_either_case(s, k));
     match v {
-        Value::Text(s) => text(s),
-        Value::Record(fields) => fields.iter().any(|(k, x)| text(k) || names_a_key(x, keys)),
-        Value::List(xs) => xs.iter().any(|x| names_a_key(x, keys)),
+        Value::Text(s) => text_names_a_key(s, keys),
+        Value::Record(fields) => fields.iter().any(|(k, x)| key_of(keys, k).is_some() || names_a_key(x, keys)),
+        Value::List(xs) => {
+            matches!(xs.as_slice(), [Value::Text(name), _] if key_of(keys, name).is_some()) || xs.iter().any(|x| names_a_key(x, keys))
+        }
         Value::Effect { payload, .. } | Value::Sum { payload, .. } => names_a_key(payload, keys),
         Value::Number(_) | Value::Boolean(_) | Value::Bytes(_) => false,
     }
+}
+
+/// Whether [`text_tainted`] reads `s` for keys: it is JSON or holds a form's `=`, and names one
+/// of `keys`, either case.
+fn text_names_a_key(s: &str, keys: &[&str]) -> bool {
+    let t = s.trim_start();
+    (t.starts_with('{') || t.starts_with('[') || s.contains('=')) && contains_any_either_case(s, keys)
 }
 
 /// [`tainted`]'s finding, for `keys`.
@@ -414,7 +446,7 @@ fn leaves(key: &str, v: &crate::wire::SValue, found: &mut Vec<(String, String)>)
 fn text_tainted(s: &str, keys: &[&str], found: &mut Vec<(String, String)>) {
     let t = s.trim_start();
     let json = t.starts_with('{') || t.starts_with('[');
-    if !(json || s.contains('=')) || !keys.iter().any(|k| contains_either_case(s, k)) {
+    if !text_names_a_key(s, keys) {
         return;
     }
     if json && let Ok(json) = serde_json::from_str::<serde_json::Value>(t) {
@@ -433,9 +465,17 @@ fn text_tainted(s: &str, keys: &[&str], found: &mut Vec<(String, String)>) {
     }
 }
 
-/// Whether `s` holds `key`, either case.
-fn contains_either_case(s: &str, key: &str) -> bool {
-    s.as_bytes().windows(key.len()).any(|w| w.eq_ignore_ascii_case(key.as_bytes()))
+/// Whether `s` holds any of `keys`, either case: one pass over it for them all, each place
+/// compared only where one of them could begin (an ASCII key's first letter, either case), not a
+/// pass a key comparing every place (R80's cost, performance.md).
+fn contains_any_either_case(s: &str, keys: &[&str]) -> bool {
+    let mut begins = [false; 256];
+    for k in keys.iter().filter_map(|k| k.as_bytes().first()) {
+        begins[k.to_ascii_lowercase() as usize] = true;
+        begins[k.to_ascii_uppercase() as usize] = true;
+    }
+    let b = s.as_bytes();
+    b.iter().enumerate().any(|(i, c)| begins[*c as usize] && keys.iter().any(|k| b.get(i..i + k.len()).is_some_and(|w| !k.is_empty() && w.eq_ignore_ascii_case(k.as_bytes()))))
 }
 
 /// The values under tainted keys anywhere in JSON: a text as it is, a number as it is written,

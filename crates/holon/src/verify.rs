@@ -1695,13 +1695,12 @@ fn rerun(
     let nonce = bytes_of(&entry.nonce).and_then(|b| <[u8; 16]>::try_from(b).ok());
     // A run's id hashes what started it as its record writes it (`firing::run_id_of`, R80), so
     // it is made again from the record's own values as they are, marks and all. A run whose
-    // record marks in what started it a value found only as it went (a token, what a call
-    // answered, a value computed from a secret: `data::start_marks`) hashed that value as it
-    // was, which the log never holds: its id can't be made again, and the log's stands, as what
-    // the log kept stands in for a node fed one. Only a mark the log wrote counts: a look-alike a
-    // caller sent is computed with, and an id that isn't made again from a record without one is
-    // not the run's.
-    let never_keep = read_server(deployed, resolver).map(|s| s.never_keep).unwrap_or_default();
+    // record marks in what started it a value found only as it went (a token, a guarded value a
+    // call answered or a row held, a value computed from a secret: `data::start_marks`) hashed
+    // that value as it was, which the log never holds: its id can't be made again, and the log's
+    // stands, as what the log kept stands in for a node fed one. Only a mark the log wrote
+    // counts: a look-alike a caller sent is computed with, and an id that isn't made again from
+    // a record without one is not the run's.
     let written = |v: &crate::wire::SValue| v.clone().into_core();
     let id_inputs: Vec<Option<Value>> = inputs.iter().map(|_| entry.request.as_ref().map(written)).collect();
     let id_extra: Vec<(Capability, Value)> = entry.sourced.iter().zip(&extra).map(|((_, v), (cap, _))| (cap.clone(), written(v))).collect();
@@ -1710,13 +1709,28 @@ fn rerun(
         let id = |state: Option<&State>| to_hex(&run_id_of(deployment, &id_inputs, state, &id_extra, &nonce, None));
         id_state.as_ref().is_some_and(|s| id(Some(s)) == entry.run_id) || (state.is_empty() && id(None) == entry.run_id)
     });
-    // Only a mark of a value the start couldn't know lets the log's id stand: a token's (as its
-    // text, or respelled) or a value computed from a secret's. A secret, a tainted or a never-kept
-    // value is marked at the start as the record marks it, so a record that carries only those
-    // makes its id again, or the id isn't the run's. (A guarded value the start met first outside
-    // its key, a rare case, then reads as a changed id: stricter, never looser.)
-    let found_later = |v: &Value| ["token:", "respelled:token:", Marks::DERIVED].iter().any(|kind| !marks.rest_of(kind, v).is_empty());
-    given.id = !made && inputs.iter().flatten().chain(state.iter().map(|(_, v)| v)).chain(extra.iter().map(|(_, v)| v)).any(found_later);
+    // The log's id stands only where a mark in what started the run is one the start couldn't have
+    // written (`data::start_marks`), so the id hashed what it stood for as it was: a token's, a
+    // value computed from a secret's, a guarded value the run met first in a call's answer or a
+    // row and the record then marked where else it stood. The start writes a secret's mark wherever
+    // its value is, and a guarded key's where it finds it by that key (`data::keyed_at_start`, run
+    // here on the record): a record whose marks are all such makes its id again, or the id isn't
+    // the run's.
+    let (taint, never_keep) = read_server(deployed, resolver).map(|s| (s.taint, s.never_keep)).unwrap_or_default();
+    let started: Vec<&Value> = inputs.iter().flatten().chain(state.iter().map(|(_, v)| v)).chain(extra.iter().map(|(_, v)| v)).collect();
+    // Counted a place each: a guarded key's mark names its key, not its value, so the same mark
+    // outside a value under a guarded key may stand for one met as the run went.
+    let mut everywhere = BTreeMap::new();
+    started.iter().for_each(|v| marks.count_in_value(v, &mut everywhere));
+    let mut keyed = BTreeMap::new();
+    data::keyed_at_start(&taint, &never_keep, started.iter().copied()).iter().for_each(|s| marks.count_in(s, &mut keyed));
+    let at_start = |placeholder: &str, places: usize| {
+        let stands_for = placeholder.strip_prefix(marks.start.as_str()).unwrap_or(placeholder);
+        let stands_for = stands_for.strip_prefix("respelled:").unwrap_or(stands_for);
+        let by_key = stands_for.starts_with("taint:") || stands_for.starts_with(Marks::NEVER_KEPT);
+        stands_for.starts_with("secret:") || (by_key && keyed.get(placeholder).is_some_and(|under_key| *under_key >= places))
+    };
+    given.id = !made && everywhere.iter().any(|(p, places)| !at_start(p, *places));
     let id_matches = made || given.id;
     if !id_matches {
         differs.push("its run id");
@@ -2708,6 +2722,27 @@ impl Marks {
         self.rest_of("token:", v)
     }
 
+    /// Each placeholder in `s`, whole (its start, what it stands for, its end), counted once a
+    /// place it stands, into `counts`.
+    fn count_in(&self, s: &str, counts: &mut BTreeMap<String, usize>) {
+        for (i, _) in s.match_indices(self.start.as_str()) {
+            let rest = &s[i..];
+            *counts.entry(rest[..rest.find('›').map_or(rest.len(), |e| e + '›'.len_utf8())].to_string()).or_default() += 1;
+        }
+    }
+
+    /// [`Marks::count_in`], each text of `v`, its record's field names included.
+    fn count_in_value(&self, v: &Value, counts: &mut BTreeMap<String, usize>) {
+        let found = std::cell::RefCell::new(BTreeMap::new());
+        secrets::value_holds(v, &|s: &str| {
+            self.count_in(s, &mut found.borrow_mut());
+            false
+        });
+        for (p, n) in found.into_inner() {
+            *counts.entry(p).or_default() += n;
+        }
+    }
+
     /// What follows `kind` in each placeholder of that kind in `v`, up to the placeholder's end.
     fn rest_of(&self, kind: &str, v: &Value) -> BTreeSet<String> {
         let start = format!("{}{kind}", self.start);
@@ -3233,7 +3268,7 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
     }
     if !r.ids_given.is_empty() {
         out += &format!(
-            "  {} checked given the run id the log kept (made from what the run received that it found only as it went, a resume token; not computed again)\n",
+            "  {} checked given the run id the log kept (it hashed a value the run found only as it went, as it was: a resume token, or a guarded value a call answered or a row held; not computed again)\n",
             count_of(&r.ids_given)
         );
     }

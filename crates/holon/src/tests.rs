@@ -2476,7 +2476,10 @@ fn a_run_id_is_recomputable_from_its_log_entry() {
 /// the two ids. And for each, the id isn't the one the value as it was makes, with the rest of the
 /// record as it is (a secret's mark names which value it was, so two runs sending two values read
 /// differently; this is its row's check), and `holon verify` makes every id again from the record,
-/// none taken as given.
+/// none taken as given. And two rows where the start can't know the value: a guarded value the run
+/// meets first in a call's answer, and in a row, the request holding it under another key. The
+/// record writes the request's value as its mark; the id hashed it as it was (a limit, said in
+/// checking-runs.md), so verify takes the log's id as given, says why, and never that it differs.
 ///
 /// **Why:** the id was a hash of the inputs as the run had them, and the record keeps it beside
 /// its nonce and everything else it hashes: a value it leaves out was a few guesses away (a CVC a
@@ -2564,6 +2567,47 @@ fn a_runs_id_hashes_what_its_record_keeps() {
     if !report.ids_given.is_empty() || !report.ok() || report.reruns.iter().any(|(_, r)| *r != verify::Rerun::Matched) {
         wrong.push(format!("holon verify: {}", verify::describe(&report, None)));
     }
+
+    // A guarded value a run meets first as it goes, in a call's answer or a row, under its key:
+    // the record marks it wherever else it stands, the request too (a lookup by it under another
+    // key, `q`), which the start can't know. Its id hashed `q` as it was (a limit: the start can't
+    // mark what it hasn't met), so it isn't made again from the record, and verify takes the log's
+    // id as given, saying so, rather than saying it differs.
+    let (host, _) = counting_server();
+    let dir = std::env::temp_dir().join(format!("holon-ids-late-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let people = serde_json::json!({ "name": "people", "path": dir.join("people.db").display().to_string(), "schema": "create table people (email text not null)" });
+    assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&people).unwrap())).status_code, 200);
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport host from \"host:{host}\"\nimport people from \"database:people\"\n\nflow(\"ids-late\", {{ port: 18632, taint: [\"email\"] }})\n\nroute.post(\"/add\", (req) => {{\n  people.exec(\"insert into people (email) values ($1)\", req.body)\n  return \"ok\"\n}})\n\nroute.get(\"/call\", async (req) => {{\n  const got = await host.post(\"/ascii\", {{ body: JSON.stringify({{ email: req.query.q }}) }})\n  return {{ status: got.status }}\n}})\n\nroute.get(\"/row\", (req) => {{\n  const row = people.one(\"select email from people where email = $1\", req.query.q)\n  return {{ found: row.email === req.query.q }}\n}})\n"
+    );
+    let late = deploy_text(&state, &text, &host);
+    let email = "bob@example.com";
+    let added = data_call(&state, &late, "POST", "/add", email);
+    assert_eq!(added.0, 200, "{}", added.1);
+    // (the row, the path it asks)
+    let late_rows = [("a guarded value a call answered", "/call"), ("a guarded value a row held", "/row")];
+    for (row, path) in late_rows {
+        let (status, answer, _) = data_call(&state, &late, "GET", &format!("{path}?q={}", email.replace('@', "%40")), "");
+        if status != 200 {
+            wrong.push(format!("{row}: answered {status}: {answer}"));
+        }
+        let entry = log_entries(&state, &late).last().unwrap().clone();
+        if !entry["request"].to_string().contains("‹taint:email›") || entry.to_string().contains(email) {
+            wrong.push(format!("{row}: its record doesn't write the request's value as its mark: {}", entry["request"]));
+        }
+    }
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{late}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let said = verify::describe(&report, None);
+    // The add run (seq 0) has its id made again; each lookup's is taken as given.
+    if report.ids_given != vec![1, 2] || !report.ok() || report.reruns.iter().any(|(_, r)| *r != verify::Rerun::Matched) {
+        wrong.push(format!("holon verify, the guarded values met as a run went (ids given {:?}): {said}", report.ids_given));
+    }
+    if said.contains("its run id") || !said.contains("a guarded value a call answered or a row held") {
+        wrong.push(format!("holon verify doesn't name why the lookups' ids are taken as given: {said}"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 

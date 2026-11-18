@@ -20,7 +20,8 @@
   its mark, so that the id beside its nonce isn't a CVC a thousand tries away either, and verify
   makes it again from the record; a step is kept or left out, for its size, as the record writes
   it, the value as its mark. The **card-check** sample shows it.
-- **A run's id says nothing its record leaves out.** The id is in a run's record beside its nonce
+- **A run's id hashes a guarded value as its record writes it, where the run knows it at the
+  start.** The id is in a run's record beside its nonce
   and everything else it hashes, and it hashed what started the run as it was: a value the record
   marks could be found from the record by guessing until the id came out the same. A weak password
   in an `authorization` header, a tainted card number whose first six digits are a bank's and
@@ -30,7 +31,10 @@
   credential's parts) and a value never kept, each as its mark. A short tainted value the record
   keeps in clear is hashed as kept. `holon verify` makes the id again from the record, so a run
   that received a secret (a bearer token equal to one) is now checked rather than taken as the
-  record says; one that received a token the run finds only as it goes (a resume link's) still is.
+  record says; one that received a value the run finds only as it goes still is: a resume link's
+  token, or a tainted value it meets first in a call's answer or a database row (an email it
+  looked up as `?q=`, answered under `email`). For that value the id still hashes it as it was,
+  so a guess at it can be checked against the id: a limit, which a salted id would close.
 - **A change to a deployment that isn't saved says so, and a crash doesn't run a part twice.** A
   deploy, a removal, a grant or a revoke, a pause, a stop or a run, a deployment's settings, its
   state put back, a decision on a waiting run and a run that waits (its token) each answered 200

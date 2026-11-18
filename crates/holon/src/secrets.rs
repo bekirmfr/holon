@@ -1646,36 +1646,56 @@ impl Redactor {
     /// run's id hashes (`firing::run_id_of`, audit R80): the id is in its record beside its nonce,
     /// so it hashes nothing the record leaves out. `v` as it is where none of that touches it.
     pub(crate) fn logged_value<'v>(&self, v: &'v holon_core::Value) -> std::borrow::Cow<'v, holon_core::Value> {
-        if self.places.is_none() && self.leaves_alone(v) {
-            return std::borrow::Cow::Borrowed(v);
-        }
-        let mut s = SValue::from_core(v);
         if let Some(places) = &self.places {
+            let mut s = SValue::from_core(v);
             places.svalue(&mut s);
+            self.logged_svalue(&mut s);
+            return std::borrow::Cow::Owned(s.into_core());
         }
-        self.logged_svalue(&mut s);
-        std::borrow::Cow::Owned(s.into_core())
+        match self.logged_core(v) {
+            Some(written) => std::borrow::Cow::Owned(written),
+            None => std::borrow::Cow::Borrowed(v),
+        }
     }
 
-    /// Whether writing `v` as the record does ([`Redactor::logged_value`]) leaves it as it is: no
-    /// text that holds a value or reads as a mark, no number that is a tainted value as written,
-    /// no bytes (whose texts are looked into). Looked at, not copied.
-    fn leaves_alone(&self, v: &holon_core::Value) -> bool {
+    /// `v` as [`Redactor::logged_svalue`] writes it, in one walk: each text looked at once, and
+    /// only what changes copied (a record's other fields cloned beside it). None where nothing
+    /// does. A request's 200 KiB body beside a marked header is read once, rather than looked at,
+    /// copied whole and read again (R80's cost, performance.md).
+    fn logged_core(&self, v: &holon_core::Value) -> Option<holon_core::Value> {
         use holon_core::Value;
-        let text = |s: &str| !s.contains('‹') && !self.holds(s);
+        let text = |s: &str| self.logged(s).map(|(out, _)| out);
         match v {
-            Value::Text(s) => text(s),
+            Value::Text(s) => text(s).map(Value::Text),
             Value::Number(n) => {
                 // As `tainted_numbers` writes it.
                 let written = format!("{n}");
-                !self.pairs.iter().any(|(value, mark)| is_keyed(mark) && *value == written)
+                self.pairs.iter().find(|(value, mark)| is_keyed(mark) && *value == written).map(|(_, mark)| Value::Text(mark.clone()))
             }
-            Value::Boolean(_) => true,
-            Value::Bytes(_) => false,
-            Value::List(xs) => xs.iter().all(|x| self.leaves_alone(x)),
-            Value::Record(fields) => fields.iter().all(|(k, x)| text(k) && self.leaves_alone(x)),
-            Value::Effect { sink, payload } => text(sink) && self.leaves_alone(payload),
-            Value::Sum { payload, .. } => self.leaves_alone(payload),
+            Value::Boolean(_) => None,
+            // Their texts looked into, as the record does.
+            Value::Bytes(_) => {
+                let mut s = SValue::from_core(v);
+                self.logged_svalue(&mut s);
+                Some(s.into_core()).filter(|w| w != v)
+            }
+            Value::List(xs) => {
+                let written: Vec<Option<Value>> = xs.iter().map(|x| self.logged_core(x)).collect();
+                written.iter().any(Option::is_some).then(|| Value::List(xs.iter().zip(written).map(|(x, w)| w.unwrap_or_else(|| x.clone())).collect()))
+            }
+            Value::Record(fields) => {
+                let written: Vec<(Option<String>, Option<Value>)> = fields.iter().map(|(k, x)| (text(k), self.logged_core(x))).collect();
+                // In key order as a record keeps it: a key marked may sort elsewhere, and of two
+                // written the same the later stands, as `into_core` keeps it.
+                written.iter().any(|(k, x)| k.is_some() || x.is_some()).then(|| {
+                    Value::Record(fields.iter().zip(written).map(|((k, x), (wk, wx))| (wk.unwrap_or_else(|| k.clone()), wx.unwrap_or_else(|| x.clone()))).collect())
+                })
+            }
+            Value::Effect { sink, payload } => {
+                let (ws, wp) = (text(sink), self.logged_core(payload));
+                (ws.is_some() || wp.is_some()).then(|| Value::Effect { sink: ws.unwrap_or_else(|| sink.clone()), payload: Box::new(wp.unwrap_or_else(|| (**payload).clone())) })
+            }
+            Value::Sum { arm, payload } => self.logged_core(payload).map(|p| Value::Sum { arm: *arm, payload: Box::new(p) }),
         }
     }
 }

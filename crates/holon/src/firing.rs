@@ -669,7 +669,10 @@ fn run_attempt(
     prior: Vec<Round>,
     claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>, bool)>,
 ) -> Attempt {
-    let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, nonce, Some(&id_marks(permit, secrets, inputs, start.as_ref(), extra_sourced)));
+    // What its record is known to mark before it takes a step: what its id hashes each started
+    // value as, and what its timer measures a step as (below). Made once.
+    let start_marks = id_marks(permit, secrets, inputs, start.as_ref(), extra_sourced);
+    let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, nonce, Some(&start_marks));
     // Its resume tokens are derived from its id (durable.rs).
     // Hex once: its resume tokens, its claims and its entry all name it so.
     let run_hex = to_hex(&run_id);
@@ -731,9 +734,7 @@ fn run_attempt(
     // what started the run, by its text, in each step that holds one, with a secret or not:
     // whether a step is kept doesn't say how long it was.
     if (!secret_fed.is_empty() || !permit.never_keep.is_empty()) && !waits.unrecorded {
-        // What its record is known to mark before it takes a step, as its id is made.
-        let marks = id_marks(permit, secrets, inputs, start.as_ref(), extra_sourced);
-        timer = timer.measured(Box::new(secrets::Measured::new(secret_fed.clone(), born_key.clone(), run_hex.clone(), marks)));
+        timer = timer.measured(Box::new(secrets::Measured::new(secret_fed.clone(), born_key.clone(), run_hex.clone(), start_marks)));
     }
     // Outbound requests go only where the grant allows, within its limits.
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
