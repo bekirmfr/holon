@@ -190,8 +190,12 @@ Sending (`payouts.send({ data, group })`, a sink) is `queues.rs`'s, as mail's is
 run's messages are spooled (`queue-spool/` beside `--queues`) before its record is written, held
 until it is on disk, then sent in order by an outbox thread for each queue, tried again for a day
 on what SQS says is temporary. A FIFO queue's message carries its group (the deployment's name
-unless given) and a deduplication id of the run's id and the send's place in it. A restart sends
-what the spool holds whose run its log holds.
+unless given) and a deduplication id of the run's id and the send's place in it. Once its run's
+record is on disk, a message's spool file is marked landed (`<name>.landed.msg`), as a mail's is.
+A restart sends what is marked without asking the log, which may have let the run go by then;
+for one not marked (the moments before a crash) it asks the log: its run found and finished,
+sent; not found in a log read whole, removed; not found in one that can't all be read, kept and
+said in the admin's warnings until a restart that reads it (`spools.rs`).
 
 ### Actions and flow calls
 
