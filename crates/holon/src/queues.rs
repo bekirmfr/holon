@@ -889,48 +889,82 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str, sees_where: b
 /// `holon queue add NAME --url SOURCE [--visibility T] [--keep-failed] [--for SLUG] | list |
 /// remove NAME`: bind, show and unbind the queues of the server this user runs here (or
 /// `--server`), as an admin.
-pub(crate) fn cli(args: &[String]) -> i32 {
-    let mut server = None;
-    let mut for_deployment: Option<String> = None;
-    let mut asked = serde_json::Map::new();
-    let mut words = Vec::new();
+/// `holon queue`'s words and flags, read: what the command and the editor's Queues part share.
+pub(crate) fn read_args(args: &[String]) -> Result<crate::cmdline::BindArgs, String> {
+    let mut read = crate::cmdline::BindArgs::default();
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--server" => server = args.next().cloned(),
-            "--for" => for_deployment = args.next().cloned(),
+            "--server" => read.server = args.next().cloned(),
+            "--for" => read.for_deployment = args.next().cloned(),
             "--url" | "--visibility" => {
-                let Some(v) = args.next() else {
-                    eprintln!("holon queue: {a} takes a value\n\n{QUEUE_USAGE}");
-                    return 2;
-                };
-                asked.insert(a[2..].to_string(), serde_json::Value::String(v.clone()));
+                let Some(v) = args.next() else { return Err(format!("{a} takes a value")) };
+                read.asked.insert(a[2..].to_string(), serde_json::Value::String(v.clone()));
             }
             "--keep-failed" => {
-                asked.insert("keep_failed".into(), serde_json::Value::Bool(true));
+                read.asked.insert("keep_failed".into(), serde_json::Value::Bool(true));
             }
-            "--help" | "-h" => {
-                println!("{QUEUE_USAGE}");
-                return 0;
-            }
-            _ if !a.starts_with('-') => words.push(a.as_str()),
-            _ => {
-                eprintln!("holon queue: no option {a:?}\n\n{QUEUE_USAGE}");
-                return 2;
-            }
+            "--help" | "-h" => read.help = true,
+            _ if !a.starts_with('-') => read.words.push(a.clone()),
+            _ => return Err(format!("no option {a:?}")),
         }
     }
+    Ok(read)
+}
+
+/// The body of `POST /admin/queues` binding `name` as `read` asks.
+pub(crate) fn add_body(name: &str, read: &crate::cmdline::BindArgs) -> Result<serde_json::Value, String> {
+    if !read.asked.contains_key("url") {
+        return Err("it takes --url SOURCE, where the server reads the queue's URL".into());
+    }
+    let mut body = read.asked.clone();
+    body.insert("name".into(), serde_json::Value::String(name.to_string()));
+    body.insert("deployment".into(), serde_json::json!(read.for_deployment));
+    Ok(serde_json::Value::Object(body))
+}
+
+/// A queue binding as `holon queue list` prints it.
+pub(crate) fn line(q: &serde_json::Value) -> String {
+    // Where it is, to whoever may bind (web console L4, Q4).
+    let at = match q["address"].as_str() {
+        Some(at) => format!("{at} (from {})", q["url"].as_str().unwrap_or("")),
+        None => "where, to whoever may bind".to_string(),
+    };
+    let mut said = vec![q["name"].as_str().unwrap_or("").to_string(), at];
+    if q["fifo"].as_bool() == Some(true) {
+        said.push("FIFO".into());
+    }
+    said.push(format!("{} KiB at most", q["largest"].as_u64().unwrap_or(LARGEST) / 1024));
+    said.push(format!("out of sight for {}", folders::span_text(q["visibility"].as_u64().unwrap_or(VISIBILITY))));
+    if q["keep_failed"].as_bool() == Some(true) {
+        said.push("a failed run's message kept".into());
+    }
+    format!("{}{}", said.join("  "), q["deployment"].as_str().map_or(String::new(), |s| format!(", for {s} only")))
+}
+
+pub(crate) fn cli(args: &[String]) -> i32 {
+    let read = match read_args(args) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("holon queue: {e}\n\n{QUEUE_USAGE}");
+            return 2;
+        }
+    };
+    if read.help {
+        println!("{QUEUE_USAGE}");
+        return 0;
+    }
+    let (server, for_deployment) = (read.server.clone(), read.for_deployment.clone());
+    let words: Vec<&str> = read.words.iter().map(String::as_str).collect();
     let (method, path, body) = match words.as_slice() {
         ["list"] => ("GET", "/admin/queues".to_string(), None),
-        ["add", name] => {
-            if !asked.contains_key("url") {
-                eprintln!("holon queue add: it takes --url SOURCE, where the server reads the queue's URL\n\n{QUEUE_USAGE}");
+        ["add", name] => match add_body(name, &read) {
+            Ok(body) => ("POST", "/admin/queues".to_string(), Some(body)),
+            Err(e) => {
+                eprintln!("holon queue add: {e}\n\n{QUEUE_USAGE}");
                 return 2;
             }
-            asked.insert("name".into(), serde_json::Value::String(name.to_string()));
-            asked.insert("deployment".into(), serde_json::json!(for_deployment));
-            ("POST", "/admin/queues".to_string(), Some(serde_json::Value::Object(asked)))
-        }
+        },
         ["remove", name] => {
             let only = for_deployment.as_ref().map_or(String::new(), |d| format!("?deployment={}", crate::mcp::seg(d)));
             ("DELETE", format!("/admin/queues/{}{only}", crate::mcp::seg(name)), None)
@@ -943,23 +977,6 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     let (server, answer) = match local::admin_call("holon queue", server.as_deref(), method, &path, body.as_ref()) {
         Ok(a) => a,
         Err(code) => return code,
-    };
-    let line = |q: &serde_json::Value| {
-        // Where it is, to whoever may bind (web console L4, Q4).
-        let at = match q["address"].as_str() {
-            Some(at) => format!("{at} (from {})", q["url"].as_str().unwrap_or("")),
-            None => "where, to whoever may bind".to_string(),
-        };
-        let mut said = vec![q["name"].as_str().unwrap_or("").to_string(), at];
-        if q["fifo"].as_bool() == Some(true) {
-            said.push("FIFO".into());
-        }
-        said.push(format!("{} KiB at most", q["largest"].as_u64().unwrap_or(LARGEST) / 1024));
-        said.push(format!("out of sight for {}", folders::span_text(q["visibility"].as_u64().unwrap_or(VISIBILITY))));
-        if q["keep_failed"].as_bool() == Some(true) {
-            said.push("a failed run's message kept".into());
-        }
-        format!("{}{}", said.join("  "), q["deployment"].as_str().map_or(String::new(), |s| format!(", for {s} only")))
     };
     match words[0] {
         "list" => {
