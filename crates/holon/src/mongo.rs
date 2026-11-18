@@ -42,7 +42,7 @@ use mongodb::sync::{Client, ClientSession, Collection, Database};
 use zeroize::Zeroizing;
 
 use crate::claims::ClaimKey;
-use crate::databases::{Gather, COMMITS_TABLE};
+use crate::databases::{Gather, COMMITS_TABLE, UNREACHED};
 use crate::engines::{locks_of, lock_id, Failure, Lock, CLAIMS_TABLE, RUN_LOCK};
 use crate::permissions::Permit;
 
@@ -90,25 +90,32 @@ pub(crate) fn address_of(url: &str) -> Result<String, String> {
 }
 
 impl Mongo {
-    /// The database at `url`, reached once now, so a binding that can't connect says so.
+    /// The database at `url`, its client made: the driver reaches it on first use, and a binding
+    /// at once ([`check`](Self::check)). Within five seconds, unless the URL says how long
+    /// (`serverSelectionTimeoutMS`, `connectTimeoutMS`).
     pub(crate) fn open(url: Zeroizing<String>) -> Result<Mongo, String> {
         let address = address_of(&url)?;
         // The driver's own message could repeat the URL: never shown.
         let mut options = ClientOptions::parse(url.as_str()).run().map_err(|_| "the connection isn't a MongoDB URL Holon can read".to_string())?;
         options.app_name = Some("holon".into());
-        options.server_selection_timeout = Some(Duration::from_secs(5));
-        options.connect_timeout = Some(Duration::from_secs(5));
+        options.server_selection_timeout.get_or_insert(Duration::from_secs(5));
+        options.connect_timeout.get_or_insert(Duration::from_secs(5));
         let name = options.default_database.clone().ok_or("the connection names its database: mongodb+srv://…/notes")?;
-        let client = Client::with_options(options).map_err(|e| format!("{address} can't be reached: {}", said(&e)))?;
+        let client = Client::with_options(options).map_err(|e| format!("{address} can't be reached: {}", full(&e)))?;
         let db = client.database(&name);
-        db.run_command(doc! { "ping": 1 }).run().map_err(|e| format!("{address} can't be reached: {}", said(&e)))?;
         Ok(Mongo { address, client, db, held: Mutex::new(BTreeMap::new()), renewing: Mutex::new(false) })
+    }
+
+    /// Reach it now, so a binding that can't connect says why, to whoever binds it (they may see
+    /// where it is).
+    pub(crate) fn check(&self) -> Result<(), String> {
+        self.db.run_command(doc! { "ping": 1 }).run().map(drop).map_err(|e| format!("{} can't be reached: {}", self.address, full(&e)))
     }
 
     /// Check it can hold a transaction (a replica set, or a sharded cluster's router), and make
     /// the collections Holon keeps in it: `holon_commits` and `holon_claims`.
     pub(crate) fn keep_collections(&self) -> Result<(), String> {
-        let hello = self.db.run_command(doc! { "hello": 1 }).run().map_err(|e| format!("{} didn't answer: {}", self.address, said(&e)))?;
+        let hello = self.db.run_command(doc! { "hello": 1 }).run().map_err(|e| format!("{} didn't answer: {}", self.address, full(&e)))?;
         if hello.get_str("setName").is_err() && hello.get_str("msg").ok() != Some("isdbgrid") {
             return Err(format!(
                 "{} is a standalone server: a commit is a transaction, which needs a replica set (Atlas always is one; a server of your own runs with --replSet)",
@@ -119,7 +126,7 @@ impl Mongo {
             match self.db.create_collection(name).run() {
                 Ok(()) => {}
                 Err(e) if code_of(&e) == Some(48) => {} // there already
-                Err(e) => return Err(format!("can't keep {name} in it: {}", said(&e))),
+                Err(e) => return Err(format!("can't keep {name} in it: {}", full(&e))),
             }
         }
         Ok(())
@@ -127,7 +134,7 @@ impl Mongo {
 
     /// Its collections, read now, MongoDB's own (`system.…`) left out.
     pub(crate) fn collections(&self) -> Result<Vec<String>, String> {
-        let mut names = self.db.list_collection_names().run().map_err(|e| format!("{} didn't list its collections: {}", self.address, said(&e)))?;
+        let mut names = self.db.list_collection_names().run().map_err(|e| format!("{} didn't list its collections: {}", self.address, full(&e)))?;
         names.retain(|n| !n.starts_with("system."));
         names.sort();
         Ok(names)
@@ -275,7 +282,7 @@ impl Mongo {
                 }
                 Err(e) if code_of(&e) == Some(11000) => continue,
                 Err(e) => {
-                    eprintln!("holon: can't claim in {}: {}", self.address, said(&e));
+                    eprintln!("holon: can't claim in {}: {}", self.address, full(&e));
                     return Err(said(&e));
                 }
             }
@@ -589,8 +596,20 @@ fn code_of(e: &mongodb::error::Error) -> Option<i32> {
     }
 }
 
-/// An error said for the log: the server's message, or the driver's.
+/// An error said for a run's record: the server's own message (a command's, a write's), or, for
+/// any other kind, that the database couldn't be reached ([`UNREACHED`]). The driver's text of
+/// those can list each server it tried, by its address: the admin's, on stderr (audit R82).
 fn said(e: &mongodb::error::Error) -> String {
+    use mongodb::error::{ErrorKind, WriteFailure};
+    match e.kind.as_ref() {
+        ErrorKind::Command(_) | ErrorKind::Write(WriteFailure::WriteError(_) | WriteFailure::WriteConcernError(_)) => full(e),
+        _ => crate::failing::Failed::new(UNREACHED, full(e)).said(),
+    }
+}
+
+/// An error as the driver says it, the server's message for a command or a write: to whoever
+/// binds the database, and the admin.
+fn full(e: &mongodb::error::Error) -> String {
     use mongodb::error::{ErrorKind, WriteFailure};
     match e.kind.as_ref() {
         ErrorKind::Command(c) => format!("{} ({})", c.message, c.code_name),

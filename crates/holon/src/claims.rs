@@ -73,12 +73,13 @@ impl StateCell {
     /// Make the snapshot `hex` (its values and record already in the store) the deployment's
     /// durable state: the head is written whole and synced (`write_private`) before this returns.
     /// Called with the state's lock held, so heads land in the order changes do
-    /// (docs/L4s/request-path-L4.md, C3 b). `Err`: why it wasn't, for the caller to say: the state
-    /// in place is then not the one the server starts from again.
+    /// (docs/L4s/request-path-L4.md, C3 b). `Err`: that it wasn't, for the caller to say: the state
+    /// in place is then not the one the server starts from again. Where the head is, and the
+    /// error's own text, go to the admin (stderr), not into the run's record (audit R72).
     pub(crate) fn write_head(&self, hex: &str) -> Result<(), String> {
         let Some(head) = &self.head else { return Ok(()) };
         let written = head.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| crate::persist::write_state_head(head, hex));
-        written.map_err(|e| format!("it wasn't kept in {}: {e}", head.display()))
+        written.map_err(|e| crate::failing::Failed::new("it wasn't kept on the server's disk", format!("the state's head {}: {e}", head.display())).said())
     }
 
     /// Keep `live` (the state now in place, its lock held by the caller) as the deployment's

@@ -486,7 +486,7 @@ impl Scoped {
     pub(crate) fn signatures(&self, name: &str) -> Result<BTreeMap<String, Signature>, String> {
         let folder = self.folder(name)?;
         let mut names = Vec::new();
-        walk(&folder.path, "", &mut names)?;
+        walk(&folder.path, name, "", &mut names)?;
         let mut files = BTreeMap::new();
         for n in names {
             // One gone between the walk and now is simply not there.
@@ -631,7 +631,7 @@ impl Scoped {
     pub(crate) fn list(&self, name: &str, prefix: &str, after: Option<&str>, limit: usize) -> Result<BTreeMap<String, Value>, String> {
         let folder = self.folder(name)?;
         let mut names = Vec::new();
-        walk(&folder.path, "", &mut names)?;
+        walk(&folder.path, name, "", &mut names)?;
         names.retain(|n| n.starts_with(prefix) && after.is_none_or(|a| n.as_str() > a));
         names.sort();
         names.truncate(limit);
@@ -1047,7 +1047,7 @@ const EXISTS: &str = "a file has that name already (create-only: it isn't replac
 /// if it is capped: refused past its cap, saying how full it is.
 fn fits(name: &str, folder: &Folder, path: &Path, size: u64) -> Result<(), String> {
     let Some(cap) = folder.cap else { return Ok(()) };
-    let held = usage(&folder.path)?;
+    let held = usage(name, &folder.path)?;
     let replaced = std::fs::symlink_metadata(path).ok().filter(std::fs::Metadata::is_file).map_or(0, |m| m.len());
     let after = held.saturating_sub(replaced).saturating_add(size);
     if after > cap {
@@ -1061,12 +1061,14 @@ fn fits(name: &str, folder: &Folder, path: &Path, size: u64) -> Result<(), Strin
     Ok(())
 }
 
-/// The bytes of every file under `dir`, links not followed.
-fn usage(dir: &Path) -> Result<u64, String> {
+/// The bytes of every file under `dir`, folder `folder`'s, links not followed. One of its folders
+/// that can't be read is named as the flow names it (`named`).
+pub(crate) fn usage(folder: &str, dir: &Path) -> Result<u64, String> {
     let mut total = 0u64;
     let mut dirs = vec![dir.to_path_buf()];
     while let Some(d) = dirs.pop() {
-        let entries = std::fs::read_dir(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+        let under = d.strip_prefix(dir).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+        let entries = std::fs::read_dir(&d).map_err(|e| format!("{} can't be read: {e}", named(folder, &under)))?;
         for entry in entries.flatten() {
             let Ok(meta) = entry.metadata() else { continue };
             // The server's own files (a write beside its name, the lock file) aren't the folder's.
@@ -1265,11 +1267,20 @@ fn for_writing(root: &Path, name: &str) -> Result<Placed, String> {
     Ok(Placed { path, _dir: None })
 }
 
+/// A folder of a bound one, `folder`, as the flow names it: `under` it, or itself. Where it is on
+/// the server goes only to whoever may bind it (R51), not into a run's record (audit R72).
+fn named(folder: &str, under: &str) -> String {
+    match under {
+        "" => format!("the folder {folder:?}"),
+        _ => format!("{folder}/{under}"),
+    }
+}
+
 /// The files under `dir`, by the BLAKE3 of their bytes (hex): what `holon verify --files` answers
 /// a run's file reads from (a whole file, or part of one), when its log kept only their hash.
 pub(crate) fn files_in(dir: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
     let mut names = Vec::new();
-    walk(dir, "", &mut names)?;
+    walk(dir, &dir.display().to_string(), "", &mut names)?;
     let mut files = BTreeMap::new();
     for name in names {
         let path = dir.join(&name);
@@ -1281,15 +1292,16 @@ pub(crate) fn files_in(dir: &Path) -> Result<BTreeMap<String, PathBuf>, String> 
 }
 
 /// Every file under `dir` (as `/`-separated names after `under`) a flow may name. Links are never
-/// followed, so a listing never leaves the folder.
-fn walk(dir: &Path, under: &str, names: &mut Vec<String>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+/// followed, so a listing never leaves the folder. One of its folders that can't be read is named
+/// as the flow names it, `folder` and what is under it (`named`).
+fn walk(dir: &Path, folder: &str, under: &str, names: &mut Vec<String>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("{} can't be listed: {e}", named(folder, under)))?;
     for entry in entries.flatten() {
         let Ok(kind) = entry.file_type() else { continue };
         let Some(base) = entry.file_name().to_str().map(str::to_string) else { continue };
         let name = if under.is_empty() { base } else { format!("{under}/{base}") };
         if kind.is_dir() {
-            walk(&entry.path(), &name, names)?;
+            walk(&entry.path(), folder, &name, names)?;
         } else if kind.is_file() && bad_file_name(&name).is_none() {
             names.push(name);
             if names.len() > MAX_WALK {
