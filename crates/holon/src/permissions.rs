@@ -752,7 +752,7 @@ impl Policy {
     pub(crate) fn load(path: &crate::paths::Place) -> Result<Policy, crate::failing::Failed> {
         use crate::failing::{line_and_column, Failed};
         let Some(path) = path.at() else { return Ok(Policy::default()) };
-        let text = match std::fs::read_to_string(path) {
+        let text = match crate::at_rest::disk::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Policy::default()),
             Err(e) => return Err(Failed::new(UNREAD, format!("could not read {path:?}: {e}"))),

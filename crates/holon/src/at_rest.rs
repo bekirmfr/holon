@@ -77,6 +77,171 @@ mod faults {
     }
 }
 
+/// The data folder made to fail (audit R87). Every way into this file that touches the disk or a
+/// key asks [`data_folder`] first, or goes through one that does, and every read of the data
+/// folder elsewhere goes through [`disk`], which asks it too (the guards: tests/at_rest.rs,
+/// `every_way_into_at_rest_can_be_made_to_fail` and `no_reader_under_the_data_folder_bypasses_the_hook`).
+/// So one test fails them all and holds what every route answers, and what a listener notes, to
+/// saying neither where nor why (R71's rule: whoever asked is told what failed; where and why go
+/// to the admin): tests/run_steps.rs, `no_answer_says_where_or_why_the_data_folder_failed`. Three
+/// ways: on a thread, every file and every key ([`FAILING`] in crate::faults); a folder, every
+/// file under it, on every thread ([`fail_folder`]): a listener reads what it has seen on a
+/// thread of its own; or places alone, for the files under a folder ([`fail_sites`]).
+/// For the tests alone: in any other build `data_folder` is `Ok(())` and there is nothing to set,
+/// no error to make and no text saying one (`the_data_folder_fails_in_tests_alone`).
+#[cfg(test)]
+pub(crate) const FAILING: &str = "the data folder";
+
+/// What a failure made in the data folder says: an answer that passes it on is seen, whatever it
+/// wraps it in.
+#[cfg(test)]
+pub(crate) const MADE_TO_FAIL: &str = "the data folder made to fail";
+
+/// Whether the data folder is made to fail for `path` (none: a key, on this thread alone): its
+/// error if it is, noted where it was asked from ([`fired`]).
+#[cfg(test)]
+#[track_caller]
+fn data_folder(path: Option<&Path>) -> std::io::Result<()> {
+    let at = std::panic::Location::caller();
+    let place = || {
+        let file = at.file().replace('\\', "/");
+        format!("{}:{}", file.rsplit_once("/src/").map_or(file.as_str(), |(_, f)| f), at.line())
+    };
+    let alone = |p: &Path| {
+        let sites = FAILING_SITES.lock().unwrap();
+        !sites.is_empty() && {
+            let here = place();
+            sites.iter().any(|(dir, site)| *site == here && p.starts_with(dir))
+        }
+    };
+    if crate::faults::failing(FAILING).is_some() || path.is_some_and(failing_folder) || path.is_some_and(alone) {
+        let what = path.map_or_else(
+            || "a key".to_string(),
+            |p| {
+                let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let folder = p.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let name = if name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit()) { format!("{folder}/<hash>") } else { name };
+                format!("{name}, {}", if p.exists() { "there" } else { "new" })
+            },
+        );
+        let on = std::thread::current().name().unwrap_or("a thread of its own").to_string();
+        FIRED.lock().unwrap().push(Fired { at: place(), what, on });
+        return Err(std::io::Error::other(MADE_TO_FAIL));
+    }
+    Ok(())
+}
+
+/// A failure made in the data folder: where the hook was asked from (`file:line`, through disk's
+/// readers to their caller), what of (a file's name, or a key), and on which thread.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct Fired {
+    pub(crate) at: String,
+    pub(crate) what: String,
+    pub(crate) on: String,
+}
+
+/// The failures made since [`fired`] was last asked, on every thread.
+#[cfg(test)]
+static FIRED: Mutex<Vec<Fired>> = Mutex::new(Vec::new());
+
+/// The failures made in the data folder since this was last asked, oldest first: what lets a
+/// sweep say which hook each answer came from, and which hook no answer did.
+#[cfg(test)]
+pub(crate) fn fired() -> Vec<Fired> {
+    std::mem::take(&mut *FIRED.lock().unwrap())
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn data_folder(_path: Option<&Path>) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// The folders whose files are made to fail, on every thread ([`fail_folder`]).
+#[cfg(test)]
+static FAILING_FOLDERS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Every file under `dir` fails to be read or written through this file, on every thread, until
+/// [`heal_folder`]: each test's data folder is its own, so no other test's is touched.
+#[cfg(test)]
+pub(crate) fn fail_folder(dir: &Path) {
+    FAILING_FOLDERS.lock().unwrap().push(dir.to_path_buf());
+}
+
+/// `dir`'s files are read and written again.
+#[cfg(test)]
+pub(crate) fn heal_folder(dir: &Path) {
+    FAILING_FOLDERS.lock().unwrap().retain(|d| d != dir);
+}
+
+#[cfg(test)]
+fn failing_folder(path: &Path) -> bool {
+    FAILING_FOLDERS.lock().unwrap().iter().any(|d| path.starts_with(d))
+}
+
+/// Places made to fail alone, each `file:line` as [`fired`] notes it, for the files under a
+/// folder, on every thread, until [`heal_sites`]: a read kept in memory, failed from before it is
+/// read, or one behind another hook that passes (the sweep's second pass). Only under the folder,
+/// so no other test's files fail with them.
+#[cfg(test)]
+static FAILING_SITES: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
+
+/// Each of `sites` fails for the files under `dir`, on every thread.
+#[cfg(test)]
+pub(crate) fn fail_sites(dir: &Path, sites: &[String]) {
+    FAILING_SITES.lock().unwrap().extend(sites.iter().map(|s| (dir.to_path_buf(), s.clone())));
+}
+
+/// `dir`'s sites are read and written again.
+#[cfg(test)]
+pub(crate) fn heal_sites(dir: &Path) {
+    FAILING_SITES.lock().unwrap().retain(|(d, _)| d != dir);
+}
+
+/// The data folder read below what this file seals: a run log's lines, a listing, a file another
+/// reads whole. Each asks [`data_folder`] for its path, then reads as `std::fs` does, so a read of
+/// the data folder anywhere can be made to fail with the rest (R87). Every read under the data
+/// folder outside this file is one of these: what may read past them, and why, is the guard's
+/// READERS (tests/at_rest.rs).
+pub(crate) mod disk {
+    use std::path::Path;
+
+    /// A read's error as whoever asked may be told it: [`crate::failing::FILE_UNREAD`], the kind
+    /// kept; where and why for the admin (audit R87).
+    fn unread(path: &Path, e: std::io::Error) -> std::io::Error {
+        crate::failing::Failed::of_file(crate::failing::FILE_UNREAD, path, e)
+    }
+
+    /// `std::fs::read`, asking first.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn read(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
+        let path = path.as_ref();
+        super::data_folder(Some(path)).and_then(|()| std::fs::read(path)).map_err(|e| unread(path, e))
+    }
+
+    /// `std::fs::read_to_string`, asking first.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn read_to_string(path: impl AsRef<Path>) -> std::io::Result<String> {
+        let path = path.as_ref();
+        super::data_folder(Some(path)).and_then(|()| std::fs::read_to_string(path)).map_err(|e| unread(path, e))
+    }
+
+    /// `std::fs::File::open`, asking first.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn open(path: impl AsRef<Path>) -> std::io::Result<std::fs::File> {
+        let path = path.as_ref();
+        super::data_folder(Some(path)).and_then(|()| std::fs::File::open(path)).map_err(|e| unread(path, e))
+    }
+
+    /// `std::fs::read_dir`, asking first.
+    #[cfg_attr(test, track_caller)]
+    pub(crate) fn read_dir(path: impl AsRef<Path>) -> std::io::Result<std::fs::ReadDir> {
+        let path = path.as_ref();
+        super::data_folder(Some(path)).and_then(|()| std::fs::read_dir(path)).map_err(|e| unread(path, e))
+    }
+}
+
 /// A 256-bit key, wiped from memory when dropped.
 pub(crate) type Key = Zeroizing<[u8; 32]>;
 
@@ -147,6 +312,14 @@ pub(crate) fn key_missing_in(e: &std::io::Error) -> bool {
     e.get_ref().and_then(|i| i.downcast_ref::<Unreadable>()).is_some_and(Unreadable::key_missing)
 }
 
+/// What whoever made keys.json be written (a rotation, a forget, a scope made) is told when it
+/// isn't: where and why go to stderr (audit R87).
+pub(crate) const KEYS_UNWRITTEN: &str = "the server couldn't write its keys";
+
+/// What whoever needed a scope's key (to seal a line, a secret, a unit) is told when it can't be
+/// read or made.
+pub(crate) const KEY_UNREAD: &str = "the server couldn't read or make one of its keys";
+
 /// What to do about a record whose key is missing, said once wherever one is found.
 pub(crate) const RESTORE_KEYS: &str = "keys.json is older than the data, or isn't the one that goes with this data folder: \
      restore the one that does (a backup folder keeps a copy, holon-archive-keys.json); nothing of it is read or written until then";
@@ -155,19 +328,65 @@ pub(crate) const RESTORE_KEYS: &str = "keys.json is older than the data, or isn'
 /// watch's), read: none if there is no file yet. One that is there but doesn't open (a key
 /// missing, damage) or doesn't parse is an error, never none: taken as none, the listener would
 /// run again on what it ran, or mark as seen what waits unrun, then write over the file.
-pub(crate) fn read_seen<T: serde::de::DeserializeOwned>(path: &Path, scope: &str, role: &str) -> Result<Option<T>, String> {
-    match read_sealed_in(path, scope, role)? {
-        Some(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("{}: {e}", path.display())),
-        None => Ok(None),
+/// Its error tells what to do, in fixed words: restore keys.json when a key is missing, and
+/// otherwise make the file readable or remove it. Where and why are the admin's alone (audit R91):
+/// the deployment's events and its live status, which say it, are read by whoever may view the
+/// deployment.
+pub(crate) fn read_seen<T: serde::de::DeserializeOwned>(path: &Path, scope: &str, role: &str) -> Result<Option<T>, crate::failing::Failed> {
+    // Why begins with where, once: `<path>: <why>`, as stderr says it ([`note_seen`] leaves where
+    // to the warning's place).
+    let unseen = |key_missing: bool, why: String| {
+        let todo = if key_missing { format!("A key it was sealed under is missing: {RESTORE_KEYS}") } else { SEEN_TODO.to_string() };
+        crate::failing::Failed::reason(todo, why)
+    };
+    let here = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let bytes = match disk::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // disk's error: why, for the admin, is the Failed's it holds, which says where already.
+        Err(e) => return Err(unseen(false, crate::failing::Failed::in_io(&e).map_or_else(|| here(&e), |f| f.for_the_admin().to_string()))),
+    };
+    let opened = keys().open_file_in(Some(scope), role, &bytes).map_err(|u| unseen(u.key_missing(), here(&u)))?;
+    serde_json::from_slice(&opened).map(Some).map_err(|e| unseen(false, here(&e)))
+}
+
+/// What to do about a listener's record that doesn't open, but for a key missing.
+const SEEN_TODO: &str = "The server's warnings say which file and why: make it readable again, or remove it to start over, \
+     which takes what is there now as seen";
+
+/// What a listener says when what it has seen doesn't open ([`read_seen`]): it is held, in fixed
+/// words; why is kept for stderr and the warnings ([`note_seen`]).
+pub(crate) fn seen_held(what: &str, e: crate::failing::Failed) -> crate::failing::Failed {
+    e.retold(|todo| format!("what it has seen of {what} can't be read: it runs nothing and marks nothing seen until it can. {todo}"))
+}
+
+/// What the admin's warnings say of a listener's record of what it has seen that doesn't open
+/// (failing::note_file), its file's path the place.
+pub(crate) const SEEN_UNREAD: &str = "a listener's record of what it has seen can't be read";
+
+/// Note in the admin's warnings how `file`'s read went, for the server whose deployments file is
+/// `at`: held, or read (the warning goes). The file's path is the warning's place, so why goes
+/// without it ([`read_seen`]'s begins with it). A record kept in memory has nothing to note.
+pub(crate) fn note_seen(at: &crate::paths::Place, file: Option<&Path>, result: Result<(), &crate::failing::Failed>) {
+    let Some(file) = file else { return };
+    let place = file.display().to_string();
+    match result {
+        Ok(()) => crate::failing::note_file(at, SEEN_UNREAD, &place, Ok(())),
+        Err(held) => {
+            let why = held.for_the_admin();
+            let why = why.strip_prefix(&format!("{place}: ")).unwrap_or(why);
+            crate::failing::note_file(at, SEEN_UNREAD, &place, Err(&crate::failing::Failed::new(SEEN_UNREAD, why)));
+        }
     }
 }
 
-/// What a listener says when what it has seen doesn't open ([`read_seen`]): it is held.
-pub(crate) fn seen_held(what: &str, why: &str) -> String {
-    format!(
-        "what it has seen of {what} can't be read ({why}): it runs nothing and marks nothing seen until it can. \
-         A key missing means {RESTORE_KEYS}. Otherwise remove that file to start over, which takes what is there now as seen"
-    )
+/// The records under `dir` are gone (their deployment is): their warnings go with them.
+pub(crate) fn seen_forgotten(at: &crate::paths::Place, dir: &Path) {
+    for (told, place, _) in crate::failing::files_now(at) {
+        if told == SEEN_UNREAD && Path::new(&place).starts_with(dir) {
+            crate::failing::note_file(at, &told, &place, Ok(()));
+        }
+    }
 }
 
 /// `keys.json`: the data keys, wrapped by the root, and nothing that opens them without it.
@@ -607,13 +826,14 @@ impl Keyring {
 
     /// `keys.json` written, owner-only; nothing for a keyring in memory.
     fn persist(&self, file: &KeysFile) -> Result<(), String> {
-        let Some(path) = &self.path else { return Ok(()) };
+        let unwritten = |why: String| crate::failing::Failed::new(KEYS_UNWRITTEN, why).said();
+        let Some(path) = &self.path else { return data_folder(None).map_err(|e| unwritten(format!("keys.json: {e}"))) };
         if self.read_only {
             return Err(format!("{} was opened to read only, and isn't written", path.display()));
         }
         faults::write("keys.json")?;
         let bytes = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
-        crate::sealing::write_private(path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        data_folder(Some(path)).and_then(|()| crate::sealing::write_private(path, &bytes)).map_err(|e| unwritten(format!("{}: {e}", path.display())))?;
         // The backup's copy follows at once. Left to the archiver's next look, for a second or
         // so after a forget the copy still opened the forgotten deployment's archives with the
         // old root. One that can't be written is the archiver's to retry and to say.
@@ -659,12 +879,12 @@ impl Keyring {
     /// so never half of a write. `Ok(false)`: the copy was the same, or this keyring is kept in
     /// memory only and has no file.
     pub(crate) fn keep_copy_in(&self, dir: &Path) -> Result<bool, String> {
-        let Some(path) = &self.path else { return Ok(false) };
+        let Some(path) = &self.path else { return data_folder(None).map(|()| false).map_err(|e| format!("could not read keys.json: {e}")) };
         let _held = self.inner.read().unwrap();
         *self.backup.lock().unwrap() = Some(dir.to_path_buf());
-        let bytes = std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+        let bytes = disk::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
         let to = dir.join(BACKUP_KEYS);
-        if std::fs::read(&to).is_ok_and(|kept| kept == bytes) {
+        if disk::read(&to).is_ok_and(|kept| kept == bytes) {
             return Ok(false);
         }
         faults::write("the backup's copy of keys.json")?;
@@ -701,6 +921,10 @@ impl Keyring {
     /// new. A forgotten scope is made anew from the version after the last one forgotten (its slug
     /// deployed again), so what was sealed before stays forgotten.
     fn current(&self, scope: &str) -> Result<(u32, Key), String> {
+        // What fails here reaches whoever sealed (a run's line, a secret, a unit stored): told
+        // in fixed words, where and why on stderr (audit R87).
+        let unread = |why: String| crate::failing::Failed::new(KEY_UNREAD, format!("{scope:?}'s key: {why}")).said();
+        data_folder(None).map_err(|e| unread(e.to_string()))?;
         {
             let inner = self.inner.read().unwrap();
             if let Some(keys) = inner.open.get(scope) {
@@ -712,13 +936,15 @@ impl Keyring {
             return Ok((keys.current, keys.versions[&keys.current].clone()));
         }
         let version = inner.file.forgotten.get(scope).map_or(1, |f| f.through + 1);
-        let key = self.add_version(&mut inner, scope, version)?;
+        let key = self.add_version(&mut inner, scope, version).map_err(unread)?;
         Ok((version, key))
     }
 
     /// `scope`'s keys made now if it has none (`keys.json` written): a deployment's, before it goes
     /// live, so that nothing it runs is the first to need the root, and none fails to be sealed
-    /// for a root that can't be read then (release audit F17).
+    /// for a root that can't be read then (release audit F17). The tests fail it through the data
+    /// folder's hook, which `current` asks first: whether the scope was made before or not, so a
+    /// test doesn't lean on the shared keyring's state (audit R87).
     pub(crate) fn make_scope(&self, scope: &str) -> Result<(), String> {
         self.current(scope).map(|_| ())
     }
@@ -726,9 +952,6 @@ impl Keyring {
     /// A new data key for `scope` at `version`, made its current: written to `keys.json` before it
     /// is used, so nothing is sealed under a key keys.json doesn't keep.
     fn add_version(&self, inner: &mut Inner, scope: &str, version: u32) -> Result<Key, String> {
-        if crate::faults::failing("a scope's key").is_some() {
-            return Err(crate::faults::error("a scope's key").to_string());
-        }
         let root = self.root(inner)?;
         let (wrapped, data) = Keyring::new_version(&root, &inner.file.key_id, scope, version);
         let mut file = inner.file.clone();
@@ -746,6 +969,8 @@ impl Keyring {
 
     /// The key of `scope` at `version`, or why there is none.
     fn version(&self, scope: &str, version: u32) -> Result<Key, Unreadable> {
+        // As a key that isn't there fails: what a caller takes for a lost key (key_missing).
+        data_folder(None).map_err(|e| Unreadable::NoVersion { scope: format!("{scope} ({e})"), version })?;
         let inner = self.inner.read().unwrap();
         if let Some(key) = inner.open.get(scope).and_then(|k| k.versions.get(&version)) {
             return Ok(key.clone());
@@ -1126,18 +1351,24 @@ fn promote(file: &mut KeysFile, next: Staged) {
     file.root_check = next.root_check;
 }
 
-/// `bytes` sealed under `scope` for `role` and written to `path` atomically, owner-only.
+/// `bytes` sealed under `scope` for `role` and written to `path` atomically, owner-only. Its
+/// error says only [`crate::failing::FILE_UNWRITTEN`]: where and why go to stderr (audit R87).
 pub(crate) fn write_private(keys: &Keyring, path: &Path, scope: &str, role: &str, bytes: &[u8]) -> std::io::Result<()> {
-    let sealed = keys.seal_file(scope, role, bytes).map_err(std::io::Error::other)?;
-    crate::sealing::write_private(path, &sealed)
+    data_folder(Some(path))
+        .and_then(|()| keys.seal_file(scope, role, bytes).map_err(std::io::Error::other))
+        .and_then(|sealed| crate::sealing::write_private(path, &sealed))
+        .map_err(|e| crate::failing::Failed::of_file(crate::failing::FILE_UNWRITTEN, path, e))
 }
 
-/// The file at `path`, sealed for `role`, opened: `Ok(None)` if there is none.
+/// The file at `path`, sealed for `role`, opened: `Ok(None)` if there is none. A file that
+/// doesn't open says why in holon's own words ([`Unreadable`]: not sealed, sealed for another
+/// role, its key gone), never where: the path goes to stderr (audit R87).
 pub(crate) fn read(keys: &Keyring, path: &Path, role: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
-    match std::fs::read(path) {
-        Ok(bytes) => keys.open_file(role, &bytes).map(Some).map_err(|e| format!("{}: {e}", path.display())),
+    match disk::read(path) {
+        Ok(bytes) => keys.open_file(role, &bytes).map(Some).map_err(|e| crate::failing::Failed::reason(format!("{}: {e}", crate::failing::FILE_UNREAD), format!("{}: {e}", path.display())).said()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("could not read {}: {e}", path.display())),
+        // disk's error, where and why on stderr already.
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -1206,6 +1437,12 @@ impl holon_host::AtRest for StoreKeys {
     }
     fn name(&self, hash: &holon_core::Hash) -> String {
         self.0.name(hash)
+    }
+    fn data_folder(&self, path: &Path) -> std::io::Result<()> {
+        data_folder(Some(path))
+    }
+    fn failed(&self, path: &Path, e: std::io::Error) -> std::io::Error {
+        crate::failing::Failed::of_file(crate::failing::STORE_FAILED, path, e)
     }
 }
 
@@ -1411,7 +1648,7 @@ impl LineSeal {
 
     /// The file at `path`'s lines that open, opened: none if there is no file.
     pub(crate) fn read_lines(&self, path: &Path) -> Vec<String> {
-        std::fs::read_to_string(path).map(|t| self.open_lines(&t).collect()).unwrap_or_default()
+        disk::read_to_string(path).map(|t| self.open_lines(&t).collect()).unwrap_or_default()
     }
 
     /// The file at `path`'s lines that open, opened: none if there is no file. An error if it is
@@ -1419,7 +1656,7 @@ impl LineSeal {
     /// they name (the sweep) fails rather than take them as none (release audit R92). A line cut
     /// short or changed is left out, as [`LineSeal::open_lines`] leaves it.
     pub(crate) fn try_read_lines(&self, path: &Path) -> std::io::Result<Vec<String>> {
-        let text = match std::fs::read_to_string(path) {
+        let text = match disk::read_to_string(path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(std::io::Error::new(e.kind(), format!("its file can't be read: {e}"))),
@@ -1438,6 +1675,7 @@ impl LineSeal {
     /// `plain` (one line) sealed and appended to the file at `path`, owner-only.
     pub(crate) fn append(&self, path: &Path, plain: &str) -> std::io::Result<()> {
         use std::io::Write;
+        data_folder(Some(path))?;
         let line = self.seal(plain)? + "\n";
         crate::sealing::append_private(path)?.write_all(line.as_bytes())
     }
@@ -1475,7 +1713,7 @@ pub(crate) fn read_sealed(path: &Path, role: &str) -> Result<Option<Zeroizing<Ve
 /// [`read_sealed`], refused unless it was sealed under `scope` ([`Keyring::open_file_in`]): for a
 /// file of one deployment's, in a folder that holds every deployment's.
 pub(crate) fn read_sealed_in(path: &Path, scope: &str, role: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
-    match std::fs::read(path) {
+    match disk::read(path) {
         Ok(bytes) => keys().open_file_in(Some(scope), role, &bytes).map(Some).map_err(|e| format!("{}: {e}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("could not read {}: {e}", path.display())),

@@ -186,9 +186,13 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
         return Some(crate::grants::handle_get_admin_grants(state));
     }
     // The variables an env secret can name (secret_sources.rs), for the deploy settings to offer:
-    // names only, and only to an admin, who alone sets secrets (`/admin/…`, can.rs).
+    // names only, never a value. They are the sources a binding's URL is read from, so they go to
+    // whoever may bind (audit R51); and the dotenv file's path is where the server keeps its data,
+    // which only whoever views the host is told (audit R94). Anyone else is answered none of either.
     if url == "/admin/secrets/env" && request.method() == "GET" {
         let (names, dotenv) = state.secrets.env_names();
+        let names = if sees_where { names } else { Vec::new() };
+        let dotenv = dotenv.filter(|_| crate::can::sees_data(caller));
         return Some(Response::json(&serde_json::json!({ "names": names, "dotenv": dotenv })));
     }
     // The server's own secrets, bound for every deployment that reads one (secrets.rs's SERVER).

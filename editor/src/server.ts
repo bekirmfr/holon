@@ -967,7 +967,8 @@ export async function listSecrets(slug: string): Promise<SecretInfo[]> {
 }
 
 /** `GET /admin/secrets/env` (admins only) — the `HOLON_SECRET_…` names an env secret can be read
- *  from: the server's environment and its dotenv file, read again first. Names, never values. */
+ *  from: the server's environment and its dotenv file, read again first. Names, never values: none
+ *  to whoever may not bind; and the dotenv file's path only to whoever views the host. */
 export const getEnvSecretNames = async () => asJson<{ names: string[]; dotenv: string | null }>(await api(`${BASE}/admin/secrets/env`));
 
 /** A secret's address: a deployment's, or (`slug` null) the server's own, an admin's. */

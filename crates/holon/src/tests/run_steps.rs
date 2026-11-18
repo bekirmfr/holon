@@ -60,8 +60,11 @@ fn deploy(state: &AppState, ada: &str, slug: &str, text: &str) {
 /// holding a viewer's every action but run.steps (the role `reads`); and scout, an agent holding the
 /// agent role. Their tokens, by name.
 fn server() -> (AppState, Arc<Accounts>, BTreeMap<&'static str, String>) {
-    let mut state = test_state();
-    let book = Arc::new(Accounts::memory());
+    serve(test_state(), Arc::new(Accounts::memory()))
+}
+
+/// [`server`], on `state` with `book`: one keeping its files in a data folder, say.
+fn serve(mut state: AppState, book: Arc<Accounts>) -> (AppState, Arc<Accounts>, BTreeMap<&'static str, String>) {
     let (ada, _) = book.setup(&book.setup_code().unwrap(), "ada", PW).unwrap();
     state.access = access::Access::new(Arc::clone(&book), vec![], vec![]);
     let reads = ["flow.view", "run.view", "run.export", "state.view", "secret.list", "policy.view"];
@@ -398,6 +401,27 @@ struct Got {
     seq: u64,
 }
 
+/// What every other route is sent, `kept` deployed and its value kept by a request: a version of
+/// kept, the run of `steps` waiting, a proposal scout makes, the run that kept the value.
+fn what_rob_sends(state: &AppState, tokens: &BTreeMap<&'static str, String>) -> Got {
+    let ada = &tokens["ada"];
+    let plan = holon_author::agent::plan(&KEPT.replace("return \"kept\"", "return \"kept, again\"")).unwrap();
+    let heads: Value = serde_json::from_str(&send(state, ada, "GET", "/deployments/kept/log/heads", Value::Null).1).unwrap();
+    let seq = heads["entries"].as_array().unwrap().iter().find(|e| e["kind"] == "request").unwrap()["seq"].as_u64().unwrap();
+    let runs: Value = serde_json::from_str(&send(state, ada, "GET", "/deployments/steps/runs", Value::Null).1).unwrap();
+    let waiting = runs["runs"][0]["run_id"].as_str().unwrap().to_string();
+    let proposal = {
+        let other = holon_author::agent::plan(&KEPT.replace("return \"kept\"", "return \"kept, an agent's\"")).unwrap();
+        for unit in &other.units {
+            assert_eq!(ask(state, Some(&tokens["scout"]), "POST", "/unit", unit.clone()).0, 200);
+        }
+        let (code, said) = send(state, &tokens["scout"], "POST", "/deploy", json!({ "slug": "kept", "unit": other.unit, "document": other.document }));
+        assert_eq!(code, 202, "an agent's version waits: {said}");
+        serde_json::from_str::<Value>(&said).unwrap()["proposal"]["id"].as_u64().unwrap()
+    };
+    Got { units: plan.units.clone(), unit: plan.unit.clone(), document: plan.document.clone(), waiting, proposal, seq }
+}
+
 /// Every route that isn't a GET, as rob sends it in the sweep (R57), in an order that leaves each
 /// something to do, `kept` deleted last: its method, its path, its body, and what it answers him
 /// (202 for an action that waits at its approval; 403 for a state put back, which he may not read;
@@ -556,26 +580,10 @@ fn a_flows_state_is_read_only_with_state_view() {
         assert!(code == 200 && said.contains(KEPT_CANARY), "cy, a viewer, GET {path}: {code} {said}");
     }
 
-    // What every other route is sent: a version of kept, the run waiting, a proposal, the run that
-    // kept the value.
-    let plan = holon_author::agent::plan(&KEPT.replace("return \"kept\"", "return \"kept, again\"")).unwrap();
-    let heads: Value = serde_json::from_str(&send(&state, ada, "GET", "/deployments/kept/log/heads", Value::Null).1).unwrap();
-    let seq = heads["entries"].as_array().unwrap().iter().find(|e| e["kind"] == "request").unwrap()["seq"].as_u64().unwrap();
-    let runs: Value = serde_json::from_str(&send(&state, ada, "GET", "/deployments/steps/runs", Value::Null).1).unwrap();
-    let waiting = runs["runs"][0]["run_id"].as_str().unwrap().to_string();
-    let proposal = {
-        let other = holon_author::agent::plan(&KEPT.replace("return \"kept\"", "return \"kept, an agent's\"")).unwrap();
-        for unit in &other.units {
-            assert_eq!(ask(&state, Some(&tokens["scout"]), "POST", "/unit", unit.clone()).0, 200);
-        }
-        let (code, said) = send(&state, &tokens["scout"], "POST", "/deploy", json!({ "slug": "kept", "unit": other.unit, "document": other.document }));
-        assert_eq!(code, 202, "an agent's version waits: {said}");
-        serde_json::from_str::<Value>(&said).unwrap()["proposal"]["id"].as_u64().unwrap()
-    };
+    let got = what_rob_sends(&state, &tokens);
     // ada, who holds it, reads the state a restore would put back.
-    let (code, said) = send(&state, ada, "POST", "/deployments/kept/restore", json!({ "run": seq, "state": true, "dry_run": true }));
+    let (code, said) = send(&state, ada, "POST", "/deployments/kept/restore", json!({ "run": got.seq, "state": true, "dry_run": true }));
     assert!(code == 200 && said.contains(KEPT_CANARY), "ada's dry run says the values: {code} {said}");
-    let got = Got { units: plan.units.clone(), unit: plan.unit.clone(), document: plan.document.clone(), waiting, proposal, seq };
     for (method, path, body, answered) in every_other(&got) {
         let (code, said) = ask(&state, Some(&rob), method, &path, body);
         assert!(!said.contains(KEPT_CANARY) && !said.contains(CANARY), "rob {method} {path} ({code}) answers a value: {said}");
@@ -590,6 +598,627 @@ fn a_flows_state_is_read_only_with_state_view() {
             assert!(tick["left_out"].as_str().unwrap().contains("holon bind viewer --to rob --flow kept"), "what would give them: {said}");
         }
     }
+}
+
+/// A flow listening to a queue and a feed (R87, R91): what each has seen is kept in the data
+/// folder, and read on the listener's own thread as it starts.
+const LISTENS: &str = r#"import { flow, on, route } from "holon"
+import state from "state"
+import events from "queue:events"
+import prices from "feed:prices"
+
+flow("listens", { port: 18095 })
+
+on.queue(events, (m) => {
+  state.last = m.id
+})
+
+on.feed(prices, (e) => {
+  state.price = e.data
+})
+
+route.get("/", () => "listening")
+"#;
+
+/// Each route the sweeps leave unsent (`UNSENT`), sent the data folder's sweep with a body, in an
+/// order that leaves each something to do and the caller's own sign-out last. Not the CORS
+/// preflight (headers, no body), nor the folder dialog (it opens on the server's screen and
+/// touches no file of the data folder). `bound` is a folder outside the data folder, a person's.
+fn sent_to_the_host(bound: &std::path::Path, invite: &str) -> Vec<(&'static str, String, Value)> {
+    let folder = bound.join("inbox");
+    let _ = std::fs::create_dir_all(&folder);
+    vec![
+        ("POST", "/admin/folders".into(), json!({ "name": "inbox", "path": folder.display().to_string(), "access": "read-write", "keep": "bytes" })),
+        ("POST", "/admin/folders/sweep".into(), json!({})),
+        ("DELETE", "/admin/folders/inbox".into(), Value::Null),
+        ("POST", "/admin/storage".into(), json!({ "warn_at": "90%" })),
+        ("POST", "/admin/store/sweep".into(), json!({})),
+        ("POST", "/admin/keys/rotate".into(), json!({ "scope": "server" })),
+        ("POST", "/admin/keys/forget".into(), json!({ "slug": "kept" })),
+        ("POST", "/admin/databases".into(), json!({ "name": "shop", "path": bound.join("shop.db").display().to_string(), "schema": "create table t (k text not null)" })),
+        ("DELETE", "/admin/databases/shop".into(), Value::Null),
+        ("POST", "/admin/mails".into(), json!({ "name": "ops", "smtp": "env:HOLON_SECRET_OPS_SMTP", "from": "Ops <ops@acme.com>", "to": "*@acme.com" })),
+        ("DELETE", "/admin/mails/ops".into(), Value::Null),
+        ("POST", "/admin/feeds".into(), json!({ "name": "more", "url": "env:HOLON_SECRET_PRICES_URL" })),
+        ("DELETE", "/admin/feeds/more".into(), Value::Null),
+        ("POST", "/admin/queues".into(), json!({ "name": "more", "url": "env:HOLON_SECRET_EVENTS_URL" })),
+        ("DELETE", "/admin/queues/more".into(), Value::Null),
+        ("POST", "/admin/secrets/k".into(), json!({ "value": "r87-value", "to": [] })),
+        ("POST", "/admin/secrets/k/rollback".into(), json!({ "version": 1 })),
+        ("POST", "/admin/secrets/k/cap".into(), json!({ "to": [] })),
+        ("DELETE", "/admin/secrets/k".into(), Value::Null),
+        ("POST", "/people".into(), json!({ "name": "bot", "kind": "agent", "role": "agent" })),
+        ("POST", "/admin/oidc".into(), json!({})),
+        ("POST", "/people/scout/tokens".into(), json!({ "label": "more" })),
+        ("DELETE", "/people/scout/tokens/1".into(), Value::Null),
+        ("POST", "/people/cy/reset".into(), json!({})),
+        ("PATCH", "/people/cy".into(), json!({ "role": "viewer" })),
+        ("DELETE", "/people/bot".into(), Value::Null),
+        ("POST", "/bindings".into(), json!({ "who": { "principal": "cy" }, "role": "viewer", "scope": { "flows": { "slug": "steps" } } })),
+        ("DELETE", "/bindings/1".into(), Value::Null),
+        ("PUT", "/access/approvals".into(), json!({ "exclude_deployer": false })),
+        ("POST", "/access/proposals/1/approve".into(), json!({})),
+        ("POST", "/access/proposals/1/decline".into(), json!({ "reason": "not now" })),
+        ("PUT", "/access/local".into(), json!({ "account": "cy" })),
+        ("PUT", "/roles/r87".into(), json!({ "allows": ["flow.view"], "kinds": ["person"] })),
+        ("DELETE", "/roles/r87".into(), Value::Null),
+        ("PUT", "/groups/g87".into(), json!({ "members": ["cy"] })),
+        ("DELETE", "/groups/g87".into(), Value::Null),
+        ("POST", "/auth/setup".into(), json!({ "code": "not-the-code", "name": "ada", "password": PW })),
+        ("POST", "/auth/sign-in".into(), json!({ "name": "ada", "password": PW })),
+        ("POST", "/auth/invite".into(), json!({ "token": invite, "password": "another horse battery" })),
+        ("POST", "/auth/password".into(), json!({ "current": PW, "new": PW })),
+        ("POST", "/auth/prefs".into(), json!({ "theme": "dark" })),
+        ("POST", "/auth/sign-out".into(), json!({})),
+    ]
+}
+
+/// What of `text` is around `part`: a few dozen characters each side.
+fn around(text: &str, part: &str) -> String {
+    let at = text.find(part).unwrap_or(0);
+    let start = (0..=at.saturating_sub(100)).rev().find(|i| text.is_char_boundary(*i)).unwrap_or(0);
+    let end = (at + part.len() + 100).min(text.len());
+    let end = (end..=text.len()).find(|i| text.is_char_boundary(*i)).unwrap_or(text.len());
+    text[start..end].to_string()
+}
+
+/// Guards: no answer of the server's, to anyone, says where its data folder is or why a file
+/// there failed, with every file there failing (audit R87): every route R57 holds complete (every
+/// GET, for each flow; every other, as rob's sweep sends it; and the host's and people's routes
+/// that sweep leaves unsent, each with a body), sent as ada (an admin) and as hal (every action
+/// but host.view), with the data folder made to fail on the sweep's thread (every file and every
+/// key: at_rest.rs `data_folder`) and under the folder on every thread; and what a queue's and a
+/// feed's listener note when what they have seen can't be read (R91), in the events and both
+/// listings. Each answer is held by writers.rs's `where_or_why`: no part of the folder's path,
+/// its name, a file's name under it, the temporary folder, an OS error's words, or the failure's
+/// own (`at_rest::MADE_TO_FAIL`). A GET that says where to ada before the fault too (she views
+/// the host) may say it still, never why; the admin's warnings in a GET to her are hers, and
+/// what a GET says is read without them, so nothing hangs on a warning the machine has (its disk
+/// past `warn_at`). Set up first so each reader is reached: a policy file
+/// naming a backup folder, console lines, a folder read whose text is kept, and a log past what it
+/// keeps in memory and in its file, cut into sealed segments. Then a second pass fails alone each
+/// place a request reaches only behind another that passes, or that reads what was kept before
+/// (at_rest::fail_sites), with the request that reaches it. Every place in the sources
+/// (`hook_sites`, by file and function) has an answer that reached it or a reason no request does
+/// (`REASONS`), never both: one with neither fails the sweep.
+/// Why: answers passed on where a server's file failed and why, each found by reading (R71, R72,
+/// R85, R91): the class, swept.
+/// If it fails: the answer named tells whoever asked a fixed text of what failed; where and why
+/// go to the admin's warnings and stderr (failing::Failed, R71).
+#[test]
+fn no_answer_says_where_or_why_the_data_folder_failed() {
+    let dir = std::env::temp_dir().join(format!("holon-r87-{}-{}", std::process::id(), rand::random::<u32>()));
+    let bound = dir.with_extension("bound");
+    for d in [&dir, &bound] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let at = |name: &str| dir.join(name).to_string_lossy().into_owned();
+    // What it binds: a queue, a feed and a mail server, each a stand-in, their URLs in a secret
+    // source outside the data folder.
+    let (sqs, feed, sink) = (crate::sqs::stand_in::StandIn::start(), crate::sse::stand_in::StandIn::start(), crate::smtp::sink::start("PLAIN LOGIN"));
+    sqs.make("events");
+    let env = dir.with_extension("env");
+    std::fs::write(&env, format!("HOLON_SECRET_EVENTS_URL={}\nHOLON_SECRET_PRICES_URL={}\nHOLON_SECRET_OPS_SMTP=smtp://ops:s3cret@127.0.0.1:{}\n", sqs.url("events"), feed.url("/events"), sink.port)).unwrap();
+    let sources = || crate::secret_sources::Sources::new(Some(env.clone())).unwrap();
+    // Its store on disk, nothing kept above it: every unit and value a run reads is read from the
+    // data folder, where it fails (a value kept in memory doesn't, as with a real disk's fault).
+    let disk = FileStore::new(dir.join("store"), crate::at_rest::store()).unwrap();
+    let values = disk.values_dir();
+    let shared = SharedStore::on_disk(Box::new(disk), values);
+    shared.4.set_budget(0);
+    let mut state = test_state_in(shared, crate::paths::Place::parse(&at("deployments.json")));
+    // Its policy in a file, naming a backup folder in the data folder: the storage page reads
+    // both, and a reload the file.
+    let backup = dir.join("backup");
+    std::fs::create_dir_all(backup.join("kept")).unwrap();
+    let policy = format!("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n\n[storage]\nbackup = '{}'\n", backup.display());
+    std::fs::write(at("holon.toml"), &policy).unwrap();
+    state.policy_path = crate::paths::Place::parse(&at("holon.toml"));
+    *state.policy.write().unwrap() = Arc::new(crate::permissions::Policy::parse(&policy).unwrap());
+    state.secrets = Arc::new(crate::secrets::SecretStore::open(&at("secrets.json"), Arc::clone(crate::at_rest::keys()), sources()).unwrap());
+    state.folders = Arc::new(
+        crate::folders::Folders::open(&at("folders.json"), std::slice::from_ref(&dir))
+            .unwrap()
+            .with_databases(crate::databases::Databases::open(&at("databases.json"), std::slice::from_ref(&dir)).unwrap().with_sources(sources()))
+            .with_mails(crate::mails::Mails::open(&at("mails.json")).unwrap().with_sources(sources()))
+            .with_feeds(crate::feeds::Feeds::open(&at("feeds.json")).unwrap().with_sources(sources()))
+            .with_queues(crate::queues::Queues::open(&at("queues.json")).unwrap().with_sources(sources()))
+            .with_blobs(crate::blobs::Blobs::at(dir.join("blobs")))
+            .with_logs(crate::logs::Logs::beside(&state.deployments_path, crate::logs::Caps::default())),
+    );
+    state.activity = crate::activity::Activity::beside(&state.deployments_path);
+    let (state, book, tokens) = serve(state, Arc::new(Accounts::open(&at("accounts.json")).unwrap()));
+    let ada = tokens["ada"].clone();
+    let all_but: Vec<String> = crate::can::Action::ALL.iter().filter(|a| !matches!(a, crate::can::Action::HostView)).map(|a| a.name().to_string()).collect();
+    book.define_role(RoleText { name: "all-but-host".into(), about: None, allows: all_but, kinds: vec![crate::accounts::Kind::Person] }, "ada", None).unwrap();
+    let hal = book.accept(&book.invite("hal", "all-but-host", None, "ada").unwrap(), PW).unwrap().0;
+    let invite = book.invite("ivy", "viewer", None, "ada").unwrap();
+    for (path, body) in [("/admin/queues", json!({ "name": "events", "url": "env:HOLON_SECRET_EVENTS_URL" })), ("/admin/feeds", json!({ "name": "prices", "url": "env:HOLON_SECRET_PRICES_URL" }))] {
+        let (code, said) = send(&state, &ada, "POST", path, body);
+        assert_eq!(code, 200, "{path}: {said}");
+    }
+    deploy(&state, &ada, "kept", KEPT);
+    deploy(&state, &ada, "listens", LISTENS);
+    let note = json!({ "method": "POST", "url": "/note", "headers": [["content-type", "application/json"]], "body": json!({ "note": "a note" }).to_string() });
+    assert_eq!(send(&state, &ada, "POST", "/deployments/kept/request", note.clone()).0, 200);
+    // A folder outside the data folder, whose texts a run reads are kept in it; a flow that reads
+    // one and says so on the console; and kept's runs past what its log keeps in memory and in its
+    // file, cut into sealed segments: what the logs', the files' and the storage pages read back.
+    let texts = bound.join("texts");
+    std::fs::create_dir_all(&texts).unwrap();
+    // Past what a run's record holds inline (folders::LOG_INLINE_BYTES): kept in the store of texts
+    // (blobs.rs), which export and the folders' sweep read back.
+    let text = "a text kept\n".repeat(700);
+    assert!(text.len() as u64 > crate::folders::LOG_INLINE_BYTES);
+    std::fs::write(texts.join("a.txt"), &text).unwrap();
+    let (code, said) = send(&state, &ada, "POST", "/admin/folders", json!({ "name": "texts", "path": texts.display().to_string(), "access": "read", "keep": "bytes" }));
+    assert_eq!(code, 200, "{said}");
+    deploy(&state, &ada, "texts", TEXTS);
+    let read = json!({ "method": "GET", "url": "/read", "headers": [], "body": "" });
+    let (code, said) = send(&state, &ada, "POST", "/deployments/texts/request", read);
+    assert!(code == 200 && said.contains("a text kept"), "{said}");
+    // Kept long enough ago for the folders' sweep to look at it (it spares what was kept in the
+    // last folders::SWEEP_SPARES_MS): the store's files dated back. A run still names it, so the
+    // sweep keeps it.
+    let long_ago = std::time::SystemTime::now() - std::time::Duration::from_millis(2 * crate::folders::SWEEP_SPARES_MS);
+    for d in [dir.join("blobs"), dir.join("blobs").join("chunks")] {
+        for e in std::fs::read_dir(&d).unwrap().flatten().filter(|e| e.path().is_file()) {
+            std::fs::File::options().write(true).open(e.path()).and_then(|f| f.set_modified(long_ago)).unwrap();
+        }
+    }
+    for _ in 0..crate::recorder::HOT + 20 {
+        assert_eq!(send(&state, &ada, "POST", "/deployments/kept/request", note.clone()).0, 200);
+    }
+    // Its file keeping 40 runs as written, the older sealed in segments beside it, by a cut asked
+    // for now (as the logs' sync makes it). 40 is more than it holds in memory
+    // (recorder::IN_MEMORY), so some runs are read from its file alone (Log::plan), some from its
+    // segments (read_segment).
+    {
+        let deployments = state.deployments.lock().unwrap();
+        deployments["kept"].log.with(|log| {
+            log.set_hot(crate::recorder::IN_MEMORY + 8);
+            log.want_cut();
+        });
+        deployments["kept"].log.cut_if_planned();
+        assert!(deployments["kept"].log.with(|log| log.sealed_holds().0) > 0, "kept's log is cut into sealed segments");
+    }
+    let got = what_rob_sends(&state, &tokens);
+    let mut gets: Vec<String> = ["steps", "kept", "listens", "texts"].into_iter().flat_map(every_get).collect();
+    gets.sort();
+    gets.dedup();
+    let callers = [("ada", ada.as_str()), ("hal", hal.as_str())];
+    // The host's and people's routes the sweeps leave unsent: each sent here, but two.
+    let to_the_host = sent_to_the_host(&bound, &invite);
+    let left: Vec<String> = UNSENT
+        .iter()
+        .filter(|(method, path, _)| (*method, *path) != ("OPTIONS", "*") && (*method, *path) != ("POST", "/admin/folders/pick"))
+        .filter(|(method, path, _)| !to_the_host.iter().any(|(m, p, _)| crate::can::find(m, p).is_some_and(|(r, _)| (r.method, r.path) == (*method, *path))))
+        .map(|(method, path, _)| format!("{method} {path}"))
+        .collect();
+    assert!(left.is_empty(), "left unsent, and not sent the data folder's sweep: {left:?}");
+
+    // The disk warned of on every machine, as a floor no disk has makes it (tests.rs's
+    // the_host_warns_of_a_full_disk_and_a_full_cache_once_each sets one): its warning names the
+    // data folder's disk, in the admin's warnings, so every run looks at the same answers, whatever
+    // this machine's disk holds, and finds a GET that hands the warnings to hal.
+    let (code, said) = send(&state, &ada, "POST", "/admin/storage", json!({ "warn_at": "1000T" }));
+    assert_eq!(code, 200, "{said}");
+    let (_, warned) = send(&state, &ada, "GET", "/admin/warnings", Value::Null);
+    assert!(warned.contains("\"disk:"), "the data folder's disk is warned of: {warned}");
+    // An answer without the admin's warnings in it. They say where and why, as they are meant to
+    // (failing::note_file: a listener's record that can't be read, its path and why), to whoever
+    // views the host alone. What else a GET says is read without them, before the fault as under
+    // it, so what it may say doesn't hang on a warning this machine happens to have: its disk past
+    // `[storage] warn_at` (rob's sweep sets 90%) is warned of by the data folder's path.
+    let outside_warnings = |said: &str| match serde_json::from_str::<Value>(said) {
+        Ok(Value::Object(mut answer)) if answer.contains_key("warnings") => {
+            answer.remove("warnings");
+            Value::Object(answer).to_string()
+        }
+        _ => said.to_string(),
+    };
+    // What each GET says before the fault, outside the admin's warnings: where, to whoever may
+    // view the host.
+    let mut before: BTreeMap<(String, String), bool> = BTreeMap::new();
+    for (who, token) in callers {
+        for path in &gets {
+            let (_, said) = send(&state, token, "GET", path, Value::Null);
+            before.insert((who.to_string(), path.clone()), !super::writers::where_or_why(&outside_warnings(&said), &dir, &[]).is_empty());
+        }
+    }
+
+    // Every place the sources ask the hook from, by name, and by its place as the hook notes it.
+    let sites = hook_sites();
+    let names: BTreeMap<String, String> = sites.iter().map(|(name, place)| (place.clone(), name.clone())).collect();
+
+    // The data folder failing: every file under it, on every thread; every file and key on this
+    // one. The listeners start now, each reading what it has seen on a thread of its own (R91).
+    let _ = crate::at_rest::fired();
+    crate::at_rest::fail_folder(&dir);
+    crate::faults::fail(crate::at_rest::FAILING, false);
+    let mut queues_held = crate::dequeue::Held::default();
+    let mut feeds_held = crate::subscriptions::Held::default();
+    crate::dequeue::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut queues_held);
+    crate::subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut feeds_held);
+    let mut found: Vec<String> = Vec::new();
+    for listing in ["queues", "feeds"] {
+        let held = soon(|| send(&state, &ada, "GET", &format!("/deployments/listens/{listing}"), Value::Null).1.contains("unreadable"));
+        if !held {
+            found.push(format!("the listener of /deployments/listens/{listing} never held: {}", send(&state, &ada, "GET", &format!("/deployments/listens/{listing}"), Value::Null).1));
+        }
+    }
+    // Each hook's answers: those it failed, those of them that said where or why, and what of.
+    let mut hooks: BTreeMap<String, (usize, usize, BTreeSet<String>)> = BTreeMap::new();
+    let starting = hooks_fired(&mut hooks, &names, false);
+    let mut codes: BTreeMap<u16, usize> = BTreeMap::new();
+    let whys = [crate::at_rest::MADE_TO_FAIL, "os error"];
+    // Each answer looked at: what of where or why it says, and which hooks failed for it.
+    let mut look = |who: &str, method: &str, path: &str, code: u16, said: &str| -> Vec<String> {
+        *codes.entry(code).or_default() += 1;
+        // A GET that says where to ada before the fault too (one that views the host) may say it
+        // still: never why. The admin's warnings in a GET to her are hers, left out
+        // (`outside_warnings`); the same GET to hal is held whole, so a warning that reaches
+        // whoever doesn't view the host is found.
+        let also = method == "GET" && before.get(&(who.to_string(), path.to_string())).copied().unwrap_or(false);
+        let said = if method == "GET" && who == "ada" { outside_warnings(said) } else { said.to_string() };
+        let said = said.as_str();
+        let parts = super::writers::where_or_why(said, &dir, &[crate::at_rest::MADE_TO_FAIL]);
+        let parts: Vec<String> = parts.into_iter().filter(|p| !also || whys.contains(&p.as_str())).collect();
+        let at = hooks_fired(&mut hooks, &names, !parts.is_empty());
+        if let Some(first) = parts.first() {
+            found.push(format!(
+                "{who} {method} {path} ({code}){}: {parts:?}, from {}: …{}…",
+                if also { " [where before the fault too]" } else { "" },
+                if at.is_empty() { "no hook".to_string() } else { at.join(", ") },
+                around(said, first)
+            ));
+        }
+        at
+    };
+    for (who, token) in callers {
+        for path in &gets {
+            let (code, said) = send(&state, token, "GET", path, Value::Null);
+            look(who, "GET", path, code, &said);
+        }
+        for (method, path, body, _) in every_other(&got) {
+            let (code, said) = ask(&state, Some(token), method, &path, body);
+            look(who, method, &path, code, &said);
+        }
+        for (method, path, body) in &to_the_host {
+            let (code, said) = send(&state, token, method, path, body.clone());
+            look(who, method, path, code, &said);
+        }
+    }
+    crate::faults::heal();
+    crate::at_rest::heal_folder(&dir);
+
+    // The second pass: each place a request reaches only behind another that passes there, or
+    // that reads what was kept before, failed alone (at_rest::fail_sites), for the files under
+    // the data folder, with the request that reaches it.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    // A forget's keys: a keyring of its own, so the server's (every test's) keeps its root; a
+    // scope sealed under it for each round that forgets one, as a forget of a scope forgotten
+    // already sweeps nothing.
+    let private = crate::at_rest::Keyring::memory();
+    for gone in ["gone", "gone-events"] {
+        private.seal_file(&crate::at_rest::deployment(gone), crate::at_rest::role::LOG, b"gone's").unwrap();
+    }
+    let forgot = "a forget, two hours on (keys::forget, as POST /admin/keys/forget answers)";
+    let fresh = |slug: &'static str, port: u16| {
+        let text = format!("import {{ flow, route }} from \"holon\"\n\nflow(\"{slug}\", {{ port: {port} }})\n\nroute.get(\"/\", () => \"hi\")\n");
+        let (deployed, run) = (deploy_answer(&state, &ada, slug, &text), send(&state, &ada, "POST", &format!("/deployments/{slug}/request"), json!({ "method": "GET", "url": "/", "headers": [], "body": "" })));
+        (deployed.0.max(run.0), format!("{} {}", deployed.1, run.1))
+    };
+    type Ask<'a> = Box<dyn Fn() -> (u16, String) + 'a>;
+    let host = || send(&state, &ada, "GET", "/admin/host", Value::Null);
+    // GET /admin/host over a log cut into sealed segments, of a deployment of its own: kept's are
+    // gone by now, with kept (rob's sweep deletes it last, and a deleted deployment's segments go
+    // with it). The deploy, its runs and the cut aren't what this round fails (the fault is the
+    // host's walk alone), so the host's answer is the one looked at, as a GET.
+    let sealed = || {
+        let _ = fresh("fresh-sealed", 18074);
+        let run = json!({ "method": "GET", "url": "/", "headers": [], "body": "" });
+        for _ in 0..11 {
+            let _ = send(&state, &ada, "POST", "/deployments/fresh-sealed/request", run.clone());
+        }
+        if let Some(d) = state.deployments.lock().unwrap().get("fresh-sealed") {
+            d.log.with(|log| {
+                log.set_hot(2);
+                log.want_cut();
+            });
+            d.log.cut_if_planned();
+        }
+        host()
+    };
+    let alone: Vec<(&str, &str, Ask)> = vec![
+        ("events.rs: Events::open", "a deploy, and its run", Box::new(|| fresh("fresh-events", 18071))),
+        ("recorder.rs: Log::open_retaining#1", "a deploy, and its run", Box::new(|| fresh("fresh-segments", 18072))),
+        ("recorder.rs: Log::open_retaining#2", "a deploy, and its run", Box::new(|| fresh("fresh-log", 18073))),
+        ("storage.rs: Sweeps::kept_view#2", "GET /admin/host", Box::new(sealed)),
+        ("storage.rs: backup_view#2", "GET /admin/host", Box::new(host)),
+        ("blobs.rs: Blobs::get#1", "GET /deployments/texts/export", Box::new(|| send(&state, &ada, "GET", "/deployments/texts/export", Value::Null))),
+        ("blobs.rs: Blobs::get#2", "GET /deployments/texts/export", Box::new(|| send(&state, &ada, "GET", "/deployments/texts/export", Value::Null))),
+        ("blobs.rs: Blobs::sweep#1", "POST /admin/folders/sweep", Box::new(|| send(&state, &ada, "POST", "/admin/folders/sweep", json!({})))),
+        ("blobs.rs: Blobs::sweep#2", "POST /admin/folders/sweep", Box::new(|| send(&state, &ada, "POST", "/admin/folders/sweep", json!({})))),
+        ("blobs.rs: Blobs::sweep#3", "POST /admin/folders/sweep", Box::new(|| send(&state, &ada, "POST", "/admin/folders/sweep", json!({})))),
+        ("at_rest.rs: LineSeal::try_read_lines", forgot, Box::new(|| (200, crate::keys::forget(&state, &private, "gone-events", "ada", now + 2 * crate::sweep::SPARES_MS).to_string()))),
+        ("sweep.rs: pack", forgot, Box::new(|| (200, crate::keys::forget(&state, &private, "gone", "ada", now + 2 * crate::sweep::SPARES_MS).to_string()))),
+    ];
+    let (mut rounds, mut missed) = (BTreeSet::new(), Vec::new());
+    for (site, what, ask) in &alone {
+        let Some(place) = sites.get(*site) else {
+            missed.push(format!("{site}: a second pass's round for a place not in the sources"));
+            continue;
+        };
+        let _ = crate::at_rest::fired();
+        crate::at_rest::fail_sites(&dir, std::slice::from_ref(place));
+        let (code, said) = ask();
+        crate::at_rest::heal_sites(&dir);
+        // A deployment the round opened under the fault may keep a log that can't be read whole
+        // for as long as it runs (`Log::unread`: its sealed segments' folder couldn't be listed).
+        // What reads every line to tell what a log names fails on it, and a sweep that can't tell
+        // removes nothing (release audit R92). So it goes after its round, as its admin would
+        // remove it, and the forgets after it sweep what the others name.
+        let logs: Vec<_> = state.deployments.lock().unwrap().iter().map(|(slug, d)| (slug.clone(), std::sync::Arc::clone(&d.log))).collect();
+        for (slug, _) in logs.into_iter().filter(|(_, log)| log.each_line(|_| {}).is_err()) {
+            let _ = send(&state, &ada, "POST", &format!("/deployments/{slug}/stop"), Value::Null);
+            let (removed, why) = send(&state, &ada, "DELETE", &format!("/deployments/{slug}"), Value::Null);
+            if removed != 200 {
+                missed.push(format!("{slug}: its log can't be read whole after the round of {site}, and its removal answered {removed}: {}", around(&why, "")));
+            }
+        }
+        // A round's request, looked at as itself: a GET as a GET.
+        let (method, path) = what.split_once(' ').filter(|(m, p)| m.chars().all(|c| c.is_ascii_uppercase()) && p.starts_with('/')).unwrap_or(("alone", *what));
+        let at = look("ada", method, path, code, &said);
+        if at.iter().any(|a| a == site || a.strip_prefix(*site).is_some_and(|rest| rest.starts_with(" (on "))) {
+            rounds.insert(site.to_string());
+        } else {
+            missed.push(format!("{site}: failed alone, {what} didn't reach it ({code}: {})", around(&said, "")));
+        }
+    }
+    found.extend(missed);
+    // The store's hook failed a read (in the first pass: the second fails none of the store's): a
+    // store whose root is spelled otherwise than the data folder (by case, or with a verbatim
+    // prefix) would leave its reads unfailed, and the sweep blind to them.
+    if !hooks.values().any(|(_, _, what)| what.iter().any(|w| w.contains("<hash>, there"))) {
+        found.push("no answer failed at a store read: the store's hook never failed a file that was there".to_string());
+    }
+    // Each listener stopped as its holder goes.
+    drop((queues_held, feeds_held));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&bound);
+    let _ = std::fs::remove_file(&env);
+
+    // Every place in the sources has an answer that reached it, or a reason no request does: never
+    // both, and a reason for a place the sources no longer hold is stale.
+    let answered = |site: &str| hooks.iter().any(|(at, (n, _, _))| *n > 0 && (at == site || at.strip_prefix(site).is_some_and(|rest| rest.starts_with(" (on "))));
+    for site in sites.keys() {
+        match (answered(site), REASONS.iter().any(|(s, _)| s == site)) {
+            (true, true) => found.push(format!("{site}: answered, and REASONS says no request reaches it")),
+            (false, false) => found.push(format!("{site}: no answer reached it, and REASONS gives no reason")),
+            _ => {}
+        }
+    }
+    for (site, _) in REASONS.iter().filter(|(s, _)| !sites.contains_key(*s)) {
+        found.push(format!("{site}: in REASONS, and no place in the sources"));
+    }
+    let mut table: Vec<String> = sites
+        .keys()
+        .map(|site| match (hooks.get(site), REASONS.iter().find(|(s, _)| s == site)) {
+            (Some((n, said, what)), _) => format!("{site}: {n} answers{}, {said} said where or why ({})", if rounds.contains(site) { " (alone)" } else { "" }, what.iter().cloned().collect::<Vec<_>>().join(", ")),
+            (None, Some((_, why))) => format!("{site}: no request reaches it: {why}"),
+            (None, None) if answered(site) => format!("{site}: reached on a thread of its own (below)"),
+            (None, None) => format!("{site}: no answer"),
+        })
+        .collect();
+    table.extend(hooks.iter().filter(|(site, _)| site.contains(" (on ") || site.contains(" (no site")).map(|(site, (n, said, _))| format!("{site}: {n} answers, {said} said where or why")));
+    // The table, passed or not (seen with --nocapture).
+    eprintln!("the data folder's hooks, each with the answers it failed or why none does:\n{}", table.join("\n"));
+    assert!(
+        found.is_empty(),
+        "{} answers say where the data folder is or why it failed (codes answered: {codes:?}; the listeners starting failed {starting:?}):\n{}\n\nthe hooks, each with the answers it failed:\n{}",
+        found.len(),
+        found.join("\n"),
+        table.join("\n")
+    );
+}
+
+/// The hooks that failed since last asked (at_rest::fired), each counted in `hooks` against one
+/// more answer, and whether that answer said where or why: their names (`names`, by place), one
+/// failed on a thread of its own (a listener's) marked so. Another test's (a thread named for it,
+/// failing its own data folder meanwhile) is none of this sweep's.
+fn hooks_fired(hooks: &mut BTreeMap<String, (usize, usize, BTreeSet<String>)>, names: &BTreeMap<String, String>, said_where: bool) -> Vec<String> {
+    let me = std::thread::current().name().map(str::to_string);
+    let mut at: Vec<String> = crate::at_rest::fired()
+        .into_iter()
+        .filter(|fired| me.as_deref() == Some(fired.on.as_str()) || !fired.on.starts_with("tests::"))
+        .map(|fired| {
+            let name = names.get(&fired.at).cloned().unwrap_or_else(|| format!("{} (no site in the sources)", fired.at));
+            let site = if me.as_deref() == Some(fired.on.as_str()) { name } else { format!("{name} (on {})", fired.on) };
+            hooks.entry(site.clone()).or_default().2.insert(fired.what);
+            site
+        })
+        .collect();
+    at.sort();
+    at.dedup();
+    for site in &at {
+        let hook = hooks.get_mut(site).unwrap();
+        hook.0 += 1;
+        hook.1 += usize::from(said_where);
+    }
+    at
+}
+
+/// Every place the server's sources ask the data folder's hook from, by name: its file and the
+/// function it is in (`at_rest.rs: Keyring::persist`, as source.rs's `fn_spans` names it), with
+/// `#k` after when that function asks it more than once (the k-th, from 1), so a line moved
+/// doesn't make it another; each with its place, `file:line`, as the hook notes it
+/// (at_rest::fired). A place is a call to one of at_rest::disk's readers, anywhere outside the
+/// tests, or one of at_rest.rs's own asks. A `#[cfg(test)]` function's are the tests' (recorder.rs's
+/// `Log::lines`): no request reaches them.
+fn hook_sites() -> BTreeMap<String, String> {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let (mut files, mut sites) = (vec![src.clone()], BTreeMap::new());
+    while let Some(at) = files.pop() {
+        if at.is_dir() {
+            files.extend(std::fs::read_dir(&at).unwrap().flatten().map(|e| e.path()));
+            continue;
+        }
+        let name = at.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
+        if !name.ends_with(".rs") || name.ends_with("tests.rs") || name.starts_with("tests/") || name.contains("/tests/") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&at).unwrap();
+        let code = super::source::inert(&text);
+        let (spans, in_test_fns) = (super::source::fn_spans(&code), test_fns(&code));
+        // Each function's asks, in order: their lines, from 1.
+        let mut by_fn: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (n, (line, test)) in text.lines().zip(super::source::in_test_modules(&text)).enumerate() {
+            let test = test || in_test_fns.get(n).copied().unwrap_or(false);
+            let line = line.trim();
+            let reads = ["disk::read(", "disk::read_to_string(", "disk::open(", "disk::read_dir("].iter().any(|r| line.contains(r));
+            let asks = name == "at_rest.rs" && line.contains("data_folder(") && !line.contains("fn data_folder(") && !line.contains("super::data_folder(");
+            if !test && !line.starts_with("//") && (reads || asks) {
+                let within = super::source::fn_at(&spans, n).unwrap_or("(no function)").to_string();
+                by_fn.entry(within).or_default().push(n + 1);
+            }
+        }
+        for (within, lines) in by_fn {
+            for (k, line) in lines.iter().enumerate() {
+                let site = if lines.len() > 1 { format!("{name}: {within}#{}", k + 1) } else { format!("{name}: {within}") };
+                sites.insert(site, format!("{name}:{line}"));
+            }
+        }
+    }
+    sites
+}
+
+/// What keeps the server's copy of keys.json in its backup folder (storage.rs's `archive`, on the
+/// housekeeping tick): a keyring with a file alone, never the tests' (kept in memory).
+const BACKUP_COPY: &str = "keys.json copied to the backup folder on the housekeeping tick (storage.rs, archive): what fails is the backup's warning, never an answer, and only a keyring with a file reaches it";
+
+/// What a log's cut-back does on the logs' sync, every second.
+const CUT: &str = "a log cut back to what it keeps, on the logs' sync (main.rs, sync_logs): what fails is said on stderr and the cut waits; no answer waits for it";
+
+/// What the housekeeping tick does: counting, archiving, expiring, sweeping texts.
+const TICK: &str = "the housekeeping tick (storage.rs): what fails is said on stderr and the warnings, and tried again at the next tick; no answer waits for it";
+
+/// What the server reads as it starts.
+const START: &str = "read as the server starts: what fails is said on stderr, and a file it can't go on without stops the start (main.rs, refuse_to_start); no request reaches it";
+
+/// The places in the sources no request reaches, and why: what fails there is said to whoever
+/// runs the server (stderr, the warnings), never in an answer. One that an answer reached, or that
+/// the sources no longer hold, fails the sweep, as one in neither does.
+const REASONS: &[(&str, &str)] = &[
+    ("at_rest.rs: read", START),
+    ("at_rest.rs: read_sealed_in", "a mail or a message spooled to be sent, read back as the server starts (mails.rs, queues.rs: recover): what fails is said on stderr; no request reaches it"),
+    ("at_rest.rs: Keyring::persist#2", "keys.json written by a keyring with a file, which the tests' own isn't (kept in memory): writers.rs's keys_that_cant_be_written_tell_whoever_rotated_or_forgot_neither_where_nor_why sends a rotation and a forget to one that is, made to fail"),
+    ("at_rest.rs: Keyring::keep_copy_in#1", BACKUP_COPY),
+    ("at_rest.rs: Keyring::keep_copy_in#2", BACKUP_COPY),
+    ("at_rest.rs: Keyring::keep_copy_in#3", BACKUP_COPY),
+    ("heads.rs: Exporter::new", START),
+    ("mails.rs: Mails::recover", START),
+    ("queues.rs: Queues::recover", START),
+    ("recorder.rs: CutMade::catch_up", CUT),
+    ("recorder.rs: CutPlan::make", CUT),
+    ("recorder.rs: Log::cut_back", CUT),
+    ("recorder.rs: Log::rewrite_file", CUT),
+    ("storage.rs: Sweeps::count", TICK),
+    ("storage.rs: archive#1", TICK),
+    ("storage.rs: archive#2", TICK),
+    ("storage.rs: expire_removed#1", TICK),
+    ("storage.rs: expire_removed#2", TICK),
+];
+
+/// `text` deployed as `slug` by ada, approving what it asks for: the deploy's answer.
+fn deploy_answer(state: &AppState, ada: &str, slug: &str, text: &str) -> (u16, String) {
+    let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+    for unit in &plan.units {
+        let (code, said) = ask(state, Some(ada), "POST", "/unit", unit.clone());
+        if code != 200 {
+            return (code, said);
+        }
+    }
+    let (code, preview) = send(state, ada, "POST", "/deploy/preview", json!({ "slug": slug, "unit": plan.unit }));
+    if code != 200 {
+        return (code, preview);
+    }
+    let preview: Value = serde_json::from_str(&preview).unwrap();
+    send(state, ada, "POST", "/deploy", json!({ "slug": slug, "unit": plan.unit, "document": plan.document, "acknowledge": preview["needs_approval"] }))
+}
+
+/// A flow that reads a file of a folder bound to it, its text kept in the data folder (a folder's
+/// `keep`: bytes), and says so on its console.
+const TEXTS: &str = r#"import { flow, route } from "holon"
+import texts from "folder:texts"
+
+flow("texts", { port: 18096 })
+
+route.get("/read", () => {
+  console.log("read a.txt")
+  return texts["a.txt"]
+})
+"#;
+
+/// For each line of `code` (made inert), whether it is a `#[cfg(test)]` function's: the attribute
+/// to the brace that closes its body.
+fn test_fns(code: &str) -> Vec<bool> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut test = vec![false; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim() != "#[cfg(test)]" {
+            i += 1;
+            continue;
+        }
+        let mut m = i + 1;
+        while m < lines.len() && (lines[m].trim().is_empty() || lines[m].trim_start().starts_with("#[")) {
+            m += 1;
+        }
+        let item = lines.get(m).map_or("", |l| l.trim_start().trim_start_matches("pub(crate) ").trim_start_matches("pub(super) ").trim_start_matches("pub "));
+        if !item.starts_with("fn ") {
+            i += 1;
+            continue;
+        }
+        let (mut depth, mut opened, mut j) = (0i32, false, m);
+        while j < lines.len() {
+            for c in lines[j].chars() {
+                match c {
+                    '{' => (depth, opened) = (depth + 1, true),
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            if opened && depth <= 0 {
+                break;
+            }
+            j += 1;
+        }
+        let last = j.min(lines.len() - 1);
+        test[i..=last].fill(true);
+        i = last + 1;
+    }
+    test
 }
 
 /// The `error` an answer says, or nothing.

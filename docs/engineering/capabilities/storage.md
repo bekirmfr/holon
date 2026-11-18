@@ -186,10 +186,11 @@ person resumes while the disk is full is paused again at the next look.
   reaches it too).
 - **`GET /admin/warnings`**, by key: `disk:<path>`, `cache:flows`, `cache:values` (at its size most
   looks of the last hour), `backup` (a log couldn't write to it), `backup-export` (a batch couldn't
-  be made an export), `pack:<path>`, `sweep:store` and `sweep:file texts` (the last round
-  removed nothing, as what names what is kept couldn't all be read), `sweep-off` (off, with the
-  store past a tenth of its disk).
-  Each says what to do.
+  be made an export), `file:<told>:<place>` (a file failing now, `failing::note_file`: a
+  listener's record of what it has seen that doesn't open, say, with where and why), `pack:<path>`,
+  `sweep:store` and `sweep:file texts` (the last round removed nothing, as what names what is kept
+  couldn't all be read), `sweep-off` (off, with the store past a tenth of its disk). Each says
+  what to do.
 
 **What crashes leave**, a file written aside and never renamed in (`is_aside`), is removed by
 `count` once older than `LEFTOVER_AFTER` (15 minutes), and said.

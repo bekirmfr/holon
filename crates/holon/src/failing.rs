@@ -77,33 +77,92 @@ pub(crate) fn health(at: &Place) -> (u16, String) {
 /// may be a flow's caller, or someone signing in (audit R71). What they are told is a fixed
 /// text, with at most a line and a column, or a reason holon gives of what it was sent: no place
 /// and no error's text can be put in it.
-#[derive(Clone, Debug, PartialEq)]
+/// Its Display and its Debug both say what whoever asked is told and no more, so a route that
+/// formats it (`{e}`, `{e:?}`), or an io::Error or a store error holding it, can't pass where or
+/// why on (audit R87). Why is had by name alone ([`Failed::for_the_admin`]): for stderr, the
+/// warnings and the tests, never an answer (tests/at_rest.rs holds every call of it to a list).
+/// Don't widen the Debug back to why: that is what this guards.
+#[derive(Clone, PartialEq)]
 pub(crate) struct Failed {
     told: String,
     why: String,
+    /// Why is on stderr already, said where the failure was made ([`Failed::of_file`]).
+    noted: bool,
 }
+
+impl std::fmt::Display for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.told)
+    }
+}
+
+impl std::fmt::Debug for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.told)
+    }
+}
+
+impl std::error::Error for Failed {}
+
+/// What a store of the server's (holon-host's, its units and values) is told to say when a file
+/// of its own fails: StoreKeys's `failed`.
+pub(crate) const STORE_FAILED: &str = "the server couldn't read or write its store";
+
+/// What a file the server reads under its data folder (at_rest::disk) says when it fails.
+pub(crate) const FILE_UNREAD: &str = "the server couldn't read one of its files";
+
+/// What a file the server seals and writes under its data folder (at_rest::write_private) says
+/// when it fails.
+pub(crate) const FILE_UNWRITTEN: &str = "the server couldn't write one of its files";
 
 impl Failed {
     /// `told` to whoever asked, `why` to the admin.
     pub(crate) fn new(told: &'static str, why: impl Into<String>) -> Failed {
-        Failed { told: told.into(), why: why.into() }
+        Failed { told: told.into(), why: why.into(), noted: false }
     }
 
     /// A file that doesn't parse: `told` and where in it, as a line and a column (a line of it,
     /// or a value its message quotes, can hold what the file names: a secret's source, say).
     pub(crate) fn at(told: &'static str, line: usize, column: usize, why: impl Into<String>) -> Failed {
-        Failed { told: format!("{told} (line {line}, column {column})"), why: why.into() }
+        Failed { told: format!("{told} (line {line}, column {column})"), why: why.into(), noted: false }
     }
 
     /// A reason holon writes itself of what it was given (a limit it doesn't know, say), with
     /// nothing of the server's disk or an error's text in it, told as it is; `why` may add where.
     pub(crate) fn reason(reason: String, why: impl Into<String>) -> Failed {
-        Failed { told: reason, why: why.into() }
+        Failed { told: reason, why: why.into(), noted: false }
     }
 
-    /// Why, for the admin.
-    pub(crate) fn why(&self) -> &str {
+    /// `e`, an error of the server's own file at `path`, as an io::Error whose text is `told`,
+    /// its kind kept (a caller that takes NotFound for none still does); where and why are on
+    /// stderr now, for the admin, but for a file that isn't there, which callers take for none.
+    /// One that holds a Failed already is left as it is.
+    pub(crate) fn of_file(told: &'static str, path: &std::path::Path, e: std::io::Error) -> std::io::Error {
+        if Failed::in_io(&e).is_some() {
+            return e;
+        }
+        let kind = e.kind();
+        let mut failed = Failed::new(told, format!("{}: {e}", path.display()));
+        if kind != std::io::ErrorKind::NotFound {
+            eprintln!("warning: {}: {}", failed.told, failed.why);
+            failed.noted = true;
+        }
+        std::io::Error::new(kind, failed)
+    }
+
+    /// The Failed `e` holds, if it holds one: its why for the admin or a test.
+    pub(crate) fn in_io(e: &std::io::Error) -> Option<&Failed> {
+        e.get_ref().and_then(|inner| inner.downcast_ref::<Failed>())
+    }
+
+    /// Why, for the admin (stderr, the warnings) and the tests: never to build an answer.
+    pub(crate) fn for_the_admin(&self) -> &str {
         &self.why
+    }
+
+    /// The same failure told in other words, made from what it told: why is kept as it was.
+    pub(crate) fn retold(self, told: impl FnOnce(&str) -> String) -> Failed {
+        Failed { told: told(&self.told), ..self }
     }
 
     /// What whoever asked is told, where the admin hears why another way (a writer's warning).
@@ -113,11 +172,38 @@ impl Failed {
 
     /// What whoever asked is told, once why is on stderr for the admin.
     pub(crate) fn said(self) -> String {
-        if self.why != self.told {
+        if !self.noted && self.why != self.told {
             eprintln!("warning: {}: {}", self.told, self.why);
         }
         self.told
     }
+}
+
+/// The files failing now, by the deployments file's place, what whoever asked was told, and where
+/// (an admin's words: a path): why ([`note_file`]).
+static FILES: Mutex<BTreeMap<(PathBuf, String, String), String>> = Mutex::new(BTreeMap::new());
+
+/// A file the server reads or writes, failing now: kept, with why, until the same (told, place)
+/// goes through. Listed in the admin's warnings (storage.rs), never /health's 503. `place` is
+/// admin-only (a path, "deployment X's seen file"). `told` is the caller's fixed sentence, passed
+/// again with Ok: the key is it, not `Failed`'s own told, so a Failed told in other words still
+/// clears. Two places under one told (two packs, two deployments' seen files) never clear each
+/// other. A server whose deployments file is kept nowhere notes nothing, as [`note`] doesn't.
+pub(crate) fn note_file(at: &Place, told: &str, place: &str, result: Result<(), &Failed>) {
+    let Some(path) = at.at() else { return };
+    let key = (PathBuf::from(path.clone()), told.to_string(), place.to_string());
+    let mut files = FILES.lock().unwrap();
+    match result {
+        Ok(()) => drop(files.remove(&key)),
+        Err(f) => drop(files.insert(key, f.why.clone())),
+    }
+}
+
+/// What fails now for the server whose deployments file is `at`: (told, place, why).
+pub(crate) fn files_now(at: &Place) -> Vec<(String, String, String)> {
+    let Some(path) = at.at() else { return Vec::new() };
+    let path = PathBuf::from(path.clone());
+    FILES.lock().unwrap().iter().filter(|((p, _, _), _)| *p == path).map(|((_, told, place), why)| (told.clone(), place.clone(), why.clone())).collect()
 }
 
 /// Where in `text` byte `at` is: its line and column, from 1.
@@ -126,4 +212,42 @@ pub(crate) fn line_and_column(text: &str, at: usize) -> (usize, usize) {
     let line = before.matches('\n').count() + 1;
     let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
     (line, column)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Failed;
+
+    /// Whatever formats a Failed, alone or inside an io::Error or a store error, gets what
+    /// whoever asked is told: never where or why, which `why` alone gives (audit R87).
+    #[test]
+    fn a_failure_says_only_what_whoever_asked_is_told() {
+        let failed = Failed::new("the thing failed", "C:\\data\\x.json: Access is denied. (os error 5)");
+        assert_eq!(format!("{failed}"), "the thing failed");
+        assert_eq!(format!("{failed:?}"), "the thing failed");
+        assert_eq!(format!("{failed:#?}"), "the thing failed");
+        assert!(failed.for_the_admin().contains("x.json") && failed.for_the_admin().contains("denied"));
+
+        let dir = std::env::temp_dir().join(format!("holon-failed-{}", std::process::id()));
+        let path = dir.join("x.json");
+        let os = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let words = os.to_string();
+        let e = Failed::of_file("the thing failed", &path, os);
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "its kind kept");
+        let store = holon_host::StoreError::Io(Failed::of_file("the thing failed", &path, e));
+        for said in [format!("{store:?}"), format!("{store:#?}")] {
+            assert!(said.contains("the thing failed") && !said.contains("x.json") && !said.contains(&words), "{said}");
+        }
+        let holon_host::StoreError::Io(e) = store else { unreachable!() };
+        for said in [e.to_string(), format!("{e:?}"), format!("{e:#?}")] {
+            assert!(said.contains("the thing failed") && !said.contains("x.json") && !said.contains(&words), "{said}");
+        }
+        let why = Failed::in_io(&e).map(Failed::for_the_admin).unwrap();
+        assert!(why.contains("x.json") && why.contains(&words), "where and why kept for the admin, once: {why}");
+        assert!(!why.contains("the thing failed"), "a Failed passed again isn't wrapped again: {why}");
+
+        let gone = Failed::of_file("the thing failed", &path, std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert_eq!(gone.kind(), std::io::ErrorKind::NotFound, "a file not there is still none to whoever reads the kind");
+        assert!(!gone.to_string().contains("x.json"));
+    }
 }

@@ -176,7 +176,8 @@ exception: a person reaches the tokens of an agent or a service they own
 hold (`may_hold`: a service is never an admin, an agent only agent or viewer), and an owner, a
 person, for an agent or a service. The paths:
 `/people[/<name>[/reset|/tokens[/<id>]]]` (PATCH changes one), `/admin/oidc` (auth.rs);
-`/admin/secrets[/<name>]` (the server's own) and `/admin/secrets/env` (variable names only);
+`/admin/secrets[/<name>]` (the server's own) and `/admin/secrets/env` (variable names only, to whoever may
+bind; the dotenv file's path to whoever views the host);
 `/admin/grants`; `/admin/folders` and below, with `browse` and `pick` (pick.rs: the OS dialog
 only for a request from the machine itself, not one a proxy forwarded); `/admin/databases` and below; `/admin/host`, `/admin/warnings`, `/admin/storage`
 (which writes `holon.toml`) and `/admin/store/sweep`. A server built without accounts lets

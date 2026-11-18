@@ -657,6 +657,12 @@ busy. The write itself, 20–22 µs of each hold before encryption as after, is 
 look, for every log: a lazy log could keep its newest lines in memory and write them with its
 sync.
 
+- **The data folder's test hook (audit R87, 2026-11-18):** each read and write of the data folder
+  asks `at_rest::data_folder` first, so the server's tests can make it fail. Outside the tests it
+  is `Ok(())`, inlined, and the readers moved behind it (`at_rest::disk`) cost nothing. The
+  store's is a method of holon-host's `AtRest`, so what ships pays one indirect call per store
+  read and write for the seam (StoreKeys's, which returns `Ok(())`), beside the file's own open.
+
 ### A reply to a flow fed a secret (R70, 2026-11-18)
 
 A flow fed a secret has each reply it gets looked at for the secret, in each spelling JSON gives

@@ -175,3 +175,85 @@ fn declared_module(line: &str) -> Option<&str> {
     let name = rest.strip_suffix(';')?.trim();
     (!name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')).then_some(name)
 }
+
+/// Each function of `code` (made [`inert`]) that has a body, named `Type::name` inside an `impl`
+/// (the type's, for a trait's impl too) and `name` outside, with the lines (from 0) from its `fn`
+/// to the brace that closes it: what a sweep names a place in the sources by, so a line moved
+/// doesn't make it another (R87). A function declared at a line's start alone is seen.
+pub(crate) fn fn_spans(code: &str) -> Vec<(String, usize, usize)> {
+    let lines: Vec<&str> = code.lines().collect();
+    // From line `at`, char `from`: the line of the brace that closes the first block opened
+    // there; none if a `;` outside brackets ends the item first (a declaration without a body).
+    let close = |at: usize, from: usize| -> Option<usize> {
+        let (mut depth, mut opened, mut brackets) = (0i32, false, 0i32);
+        for (n, line) in lines.iter().enumerate().skip(at) {
+            for c in line.chars().skip(if n == at { from } else { 0 }) {
+                match c {
+                    '{' => (depth, opened) = (depth + 1, true),
+                    '}' => {
+                        depth -= 1;
+                        if opened && depth == 0 {
+                            return Some(n);
+                        }
+                    }
+                    '(' | '[' => brackets += 1,
+                    ')' | ']' => brackets -= 1,
+                    ';' if !opened && brackets == 0 => return None,
+                    _ => {}
+                }
+            }
+        }
+        None
+    };
+    let bare = |line: &str| -> String {
+        let mut t = line.trim_start();
+        while let Some(rest) = ["pub(crate) ", "pub(super) ", "pub ", "const ", "async ", "unsafe ", "default "].iter().find_map(|q| t.strip_prefix(q)) {
+            t = rest;
+        }
+        t.to_string()
+    };
+    let ident = |t: &str| t.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect::<String>();
+    let mut impls: Vec<(String, usize, usize)> = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        let t = bare(line);
+        let Some(rest) = t.strip_prefix("impl").filter(|r| r.starts_with(['<', ' '])) else { continue };
+        let head = rest.split('{').next().unwrap_or("");
+        // The type: after `for` in a trait's impl, else after the impl's own generics.
+        let ty = match head.rsplit_once(" for ") {
+            Some((_, ty)) => ty.to_string(),
+            None => {
+                let (mut depth, mut at) = (0i32, 0);
+                for (i, c) in head.char_indices() {
+                    match c {
+                        '<' => depth += 1,
+                        '>' => depth -= 1,
+                        _ if depth == 0 && !c.is_whitespace() => {
+                            at = i;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                head[at..].to_string()
+            }
+        };
+        let ty = ty.trim().trim_start_matches('&').trim_start_matches("dyn ").trim();
+        let last = ty.split('<').next().unwrap_or("").rsplit("::").next().unwrap_or("");
+        if let Some(end) = close(n, line.find("impl").unwrap_or(0)) {
+            impls.push((ident(last), n, end));
+        }
+    }
+    let mut spans = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        let Some(name) = bare(line).strip_prefix("fn ").map(ident).filter(|i| !i.is_empty()) else { continue };
+        let Some(end) = close(n, line.find("fn ").unwrap_or(0)) else { continue };
+        let owner = impls.iter().filter(|(_, from, to)| *from < n && n <= *to).max_by_key(|(_, from, _)| *from);
+        spans.push((owner.map_or(name.clone(), |(ty, _, _)| format!("{ty}::{name}")), n, end));
+    }
+    spans
+}
+
+/// The function of `spans` ([`fn_spans`]) that line `n` (from 0) is in: the innermost.
+pub(crate) fn fn_at(spans: &[(String, usize, usize)], n: usize) -> Option<&str> {
+    spans.iter().filter(|(_, from, to)| *from <= n && n <= *to).max_by_key(|(_, from, _)| *from).map(|(name, _, _)| name.as_str())
+}

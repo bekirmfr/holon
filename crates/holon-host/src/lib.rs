@@ -393,7 +393,6 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
 
 /// What can go wrong putting or getting a unit. Holds an `io::Error`, so it is
 /// deliberately not `PartialEq` — match on the variant.
-#[derive(Debug)]
 pub enum StoreError {
     /// Disk IO failed.
     Io(io::Error),
@@ -404,6 +403,20 @@ pub enum StoreError {
     /// The blob's bytes do not hash to the key it was filed under — corruption,
     /// tampering, or a key/blob mismatch. The store refuses it.
     Corrupt { key: Hash, actual: Hash },
+}
+
+/// Written by hand: an `Io` is said as its io::Error's Display, so a `{e:?}` of a store error
+/// says what the store's [`AtRest::failed`] made of the disk's error and no more (a server's:
+/// what whoever asked may be told; holon's StoreKeys, audit R87), never the io::Error's inside.
+impl std::fmt::Debug for StoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StoreError::Io(e) => write!(f, "{e}"),
+            StoreError::Encode(e) => f.debug_tuple("Encode").field(e).finish(),
+            StoreError::Decode(e) => f.debug_tuple("Decode").field(e).finish(),
+            StoreError::Corrupt { key, actual } => f.debug_struct("Corrupt").field("key", key).field("actual", actual).finish(),
+        }
+    }
 }
 
 /// A content-addressed store: persist a unit by its hash, fetch it back by that
@@ -525,6 +538,22 @@ pub trait AtRest: Send + Sync {
     /// What the unit or value hashed `hash` is named on disk: 64 lowercase hex, keyed, so what
     /// recognises a store file by its name's shape still does.
     fn name(&self, hash: &Hash) -> String;
+    /// Asked before the store reads or writes its file at `path` on a request's path: an error
+    /// fails that read or write as the disk's own would. `Ok(())` but where the server's tests
+    /// make its data folder fail (holon's at_rest.rs, audit R87); nothing here keeps a fault. What
+    /// is kept above the disk (the server's value cache, a pack's blocks in memory) isn't read
+    /// from it, so it doesn't fail, as with a real disk's fault; nor the packs' listing and
+    /// indexes, read once as the store opens.
+    fn data_folder(&self, _path: &Path) -> io::Result<()> {
+        Ok(())
+    }
+    /// What the store's error `e`, on its file at `path`, is passed on as: here the disk's own
+    /// words (the command line's store says them to whoever runs it); a server's says only what
+    /// whoever asked may be told, and where and why to its admin (holon's StoreKeys, audit R87).
+    /// Every error of a file of the store's own goes through it.
+    fn failed(&self, _path: &Path, e: io::Error) -> io::Error {
+        e
+    }
 }
 
 /// What each of the store's files is, bound into it as it is sealed: one renamed to another role
@@ -781,18 +810,22 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
 impl Store for FileStore {
     fn put(&mut self, unit: &Unit) -> Result<Hash, StoreError> {
         let (key, bytes) = encode_keyed(unit)?;
-        let sealed = self.at_rest.seal(role::UNIT, &bytes).map_err(StoreError::Io)?;
-        write_atomically(&self.path(&key), &sealed).map_err(StoreError::Io)?;
+        let path = self.path(&key);
+        let failed = |e: io::Error| StoreError::Io(self.at_rest.failed(&path, e));
+        let sealed = self.at_rest.seal(role::UNIT, &bytes).map_err(failed)?;
+        self.at_rest.data_folder(&path).and_then(|()| write_atomically(&path, &sealed)).map_err(failed)?;
         Ok(key)
     }
     fn get(&self, key: &Hash) -> Result<Option<Unit>, StoreError> {
-        let bytes = match fs::read(self.path(key)) {
+        let path = self.path(key);
+        let failed = |e: io::Error| StoreError::Io(self.at_rest.failed(&path, e));
+        let bytes = match self.at_rest.data_folder(&path).and_then(|()| fs::read(&path)) {
             Ok(b) => b,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(StoreError::Io(e)),
+            Err(e) => return Err(failed(e)),
         };
         // Opened, then checked against its hash as ever.
-        decode_verified(key, &self.at_rest.open(role::UNIT, &bytes).map_err(StoreError::Io)?).map(Some)
+        decode_verified(key, &self.at_rest.open(role::UNIT, &bytes).map_err(failed)?).map(Some)
     }
     fn put_value(&mut self, value: &Value) -> Result<Hash, StoreError> {
         let (key, bytes) = encode_value_keyed(value)?;
@@ -800,21 +833,26 @@ impl Store for FileStore {
         // Content-addressed: a file already there, or the value packed, holds these very bytes (a
         // read verifies it).
         if !path.exists() && !self.packs.contains(&key) {
-            create_private_dir(&self.values_dir()).map_err(StoreError::Io)?;
-            let sealed = self.at_rest.seal(role::VALUE, &bytes).map_err(StoreError::Io)?;
-            write_atomically(&path, &sealed).map_err(StoreError::Io)?;
+            let failed = |e: io::Error| StoreError::Io(self.at_rest.failed(&path, e));
+            self.at_rest.data_folder(&path).map_err(failed)?;
+            create_private_dir(&self.values_dir()).map_err(failed)?;
+            let sealed = self.at_rest.seal(role::VALUE, &bytes).map_err(failed)?;
+            write_atomically(&path, &sealed).map_err(failed)?;
         }
         Ok(key)
     }
     fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
-        let bytes = match fs::read(self.value_path(key)) {
-            Ok(b) => self.at_rest.open(role::VALUE, &b).map_err(StoreError::Io)?,
-            // Not a file of its own: packed, or not there.
+        let path = self.value_path(key);
+        let failed = |e: io::Error| StoreError::Io(self.at_rest.failed(&path, e));
+        let bytes = match self.at_rest.data_folder(&path).and_then(|()| fs::read(&path)) {
+            Ok(b) => self.at_rest.open(role::VALUE, &b).map_err(failed)?,
+            // Not a file of its own: packed, or not there. A pack's error is its file's, passed
+            // through `failed` there.
             Err(e) if e.kind() == io::ErrorKind::NotFound => match self.packs.get(key).map_err(StoreError::Io)? {
                 Some(b) => b,
                 None => return Ok(None),
             },
-            Err(e) => return Err(StoreError::Io(e)),
+            Err(e) => return Err(failed(e)),
         };
         decode_value_verified(key, &bytes).map(Some)
     }
@@ -1668,6 +1706,29 @@ mod tests {
 
     /// A descriptor as `restrict_to_owner` leaves it is its owner's alone; one that inherits, or
     /// lets anyone else in, is not.
+    /// A store error's Debug is its io::Error's Display, so what the store's `failed` made of
+    /// it is all a `{e:?}` says (a server's: what whoever asked may be told, audit R87); the
+    /// default `failed` keeps the disk's own words, for whoever runs the command line.
+    #[test]
+    fn a_store_errors_debug_says_what_failed_made_of_it() {
+        struct Plain;
+        impl AtRest for Plain {
+            fn seal(&self, _: &'static str, plain: &[u8]) -> io::Result<Vec<u8>> {
+                Ok(plain.to_vec())
+            }
+            fn open(&self, _: &'static str, sealed: &[u8]) -> io::Result<Vec<u8>> {
+                Ok(sealed.to_vec())
+            }
+            fn name(&self, hash: &Hash) -> String {
+                format!("{hash:?}")
+            }
+        }
+        let e = Plain.failed(Path::new("x"), io::Error::other("the disk's words"));
+        assert_eq!(e.to_string(), "the disk's words", "the default keeps them");
+        let said = format!("{:?}", StoreError::Io(e));
+        assert_eq!(said, "the disk's words", "no Custom {{ kind, error }} around it");
+    }
+
     #[test]
     fn an_owner_only_descriptor_is_told_from_one_that_lets_others_in() {
         let me = "S-1-5-21-1-2-3-1001";

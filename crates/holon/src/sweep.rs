@@ -254,9 +254,10 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
     // path), or packed (none, and its hash, which the packs' index holds).
     let mut there: BTreeMap<String, (Option<PathBuf>, u64, Option<Hash>)> = BTreeMap::new();
     // One it couldn't list would be none to walk through: a packed value only it names would be
-    // taken as named by nothing, and go (release audit R92).
-    let listed = holon_host::listed(std::fs::read_dir(dir)).map_err(|e| {
-        eprintln!("holon: the store's values in {} can't be listed, so the sweep removes nothing: {e}", dir.display());
+    // taken as named by nothing, and go (release audit R92). Where and why are on stderr already
+    // (the data folder's reads, at_rest::disk).
+    let listed = holon_host::listed(crate::at_rest::disk::read_dir(dir)).map_err(|e| {
+        eprintln!("holon: the store's values in {} can't be listed, so the sweep removes nothing", dir.display());
         format!("the store's values can't be listed: {e}")
     })?;
     for entry in listed {
@@ -401,7 +402,7 @@ fn pack(store: &SharedStore, values: &[(Hash, PathBuf)], swept: &mut Swept) -> R
     for chunk in values.chunks(PACK_AT_MOST) {
         let (mut read, mut paths) = (Vec::with_capacity(chunk.len()), Vec::with_capacity(chunk.len()));
         for (hash, path) in chunk {
-            match std::fs::read(path) {
+            match crate::at_rest::disk::read(path) {
                 Ok(sealed) => {
                     let bytes = packs.at_rest().open(holon_host::role::VALUE, &sealed).map_err(|e| format!("can't pack the value {}: its file doesn't open: {e}", to_hex(hash)))?;
                     read.push((*hash, bytes));

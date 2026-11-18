@@ -954,7 +954,7 @@ impl CutMade {
         if upto <= self.copied {
             return Ok(());
         }
-        let mut file = std::fs::File::open(&self.path)?;
+        let mut file = crate::at_rest::disk::open(&self.path)?;
         file.seek(std::io::SeekFrom::Start(self.copied))?;
         let mut tail = Vec::with_capacity((upto - self.copied) as usize);
         file.take(upto - self.copied).read_to_end(&mut tail)?;
@@ -977,7 +977,7 @@ impl CutPlan {
     fn make(self) -> std::io::Result<Option<CutMade>> {
         use std::io::Read;
         let mut bytes = Vec::with_capacity(self.file_len as usize);
-        std::fs::File::open(&self.path)?.take(self.file_len).read_to_end(&mut bytes)?;
+        crate::at_rest::disk::open(&self.path)?.take(self.file_len).read_to_end(&mut bytes)?;
         if bytes.len() as u64 != self.file_len {
             return Err(std::io::Error::other(FileMoved));
         }
@@ -1359,7 +1359,7 @@ fn segment_name(p: &Path) -> std::borrow::Cow<'_, str> {
 
 fn read_segment(path: &Path) -> std::io::Result<String> {
     let slug = path.parent().map(slug_of).unwrap_or_default();
-    let bytes = std::fs::read(path)?;
+    let bytes = crate::at_rest::disk::read(path)?;
     let gz = LineSeal::of(&slug, role::LOG).open_file(&role::segment(&slug), &bytes)?;
     let mut text = String::new();
     std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&gz[..]), &mut text)?;
@@ -1903,9 +1903,9 @@ impl Log {
         let dir = sealed_dir(&path);
         let mut segments: Vec<PathBuf> = Vec::new();
         // A folder there that can't be listed is noted: its runs are missing from what the log
-        // keeps, not gone (`Log::unread`).
-        let listed = holon_host::listed(std::fs::read_dir(&dir)).unwrap_or_else(|e| {
-            eprintln!("holon: the sealed segments in {} can't be listed, their runs are missing from the log: {e}", dir.display());
+        // keeps, not gone (`Log::unread`). Where and why are on stderr already (at_rest::disk).
+        let listed = holon_host::listed(crate::at_rest::disk::read_dir(&dir)).unwrap_or_else(|e| {
+            eprintln!("holon: the sealed segments in {} can't be listed, their runs are missing from the log", dir.display());
             log.unread = Some(format!("its sealed segments' folder can't be listed: {e}"));
             Vec::new()
         });
@@ -1950,7 +1950,7 @@ impl Log {
         }
         // None yet: a new log. One that is there but can't be read is refused, not taken as
         // empty: its runs would be numbered again from 0, over the ones it holds.
-        let bytes = match std::fs::read(&path) {
+        let bytes = match crate::at_rest::disk::read(&path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return log.opened(),
             Err(e) => return log.refuse(format!("its file {} can't be read: {e}", path.display())),
@@ -2065,7 +2065,7 @@ impl Log {
     /// Write its file again as its index says it is (without lines it skipped reading).
     fn rewrite_file(&mut self) -> std::io::Result<()> {
         let Some(path) = self.file.clone() else { return Ok(()) };
-        let bytes = std::fs::read(&path)?;
+        let bytes = crate::at_rest::disk::read(&path)?;
         let mut all = Vec::with_capacity(bytes.len());
         let mut index = VecDeque::with_capacity(self.lines.len());
         for at in &self.lines {
@@ -2518,7 +2518,7 @@ impl Log {
         // Windows won't replace an open file). The next line opens the new one.
         self.handle = None;
         let cutoff = self.max_age_ms.map(|age| now_ms().saturating_sub(age));
-        let bytes = std::fs::read(&path).unwrap_or_default();
+        let bytes = crate::at_rest::disk::read(&path).unwrap_or_default();
         // A file this log didn't leave as it is (changed, cut or grown outside holon) is read
         // afresh, as a log opening it would; otherwise the index says where each line is.
         if bytes.len() as u64 != self.file_len {
@@ -2671,7 +2671,7 @@ impl Log {
             // the line after it.
             match &self.line_seal {
                 Some(seal) => lines.extend(seal.read_lines(path)),
-                None => lines.extend(std::fs::read_to_string(path).map(|t| t.lines().map(str::to_string).collect::<Vec<_>>()).unwrap_or_default()),
+                None => lines.extend(crate::at_rest::disk::read_to_string(path).map(|t| t.lines().map(str::to_string).collect::<Vec<_>>()).unwrap_or_default()),
             }
             return lines;
         }
@@ -2776,7 +2776,7 @@ impl Log {
             false
         });
         let file = match (&self.file, older.is_empty()) {
-            (Some(path), false) => std::fs::File::open(path).ok().map(|f| {
+            (Some(path), false) => crate::at_rest::disk::open(path).ok().map(|f| {
                 let at = older
                     .iter()
                     .filter_map(|seq| {
@@ -3028,7 +3028,7 @@ mod tests {
         assert!(crate::at_rest::read_seen::<serde_json::Value>(&seen, &crate::at_rest::deployment("keyless"), crate::at_rest::role::MAIL_SEEN).unwrap().is_none(), "none yet");
         std::fs::write(&seen, file_of_missing_key(&crate::at_rest::deployment("keyless"))).unwrap();
         let read = crate::at_rest::read_seen::<serde_json::Value>(&seen, &crate::at_rest::deployment("keyless"), crate::at_rest::role::MAIL_SEEN);
-        assert!(read.as_ref().is_err_and(|e| e.contains("version 999")), "{read:?}");
+        assert!(read.as_ref().is_err_and(|e| e.for_the_admin().contains("version 999")), "{read:?}");
         std::fs::write(&seen, b"{}").unwrap();
         assert!(crate::at_rest::read_seen::<serde_json::Value>(&seen, &crate::at_rest::deployment("keyless"), crate::at_rest::role::MAIL_SEEN).is_err(), "plain where sealed belongs: not none");
 

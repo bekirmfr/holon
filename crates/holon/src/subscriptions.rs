@@ -187,6 +187,7 @@ fn seen_dir(deployments_path: &Place, slug: &str) -> Option<PathBuf> {
 pub(crate) fn forget(deployments_path: &Place, slug: &str, feeds: &Feeds) {
     feeds.forget_held(slug);
     if let Some(dir) = seen_dir(deployments_path, slug) {
+        crate::at_rest::seen_forgotten(deployments_path, &dir);
         let _ = std::fs::remove_dir_all(dir);
     }
 }
@@ -202,7 +203,7 @@ struct Kept {
 impl Kept {
     /// Where it is: none yet if nothing is kept. One kept that doesn't open is an error (at_rest.rs,
     /// `read_seen`): the feed isn't read, rather than run again from the start.
-    fn read(&self) -> Result<Seen, String> {
+    fn read(&self) -> Result<Seen, crate::failing::Failed> {
         match &self.file {
             Some(f) => Ok(crate::at_rest::read_seen(f, &crate::at_rest::deployment_of(&self.key), crate::at_rest::role::FEED_SEEN)?.unwrap_or_default()),
             None => Ok(self.memory.lock().unwrap().get(&self.key).and_then(|b| serde_json::from_slice(b).ok()).unwrap_or_default()),
@@ -475,8 +476,8 @@ fn open(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<String, Deployment
     shared.feeds.set_live(&shared.slug, &shared.feed, |l| {
         *l = feeds::Live { address, status: "connecting", since: feeds::now_ms(), ..feeds::Live::default() };
     });
-    let (reader, deps, b, k) = (Arc::clone(shared), Arc::clone(deployments), binding.clone(), kept.clone());
-    thread::spawn(move || read(&reader, &deps, &b, &k));
+    let (reader, deps, at, b, k) = (Arc::clone(shared), Arc::clone(deployments), deployments_path.clone(), binding.clone(), kept.clone());
+    thread::spawn(move || read(&reader, &deps, &at, &b, &k));
     let (runner, deps, store, path) = (Arc::clone(shared), Arc::clone(deployments), store.clone(), deployments_path.clone());
     thread::spawn(move || run(&runner, &store, &deps, &path, &kept));
 }
@@ -497,12 +498,14 @@ fn position(shared: &Shared, binding: &Binding, kept: &Kept) -> (Option<String>,
 
 /// The reading thread: the feed's events into the buffer, the connection opened again when it is
 /// lost, until it is closed.
-fn read(shared: &Shared, deployments: &Mutex<BTreeMap<String, Deployment>>, binding: &Binding, kept: &Kept) {
+fn read(shared: &Shared, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, binding: &Binding, kept: &Kept) {
     let feed = &shared.feed;
     // Held on a place kept that doesn't open: it reads nothing, rather than from the start
     // (at_rest.rs, `read_seen`).
-    if let Err(e) = kept.read() {
-        let why = crate::at_rest::seen_held(&format!("the feed {feed}"), &e);
+    let read = kept.read().map_err(|e| crate::at_rest::seen_held(&format!("the feed {feed}"), e));
+    crate::at_rest::note_seen(deployments_path, kept.file.as_deref(), read.as_ref().map(|_| ()));
+    if let Err(held) = read {
+        let why = held.said();
         shared.note(deployments, why.clone());
         shared.feeds.set_live(&shared.slug, feed, |l| {
             (l.status, l.since) = ("unreadable", feeds::now_ms());

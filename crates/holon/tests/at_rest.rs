@@ -688,9 +688,15 @@ fn writers_in(text: &str) -> usize {
 }
 
 /// Each file under `src` that calls low-level writers outside test code, and how many
-/// ([`writers_in`]): a tests.rs, a file under a tests folder, and a test module's file of its own
-/// (`#[cfg(test)] mod x;`, source.rs's test_files) left out.
+/// ([`writers_in`]).
 fn writers_under(src: &Path) -> std::collections::BTreeMap<String, usize> {
+    counted_under(src, writers_in)
+}
+
+/// Each file under `src` with calls `count` counts outside test code, and how many: a tests.rs, a
+/// file under a tests folder, and a test module's file of its own (`#[cfg(test)] mod x;`,
+/// source.rs's test_files) left out.
+fn counted_under(src: &Path, count: fn(&str) -> usize) -> std::collections::BTreeMap<String, usize> {
     let mut files = Vec::new();
     files_under(src, &mut files);
     files.retain(|f| f.extension().is_some_and(|e| e == "rs"));
@@ -701,7 +707,7 @@ fn writers_under(src: &Path) -> std::collections::BTreeMap<String, usize> {
         if name.ends_with("tests.rs") || name.contains("/tests/") || name.starts_with("tests/") {
             continue;
         }
-        let n = writers_in(&std::fs::read_to_string(f).unwrap());
+        let n = count(&std::fs::read_to_string(f).unwrap());
         if n > 0 {
             found.insert(name, n);
         }
@@ -779,4 +785,558 @@ fn no_writer_under_the_data_folder_bypasses_at_rest() {
     let found = writers_under(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
     let allowed: std::collections::BTreeMap<String, usize> = WRITERS.iter().map(|(f, n, _)| (f.to_string(), *n)).collect();
     assert_eq!(found, allowed, "a low-level writer added or gone: seal through at_rest.rs, or say in WRITERS why it may write past it");
+}
+
+/// The ways into at_rest.rs that don't ask `data_folder` themselves and touch the disk or a key:
+/// each goes through the one named, which does or goes on through another that does (R87).
+const THROUGH: &[(&str, &str)] = &[
+    ("read_sealed", "read"),
+    ("write_table", "write_private"),
+    ("write_sealed", "write_private"),
+    ("open_export", "Keyring::open_file"),
+    ("Keyring::make_scope", "Keyring::current"),
+    ("Keyring::rotate", "Keyring::add_version"),
+    ("Keyring::add_version", "Keyring::persist"),
+    ("Keyring::forget", "Keyring::persist"),
+    ("Keyring::rotate_root", "Keyring::rotate_root_until"),
+    ("Keyring::rotate_root_until", "Keyring::persist"),
+    ("Keyring::seal_file", "Keyring::current"),
+    ("Keyring::seal_line", "Keyring::current"),
+    ("Keyring::seal_body", "Keyring::current"),
+    ("Keyring::open_file", "Keyring::open_file_in"),
+    ("Keyring::open_file_in", "Keyring::version"),
+    ("Keyring::open_line", "Keyring::version"),
+    ("Keyring::open_body", "Keyring::version"),
+    ("LineSeal::seal", "Keyring::seal_line"),
+    ("LineSeal::seal_body", "Keyring::seal_body"),
+    ("LineSeal::seal_lines", "LineSeal::seal"),
+    ("LineSeal::seal_file", "Keyring::seal_file"),
+    ("LineSeal::read", "Keyring::open_line"),
+    ("LineSeal::open", "LineSeal::read"),
+    ("LineSeal::open_lines", "LineSeal::open"),
+    ("LineSeal::open_file", "Keyring::open_file"),
+    ("StoreKeys::seal", "Keyring::seal_file"),
+    ("StoreKeys::open", "Keyring::open_file"),
+];
+
+/// The ways into at_rest.rs that never run on a request, and why: their errors go to whoever runs
+/// the server or the command.
+const OUTSIDE: &[(&str, &str)] = &[
+    ("install", "the server's keyring, set as it starts"),
+    ("lock_folder", "the data folder locked as the server starts, or by holon key rotate --root"),
+    ("hold_folder", "the data folder locked as the server starts"),
+    ("Keyring::open", "the keyring opened as the server starts, or by a command with no server on the folder"),
+    ("Keyring::open_to_read", "the keyring opened by holon verify, a command"),
+    ("Keyring::others_on_root", "holon key rotate --root, a command with no server on the folder"),
+    ("Keyring::export_root", "holon key export, a command"),
+];
+
+/// The ways into at_rest.rs that touch neither the disk nor a key, so nothing in them can be made
+/// to fail, and why. Checked: none of them, nor any function of the file they call, reads or
+/// writes a file or fetches a key.
+const PURE: &[(&[&str], &str)] = &[
+    (&["deployment", "deployment_of", "role::state_head", "role::segment", "role::batch", "role::export"], "a scope's or a role's name, made from a slug or a path"),
+    (&["seen_held", "key_missing_in", "Unreadable::fmt", "Unreadable::key_missing", "LineSeal::fmt"], "words, or which error one is"),
+    (&["StoreKeys::failed"], "a store's error made into what whoever asked may be told (failing::Failed): nothing read or written"),
+    (&["note_seen", "seen_forgotten"], "a listener's held record noted in the admin's warnings, or taken back (failing::note_file): nothing read or written"),
+    (&["is_sealed", "decimal", "rejoin", "Framed::of", "Framed::line", "Framed::text", "LineSeal::number"], "bytes already in hand, looked at or framed"),
+    (&["LineSeal::new", "LineSeal::with", "LineSeal::of", "keys", "store", "Keyring::memory"], "a sealer or a keyring made or handed on, nothing sealed or opened yet (memory: random keys, kept nowhere)"),
+    (&["Keyring::key_id", "Keyring::source", "Keyring::made", "Keyring::no_backup", "Keyring::status"], "what the keyring was opened with, held in memory: never a key"),
+    (&["Keyring::fingerprint", "Keyring::name", "StoreKeys::name"], "a keyed hash under a key derived as the keyring opened, held in memory: no scope's key fetched"),
+];
+
+/// The functions that fetch a key: a scope's (current, version) or the root, read where it is kept.
+const KEYS: &[&str] = &["Keyring::current", "Keyring::version", "Keyring::root"];
+
+/// A function of at_rest.rs outside its test modules: its name (`Type::name` in an impl,
+/// `module::name` in a module), the text of its body (from the line that opens it), whether it is
+/// a way in (`pub(crate)`, or a trait's method), and whether a cfg gates it (the fault's own: the
+/// tests' or its stand-in in every other build).
+struct AtRestFn {
+    name: String,
+    body: String,
+    way_in: bool,
+    gated: bool,
+}
+
+/// Each function of at_rest.rs outside its test modules, and the names of its modules.
+fn at_rest_fns(text: &str) -> (Vec<AtRestFn>, std::collections::BTreeSet<String>) {
+    let lines: Vec<&str> = text.lines().collect();
+    let test = source::in_test_modules(text);
+    let (mut found, mut mods) = (Vec::new(), std::collections::BTreeSet::new());
+    let (mut of, mut trait_impl, mut i) = (None::<String>, false, 0);
+    while i < lines.len() {
+        let line = lines[i];
+        if test[i] {
+            i += 1;
+            continue;
+        }
+        if let Some(head) = line.strip_prefix("impl").filter(|h| h.starts_with(' ') || h.starts_with('<')) {
+            trait_impl = head.contains(" for ");
+            let head = head.split(" for ").last().unwrap_or(head);
+            of = head.trim().trim_end_matches('{').trim().split('<').next().map(|t| t.trim().to_string());
+        } else if let Some(module) = ["pub(crate) mod ", "pub mod ", "mod "].iter().find_map(|p| line.strip_prefix(p)).and_then(|m| m.strip_suffix(" {")) {
+            (of, trait_impl) = (Some(module.to_string()), false);
+            mods.insert(module.to_string());
+        } else if line == "}" {
+            (of, trait_impl) = (None, false);
+        }
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        // pub(crate) in the server; pub in holon-host, a library.
+        let public = trimmed.starts_with("pub(crate) fn ") || trimmed.starts_with("pub fn ");
+        if public || trimmed.starts_with("fn ") {
+            let name = trimmed.split("fn ").nth(1).unwrap().split(['(', '<']).next().unwrap().to_string();
+            let name = match (&of, indent) {
+                (Some(of), 4) => format!("{of}::{name}"),
+                _ => name,
+            };
+            let gated = lines[..i].iter().rev().map(|l| l.trim()).take_while(|l| l.starts_with("#[") || l.starts_with("///")).any(|l| l.starts_with("#[cfg("));
+            // To the line that opens its body: or a body on one line, opened and closed there.
+            let one_line = |l: &str| l.contains('{') && l.trim_end().ends_with('}');
+            let mut j = i;
+            while j + 1 < lines.len() && !lines[j].trim_end().ends_with('{') && !lines[j].trim_end().ends_with(';') && !one_line(lines[j]) {
+                j += 1;
+            }
+            // A trait's declaration, with no body: nothing to read.
+            if lines[j].trim_end().ends_with(';') {
+                i = j + 1;
+                continue;
+            }
+            let end = format!("{}}}", " ".repeat(indent));
+            let close = if one_line(lines[j]) { j } else { (j + 1..lines.len()).find(|&k| lines[k] == end).unwrap_or(lines.len() - 1) };
+            found.push(AtRestFn { name, body: lines[j..=close].join("\n"), way_in: public || (trait_impl && indent == 4), gated });
+            i = close + 1;
+            continue;
+        }
+        i += 1;
+    }
+    (found, mods)
+}
+
+fn ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Whether `body` calls the function of at_rest.rs named `name`: a top-level one bare, a module's
+/// as `module::f`, a type's method as `.m(`, `Type::m(` or `Self::m(` (any type's `.m(`: more
+/// calls than there are, never fewer).
+fn calls(body: &str, name: &str, mods: &std::collections::BTreeSet<String>) -> bool {
+    let (of, short) = name.rsplit_once("::").map_or((None, name), |(o, s)| (Some(o), s));
+    let called = format!("{short}(");
+    let as_path = |before: &str, path: &str| before.strip_suffix("::").and_then(|b| b.strip_suffix(path)).is_some_and(|b| !b.ends_with(ident));
+    body.match_indices(&called).any(|(at, _)| {
+        let (before, after) = (&body[..at], &body[at + called.len()..]);
+        if before.ends_with(ident) {
+            return false;
+        }
+        match of {
+            None => !before.ends_with('.') && !before.ends_with("::"),
+            Some(module) if mods.contains(module) => as_path(before, module),
+            // A lock's read() or write() isn't the method of that name.
+            Some(_) if ["read", "write", "lock"].contains(&short) && after.starts_with(')') => false,
+            Some(of) => before.ends_with('.') || as_path(before, of) || as_path(before, "Self"),
+        }
+    })
+}
+
+/// Whether `body` touches the disk itself: a file read or written, a root read or kept where it
+/// is, or the hook asked.
+fn touches_disk(body: &str) -> bool {
+    let bare = |what: &str| body.match_indices(what).any(|(at, _)| !body[..at].ends_with(ident));
+    bare("fs::")
+        || bare("File::")
+        || bare("disk::")
+        || ["OpenOptions", "crate::sealing::", "data_folder(", "source.read(", "source.create(", "source.keep(", ".keyrings(", ".keep_keyrings("].iter().any(|w| body.contains(w))
+}
+
+/// Guards: every way into at_rest.rs, a `pub(crate)` function or a trait's method, Result or not,
+/// can be made to fail where it touches the disk or a key: it asks `data_folder` itself (or reads
+/// through `disk`, which does), or goes through one that does (THROUGH), or never runs on a
+/// request (OUTSIDE, with why), or touches neither (PURE, with why, and checked: nothing it calls
+/// in the file does). So the data folder made to fail reaches everything a request does there,
+/// and `no_answer_says_where_or_why_the_data_folder_failed` sees what each answer says then
+/// (audit R87).
+/// Why: answers passed on where a server's file failed and why (R71, R85, R91), each found by
+/// reading; the sweep sees only the ways in that ask the fault, and one added that doesn't would
+/// hide every answer behind it. A reader that swallows its error (a line log read to its lines)
+/// and the store's sealing (a trait's methods) are ways in like the rest.
+/// If it fails: a new way into at_rest.rs asks `data_folder(Some(path))` before it touches the
+/// disk (`data_folder(None)` for a key), or is named in THROUGH with what it goes through, in
+/// OUTSIDE with why it never runs on a request, or in PURE with why it touches neither.
+#[test]
+fn every_way_into_at_rest_can_be_made_to_fail() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/at_rest.rs")).unwrap();
+    let (fns, mods) = at_rest_fns(&text);
+    let fns: Vec<&AtRestFn> = fns.iter().filter(|f| !f.gated).collect();
+    let named: std::collections::BTreeMap<&str, &str> = fns.iter().map(|f| (f.name.as_str(), f.body.as_str())).collect();
+    let asks = |name: &str| named.get(name).is_some_and(|body| body.contains("data_folder(") || body.contains("disk::"));
+    let pure: std::collections::BTreeMap<&str, &str> = PURE.iter().flat_map(|(names, why)| names.iter().map(move |n| (*n, *why))).collect();
+    let mut wrong = Vec::new();
+    for (name, through) in THROUGH {
+        let Some(body) = named.get(name) else {
+            wrong.push(format!("{name}: in THROUGH, and no function of at_rest.rs"));
+            continue;
+        };
+        if !calls(body, through, &mods) {
+            wrong.push(format!("{name}: said to go through {through}, which it doesn't call"));
+        }
+    }
+    // Through, to one that asks: never round in a ring.
+    let reaches = |name: &str| {
+        let mut at = name.to_string();
+        for _ in 0..THROUGH.len() + 1 {
+            if asks(&at) {
+                return true;
+            }
+            match THROUGH.iter().find(|(n, _)| *n == at) {
+                Some((_, next)) => at = next.to_string(),
+                None => return false,
+            }
+        }
+        false
+    };
+    // What touches the disk or a key: itself, or through any function of the file it calls.
+    let mut touch: std::collections::BTreeSet<&str> = fns.iter().filter(|f| touches_disk(&f.body) || KEYS.contains(&f.name.as_str())).map(|f| f.name.as_str()).collect();
+    loop {
+        let more: Vec<&str> = fns
+            .iter()
+            .filter(|f| !touch.contains(f.name.as_str()) && touch.iter().any(|t| *t != f.name && calls(&f.body, t, &mods)))
+            .map(|f| f.name.as_str())
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        touch.extend(more);
+    }
+    for f in fns.iter().filter(|f| f.way_in) {
+        let n = f.name.as_str();
+        let classes: Vec<&str> = [
+            ("asks", asks(n)),
+            ("THROUGH", THROUGH.iter().any(|(t, _)| *t == n)),
+            ("OUTSIDE", OUTSIDE.iter().any(|(o, _)| *o == n)),
+            ("PURE", pure.contains_key(n)),
+        ]
+        .into_iter()
+        .filter(|(_, is)| *is)
+        .map(|(class, _)| class)
+        .collect();
+        match classes.as_slice() {
+            [] => wrong.push(format!("{n}: a way in of no class (touches the disk or a key: {})", touch.contains(n))),
+            ["THROUGH"] if !reaches(n) => wrong.push(format!("{n}: goes through no function that asks data_folder")),
+            ["PURE"] if touch.contains(n) => {
+                let through: Vec<&&str> = touch.iter().filter(|t| **t != n && calls(&f.body, t, &mods)).collect();
+                wrong.push(format!("{n}: in PURE, and touches the disk or a key (through {through:?})"));
+            }
+            [_] => {}
+            _ => wrong.push(format!("{n}: in more than one class: {classes:?}")),
+        }
+    }
+    for name in OUTSIDE.iter().map(|(n, _)| *n).chain(pure.keys().copied()) {
+        if !named.contains_key(name) {
+            wrong.push(format!("{name}: listed, and no function of at_rest.rs"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    // The scan reads what it should: the ways that ask, the ones that swallow their error, the
+    // store's sealing, and the fault's own left out.
+    for name in ["Keyring::persist", "Keyring::current", "Keyring::version", "write_private", "read", "read_sealed_in", "LineSeal::append", "Keyring::keep_copy_in", "LineSeal::read_lines", "disk::read_dir"] {
+        assert!(asks(name), "{name} asks data_folder: the scan doesn't read it");
+    }
+    for name in ["StoreKeys::seal", "StoreKeys::open", "LineSeal::open", "LineSeal::read_lines", "disk::open"] {
+        assert!(fns.iter().any(|f| f.name == name && f.way_in), "{name} is a way in: the scan doesn't see it");
+    }
+    assert!(!named.contains_key("fail_folder") && !named.contains_key("failing_folder"), "the fault's own, gated by cfg, are left out");
+    assert!(touch.contains("Keyring::open_line") && !touch.contains("Keyring::name"), "{touch:?}");
+    assert!(fns.iter().filter(|f| f.way_in).count() > 60, "the scan finds at_rest.rs's ways in");
+}
+
+/// Guards: the call scan tells a call from what only looks like one (R87): a lock's `read()`
+/// isn't `LineSeal::read`, `Vec::new(` isn't `LineSeal::new`, `KeysFile::` isn't a file, and a
+/// longer name holding a short one isn't it; a call made any of the ways Rust makes one is seen.
+/// If it fails: `calls` or `touches_disk` misreads a body, and the guard above with it.
+#[test]
+fn the_at_rest_scan_tells_a_call_from_a_name() {
+    let mods: std::collections::BTreeSet<String> = ["disk".to_string()].into();
+    for (body, name, called) in [
+        ("self.inner.read().unwrap()", "LineSeal::read", false),
+        ("self.read(line).ok()", "LineSeal::read", true),
+        ("Vec::new()", "LineSeal::new", false),
+        ("LineSeal::new(&deployment(slug), role)", "LineSeal::new", true),
+        ("Self::open_as(path, None, &[], true)", "Keyring::open_as", true),
+        ("crate::paths::canonical(path)", "Keyring::canonical", false),
+        ("std::fs::read(path)", "disk::read", false),
+        ("disk::read(path)", "disk::read", true),
+        ("read_sealed_in(path, scope, role)", "read", false),
+        ("keys.read_sealed(path)", "read_sealed", false),
+        ("match read(keys, path, role) {", "read", true),
+    ] {
+        assert_eq!(calls(body, name, &mods), called, "{body} calls {name}");
+    }
+    for (body, touches) in [("KeysFile::default()", false), ("std::fs::File::open(p)", true), ("let fs_used = 1;", false), ("source.keyrings()?", true), ("inner.source.clone()", false)] {
+        assert_eq!(touches_disk(body), touches, "{body}");
+    }
+}
+
+/// How many low-level reads `text` (a source file) makes outside its test modules: a file read
+/// whole, opened, or a folder listed, past at_rest::disk.
+fn readers_in(text: &str) -> usize {
+    text.lines()
+        .map(str::trim)
+        .zip(source::in_test_modules(text))
+        .filter(|(l, test)| !test && !l.starts_with("//"))
+        .map(|(line, _)| ["fs::read(", "fs::read_to_string(", "File::open(", "fs::read_dir(", ".read_dir()"].iter().map(|r| line.matches(*r).count()).sum::<usize>())
+        .sum()
+}
+
+/// The low-level reads left past at_rest::disk, per file, and why each may read past the hook:
+/// what it reads isn't the data folder, or no request, run or listener reads it (R87).
+const READERS: &[(&str, usize, &str)] = &[
+    ("at_rest.rs", 7, "the hook's own readers (disk's four), and the keyring opened as the server starts, keys files beside the root, a table written in clear before sealing: at start or by a rotation"),
+    ("bounds.rs", 1, "the container's memory limit, in its cgroup files: not the data folder"),
+    ("cmdline.rs", 1, "the command line reading a file a person named"),
+    ("deploycmd.rs", 1, "holon deploy reading the flow's text a person named"),
+    ("editor.rs", 1, "the editor's own files, from a folder given as the server starts: not the data folder"),
+    ("flowcmd.rs", 2, "the command line reading a flow's text, and its types file, where a person named"),
+    ("flowscmd.rs", 1, "holon flows save reading the text a person named"),
+    ("folders.rs", 3, "a bound folder: the person's own, read by the flow it is bound to, not the server's"),
+    ("keys.rs", 1, "holon key export: keys.json's id read by the command"),
+    ("local.rs", 3, "the command line's own files: where a server is, its sign-in, runs kept"),
+    ("mcphosts.rs", 5, "an MCP client's config file, where a person asked"),
+    ("migrate.rs", 4, "holon migrate: key files an older release kept in the config folder"),
+    ("pick.rs", 1, "the folder picker listing the server's disk for a folder to bind, at an admin's asking: what it lists is its answer"),
+    ("replaycmd.rs", 1, "holon replay reading the flow's text a person named"),
+    ("sealing.rs", 3, "the root key's own file and the keys files listed beside it, kept apart from the data folder; an old release's secrets file, at uninstall"),
+    ("secret_sources.rs", 1, "the env file an admin points the secrets at: theirs, outside the data folder"),
+    ("selfmanage.rs", 3, "holon's own install, read on update and uninstall"),
+    ("storage.rs", 1, "the process's own memory (/proc/self/status): not the data folder"),
+    ("verify.rs", 4, "holon verify and export: an export, and what a rerun read, where a person named"),
+    ("workbench/app.rs", 2, "the terminal app reading a file a person opened"),
+    ("workbench/shell.rs", 1, "the machine's name (/etc/hostname)"),
+];
+
+/// Guards: nothing under the data folder is read past at_rest.rs's hook but the readers named,
+/// each with why (R87): every other read of a file or a listing goes through `at_rest::disk`,
+/// which asks `data_folder` first, so the data folder made to fail reaches it.
+/// Why: the sweep fails only what asks the hook; a read added later past it, on a request's path,
+/// would answer from a disk that never fails in the tests, and what it passes on when a real one
+/// does would go unseen.
+/// If it fails: read through `crate::at_rest::disk` (the same call, after the check), or, if what
+/// it reads isn't the data folder or no request, run or listener reads it, add it to READERS with
+/// why.
+#[test]
+fn no_reader_under_the_data_folder_bypasses_the_hook() {
+    let found = counted_under(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), readers_in);
+    let allowed: std::collections::BTreeMap<String, usize> = READERS.iter().map(|(f, n, _)| (f.to_string(), *n)).collect();
+    assert_eq!(found, allowed, "a low-level reader added or gone: read through at_rest::disk, or say in READERS why it may read past it");
+    assert_eq!(readers_in("let a = std::fs::read(p);\nlet b = crate::at_rest::disk::read(p);\n// std::fs::read(q)\nfor e in dir.read_dir()? {}\n"), 2);
+}
+
+/// holon-host's functions that read a file or list a folder past the store's hook, and why: the
+/// rest ask it (`at_rest.data_folder(path)`) before they read (R87).
+const HOST_OUTSIDE: &[(&str, &str, &str)] = &[
+    ("lib.rs", "sync_dir", "a folder opened to sync its names to disk after a write: nothing of it read"),
+    ("packs.rs", "Packs::open", "the packs listed once, as the store opens (the server's start, or the store sweep's first look): never on a request; failed then, the store would go without its packs for the rest of the process"),
+    ("packs.rs", "read_index", "a pack's index, read once as the store opens, with the listing"),
+];
+
+/// Guards: holon-host's store asks the data folder's hook (AtRest::data_folder) before each read
+/// of a file of its own on a request's path, so the server's tests fail it with the rest (R87):
+/// every function there that reads a file or lists a folder asks it, or is named in HOST_OUTSIDE
+/// with why.
+/// Why: the store is a crate below the server, its reads its own; one added past the hook would
+/// read a disk that never fails in the tests.
+/// If it fails: ask `self.at_rest.data_folder(&path)` before the read, or name the function in
+/// HOST_OUTSIDE with why no request reaches it.
+#[test]
+fn every_read_of_the_store_asks_the_hook() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../holon-host/src");
+    let mut wrong = Vec::new();
+    let mut asked = 0;
+    for file in ["lib.rs", "packs.rs"] {
+        let (fns, _) = at_rest_fns(&std::fs::read_to_string(src.join(file)).unwrap());
+        for f in fns.iter().filter(|f| readers_in(&f.body) > 0) {
+            let outside = HOST_OUTSIDE.iter().any(|(at, name, _)| *at == file && *name == f.name);
+            if f.body.contains(".data_folder(") {
+                asked += 1;
+            } else if !outside {
+                wrong.push(format!("{file}: {} reads past the store's hook", f.name));
+            }
+        }
+        for (_, name, _) in HOST_OUTSIDE.iter().filter(|(at, _, _)| *at == file) {
+            if !fns.iter().any(|f| f.name == *name && readers_in(&f.body) > 0) {
+                wrong.push(format!("{file}: {name} is in HOST_OUTSIDE, and reads nothing"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert!(asked >= 3, "get, get_value and a pack's block ask the hook: the scan finds {asked}");
+}
+
+/// The cfg attributes above each definition of `item` in `text` (a fn, const, static, or a
+/// `thread_local!` holding it), one string per definition.
+fn gates_of(text: &str, item: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let defines = |line: &str| {
+        let t = line.trim_start().trim_start_matches("pub(crate) ").trim_start_matches("pub(super) ");
+        !t.contains("(&self") && ["fn ", "const ", "static ", "struct "].iter().any(|k| t.strip_prefix(k).is_some_and(|r| r.strip_prefix(item).is_some_and(|r| r.starts_with(['(', ':', '<', ' ']))))
+    };
+    (0..lines.len())
+        .filter(|&i| defines(lines[i]))
+        .map(|i| {
+            // A static in a thread_local! is gated where the macro is.
+            let at = if lines[i].trim_start().starts_with("static ") && i > 0 && lines[..i].iter().rev().find(|l| !l.trim().starts_with("///")).is_some_and(|l| l.trim() == "thread_local! {") {
+                lines[..i].iter().rposition(|l| l.trim() == "thread_local! {").unwrap()
+            } else {
+                i
+            };
+            lines[..at].iter().rev().map(|l| l.trim()).take_while(|l| l.starts_with("#[") || l.starts_with("///")).filter(|l| l.starts_with("#[cfg")).collect::<Vec<_>>().join(" ")
+        })
+        .collect()
+}
+
+/// The body of the definition of fn `item` in `text` gated by `gate`, on one line, trimmed.
+fn body_under(text: &str, item: &str, gate: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let at = (0..lines.len())
+        .find(|&i| {
+            let t = lines[i].trim_start().trim_start_matches("pub(crate) ").trim_start_matches("pub(super) ");
+            t.strip_prefix("fn ").is_some_and(|r| r.strip_prefix(item).is_some_and(|r| r.starts_with('(')))
+                && lines[..i].iter().rev().map(|l| l.trim()).take_while(|l| l.starts_with("#[") || l.starts_with("///")).any(|l| l == gate)
+        })
+        .unwrap_or_else(|| panic!("{item} under {gate}: no such definition"));
+    let indent = lines[at].len() - lines[at].trim_start().len();
+    let end = format!("{}}}", " ".repeat(indent));
+    let close = (at + 1..lines.len()).find(|&k| lines[k] == end).unwrap();
+    lines[at + 1..close].iter().map(|l| l.trim()).collect::<Vec<_>>().join(" ")
+}
+
+/// Guards: the data folder fails in the tests alone (R87). What makes it fail (the folders made
+/// to fail, the error and its words, the per-thread faults, the keyring's writes made to fail) is
+/// `#[cfg(test)]`, gated by no other cfg or feature; outside the tests `data_folder` is `Ok(())`,
+/// crate::faults' `failing` is `None` and the keyring's `write` is `Ok(())`, each inlined. So a
+/// server built for anything but its tests has nothing to set, no error to make and no text saying
+/// one; the e2e setup holds the built binary to not holding the words.
+/// Why: the hook sits in every read and write of the data folder; a fault reachable outside the
+/// tests would be a way to fail a real server's disk.
+/// If it fails: gate the item named by `#[cfg(test)]` alone, with its stand-in under
+/// `#[cfg(not(test))]` doing nothing that fails.
+#[test]
+fn the_data_folder_fails_in_tests_alone() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let at_rest = std::fs::read_to_string(src.join("at_rest.rs")).unwrap();
+    let faults = std::fs::read_to_string(src.join("faults.rs")).unwrap();
+    let test = "#[cfg(test)]";
+    let mut wrong = Vec::new();
+    for (file, text, items) in [
+        ("at_rest.rs", &at_rest, &["FAILING", "MADE_TO_FAIL", "FAILING_FOLDERS", "fail_folder", "heal_folder", "failing_folder", "FAILING_SITES", "fail_sites", "heal_sites", "Fired", "FIRED", "fired", "fail_at", "AT"][..]),
+        ("faults.rs", &faults, &["FAILING", "fail", "heal"][..]),
+    ] {
+        for item in items {
+            let gates = gates_of(text, item);
+            if gates.is_empty() || gates.iter().any(|g| g != test) {
+                wrong.push(format!("{file}: {item} is gated by {gates:?}, not #[cfg(test)] alone"));
+            }
+        }
+    }
+    for (file, text, item, stand_in) in [("at_rest.rs", &at_rest, "data_folder", "Ok(())"), ("at_rest.rs", &at_rest, "write", "Ok(())"), ("faults.rs", &faults, "failing", "None")] {
+        let gates = gates_of(text, item);
+        if gates != [test, "#[cfg(not(test))]"] {
+            wrong.push(format!("{file}: {item} is gated by {gates:?}, not once by #[cfg(test)] and once by #[cfg(not(test))]"));
+        } else if body_under(text, item, "#[cfg(not(test))]") != stand_in {
+            wrong.push(format!("{file}: {item} outside the tests does more than {stand_in}"));
+        }
+    }
+    for file in ["at_rest.rs", "faults.rs"] {
+        let text = std::fs::read_to_string(src.join(file)).unwrap();
+        if text.contains("cfg(feature") || text.contains("cfg(debug_assertions") {
+            wrong.push(format!("{file}: a cfg other than test gates something in it"));
+        }
+    }
+    // The store's hook (holon-host's AtRest::data_folder) is defined twice outside the tests: its
+    // default, which never fails, and StoreKeys's, which asks the one above.
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut defined = Vec::new();
+    for krate in ["holon", "holon-host", "holon-core", "holon-author", "holon-module", "holon-wasm"] {
+        let src = crates.join(krate).join("src");
+        let mut files = Vec::new();
+        files_under(&src, &mut files);
+        files.retain(|f| f.extension().is_some_and(|e| e == "rs"));
+        let tests = source::test_files(&files);
+        for f in files.iter().filter(|f| !tests.contains(*f)) {
+            let name = f.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
+            if name.ends_with("tests.rs") || name.starts_with("tests/") || name.contains("/tests/") {
+                continue;
+            }
+            let text = std::fs::read_to_string(f).unwrap();
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, test) in source::in_test_modules(&text).into_iter().enumerate() {
+                if !test && lines[i].trim_start().starts_with("fn data_folder(&self") {
+                    defined.push(format!("{krate}/{name}: {}", lines.get(i + 1).map_or("", |l| l.trim())));
+                }
+            }
+        }
+    }
+    if defined != ["holon/at_rest.rs: data_folder(Some(path))", "holon-host/lib.rs: Ok(())"] {
+        wrong.push(format!("the store's hook is defined other than by its default (Ok(())) and StoreKeys's (at_rest's data_folder): {defined:?}"));
+    }
+    // No feature of the workspace names the faults: none can turn one on.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut manifests = vec![root.join("Cargo.toml")];
+    manifests.extend(std::fs::read_dir(root.join("crates")).unwrap().flatten().map(|e| e.path().join("Cargo.toml")).filter(|p| p.exists()));
+    for manifest in manifests {
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        let features = text.split("\n[").find(|s| s.starts_with("features]")).unwrap_or_default();
+        if features.lines().filter(|l| !l.trim_start().starts_with('#')).any(|l| l.to_lowercase().contains("fault") || l.to_lowercase().contains("fail")) {
+            wrong.push(format!("{}: a feature names the faults", manifest.display()));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The functions of the server that read why one of its files failed (`Failed::for_the_admin`:
+/// where it is on the server's disk and the error's own text), each with where it sends it: none
+/// builds an answer with it (audit R87).
+const FOR_THE_ADMIN: &[(&str, &str)] = &[
+    ("main.rs: serve", "the policy file that doesn't load as the server starts: refuse_to_start says why on stderr, and nothing answers"),
+    ("at_rest.rs: read_seen", "disk's own error (a Failed already) made the why of the Failed it gives, whose Display says only what to do"),
+    ("at_rest.rs: note_seen", "the admin's warnings (failing::note_file), the record's path the warning's place"),
+];
+
+/// Guards: why a file of the server's failed (`Failed::for_the_admin`) is read only where
+/// FOR_THE_ADMIN says: every call of it in the server's sources, outside the tests, is in a
+/// function it lists (by file and function, source.rs's `fn_spans`), and each it lists still calls
+/// it (audit R87).
+/// Why: a Failed's Display and Debug say only what whoever asked is told, so a route that formats
+/// one can't pass where or why on; one that read why by name could, and only reading would find it.
+/// If it fails: send why to stderr or the admin's warnings (`Failed::said`, `failing::note_file`)
+/// and answer with what Display says; a function that only does so goes in FOR_THE_ADMIN, saying
+/// where it sends it.
+#[test]
+fn only_what_is_for_the_admin_reads_why_a_file_failed() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    files_under(&src, &mut files);
+    files.retain(|f| f.extension().is_some_and(|e| e == "rs"));
+    let tests = source::test_files(&files);
+    let mut found = std::collections::BTreeSet::new();
+    for f in files.iter().filter(|f| !tests.contains(*f)) {
+        let name = f.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
+        if name.ends_with("tests.rs") || name.contains("/tests/") || name.starts_with("tests/") {
+            continue;
+        }
+        let code = source::inert(&std::fs::read_to_string(f).unwrap());
+        let spans = source::fn_spans(&code);
+        for (n, (line, test)) in code.lines().zip(source::test_modules(&code)).enumerate() {
+            if !test && line.contains("for_the_admin(") && !line.contains("fn for_the_admin(") {
+                found.insert(format!("{name}: {}", source::fn_at(&spans, n).unwrap_or("(no function)")));
+            }
+        }
+    }
+    let listed: std::collections::BTreeSet<String> = FOR_THE_ADMIN.iter().map(|(f, _)| f.to_string()).collect();
+    assert_eq!(found, listed, "why a file failed read where FOR_THE_ADMIN doesn't say, or listed and read no more");
+    // The scan names a call by the function it is in, a method by its type.
+    let code = "impl Failed {\n    fn why(&self) -> &str {\n        self.for_the_admin()\n    }\n}\nfn f() {}\n";
+    let spans = source::fn_spans(code);
+    assert_eq!((source::fn_at(&spans, 2), source::fn_at(&spans, 5)), (Some("Failed::why"), Some("f")));
 }

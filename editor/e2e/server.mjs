@@ -64,6 +64,12 @@ const mongo = process.env.HOLON_TEST_MONGODB?.replace(/^(mongodb(\+srv)?:\/\/[^/
 // if it isn't, each run's entries under accounts of its own.
 const ledger = process.env.HOLON_TEST_POSTGRES;
 const binary = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
+// The data folder is made to fail in the server's own tests alone (at_rest.rs, R87): a build
+// that isn't a test's holds no fault to set, nor the words one says. This is such a build, as a
+// release is, so it never holds them.
+if (readFileSync(binary).includes("the data folder made to fail")) {
+  throw new Error(`${binary} holds the data folder's fault, which only the server's tests may (at_rest.rs, R87)`);
+}
 // Its policy lets a flow call plain HTTP and private addresses when its deploy asks: the
 // chat-proxy test points the sample at a stand-in upstream on loopback.
 const policy = join(dir, "holon.toml");

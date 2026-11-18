@@ -15,11 +15,15 @@ use crate::sealing::KeySource;
 /// `/admin/keys…`, or None for any other path. Who may: `can.rs` (status: host.view; a rotation
 /// or a forget: host.operate).
 pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Response> {
+    route_with(state, request, by, crate::at_rest::keys())
+}
+
+/// [`route`], on `keys`: the server's keyring, or a test's over a keys.json of its own.
+pub(crate) fn route_with(state: &AppState, request: &Request, by: &str, keys: &crate::at_rest::Keyring) -> Option<Response> {
     let url = request.url();
     if url != "/admin/keys" && !url.starts_with("/admin/keys/") {
         return None;
     }
-    let keys = crate::at_rest::keys();
     Some(match (request.method(), url.as_str()) {
         ("GET", "/admin/keys") => Response::json(&keys.status()),
         ("POST", "/admin/keys/rotate") => {
@@ -44,7 +48,7 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                 return Some(err(409, format!("{slug:?} is deployed: remove it first (holon remove {slug} --yes --forget)")));
             }
             let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-            Response::json(&forget(state, &slug, by, now_ms))
+            Response::json(&forget(state, keys, &slug, by, now_ms))
         }
         _ => Response::empty_404(),
     })
@@ -59,8 +63,7 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
 /// or the same value (release audit R30): the values nothing else names are swept from it at once
 /// (`now_ms`), but those written in the last hour, which the next sweep takes; its code (units)
 /// stays, as units are never swept.
-pub(crate) fn forget(state: &AppState, slug: &str, by: &str, now_ms: u64) -> Value {
-    let keys = crate::at_rest::keys();
+pub(crate) fn forget(state: &AppState, keys: &crate::at_rest::Keyring, slug: &str, by: &str, now_ms: u64) -> Value {
     let scope = crate::at_rest::deployment(slug);
     let had = match keys.forget(&scope) {
         Ok(had) => had,

@@ -1628,7 +1628,7 @@ pub(crate) fn handle_delete_deployment(
             if let Some(head) = state_head_for(deployments_path, slug) {
                 let _ = std::fs::remove_file(head);
             }
-            dep.arrivals.forget();
+            dep.arrivals.forget(deployments_path);
             inbox::forget(deployments_path, slug);
             subscriptions::forget(deployments_path, slug, &dep.folders.all.feeds);
             dequeue::forget(deployments_path, slug, &dep.folders.all.queues);

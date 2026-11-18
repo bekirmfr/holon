@@ -605,10 +605,11 @@ pub(crate) fn history(path: &Path) -> PathBuf {
 
 /// The history at `at` as it is on disk, a sealed version a line: empty if there is none.
 fn read_history(at: &Path) -> Result<String, String> {
-    match std::fs::read_to_string(at) {
+    match crate::at_rest::disk::read_to_string(at) {
         Ok(text) => Ok(text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(format!("the access history {at:?}: {e}")),
+        // disk's error, where and why on stderr already.
+        Err(e) => Err(format!("the access history can't be read: {e}")),
     }
 }
 
@@ -719,7 +720,7 @@ impl Bindings {
                 let at = history(path);
                 let appended = crate::sealing::append_private(&at).and_then(|mut f| f.write_all(&line).and_then(|_| f.sync_data()));
                 self.torn.store(appended.is_err(), Ordering::SeqCst);
-                appended.map_err(|e| format!("the access history {at:?}: {e}"))?;
+                appended.map_err(|e| crate::failing::Failed::new("the access history couldn't be written", format!("{at:?}: {e}")).said())?;
                 if let Err(e) = crate::at_rest::write_table(path, crate::at_rest::role::ACCESS, &text) {
                     eprintln!("holon: the access file {path:?}: {e}: version {} is kept in its history, and read from there when the server starts", document.version);
                 }

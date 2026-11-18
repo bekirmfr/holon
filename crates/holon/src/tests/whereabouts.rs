@@ -4,6 +4,8 @@
 //! data only to whoever views the host: no other caller is answered either, by any route. What a
 //! binding does (whom a mail is from and to, a feed's buffer) is shown as a database's access is.
 //! A summary and a check of the logs name only the deployments their caller may see (audit R51).
+//! The variables an env secret can name are sources too, and the dotenv file's path is where the
+//! server keeps its data (audit R94).
 
 use super::access_table::{ask, error_of};
 use super::*;
@@ -63,6 +65,8 @@ struct Server {
     bob: String,
     /// host.check on the host, an editor on `w`.
     cy: String,
+    /// The data folder, the .env file in it.
+    dir: PathBuf,
     _feed: sse::stand_in::StandIn,
     _sqs: sqs::stand_in::StandIn,
     _sink: smtp::sink::Sink,
@@ -94,6 +98,8 @@ fn server() -> Server {
     std::fs::write(&env, lines.join("\n") + "\n").unwrap();
     let sources = || secret_sources::Sources::new(Some(env.clone())).unwrap();
     let mut state = test_state_at(dir.join("deployments.json").to_string_lossy().to_string().into());
+    // The secrets read the same .env, as a server's do: what an env secret can name, offered.
+    state.secrets = Arc::new(SecretStore::memory().with_sources(sources()));
     let policy = "[grants]\nallow_plain_http = true\nallow_private_addresses = true\n";
     *state.policy.write().unwrap() = Arc::new(Policy::parse(policy).unwrap());
     state.folders = Arc::new(
@@ -163,7 +169,7 @@ fn server() -> Server {
     }
     let bob_on_host = state.access.accounts().unwrap().bindings_of("bob").into_iter().find(|b| b.scope == crate::bindings::Scope::Host).unwrap();
     admin("DELETE", &format!("/bindings/{}", bob_on_host.id), Value::Null);
-    Server { state, ada, rv, bob, cy, _feed: feed, _sqs: sqs, _sink: sink, _imap: imap, _connections: connections }
+    Server { state, ada, rv, bob, cy, dir, _feed: feed, _sqs: sqs, _sink: sink, _imap: imap, _connections: connections }
 }
 
 /// Every GET route the control plane answers, its path's names filled in: `{slug}` the deployment
@@ -195,7 +201,8 @@ fn swept(state: &AppState, token: &str, who: &str, canaries: &[&str]) -> Vec<Str
 /// No caller who may not bind resources is told where one is, by any GET route, nor one who
 /// doesn't view the host where its data is; an editor on one flow isn't told of another by the
 /// summary or a check of the logs, nor is a caller who may check them but view no flow; an admin
-/// is told each. Deleting a deployment says where its records are kept to whoever views the host,
+/// is told each. Nor is any of them told the data folder's path or the .env's, as written or as
+/// JSON escapes them, nor the variables an env secret can name. Deleting a deployment says where its records are kept to whoever views the host,
 /// and within the data folder to anyone else.
 #[test]
 fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_host() {
@@ -218,6 +225,10 @@ fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_hos
     let (code, said) = ask(state, Some(&s.ada), "POST", "/summary/check", vec![]);
     assert!(code == 200 && said.contains(HIDDEN), "{said}");
     assert_eq!(get(&s.ada, "/summary")["chain"]["witness"]["address"], json!(witness));
+    let env = s.dir.join(".env").display().to_string();
+    let offered = get(&s.ada, "/admin/secrets/env");
+    assert_eq!(offered["dotenv"], json!(env), "the admin is told where the .env is: {offered}");
+    assert!(offered["names"].to_string().contains(SOURCE), "and what an env secret can name: {offered}");
 
     // A connection's error names where it is (sse.rs's "<address> answered 404", a refused
     // connection its host and port): w's timeline noted with each place the admin is shown, whole
@@ -260,11 +271,13 @@ fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_hos
     state.folders.feeds.set_live("w", "prices", |l| l.error = Some(format!("{feed_at} answered 404")));
     state.folders.queues.set_live("w", "inq", |l| l.error = Some(format!("{inq_at} wasn't reached")));
     assert_eq!(get(&s.ada, "/deployments/w/feeds")["feeds"][0]["error"], json!(format!("{feed_at} answered 404")), "the admin is told it as it is");
-    let canaries: Vec<&str> = [WHERE, SOURCE, DATA].into_iter().chain(places.iter().chain(&authorities).map(String::as_str)).collect();
+    let data = s.dir.display().to_string();
+    let paths = [data.clone(), data.replace('\\', "\\\\"), env.clone(), env.replace('\\', "\\\\")];
+    let canaries: Vec<&str> = [WHERE, SOURCE, DATA].into_iter().chain(places.iter().chain(&authorities).chain(&paths).map(String::as_str)).collect();
 
     // rv views every flow and every resource, and binds none.
     let answered = swept(state, &s.rv, "rv", &canaries);
-    for path in ["/admin/feeds", "/admin/queues", "/admin/mails", "/deployments/w/feeds", "/deployments/w/queues", "/deployments/w/events", "/summary"] {
+    for path in ["/admin/feeds", "/admin/queues", "/admin/mails", "/admin/secrets/env", "/deployments/w/feeds", "/deployments/w/queues", "/deployments/w/events", "/summary"] {
         assert!(answered.iter().any(|p| p == path), "rv is answered {path}: {answered:?}");
     }
     for path in ["/admin/feeds", "/admin/queues", "/admin/mails"] {
