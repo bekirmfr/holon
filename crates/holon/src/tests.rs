@@ -15502,7 +15502,7 @@ fn a_secret_is_in_nothing_an_integration_says_when_it_fails() {
             let _ = conn.write_all(b"N");
         }
     });
-    let opened = engines::Remote::open(Zeroizing::new(format!("postgres://shop:{CANARY}@{pg}/shop?sslmode=require"))).map(|_| ());
+    let opened = engines::Remote::open(Zeroizing::new(format!("postgres://shop:{CANARY}@{pg}/shop?sslmode=require"))).and_then(|r| r.check());
     said.push(("a Postgres password, TLS refused", format!("{opened:?}")));
 
     // The command line's token (`HOLON_TOKEN`, a session kept), as each road to a server signs in.

@@ -622,18 +622,23 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
                 // Its keys made before it goes live: left to its first seal, a root that couldn't be
                 // read then left it live with nothing it ran sealable, lazy runs answering 200 with
                 // no record (release audit F17).
+                // Where and why (keys.json's path, the OS's words, a line's place in a file) go to
+                // the admin, never to whoever deploys (audit R71).
                 if let Err(why) = crate::at_rest::keys().make_scope(&crate::at_rest::deployment(&body.slug)) {
-                    return err(503, format!("{:?}'s keys couldn't be made, so nothing it runs could be kept: {why}", body.slug));
+                    let told = format!("{:?}'s keys couldn't be made, so nothing it runs could be kept", body.slug);
+                    return err(503, crate::failing::Failed::reason(told, format!("{:?}'s keys: {why}", body.slug)).said());
                 }
                 let mut log = Log::for_deployment(deployments_path, &body.slug);
                 let events = crate::events::Events::for_deployment(deployments_path, &body.slug);
                 // A log or events left there that it can't read (a key missing) isn't started
                 // over: numbered again from 0, what they hold would be cut (recorder.rs).
                 if let Some(why) = log.refused() {
-                    return err(409, format!("{:?}'s run log is there and can't be opened: {why}", body.slug));
+                    let told = format!("{:?}'s run log is there and can't be opened", body.slug);
+                    return err(409, crate::failing::Failed::reason(told, format!("{:?}'s run log: {why}", body.slug)).said());
                 }
                 if let Some(why) = events.refused() {
-                    return err(409, format!("{:?}'s events are there and can't be opened: {why}", body.slug));
+                    let told = format!("{:?}'s events are there and can't be opened", body.slug);
+                    return err(409, crate::failing::Failed::reason(told, format!("{:?}'s events: {why}", body.slug)).said());
                 }
                 // Writing what it lets go of to the backup from its first run, not only from the
                 // housekeeping's next look (storage.rs `act`, which also says whether a full disk
@@ -1598,7 +1603,9 @@ pub(crate) fn handle_delete_deployment(
         Ok(at) => at,
         Err(e) => {
             log.with(|log| log.reopen());
-            return err(500, format!("{slug:?}'s run records couldn't be kept ({e}), so nothing was removed"));
+            // Where and why (the removed records' file, the OS's words) go to the admin (R71).
+            let told = format!("{slug:?}'s run records couldn't be kept, so nothing was removed");
+            return err(500, crate::failing::Failed::reason(told, format!("{slug:?}'s run records: {e}")).said());
         }
     };
     let removed = {

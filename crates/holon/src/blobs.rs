@@ -185,28 +185,31 @@ impl Blobs {
             mem.texts.insert(id.clone(), (Manifest { size: bytes.len() as u64, chunks: names }, now));
             return Ok(id);
         };
+        // Where the store is, and the error's own text, go to the admin (stderr); a read whose text
+        // it couldn't keep says only that, in its run's record (audit R72).
+        let failed = |e: std::io::Error| crate::failing::Failed::new("the server couldn't keep its text", format!("its store of texts {}: {e}", dir.display())).said();
         let text = dir.join(file_of(&id));
         if text.is_file() {
             std::fs::File::options()
                 .write(true)
                 .open(&text)
                 .and_then(|f| f.set_modified(SystemTime::now()))
-                .map_err(|e| format!("can't keep a text in {}: {e}", dir.display()))?;
+                .map_err(failed)?;
             return Ok(id);
         }
         let dir_of_chunks = dir.join("chunks");
-        std::fs::create_dir_all(&dir_of_chunks).map_err(|e| format!("can't keep texts in {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(&dir_of_chunks).map_err(failed)?;
         let mut names = Vec::new();
         for chunk in chunks(bytes) {
             let name = blake3::hash(chunk).to_hex().to_string();
             let path = dir_of_chunks.join(file_of(&name));
             if !path.is_file() {
-                holon_host::write_atomically(&path, &seal(role::BLOB_CHUNK, chunk)?).map_err(|e| format!("can't keep a chunk in {}: {e}", dir.display()))?;
+                holon_host::write_atomically(&path, &seal(role::BLOB_CHUNK, chunk)?).map_err(failed)?;
             }
             names.push(name);
         }
         let manifest = serde_json::to_vec(&Manifest { size: bytes.len() as u64, chunks: names }).map_err(|e| e.to_string())?;
-        holon_host::write_atomically(&text, &seal(role::BLOB_TEXT, &manifest)?).map_err(|e| format!("can't keep a text in {}: {e}", dir.display()))?;
+        holon_host::write_atomically(&text, &seal(role::BLOB_TEXT, &manifest)?).map_err(failed)?;
         Ok(id)
     }
 
