@@ -239,6 +239,24 @@ fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_hos
         assert!(events.contains(said), "{said}: {events}");
     }
     let (feed_at, inq_at) = (get(&s.ada, "/admin/feeds")[0]["address"].as_str().unwrap().to_string(), get(&s.ada, "/admin/queues")[0]["address"].as_str().unwrap().to_string());
+    // The queue's listener is stopped first, and known to have stopped, so that the error faked
+    // here stays as faked through rv's and bob's sweeps. A running listener receives again as
+    // soon as a receive comes back, and each receive that comes back clears the error its status
+    // holds (dequeue.rs, `listen`); the stand-in answers a receive within a second (sqs.rs). So a
+    // listener closed, with nothing asked of the stand-in for two seconds, has had its last answer
+    // and written its last status. Faked while it ran, the error was gone by bob's read whenever
+    // a receive came back in between, which a busy machine made likely.
+    // The feed needs none of this: its reader writes its error only as it connects or loses its
+    // connection (subscriptions.rs), and the stand-in keeps its stream open for the whole test.
+    drop(s._connections.1);
+    let mut asked = (s._sqs.asked().len(), std::time::Instant::now());
+    eventually("the queue's listener stops: the stand-in is asked nothing for two seconds", || {
+        let now = s._sqs.asked().len();
+        if now != asked.0 {
+            asked = (now, std::time::Instant::now());
+        }
+        asked.1.elapsed() >= std::time::Duration::from_secs(2)
+    });
     state.folders.feeds.set_live("w", "prices", |l| l.error = Some(format!("{feed_at} answered 404")));
     state.folders.queues.set_live("w", "inq", |l| l.error = Some(format!("{inq_at} wasn't reached")));
     assert_eq!(get(&s.ada, "/deployments/w/feeds")["feeds"][0]["error"], json!(format!("{feed_at} answered 404")), "the admin is told it as it is");
