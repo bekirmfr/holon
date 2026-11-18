@@ -838,6 +838,7 @@ const OUTSIDE: &[(&str, &str)] = &[
 const PURE: &[(&[&str], &str)] = &[
     (&["deployment", "deployment_of", "role::state_head", "role::segment", "role::batch", "role::export"], "a scope's or a role's name, made from a slug or a path"),
     (&["seen_held", "key_missing_in", "Unreadable::fmt", "Unreadable::key_missing", "LineSeal::fmt"], "words, or which error one is"),
+    (&["StoreKeys::failed"], "a store's error made into what whoever asked may be told (failing::Failed): nothing read or written"),
     (&["is_sealed", "decimal", "rejoin", "Framed::of", "Framed::line", "Framed::text", "LineSeal::number"], "bytes already in hand, looked at or framed"),
     (&["LineSeal::new", "LineSeal::with", "LineSeal::of", "keys", "store", "Keyring::memory"], "a sealer or a keyring made or handed on, nothing sealed or opened yet (memory: random keys, kept nowhere)"),
     (&["Keyring::key_id", "Keyring::source", "Keyring::made", "Keyring::no_backup", "Keyring::status"], "what the keyring was opened with, held in memory: never a key"),

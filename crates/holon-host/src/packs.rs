@@ -190,7 +190,7 @@ impl Packs {
                     return block.get(from..to).map(|b| Some(b.to_vec())).ok_or_else(|| io::Error::other("a packed value past its block's end"));
                 }
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e),
+                Err(e) => return Err(self.at_rest.failed(&path, e)),
             }
         }
         // Still in the index, its pack gone each time: there, and not read (release audit R92).
@@ -255,8 +255,7 @@ impl Packs {
             kept.next - 1
         };
         let path = self.dir.join(format!("{:016x}-{:08x}.pack", now_ns(), n));
-        self.at_rest.data_folder(&path)?;
-        crate::write_atomically(&path, &bytes)?;
+        self.at_rest.data_folder(&path).and_then(|()| crate::write_atomically(&path, &bytes)).map_err(|e| self.at_rest.failed(&path, e))?;
         for (_, at) in entries.iter_mut() {
             at.pack = n;
         }

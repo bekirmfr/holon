@@ -117,32 +117,38 @@ fn data_folder(_path: Option<&Path>) -> std::io::Result<()> {
 pub(crate) mod disk {
     use std::path::Path;
 
+    /// A read's error as whoever asked may be told it: [`crate::failing::FILE_UNREAD`], the kind
+    /// kept; where and why for the admin (audit R87).
+    fn unread(path: &Path, e: std::io::Error) -> std::io::Error {
+        crate::failing::Failed::of_file(crate::failing::FILE_UNREAD, path, e)
+    }
+
     /// `std::fs::read`, asking first.
     #[cfg_attr(test, track_caller)]
     pub(crate) fn read(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
-        super::data_folder(Some(path.as_ref()))?;
-        std::fs::read(path)
+        let path = path.as_ref();
+        super::data_folder(Some(path)).and_then(|()| std::fs::read(path)).map_err(|e| unread(path, e))
     }
 
     /// `std::fs::read_to_string`, asking first.
     #[cfg_attr(test, track_caller)]
     pub(crate) fn read_to_string(path: impl AsRef<Path>) -> std::io::Result<String> {
-        super::data_folder(Some(path.as_ref()))?;
-        std::fs::read_to_string(path)
+        let path = path.as_ref();
+        super::data_folder(Some(path)).and_then(|()| std::fs::read_to_string(path)).map_err(|e| unread(path, e))
     }
 
     /// `std::fs::File::open`, asking first.
     #[cfg_attr(test, track_caller)]
     pub(crate) fn open(path: impl AsRef<Path>) -> std::io::Result<std::fs::File> {
-        super::data_folder(Some(path.as_ref()))?;
-        std::fs::File::open(path)
+        let path = path.as_ref();
+        super::data_folder(Some(path)).and_then(|()| std::fs::File::open(path)).map_err(|e| unread(path, e))
     }
 
     /// `std::fs::read_dir`, asking first.
     #[cfg_attr(test, track_caller)]
     pub(crate) fn read_dir(path: impl AsRef<Path>) -> std::io::Result<std::fs::ReadDir> {
-        super::data_folder(Some(path.as_ref()))?;
-        std::fs::read_dir(path)
+        let path = path.as_ref();
+        super::data_folder(Some(path)).and_then(|()| std::fs::read_dir(path)).map_err(|e| unread(path, e))
     }
 }
 
@@ -1281,6 +1287,9 @@ impl holon_host::AtRest for StoreKeys {
     }
     fn data_folder(&self, path: &Path) -> std::io::Result<()> {
         data_folder(Some(path))
+    }
+    fn failed(&self, path: &Path, e: std::io::Error) -> std::io::Error {
+        crate::failing::Failed::of_file(crate::failing::STORE_FAILED, path, e)
     }
 }
 
