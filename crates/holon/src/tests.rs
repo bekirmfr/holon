@@ -8172,9 +8172,10 @@ fn a_steps_kind_is_told_the_same_kept_or_only_noted() {
 
 /// A far side that answers with what it is sent: `/e` the body as it is; `/j` a JSON answer with
 /// the body, its first eight characters, its length, a balance, a name and a currency that are
-/// nobody's secret; `/n`, sent `key|note`, the key and the note in lower case (a service that
-/// tidies what its caller wrote). `silent`: it answers the same with a text that isn't what it
-/// was sent, where the body or the key would be.
+/// nobody's secret; `/jj` a JSON answer whose field is a JSON text holding the body (two deep, as
+/// a service wrapping another's answer writes it); `/n`, sent `key|note`, the key and the note in
+/// lower case (a service that tidies what its caller wrote). `silent`: it answers the same with a
+/// text that isn't what it was sent, where the body or the key would be.
 fn echoing_server(silent: bool) -> String {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -8213,6 +8214,7 @@ fn echoing_server(silent: bool) -> String {
                 let key = if silent { "nothing-anyone-keeps-00001".to_string() } else { key };
                 let answer = match path.as_str() {
                     "/j" => serde_json::json!({ "echo": key, "first": key.chars().take(8).collect::<String>(), "len": key.chars().count(), "balance": 12, "name": "Alice Example", "code": "EUR" }).to_string(),
+                    "/jj" => serde_json::json!({ "wrapped": serde_json::json!({ "echo": key }).to_string() }).to_string(),
                     "/n" => serde_json::json!({ "key": key, "note": note.to_lowercase() }).to_string(),
                     _ => key,
                 };
@@ -8228,7 +8230,8 @@ fn echoing_server(silent: bool) -> String {
 /// does something with the reply: returns it whole, its length, a slice, a slice in upper case,
 /// its `content-length`, fields parsed out of JSON (the first eight characters, a balance and a
 /// length, a name, a currency code), sends a slice on to the same host and to another, writes a
-/// slice and a balance to a collection; and returns a note the far side gave back in lower case,
+/// slice and a balance to a collection; returns a slice of the secret the far side gave back two
+/// deep (a JSON text inside its JSON); and returns a note the far side gave back in lower case,
 /// which its caller chose. Against a far side that sends the secret back, one that doesn't, one
 /// that does for a flow approved to answer with its secret, and for a secret JSON spells another
 /// way. Where the reply held the secret and the flow isn't approved: a route that answers with a
@@ -8271,6 +8274,8 @@ fn what_is_read_from_a_reply_that_sent_the_secret_back_is_the_secrets() {
         ("changed", "return { part: got.body.slice(8, 20).toUpperCase() }".into(), "/e", true),
         ("header", "return { n: got.headers[\"content-length\"] }".into(), "/e", false),
         ("first", format!("{J}return {{ first: said.first }}"), "/j", true),
+        // The secret two deep in the reply: a JSON text inside its JSON, each spelling it its way.
+        ("deep", format!("{J}return {{ inner: JSON.parse(said.wrapped).echo.slice(2, 14) }}"), "/jj", true),
         ("balance", format!("{J}return {{ balance: said.balance, len: said.len }}"), "/j", false),
         ("name", format!("{J}return {{ name: said.name }}"), "/j", true),
         ("code", format!("{J}return {{ code: said.code }}"), "/j", false),
