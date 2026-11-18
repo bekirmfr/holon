@@ -1730,13 +1730,6 @@ impl LogCell {
         (lines, head)
     }
 
-    /// Each run it keeps, oldest first (`Log::each_kept`), read with the lock released.
-    pub fn each_kept(&self, f: impl FnMut(LogEntry)) {
-        if let Err(e) = self.with(|log| log.its_lines()).each_kept(f) {
-            eprintln!("holon: a run log's runs can't all be read, what reads them has those it could: {e}");
-        }
-    }
-
     /// The runs it keeps, read a run at a time, and whether they could all be read: what a
     /// server starting asks of a mail or a queue's message a run spooled that isn't marked
     /// landed (spools.rs).
@@ -3709,7 +3702,7 @@ mod tests {
                 // runs, its file holding more than it keeps (until the next cut-back) or not.
                 let want = lines(in_memory.after(None, usize::MAX));
                 let (mut from_cell, mut from_held, mut from_memory) = (Vec::new(), Vec::new(), Vec::new());
-                cell.each_kept(|e| from_cell.push(e));
+                cell.with(|l| l.its_lines()).each_kept(|e| from_cell.push(e)).unwrap();
                 held.each_kept(|e| from_held.push(e));
                 in_memory.each_kept(|e| from_memory.push(e));
                 assert_eq!(lines(from_cell), want, "the cell's, a run at a time, at run {i}");
