@@ -36,6 +36,8 @@ use crate::http::{err, read_body};
 use crate::permissions::Manifest;
 use crate::secret_sources::{Reference, Sources};
 use crate::smtp::Failure;
+use crate::recorder::KeptRuns;
+use crate::spools::AtStart;
 
 use crate::*;
 
@@ -169,7 +171,12 @@ struct Inner {
     live: Mutex<BTreeMap<(String, String), Live>>,
     /// What each deployment's messages to each queue came to.
     sent: Mutex<BTreeMap<(String, String), Sent>>,
+    /// What the server's start kept back, unsent, for the admin's warnings (spools.rs).
+    kept_back: spools::KeptBack,
 }
+
+/// What a queue's message is called in the admin's warnings (spools.rs).
+const KIND: spools::Kind = spools::Kind { key: "spool:message", one: "message to a queue", many: "messages to queues", folder: "queue spool" };
 
 impl std::fmt::Debug for Queues {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -238,6 +245,7 @@ impl Queues {
             retry,
             live: Mutex::default(),
             sent: Mutex::default(),
+            kept_back: spools::KeptBack::default(),
         }))
     }
 
@@ -480,9 +488,23 @@ impl Queues {
     /// Hold the messages spooled for entry `seq`, just written, until it is on disk
     /// ([`release`](Self::release)).
     pub(crate) fn hold_sends(&self, slug: &str, seq: u64, spooled: Vec<Queued>) {
-        for item in spooled {
+        for mut item in spooled {
             let queues = self.clone();
-            self.hold(slug, seq, Box::new(move || queues.queue(item)));
+            self.hold(
+                slug,
+                seq,
+                Box::new(move || {
+                    // Marked landed: a start sends it without asking the log, which may have let
+                    // its run go by then (spools.rs).
+                    if let Some(file) = &item.file {
+                        match spools::mark_landed(file) {
+                            Ok(marked) => item.file = Some(marked),
+                            Err(e) => eprintln!("holon: the spooled message {} can't be marked landed, so a restart before it is sent asks its run log for it: {e}", file.display()),
+                        }
+                    }
+                    queues.queue(item)
+                }),
+            );
         }
     }
 
@@ -522,16 +544,35 @@ impl Queues {
         }
     }
 
-    /// What the spool holds, queued again as the server starts: each message whose run its
-    /// deployment's log holds, finished (`log`: a deployment's entries, none when it isn't
-    /// deployed), and each unlogged one. Another's run a crash lost before its record was on
-    /// disk: it is removed, never sent.
-    pub(crate) fn recover(&self, mut log: impl FnMut(&str) -> Option<BTreeSet<String>>) {
+    /// What the spool holds, as the server starts (spools.rs): each message marked landed, and
+    /// each unlogged one, queued again; each other one of a deployment that is `deployed`, by its
+    /// run among the deployment's kept runs (`runs`, read only for one of those): queued, removed,
+    /// or kept unsent and said; one of a deployment that isn't, removed.
+    pub(crate) fn recover(&self, deployed: impl Fn(&str) -> bool, mut runs: impl FnMut(&str) -> KeptRuns) {
         let Some(dir) = &self.0.spool else { return };
-        let Ok(files) = std::fs::read_dir(dir) else { return };
-        let mut logged: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let files = match std::fs::read_dir(dir) {
+            Ok(files) => files,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                eprintln!("holon: the queue spool {} can't be listed, so no message spooled before the server started is sent or removed: {e}", dir.display());
+                self.0.kept_back.folder(format!("{}: {e}", dir.display()));
+                return;
+            }
+        };
+        let mut kept: BTreeMap<String, KeptRuns> = BTreeMap::new();
         let mut found: Vec<(Spooled, String, PathBuf)> = Vec::new();
-        for file in files.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e == "msg")) {
+        for file in files {
+            let file = match file {
+                Ok(f) => f.path(),
+                Err(e) => {
+                    eprintln!("holon: an entry of the queue spool {} can't be read, so it is neither sent nor removed: {e}", dir.display());
+                    self.0.kept_back.folder(format!("{}: {e}", dir.display()));
+                    continue;
+                }
+            };
+            if file.extension().is_none_or(|e| e != "msg") {
+                continue;
+            }
             let named = crate::at_rest::deployment(file.file_name().and_then(|n| n.to_str()).and_then(|n| n.split('.').next()).unwrap_or_default());
             let bytes = match crate::at_rest::read_sealed_in(&file, &named, crate::at_rest::role::SPOOL_QUEUE) {
                 Ok(Some(bytes)) => bytes,
@@ -543,21 +584,40 @@ impl Queues {
                     continue;
                 }
             };
-            let Some(end) = bytes.iter().position(|b| *b == b'\n') else { continue };
-            let (Ok(spooled), Ok(body)) = (serde_json::from_slice::<Spooled>(&bytes[..end]), String::from_utf8(bytes[end + 1..].to_vec())) else {
-                let _ = std::fs::remove_file(&file);
-                continue;
+            // One that opens and doesn't read as a message (written by another version of holon):
+            // left as it is, said, never sent, as one that doesn't open.
+            let read = bytes
+                .iter()
+                .position(|b| *b == b'\n')
+                .ok_or_else(|| "it has no first line".to_string())
+                .and_then(|end| Ok((serde_json::from_slice::<Spooled>(&bytes[..end]).map_err(|e| e.to_string())?, String::from_utf8(bytes[end + 1..].to_vec()).map_err(|e| e.to_string())?)));
+            let (spooled, body) = match read {
+                Ok(read) => read,
+                Err(e) => {
+                    eprintln!("holon: the spooled message {} doesn't read as one, so it isn't sent; left as it is: {e}", file.display());
+                    continue;
+                }
             };
-            let landed = spooled.unlogged
-                || logged
-                    .entry(spooled.slug.clone())
-                    .or_insert_with(|| log(&spooled.slug).unwrap_or_default())
-                    .contains(&spooled.run);
-            if !landed {
-                let _ = std::fs::remove_file(&file);
-                continue;
+            let at_start = if spooled.unlogged {
+                AtStart::Send
+            } else if !deployed(&spooled.slug) {
+                eprintln!("holon: a message spooled by {:?}, which isn't deployed, is removed unsent: to {}", spooled.slug, spooled.queue);
+                AtStart::Remove
+            } else if spools::is_landed(&file) {
+                AtStart::Send
+            } else {
+                spools::unmarked(kept.entry(spooled.slug.clone()).or_insert_with(|| runs(&spooled.slug)), &spooled.run)
+            };
+            match at_start {
+                AtStart::Send => found.push((spooled, body, file)),
+                AtStart::Remove => {
+                    let _ = std::fs::remove_file(&file);
+                }
+                AtStart::Keep(why) => {
+                    eprintln!("holon: a message spooled by {:?} is kept unsent: whether its run landed can't be told, since its run log can't all be read ({why}); restart the server once it can", spooled.slug);
+                    self.0.kept_back.item(&spooled.slug, why);
+                }
             }
-            found.push((spooled, body, file));
         }
         // In the order they were sent: by their run's start, then their place in it.
         found.sort_by(|(a, _, _), (b, _, _)| (a.at_ms, &a.run, a.n).cmp(&(b.at_ms, &b.run, b.n)));
@@ -565,6 +625,11 @@ impl Queues {
             let key = self.resolve_keyed(&spooled.slug, &spooled.queue).map_or_else(|| spooled.queue.clone(), |(k, _)| k);
             self.queue(Queued { key, spooled, body, file: Some(file), tries: 0, not_before: Instant::now() });
         }
+    }
+
+    /// The admin's warnings of what the server's start kept back, unsent (spools.rs).
+    pub(crate) fn kept_back(&self) -> Vec<crate::storage::Warning> {
+        self.0.kept_back.warnings(&KIND)
     }
 
     /// Start sending: each outbox's thread, now and as an outbox first has a message, its outcomes
@@ -1034,7 +1099,7 @@ examples:
   --server), or as an agent or a service with its token in HOLON_TOKEN.";
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::sqs::stand_in::StandIn;
 
@@ -1098,6 +1163,27 @@ mod tests {
 
     fn entry(run: &str) -> LogEntry {
         LogEntry { run_id: run.into(), at_ms: firing::started_now().0, ..Default::default() }
+    }
+
+    /// For the spools' class test (spools.rs): a queue spool in `dir`, its binding `payouts` to a
+    /// queue that isn't there, sending nothing until it serves.
+    pub(crate) fn spooling(dir: &Path) -> Queues {
+        let queues = Queues::open(dir.join("queues.json").to_str().unwrap()).unwrap();
+        let binding = Binding { url: "env:HOLON_SECRET_P".into(), address: "https://sqs.eu-west-1.amazonaws.com/123456789012/payouts".into(), fifo: false, largest: 262_144, visibility: VISIBILITY, keep_failed: false };
+        queues.0.bound.write().unwrap().server.insert("payouts".into(), binding);
+        queues
+    }
+
+    /// The message run `run` of `slug` spools.
+    pub(crate) fn spooled(queues: &Queues, slug: &str, run: &str) -> Vec<Queued> {
+        queues.spool_logged(slug, &entry(run), vec![("payouts".into(), message(run, None))]).unwrap()
+    }
+
+    /// The runs whose message is queued to send, in order.
+    pub(crate) fn queued(queues: &Queues) -> Vec<String> {
+        let mut runs: Vec<String> = queues.0.outboxes.lock().unwrap().values().flat_map(|o| o.items.lock().unwrap().iter().map(|i| i.spooled.run.clone()).collect::<Vec<_>>()).collect();
+        runs.sort();
+        runs
     }
 
     fn message(data: &str, group: Option<&str>) -> Value {
@@ -1178,7 +1264,7 @@ mod tests {
         let plain = crate::at_rest::read_sealed(&spool.join("app.landed.0.msg"), crate::at_rest::role::SPOOL_QUEUE).unwrap().unwrap();
         std::fs::write(spool.join("app.plain.0.msg"), &*plain).unwrap();
         let again = Queues::open(file.to_str().unwrap()).unwrap().with_sources(Sources::of(&vars));
-        again.recover(|slug| (slug == "app").then(|| BTreeSet::from(["landed".to_string()])));
+        again.recover(|slug| slug == "app", |_| KeptRuns { runs: BTreeMap::from([("landed".to_string(), true)]), unread: None });
         again.serve(Arc::default());
         until(|| sqs.messages("payouts").len() == 1);
         assert_eq!(sqs.messages("payouts")[0].body, "kept");

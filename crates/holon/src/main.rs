@@ -71,6 +71,7 @@ mod listen;
 mod subscriptions;
 mod sigv4;
 mod sqs;
+mod spools;
 mod queues;
 mod dequeue;
 mod deploy;
@@ -1260,11 +1261,13 @@ fn serve(args: Vec<String>) {
         persist::seal_opened(slug, dep);
         dep.folders = Arc::new(folders::Scoped::new(Arc::clone(&folders), slug));
     }
-    // The mail its runs sent that wasn't delivered when the server stopped, sent now: what its
-    // deployment's log holds of it (mails.rs).
-    folders.mails.recover(|slug| initial_deployments.get(slug).map(|dep| dep.log.landed_runs()));
-    // And the messages to its queues (queues.rs).
-    folders.queues.recover(|slug| initial_deployments.get(slug).map(|dep| dep.log.landed_runs()));
+    // The mail its runs sent that wasn't delivered when the server stopped, sent now if its run
+    // landed, and the messages to its queues (spools.rs): marked landed, or as its deployment's
+    // log tells, or kept until a start whose log reads.
+    let deployed = |slug: &str| initial_deployments.contains_key(slug);
+    let runs = |slug: &str| initial_deployments.get(slug).map(|dep| dep.log.kept_runs()).unwrap_or_default();
+    folders.mails.recover(deployed, runs);
+    folders.queues.recover(deployed, runs);
     let flows = Mutex::new(load_flows(&flows_at).unwrap_or_else(|e| refuse_to_start(e)));
     let proposals = proposals::Proposals::beside(&flows_at).unwrap_or_else(|e| refuse_to_start(e));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));

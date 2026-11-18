@@ -1425,6 +1425,14 @@ fn split(sealed: &[Sealed], hot: &[(&[u8], &LineAt)], keep: usize, hot_keep: usi
 /// lines in memory, bounded by no cache's size).
 pub(crate) const IN_MEMORY: usize = 32;
 
+/// The runs a log keeps, by id, each with whether it finished (no error, not waiting); and,
+/// when they couldn't all be read, why: then a run not among them may be one it couldn't read.
+#[derive(Debug, Default)]
+pub struct KeptRuns {
+    pub runs: BTreeMap<String, bool>,
+    pub unread: Option<String>,
+}
+
 /// What reading a log's lines a line at a time needs, taken under its lock (`Log::its_lines`) and
 /// read with it released: its file opened, its sealed segments named, how its lines are sealed,
 /// and the first run it keeps. A log kept in memory only, its lines.
@@ -1739,24 +1747,18 @@ impl LogCell {
         (lines, head)
     }
 
-    /// Each run it keeps, oldest first (`Log::each_kept`), read with the lock released.
-    pub fn each_kept(&self, f: impl FnMut(LogEntry)) {
-        if let Err(e) = self.with(|log| log.its_lines()).each_kept(f) {
-            eprintln!("holon: a run log's runs can't all be read, what reads them has those it could: {e}");
-        }
-    }
-
-    /// The ids of the runs it keeps that finished: no error, not waiting. What a mail or a
-    /// queue's message spooled by one is sent again for, as a server starts (mails.rs,
-    /// queues.rs), read a run at a time.
-    pub fn landed_runs(&self) -> BTreeSet<String> {
-        let mut landed = BTreeSet::new();
-        self.each_kept(|e| {
-            if e.error.is_none() && e.parked.is_empty() {
-                landed.insert(e.run_id);
-            }
+    /// The runs it keeps, read a run at a time, and whether they could all be read: what a
+    /// server starting asks of a mail or a queue's message a run spooled that isn't marked
+    /// landed (spools.rs).
+    pub fn kept_runs(&self) -> KeptRuns {
+        let mut kept = KeptRuns::default();
+        let read = self.with(|log| log.its_lines()).each_kept(|e| {
+            kept.runs.insert(e.run_id, e.error.is_none() && e.parked.is_empty());
         });
-        landed
+        if let Err(e) = read {
+            kept.unread = Some(e.to_string());
+        }
+        kept
     }
 
     /// The runs it keeps after `after`, the newest `limit` of them, oldest first (`Log::after`):
@@ -3717,14 +3719,15 @@ mod tests {
                 // runs, its file holding more than it keeps (until the next cut-back) or not.
                 let want = lines(in_memory.after(None, usize::MAX));
                 let (mut from_cell, mut from_held, mut from_memory) = (Vec::new(), Vec::new(), Vec::new());
-                cell.each_kept(|e| from_cell.push(e));
+                cell.with(|l| l.its_lines()).each_kept(|e| from_cell.push(e)).unwrap();
                 held.each_kept(|e| from_held.push(e));
                 in_memory.each_kept(|e| from_memory.push(e));
                 assert_eq!(lines(from_cell), want, "the cell's, a run at a time, at run {i}");
                 assert_eq!(lines(from_held), want, "held, a run at a time, at run {i}");
                 assert_eq!(lines(from_memory), want, "in memory, a run at a time, at run {i}");
-                let landed: BTreeSet<String> = in_memory.after(None, usize::MAX).into_iter().map(|e| e.run_id).collect();
-                assert_eq!(cell.landed_runs(), landed);
+                let kept: BTreeMap<String, bool> = in_memory.after(None, usize::MAX).into_iter().map(|e| (e.run_id, true)).collect();
+                let read = cell.kept_runs();
+                assert!(read.runs == kept && read.unread.is_none(), "{read:?}");
             }
         }
         let (segments, sealed_runs, sealed_bytes) = cell.with(|l| l.sealed_holds());
