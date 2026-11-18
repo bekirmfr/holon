@@ -27,7 +27,34 @@ pub(crate) struct Client {
     pub(crate) chains: std::collections::HashMap<String, (usize, String)>,
     /// What the host warns of (`GET /admin/warnings`, storage.rs): says, todo. An admin's only.
     pub(crate) warnings: Vec<Value>,
+    /// The access document's version as `/auth/me` said it last: what `may` answers changes only
+    /// with it (or a flow's tags, or a minute on), so its answers are read again when it moves.
+    pub(crate) access_version: Option<u64>,
+    /// The runs waiting at a point that the caller may see (`GET /runs/waiting`), oldest first,
+    /// each with its `slug`; and why they couldn't be read, when they couldn't.
+    pub(crate) waiting_runs: Vec<Value>,
+    pub(crate) waiting_runs_error: Option<String>,
+    /// The versions proposed and waiting for a person (`GET /proposals`), oldest first: each
+    /// replaces its flow's "a version saved since" wait, which it saved.
+    pub(crate) proposals: Vec<Value>,
+    /// The access changes, newest first (`GET /access/proposals`), for whoever may see people; or
+    /// why they aren't read.
+    pub(crate) access_changes: Vec<Value>,
+    pub(crate) access_changes_error: Option<String>,
+    /// What the caller may do (`GET /auth/me/can`), by flow ("" for the host and every flow at
+    /// once), with when it was asked: each action's answer, or the words of its refusal.
+    pub(crate) can: std::collections::HashMap<String, (std::time::Instant, Answers)>,
+    /// The host at a glance (`GET /summary?hours=24`), of the flows the caller may see the runs
+    /// of: each one's hours, median and newest run, the newest runs, and the run logs' chain and
+    /// witness. Null when it can't be read; a flow it doesn't cover is read run by run.
+    pub(crate) summary: Value,
 }
+
+/// Each action's answer, or the words of its refusal.
+pub(crate) type Answers = std::collections::HashMap<String, Result<(), String>>;
+
+/// How long what the caller may do is kept before it is asked again, as the web console keeps it.
+const CAN_KEPT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// One deployment's pages: what it may do, its runs, its history, its access.
 pub(crate) struct Detail {
@@ -53,6 +80,17 @@ pub(crate) struct Detail {
     /// follow the one before them: what a run's record says of its chain.
     pub(crate) head: String,
     pub(crate) breaks: Vec<u64>,
+    /// The host's policy (`GET /permissions`): its limits' defaults and ceilings, as Settings says
+    /// them; null for whoever may not read it (policy.view).
+    pub(crate) policy: Value,
+    /// Its sessions, oldest first (`…/sessions`), each with the state it ended with.
+    pub(crate) sessions: Vec<Value>,
+    /// What it is connected to (state.view's): the feeds its handlers listen to (`…/feeds`), the
+    /// queues it listens to and sends to (`…/queues`: `{listening, sending}`), and its channels
+    /// (`…/channels`). Empty for whoever may not read them.
+    pub(crate) feeds: Vec<Value>,
+    pub(crate) queues: Value,
+    pub(crate) channels: Vec<Value>,
 }
 
 /// One moment of a deployment's history: a run, or something done to it.
@@ -79,6 +117,11 @@ pub(crate) struct Point {
 pub(crate) const RUNS: u64 = 200;
 /// How many of its latest runs each deployment's row reads, for its spark and last run.
 pub(crate) const RECENT: u64 = 50;
+/// A page of a collection: its items, (key, value), and the key the next starts after.
+pub(crate) type Items = (Vec<(String, Value)>, Option<String>);
+
+/// How many of a collection's items a page of the State section shows.
+pub(crate) const PAGE: usize = 100;
 
 fn list(v: &Value, key: &str) -> Vec<Value> {
     v.get(key).and_then(Value::as_array).cloned().unwrap_or_default()
@@ -90,7 +133,7 @@ pub(crate) fn strings(v: &Value, key: &str) -> Vec<String> {
 
 impl Client {
     pub(crate) fn new(api: Box<dyn Api>) -> Client {
-        Client { api, me: None, role: None, deployments: vec![], flows: vec![], activity: vec![], recent: Default::default(), chains: Default::default(), warnings: vec![] }
+        Client { api, me: None, role: None, deployments: vec![], flows: vec![], activity: vec![], recent: Default::default(), chains: Default::default(), warnings: vec![], access_version: None, can: Default::default(), waiting_runs: vec![], waiting_runs_error: None, proposals: vec![], access_changes: vec![], access_changes_error: None, summary: Value::Null }
     }
 
     pub(crate) fn server(&self) -> String {
@@ -109,27 +152,73 @@ impl Client {
         deploycmd::call(self.api.as_ref(), "PATCH", path, Some(Body::Json(body)))
     }
 
+    pub(crate) fn put(&self, path: &str, body: Value) -> Result<Value, String> {
+        deploycmd::call(self.api.as_ref(), "PUT", path, Some(Body::Json(body)))
+    }
+
     pub(crate) fn delete(&self, path: &str) -> Result<Value, String> {
         deploycmd::call(self.api.as_ref(), "DELETE", path, None)
     }
 
     /// Read the deployments, saved flows and activity again.
     pub(crate) fn refresh(&mut self) -> Result<(), String> {
-        let deployments = list(&self.get("/deployments")?, "deployments");
-        let flows = self.get("/flows")?.as_array().cloned().unwrap_or_default();
-        if self.me.is_none() {
-            let me = self.get("/auth/me").ok();
-            self.me = me.as_ref().and_then(|m| m.get("name").and_then(Value::as_str).map(str::to_string));
-            self.role = me.as_ref().and_then(|m| m.get("role").and_then(Value::as_str).map(str::to_string));
+        // Who we are, and the access document's version: when it moves, what we may do is asked
+        // again (a server without accounts answers no version).
+        let me = self.get("/auth/me").ok();
+        self.me = me.as_ref().and_then(|m| m.get("name").and_then(Value::as_str).map(str::to_string));
+        self.role = me.as_ref().and_then(|m| m.get("role").and_then(Value::as_str).map(str::to_string));
+        let version = me.as_ref().and_then(|m| m["access_version"].as_u64());
+        if version != self.access_version {
+            self.can.clear();
+            self.access_version = version;
         }
+        self.ask_can(None);
+        // The flows, unless the server said the caller may see none (an admin of people alone, say):
+        // then none are listed, and the rest is read as ever.
+        let (deployments, flows) = if self.refused("flow.view").is_some() {
+            (vec![], vec![])
+        } else {
+            (list(&self.get("/deployments")?, "deployments"), self.get("/flows")?.as_array().cloned().unwrap_or_default())
+        };
+        // Waiting ones come first in the answer, oldest first; whoever may not list flows reads none.
+        self.proposals = self.get("/proposals").map(|v| list(&v, "proposals")).unwrap_or_default().into_iter().filter(|p| p["state"] == "waiting").collect();
+        match self.get("/runs/waiting") {
+            Ok(v) => {
+                let mut runs = list(&v, "runs");
+                runs.sort_by_key(|r| r["parked_at"].as_u64().unwrap_or(0));
+                (self.waiting_runs, self.waiting_runs_error) = (runs, None);
+            }
+            Err(e) => (self.waiting_runs, self.waiting_runs_error) = (vec![], Some(e)),
+        }
+        (self.access_changes, self.access_changes_error) = match self.may("people.view", None) {
+            Err(why) => (vec![], Some(why)),
+            Ok(()) => match self.get("/access/proposals") {
+                Ok(v) => (list(&v, "proposals"), None),
+                Err(e) => (vec![], Some(e)),
+            },
+        };
         // Only an admin may read it all; for anyone else it stays empty.
         self.activity = self.get("/activity?limit=30").map(|a| list(&a, "entries")).unwrap_or_default();
         self.warnings = self.get("/admin/warnings").map(|w| list(&w, "warnings")).unwrap_or_default();
+        // The host at a glance, in one read: each flow it covers needs no read of its own.
+        self.summary = self.get("/summary?hours=24").unwrap_or(Value::Null);
+        let covered: Vec<(String, usize, String)> = self.summary["deployments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| Some((f["slug"].as_str()?.to_string(), f["breaks"].as_array().map_or(0, Vec::len), f["head"].as_str().unwrap_or_default().to_string())))
+            .collect();
         // The latest runs of what ran since it was last read; what is gone is forgotten.
-        self.recent.retain(|slug, _| deployments.iter().any(|d| d["slug"].as_str() == Some(slug.as_str())));
+        self.recent.retain(|slug, _| deployments.iter().any(|d| d["slug"].as_str() == Some(slug.as_str())) && !covered.iter().any(|(s, ..)| s == slug));
         self.chains.retain(|slug, _| deployments.iter().any(|d| d["slug"].as_str() == Some(slug.as_str())));
+        for (slug, breaks, head) in &covered {
+            self.chains.insert(slug.clone(), (*breaks, head.clone()));
+        }
         for d in &deployments {
             let (Some(slug), runs) = (d["slug"].as_str(), d["trigger_count"].as_u64().unwrap_or(0)) else { continue };
+            if covered.iter().any(|(s, ..)| s == slug) {
+                continue;
+            }
             if self.recent.get(slug).is_some_and(|(n, _)| *n == runs) {
                 continue;
             }
@@ -145,6 +234,46 @@ impl Client {
         Ok(())
     }
 
+    /// Ask what the caller may do, every action at once, on `flow` or on the host and every flow,
+    /// unless it was asked within the minute. Answers are kept by this client, which signs in with
+    /// one token for its life (another server, or another sign-in, is another client), so an
+    /// answer is never another caller's. One that can't be read is kept as no answer.
+    pub(crate) fn ask_can(&mut self, flow: Option<&str>) {
+        let key = flow.unwrap_or_default().to_string();
+        if self.can.get(&key).is_some_and(|(at, _)| at.elapsed() < CAN_KEPT) {
+            return;
+        }
+        let actions: Vec<&str> = crate::can::Action::ALL.iter().map(|a| a.name()).collect();
+        let mut path = format!("/auth/me/can?actions={}", actions.join(","));
+        if let Some(f) = flow {
+            path.push_str(&format!("&flow={}", seg(f)));
+        }
+        let answers = match self.get(&path) {
+            Ok(Value::Object(m)) => m.into_iter().map(|(k, v)| (k, if v == Value::Bool(true) { Ok(()) } else { Err(v.as_str().unwrap_or("not yours to do here").to_string()) })).collect(),
+            Ok(_) => Default::default(),
+            Err(e) => [(String::new(), Err(e))].into(),
+        };
+        self.can.insert(key, (std::time::Instant::now(), answers));
+    }
+
+    /// The server's no to `action` on the host and every flow, when it answered one: not when it
+    /// hasn't answered, which [`Client::may`] takes as a no too.
+    pub(crate) fn refused(&self, action: &str) -> Option<String> {
+        self.can.get("").and_then(|(_, a)| a.get(action)).and_then(|a| a.clone().err())
+    }
+
+    /// Whether the caller may do `action` (a catalogue name, `people.manage`), on `flow` or on the
+    /// host and every flow: the refusal's words when not. Not asked yet, or not answered, is no
+    /// (R77): a key never works on a guess, only on the server's yes.
+    pub(crate) fn may(&self, action: &str, flow: Option<&str>) -> Result<(), String> {
+        let asked = flow.and_then(|f| self.can.get(f)).or_else(|| self.can.get(""));
+        match asked.map(|(_, a)| (a.get(action), a.get(""))) {
+            Some((Some(answer), _)) => answer.clone(),
+            Some((None, Some(Err(e)))) => Err(format!("the server didn't say what you may do ({e}): r asks again")),
+            _ => Err("the server hasn't said yet what you may do: r asks again".into()),
+        }
+    }
+
     pub(crate) fn deployment(&self, slug: &str) -> Option<&Value> {
         self.deployments.iter().find(|d| d["slug"].as_str() == Some(slug))
     }
@@ -153,20 +282,42 @@ impl Client {
         self.flows.iter().find(|f| f["name"].as_str() == Some(name))
     }
 
-    /// What waits for a person, deployment by deployment, then the saved flows never deployed.
+    /// The version of `slug` proposed and waiting for a person, if one is.
+    pub(crate) fn proposal_for(&self, slug: &str) -> Option<&Value> {
+        self.proposals.iter().find(|p| p["slug"].as_str() == Some(slug))
+    }
+
+    /// What waits for a person, deployment by deployment, then the saved flows never deployed,
+    /// then what is proposed of a flow neither. A version proposed is said as one, in place of
+    /// the save it made.
     pub(crate) fn waiting(&self) -> Vec<(String, String)> {
         let mut out = vec![];
         for d in &self.deployments {
             let slug = d["slug"].as_str().unwrap_or("?").to_string();
+            let proposed = self.proposal_for(&slug);
             for w in crate::mcp::waits_for(d, self.saved(&slug)) {
-                out.push((slug.clone(), w));
+                if proposed.is_none() || !w.starts_with("to review a version saved since") {
+                    out.push((slug.clone(), w));
+                }
+            }
+            if let Some(p) = proposed {
+                out.push((slug.clone(), super::approvals::proposal_wait(p)));
             }
         }
         for f in &self.flows {
             let name = f["name"].as_str().unwrap_or("?");
-            if self.deployment(name).is_none() {
+            if let Some(p) = self.proposal_for(name).filter(|_| self.deployment(name).is_none()) {
+                out.push((name.to_string(), super::approvals::proposal_wait(p)));
+            } else if self.deployment(name).is_none() {
                 let by = f["saved_by"].as_str().unwrap_or("someone");
                 out.push((name.to_string(), format!("to deploy it for the first time: saved by {by}, at {}", crate::mcp::when(&f["saved_at_epoch_seconds"]))));
+            }
+        }
+        // A proposal of a flow neither deployed nor saved here waits all the same.
+        for p in &self.proposals {
+            let name = p["slug"].as_str().unwrap_or("?");
+            if self.deployment(name).is_none() && !self.flows.iter().any(|f| f["name"].as_str() == Some(name)) {
+                out.push((name.to_string(), super::approvals::proposal_wait(p)));
             }
         }
         out
@@ -194,7 +345,12 @@ impl Client {
         secrets["reads"] = json!(crate::secretcmd::reads(&manifest));
         let parked = if entry["waiting"].as_u64().unwrap_or_default() > 0 { self.get(&format!("{path}/runs")).map(|r| list(&r, "runs")).unwrap_or_default() } else { vec![] };
         let holds = self.get(&format!("{path}/holds")).unwrap_or(Value::Null);
-        Ok(Detail { slug: slug.to_string(), entry, manifest, runs, events, versions, grant, secrets, parked, holds, head, breaks })
+        let policy = if self.may("policy.view", None).is_ok() { self.get("/permissions").unwrap_or(Value::Null) } else { Value::Null };
+        let sessions = self.get(&format!("{path}/sessions")).map(|s| list(&s, "sessions")).unwrap_or_default();
+        let feeds = self.get(&format!("{path}/feeds")).map(|f| list(&f, "feeds")).unwrap_or_default();
+        let queues = self.get(&format!("{path}/queues")).unwrap_or(Value::Null);
+        let channels = self.get(&format!("{path}/channels")).map(|c| list(&c, "channels")).unwrap_or_default();
+        Ok(Detail { slug: slug.to_string(), entry, manifest, runs, events, versions, grant, secrets, parked, holds, head, breaks, policy, sessions, feeds, queues, channels })
     }
 
     /// Its text as deployed now, or as version `unit` was.
@@ -229,6 +385,11 @@ impl Client {
     pub(crate) fn lifecycle(&self, slug: &str, action: &str, from: Option<Value>) -> Result<(), String> {
         let body = from.map(|f| json!({ "from": f })).unwrap_or_else(|| json!({}));
         self.post(&format!("/deployments/{}/{action}", seg(slug)), body).map(|_| ())
+    }
+
+    /// A saved flow deleted (`DELETE /flows/{name}`, flow.delete): its deployment, if any, stays.
+    pub(crate) fn delete_saved(&self, name: &str) -> Result<(), String> {
+        self.delete(&format!("/flows/{}", seg(name))).map(|_| ())
     }
 
     pub(crate) fn remove(&self, slug: &str) -> Result<(), String> {
@@ -325,11 +486,13 @@ impl Client {
         self.get(&format!("/deployments/{}/logs?{asked}", seg(slug))).map(|a| a["lines"].as_array().cloned().unwrap_or_default())
     }
 
-    /// A collection's first items: (key, value).
-    pub(crate) fn collection(&self, slug: &str, name: &str) -> Result<(Vec<(String, Value)>, bool), String> {
-        let c = self.get(&format!("/deployments/{}/collections/{}?limit=100", seg(slug), seg(name)))?;
+    /// A page of a collection's items, in key order, after the key `after` (from its first
+    /// without one): (key, value), and the key the next page starts after, when there may be more.
+    pub(crate) fn collection(&self, slug: &str, name: &str, after: Option<&str>) -> Result<Items, String> {
+        let after = after.map(|a| format!("&after={}", seg(a))).unwrap_or_default();
+        let c = self.get(&format!("/deployments/{}/collections/{}?limit={PAGE}{after}", seg(slug), seg(name)))?;
         let items = c["items"].as_array().into_iter().flatten().filter_map(|i| Some((i.get(0)?.as_str()?.to_string(), i.get(1).cloned().unwrap_or(Value::Null)))).collect();
-        Ok((items, !c["next"].is_null()))
+        Ok((items, c["next"].as_str().map(str::to_string)))
     }
 
     /// The runs that changed a cell (or a collection, or one item of it), as `holon history --cell`.

@@ -207,9 +207,59 @@ pub(crate) fn table(rows: &[Vec<String>]) -> Vec<String> {
         .collect()
 }
 
+/// What `holon mail`, `holon feed` and `holon queue` read from their words and flags: the
+/// server asked, the deployment a binding is for, the words, and the binding's fields as the
+/// server takes them. The terminal editor's Mail, Feeds and Queues parts read a dialog's line
+/// the same way (`split_words` first).
+#[derive(Default, Debug)]
+pub(crate) struct BindArgs {
+    pub(crate) server: Option<String>,
+    pub(crate) for_deployment: Option<String>,
+    pub(crate) words: Vec<String>,
+    pub(crate) asked: serde_json::Map<String, Value>,
+    pub(crate) help: bool,
+}
+
+/// A line as a shell splits it into words: on spaces, but not inside "double" or 'single' quotes,
+/// which are taken off ("Treasury <treasury@acme.com>" is one word).
+pub(crate) fn split_words(line: &str) -> Result<Vec<String>, String> {
+    let (mut words, mut word, mut quote, mut any) = (Vec::new(), String::new(), None, false);
+    for c in line.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => word.push(c),
+            (None, '"' | '\'') => {
+                quote = Some(c);
+                any = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if any || !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+                any = false;
+            }
+            (None, c) => word.push(c),
+        }
+    }
+    if let Some(q) = quote {
+        return Err(format!("a {q} isn't closed"));
+    }
+    if any || !word.is_empty() {
+        words.push(word);
+    }
+    Ok(words)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_splits_as_a_shell_splits_it() {
+        assert_eq!(split_words(r#"ops --from "Treasury <t@acme.com>" --to '*@acme.com'  x"#).unwrap(), ["ops", "--from", "Treasury <t@acme.com>", "--to", "*@acme.com", "x"]);
+        assert_eq!(split_words(r#"a "" b"#).unwrap(), ["a", "", "b"], "an empty quoted word is a word");
+        assert!(split_words(r#"a "b"#).is_err());
+    }
 
     fn strings(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()

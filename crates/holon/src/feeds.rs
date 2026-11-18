@@ -903,71 +903,131 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str, sees_where: b
 /// FIELD,…] [--only FIELD=VALUE]… [--resume WHERE]… [--for SLUG] | add NAME --database NAME
 /// --channel CHANNEL […] | list | remove NAME`: bind, show and unbind the feeds of the server this
 /// user runs here (or `--server`), as an admin.
-pub(crate) fn cli(args: &[String]) -> i32 {
-    let mut server = None;
-    let mut for_deployment: Option<String> = None;
-    let mut asked = serde_json::Map::new();
+/// `holon feed`'s words and flags, read: what the command and the editor's Feeds part share.
+/// Each `--header NAME=SOURCE` is put in `headers`.
+pub(crate) fn read_args(args: &[String]) -> Result<crate::cmdline::BindArgs, String> {
+    let mut read = crate::cmdline::BindArgs::default();
     let mut headers = serde_json::Map::new();
-    let mut words = Vec::new();
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--server" => server = args.next().cloned(),
-            "--for" => for_deployment = args.next().cloned(),
+            "--server" => read.server = args.next().cloned(),
+            "--for" => read.for_deployment = args.next().cloned(),
             "--url" | "--buffer" | "--idle" | "--header" | "--on-full" | "--key" | "--sequence" | "--subscribe" | "--heartbeat" | "--every" | "--id" | "--only" | "--resume" | "--database" | "--channel" => {
-                let Some(v) = args.next() else {
-                    eprintln!("holon feed: {a} takes a value\n\n{FEED_USAGE}");
-                    return 2;
-                };
+                let Some(v) = args.next() else { return Err(format!("{a} takes a value")) };
                 match a.as_str() {
                     "--header" => {
-                        let Some((name, source)) = v.split_once('=') else {
-                            eprintln!("holon feed: --header is NAME=SOURCE (Authorization=env:HOLON_SECRET_PRICES_AUTH)\n\n{FEED_USAGE}");
-                            return 2;
-                        };
+                        let Some((name, source)) = v.split_once('=') else { return Err("--header is NAME=SOURCE (Authorization=env:HOLON_SECRET_PRICES_AUTH)".into()) };
                         headers.insert(name.trim().to_string(), serde_json::Value::String(source.trim().to_string()));
                     }
                     "--buffer" => {
-                        let Ok(n) = v.parse::<u64>() else {
-                            eprintln!("holon feed: --buffer is how many events may wait: a number\n\n{FEED_USAGE}");
-                            return 2;
-                        };
-                        asked.insert("buffer".into(), serde_json::json!(n));
+                        let Ok(n) = v.parse::<u64>() else { return Err("--buffer is how many events may wait: a number".into()) };
+                        read.asked.insert("buffer".into(), serde_json::json!(n));
                     }
                     "--subscribe" | "--only" | "--resume" => {
-                        let list = asked.entry(a[2..].to_string()).or_insert_with(|| serde_json::json!([]));
+                        let list = read.asked.entry(a[2..].to_string()).or_insert_with(|| serde_json::json!([]));
                         if let Some(list) = list.as_array_mut() {
                             list.push(serde_json::Value::String(v.clone()));
                         }
                     }
                     _ => {
-                        asked.insert(a[2..].replace('-', "_"), serde_json::Value::String(v.clone()));
+                        read.asked.insert(a[2..].replace('-', "_"), serde_json::Value::String(v.clone()));
                     }
                 }
             }
-            "--help" | "-h" => {
-                println!("{FEED_USAGE}");
-                return 0;
-            }
-            _ if !a.starts_with('-') => words.push(a.as_str()),
-            _ => {
-                eprintln!("holon feed: no option {a:?}\n\n{FEED_USAGE}");
-                return 2;
-            }
+            "--help" | "-h" => read.help = true,
+            _ if !a.starts_with('-') => read.words.push(a.clone()),
+            _ => return Err(format!("no option {a:?}")),
         }
     }
+    read.asked.insert("headers".into(), serde_json::Value::Object(headers));
+    Ok(read)
+}
+
+/// The body of `POST /admin/feeds` binding `name` as `read` asks.
+pub(crate) fn add_body(name: &str, read: &crate::cmdline::BindArgs) -> Result<serde_json::Value, String> {
+    if !read.asked.contains_key("url") && !read.asked.contains_key("database") {
+        return Err("it takes --url SOURCE, where the server reads the feed's URL, or --database NAME --channel CHANNEL".into());
+    }
+    let mut body = read.asked.clone();
+    body.insert("name".into(), serde_json::Value::String(name.to_string()));
+    body.insert("deployment".into(), serde_json::json!(read.for_deployment));
+    Ok(serde_json::Value::Object(body))
+}
+
+/// A feed binding as `holon feed list` prints it.
+pub(crate) fn line(f: &serde_json::Value) -> String {
+    let headers: Vec<String> = f["headers"].as_object().into_iter().flatten().map(|(h, s)| format!("{h} from {}", s.as_str().unwrap_or(""))).collect();
+    // Where it is, to whoever may bind (web console L4, Q4).
+    let reads = match (f["database"].as_str(), f["address"].as_str()) {
+        (Some(db), Some(at)) => format!("listens on {at} (the database {db})"),
+        (Some(db), None) => format!("listens on the database {db}"),
+        (None, Some(at)) => format!("reads {at} (from {})", f["url"].as_str().unwrap_or("")),
+        (None, None) => "reads a feed (where, to whoever may bind)".to_string(),
+    };
+    let mut said = vec![f["name"].as_str().unwrap_or("").to_string(), reads];
+    if !headers.is_empty() {
+        said.push(format!("sends {}", headers.join(", ")));
+    }
+    let texts = |k: &str| -> Vec<String> { f[k].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect() };
+    let subscribe = texts("subscribe");
+    if !subscribe.is_empty() {
+        said.push(format!("subscribes with {}", subscribe.join(", ")));
+    }
+    if let Some(beat) = f["heartbeat"].as_str() {
+        said.push(format!("sends {beat} every {}", folders::span_text(f["every"].as_u64().unwrap_or(EVERY))));
+    }
+    let only: Vec<String> = f["only"].as_object().into_iter().flatten().map(|(k, vs)| format!("{k} {}", vs.as_array().into_iter().flatten().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" or "))).collect();
+    if !only.is_empty() {
+        said.push(format!("runs only {}", only.join(" and ")));
+    }
+    let id = texts("id");
+    if !id.is_empty() {
+        said.push(format!("its id {}", id.join("/")));
+    }
+    if let Some(sequence) = f["sequence"].as_str() {
+        said.push(format!("numbered by {sequence}{}", f["key"].as_str().map_or(String::new(), |k| format!(", each {k} on its own"))));
+    }
+    let resume = &f["resume"];
+    if let Some(name) = resume["query"].as_str() {
+        said.push(format!("resumes from its position with {name}= in the URL"));
+    } else if let Some(name) = resume["header"].as_str() {
+        said.push(format!("resumes from its position with the header {name}"));
+    } else if let Some(messages) = resume["message"].as_array() {
+        said.push(format!("resumes from its position with {}", messages.iter().filter_map(|m| m.as_str()).collect::<Vec<_>>().join(", ")));
+    }
+    let full = match (f["on_full"].as_str(), f["key"].as_str()) {
+        (Some("skip"), _) => ", the rest dropped".to_string(),
+        (Some("latest"), Some(key)) => format!(", one a {key}, the newest"),
+        _ => String::new(),
+    };
+    said.push(format!("{} may wait{full}  quiet for {} at most", f["buffer"].as_u64().unwrap_or(BUFFER as u64), folders::span_text(f["idle"].as_u64().unwrap_or(IDLE))));
+    format!("{}{}", said.join("  "), f["deployment"].as_str().map_or(String::new(), |s| format!(", for {s} only")))
+}
+
+pub(crate) fn cli(args: &[String]) -> i32 {
+    let read = match read_args(args) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("holon feed: {e}\n\n{FEED_USAGE}");
+            return 2;
+        }
+    };
+    if read.help {
+        println!("{FEED_USAGE}");
+        return 0;
+    }
+    let (server, for_deployment) = (read.server.clone(), read.for_deployment.clone());
+    let words: Vec<&str> = read.words.iter().map(String::as_str).collect();
     let (method, path, body) = match words.as_slice() {
         ["list"] => ("GET", "/admin/feeds".to_string(), None),
-        ["add", name] => {
-            if !asked.contains_key("url") && !asked.contains_key("database") {
-                eprintln!("holon feed add: it takes --url SOURCE, where the server reads the feed's URL, or --database NAME --channel CHANNEL\n\n{FEED_USAGE}");
+        ["add", name] => match add_body(name, &read) {
+            Ok(body) => ("POST", "/admin/feeds".to_string(), Some(body)),
+            Err(e) => {
+                eprintln!("holon feed add: {e}\n\n{FEED_USAGE}");
                 return 2;
             }
-            asked.insert("name".into(), serde_json::Value::String(name.to_string()));
-            asked.insert("headers".into(), serde_json::Value::Object(headers));
-            asked.insert("deployment".into(), serde_json::json!(for_deployment));
-            ("POST", "/admin/feeds".to_string(), Some(serde_json::Value::Object(asked)))
-        }
+        },
         ["remove", name] => {
             let only = for_deployment.as_ref().map_or(String::new(), |d| format!("?deployment={}", crate::mcp::seg(d)));
             ("DELETE", format!("/admin/feeds/{}{only}", crate::mcp::seg(name)), None)
@@ -980,54 +1040,6 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     let (server, answer) = match local::admin_call("holon feed", server.as_deref(), method, &path, body.as_ref()) {
         Ok(a) => a,
         Err(code) => return code,
-    };
-    let line = |f: &serde_json::Value| {
-        let headers: Vec<String> = f["headers"].as_object().into_iter().flatten().map(|(h, s)| format!("{h} from {}", s.as_str().unwrap_or(""))).collect();
-        // Where it is, to whoever may bind (web console L4, Q4).
-        let reads = match (f["database"].as_str(), f["address"].as_str()) {
-            (Some(db), Some(at)) => format!("listens on {at} (the database {db})"),
-            (Some(db), None) => format!("listens on the database {db}"),
-            (None, Some(at)) => format!("reads {at} (from {})", f["url"].as_str().unwrap_or("")),
-            (None, None) => "reads a feed (where, to whoever may bind)".to_string(),
-        };
-        let mut said = vec![f["name"].as_str().unwrap_or("").to_string(), reads];
-        if !headers.is_empty() {
-            said.push(format!("sends {}", headers.join(", ")));
-        }
-        let texts = |k: &str| -> Vec<String> { f[k].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect() };
-        let subscribe = texts("subscribe");
-        if !subscribe.is_empty() {
-            said.push(format!("subscribes with {}", subscribe.join(", ")));
-        }
-        if let Some(beat) = f["heartbeat"].as_str() {
-            said.push(format!("sends {beat} every {}", folders::span_text(f["every"].as_u64().unwrap_or(EVERY))));
-        }
-        let only: Vec<String> = f["only"].as_object().into_iter().flatten().map(|(k, vs)| format!("{k} {}", vs.as_array().into_iter().flatten().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" or "))).collect();
-        if !only.is_empty() {
-            said.push(format!("runs only {}", only.join(" and ")));
-        }
-        let id = texts("id");
-        if !id.is_empty() {
-            said.push(format!("its id {}", id.join("/")));
-        }
-        if let Some(sequence) = f["sequence"].as_str() {
-            said.push(format!("numbered by {sequence}{}", f["key"].as_str().map_or(String::new(), |k| format!(", each {k} on its own"))));
-        }
-        let resume = &f["resume"];
-        if let Some(name) = resume["query"].as_str() {
-            said.push(format!("resumes from its position with {name}= in the URL"));
-        } else if let Some(name) = resume["header"].as_str() {
-            said.push(format!("resumes from its position with the header {name}"));
-        } else if let Some(messages) = resume["message"].as_array() {
-            said.push(format!("resumes from its position with {}", messages.iter().filter_map(|m| m.as_str()).collect::<Vec<_>>().join(", ")));
-        }
-        let full = match (f["on_full"].as_str(), f["key"].as_str()) {
-            (Some("skip"), _) => ", the rest dropped".to_string(),
-            (Some("latest"), Some(key)) => format!(", one a {key}, the newest"),
-            _ => String::new(),
-        };
-        said.push(format!("{} may wait{full}  quiet for {} at most", f["buffer"].as_u64().unwrap_or(BUFFER as u64), folders::span_text(f["idle"].as_u64().unwrap_or(IDLE))));
-        format!("{}{}", said.join("  "), f["deployment"].as_str().map_or(String::new(), |s| format!(", for {s} only")))
     };
     match words[0] {
         "list" => {
