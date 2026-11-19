@@ -31,7 +31,7 @@ const ORIGINS: &[(&str, &str, &str, &str, Option<&str>)] = &[
     ("after an early return", "if (req.json.c) return \"stop\"\n{S}\nreturn \"end\"", "\"x\"", r#"{"c":true}"#, None),
     ("the other side of ??", "const got = req.json.v ?? \"x\"\n{S}\nreturn \"end\"", "got", r#"{"v":"y"}"#, None),
     ("tied to a value not there", "if (req.json.v !== undefined) {\n{S}\n}\nreturn \"end\"", "req.json.v", r#"{}"#, None),
-    ("a throw in a try", "try {\nif (req.json.n <= 0) throw new Error(\"no\")\n{S}\n} catch {\nreturn \"bad\"\n}\nreturn \"end\"", "req.json.n", r#"{"n":0}"#, Some("failed")),
+    ("a throw its own catch took", "try {\nif (req.json.n <= 0) throw new Error(\"no\")\n{S}\n} catch {\nreturn \"bad\"\n}\nreturn \"end\"", "req.json.n", r#"{"n":0}"#, None),
     ("a missing field in a try", "try {\nconst n = req.json.n + 1\n{S}\n} catch {\nreturn \"bad\"\n}\nreturn \"end\"", "n", r#"{}"#, Some("missing")),
     ("a function that throws", "{S}\nreturn \"end\"", "checked(req.json.n)", r#"{"n":0}"#, Some("failed")),
     ("a map, as far as the record sees", "{S}\nreturn \"end\"", "req.json.items.map((i) => i.n)", r#"{"items":[{"m":1}]}"#, Some("missing")),
@@ -68,8 +68,9 @@ fn gained(state: &AppState, slug: &str, seen: &mut Option<u64>) -> Vec<serde_jso
 /// **Guards:** a run that held an effect and didn't make it says so in its record (`skipped`),
 /// with the level of where the absence began: a read that found nothing (and which read), a field
 /// a value lacked, a step that failed, as far as the record sees into a map or a fold; and says
-/// nothing where the flow's own choice left it out (an `if` not taken, an early return, the side
-/// of a `??` not needed, a tie to a value the flow tested), or where it was made. The same for
+/// nothing where the flow's own choice left it out (an `if` not taken, an early return, a throw
+/// under its own test that its own catch took, the side of a `??` not needed, a tie to a value the
+/// flow tested), or where it was made. A throw no catch takes is a failure. The same for
 /// every kind of effect: a write, a row, a line, a call, an action started.
 /// **Why:** an effect whose value didn't arrive was dropped without a word: the run answered 200,
 /// `performed` was empty, and a person reading the record couldn't tell "the write was never
@@ -147,9 +148,10 @@ const SECRET_PLACES: &[(&str, &str)] = &[
 
 /// **Guards:** two runs that differ only in something computed from a secret (which way a test
 /// on it went, whether a value computed from it arrived), with everything clean the same, leave
-/// records that read the same but for their steps (which show which way a choice went, as the
-/// owner decided): their `skipped` field for field, in the same order. Each place the walk can
-/// meet such a step (`SECRET_PLACES`), with each request, run with one secret and then another.
+/// records that read the same but for their steps and outputs (which show which way a choice went,
+/// as the owner decided): their `skipped` field for field, in the same order. Each place the walk
+/// can meet such a step (`SECRET_PLACES`), with each request, run with one secret and then
+/// another.
 /// **Why:** otherwise a run's record answers yes or no about the secret, one guess a run: the
 /// walk read whether a step computed from a secret gave anything before it asked whether it may,
 /// and a write a secret decided read "refused" where it was made and the host refused it, and
@@ -169,7 +171,7 @@ fn a_runs_skipped_effects_read_the_same_whatever_its_secret() {
         })
         .collect();
     let text = format!(
-        "import {{ flow, route }} from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\nimport k from \"secret:k\"\n\nflow(\"either\", {{ port: {} }})\n\nfunction pick(v) {{\n  const s = k.startsWith(\"live_\") ? \"s\" : undefined\n  return {{ s, v }}\n}}\n\n{routes}",
+        "import {{ flow, route }} from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\nimport k from \"secret:k\"\n\nflow(\"either\", {{ port: {} }})\n\nfunction pick(x) {{\n  const s = k.startsWith(\"live_\") ? \"s\" : undefined\n  return {{ s, v: x + \"!\" }}\n}}\n\n{routes}",
         free_port()
     );
     let slug = deploy_plain_text(&state, &text);
@@ -198,7 +200,9 @@ fn a_runs_skipped_effects_read_the_same_whatever_its_secret() {
         table.push(format!("{place:42} | {body:20} | {} | {}", words(one), words(other)));
         let mut at = Vec::new();
         differs(&but_marks(one), &but_marks(other), String::new(), &mut at);
-        at.retain(|d| !d.starts_with(".timeline"));
+        // The steps and the run's outputs show which way a choice went (an effect's output is there
+        // where it was made), as the owner decided; both were so before `skipped`.
+        at.retain(|d| !d.starts_with(".timeline") && !d.starts_with(".outputs"));
         if !at.is_empty() {
             wrong.push(format!("{place} | {body}:\n  {}", at.join("\n  ")));
         }
