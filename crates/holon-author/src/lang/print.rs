@@ -2405,7 +2405,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         }
         let assigned = s.declares.is_some() || s.writes.is_some() || s.text.starts_with("state.");
         if !assigned && !self.sink(node) {
-            return Err(format!("{} waits for a value, which TypeScript says only of a write, a request, a send or another flow's action: bind it, or wait for its value with ??", node.data.name));
+            return Err(format!("{} waits for a value, which TypeScript says only of a write, a request, a send, an action called or started or a function of the flow's: bind it, or wait for its value with ??", node.data.name));
         }
         let saved = std::mem::take(&mut self.touched);
         let x = self.arg(node, TRIGGER)?.map(|v| wrap(v, REL)).expect("tied");
@@ -2416,10 +2416,12 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     }
 
     /// Whether `node`, written as a statement, is one ts.rs ties to what an `if (x !== undefined)`
-    /// waits for: a request, another flow's action, a send, a write by method.
+    /// waits for (`contains_sink`, `calls_function`): a request, an action called or started, a
+    /// send, a write by method, a call of a function of the flow's.
     fn sink(&self, node: &Node) -> bool {
         let name = node.data.name.as_str();
-        matches!(name, "http_request" | "http_upload" | "http_stream" | "flow_call" | "channel_send" | "mail_send" | "queue_send" | "log" | "collection_put" | "collection_delete" | "db_exec" | "db_insert" | "db_update" | "db_delete")
+        matches!(node.data.body, PlacedBody::Composite { .. })
+            || matches!(name, "http_request" | "http_upload" | "http_stream" | "flow_call" | "flow_start" | "channel_send" | "mail_send" | "queue_send" | "log" | "collection_put" | "collection_delete" | "db_exec" | "db_insert" | "db_update" | "db_delete")
             || (name.starts_with("file_") && !matches!(name, "file_list" | "file_lines" | "file_slice" | "file_read" | "file_read_bytes" | "file_serve"))
     }
 
@@ -4034,10 +4036,13 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 _ => break cur,
             }
         };
-        chain.reverse();
+        // Every link but `node`, which its own render places, on the line it is written on: the
+        // first of them too, once the chain is turned (it was left off, its field's value read
+        // as the line's by explain).
         for c in &chain[1..] {
             self.touch(c);
         }
+        chain.reverse();
         let mut items = self.base_items(base)?;
         for c in &chain {
             let value = self.required(c, "value", COND)?;
@@ -4818,6 +4823,52 @@ export const t = action((input) => {
         );
     }
 
+    /// **Guards:** each kind of call the compiler ties to what an `if (x !== undefined)` waits
+    /// for (ts.rs `contains_sink`, `calls_function`: an action started or called, a request, a
+    /// log line, a send, a write by method, a function of the flow's that writes) prints inside
+    /// it and reads back as the same unit.
+    /// **Why:** the printer's own list of those calls (`sink`) lacked an action started and a call of
+    /// a function of the flow's: a flow making one inside `if (x !== undefined)` compiled and
+    /// deployed, and explain, which prints the deployed document, refused every run of it (found
+    /// by R99's explain sweep, 2026-11-19).
+    #[test]
+    fn every_call_that_waits_for_a_value_prints_inside_its_if() {
+        let calls: &[(&str, &str, &str)] = &[
+            ("an action of the flow's started", "", "ping(found)"),
+            ("another flow's action started", "import { charge } from \"flow:billing\"\n", "charge(found)"),
+            ("another flow's action called", "import { charge } from \"flow:billing\"\n", "await charge(found)"),
+            ("a request", "import api from \"host:example.com\"\n", "await api.post(\"/a\", { body: found })"),
+            ("a log line", "", "console.warn(\"found\", found)"),
+            ("a message on a channel", "import drops from \"channel:drops\"\n", "drops.send(found)"),
+            ("a mail", "import ops from \"mail:ops\"\n", "ops.send({ to: \"a@acme.com\", subject: \"s\", text: found })"),
+            ("a message on a queue", "import payouts from \"queue:payouts\"\n", "payouts.send(found)"),
+            ("a row put", "", "c.put(\"k\", found)"),
+            ("a row deleted", "", "c.delete(found)"),
+            ("a file deleted", "import drafts from \"folder:drafts\"\n", "drafts.delete(found)"),
+            ("a database statement", "import bank from \"database:bank\"\n", "bank.exec(\"delete from t where id = $1\", found)"),
+            ("a function of the flow's that writes", "", "keep(found)"),
+        ];
+        let mut wrong = Vec::new();
+        for (what, import, call) in calls {
+            let src = format!(
+                "import {{ action, flow, route }} from \"holon\"\nimport c from \"collection:c\"\n{import}\nflow(\"f\", {{ port: 8080 }})\n\nfunction keep(v) {{\n  c.put(\"kept\", v)\n  return \"kept\"\n}}\n\nexport const ping = action((x) => x.n + 1)\n\nroute.post(\"/a\", async (req) => {{\n  const found = c[req.json.id]\n  if (found !== undefined) {{\n    {call}\n  }}\n  return \"end\"\n}})\n"
+            );
+            let l = match compile(&src) {
+                Ok(l) => l,
+                Err(e) => {
+                    wrong.push(format!("{what}: doesn't compile: {e}"));
+                    continue;
+                }
+            };
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| round_trips("f", &l.doc, &l.names))) {
+                Ok(text) if text.contains("if (found !== undefined)") => {}
+                Ok(text) => wrong.push(format!("{what}: printed without its if:\n{text}")),
+                Err(e) => wrong.push(format!("{what}: {}", e.downcast_ref::<String>().cloned().unwrap_or_default())),
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
     /// **Guards:** every approval's steps print as the language writes them and read back as
     /// themselves: for each steps of the universe (`holon_core::approval::universe`), the printed
     /// text compiles to the same canonical steps, prints back as written, and fmt of it is itself.
@@ -5086,6 +5137,26 @@ export const t = action((input) => {
         let first = compile(src).unwrap();
         let (_, lines) = print_lines(Some("f"), &first.doc, &mut MapResolver::new(), &Names::new(), &first.names).unwrap();
         assert!(first.doc.nodes.iter().all(|n| lines[&n.id] == 5), "{lines:?}");
+    }
+
+    /// **Guards:** every step of every sample is on a line of the printed text.
+    /// **Why:** explain reads what a line did by the steps on it, the roots first (those feeding
+    /// no other step on it), and the editor links text and canvas by them: a record literal
+    /// setting two fields after a spread (`{ ...found, state: "done", via }`) left its first
+    /// field's step off its line, so that field's value (`"done"`) stood as a root and explain
+    /// said the line gave it (found by R99's explain of a resumed run, 2026-11-19).
+    #[test]
+    fn every_samples_steps_each_have_a_line() {
+        let mut wrong = Vec::new();
+        for (name, src) in crate::lang::lower::tests::sample_texts() {
+            let first = compile(src).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let (_, lines) = print_lines(Some(name), &first.doc, &mut MapResolver::new(), &Names::new(), &first.names).unwrap_or_else(|e| panic!("{name}: {e}"));
+            // An answer the text leaves out has no line: a route of calls alone answering 204
+            // (`answer`'s `nothing && calls_alone`, the fan-out sample's).
+            let left_out = |n: &Node| n.data.name == "respond" && n.param("status") == "204" && !first.doc.edges.iter().any(|w| w.target == n.id && w.target_handle.as_deref() == Some("body"));
+            wrong.extend(first.doc.nodes.iter().filter(|n| !lines.contains_key(&n.id) && !left_out(n)).map(|n| format!("{name}: {} ({})", n.id, n.data.name)));
+        }
+        assert!(wrong.is_empty(), "{} steps on no line:\n{}", wrong.len(), wrong.join("\n"));
     }
 
     #[test]
