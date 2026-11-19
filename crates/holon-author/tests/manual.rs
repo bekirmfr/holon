@@ -359,13 +359,33 @@ export const one = action(async (input) => {
 })
 "#;
 
+/// A flow whose action may answer before its wait: where it does, nothing waits; where it doesn't,
+/// it waits, and the send after the wait, using nothing of it, waits for it.
+const A_RETURN_BEFORE_THE_WAIT: &str = r#"import { action, event, flow, route } from "holon"
+import updates from "channel:updates"
+
+flow("early", { port: 8997 })
+
+route.post("/start", (req) => job(req.json).waiting)
+
+route.post("/go/:token", () => "ok", { resumes: "go" })
+
+export const job = action(async (order) => {
+  if (order.skip ?? false) return "skipped"
+  const go = await event("go", { expires: "1d" })
+  updates.send({ sent: order.id })
+  return go.method
+})
+"#;
+
 /// Each text that waits, with the name a failure gives it: the samples that do, the README's
-/// and the manual's flows that do, LANGUAGE.md's that compile, [`EVERY_STEP_AFTER_A_WAIT`] and
-/// [`NOTHING_OF_THE_WAIT_AFTER_IT`].
+/// and the manual's flows that do, LANGUAGE.md's that compile, [`EVERY_STEP_AFTER_A_WAIT`],
+/// [`NOTHING_OF_THE_WAIT_AFTER_IT`] and [`A_RETURN_BEFORE_THE_WAIT`].
 fn waiting_texts() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = samples::samples().iter().filter(|s| waits(s.text)).map(|s| (format!("sample {}", s.name), s.text.to_string())).collect();
     out.push(("every step after a wait".to_string(), EVERY_STEP_AFTER_A_WAIT.to_string()));
     out.push(("nothing of the wait after it".to_string(), NOTHING_OF_THE_WAIT_AFTER_IT.to_string()));
+    out.push(("a return before the wait".to_string(), A_RETURN_BEFORE_THE_WAIT.to_string()));
     let language = std::fs::read_to_string(manual().join("../LANGUAGE.md")).unwrap().replace("\r\n", "\n");
     for (name, text) in docs().into_iter().chain([("docs/LANGUAGE.md".to_string(), language)]) {
         for block in fences(&text) {
@@ -435,7 +455,9 @@ fn held(l: &holon_author::lang::Lowered, id: &str, reach: &BTreeSet<&str>) -> bo
 /// Guards: in an action's body, what is written after `await event(…)` or `await approval(…)` is
 /// asked for once the wait is answered, as in JavaScript, and the text says so with nothing
 /// added. Each text that waits builds as a deploy builds it, and printed from its graph, prints
-/// back as it is; and in that graph
+/// back as it is and builds so too (one that answers before its first wait is left to its text:
+/// the printer can't write that `return` yet, and says so; `a_return_before_the_first_wait_…`
+/// runs it); and in that graph
 /// every write, send, request, call and start a statement after a wait places (up to the next
 /// wait, as two waits in a row still park together), and the action's answer, is reached from
 /// the wait: it takes its trigger from it, or is held behind a guard on it (`held`), so the host
@@ -450,7 +472,7 @@ fn what_an_action_asks_for_after_a_wait_waits_for_it_and_prints_back_as_written(
     let texts = waiting_texts();
     assert!(texts.iter().filter(|(at, _)| at.starts_with("sample ")).count() >= 5 && texts.len() >= 8, "too few texts that wait: {:?}", texts.iter().map(|(at, _)| at).collect::<Vec<_>>());
     let mut wrong = vec![];
-    let mut checked = 0;
+    let (mut checked, mut left) = (0, 0);
     for (at, src) in &texts {
         // Its units hash, as `holon check` and a deploy build them: the holds of two waits read by
         // nothing would be the same steps twice (EncodeError::UnusedTwins).
@@ -458,7 +480,22 @@ fn what_an_action_asks_for_after_a_wait_waits_for_it_and_prints_back_as_written(
             wrong.push(format!("{at}: doesn't build as a deploy would: {e}"));
             continue;
         }
-        let (_, text) = printed_from_graph(src).unwrap_or_else(|e| panic!("{at}: {e}"));
+        let text = match printed_from_graph(src) {
+            Ok((_, text)) => text,
+            // An action that answers before its first wait is left to its text (print.rs
+            // `returns_before_a_wait`), which says it with a `return` the printer can't write.
+            Err(e) if e.contains(" answers before its first wait") => {
+                left += 1;
+                continue;
+            }
+            Err(e) => panic!("{at}: {e}"),
+        };
+        // The printed text builds as a deploy would, as its source does: one that only compiled
+        // and printed back the same could still be refused at the deploy.
+        if let Err(e) = holon_author::agent::plan(&text) {
+            wrong.push(format!("{at}: printed from its graph, it doesn't build as a deploy would: {e}\n{text}"));
+            continue;
+        }
         let (l, again) = printed_from_graph(&text).unwrap_or_else(|e| panic!("{at}: printed, it doesn't compile: {e}\n{text}"));
         if again != text {
             wrong.push(format!("{at}: printed from its graph, it prints back otherwise:\n{text}\n--- then ---\n{again}"));
@@ -476,6 +513,7 @@ fn what_an_action_asks_for_after_a_wait_waits_for_it_and_prints_back_as_written(
         }
     }
     assert!(checked >= 20, "only {checked} steps after a wait checked: is the scan finding them?");
+    assert!(left >= 1, "no text that answers before its wait was left to its text: is {} still among them?", "A_RETURN_BEFORE_THE_WAIT");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
@@ -560,4 +598,56 @@ fn a_run_reaches_every_wait_of_its_action_at_once() {
     }
     assert!(two >= 1, "no text waits twice: the test needs one that does");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Guards: a return before an action's first wait answers without it. Run as a server runs it,
+/// [`A_RETURN_BEFORE_THE_WAIT`] started with the return taken answers at once and asks for no
+/// wait and sends nothing; started with it not taken, it asks for its wait, answers nothing yet,
+/// and sends nothing yet (the send after the wait waits for it).
+/// Why: the answer of an action that waits is held to its last wait (ts.rs `finish`); held whole,
+/// it would hold the early return too, and a run that returned before its wait would never
+/// answer. And the action's hold reads the wait: read directly, it asked for the wait in a run
+/// that had already answered (found by this test, 2026-11-19).
+/// If it fails: the returns before the first wait were folded under the wait's tie (ts.rs
+/// `fold`'s `tie`), or the hold no longer reads the wait under the returns not taken (ts.rs
+/// `waited_on`).
+#[test]
+fn a_return_before_the_first_wait_answers_without_it() {
+    use holon_core::{Answer, Value};
+    struct Asked(Vec<String>);
+    impl holon_core::Observer for Asked {
+        fn answer(&mut self, _path: &[u32], request: &Value) -> Answer {
+            match request {
+                Value::Record(r) => match r.get("await") {
+                    Some(Value::Text(name)) => {
+                        self.0.push(name.clone());
+                        Answer::NotYet
+                    }
+                    _ => Answer::Absent,
+                },
+                _ => Answer::Absent,
+            }
+        }
+    }
+    let lowered = holon_author::lang::compile(A_RETURN_BEFORE_THE_WAIT).unwrap_or_else(|e| panic!("{e}"));
+    let mut store = holon_core::MapResolver::new();
+    holon_author::text::restore(&lowered.doc, &mut store, &BTreeMap::new());
+    let port = lowered.doc.server.as_ref().map(|s| s.port.clone()).unwrap_or_default();
+    let server = holon_author::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.unit_settings());
+    let [action] = server.actions.as_slice() else { panic!("one action: {:?}", server.actions.iter().map(|a| &a.label).collect::<Vec<_>>()) };
+    let unit = holon_core::Resolver::resolve(&store, &holon_core::parse_hash(&action.hash).unwrap()).expect("its unit").clone();
+    let run = |input: &str| {
+        let mut asked = Asked(vec![]);
+        let outputs = holon_core::eval_observed(&unit, &[Some(holon_core::parse_json(input).unwrap())], &store, &mut asked);
+        (asked.0, format!("{outputs:?}"))
+    };
+    let names = unit.outputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>();
+    let (asked, outputs) = run(r#"{"id":"early-7","skip":true}"#);
+    assert_eq!(asked, Vec::<String>::new(), "returned before the wait, it asked for it");
+    assert!(outputs.contains("Text(\"skipped\")"), "returned before the wait, it didn't answer: {names:?} {outputs}");
+    assert!(!outputs.contains("early-7"), "returned before the wait, it sent what follows the wait: {names:?} {outputs}");
+    let (asked, outputs) = run(r#"{"id":"early-7","skip":false}"#);
+    assert_eq!(asked, vec!["go".to_string()], "not returned, it didn't wait");
+    assert!(!outputs.contains("skipped"), "waiting, it answered the early return: {names:?} {outputs}");
+    assert!(!outputs.contains("early-7"), "waiting, it sent what follows the wait: {names:?} {outputs}");
 }

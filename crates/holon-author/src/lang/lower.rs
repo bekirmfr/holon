@@ -60,9 +60,26 @@ pub(crate) fn wait_holds<'d>(doc: &'d FlowDocument, names: &BTreeMap<String, Str
     let leaf = |id: &str, name: &str| doc.nodes.iter().any(|n| n.id == id && n.data.body == PlacedBody::Primitive && n.data.name == name);
     let mut holds = HashSet::new();
     for g in doc.nodes.iter().filter(|n| names.get(&n.id).is_some_and(|b| b.starts_with("waited_")) && leaf(&n.id, "guard")) {
-        let Some(test) = into(&g.id, "cond").filter(|d| leaf(d, "default")) else { continue };
+        // After a return before the first wait, the hold is itself held to the returns not taken:
+        // `when(<the hold>, c)`, with the steps of `c` that feed nothing else.
+        let mut g = g.id.as_str();
+        if let Some(inner) = into(g, "value").filter(|v| leaf(v, "guard") && into(v, "cond").is_some_and(|d| leaf(d, "default")))
+            && into(g, "cond").is_some_and(|d| !leaf(d, "default"))
+        {
+            holds.insert(g);
+            let mut todo: Vec<&str> = into(g, "cond").into_iter().collect();
+            while let Some(id) = todo.pop() {
+                let reads: Vec<&str> = doc.edges.iter().filter(|w| w.source == id).map(|w| w.target.as_str()).collect();
+                if !holds.contains(id) && !reads.is_empty() && reads.iter().all(|r| holds.contains(r)) {
+                    holds.insert(id);
+                    todo.extend(doc.edges.iter().filter(|w| w.target == id).map(|w| w.source.as_str()));
+                }
+            }
+            g = inner;
+        }
+        let Some(test) = into(g, "cond").filter(|d| leaf(d, "default")) else { continue };
         let Some(same) = into(test, "value").filter(|s| leaf(s, "same_value")) else { continue };
-        holds.extend([g.id.as_str(), test, same]);
+        holds.extend([g, test, same]);
         holds.extend(["a", "b"].iter().filter_map(|port| into(same, port).filter(|l| leaf(l, "list"))));
     }
     holds

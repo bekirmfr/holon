@@ -474,8 +474,12 @@ trigger from what the wait gave, `paid`; one hold for the action, read by nothin
 reaches both at once), keeps a step that uses nothing of what was sent in the action. The text
 writes both by order alone, and the canvas prints them back so. A
 wait stands on a line of its own at the top of
-the action's body, `const paid = await event(…)`: one in an `if`, a `try`, after a `return` that
-may answer, or inside another expression is refused, as is an `if (x !== undefined)` after a wait
+the action's body, `const paid = await event(…)`. A `return` before the first wait may answer
+without it (`if (order.skip ?? false) return "skipped"`): where it does, the wait isn't asked for,
+as the hold too reads the wait only where no such return was taken (`when(<the hold>, c)`, `c`
+the returns not taken), and the answer is held to the last wait only past the first. The canvas
+can't write such an action as text yet: change it in its text. A wait in an `if`, a `try`, after
+a `return` between two waits, or inside another expression is refused, as is an `if (x !== undefined)` after a wait
 whose `x` is there before the wait is answered (a read, `now`, `random`, what was sent). Two waits
 in a row still park together: the run waits at both from the start, and what follows the second
 waits for the second, not for the first. A state key written before a wait and after it is written once, after it, with the

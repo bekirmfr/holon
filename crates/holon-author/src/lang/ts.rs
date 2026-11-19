@@ -241,6 +241,11 @@ struct Waited {
     hold: String,
     /// What each wait so far gave, which the hold tests.
     waits: Vec<Expr>,
+    /// The returns written before the first wait, which answer without it, and the conditions
+    /// (each a return not taken) the first wait was read under: a later wait is read under those
+    /// alone, with no return between the waits.
+    exits: usize,
+    guards: usize,
 }
 
 /// What the `++` and `--` written as values in a statement did: the bindings they made (the
@@ -1327,20 +1332,18 @@ impl<'s, 't> Reader<'s, 't> {
     fn finish(&mut self, block: Block, ret: Ret, stmts: &mut Vec<Stmt>, at: Span) -> R<()> {
         let exits = std::mem::take(&mut self.frame.exits);
         let span = exits.last().map_or(at, |e| e.span);
-        match self.fold(exits, matches!(ret, Ret::Always))? {
+        // An action that waits answers once it is done: each return after its first wait is after
+        // its last (`waits_here` refuses a return between two), so what they answer is there once
+        // that wait is answered, and not before; a run parked at it has answered nothing yet. A
+        // return before the first wait answers as it is: where it is taken, the wait isn't asked.
+        // What tests the wait is the answer's, where it is written.
+        let tie = match block {
+            Block::Action => self.frame.waited.as_ref().map(|w| (w.exits, Expr { span, ..w.value.clone() })),
+            _ => None,
+        };
+        match self.fold(exits, matches!(ret, Ret::Always), tie)? {
             Some(Answer::Response(r)) => stmts.push(Stmt { span: r.span, kind: StmtKind::Respond(respond_args(*r)), after: None }),
-            Some(Answer::Value { value, .. }) if matches!(block, Block::Action | Block::Message) => {
-                // An action that waits answers once it is done: every return is after its last
-                // wait (`waits_here` refuses one after a return that may answer), so its answer
-                // is there once that wait is answered, and not before. A run parked at it has
-                // answered nothing yet.
-                // What tests the wait is the answer's, where it is written.
-                let value = match self.waited() {
-                    Some(w) => when(value, has_value(Expr { span, ..w })),
-                    None => value,
-                };
-                stmts.push(Stmt { kind: StmtKind::Respond(vec![Arg { name: None, value }]), span, after: None })
-            }
+            Some(Answer::Value { value, .. }) if matches!(block, Block::Action | Block::Message) => stmts.push(Stmt { kind: StmtKind::Respond(vec![Arg { name: None, value }]), span, after: None }),
             _ => {}
         }
         self.settle(stmts);
@@ -1432,8 +1435,12 @@ impl<'s, 't> Reader<'s, 't> {
     }
 
     /// The name `s` binds when it is a statement an action's body waits in: `const x = await
-    /// event(…)` or `await approval(…)`, at the top of the body, where nothing before it may have
-    /// returned and no `try` holds it. Anywhere else a wait is refused ([`WAIT_ALONE`]).
+    /// event(…)` or `await approval(…)`, at the top of the body, where no `try` holds it and no
+    /// branch is open. A return before the first wait may have answered: the wait is then not
+    /// asked for (all that reads it, the action's hold among them, reads it under the returns not
+    /// taken), and that return answers without it ([`Self::finish`]). A return between two waits is refused: the later
+    /// wait would hold to the earlier, a chain the run can't park at yet. Anywhere else a wait is
+    /// refused ([`WAIT_ALONE`]).
     fn waits_here(&self, s: &js::Statement, block: Block) -> Option<String> {
         let js::Statement::VariableDeclaration(v) = s else { return None };
         let [d] = v.declarations.as_slice() else { return None };
@@ -1441,7 +1448,8 @@ impl<'s, 't> Reader<'s, 't> {
         let js::Expression::AwaitExpression(a) = self.unwrap(d.init.as_ref()?) else { return None };
         let js::Expression::CallExpression(c) = self.unwrap(&a.argument) else { return None };
         let waits = matches!(self.vocab_of(&c.callee), Some(Vocab::Event | Vocab::Approval));
-        let top = matches!(block, Block::Action) && v.kind == js::VariableDeclarationKind::Const && self.frame.depth == 0 && self.frame.trying.is_empty() && self.frame.guards.is_empty();
+        let returns_before = self.frame.guards.iter().all(|g| matches!(g, Guard::Live(_))) && self.frame.waited.as_ref().is_none_or(|w| w.guards == self.frame.guards.len());
+        let top = matches!(block, Block::Action) && v.kind == js::VariableDeclarationKind::Const && self.frame.depth == 0 && self.frame.trying.is_empty() && returns_before;
         (waits && top).then(|| id.name.to_string())
     }
 
@@ -1458,6 +1466,8 @@ impl<'s, 't> Reader<'s, 't> {
     /// first only once the second was answered (a guard reads its value once its test holds). It
     /// is bound at the end of the latest wait's line, so the wait's line keeps the wait's name;
     /// print.rs `without_block_ties` leaves it out of the text, which writes it by order alone.
+    /// After a return before the first wait it is itself held to the returns not taken, so where
+    /// one answered, no wait is asked for.
     ///
     /// The hold stands in until a wait takes a trigger (stage 1 of the wait-and-resume design):
     /// it reads the action's input, which a run parked at a wait would then keep sealed, so stage 1
@@ -1468,12 +1478,12 @@ impl<'s, 't> Reader<'s, 't> {
         let here = stmts.iter().rev().find(|s| matches!(&s.kind, StmtKind::Bind { name: n, .. } if n.text == name)).map_or(at, |s| s.span);
         let value = Expr { kind: ExprKind::Name(name), span: here };
         let received = Expr { kind: ExprKind::Name(self.frame.received.clone()), span: here };
-        let (hold, mut waits) = match self.frame.waited.take() {
+        let (hold, mut waits, exits, guards) = match self.frame.waited.take() {
             Some(w) => {
                 stmts.retain(|s| !matches!(&s.kind, StmtKind::Bind { name, .. } if name.text == w.hold));
-                (w.hold, w.waits)
+                (w.hold, w.waits, w.exits, w.guards)
             }
-            None => (self.hidden_name("waited"), vec![]),
+            None => (self.hidden_name("waited"), vec![], self.frame.exits.len(), self.frame.guards.len()),
         };
         waits.push(value.clone());
         let tested = match waits.as_slice() {
@@ -1481,8 +1491,15 @@ impl<'s, 't> Reader<'s, 't> {
             all => Expr { kind: ExprKind::List(all.to_vec()), span: here },
         };
         let end = Span { start: at.end, end: at.end };
-        stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: hold.clone(), span: end }, value: when(received, has_value(tested)) }, span: end, after: None });
-        self.frame.waited = Some(Waited { value, from: stmts.len(), hold, waits });
+        // Where a return before the first wait may have answered, the hold tests the waits only
+        // where none did: a guard reads its test first, so where one did, no wait is asked for.
+        let held = when(received, has_value(tested));
+        let held = match self.live() {
+            Some(c) => when(held, c),
+            None => held,
+        };
+        stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: hold.clone(), span: end }, value: held }, span: end, after: None });
+        self.frame.waited = Some(Waited { value, from: stmts.len(), hold, waits, exits, guards });
     }
 
     /// What the statement being read waits for, past a wait in its action's body: what the wait
@@ -2986,11 +3003,19 @@ impl<'s, 't> Reader<'s, 't> {
 
     /// The returns, last to first, folded into one answer (`None` where none answers). The last
     /// answers whenever the ones before it didn't, if the body ends with a return on every path
-    /// (`ended`).
-    fn fold(&mut self, exits: Vec<Exit>, ended: bool) -> R<Option<Answer>> {
+    /// (`ended`). With `tie`, an action's that waits (`from`, the returns before its first wait;
+    /// `w`, what its last gave): the returns from `from` on, folded, answer once `w` has a value.
+    fn fold(&mut self, exits: Vec<Exit>, ended: bool, tie: Option<(usize, Expr)>) -> R<Option<Answer>> {
+        let tied = |acc: Option<Answer>| match (acc, &tie) {
+            (Some(Answer::Value { value, .. }), Some((_, w))) => Some(Answer::Value { value: when(value, has_value(w.clone())), name: None, fields: None }),
+            (acc, _) => acc,
+        };
         let mut acc: Option<Answer> = None;
         let n = exits.len();
         for (i, exit) in exits.into_iter().enumerate().rev() {
+            if tie.as_ref().is_some_and(|(from, _)| *from == i + 1) {
+                acc = tied(acc);
+            }
             let here = match exit.kind {
                 ExitKind::One(a) => Some(a),
                 ExitKind::Switch { subject, arms, default } => {
@@ -3006,6 +3031,9 @@ impl<'s, 't> Reader<'s, 't> {
                 Some(c) if !(ended && i + 1 == n) => self.merge(&Choice::If(c), vec![here], acc, exit.span)?,
                 _ => here,
             };
+        }
+        if tie.as_ref().is_some_and(|(from, _)| *from == 0) {
+            acc = tied(acc);
         }
         Ok(acc)
     }
@@ -3387,7 +3415,7 @@ impl<'s, 't> Reader<'s, 't> {
                 }
             };
         }
-        match self.fold(exits, ended)? {
+        match self.fold(exits, ended, None)? {
             Some(Answer::Value { fields: Some(fields), .. }) => Ok(self.output_fields(fields, stmts)),
             Some(Answer::Value { value, .. }) => {
                 self.output("out", value, at, stmts);
@@ -5473,7 +5501,7 @@ const FUNCTION_WAITS: &str = "a function computes and never waits: await event(�
 /// Why a wait is refused where it is written, in an action's body: everything after a wait waits
 /// for it, so a run waits at one point after another, every run at the same ones
 /// (the wait-and-resume design note, §2, stage 1).
-const WAIT_ALONE: &str = "an action waits on a line of its own, at the top of its body: const paid = await event(\"paid\", { expires: \"1d\" }), and what follows waits for it. In an if, a ?:, a try, after a return that may answer, or inside another expression, a wait comes in a later slice: to answer without waiting, test in the route before starting the action, or test after the wait";
+const WAIT_ALONE: &str = "an action waits on a line of its own, at the top of its body: const paid = await event(\"paid\", { expires: \"1d\" }), and what follows waits for it. A return before the first wait may answer without it. In an if, a ?:, a try, after a return between two waits, or inside another expression, a wait comes in a later slice: test before the first wait and return there, or after the last";
 
 /// A method given a function (`map`, `filter`, `sort`, a reviver…) is handed what it returns: an
 /// `async` one would hand it promises, which `Promise.all` gathers, and that comes with the L4's
@@ -7215,7 +7243,8 @@ route.post("/n", (req) => {
         assert!(leaves(&called).contains("Method"), "{called:?}");
     }
 
-    /// Guards: an action waits on a line of its own, at the top of its body, and an
+    /// Guards: an action waits on a line of its own, at the top of its body (a return before the
+    /// first wait may answer, none between two), and an
     /// `if (x !== undefined)` past a wait tests a value made after it; a state key written before
     /// a wait and after it is read, written once, after it.
     /// Why: what is written after a wait is asked for once it is answered (its writes and calls
@@ -7231,7 +7260,8 @@ route.post("/n", (req) => {
         let past = "past a wait, if (x !== undefined) waits for a value made after it";
         let refused = [
             format!("export const pay = action(async (order) => {{\n  if (order.now) {{\n    const paid = {wait}\n    state.m = paid.method\n  }}\n}})\n"),
-            format!("export const pay = action(async (order) => {{\n  if (order.now) return 1\n  const paid = {wait}\n  return paid.method\n}})\n"),
+            // A return between two waits: the second would hold to the first.
+            format!("export const pay = action(async (order) => {{\n  const paid = {wait}\n  if (paid.expired ?? false) return 1\n  const sent = await event(\"sent\", {{ expires: \"1h\" }})\n  return sent.method\n}})\n"),
             format!("export const pay = action(async (order) => {{\n  try {{\n    const paid = {wait}\n    state.m = paid.method\n  }} catch {{\n    state.m = \"failed\"\n  }}\n}})\n"),
             format!("export const pay = action(async (order) => {{\n  let paid = {wait}\n  return paid.method\n}})\n"),
             format!("export const pay = action(async (order) => ({wait}).method)\n"),
@@ -7253,6 +7283,9 @@ route.post("/n", (req) => {
         for body in [
             format!("export const pay = action(async (order) => {{\n  const paid = {wait}\n  if (paid.method !== undefined) {{\n    state.m = paid.method\n  }}\n}})\n"),
             format!("export const pay = action(async (order) => {{\n  state.m = \"asked\"\n  const paid = {wait}\n  state.m = paid.method ?? \"paid\"\n}})\n"),
+            // A return before the first wait answers without it, and both waits after it.
+            format!("export const pay = action(async (order) => {{\n  if (order.now) return 1\n  const paid = {wait}\n  return paid.method\n}})\n"),
+            format!("export const pay = action(async (order) => {{\n  if (order.now) return 1\n  const paid = {wait}\n  const sent = await event(\"sent\", {{ expires: \"1h\" }})\n  return [paid.method, sent.method]\n}})\n"),
         ] {
             parse(&format!("{head}{body}")).unwrap_or_else(|e| panic!("{body}\n  => {e}"));
         }

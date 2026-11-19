@@ -1063,8 +1063,10 @@ misled, the compiler refuses instead.
   last wait. For now, a wait that runs out gives `{ expired: true }`, so such a step is made then too:
   return on `paid.expired ?? false` before a step only an answer should make. What it reads there is the state as the run found it when it began, until each part
   of a run is saved as it parks. A wait stands on a line of its own at the top of the action's
-  body, `const paid = await event(…)`; in an `if`, a `try`, after a `return` that may answer or
-  inside another expression it is refused. Two waits in a row still park together: the run waits
+  body, `const paid = await event(…)`. A `return` before the first wait may answer without it
+  (`if (order.skip ?? false) return "skipped"`), and then nothing waits; the canvas can't write
+  such an action as text yet, so change it in its text. In an `if`, a `try`, after a `return`
+  between two waits or inside another expression a wait is refused. Two waits in a row still park together: the run waits
   at both from the start, and what follows the second waits for the second, not for the first.
 - **People decide an approval.** `await approval(name, { people: 2 })` parks the run as an event
   does, but nothing the flow hands out resumes it: it has no token, and a route `{ resumes: name }`

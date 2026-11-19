@@ -505,6 +505,27 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, 
     (nodes.into_iter().filter(|n| !gone.contains(&n.id)).collect(), kept, tied)
 }
 
+/// Whether an action's body answers before its first wait: its hold (ts.rs `waited_on`) is held to
+/// the returns not taken, a guard read by nothing whose test isn't the hold's and whose value is
+/// the hold, `when(<input>, has_value(w))`. The text says that with a `return` above the wait, which
+/// the printer can't write: it would write the answer as one `return` after the wait, which reads
+/// back as an answer that waits too, and the hold as a step of its own.
+fn returns_before_a_wait(nodes: &[&Node], wires: &[BlockWire]) -> bool {
+    let leaf = |id: &str, name: &str| nodes.iter().any(|n| n.id == id && n.data.body == PlacedBody::Primitive && n.data.name == name);
+    let into = |to: &str, input: &str| {
+        wires.iter().rev().find(|(_, t, i)| t == to && i == input).and_then(|(s, _, _)| match s {
+            Src::Node { id, .. } => Some(id.as_str()),
+            Src::In(_) => None,
+        })
+    };
+    let read = |id: &str| wires.iter().any(|(s, _, _)| matches!(s, Src::Node { id: from, .. } if from == id));
+    let hold = |h: &str| {
+        leaf(h, "guard")
+            && into(h, "cond").is_some_and(|d| leaf(d, "default") && into(d, "value").is_some_and(|s| leaf(s, "same_value") && into(s, "a").is_some_and(|a| leaf(a, "await") || leaf(a, "approval") || leaf(a, "list"))))
+    };
+    nodes.iter().any(|g| leaf(&g.id, "guard") && !read(&g.id) && into(&g.id, "cond").is_some_and(|c| !leaf(c, "default")) && into(&g.id, "value").is_some_and(hold))
+}
+
 /// The first input TypeScript can't write as wired: one a node needs and nothing feeds (the
 /// lowering refuses one left out), or a request node that isn't the handler's own.
 fn unwritable(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, request: Option<&str>) -> Option<String> {
@@ -1395,7 +1416,10 @@ impl<'s> Printer<'s> {
     fn handler_function(&mut self, doc: &FlowDocument, node_ids: &[String], trigger: &Node, kind: Kind, fallback: &str, label: &str) -> Result<(String, Vec<Stmt>), String> {
         let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         let nodes: Vec<&Node> = node_ids.iter().map(|id| by_id[id.as_str()]).collect();
-        let ws = doc.edges.iter().map(|w| (Src::Node { id: w.source.clone(), output: w.output().to_string() }, w.target.clone(), w.input().to_string())).collect();
+        let ws: Vec<BlockWire> = doc.edges.iter().map(|w| (Src::Node { id: w.source.clone(), output: w.output().to_string() }, w.target.clone(), w.input().to_string())).collect();
+        if kind == Kind::Action && returns_before_a_wait(&nodes, &ws) {
+            return Err(format!("{label} answers before its first wait (a return above the wait), which only the text it was written in says: change it there, not on the canvas"));
+        }
         let group = Group::new(nodes, ws, vec![]);
         if let Some(why) = unwritable(&group.nodes, &group.incoming, Some(&trigger.id)) {
             return Err(format!("{label}: {why}"));
@@ -5242,6 +5266,28 @@ export const t = action((input) => {
             wrong.extend(holds.iter().filter(|id| lines.contains_key(**id)).map(|id| format!("{name}: {id}, of a wait's hold, is on line {}", lines[*id])));
         }
         assert!(wrong.is_empty(), "{} steps on no line:\n{}", wrong.len(), wrong.join("\n"));
+    }
+
+    /// **Guards:** an action that answers before its first wait isn't printed from its graph: the
+    /// printer says so, naming the action, and the same action with its test after the wait
+    /// prints.
+    /// **Why:** the printer has no `return` above a wait. It wrote the answer as one `return`
+    /// after the wait, which reads back as an answer that waits too, and the action's hold as a
+    /// step of its own, which a deploy refuses ("the same value is computed twice"); the canvas
+    /// showed a text that wasn't its flow (R7, 2026-11-19).
+    /// **If it fails:** the hold's shape after an early return changed (ts.rs `waited_on`), so
+    /// `returns_before_a_wait` no longer sees it; or the printer learned to write the return, and
+    /// this row becomes one that prints it as written.
+    #[test]
+    fn an_action_answering_before_its_wait_is_left_to_its_text() {
+        let text = |body: &str| format!("import {{ action, event, flow, route }} from \"holon\"\n\nflow(\"f\", {{ port: 8200 }})\n\nroute.post(\"/start\", (req) => job(req.json).waiting)\n\nroute.post(\"/go/:token\", () => \"ok\", {{ resumes: \"go\" }})\n\nexport const job = action(async (order) => {{\n{body}}})\n");
+        let early = text("  if (order.skip ?? false) return \"skipped\"\n  const go = await event(\"go\", { expires: \"1d\" })\n  return go.method\n");
+        let first = compile(&early).unwrap_or_else(|e| panic!("{e}"));
+        let why = print(Some("f"), &first.doc, &mut MapResolver::new(), &Names::new(), &first.names).expect_err("printed an action answering before its wait");
+        assert!(why.starts_with("action job answers before its first wait"), "{why}");
+        let late = text("  const go = await event(\"go\", { expires: \"1d\" })\n  return (order.skip ?? false) ? \"skipped\" : go.method\n");
+        let first = compile(&late).unwrap_or_else(|e| panic!("{e}"));
+        print(Some("f"), &first.doc, &mut MapResolver::new(), &Names::new(), &first.names).unwrap_or_else(|e| panic!("the test after the wait: {e}"));
     }
 
     #[test]
