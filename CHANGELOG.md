@@ -19,6 +19,18 @@
   body's error at the body's line as explain says it. The sample `loyalty` shows it, and the
   manual's [Checking runs](docs/manual/guides/checking-runs.md#what-a-run-didnt-make) says what
   each note means and which refusals `holon verify` can't work out again (those of a grant).
+- **explain no longer refuses a flow that starts an action, or calls one of its own functions,
+  inside `if (x !== undefined)`.** Such a flow compiled and deployed, but printing it back refused
+  that statement, so `holon explain`, `holon runs <slug> --run N` and the MCP explain tool refused
+  every run of it. It now prints inside its `if` and reads back as the same flow.
+- **explain no longer shows a field's value as what a line gave.** In a record written after a
+  spread (`{ ...found, state: "done", via }`), the first field after the spread was on no line of
+  the printed text, so explain took its value for the line's result (`⇒ "done"` under a write
+  that made nothing), and the editor, which links text and canvas by the same lines, had no line
+  for it. Every field is now on its line; 132 steps across the samples were on none.
+- **A run that answers nothing is headed "answered" in the editor**, not "answered null": an
+  action's run, a clock's, or a part that went on from its wait, in View runs' inspector, its
+  compare rows and the run's page, as `holon runs` prints no status for it.
 - **Changing a secret while a run waits no longer sends its earlier requests again** where the
   request holds the secret as it is: in a header, a URL or a JSON body. When the run goes on, such
   a request is recognised as sent and answered from its record; the same holds for a run tried
