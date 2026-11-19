@@ -1781,7 +1781,7 @@ fn rerun(
     let given_one = entry.secrets.keys().any(|name| caps.iter().any(|c| matches!(c, Capability::SecretRead(s) if s == *name)));
     let fed = if given_one { taint::SecretFed::of(root, resolver) } else { taint::SecretFed::default() };
     let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped, fed.clone());
-    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &network, &limits, &mut observer, &mut waits, &prior);
+    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &network, &limits, &mut observer, &mut waits, &prior, marks);
     // A node computed on its placeholders gives what the run gave, written with them; the log
     // recording other for it is a record that isn't the run's.
     if observer.belied {
@@ -2463,6 +2463,8 @@ fn round_of(round: &recorder::LoggedRound, marks: &Marks, escaped: bool) -> Roun
                 response: marks.read(&x.response, escaped),
                 start_us: x.start_us,
                 end_us: x.end_us,
+                // Keyed as the check asks it (`Marks` as `Keys`).
+                key: None,
             })
             .collect(),
     }
@@ -2824,6 +2826,16 @@ struct Marks {
     start: String,
 }
 
+/// A request as the server keyed it when it sent it (`holon_host::Keys`, `secrets::Named`): each
+/// secret by its name, whatever value it had. A later part asked again with another value of a
+/// secret than an earlier part sent (set while the run waited) is the request that part sent, as
+/// the server answered it from its record (R113).
+impl holon_host::Keys for Marks {
+    fn key(&self, request: &Value) -> holon_core::Hash {
+        holon_host::Whole.key(&secrets::texts_mapped(request, &|s| self.by_name(s)))
+    }
+}
+
 impl Marks {
     /// What follows a placeholder's start for a value a run computed from a secret, up to its
     /// print (`secrets::DERIVED_MARK`, less the `‹`).
@@ -2848,6 +2860,28 @@ impl Marks {
     /// The placeholder of a secret's (`kind` "secret") or a token's value.
     fn of(&self, kind: &str, name: &str) -> String {
         format!("{}{kind}:{name}›", self.start)
+    }
+
+    /// `s` with each secret's placeholder written by its name alone (`‹<tag>|secret:k›`, its
+    /// version and print left out), if it holds one: a request as the server told it apart when
+    /// it sent it (`secrets::Named`), where a secret stands as its name whatever its value.
+    fn by_name(&self, s: &str) -> Option<String> {
+        let start = format!("{}secret:", self.start);
+        if !s.contains(start.as_str()) {
+            return None;
+        }
+        let (mut out, mut rest) = (String::with_capacity(s.len()), s);
+        while let Some(i) = rest.find(start.as_str()) {
+            let after = &rest[i + start.len()..];
+            let name_ends = after.find([' ', '›']).unwrap_or(after.len());
+            let mark_ends = after.find('›').map_or(after.len(), |e| e + '›'.len_utf8());
+            out.push_str(&rest[..i + start.len()]);
+            out.push_str(&after[..name_ends]);
+            out.push('›');
+            rest = &after[mark_ends..];
+        }
+        out.push_str(rest);
+        Some(out)
     }
 
     /// The secrets whose placeholder is in `v` (as [`Marks::read`] gives it), by name.

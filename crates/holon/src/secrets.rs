@@ -1171,6 +1171,83 @@ pub(crate) fn spelled_any(s: &str, found: &dyn Fn(&str) -> bool) -> bool {
     }
 }
 
+/// What tells a run's requests apart ([`holon_host::Keys`]): the request with each value of the
+/// secrets the try was given written as its name, so one asked again with another value of the
+/// same secret (set since, a reference read again, a version let go of) is the request it sent,
+/// answered from its record and not sent twice (R113). A value is found where the record marks it
+/// as the secret ([`Redactor`]), in each of its spellings ([`spellings`]), and nowhere else, so
+/// `holon verify` reads the record's requests to the same keys (`Marks` as `Keys`). A value
+/// computed from one (a signature, a Basic credential, another encoding) isn't found: the record
+/// marks it by a print of its own value, which a check can't put a name to, and such a request is
+/// another. Two requests that differ only in a secret's value have one key, and the key holds
+/// nothing more of it (not even its length: each spelling is put in place as one name, as deep as
+/// it stands).
+pub(crate) struct Named {
+    /// Each spelling of each value and what it is written as, the longest first: one that holds
+    /// another is written whole.
+    spelled: Vec<(Zeroizing<String>, String)>,
+}
+
+impl Named {
+    pub(crate) fn new(given: impl IntoIterator<Item = (String, Zeroizing<String>)>) -> Named {
+        let mut spelled: Vec<(Zeroizing<String>, String)> = given
+            .into_iter()
+            .filter(|(_, v)| !v.is_empty())
+            .flat_map(|(name, value)| spellings(&value).into_iter().map(move |s| (Zeroizing::new(s), format!("\u{e000}secret:{name}\u{e001}"))))
+            .collect();
+        spelled.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.1.cmp(&b.1)));
+        Named { spelled }
+    }
+
+    /// `s` with each value written as its name, if it holds one in a spelling this knows.
+    fn named(&self, s: &str) -> Option<String> {
+        // One pass, the longest spelling first where several begin: what is put in isn't looked
+        // through again.
+        if !self.spelled.iter().any(|(value, _)| s.contains(value.as_str())) {
+            return None;
+        }
+        let (mut out, mut rest) = (String::with_capacity(s.len()), s);
+        while let Some(c) = rest.chars().next() {
+            match self.spelled.iter().find(|(value, _)| rest.starts_with(value.as_str())) {
+                Some((value, name)) => {
+                    out.push_str(name);
+                    rest = &rest[value.len()..];
+                }
+                None => {
+                    out.push(c);
+                    rest = &rest[c.len_utf8()..];
+                }
+            }
+        }
+        Some(out)
+    }
+}
+
+impl holon_host::Keys for Named {
+    fn key(&self, request: &holon_core::Value) -> holon_core::Hash {
+        if self.spelled.is_empty() {
+            return holon_host::Whole.key(request);
+        }
+        holon_host::Whole.key(&texts_mapped(request, &|s| self.named(s)))
+    }
+}
+
+/// `v` with each of its texts that `f` rewrites rewritten, however deep (a record's field names,
+/// and a body sent as bytes when it is text, included): what a request is keyed by, as the server
+/// sends it ([`Named`]) and as `holon verify` reads it back from the record.
+pub(crate) fn texts_mapped(v: &holon_core::Value, f: &dyn Fn(&str) -> Option<String>) -> holon_core::Value {
+    use holon_core::Value;
+    match v {
+        Value::Text(t) => Value::Text(f(t).unwrap_or_else(|| t.clone())),
+        Value::List(items) => Value::List(items.iter().map(|v| texts_mapped(v, f)).collect()),
+        Value::Record(fields) => Value::Record(fields.iter().map(|(k, v)| (f(k).unwrap_or_else(|| k.clone()), texts_mapped(v, f))).collect()),
+        Value::Sum { arm, payload } => Value::Sum { arm: *arm, payload: Box::new(texts_mapped(payload, f)) },
+        Value::Effect { sink, payload } => Value::Effect { sink: sink.clone(), payload: Box::new(texts_mapped(payload, f)) },
+        Value::Bytes(b) => Value::Bytes(std::str::from_utf8(b).ok().and_then(f).map_or_else(|| b.clone(), String::into_bytes)),
+        other => other.clone(),
+    }
+}
+
 /// Whether `s` holds `value` in any spelling JSON gives it, however deep ([`spelled_any`]): what
 /// a guard asks before a value is written or sent, where a secret must not go in any spelling.
 pub(crate) fn holds_spelled(s: &str, value: &str) -> bool {
@@ -2916,5 +2993,50 @@ mod tests {
         .map(String::from)
         .collect();
         assert_eq!(found, named, "left in the line: {line}");
+    }
+
+    /// What tells a run's requests apart ([`Named`]) holds nothing of a secret's value: the same
+    /// request with two values of one secret, of other lengths and one with characters JSON
+    /// escapes, has one key, where the value stands as it is, as a Bearer token, and inside a JSON
+    /// body written out once or twice. Another request has another key, and so does one that holds
+    /// a value computed from the secret some other way (a Basic credential, hex), which is the
+    /// limit [`Named`] states: the record marks such a value by a print of its own, so `holon
+    /// verify` couldn't key it by the secret's name either.
+    /// If it fails: `Named` writes a value only in some of its spellings, or one value inside
+    /// another's name (it isn't one pass), or the key depends on the value's length.
+    #[test]
+    fn a_request_is_keyed_the_same_whatever_its_secrets_value() {
+        use holon_core::Value;
+        use holon_host::Keys;
+        let txt = |s: &str| Value::Text(s.to_string());
+        let request = |path: &str, value: &str, computed: Option<&str>| {
+            let body = serde_json::json!({ "key": value, "note": "k" }).to_string();
+            let mut headers = BTreeMap::from([("authorization".to_string(), txt(&format!("Bearer {value}")))]);
+            match computed {
+                Some("basic") => headers.insert("x-basic".to_string(), txt(&format!("Basic {}", crate::smtp::base64(format!("{value}:").as_bytes())))),
+                Some(_) => headers.insert("x-hex".to_string(), txt(&holon_core::hex(value.as_bytes()))),
+                None => None,
+            };
+            Value::Record(BTreeMap::from([
+                ("url".to_string(), txt(&format!("https://api.example.com{path}"))),
+                ("headers".to_string(), Value::Record(headers)),
+                ("body".to_string(), txt(&serde_json::json!({ "inner": body }).to_string())),
+            ]))
+        };
+        let keyed = |value: &str| Named::new([("k".to_string(), Zeroizing::new(value.to_string())), ("other".to_string(), Zeroizing::new("pw_test_other".to_string()))]);
+        let values = ["sk_test_first_value_123", "sk_test_a_much_longer_second_value_4567890", "sk\"test\\quoted\nvalue"];
+        let first = keyed(values[0]).key(&request("/pay", values[0], None));
+        for value in &values[1..] {
+            assert_eq!(keyed(value).key(&request("/pay", value, None)), first, "another value, one key");
+        }
+        assert_ne!(keyed(values[0]).key(&request("/refund", values[0], None)), first, "another request");
+        // A value computed some other way isn't found: such a request is another.
+        for computed in ["basic", "hex"] {
+            assert_ne!(keyed(values[0]).key(&request("/pay", values[0], Some(computed))), keyed(values[1]).key(&request("/pay", values[1], Some(computed))), "{computed}");
+        }
+        // A value isn't looked for inside a name already put in: "api" is one, and `api_key`'s
+        // name holds it.
+        let short = Named::new([("api_key".to_string(), Zeroizing::new("sk_test_whole".to_string())), ("b".to_string(), Zeroizing::new("api".to_string()))]);
+        assert_eq!(short.named("Bearer sk_test_whole").as_deref(), Some("Bearer \u{e000}secret:api_key\u{e001}"));
     }
 }

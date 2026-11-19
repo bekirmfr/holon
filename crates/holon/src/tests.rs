@@ -35,6 +35,8 @@ mod semantics;
 mod writers;
 /// What is there and can't be read is an error at every reader of a deployment's runs (R92).
 mod unread_readers;
+/// A request asked again with another value of its secret isn't sent again (R113).
+mod secret_rounds;
 /// Which lines of a source file are a test module's, for the sweeps of the source (R78).
 mod source;
 use source::{in_test_modules, inert, test_files, test_modules};
