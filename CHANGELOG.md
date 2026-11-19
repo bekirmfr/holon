@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Changing a secret while a run waits no longer sends its earlier requests again** where the
+  request holds the secret as it is: in a header, a URL or a JSON body. When the run goes on, such
+  a request is recognised as sent and answered from its record; the same holds for a run tried
+  again after a secret changed between its tries. Still sent again, with the new value: a request
+  holding a value computed from the secret in the flow (a signature, a Basic credential, another
+  encoding); change such a secret when `holon runs <slug> --waiting` lists none. `holon verify`
+  and replays read the record the same way.
+
 ## 0.1.0-rc.36
 
 - **Known limits of this release.** The first three are the first work after it.

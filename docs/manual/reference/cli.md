@@ -629,9 +629,10 @@ never an argument, which the shell's history would keep), or read by the server 
 environment or a vault. `rollback` makes a kept version current again, as a new one; `--dry-run`
 names the two values by their fingerprints. `remove` forgets every version. `env`: the
 `HOLON_SECRET_*` names the server can read. Admins set, roll back and remove. A run waiting as a
-secret is `set` sends again, with the new value, the requests that carried it before its wait,
-when it goes on: set one when `holon runs <slug> --waiting` lists none (see
-[Deploying](../guides/deploying.md#secrets)).
+secret is `set` sends again, with the new value, the requests before its wait that held a value
+computed from the secret (a signature, a Basic credential), when it goes on; those that held it as
+it is are answered from its record. For such a flow, set one when `holon runs <slug> --waiting`
+lists none (see [Deploying](../guides/deploying.md#secrets)).
 
 `bind` sets the server's own secret, read by every deployment that reads a secret of that name
 and has none of its own (one set for a deployment overrides it), its value piped in or `--from`,
