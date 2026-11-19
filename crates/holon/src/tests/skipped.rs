@@ -146,12 +146,28 @@ const SECRET_PLACES: &[(&str, &str)] = &[
     ("a row", "if ({T}) {\nnotes[\"k\"] = req.json.v\n}"),
 ];
 
+/// Where two runs that did the same may still read apart, older than `skipped` and allowed: each
+/// named with the decision that allows it, still compared. A difference that is one of these is
+/// said, not failed; the test fails on any other, and on one of these that no pair shows any more
+/// (the record changed: take it out, so the list can't outlive what it allows).
+const ALLOWED: &[(&str, &str)] = &[(
+    "a refused effect's output",
+    "the route's effect output is the refused write's (withheld) in one run and null where the write wasn't reached: allowed by the owner's decision of 2026-11-15 (a run's steps show which way a choice went, a secret's included; a grant on who reads them, not scrubbing), R125 closed on SV's reading: the refused write's step is entered and timed and the unreached one is not in the timeline, so the steps already tell the two apart to the same readers, and only holders of the grant on a run's steps (run.steps) read its outputs",
+)];
+
+/// Which of [`ALLOWED`] the difference `d` (as `differs` words it) is: a run's output, withheld in
+/// one run and absent in the other.
+fn allowed(d: &str) -> Option<usize> {
+    let withheld_or_none = d.starts_with(".outputs[") && d.contains("‹withheld: computed from a secret›") && (d.ends_with("| null") || d.contains(": null |"));
+    withheld_or_none.then_some(0)
+}
+
 /// **Guards:** two runs that differ only in something computed from a secret (which way a test
 /// on it went, whether a value computed from it arrived), with everything clean the same, leave
-/// records that read the same but for their steps and outputs (which show which way a choice went,
-/// as the owner decided): their `skipped` field for field, in the same order. Each place the walk
-/// can meet such a step (`SECRET_PLACES`), with each request, run with one secret and then
-/// another.
+/// records that read the same but for their steps (which show which way a choice went, as the
+/// owner decided) and the differences `ALLOWED` names: their `skipped` field for field, in
+/// the same order. Each place the walk can meet such a step (`SECRET_PLACES`), with each request,
+/// run with one secret and then another.
 /// **Why:** otherwise a run's record answers yes or no about the secret, one guess a run: the
 /// walk read whether a step computed from a secret gave anything before it asked whether it may,
 /// and a write a secret decided read "refused" where it was made and the host refused it, and
@@ -194,20 +210,34 @@ fn a_runs_skipped_effects_read_the_same_whatever_its_secret() {
         records.push(these);
     }
     let (mut wrong, mut table) = (Vec::new(), Vec::new());
+    let mut shown = vec![0; ALLOWED.len()];
     for (n, (one, other)) in records[0].iter().zip(&records[1]).enumerate() {
         let (place, body) = (SECRET_PLACES[n / bodies.len()].0, bodies[n % bodies.len()]);
         let words = |e: &serde_json::Value| e["skipped"].as_array().map_or("-".to_string(), |s| s.iter().map(|n| format!("{} {}", n["effect"].as_str().unwrap_or(""), n["level"].as_str().unwrap_or(""))).collect::<Vec<_>>().join(", "));
         table.push(format!("{place:42} | {body:20} | {} | {}", words(one), words(other)));
         let mut at = Vec::new();
         differs(&but_marks(one), &but_marks(other), String::new(), &mut at);
-        // The steps and the run's outputs show which way a choice went (an effect's output is there
-        // where it was made), as the owner decided; both were so before `skipped`.
-        at.retain(|d| !d.starts_with(".timeline") && !d.starts_with(".outputs"));
+        // The steps show which way a choice went, as the owner decided.
+        at.retain(|d| !d.starts_with(".timeline"));
+        // A difference `ALLOWED` names is said with the decision that allows it, not failed.
+        at.retain(|d| match allowed(d) {
+            Some(k) => {
+                shown[k] += 1;
+                false
+            }
+            None => true,
+        });
         if !at.is_empty() {
             wrong.push(format!("{place} | {body}:\n  {}", at.join("\n  ")));
         }
     }
     println!("{}", table.join("\n"));
+    for (k, (what, why)) in ALLOWED.iter().enumerate() {
+        println!("allowed, {what}, in {} pairs: {why}", shown[k]);
+        if shown[k] == 0 {
+            wrong.push(format!("{what}: no pair reads apart there any more; take it out of ALLOWED"));
+        }
+    }
     assert!(wrong.is_empty(), "{} of {} pairs of runs read differently:\n{}", wrong.len(), table.len(), wrong.join("\n"));
 }
 
