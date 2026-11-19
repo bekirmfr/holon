@@ -35,7 +35,7 @@ pub mod collection;
 pub mod packs;
 mod rounds;
 mod state;
-pub use rounds::{run_rounds, Claim, Exchange, Keys, Limits, NoWaits, Performer, Recorded, Round, RunError, RunOutcome, Waiting, Waits, Whole, STEP_BUDGET};
+pub use rounds::{run_rounds, Claim, Exchange, Keys, Limits, NoWaits, Performer, Recorded, Round, RunError, RunOutcome, Waiting, Waits, Whole, HELD_BACK, STEP_BUDGET};
 pub use state::{InsertError, LoadError, State};
 
 use holon_core::{

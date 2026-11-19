@@ -271,8 +271,8 @@ fn fire_run(
     if let Some(slug) = &waits.slug {
         crate::listeners::panic_for_tests::check(&format!("a run of {slug}"));
     }
-    let attempt = |start: Option<State>, nonce: &[u8; 16], prior: Vec<Round>, waits: &mut RunWaits, claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>, bool)>| {
-        run_attempt(root_unit, inputs, resolver, store, start, extra_sourced, permit, clock, secrets, waits, nonce, prior, claim)
+    let attempt = |start: Option<State>, nonce: &[u8; 16], prior: Vec<Round>, tried: &[Round], waits: &mut RunWaits, claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>, bool)>| {
+        run_attempt(root_unit, inputs, resolver, store, start, extra_sourced, permit, clock, secrets, waits, nonce, prior, tried, claim)
     };
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
     // The resources an admin set to `run` it holds from before it starts until it returns (it
@@ -291,7 +291,7 @@ fn fire_run(
         None => (None, Vec::new()),
     };
     let Some(cell) = state else {
-        return attempt(None, &nonce, base, waits, None).run;
+        return attempt(None, &nonce, base, &[], waits, None).run;
     };
     // Optimistic: run on a copy, no lock held, so runs of one deployment proceed side by side;
     // then commit only if everything it could have read is still as it found it. Otherwise run
@@ -299,7 +299,9 @@ fn fire_run(
     // reads): the requests it already made are answered from its own record (`sent`), not sent
     // again, and nothing it did is kept but its answer. A run about to call out first claims the
     // keys it read and may write (claims.rs): one that finds them changed as it claims them runs
-    // again having sent nothing, and its commit never lands under another run's claim.
+    // again having sent nothing, and its commit never lands under another run's claim. A call its
+    // record doesn't answer, from a node an earlier try called out from (`sent`), isn't sent a
+    // second time with other contents: the run fails, keeping nothing (R115, `run_rounds`).
     let mut sent: Vec<Round> = Vec::new();
     let mut records = Vec::new();
     let prior = |sent: &[Round]| base.iter().chain(sent).cloned().collect::<Vec<Round>>();
@@ -318,7 +320,7 @@ fn fire_run(
                 (live.clone(), Some(cell.commits()))
             }
         };
-        let mut a = attempt(Some(start), &nonce, prior(&sent), waits, Some((cell, records, pinned.is_none())));
+        let mut a = attempt(Some(start), &nonce, prior(&sent), &sent, waits, Some((cell, records, pinned.is_none())));
         a.run.commit = Some(recorder::Commit { cell: cell.id.clone(), after, n: None });
         sent.append(&mut a.run.rounds);
         a.run.rounds = sent.clone();
@@ -422,7 +424,7 @@ fn fire_run(
     let is_pinned = pinned.is_some();
     let after = (!is_pinned).then(|| cell.commits());
     let start = pinned.unwrap_or_else(|| live.clone());
-    let mut a = attempt(Some(start), &nonce, prior(&sent), waits, None);
+    let mut a = attempt(Some(start), &nonce, prior(&sent), &sent, waits, None);
     a.run.commit = Some(recorder::Commit { cell: cell.id.clone(), after, n: None });
     sent.append(&mut a.run.rounds);
     a.run.rounds = sent;
@@ -727,6 +729,7 @@ fn run_attempt(
     waits: &mut RunWaits,
     nonce: &[u8; 16],
     prior: Vec<Round>,
+    tried: &[Round],
     claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>, bool)>,
 ) -> Attempt {
     // What its record is known to mark before it takes a step: what its id hashes each started
@@ -859,7 +862,7 @@ fn run_attempt(
         calls: Some(&caller),
         secret_sends,
     };
-    let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &sender, limits, &mut timer, waits, &prior, &keys);
+    let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &sender, limits, &mut timer, waits, &prior, tried, &keys);
     let overtaken = outcome.error == Some(holon_host::RunError::Overtaken);
     // A read that failed (a file too big, or not text; a folder not bound) fails the run: it
     // performs nothing. Why names what it asked for (a file's name, a key, a parameter): where a
