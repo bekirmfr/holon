@@ -109,7 +109,8 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   none of it (`may_own`).
 - **Roles** (can.rs): the catalogue of actions (`Action`, the access design's §4) and the
   built-in roles made from it (`BUILTIN`, §5.1): `viewer` reads flows, runs, state, a secret's
-  names and the policy, and exports runs; `editor` also saves, deploys and approves, restores,
+  names and the policy (its file's text and where it backs up runs only with `host.view`:
+  `deploy::permissions_view`, R74), and exports runs; `editor` also saves, deploys and approves, restores,
   runs, pauses, stops, deletes, calls, decides approvals, writes state, reloads the policy and
   checks the logs again; `admin` everything, a flow's secrets and every `/admin/` and `/people`
   path included; `agent` reads and proposes: storing units, previewing and deploying, saving its
