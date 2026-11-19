@@ -2830,6 +2830,42 @@ fn function<'r>(params: &[Param], resolver: &'r impl Resolver) -> Option<&'r Uni
     resolver.resolve(&parse_hash(fn_hex)?)
 }
 
+/// The node a step's `path` under `root` is at, its item numbers taken out. A leaf that applies a
+/// function (its `fn` param names one: `map`, `fold`, `filter`, a JSON reviver, [`function`]) runs
+/// it for item `k` at the leaf's path then `k` ([`at_item`]), and the function's own nodes go on
+/// from there; this drops each `k`, so a node inside the function is the same node whichever item
+/// it ran for, and however long the list was. No two nodes share one: the leaf has no children
+/// of its own. The root may be such a leaf, and a function another. A path that stops walking the
+/// units (a node it can't resolve) keeps the rest as it is.
+pub fn node_path(root: &Unit, resolver: &impl Resolver, path: &[u32]) -> Vec<u32> {
+    let mut node = Vec::with_capacity(path.len());
+    let mut unit = root;
+    let mut rest = path.iter().copied();
+    loop {
+        if let (UnitBody::Primitive { .. }, Some(applied)) = (&unit.body, function(&unit.params, resolver)) {
+            // The item it ran its function for.
+            if rest.next().is_none() {
+                return node;
+            }
+            unit = applied;
+            continue;
+        }
+        let Some(ci) = rest.next() else { return node };
+        node.push(ci);
+        let child = match &unit.body {
+            UnitBody::Composite { children, .. } => children.get(ci as usize).and_then(|h| resolver.resolve(h)),
+            _ => None,
+        };
+        match child {
+            Some(child) => unit = child,
+            None => {
+                node.extend(rest);
+                return node;
+            }
+        }
+    }
+}
+
 /// Whether `unit`, applied by a `map` or `fold`, runs down a plan worked out ahead (step 5, level 2)
 /// rather than walked: a composite whose only choices are pass-throughs. For a test that a flow's
 /// functions keep their plans when the language changes (docs/L4s/resilience-audit-L4.md, D5).
@@ -4667,6 +4703,68 @@ mod tests {
         let mut seen = Prices::default();
         assert_eq!(eval_observed(&fold_unit(&hstep), &[Some(num(0.0)), Some(keys)], &r, &mut seen).into_vec(), vec![Some(num(7.0))]);
         assert_eq!(seen.asked.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(), vec![vec![0, 0], vec![1, 0]], "item k, the read at child 0");
+    }
+
+    /// Guards: [`node_path`] gives each node one path whatever item it ran for: the paths the
+    /// evaluator asks a read at (map at [0] of a function that maps again, a map at [1], a read at
+    /// [2] outside any; a fold as the root), their item numbers taken out.
+    /// Why: a run tried again holds back a call from a node an earlier try called out from (R115);
+    /// a list that grew between the tries asks from the same node at other items.
+    /// If it fails: the row names the path asked and the node it should be.
+    #[test]
+    fn a_nodes_path_is_the_same_whatever_item_it_ran_for() {
+        #[derive(Default)]
+        struct Asked(Vec<Vec<u32>>);
+        impl Observer for Asked {
+            fn answer(&mut self, path: &[u32], _: &Value) -> Answer {
+                self.0.push(path.to_vec());
+                Answer::Value(num(1.0))
+            }
+        }
+        let mut r = MapResolver::new();
+        let get = Unit { params: vec![Param::frozen("collection", "prices")], ..prim("collection_get", 1, Type::Any) };
+        let hget = r.insert(get).unwrap();
+        let price = composite(vec![Port { name: "key".into(), ty: Type::Text }], Type::Any, vec![hget], vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, BOUNDARY, 0)]);
+        let hprice = r.insert(price).unwrap();
+        let hmap = r.insert(map_unit(&hprice)).unwrap();
+        // each(keys) = keys.map(price): a function that maps again.
+        let each = composite(vec![Port { name: "keys".into(), ty: Type::list_any() }], Type::list_any(), vec![hmap], vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, BOUNDARY, 0)]);
+        let heach = r.insert(each).unwrap();
+        let houter = r.insert(map_unit(&heach)).unwrap();
+        let flow = Unit {
+            outputs: (0..3).map(|i| Port { name: format!("o{i}"), ty: Type::Any }).collect(),
+            ..composite(
+                vec![Port { name: "groups".into(), ty: Type::list_any() }, Port { name: "keys".into(), ty: Type::list_any() }, Port { name: "key".into(), ty: Type::Text }],
+                Type::Any,
+                vec![houter, hmap, hget],
+                vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 1, 0), edge(BOUNDARY, 2, 2, 0), edge(0, 0, BOUNDARY, 0), edge(1, 0, BOUNDARY, 1), edge(2, 0, BOUNDARY, 2)],
+            )
+        };
+        let keys = |n: usize| list((0..n).map(|i| Value::Text(format!("k{i}"))).collect());
+        let mut seen = Asked::default();
+        eval_observed(&flow, &[Some(list(vec![keys(2), keys(3)])), Some(keys(4)), Some(Value::Text("k".into()))], &r, &mut seen);
+        assert_eq!(seen.0.len(), 2 + 3 + 4 + 1, "{:?}", seen.0);
+        for asked in &seen.0 {
+            let want = match asked[0] {
+                0 => vec![0, 0, 0],
+                1 => vec![1, 0],
+                _ => vec![2],
+            };
+            assert_eq!(node_path(&flow, &r, asked), want, "asked at {asked:?}");
+        }
+        // A fold as the root: its item first.
+        let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
+        let step = composite(
+            vec![nport("acc"), Port { name: "key".into(), ty: Type::Text }],
+            Type::Number,
+            vec![hget, hadd],
+            vec![edge(BOUNDARY, 1, 0, 0), edge(BOUNDARY, 0, 1, 0), edge(0, 0, 1, 1), edge(1, 0, BOUNDARY, 0)],
+        );
+        let root = fold_unit(&r.insert(step).unwrap());
+        let mut seen = Asked::default();
+        eval_observed(&root, &[Some(num(0.0)), Some(keys(3))], &r, &mut seen);
+        assert_eq!(seen.0, vec![vec![0, 0], vec![1, 0], vec![2, 0]]);
+        assert!(seen.0.iter().all(|asked| node_path(&root, &r, asked) == vec![0]), "{:?}", seen.0);
     }
 
     fn fold_unit(fn_hash: &Hash) -> Unit {
