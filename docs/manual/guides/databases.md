@@ -305,9 +305,14 @@ shows it beside `orders-api`, on the same database.
   `_id` (an insert, by its document's `_id`) is held alone, any other call holds the collection.
   Each is held with a 30-second lease the server renews while the run lasts, so a server that
   stops lets go within 30 seconds.
-- A run that never calls out holds nothing; one that only reads a table holds nothing in it.
+- Holding a row is a wait, not a lock. A run that finds a row held waits `claim_wait_ms` at most
+  (10 s), then goes on, and may commit over it. The run that held the row then finds it changed
+  at its commit and runs again, and a call built from that row goes out a second time, with the
+  new value. A run that never calls out holds nothing, and one that only reads a table holds
+  nothing in it. Where a call must go out once, hold the database for whole runs (below), at its
+  price.
 - `holon check` says it, under `while it runs:`, and the run log lists each row held, how long it
-  waited, and whether it found the row changed. A run waits `claim_wait_ms` at most (10 s).
+  waited, and whether it found the row changed.
 
 ## Runs that wait
 
@@ -316,8 +321,9 @@ waits: a row it read is anyone's to change until it goes on. A route never waits
 run that does, an action, and answers. When the wait ends, the run goes on from where it waited,
 its own state as it first found it, and its databases and files **as they are now**: it reads
 them again. Its commit checks those reads as any run's does, and holds what it reads before it
-calls out, so if a row changed again in between, it runs again from where it waited, its requests
-and the approval answered from its record, not sent or asked again.
+calls out, so if a row changed again in between, it runs again from where it waited, its approval
+and its requests answered from its record, not asked or sent again. A request built from a row
+that changed is the exception: it is sent again, with the new value.
 
 ```ts
 import { action, approval, flow, route, status } from "holon"
@@ -396,6 +402,13 @@ holon database add tickets ~/tickets.db --lock run --schema-file tickets.sql
 
 It is off unless set: it costs every writer its turn, where the check costs a run going again
 only when two touched the same rows. A folder can be set so too (`holon folder add … --lock run`).
+
+It also keeps a call from going out twice. A run whose commit finds a row it read changed runs
+again, and a call built from that row is sent again, with the new value. Held for whole runs,
+nothing changes what a run read while its call is out, so it never runs again after a call. The
+price: a run that may write the database holds all of it, alone, from before it starts until it
+commits. While its call is out, every other run that touches that database, in any flow, waits,
+and past `claim_wait_ms` (10 s) it is turned away with a 503 and does nothing.
 
 ## Limits
 

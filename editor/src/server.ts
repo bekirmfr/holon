@@ -10,6 +10,7 @@
 // carries the session this browser was given, a bearer token, never a cookie (AuthGate.tsx).
 
 import { browsersOf } from "./DeploySettings";
+import { ANSWER_WITHIN, READ_AGAIN_MS } from "./limits";
 import { signedIn, signInExpired, signOut, type AuthConfig } from "./signin";
 import { usesIn, type Placed } from "./holonUsage";
 import type { WValue, ModuleEntry } from "./holon";
@@ -96,26 +97,11 @@ function endSession(): void {
   window.dispatchEvent(new Event("holon:session-ended"));
 }
 
-/** How long the server is given to answer, by what is asked (ms), in one place. On a busy machine
- *  the server's HTTP library can leave a new connection unread until another one closes (tiny_http's
- *  pool of connection threads): a request written into it gets no answer at all, neither a status
- *  nor an error, and a page waited on it for a minute or more, its buttons disabled (R97). Past its
- *  time a request is given up and its connection dropped (aborted), so what is asked next goes on
- *  another:
- *  - `read`, a read of what the server holds, answered in milliseconds when it is: asked again
- *    (READ_AGAIN_MS), its first answer never taken if it comes late; meanwhile the page says it
- *    can't reach the server and is trying again (`askingAgainNow`, can.tsx's UNREACHED);
- *  - `work`, a read that has the server work first (a version replayed on recent runs, a
- *    database's tables, a run's export, the logs): not asked again, which would redo the work;
- *  - `change`, everything else: never sent twice, since it may have been done; given up, it is
- *    said so (`Unanswered`), and the pages show what the server holds at their next read.
- *  The host's folder picker waits on a person, as long as they take ("a person"). Changed only by
- *  tests. */
-export const ANSWER_WITHIN = { read: 8_000, work: 120_000, change: 120_000 };
+/** How long the server is given to answer, by what is asked, and when a read is asked again:
+ *  limits.ts, where the end-to-end tests read them too. */
+export { ANSWER_WITHIN, READ_AGAIN_MS };
 /** What a request waits on: the server, as ANSWER_WITHIN has it, or a person. */
 export type Waits = keyof typeof ANSWER_WITHIN | "a person";
-/** After a read ran out, how long before each time it is asked again: twice. */
-export const READ_AGAIN_MS = [1_000, 3_000];
 
 /** A request the server didn't answer within its time (ANSWER_WITHIN). */
 export class Unanswered extends Error {

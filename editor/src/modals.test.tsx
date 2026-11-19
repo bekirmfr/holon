@@ -110,11 +110,14 @@ const REPORT: DryRunReport = {
   ],
 };
 
-function DryRunPage() {
+/** The same, its version asking for two permissions the grant doesn't hold: approved once ticked. */
+const ASKING: DryRunReport = { ...REPORT, approvals: ['read and write the state "n"', "receive requests"], action: "Approve and restore" };
+
+function DryRunPage({ report = REPORT }: { report?: DryRunReport }) {
   const { ask, modal } = useDryRun();
   return (
     <>
-      <button onClick={() => void ask(REPORT)}>open it</button>
+      <button onClick={() => void ask(report)}>open it</button>
       {modal}
       <button>the page's own button</button>
     </>
@@ -142,6 +145,7 @@ const MODALS: { modal: string; file: string; page: () => ReactNode }[] = [
   },
   { modal: "cell history", file: "CellHistory.tsx", page: () => <CellHistoryButton slug="shop" name="count" onOpenRun={() => {}} /> },
   { modal: "dry run", file: "DryRun.tsx", page: () => <DryRunPage /> },
+  { modal: "dry run asking for more", file: "DryRun.tsx", page: () => <DryRunPage report={ASKING} /> },
   { modal: "folder picker", file: "FolderPicker.tsx", page: () => <Opens modal={(close) => <FolderPicker start="" onChoose={close} onClose={close} />} /> },
   { modal: "command palette", file: "ui/CommandPalette.tsx", page: () => <Opens modal={(close) => <CommandPalette commands={[{ label: "Flows", kind: "page", run: () => {} }]} onColon={() => null} onClose={close} />} /> },
   { modal: "keys", file: "ui/Keys.tsx", page: () => <Opens modal={(close) => <KeysDialog onClose={close} />} /> },
@@ -221,5 +225,58 @@ describe("modal dialogs keep the focus", () => {
     expect(modal()).toBe(picker);
     expect(document.activeElement, "the focus is back in the picker where it was").toBe(at);
     expect((await lap(() => picker)).map(what)).toEqual(inPicker.map(what));
+  });
+});
+
+// R121: approving new permissions takes a mark first, in either console, however it is approved
+// (the terminal's held by workbench/tests.rs). Here a restore's dry run: asking for more, its
+// button waits for the tick; the tick is for the report shown, so one read afresh is unticked
+// (a tick made for two permissions never approves three); asking for nothing, it goes at once.
+// If it fails: a restore approves permissions no one said they read.
+describe("a dry run asking for new permissions", () => {
+  function Answers({ reports, said }: { reports: DryRunReport[]; said: (ok: boolean) => void }) {
+    const { ask, modal } = useDryRun();
+    return (
+      <>
+        {reports.map((r, i) => (
+          <button key={i} onClick={() => void ask(r).then(said)}>{`open ${i}`}</button>
+        ))}
+        {modal}
+      </>
+    );
+  }
+
+  it("approves only once ticked, the tick gone when what it approves is read afresh, and at once when it asks nothing", async () => {
+    const answers: boolean[] = [];
+    const more = { ...ASKING, approvals: [...ASKING.approvals!, "send requests to api.example.com"] };
+    await open(<Answers reports={[ASKING, more, REPORT]} said={(ok) => answers.push(ok)} />);
+    const go = (name: string) => [...modal()!.querySelectorAll("button")].find((b) => b.textContent === name)!;
+    const tick = () => modal()!.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    const click = (el: HTMLElement) =>
+      act(async () => {
+        el.click();
+        await settle();
+      });
+
+    expect(modal()!.textContent).toContain("I read the 2 new permissions and the change.");
+    expect(tick()!.checked).toBe(false);
+    expect(go("Approve and restore").disabled, "unticked, it waits").toBe(true);
+    await click(go("Approve and restore"));
+    expect(answers).toEqual([]);
+    await click(tick()!);
+    expect(go("Approve and restore").disabled, "ticked, it goes").toBe(false);
+    // Read afresh while it is open: three permissions now, the tick made for two gone.
+    await click(container!.querySelectorAll("button")[1]);
+    expect(modal()!.textContent).toContain("I read the 3 new permissions and the change.");
+    expect(tick()!.checked).toBe(false);
+    expect(go("Approve and restore").disabled, "a tick made for two doesn't approve three").toBe(true);
+    await click(tick()!);
+    await click(go("Approve and restore"));
+    expect(answers).toEqual([true]);
+    // Asking nothing new: no tick, and it goes at once.
+    await click(container!.querySelectorAll("button")[2]);
+    expect(tick()).toBeNull();
+    await click(go("Restore"));
+    expect(answers).toEqual([true, true]);
   });
 });

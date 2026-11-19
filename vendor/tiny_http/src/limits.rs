@@ -303,3 +303,102 @@ pub(crate) fn timed_out(e: &std::io::Error) -> bool {
         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
     )
 }
+
+/// The first wait after an accept fails; doubled while they fail in a row, to
+/// [`ACCEPT_WAIT_MOST`] (as Holon's data plane waits, and Go's `net/http`).
+pub(crate) const ACCEPT_WAIT_FIRST: Duration = Duration::from_millis(5);
+
+/// The longest wait between accepts that fail.
+pub(crate) const ACCEPT_WAIT_MOST: Duration = Duration::from_secs(1);
+
+/// The least time between a line about failed accepts and the next run's start being said. A
+/// run that starts sooner is counted, not said, and the next line says how many there were. A
+/// client that holds the server near its limit of file handles can end a run and start the next
+/// as handles come and go; said each time, that is two lines a run with nothing to bound them.
+pub(crate) const SAY_EVERY: Duration = Duration::from_secs(60);
+
+/// Holon (PATCHED.md): the accepts that failed in a row, and how long the accept thread waits
+/// before the next. An accept that fails for want of a file handle fails again at once, so it is
+/// waited on, not tried again at once. A run of them is said as it starts and as it ends, unless
+/// it starts within [`SAY_EVERY`] of the last line said: then it is counted, and said with the
+/// next line, whenever that is (a run that ends once that long has passed says what came of the
+/// ones not said). At most a line or two a minute, however often runs start.
+pub(crate) struct Failing {
+    at: String,
+    /// The run now: the accepts failed in it, the next wait, and whether its start was said.
+    run: Option<Run>,
+    /// When a line was last said.
+    said_at: Option<Instant>,
+    /// The runs ended since then that weren't said, and the accepts that failed in them.
+    unsaid: (u64, u64),
+}
+
+struct Run {
+    failed: u64,
+    wait: Duration,
+    said: bool,
+}
+
+impl Failing {
+    /// For the server listening at `at`.
+    pub(crate) fn new(at: String) -> Failing {
+        Failing { at, run: None, said_at: None, unsaid: (0, 0) }
+    }
+
+    /// An accept failed with `e` at `now`: what to say (at the start of a run only, and only past
+    /// `SAY_EVERY`), and how long to wait before the next.
+    pub(crate) fn failed(&mut self, e: &std::io::Error, now: Instant) -> (Option<String>, Duration) {
+        if let Some(run) = self.run.as_mut() {
+            run.failed += 1;
+            run.wait = (run.wait * 2).min(ACCEPT_WAIT_MOST);
+            return (None, run.wait);
+        }
+        let said = if self.due(now) {
+            self.said_at = Some(now);
+            let before = self.unsaid_text("; ");
+            Some(format!(
+                "holon: the control port ({}) could not accept a connection: {}; trying again, less often while it fails{}",
+                self.at, e, before
+            ))
+        } else {
+            None
+        };
+        self.run = Some(Run { failed: 1, wait: ACCEPT_WAIT_FIRST, said: said.is_some() });
+        (said, ACCEPT_WAIT_FIRST)
+    }
+
+    /// An accept succeeded at `now`: what to say, if it ends a run of failures said, or one not
+    /// said once `SAY_EVERY` has passed since the last line.
+    pub(crate) fn accepted(&mut self, now: Instant) -> Option<String> {
+        let run = self.run.take()?;
+        if run.said {
+            return Some(format!(
+                "holon: the control port ({}) accepts connections again, after {} that failed",
+                self.at, run.failed
+            ));
+        }
+        self.unsaid.0 += 1;
+        self.unsaid.1 += run.failed;
+        if !self.due(now) {
+            return None;
+        }
+        self.said_at = Some(now);
+        let since = self.unsaid_text("; ");
+        Some(format!("holon: the control port ({}) accepts connections again{}", self.at, since))
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        self.said_at.map_or(true, |at| now.saturating_duration_since(at) >= SAY_EVERY)
+    }
+
+    /// The runs not said since the last line, after `lead`, counted afresh; nothing if none.
+    fn unsaid_text(&mut self, lead: &str) -> String {
+        let (runs, failed) = std::mem::take(&mut self.unsaid);
+        let times = match runs {
+            0 => return String::new(),
+            1 => "once more".to_string(),
+            n => format!("{} more times", n),
+        };
+        format!("{}it couldn't for a while {} since the last of these lines ({} accepts that failed in all)", lead, times, failed)
+    }
+}

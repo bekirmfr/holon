@@ -24,7 +24,7 @@
 // button said she may do what she may not. Now those who may see it enabled a moment later.
 // A read that gets no answer is asked again shortly, not a round later: a minute of buttons
 // waiting on an answer is too long. One that gets none at all (a connection the server left
-// unread, R97) is given up after server.ts's ANSWER_WITHIN and asked again on another; meanwhile
+// unread, R97) is given up after limits.ts's ANSWER_WITHIN and asked again on another; meanwhile
 // the buttons say the server can't be reached and they are trying again (UNREACHED), not that
 // they are asking: "a moment" for a minute was all a person saw.
 

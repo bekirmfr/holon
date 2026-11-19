@@ -2,8 +2,10 @@
 
 Holon is built for flows that agents write and people approve. An agent connects through
 `holon mcp`, a [Model Context Protocol](https://modelcontextprotocol.io) server: it reads the
-language, checks its flow, saves and deploys it, sends it requests and reads its runs. It can't
-approve what a flow may do: that stays with a person.
+language, checks its flow, saves and deploys it, sends it requests and reads its runs. Through
+`holon mcp` it can't approve what a flow may do: that stays with a person. An agent that also has
+a shell on the server's machine can, as you, unless you keep it to its own token: see [An agent
+with a shell](#an-agent-with-a-shell).
 
 ## Connecting an agent
 
@@ -30,13 +32,14 @@ was. Restart the agent to pick it up.
 
 `holon mcp` signs in as an **agent**, a principal of its own, never as you, so the server holds it
 to proposing, and what it does is under the agent's name. On the same machine it finds the server
-you run, and the first time, makes your agent there: *you*-agent (`bma-agent`), owned by you, with
+you run, and the first time, makes your agent there: *you*-agent (`ada-agent`), owned by you, with
 the **agent** role. Its token is kept in `~/.holon/tokens.json`, readable only by you; the
 server's **People and access** lists it with its tokens, when it was last seen and when each
 token was last used. `setup` makes it at once when the server is running, and says so:
 
 ```
-holon mcp signs in to http://127.0.0.1:7420 as bma-agent, an agent owned by bma.
+holon mcp signs in to http://127.0.0.1:7420 as ada-agent, an agent owned by ada.
+holon: commands run as ada on this machine sign in as this server's admin, an agent's shell running as ada too (the manual: "An agent with a shell")
 ```
 
 `--agent NAME` signs in as another agent instead (made if it isn't there): one per host, say. One
@@ -57,8 +60,38 @@ NAME --agent --owner YOU`), and you make its token in the editor's **Your agents
 The host's settings file never holds the token. `HOLON_TOKEN` gives one without asking.
 
 `holon mcp` takes only an agent's token: a person's or a service's is refused, at setup and when
-it connects, so an agent with a shell can't approve anything, whatever it runs. A setup from before
+it connects, so nothing an agent does through `holon mcp` approves anything. What it runs in a
+shell is another matter: see [An agent with a shell](#an-agent-with-a-shell). A setup from before
 agents were principals, which kept a person's token, says to run `setup` again with an agent's.
+
+## An agent with a shell
+
+An agent that runs commands on your machine, as Claude Code does, has more than `holon mcp`. On
+the machine where you run `holon serve`, every `holon` command you run signs in as you, the
+server's admin, through the file the server writes for them ([the run
+file](../reference/surfaces.md#the-run-file)). The agent's shell runs as you, so its commands do
+too. `holon deploy --approve` run there approves what its own flow asks for, and the deployment's
+timeline says you approved it. The activity log says it came through the run file, but not who
+typed it. `holon serve` says so when it starts, and `holon mcp setup` when it sets up your agent:
+
+```
+holon: commands run as ada on this machine sign in as this server's admin, an agent's shell running as ada too (the manual: "An agent with a shell")
+```
+
+A rule in the server wouldn't change this. To your operating system the agent's shell is you: it
+can read what you can, the run file, the server's data folder and its key among them. To keep such
+an agent to its own token, give it less than you have:
+
+- **No shell, only `holon mcp`.** An agent host that runs no commands leaves the agent with its
+  tools, and they always sign in as your agent.
+- **An agent's token in `HOLON_TOKEN`**, in the environment its shell starts with (`holon people
+  token NAME` makes one). The `holon` commands it runs then sign in as that agent, held to
+  proposing. It can unset it, so this keeps an agent from approving by accident, not one set on
+  doing it.
+- **Another OS user** for the agent, who can't read your run file.
+- **A container or another machine** for the agent, reaching the server with an agent's token.
+
+The rest of this guide is about the agent as `holon mcp` signs it in.
 
 ## What an agent can do
 
@@ -116,7 +149,7 @@ secret, restores one, takes a person's step of an [approval](../language/leaves.
 run waits at, or
 replaces a flow someone else saved. The server enforces this, not the tool: it answers an agent's restore only as a dry run, or saves it for you. An agent that asks
 (`restore` with `ask`) leaves a row on the deployment's timeline, "asks to put back the state run
-41 left", by *bma-agent*; in the editor's history, pick that row and restore what it asks, after
+41 left", by *ada-agent*; in the editor's history, pick that row and restore what it asks, after
 the same dry run as any restore. Nothing changes until you do.
 
 Within that, an agent does what it is bound: its role on the host (agent, or only viewer), and
@@ -130,7 +163,7 @@ An agent runs a flow's [action](actions.md) only once you let it: in the deploy 
 **agents may run** lists the flow's actions, and each one you tick asks for `AgentRuns("name")`,
 which you approve at the next deploy. Until then, `run` answers that agents may not run it, and
 revoking it on the deployed page refuses them again. The agent's runs are logged as anyone's,
-"by *bma-agent*".
+"by *ada-agent*".
 
 An agent reads a flow's log lines, what its flow wrote with `console.log`, only once you let it too: **agents may read
 its logs** in the deploy settings asks for `AgentReadsLogs`, which you approve at the next deploy. Then the `logs` tool
@@ -145,7 +178,7 @@ Who may do what is a person's to change, and an access change that waits for peo
 people (Approvals › Access changes, or [`holon access approve`](../reference/cli.md#holon-access)), never by an agent.
 An approval in steps may have a step written for an agent (`{ role: "classifier", kind: "agent"
 }`): bind a role of your own to the agent where the flow is (`holon roles define classifier
---allow run.view,run.decide --kinds agent`, then `holon bind classifier --to bma-agent --flow
+--allow run.view,run.decide --kinds agent`, then `holon bind classifier --to ada-agent --flow
 payout`, or the same in the editor's People and access), and `runs` lists the step as its own, and `decide` takes it, with a `note` (a label, a
 confidence) the run is given. A person's step it never takes: it says who decides it and where,
 for the agent to tell you. Turning agents off for the host (`holon access approvals --agents

@@ -52,7 +52,11 @@ const heading = { color: "var(--accent)", fontSize: 11, textTransform: "uppercas
 function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: boolean) => void }) {
   const box = useRef<HTMLDivElement>(null);
   const ok = useRef<HTMLButtonElement>(null);
-  useFocusTrap(box, true, () => ok.current);
+  const tick = useRef<HTMLInputElement>(null);
+  useFocusTrap(box, true, () => tick.current ?? ok.current);
+  // Approving new permissions takes a tick first, as a deploy's review does: ticked for the report
+  // it shows, so one read afresh (another report, another list) is unticked.
+  const [readFor, setReadFor] = useState<DryRunReport | null>(null);
   const [diff, setDiff] = useState<{ diffs?: Diff[]; error?: string }>({});
   useEffect(() => {
     let live = true;
@@ -73,6 +77,7 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
   }, [onClose]);
   const button = { font: "inherit", fontSize: 12, padding: "4px 12px", borderRadius: 3, cursor: "pointer" } as const;
   const approvals = report.approvals ?? [];
+  const read = approvals.length === 0 || readFor === report;
   const changes = report.changes ?? [];
   return (
     <div
@@ -174,11 +179,22 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
           )}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {approvals.length > 0 && (
+            <label className="hl-flow__check" style={{ margin: 0 }}>
+              <input ref={tick} type="checkbox" checked={readFor === report} onChange={(e) => setReadFor(e.target.checked ? report : null)} />
+              {`I read the ${approvals.length} new permission${approvals.length === 1 ? "" : "s"} and the change.`}
+            </label>
+          )}
           <span style={{ flex: 1 }} />
           <button onClick={() => onClose(false)} style={{ ...button, color: "var(--muted)", background: "transparent", border: "1px solid var(--border)" }}>
             Cancel
           </button>
-          <button ref={ok} onClick={() => onClose(true)} style={{ ...button, color: "var(--accent-ink)", background: approvals.length > 0 ? "var(--warn)" : "var(--accent)", border: "none" }}>
+          <button
+            ref={ok}
+            disabled={!read}
+            onClick={() => onClose(true)}
+            style={{ ...button, color: "var(--accent-ink)", background: approvals.length > 0 ? "var(--warn)" : "var(--accent)", border: "none", ...(read ? {} : { opacity: 0.5, cursor: "not-allowed" }) }}
+          >
             {report.action}
           </button>
         </div>

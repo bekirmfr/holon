@@ -30,7 +30,8 @@ So on the server's own machine, whoever can read the run file is the server's ad
 grants say: the grants hold the run file to nothing, and keeping the machine's accounts to those
 who should be its admin is what guards it. A command run with an agent's or a service's token
 (HOLON_TOKEN) or a `holon login` session signs in as that instead, and is held to its grants.
-`holon access local` says which account the run file signs in as.
+`holon access local` says which account the run file signs in as. An agent's shell running as that
+user is such a command: [An agent with a shell](../guides/agents.md#an-agent-with-a-shell).
 
 ## An export is a file no grant follows
 

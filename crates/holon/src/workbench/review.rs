@@ -80,6 +80,8 @@ pub(crate) enum Row {
     /// Hunk, its first folded line, how many.
     Fold(usize, usize, usize),
     Code(usize, usize),
+    /// The line saying whether its new permissions are marked read (t), last.
+    Mark,
 }
 
 #[derive(Debug, Default)]
@@ -94,6 +96,12 @@ pub(crate) struct Review {
     pub(crate) scroll: usize,
     /// How many rows showed when last drawn: what moving the focus keeps it in.
     pub(crate) height: usize,
+    /// The new permissions approving it grants, as the web's review counts them for its tick:
+    /// approving waits until they are marked read (t). None new: it goes at once.
+    pub(crate) asks: Vec<String>,
+    /// What was marked read: `asks` as it was then. A mark approves only the list it was made for
+    /// (`unread`), so one made for three permissions never approves four.
+    pub(crate) read: Option<Vec<String>>,
 }
 
 impl Review {
@@ -123,7 +131,45 @@ impl Review {
             out.push(Row::Blank);
             out.extend((0..self.foot.len()).map(Row::Foot));
         }
+        if !self.asks.is_empty() {
+            out.extend([Row::Blank, Row::Mark]);
+        }
         out
+    }
+
+    /// Marked read, or not (t, or a click on its line): for the new permissions it shows now.
+    fn mark(&mut self) {
+        self.read = if self.read.is_some() { None } else { Some(self.asks.clone()) };
+    }
+
+    /// Why approving `needs` waits: they aren't marked read, or the mark was made for another list
+    /// (what is approved changed under it). None when nothing new is approved, or the mark is for
+    /// exactly these. Every way to approve from a review asks it first.
+    pub(crate) fn unread(&self, needs: &[String]) -> Option<String> {
+        if needs.is_empty() || self.read.as_deref() == Some(needs) {
+            return None;
+        }
+        let them = match needs.len() {
+            1 => "the new permission".to_string(),
+            n => format!("the {n} new permissions"),
+        };
+        Some(match self.read {
+            Some(_) => format!("What it asks changed since you marked it: read {them} again, then mark them (t)."),
+            None => format!("Not yet: mark that you read {them}, marked +, first (t)."),
+        })
+    }
+
+    /// The line under it: whether its new permissions are marked read.
+    pub(crate) fn mark_said(&self) -> Said {
+        let them = match self.asks.len() {
+            1 => "the new permission".to_string(),
+            n => format!("the {n} new permissions"),
+        };
+        if self.read.as_deref() == Some(&self.asks[..]) {
+            (Tone::Good, format!("[x] I read {them}, marked +, and the change.  t takes the mark back"))
+        } else {
+            (Tone::Warn, format!("[ ] I read {them}, marked +, and the change.  t marks it: approving waits for it"))
+        }
     }
 
     /// The rows the cursor jumps between: hunks' heads and folds.
@@ -203,8 +249,10 @@ impl Review {
     /// A row clicked: the cursor on it; a hunk's head or a fold opens or closes.
     pub(crate) fn click(&mut self, row: usize) {
         self.at = Some(row);
-        if matches!(self.rows().get(row), Some(Row::Head(_) | Row::Fold(..))) {
-            self.toggle(None);
+        match self.rows().get(row) {
+            Some(Row::Head(_) | Row::Fold(..)) => self.toggle(None),
+            Some(Row::Mark) => self.mark(),
+            _ => {}
         }
     }
 
@@ -226,7 +274,8 @@ impl Review {
         self.put(at);
     }
 
-    /// A key that moves through it, opens or closes a hunk, or shows it whole; false for any other.
+    /// A key that moves through it, opens or closes a hunk, shows it whole, or marks its new
+    /// permissions read (t, when it has some); false for any other.
     pub(crate) fn key(&mut self, k: KeyEvent) -> bool {
         let page = self.height.max(2) as isize - 1;
         match k.code {
@@ -243,6 +292,7 @@ impl Review {
             KeyCode::PageDown => self.move_by(page),
             KeyCode::Home => self.move_by(-(isize::MAX / 2)),
             KeyCode::End => self.move_by(isize::MAX / 2),
+            KeyCode::Char('t') if !self.asks.is_empty() => self.mark(),
             _ => return false,
         }
         true
@@ -269,6 +319,9 @@ impl Review {
             }));
         }
         out.extend(self.foot.iter().cloned());
+        if !self.asks.is_empty() {
+            out.push(self.mark_said());
+        }
         out
     }
 }

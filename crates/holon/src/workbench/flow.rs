@@ -872,18 +872,22 @@ impl App {
         if !preview["state"].is_null() {
             review.hunks.push(review::state(&preview["state"]));
         }
+        review.asks = needs.clone();
         self.modal = Some(Modal::DryRun { slug: slug.to_string(), point, code, state, review, needs, refused: refused.is_some() });
     }
 
     pub(crate) fn dry_run_key(&mut self, k: KeyEvent) {
-        let Some(Modal::DryRun { review, refused, .. }) = self.modal.as_mut() else { return };
+        let Some(Modal::DryRun { review, refused, needs, .. }) = self.modal.as_mut() else { return };
         match k.code {
             _ if review.key(k) => {}
             KeyCode::Esc | KeyCode::Char('x') => {
                 self.modal = None;
                 self.tell("nothing changed");
             }
-            KeyCode::Enter | KeyCode::Char('y') if !*refused => self.restore(),
+            KeyCode::Enter | KeyCode::Char('y') if !*refused => match review.unread(needs) {
+                Some(why) => self.fail(why),
+                None => self.restore(),
+            },
             KeyCode::Enter => self.modal = None,
             _ => {}
         }
