@@ -885,6 +885,43 @@ Live, `holon load`, 3 alternating rounds, 5 s a route, 16 connections, release b
 is ±5% a round, and callgrind is the measure; fix 1's instructions saved are per recorded run,
 the same whatever the flow computes, so they show most where a run is small.
 
+**Again on `main` after rc.36 (`32b7f29c`, 2026-11-19).** The branch rebased onto it, fix 1 kept
+beside rc.36's `cut_answer`. Its ground checked again first: rc.36's redactor has two more parts,
+both inert when it is empty (`is_empty` asks `pairs` and `places`; `whole` is made from the same
+values as `pairs`, so `respelled` finds nothing; no pairs, no tainted numbers; `logged` still
+returns nothing for a text without `‹`, and bytes are still walked by their UTF-8 runs). Every
+host test passes; the bytes check turned off fails both its tests again. Callgrind, per run:
+
+| route | `main` | fix 1 | |
+|---|---|---|---|
+| `notes` (lazy, recorded) | 659.5 K | 540.6 K | **−18.0%** |
+| `hello` (unrecorded) | 126.2 K | 126.8 K | +0.4% |
+| `crunch` | 35.31 M | 36.23 M | +2.6%: the profiling binary's codegen, not the change (below) |
+
+`notes`' saving is the second line, halved function by function: `format_escaped_str` 93.4 →
+46.7 K, `serialize_entry` 29.1 → 14.6 K, the numbers' writing 12.5 → 6.3 K, and the redactor's walk
+(`whole_first`, `logged`, `texts_mut`) about 13 K → 3 K. `crunch` computes nothing fix 1 touches:
+in the fixed profiling binary `primitives::reading` (B5's step charge, generic and instantiated in
+the host crate) calls `SmallVec::extend` out of line where `main`'s inlined it (`reading` −1.02 M,
+`extend` +1.98 M). That binary holds the branch's 144 lines of tests as well, and its codegen moved
+with them: 79 out-of-line `extend` instances and 28 of `reading` against `main`'s 35 and 4. The
+shipped `holon` binaries hold 32 and 3 each, and the live race below finds `crunch`'s CPU a request
+the same.
+
+Live, `holon load` through release `holon` binaries, 5 rounds in turn, 5 s a route, medians:
+
+| route | 8 connections | ×CPU less | 16 connections | ×CPU less |
+|---|---|---|---|---|
+| lazy | 13,766 → 14,096 (×1.02) | 1.03 | 14,508 → 15,437 (×1.06) | 1.09 |
+| strict | 6,137 → 6,092 (×0.99) | 1.01 | 7,469 → 7,659 (×1.03) | 1.02 |
+| unrecorded | 32,821 → 32,049 (×0.98) | 0.98 | 38,655 → 38,900 (×1.01) | 1.01 |
+| `hello` | 32,909 → 33,680 (×1.02) | 1.03 | 40,410 → 41,345 (×1.02) | 1.04 |
+| `crunch` 1000 | 872 → 888 (×1.02) | 1.00 | 842 → 852 (×1.01) | 1.00 |
+
+Two rounds at 8 connections fell to ×0.64 and ×0.65 for one build (strict, unrecorded): the
+container's, not a build's. Lazy, the route whose lock the line's making holds up, gains most at 16
+connections; the others hold even.
+
 **Kept as they are:** the taint scan (`1c094ab`, `ALWAYS_TAINTED`'s keys on every recorded run,
 about 14 K: security's); `run_attempt` and the random bytes' making (rc.35's run record that holds
 through a crash, 1.1 K for `hello`, and `pgp_encrypt`'s randomness, 0.3 K).
