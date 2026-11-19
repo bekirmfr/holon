@@ -4,7 +4,7 @@ import { beforeAll, describe, it, expect } from "vitest";
 import { Evaluator, initSync } from "../wasm/holon_wasm.js";
 import { buildSample, samples } from "./samples";
 import { tabFromDocument } from "./tabs";
-import { collectionsAtStep, diagnose, executionOrder, heldEffects, heldWhy, placedBy, fileLabel, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, replayVerdict, runGroup, failureWire, fellBack, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type NodeTrace, type Replay, type ReplayNode, type VerdictRun, type Issue, type NodeTiming, type SkippedNote } from "./replay";
+import { bodyPosition, collectionsAtStep, diagnose, executionOrder, heldEffects, placedBy, fileLabel, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, replayVerdict, runGroup, failureWire, fellBack, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type NodeTrace, type Replay, type ReplayNode, type VerdictRun, type Issue, type NodeTiming, type SkippedNote } from "./replay";
 import { graphRun } from "./runRows";
 import skippedFixture from "./skipped.fixture.json";
 import { asksHostPrimitives, choiceNext, primitiveCatalog, type WParam, type WValue } from "./holon";
@@ -754,12 +754,29 @@ describe("what a run held and didn't make (the server's notes, skipped)", () => 
   const txt = (value: string): WValue => ({ type: "Text", value });
   const rec = (...fields: [string, WValue][]): WValue => ({ type: "Record", value: fields });
 
-  it("says each note in explain's words (skipped.fixture.json, written by holon-author's test)", () => {
+  it("says each note in explain's words, a failure's reason read from the run's steps (skipped.fixture.json, written by holon-author's test)", () => {
     expect(skippedFixture.cases.length).toBeGreaterThan(10);
+    expect(skippedFixture.cases.filter((c) => c.timeline).length).toBeGreaterThan(3);
     for (const c of skippedFixture.cases) {
-      const from = c.from ? { data: { name: c.from.name, params: c.from.params as unknown as WParam[] } } : undefined;
-      expect(heldWhy(c.note as unknown as SkippedNote, from, skippedFixture.reads as unknown as { request: WValue }[], c.reason ?? undefined), c.what).toBe(c.says);
+      // The run as the editor reads it: a request's, its steps placed by the route's trace, whose
+      // second and third steps are the note's `from` (none when the case has no node).
+      const nodes = [n("a", "request", [], ["out"])];
+      if (c.from) nodes.push(n("from", c.from.name, [], ["out"], c.from.params as unknown as WParam[]));
+      const entry = {
+        kind: "request",
+        route: "POST /r",
+        reads: skippedFixture.reads as unknown as { request: WValue }[],
+        skipped: [c.note as unknown as SkippedNote],
+        timeline: (c.timeline ?? undefined) as unknown as NodeTiming[] | undefined,
+      };
+      expect(heldEffects(entry, skippedFixture.trace, nodes)[0]?.reason, c.what).toBe(c.says);
     }
+  });
+
+  it("says an engine's position as the body's, and only the message's first line, as explain does", () => {
+    expect(bodyPosition("SyntaxError: unexpected token at line 2, col 5 (native)\n  more")).toBe("SyntaxError: unexpected token (the body's line 2, col 5)");
+    expect(bodyPosition("Error: no (unknown at :3:11)")).toBe("Error: no (the body's line 3, col 11)");
+    expect(bodyPosition("TypeError: not a function")).toBe("TypeError: not a function");
   });
 
   // A route's handler: a read, a write fed by it, and a function holding a write of its own.

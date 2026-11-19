@@ -221,6 +221,8 @@ export type NodeTiming = {
   round?: number;
   /** What the node produced (servers before this, or an output too large, leave it out). */
   outputs?: (WValue | null)[];
+  /** Why it gave nothing, when the host knows (a js engine out of fuel, a trap). */
+  reason?: string;
 };
 
 /** Which of the deployed flow's traces places a run's steps, and how deep they sit: a request's
@@ -321,15 +323,39 @@ function failedReason(timeline: NodeTiming[] | undefined, path: number[]): strin
   const last = Math.max(0, ...steps.map((t) => t.round ?? 0));
   const within = (p: number[]) => p.length >= path.length && path.every((x, i) => p[i] === x);
   for (const t of steps.filter((s) => (s.round ?? 0) === last && within(s.path))) {
-    const own = (t as NodeTiming & { reason?: string }).reason;
-    if (own) return own;
-    const [record] = t.outputs ?? [];
-    if (t.path.length > path.length && t.outputs?.length === 1 && record?.type === "Record") {
-      const error = record.value.find(([k]) => k === "error")?.[1];
-      if (error?.type === "Text") return error.value;
-    }
+    if (t.reason) return t.reason;
+    const error = t.path.length > path.length ? engineError(t.outputs) : undefined;
+    if (error !== undefined) return error;
   }
   return undefined;
+}
+
+/** The error a js engine's step answered with, when its one output is the engine's record
+ *  (`{ error }`, or `{ value }` with no error): a body's exception, its position said as the
+ *  body's (holon-author's agent.rs `engine_error`). */
+function engineError(outputs: (WValue | null)[] | undefined): string | undefined {
+  if (outputs?.length !== 1) return undefined;
+  const [record] = outputs;
+  if (record?.type !== "Record" || !record.value.every(([k]) => k === "error" || k === "value")) return undefined;
+  const error = record.value.find(([k]) => k === "error")?.[1] as { value?: unknown } | null | undefined;
+  return typeof error?.value === "string" ? bodyPosition(error.value) : undefined;
+}
+
+/** The engine's position in a message, said as the body's, and only its first line
+ *  (holon-author's agent.rs `body_position`): Boa writes `at line L, col C (native)` for a syntax
+ *  error and `(unknown at :L:C)` for a frame, both counted in the source the engine was given,
+ *  whose line 1 is the js statement's header line. */
+export function bodyPosition(message: string): string {
+  const first = (message.split(/\r?\n/)[0] ?? message).replace(/(?: \(native\))+$/, "");
+  const frame = first.indexOf(" (unknown at :");
+  if (frame >= 0) {
+    const tail = first.slice(frame + " (unknown at :".length).replace(/\)+$/, "");
+    const colon = tail.indexOf(":");
+    const [l, c] = colon >= 0 ? [tail.slice(0, colon), tail.slice(colon + 1)] : [tail, ""];
+    return `${first.slice(0, frame)} (the body's line ${l}, col ${c})`;
+  }
+  const at = first.indexOf(" at line ");
+  return at >= 0 ? `${first.slice(0, at)} (the body's line ${first.slice(at + " at line ".length)})` : first;
 }
 
 /**

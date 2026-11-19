@@ -1274,10 +1274,15 @@ mod tests {
 
     /// **Guards:** the editor says a run's notes (`skipped`) in explain's words:
     /// `editor/src/skipped.fixture.json` is [`skipped_why`] over a table of notes (each level; a
-    /// read by its key, of a listing, with no request kept, of state; a failure with its reason and
-    /// without; as far as the record sees; a step with no node), and the editor's `heldWhy` is held
-    /// to it (replay.test.ts).
-    /// **Why:** explain and the editor say one note in two places: written twice, they drift.
+    /// read by its key, of a listing, with no request kept, of state; as far as the record sees; a
+    /// step with no node), and the editor's `heldEffects` is held to it (replay.test.ts). A
+    /// failure's reason is read out of the run's recorded steps on both sides, as explain reads it
+    /// ([`recorded`]): an engine's own reason, a body's syntax error and a frame's exception (the
+    /// engine's `{ error }` answer, its position said as the body's, its first line only), an
+    /// earlier round's, an answer that isn't the engine's, and none.
+    /// **Why:** explain and the editor say one note in two places: written twice, they drift. They
+    /// did: the editor showed an engine's error whole, Boa's position and further lines in, where
+    /// explain says "the body's line L, col C" (the coordinator's reading of R99 stage 5).
     #[test]
     fn the_editor_says_a_runs_notes_in_explains_words() {
         let step = |name: &str, params: Value| -> crate::canvas::Node {
@@ -1296,34 +1301,65 @@ mod tests {
             step("js", json!([])),
         );
         let write = "StateWrite(\"g\")";
-        let cases: [(&str, Value, Option<&crate::canvas::Node>, Option<&str>); 12] = [
+        // The js node's own step (`[0, 2]`) and its engine's step inside it (`[0, 2, 1]`), in a
+        // round, with what they recorded.
+        let own = |round: u64| json!({ "path": [0, 2], "start_us": 0, "end_us": 1, "round": round, "outputs": [null] });
+        let engine = |round: u64, recorded: Value| {
+            let mut step = json!({ "path": [0, 2, 1], "start_us": 0, "end_us": 1, "round": round });
+            step.as_object_mut().unwrap().extend(recorded.as_object().unwrap().clone());
+            step
+        };
+        let answered = |fields: Value| json!({ "outputs": [{ "type": "Record", "value": fields }] });
+        let failed = json!({ "effect": write, "level": "failed", "at": [0, 3], "from": [0, 2], "leaf": "js" });
+        let cases: [(&str, Value, Option<&crate::canvas::Node>, Option<Value>); 16] = [
             ("a read, by its key", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 1], "leaf": "collection_get", "read": 0 }), Some(&tasks), None),
             ("a read of a listing", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 1], "leaf": "collection_get", "read": 1 }), Some(&tasks), None),
             ("a read whose request the record doesn't keep", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 1], "leaf": "collection_get", "read": 7 }), Some(&tasks), None),
             ("a state read (not one of the entry's reads)", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 2], "leaf": "store_read" }), Some(&state), None),
             ("a value lacking a field", json!({ "effect": write, "level": "missing", "at": [0, 3], "from": [0, 2], "leaf": "field" }), Some(&field), None),
             ("as far as the record sees", json!({ "effect": write, "level": "missing", "at": [0, 3], "from": [0, 2, 1], "leaf": "field", "unseen": true }), Some(&field), None),
-            ("a failure, its reason recorded", json!({ "effect": write, "level": "failed", "at": [0, 3], "from": [0, 2], "leaf": "js" }), Some(&js), Some("out of fuel")),
-            ("a failure, no reason recorded", json!({ "effect": write, "level": "failed", "at": [0, 3], "from": [0, 2], "leaf": "js" }), Some(&js), None),
+            ("a failure, the engine's own reason", failed.clone(), Some(&js), Some(json!([own(0), engine(0, json!({ "reason": "out of fuel" }))]))),
+            (
+                "a failure, a body's syntax error: its position as the body's, its first line",
+                failed.clone(),
+                Some(&js),
+                Some(json!([own(0), engine(0, answered(json!([["error", text("SyntaxError: formal parameter `at` declared in lexically declared names at line 1, col 2 (native)\n    and a line the engine went on with")]])))])),
+            ),
+            (
+                "a failure, a body's exception in a frame, in the run's last round",
+                failed.clone(),
+                Some(&js),
+                Some(json!([engine(0, json!({ "reason": "an earlier round's" })), own(1), engine(1, answered(json!([["error", text("Error: not more than 0 (unknown at :3:11)")], ["value", null]])))])),
+            ),
+            ("a failure, an answer that isn't the engine's", failed.clone(), Some(&js), Some(json!([own(0), engine(0, answered(json!([["error", text("refused")], ["status", { "type": "Number", "value": 0 }]])))]))),
+            ("a failure, the engine's answer with a value and no error", failed.clone(), Some(&js), Some(json!([own(0), engine(0, answered(json!([["value", text("ok")]])))]))),
+            ("a failure, no reason recorded", failed.clone(), Some(&js), None),
             ("withheld", json!({ "effect": write, "level": "withheld", "at": [0, 3] }), None, None),
             ("refused", json!({ "effect": "DbWrite(\"shop/orders\")", "level": "refused", "rule": "a value read from a reply that sent a secret back isn't written" }), None, None),
             ("a step with no node of the text", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 9], "leaf": "collection_get", "read": 0 }), None, None),
             ("a step with no node and no leaf", json!({ "effect": write, "level": "missing", "at": [0, 3] }), None, None),
         ];
+        // The run as explain reads it: a request's, placed by its route's trace, whose second and
+        // third steps are the note's `from` (the notes stand at `[0, 1]` and `[0, 2]`).
+        let document = json!({ "trace": { "POST /r": ["a", "from", "from"] } });
         let fixture: Vec<Value> = cases
             .iter()
-            .map(|(what, note, from, reason)| {
-                let reasons: HashMap<String, String> = reason.map(|r| ("from".to_string(), r.to_string())).into_iter().collect();
+            .map(|(what, note, from, timeline)| {
+                let mut run = entry.clone();
+                run["kind"] = json!("request");
+                run["route"] = json!("POST /r");
+                run["timeline"] = timeline.clone().unwrap_or(json!([]));
+                let reasons = recorded(&document, &run).reasons;
                 json!({
                     "what": what,
                     "note": note,
                     "from": from.map(|n| json!({ "name": n.data.name, "params": n.data.params })),
-                    "reason": reason,
-                    "says": skipped_why(note, *from, &entry, &reasons),
+                    "timeline": timeline,
+                    "says": skipped_why(note, *from, &run, &reasons),
                 })
             })
             .collect();
-        let text = serde_json::to_string_pretty(&json!({ "reads": entry["reads"], "cases": fixture })).unwrap() + "\n";
+        let text = serde_json::to_string_pretty(&json!({ "reads": entry["reads"], "trace": document["trace"], "cases": fixture })).unwrap() + "\n";
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../editor/src/skipped.fixture.json");
         let kept = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
         if kept != text && std::env::var_os("HOLON_BLESS").is_some() {

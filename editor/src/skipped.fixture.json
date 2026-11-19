@@ -25,8 +25,8 @@
         "level": "read",
         "read": 0
       },
-      "reason": null,
       "says": "collection_get \"tasks\" found nothing at tasks[t1]",
+      "timeline": null,
       "what": "a read, by its key"
     },
     {
@@ -54,8 +54,8 @@
         "level": "read",
         "read": 1
       },
-      "reason": null,
       "says": "collection_get \"tasks\" found nothing at tasks[*]",
+      "timeline": null,
       "what": "a read of a listing"
     },
     {
@@ -83,8 +83,8 @@
         "level": "read",
         "read": 7
       },
-      "reason": null,
       "says": "collection_get \"tasks\" found nothing",
+      "timeline": null,
       "what": "a read whose request the record doesn't keep"
     },
     {
@@ -111,8 +111,8 @@
         "leaf": "store_read",
         "level": "read"
       },
-      "reason": null,
       "says": "store_read \"none\" found nothing",
+      "timeline": null,
       "what": "a state read (not one of the entry's reads)"
     },
     {
@@ -139,8 +139,8 @@
         "leaf": "field",
         "level": "missing"
       },
-      "reason": null,
       "says": "field \"id\" gave nothing: what it read lacked it",
+      "timeline": null,
       "what": "a value lacking a field"
     },
     {
@@ -169,8 +169,8 @@
         "level": "missing",
         "unseen": true
       },
-      "reason": null,
       "says": "field \"id\" gave nothing: what it read lacked it, as far as the record sees",
+      "timeline": null,
       "what": "as far as the record sees"
     },
     {
@@ -191,9 +191,33 @@
         "leaf": "js",
         "level": "failed"
       },
-      "reason": "out of fuel",
       "says": "js failed: out of fuel",
-      "what": "a failure, its reason recorded"
+      "timeline": [
+        {
+          "end_us": 1,
+          "outputs": [
+            null
+          ],
+          "path": [
+            0,
+            2
+          ],
+          "round": 0,
+          "start_us": 0
+        },
+        {
+          "end_us": 1,
+          "path": [
+            0,
+            2,
+            1
+          ],
+          "reason": "out of fuel",
+          "round": 0,
+          "start_us": 0
+        }
+      ],
+      "what": "a failure, the engine's own reason"
     },
     {
       "from": {
@@ -213,8 +237,266 @@
         "leaf": "js",
         "level": "failed"
       },
-      "reason": null,
+      "says": "js failed: SyntaxError: formal parameter `at` declared in lexically declared names (the body's line 1, col 2)",
+      "timeline": [
+        {
+          "end_us": 1,
+          "outputs": [
+            null
+          ],
+          "path": [
+            0,
+            2
+          ],
+          "round": 0,
+          "start_us": 0
+        },
+        {
+          "end_us": 1,
+          "outputs": [
+            {
+              "type": "Record",
+              "value": [
+                [
+                  "error",
+                  {
+                    "type": "Text",
+                    "value": "SyntaxError: formal parameter `at` declared in lexically declared names at line 1, col 2 (native)\n    and a line the engine went on with"
+                  }
+                ]
+              ]
+            }
+          ],
+          "path": [
+            0,
+            2,
+            1
+          ],
+          "round": 0,
+          "start_us": 0
+        }
+      ],
+      "what": "a failure, a body's syntax error: its position as the body's, its first line"
+    },
+    {
+      "from": {
+        "name": "js",
+        "params": []
+      },
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "from": [
+          0,
+          2
+        ],
+        "leaf": "js",
+        "level": "failed"
+      },
+      "says": "js failed: Error: not more than 0 (the body's line 3, col 11)",
+      "timeline": [
+        {
+          "end_us": 1,
+          "path": [
+            0,
+            2,
+            1
+          ],
+          "reason": "an earlier round's",
+          "round": 0,
+          "start_us": 0
+        },
+        {
+          "end_us": 1,
+          "outputs": [
+            null
+          ],
+          "path": [
+            0,
+            2
+          ],
+          "round": 1,
+          "start_us": 0
+        },
+        {
+          "end_us": 1,
+          "outputs": [
+            {
+              "type": "Record",
+              "value": [
+                [
+                  "error",
+                  {
+                    "type": "Text",
+                    "value": "Error: not more than 0 (unknown at :3:11)"
+                  }
+                ],
+                [
+                  "value",
+                  null
+                ]
+              ]
+            }
+          ],
+          "path": [
+            0,
+            2,
+            1
+          ],
+          "round": 1,
+          "start_us": 0
+        }
+      ],
+      "what": "a failure, a body's exception in a frame, in the run's last round"
+    },
+    {
+      "from": {
+        "name": "js",
+        "params": []
+      },
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "from": [
+          0,
+          2
+        ],
+        "leaf": "js",
+        "level": "failed"
+      },
       "says": "js failed",
+      "timeline": [
+        {
+          "end_us": 1,
+          "outputs": [
+            null
+          ],
+          "path": [
+            0,
+            2
+          ],
+          "round": 0,
+          "start_us": 0
+        },
+        {
+          "end_us": 1,
+          "outputs": [
+            {
+              "type": "Record",
+              "value": [
+                [
+                  "error",
+                  {
+                    "type": "Text",
+                    "value": "refused"
+                  }
+                ],
+                [
+                  "status",
+                  {
+                    "type": "Number",
+                    "value": 0
+                  }
+                ]
+              ]
+            }
+          ],
+          "path": [
+            0,
+            2,
+            1
+          ],
+          "round": 0,
+          "start_us": 0
+        }
+      ],
+      "what": "a failure, an answer that isn't the engine's"
+    },
+    {
+      "from": {
+        "name": "js",
+        "params": []
+      },
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "from": [
+          0,
+          2
+        ],
+        "leaf": "js",
+        "level": "failed"
+      },
+      "says": "js failed",
+      "timeline": [
+        {
+          "end_us": 1,
+          "outputs": [
+            null
+          ],
+          "path": [
+            0,
+            2
+          ],
+          "round": 0,
+          "start_us": 0
+        },
+        {
+          "end_us": 1,
+          "outputs": [
+            {
+              "type": "Record",
+              "value": [
+                [
+                  "value",
+                  {
+                    "type": "Text",
+                    "value": "ok"
+                  }
+                ]
+              ]
+            }
+          ],
+          "path": [
+            0,
+            2,
+            1
+          ],
+          "round": 0,
+          "start_us": 0
+        }
+      ],
+      "what": "a failure, the engine's answer with a value and no error"
+    },
+    {
+      "from": {
+        "name": "js",
+        "params": []
+      },
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "from": [
+          0,
+          2
+        ],
+        "leaf": "js",
+        "level": "failed"
+      },
+      "says": "js failed",
+      "timeline": null,
       "what": "a failure, no reason recorded"
     },
     {
@@ -227,8 +509,8 @@
         "effect": "StateWrite(\"g\")",
         "level": "withheld"
       },
-      "reason": null,
       "says": "withheld: where it stopped may be computed from a secret",
+      "timeline": null,
       "what": "withheld"
     },
     {
@@ -238,8 +520,8 @@
         "level": "refused",
         "rule": "a value read from a reply that sent a secret back isn't written"
       },
-      "reason": null,
       "says": "refused: a value read from a reply that sent a secret back isn't written",
+      "timeline": null,
       "what": "refused"
     },
     {
@@ -258,8 +540,8 @@
         "level": "read",
         "read": 0
       },
-      "reason": null,
       "says": "collection_get found nothing at tasks[t1]",
+      "timeline": null,
       "what": "a step with no node of the text"
     },
     {
@@ -272,8 +554,8 @@
         "effect": "StateWrite(\"g\")",
         "level": "missing"
       },
-      "reason": null,
       "says": "a step gave nothing: what it read lacked it",
+      "timeline": null,
       "what": "a step with no node and no leaf"
     }
   ],
@@ -313,5 +595,12 @@
         ]
       }
     }
-  ]
+  ],
+  "trace": {
+    "POST /r": [
+      "a",
+      "from",
+      "from"
+    ]
+  }
 }
