@@ -118,7 +118,9 @@ impl Runs {
     pub(crate) fn steps(&self) -> Vec<u32> {
         match &self.view {
             Some(Ok(v)) if !v.steps.is_empty() => v.steps.iter().map(|s| s.line).collect(),
-            Some(Ok(v)) => v.notes.iter().filter(|(_, ns)| ns.iter().any(|n| !n.starts_with("⇒ nothing"))).map(|(l, _)| *l).collect(),
+            // A line whose note says it has no value, or that the effect there wasn't made, isn't
+            // a step that ran with one.
+            Some(Ok(v)) => v.notes.iter().filter(|(_, ns)| ns.iter().any(|n| !n.starts_with("⇒ nothing") && !n.starts_with("⇒ not made"))).map(|(l, _)| *l).collect(),
             _ => vec![],
         }
     }

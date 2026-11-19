@@ -544,3 +544,106 @@ fn verify_works_out_what_each_run_didnt_make_again() {
     println!("{}", table.join("\n"));
     assert!(wrong.is_empty(), "{}:\n{}", wrong.len(), wrong.join("\n"));
 }
+
+/// The words `holon explain` says a note of each level with (agent.rs's `skipped_why`).
+const EXPLAIN_SAYS: &[(&str, &str)] =
+    &[("read", "found nothing"), ("missing", "gave nothing:"), ("failed", "failed"), ("withheld", "withheld:"), ("refused", "refused:")];
+
+/// **Guards:** `holon explain` says why an effect the run held wasn't made by the server's note of
+/// it (`skipped`), once, under the line that would have made it, for every kind of effect and
+/// every way of not arriving in the level table; and where it still works out why a step has no
+/// value itself (a step that isn't an effect), it never takes a step whose value was too large to
+/// record for one that gave nothing: a function given a large value and a state read for the
+/// first time is said to have got nothing from the read, as is the write it fed.
+/// **Why:** explain worked every reason out from the record, the first step upstream with no
+/// recorded value taken for the one that gave nothing. A step whose value was too large to record
+/// has none, so a flow on rc.36 whose write was fed two large answers and a state read for the
+/// first time was told the request had given nothing (2026-11-19).
+/// **If it fails:** the row printed names the effect and the way it didn't arrive that explain
+/// says otherwise than the record; for the function row, the line that names the wrong step.
+#[test]
+fn explain_says_why_by_the_records_note() {
+    let state = claims_state("");
+    let (host, _hits) = counting_server();
+    let mut text = flow_of(free_port(), &host);
+    text.push_str("\nroute.post(\"/slim\", (req) => {\n  const s = both(req.json.pad, state.none)\n  state.g = s\n  return \"end\"\n})\n");
+    let slug = deploy_text(&state, &text, &host);
+    let document = holon_author::agent::plan(&text).unwrap().document;
+    let mut seen = None;
+    gained(&state, &slug, &mut seen);
+    let (mut rows, mut wrong) = (0, Vec::new());
+    for (e, (effect, _, _)) in EFFECTS.iter().enumerate() {
+        for (o, (origin, _, _, body, _)) in ORIGINS.iter().enumerate() {
+            data_call(&state, &slug, "POST", &format!("/r{e}_{o}"), &sent(body));
+            let entry = gained(&state, &slug, &mut seen).pop().unwrap_or_else(|| panic!("{effect} | {origin}: no entry"));
+            let said = holon_author::agent::explain(&slug, &document, &entry).unwrap();
+            let notes = entry["skipped"].as_array().cloned().unwrap_or_default();
+            let not_made: Vec<&str> = said.lines().filter(|l| l.contains("not made: ")).collect();
+            rows += 1;
+            if not_made.len() != notes.len() {
+                wrong.push(format!("{effect} | {origin}: {} note(s), explain says \"not made\" {} time(s):\n{said}", notes.len(), not_made.len()));
+                continue;
+            }
+            for (note, line) in notes.iter().zip(&not_made) {
+                let level = note["level"].as_str().unwrap_or("?");
+                let words = EXPLAIN_SAYS.iter().find(|(l, _)| *l == level).map_or("?", |(_, w)| *w);
+                if !line.contains(words) {
+                    wrong.push(format!("{effect} | {origin}: the note {note} is said as {line:?}, without {words:?}"));
+                }
+            }
+            // Beside a value too large to record, only the read that found nothing is said to
+            // have given nothing.
+            if sent(body).len() > crate::recorder::Timer::MAX_RECORDED_BYTES {
+                for line in said.lines().filter(|l| l.contains("nothing")) {
+                    if !line.contains("\"none\"") {
+                        wrong.push(format!("{effect} | {origin}: a step other than the read is said to have given nothing: {line:?}\n{said}"));
+                    }
+                }
+            }
+        }
+    }
+    // A step that isn't an effect, fed a large value and a missing state: explain works out why
+    // it has no value, and names the read.
+    data_call(&state, &slug, "POST", "/slim", &sent("{BIG}"));
+    let entry = gained(&state, &slug, &mut seen).pop().expect("the /slim run's entry");
+    let said = holon_author::agent::explain(&slug, &document, &entry).unwrap();
+    println!("/slim, explained:\n{said}");
+    let nothing: Vec<&str> = said.lines().filter(|l| l.contains("nothing")).collect();
+    if nothing.len() != 2 || nothing.iter().any(|l| !l.contains("\"none\"")) {
+        wrong.push(format!("/slim: the function's line and the write's should each name the read, and only it:\n{said}"));
+    }
+    println!("{rows} runs of the level table explained");
+    assert!(wrong.is_empty(), "{} wrong:\n{}", wrong.len(), wrong.join("\n"));
+}
+
+/// **Guards:** a run that went on from a wait (`resume`) is explained over its own handler's
+/// steps, with the note of the effect it didn't make under that effect's line, as its first part
+/// is.
+/// **Why:** explain placed only a request's, a clock's, a file's and a started action's runs
+/// under their handler; a resumed run was placed over the whole flow, none of its steps found, and
+/// `holon runs --run N` said it "recorded no steps", so why it wrote nothing showed only on its
+/// first part (rc.36, 2026-11-19).
+/// **If it fails:** the explained text printed shows what was placed.
+#[test]
+fn explain_shows_a_resumed_runs_steps_and_notes() {
+    let state = claims_state("");
+    let text = format!(
+        "import {{ action, event, flow, route }} from \"holon\"\nimport tasks from \"collection:tasks\"\n\nflow(\"cards\", {{ port: {} }})\n\nroute.post(\"/propose\", (req) => {{\n  const started = card({{ id: req.json.id }})\n  return `/go/${{started.waiting.go}}`\n}})\n\nexport const card = action(async (asked) => {{\n  const go = await event(\"go\", {{ expires: \"1h\" }})\n  const found = tasks[\"never\"]\n  tasks[asked.id] = {{ ...found, state: \"done\", via: go.method }}\n  return \"end\"\n}})\n\nroute.get(\"/go/:token\", () => \"thanks\", {{ resumes: \"go\" }})\n",
+        free_port()
+    );
+    let slug = deploy_plain_text(&state, &text);
+    let document = holon_author::agent::plan(&text).unwrap().document;
+    let (code, link, _) = data_call(&state, &slug, "POST", "/propose", r#"{"id":"t1"}"#);
+    assert_eq!(code, 200, "{link}");
+    let (code, said, _) = data_call(&state, &slug, "GET", link.trim_matches('"'), "");
+    assert_eq!(code, 200, "{said}");
+    let log = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/log?limit=50"), vec![])));
+    let entries = log["entries"].as_array().cloned().unwrap_or_default();
+    let resumed = entries.iter().find(|e| e["kind"] == "resume").unwrap_or_else(|| panic!("no resumed run: {log}"));
+    assert_eq!(resumed["skipped"].as_array().map(Vec::len), Some(1), "the resumed run notes the write it didn't make: {resumed}");
+    let said = holon_author::agent::explain(&slug, &document, resumed).unwrap();
+    println!("the resumed run, explained:\n{said}");
+    assert!(!said.contains("recorded no steps"), "{said}");
+    let under_write = said.lines().skip_while(|l| !l.contains("tasks[asked.id] =")).nth(1).unwrap_or("");
+    assert!(under_write.contains("not made: ") && under_write.contains("found nothing"), "the note stands under the write's line: {said}");
+}

@@ -278,10 +278,11 @@ struct Recorded {
 /// step's path that index sits. A request's route, or a clock's, file handler's or action's label
 /// (`every 2s`, `on file inbox`, `action reset`), places it one level down, inside its handler
 /// unit (`[0, k]`); else the whole flow's (`"*"`), at the top. As the editor's `placedBy` does.
+/// A run that went on from a wait (`resume`) keeps the label of the run it continues.
 fn run_trace(document: &Value, entry: &Value) -> (Vec<String>, usize) {
     let kind = entry.get("kind").and_then(Value::as_str).unwrap_or("");
     let route = entry.get("route").and_then(Value::as_str).filter(|r| !r.is_empty());
-    let handler = kind == "request" || (matches!(kind, "tick" | "file" | "trigger") && route.is_some());
+    let handler = kind == "request" || (matches!(kind, "tick" | "file" | "trigger" | "websocket" | "resume") && route.is_some());
     let (key, depth) = if handler { (route.unwrap_or(""), 2) } else { ("*", 1) };
     let map: Vec<String> = document.pointer(&format!("/trace/{}", key.replace('~', "~0").replace('/', "~1"))).and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
     (map, depth)
@@ -299,9 +300,6 @@ fn node_of_path(map: &[String], depth: usize, path: &[u64]) -> Option<String> {
 /// the read it protects; the ones no read of the text explains (a listing) under line 0.
 fn claim_notes(document: &Value, entry: &Value, lines: &BTreeMap<String, u32>) -> BTreeMap<u32, Vec<String>> {
     let (map, depth) = run_trace(document, entry);
-    let text_field = |record: &Value, name: &str| -> Option<String> {
-        record.get("value")?.as_array()?.iter().find(|kv| kv.get(0).and_then(Value::as_str) == Some(name))?.get(1)?.get("value")?.as_str().map(str::to_string)
-    };
     // Each read's key (`seen[k2]`, or `seen[*]` for a listing) and the line of its node.
     let reads: Vec<(String, Option<u32>)> = entry
         .get("reads")
@@ -309,12 +307,7 @@ fn claim_notes(document: &Value, entry: &Value, lines: &BTreeMap<String, u32>) -
         .into_iter()
         .flatten()
         .filter_map(|r| {
-            let request = r.get("request")?;
-            let collection = text_field(request, "collection")?;
-            let key = match text_field(request, "get") {
-                Some(k) => format!("{collection}[{k}]"),
-                None => format!("{collection}[*]"),
-            };
+            let key = read_key(r.get("request")?)?;
             let path: Vec<u64> = r.get("path").and_then(Value::as_array).map(|p| p.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
             let line = node_of_path(&map, depth, &path).and_then(|id| lines.get(&id).copied());
             Some((key, line))
@@ -343,6 +336,44 @@ fn claim_notes(document: &Value, entry: &Value, lines: &BTreeMap<String, u32>) -
         notes.entry(line).or_default().push(note);
     }
     notes
+}
+
+/// A read's key as its record keeps what it asked: `seen[k2]`, or `seen[*]` for a listing.
+fn read_key(request: &Value) -> Option<String> {
+    let text_field = |name: &str| -> Option<String> {
+        request.get("value")?.as_array()?.iter().find(|kv| kv.get(0).and_then(Value::as_str) == Some(name))?.get(1)?.get("value")?.as_str().map(str::to_string)
+    };
+    let collection = text_field("collection")?;
+    Some(match text_field("get") {
+        Some(k) => format!("{collection}[{k}]"),
+        None => format!("{collection}[*]"),
+    })
+}
+
+/// Why an effect wasn't made, in words, from the server's note of it (`skipped`): the step
+/// where its absence began (`from`, the node of the text it stands in), and what a read asked.
+/// Read, never worked out again: the server's walk saw each step, and the record may not keep
+/// one (a value too large to record), which a walk here would take for one that gave nothing.
+fn skipped_why(note: &Value, from: Option<&crate::canvas::Node>, entry: &Value, reasons: &HashMap<String, String>) -> String {
+    let name = from.map(node_name).unwrap_or_else(|| note.get("leaf").and_then(Value::as_str).unwrap_or("a step").to_string());
+    let seen = if note.get("unseen").and_then(Value::as_bool) == Some(true) { ", as far as the record sees" } else { "" };
+    match note.get("level").and_then(Value::as_str).unwrap_or("") {
+        "read" => {
+            let asked = note.get("read").and_then(Value::as_u64).and_then(|i| read_key(entry.get("reads")?.get(i as usize)?.get("request")?));
+            match asked {
+                Some(key) => format!("{name} found nothing at {key}{seen}"),
+                None => format!("{name} found nothing{seen}"),
+            }
+        }
+        "missing" => format!("{name} gave nothing: what it read lacked it{seen}"),
+        "failed" => match from.and_then(|n| reasons.get(n.id.as_str())) {
+            Some(why) => format!("{name} failed: {why}{seen}"),
+            None => format!("{name} failed{seen}"),
+        },
+        "withheld" => "withheld: where it stopped may be computed from a secret".into(),
+        "refused" => format!("refused: {}", note.get("rule").and_then(Value::as_str).unwrap_or("?")),
+        other => other.to_string(),
+    }
 }
 
 fn recorded(document: &Value, entry: &Value) -> Recorded {
@@ -514,6 +545,24 @@ pub fn run_view(name: &str, document: &Value, entry: &Value) -> Result<RunView, 
         on_line.entry(*line).or_default().push(id.as_str());
     }
     let mut claims = claim_notes(document, entry, &lines);
+    // Each effect the run held and didn't make, as the server noted it (`skipped`, R99): its
+    // reason is read from the note, never worked out again here. By the node of the text that
+    // would have made it; one with no step to stand under (refused, withheld) is said after it.
+    let (map, depth) = run_trace(document, entry);
+    let mut held: HashMap<String, Vec<String>> = HashMap::new();
+    let mut unplaced: Vec<String> = Vec::new();
+    for note in entry.get("skipped").and_then(Value::as_array).into_iter().flatten() {
+        let path = |k: &str| -> Vec<u64> { note.get(k).and_then(Value::as_array).map(|p| p.iter().filter_map(Value::as_u64).collect()).unwrap_or_default() };
+        let from = node_of_path(&map, depth, &path("from")).and_then(|id| by_id.get(id.as_str()).copied());
+        let why = skipped_why(note, from, entry, &reasons);
+        match node_of_path(&map, depth, &path("at")).filter(|id| part.contains(id)) {
+            Some(id) => held.entry(id).or_default().push(why),
+            None => unplaced.push(format!("not made: {}: {why}", note.get("effect").and_then(Value::as_str).unwrap_or("?"))),
+        }
+    }
+    // A node that ran and whose outputs the record didn't keep (too large to record) had a value:
+    // never the one taken to have given nothing.
+    let known = |id: &str| has(id) || (ran.contains(id) && !values.contains_key(id));
     // Why a node has no value: the first node upstream that gave nothing though everything
     // feeding it had a value.
     let origin = |id: &str| -> String {
@@ -521,14 +570,14 @@ pub fn run_view(name: &str, document: &Value, entry: &Value) -> Result<RunView, 
         let mut seen = HashSet::new();
         let mut found = None;
         while let Some(n) = stack.pop() {
-            if !seen.insert(n) || has(n) {
+            if !seen.insert(n) || known(n) {
                 continue;
             }
             let from = feeds.get(n).cloned().unwrap_or_default();
-            if from.iter().all(|f| has(f)) {
+            if from.iter().all(|f| known(f)) {
                 found = Some(n);
             }
-            stack.extend(from.iter().filter(|f| !has(f)));
+            stack.extend(from.iter().filter(|f| !known(f)));
         }
         match found.and_then(|n| by_id.get(n)) {
             Some(n) if ran.contains(&n.id) => match reasons.get(n.id.as_str()) {
@@ -576,10 +625,17 @@ pub fn run_view(name: &str, document: &Value, entry: &Value) -> Result<RunView, 
         roots.sort_by_key(|id| doc.nodes.iter().position(|n| n.id == *id));
         let here = notes.entry(n).or_default();
         for id in &roots {
+            // An effect the server noted as held says why by its note, below.
+            if held.contains_key(*id) && !has(id) {
+                continue;
+            }
             let note = annotate(id);
             if !note.is_empty() {
                 here.push(format!("⇒ {note}"));
             }
+        }
+        for why in ids.iter().filter_map(|id| held.get(*id)).flatten() {
+            here.push(format!("⇒ not made: {why}"));
         }
         // A node inlined into the statement (a js call inside `respond { … }`) that gave nothing
         // for a recorded reason: said too, since the root's own value hides it.
@@ -604,6 +660,7 @@ pub fn run_view(name: &str, document: &Value, entry: &Value) -> Result<RunView, 
     for p in entry.get("performed").and_then(Value::as_array).into_iter().flatten() {
         out.push(format!("performed {}: {}", p.get("capability").and_then(Value::as_str).unwrap_or("?"), p.get("payload").map(show).unwrap_or_default()));
     }
+    out.extend(unplaced);
     for x in entry.get("rounds").and_then(Value::as_array).into_iter().flatten().filter_map(|r| r.get("exchanges").and_then(Value::as_array)).flatten() {
         out.push(format!("called out: {} → {}", x.get("request").map(show).unwrap_or_default(), x.get("response").map(show).unwrap_or_default()));
     }

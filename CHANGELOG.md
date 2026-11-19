@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **A run's record says what it held and didn't make, and why** (`skipped`). Each write, row, log
+  line, call or action start whose value never arrived is noted with where it stopped: a read that
+  found nothing (and what it asked), a field a value lacked, a step that failed. One the server
+  refused is noted with its rule, and one that may carry what is computed from a secret is noted
+  as withheld, naming nothing. The flow's own choice (an `if` not taken, an early return) isn't
+  noted. `holon explain` and `holon runs --run N` say each under the line that would have made it,
+  read from the note, and a run that went on from a wait is explained over its own steps (it
+  said "this run recorded no steps"). explain no longer takes a step whose value was too large
+  to record for one that gave nothing: a write fed a large answer and a state read for the first
+  time named the request as what gave nothing. `holon verify` works the notes out again and says a
+  run differs where they don't match. A run recorded before this release has no notes, so verify
+  says DIFFERS for one of those runs that held an effect. A run where nothing was held pays
+  nothing for it; one that dropped an effect pays about 7.5 µs (performance.md).
 - **Changing a secret while a run waits no longer sends its earlier requests again** where the
   request holds the secret as it is: in a header, a URL or a JSON body. When the run goes on, such
   a request is recognised as sent and answered from its record; the same holds for a run tried
