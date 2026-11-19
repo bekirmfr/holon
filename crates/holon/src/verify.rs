@@ -1811,8 +1811,22 @@ fn rerun(
         })
         .collect();
     // What holds a value its flow never keeps, under its key, is refused where it runs
-    // (never_keep.rs), and so here: its mark stands where the value stood.
-    host.performed.retain(|(c, p)| crate::never_keep::refused(c, p, &never_keep).is_none());
+    // (never_keep.rs), and so here: its mark stands where the value stood. A log line too. Each
+    // is noted as the server notes it (skipped.rs), to hold the line's notes to.
+    let mut noted: Vec<(Capability, &'static str)> = Vec::new();
+    host.performed.retain(|(c, p)| {
+        let kept = crate::never_keep::refused(c, p, &never_keep).is_none();
+        if !kept {
+            noted.push((c.clone(), skipped::NEVER_KEPT));
+        }
+        kept
+    });
+    for (level, line) in &host.logs {
+        let log = Capability::Log(level.clone());
+        if crate::never_keep::refused(&log, line, &never_keep).is_some() {
+            noted.push((log, skipped::NEVER_KEPT));
+        }
+    }
     // A write of a secret's value is refused where it runs (firing.rs), and run again here with
     // its placeholder it can't be told from one that was performed (a file's text, logged by
     // hash, differs too): the run isn't checked.
@@ -1820,6 +1834,11 @@ fn rerun(
         use holon_core::Capability::*;
         matches!(c, StateWrite(_) | CollectionWrite(_) | DbWrite(_) | ChannelSend(_) | MailSend(_) | QueueSend(_) | FileWrite(_))
     };
+    // A write of what is computed from a secret is refused there by where it came from, whatever
+    // its value (`SecretFed::derives_effect`), after one of a never-kept value and before one of
+    // what a reply sent back, as the server says it: noted here, in that order. One whose value
+    // the record writes as a mark has the run not checked (below); the rest are taken out there.
+    noted.extend(host.performed.iter().filter(|(c, _)| keeps(c) && fed.derives_effect(c)).map(|(c, _)| (c.clone(), skipped::DERIVED)));
     // A write of what the run read out of a reply that sent a secret back is refused where it runs
     // too (`firing::Echoed`, R70), by where it came from and what kind of value each step gave,
     // which run again says as well as the run did: the calls whose recorded reply holds a
@@ -1916,6 +1935,9 @@ fn rerun(
     if host.performed.iter().any(|(c, p)| keeps(c) && marks.carries_secret(p)) {
         return Rerun::Skipped("it wrote a secret's value, or one computed from it, which the server refuses: not run again".into());
     }
+    // And one computed from a secret too short to be a mark (a number, a true or false): refused
+    // there all the same, by where it came from (noted above).
+    host.performed.retain(|(c, _)| !(keeps(c) && fed.derives_effect(c)));
     // What it produced, as the log would write it, to compare with what the log wrote.
     let outputs: Vec<Option<SValue>> =
         outcome.outputs.iter().map(|o| o.as_ref().map(|v| marks.write(SValue::from_core(&folders::loggable_output(v))))).collect();
@@ -1929,6 +1951,21 @@ fn rerun(
         .collect();
     if json(&performed) != json(&entry.performed) {
         differs.push("the effects it performed");
+    }
+    // The effects it held and didn't make, with why, and those refused (skipped.rs): worked out
+    // again by the server's walk, on the steps run again and the reads the line keeps, for a run
+    // that settled; one that failed or waits notes none. So a note dropped, added or changed
+    // differs, and so does an effect moved out of what it performed into what it didn't make
+    // (its effects differ too). A refusal by its grant, which the export doesn't hold, can't be
+    // told here: such a run differs on its effects already.
+    let notes = if outcome.waiting.is_empty() && outcome.error.is_none() && entry.error.is_none() {
+        let read = |path: &[u32]| entry.reads.iter().position(|r| r.path == path);
+        skipped::of(root, resolver, &observer.timer.timeline, &fed, &read, &noted, observer.timer.began_absent || !fed.is_empty())
+    } else {
+        Vec::new()
+    };
+    if json(&notes) != json(&entry.skipped) {
+        differs.push("the effects it held and didn't make");
     }
     // A line that says its record withholds keeps nothing that may be computed from a secret,
     // and is one that computed with one: else it says other than the server writes. Nor is it
@@ -2685,6 +2722,11 @@ impl Observer for Asserting {
     fn round(&mut self, n: usize) {
         self.round = n as u32;
         self.timer.round(n)
+    }
+    // Where an absence began, heard as the server's `Timer` hears it: the notes of what the run
+    // didn't make are worked out again by the same walk (skipped.rs).
+    fn began_absent(&mut self) {
+        self.timer.began_absent()
     }
     fn failed(&mut self, path: &[u32], reason: &str) {
         self.timer.failed(path, reason)

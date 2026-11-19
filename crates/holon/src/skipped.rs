@@ -31,11 +31,18 @@ use holon_core::absence::{self, Level, Look, Seen, Truth};
 use holon_core::{capabilities_of, Capability, Resolver, Type, Unit, UnitBody, CALLS};
 use std::collections::HashMap;
 
+/// The rules a refusal is said by that `holon verify` works out again from the run (the others
+/// it can't: a grant isn't in the export), in the words the server says them.
+pub(crate) const NEVER_KEPT: &str = "it holds a value its flow never keeps";
+pub(crate) const DERIVED: &str = "it holds what is computed from a secret";
+
 /// The effects `root`'s run held and didn't make, by its steps (`timeline`, as its `Timer` kept
-/// them, before anything of them is withheld) and the reads it made, with the effects the host
-/// refused (each by its rule): every level but the flow's own condition, in one order. `walk`
-/// false asks no step (no absence began, and no secret is read): only the refusals.
-pub(crate) fn of(root: &Unit, resolver: &impl Resolver, timeline: &[NodeTiming], fed: &SecretFed, reads: &[crate::collections::Read], refused: &[(Capability, &str)], walk: bool) -> Vec<Skipped> {
+/// them, before anything of them is withheld) and the reads it made (`read`: a read step's place
+/// among them), with the effects the host refused (each by its rule): every level but the flow's
+/// own condition, in one order. `walk` false asks no step (no absence began, and no secret is
+/// read): only the refusals. The server works them out as the run ends (firing.rs), and `holon
+/// verify` again as it runs the run again, to hold the line to them.
+pub(crate) fn of(root: &Unit, resolver: &impl Resolver, timeline: &[NodeTiming], fed: &SecretFed, read: &dyn Fn(&[u32]) -> Option<usize>, refused: &[(Capability, &str)], walk: bool) -> Vec<Skipped> {
     let mut out: Vec<Skipped> = refused.iter().map(|(cap, rule)| said_refused(cap, rule, fed)).collect();
     if walk && let UnitBody::Composite { children, .. } = &root.body {
         let last = timeline.iter().map(|t| t.round).max().unwrap_or(0);
@@ -60,8 +67,7 @@ pub(crate) fn of(root: &Unit, resolver: &impl Resolver, timeline: &[NodeTiming],
                 out.push(if origin.level == Level::Withheld {
                     withheld(effect)
                 } else {
-                    let read = reads.iter().position(|r| r.path == origin.at);
-                    Skipped { effect, level: origin.level.word().into(), at: leaf, from: origin.at, leaf: origin.leaf, read, unseen: origin.unseen, rule: String::new() }
+                    Skipped { effect, level: origin.level.word().into(), at: leaf, read: read(&origin.at), from: origin.at, leaf: origin.leaf, unseen: origin.unseen, rule: String::new() }
                 });
             }
         }

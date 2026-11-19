@@ -922,7 +922,7 @@ fn run_attempt(
         // the payload as the run made it, before anything of it is marked.
         if let Some(why) = never_keep::refused(cap, payload, &permit.never_keep) {
             eprintln!("holon: {why}");
-            refuse("it holds a value its flow never keeps");
+            refuse(skipped::NEVER_KEPT);
             return false;
         }
         // A file too: another deployment that reads it logs its text, redacted only of its own
@@ -935,7 +935,7 @@ fn run_attempt(
             }
             if secret_fed.derives_effect(cap) {
                 eprintln!("holon: refused to store or send in {key:?} what is computed from a secret");
-                refuse("it holds what is computed from a secret");
+                refuse(skipped::DERIVED);
                 return false;
             }
             if echoed.fed.feeds_effect(cap) {
@@ -1013,7 +1013,7 @@ fn run_attempt(
         .filter(|(level, line)| match never_keep::refused(&Capability::Log(level.clone()), line, &permit.never_keep) {
             Some(why) => {
                 eprintln!("holon: {why}");
-                refused.push((Capability::Log(level.clone()), "it holds a value its flow never keeps"));
+                refused.push((Capability::Log(level.clone()), skipped::NEVER_KEPT));
                 false
             }
             None => true,
@@ -1023,9 +1023,11 @@ fn run_attempt(
     // (one that waits makes nothing yet). Its steps are walked where an absence began in it, and
     // in every run of a flow that reads a secret, since whether one began can turn on the secret.
     // Before its steps are withheld of what a secret reaches: the walk reads whether a step gave
-    // anything, and never one that may be computed from one.
+    // anything, and never one that may be computed from one. `holon verify` works them out again
+    // (`verify::rerun`), by the same walk and the refusals it can tell.
     let not_made = if outcome.waiting.is_empty() && outcome.error.is_none() {
-        skipped::of(root_unit, resolver, &timer.timeline, &secret_fed, &reads, &refused, timer.began_absent || !secret_fed.is_empty())
+        let read = |path: &[u32]| reads.iter().position(|r| r.path == path);
+        skipped::of(root_unit, resolver, &timer.timeline, &secret_fed, &read, &refused, timer.began_absent || !secret_fed.is_empty())
     } else {
         Vec::new()
     };

@@ -305,3 +305,203 @@ fn a_refused_effect_and_a_secrets_absence_are_said_without_their_value() {
     assert!(notes[0].get("from").is_none() && notes[0].get("leaf").is_none() && notes[0].get("read").is_none(), "{notes}");
     assert!(!notes.to_string().contains("s3cr3t"), "{notes}");
 }
+
+/// A deployment's export, its lines ten seconds apart (none ran beside another, `verify::beside`),
+/// and its lines as JSON.
+fn exported(state: &AppState, slug: &str) -> (verify::Export, Vec<serde_json::Value>) {
+    let export: verify::Export = serde_json::from_value(body_json(route(state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let values = export
+        .lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let mut v: serde_json::Value = serde_json::from_str(l).unwrap();
+            v["at_ms"] = (v["at_ms"].as_u64().unwrap() + 10_000 * i as u64).into();
+            v
+        })
+        .collect();
+    (export, values)
+}
+
+/// `holon verify` on `values`, line `line` changed by `change` (none: as they are), chained again:
+/// what each run comes to, by seq.
+fn verified(export: &verify::Export, values: &[serde_json::Value], line: Option<usize>, change: &dyn Fn(&mut serde_json::Value)) -> Vec<(u64, verify::Rerun)> {
+    let mut lines: Vec<String> = Vec::new();
+    for (j, v) in values.iter().enumerate() {
+        let mut v = v.clone();
+        if Some(j) == line {
+            change(&mut v);
+        }
+        if let Some(before) = lines.last() {
+            v["prev"] = recorder::line_hash(before).into();
+        }
+        lines.push(serde_json::to_string(&v).unwrap());
+    }
+    let head = recorder::line_hash(lines.last().unwrap());
+    let forged = verify::Export { lines, head, ..serde_json::from_value(serde_json::to_value(export).unwrap()).unwrap() };
+    verify::check(&forged, None, &BTreeMap::new()).reruns
+}
+
+/// What `holon verify` made of each run of a flow, as rows; a run it says differs is wrong. The
+/// levels of the notes of the runs it ran again to the same are counted in `levels`.
+fn tally(name: &str, reruns: &[(u64, verify::Rerun)], values: &[serde_json::Value], table: &mut Vec<String>, wrong: &mut Vec<String>, levels: &mut BTreeMap<String, usize>) {
+    let (mut matched, mut not_run) = (0, 0);
+    for (seq, rerun) in reruns {
+        let line = values.iter().find(|v| v["seq"].as_u64() == Some(*seq));
+        let at = line.map_or(String::new(), |v| format!("{} {}", v["kind"].as_str().unwrap_or(""), v["url"].as_str().unwrap_or("")));
+        match rerun {
+            verify::Rerun::Matched => {
+                matched += 1;
+                for note in line.and_then(|v| v["skipped"].as_array()).into_iter().flatten() {
+                    *levels.entry(note["level"].as_str().unwrap_or("?").to_string()).or_default() += 1;
+                }
+            }
+            verify::Rerun::Differs(why) => wrong.push(format!("{name}, {at} (seq {seq}): holon verify says it differs: {why}; its notes {}", line.map_or(serde_json::Value::Null, |v| v["skipped"].clone()))),
+            verify::Rerun::Skipped(why) => {
+                not_run += 1;
+                table.push(format!("{name}, {at}: not run again: {why}"));
+            }
+            _ => {}
+        }
+    }
+    table.push(format!("{name}: {} runs, {matched} run again to the same, {not_run} not run again", reruns.len()));
+}
+
+/// **Guards:** `holon verify` works each run's `skipped` out again, by the server's walk on the
+/// steps it runs again and the refusals it can tell (a never-kept value in a write or a line, a
+/// write computed from a secret), and holds the line to it: every run of the table's flow, of the
+/// secret places' flow with each secret, and of a flow whose writes and lines are refused, that
+/// verify runs again comes to its notes, every level among them; and a line changed and chained
+/// again differs where its notes do (a note taken out, one put in, a level, a read or a rule
+/// changed, an effect moved out of `performed` into `skipped`, a refused one said made). A run
+/// that computed a true or false or a number from a secret isn't run again (no mark carries one),
+/// and its notes are as unchecked as the rest of its line: the rows say which.
+/// **Why:** a note is the server's claim about the run: unchecked, a line could drop the note of
+/// a payout whose amount never came, or say a write was refused that was made (R99 stage 3).
+/// **If it fails:** the run named came out other than its line says: the walk in verify isn't
+/// the server's (what it hears of an absence, the steps it reads, the reads it names), or verify
+/// notes a refusal the server didn't (or not one it did). "No run … at level" means the flows no
+/// longer give a run verify can run again with such a note: give one back.
+#[test]
+fn verify_works_out_what_each_run_didnt_make_again() {
+    let state = claims_state("");
+    let (host, _hits) = counting_server();
+    let (mut table, mut wrong) = (Vec::new(), Vec::new());
+    let mut levels = BTreeMap::new();
+
+    // The table's flow: every effect, every way of not arriving.
+    let table_slug = deploy_text(&state, &flow_of(free_port(), &host), &host);
+    for (e, _) in EFFECTS.iter().enumerate() {
+        for (o, (_, _, _, body, _)) in ORIGINS.iter().enumerate() {
+            data_call(&state, &table_slug, "POST", &format!("/r{e}_{o}"), body);
+        }
+    }
+    let (table_export, table_values) = exported(&state, &table_slug);
+    tally("the table", &verified(&table_export, &table_values, None, &|_| {}), &table_values, &mut table, &mut wrong, &mut levels);
+
+    // The secret places' flow, with each secret.
+    let routes: String = SECRET_PLACES
+        .iter()
+        .enumerate()
+        .map(|(i, (_, body))| {
+            let body = body.replace("{T}", "k.startsWith(\"live_\")").replace("{S}", "(k.startsWith(\"live_\") ? \"s\" : undefined)");
+            format!("route.post(\"/p{i}\", (req) => {{\n{body}\nreturn \"end\"\n}})\n\n")
+        })
+        .collect();
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\nimport k from \"secret:k\"\n\nflow(\"either\", {{ port: {} }})\n\nfunction pick(x) {{\n  const s = k.startsWith(\"live_\") ? \"s\" : undefined\n  return {{ s, v: x + \"!\" }}\n}}\n\n{routes}",
+        free_port()
+    );
+    let places = deploy_plain_text(&state, &text);
+    for secret in ["live_alpha-key", "test_bravo-another-secret-value-22"] {
+        let set = req("POST", &format!("/deployments/{places}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+        for i in 0..SECRET_PLACES.len() {
+            for body in [r#"{}"#, r#"{"v":"y","c":true}"#, r#"{"c":false}"#, r#"{"v":"y"}"#] {
+                data_call(&state, &places, "POST", &format!("/p{i}"), body);
+            }
+        }
+    }
+    let (places_export, places_values) = exported(&state, &places);
+    tally("the secret places", &verified(&places_export, &places_values, None, &|_| {}), &places_values, &mut table, &mut wrong, &mut levels);
+
+    // Refused: a write and a line holding a value the flow never keeps, a write computed from a
+    // secret too short to be a mark.
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport state from \"state\"\nimport k from \"secret:k\"\n\nflow(\"refuses\", {{ port: {}, never_keep: [\"cvc\"] }})\n\nroute.post(\"/keep\", (req) => {{\n  state.last = req.json\n  return \"ok\"\n}})\n\nroute.post(\"/said\", (req) => {{\n  console.log(req.json)\n  return \"ok\"\n}})\n\nroute.post(\"/short\", (req) => {{\n  state.n = k.length\n  return \"ok\"\n}})\n",
+        free_port()
+    );
+    let refuses = deploy_plain_text(&state, &text);
+    let set = req("POST", &format!("/deployments/{refuses}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": "s3cr3t-value-for-test" })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    for path in ["/keep", "/said", "/short"] {
+        data_call(&state, &refuses, "POST", path, r#"{"amount":1737,"cvc":"737"}"#);
+    }
+    let (refuses_export, refuses_values) = exported(&state, &refuses);
+    tally("the refusals", &verified(&refuses_export, &refuses_values, None, &|_| {}), &refuses_values, &mut table, &mut wrong, &mut levels);
+    for v in refuses_values.iter().filter(|v| v["kind"] == "request") {
+        table.push(format!("the refusals, {}: performed {}, skipped {}", v["url"].as_str().unwrap_or(""), v["performed"], v["skipped"]));
+    }
+    // Each is noted: refused where it holds a never-kept value, withheld where it may carry what
+    // is computed from a secret.
+    let notes = |url: &str| refuses_values.iter().find(|v| v["url"].as_str().is_some_and(|u| u.ends_with(url))).map_or(serde_json::Value::Null, |v| v["skipped"].clone());
+    for (url, level) in [("/keep", "refused"), ("/said", "refused"), ("/short", "withheld")] {
+        if notes(url)[0]["level"] != level {
+            wrong.push(format!("the refusals, {url}: the line's notes are {}, not one at level {level}", notes(url)));
+        }
+    }
+
+    // Changed lines: each differs. `/r0_1`: a write whose read found nothing; `/r0_0`: a write made.
+    let line_of = |values: &[serde_json::Value], url: &str| values.iter().position(|v| v["url"].as_str().is_some_and(|u| u.ends_with(url))).unwrap_or_else(|| panic!("no line for {url}"));
+    let (read_line, made_line) = (line_of(&table_values, "/r0_1"), line_of(&table_values, "/r0_0"));
+    let keep_line = line_of(&refuses_values, "/keep");
+    let made = table_values[made_line]["performed"].clone();
+    type Change = Box<dyn Fn(&mut serde_json::Value)>;
+    let changes: Vec<(&str, &verify::Export, &[serde_json::Value], usize, Change)> = vec![
+        ("a note taken out", &table_export, &table_values, read_line, Box::new(|v| v["skipped"] = serde_json::json!([]))),
+        ("a note's level changed", &table_export, &table_values, read_line, Box::new(|v| v["skipped"][0]["level"] = "missing".into())),
+        ("a note's read changed", &table_export, &table_values, read_line, Box::new(|v| v["skipped"][0]["read"] = 7.into())),
+        ("a note put in", &table_export, &table_values, made_line, Box::new(|v| v["skipped"] = serde_json::json!([{ "effect": "Log(\"info\")", "level": "refused", "rule": "not granted" }]))),
+        (
+            "a write made moved into what it didn't make",
+            &table_export,
+            &table_values,
+            made_line,
+            Box::new(|v| {
+                v["performed"] = serde_json::json!([]);
+                v["skipped"] = serde_json::json!([{ "effect": "StateWrite(\"w\")", "level": "refused", "rule": "it holds a value its flow never keeps" }]);
+            }),
+        ),
+        ("a refused write's note taken out", &refuses_export, &refuses_values, keep_line, Box::new(|v| v["skipped"] = serde_json::json!([]))),
+        ("a refused write's rule changed", &refuses_export, &refuses_values, keep_line, Box::new(|v| v["skipped"][0]["rule"] = "not granted".into())),
+        (
+            "a refused write said made",
+            &refuses_export,
+            &refuses_values,
+            keep_line,
+            Box::new(move |v| {
+                v["skipped"] = serde_json::json!([]);
+                v["performed"] = made.clone();
+            }),
+        ),
+    ];
+    for (what, export, values, line, change) in changes {
+        let seq = values[line]["seq"].as_u64().unwrap();
+        let reruns = verified(export, values, Some(line), &change);
+        let said = reruns.iter().find(|(s, _)| *s == seq).map(|(_, r)| r);
+        table.push(format!("{what}: {said:?}"));
+        if !matches!(said, Some(verify::Rerun::Differs(_))) {
+            wrong.push(format!("{what} (seq {seq}), and holon verify says {said:?}, not that it differs"));
+        }
+    }
+    // Each level is held in a run verify ran again (a run it can't run again holds none of its
+    // line): else the comparison could pass by never being made.
+    table.push(format!("the notes of the runs run again to the same, by level: {levels:?}"));
+    for level in ["read", "missing", "failed", "withheld", "refused"] {
+        if !levels.contains_key(level) {
+            wrong.push(format!("no run verify ran again to the same has a note at level {level}: the comparison isn't made for it"));
+        }
+    }
+    println!("{}", table.join("\n"));
+    assert!(wrong.is_empty(), "{}:\n{}", wrong.len(), wrong.join("\n"));
+}
