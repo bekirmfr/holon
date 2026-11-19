@@ -594,7 +594,10 @@ What is not defended, or only partly:
   `every_file_the_server_writes_is_its_owners_alone` (`owner_only.rs`: every file owner-only, and
   the tables, line logs and store sealed).
 - **Grants**: `deploy_asks_for_what_policy_doesnt_grant_and_only_once`,
-  `an_effect_outside_the_grant_is_refused_at_perform_time`, `revoking_an_item_pauses_until_it_is_granted_back`.
+  `an_effect_outside_the_grant_is_refused_at_perform_time`, `revoking_an_item_pauses_until_it_is_granted_back`,
+  `a_runs_sends_are_held_to_the_grant_and_the_secrets_whether_it_finishes_or_parks` (a table: a
+  run that finishes and one that parks, each sending a clean pack, the secret, a value computed
+  from it and a send the grant has lost; only the clean one goes out on either path).
 - **Outbound**: `every_rule_is_enforced_at_perform_time` (an ungranted host, plain HTTP, a private
   address, five headers the host sets, credentials in a URL),
   `a_redirect_to_another_host_leaves_the_credentials_behind`, `private_addresses_are_recognised`.
@@ -668,7 +671,15 @@ What is not defended, or only partly:
   `exported_runs_verify_and_a_rewritten_log_doesnt`, `a_batch_goes_only_after_its_hook_has_run`,
   `a_witness_is_reached_over_https_or_on_this_machine`.
 
-Gaps: none named here beyond the limits above.
+Gaps, found by grounding every claim above in a test (2026-11-12):
+
+- a secret, a value derived from one or an answered token written to a database, a file, mail or
+  a queue (state, collections and channels are held);
+- sessions and invites past their time;
+- every file the server writes owner-only, swept (helpers are held one by one);
+- a name that resolves to a private address, and an answer mixing public and private ones (only
+  literal addresses are tested); a packed value changed on disk; two deployments' state kept
+  apart; constant-time comparing (`same`).
 
 ## 6. History
 

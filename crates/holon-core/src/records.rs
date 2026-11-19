@@ -68,8 +68,13 @@ pub(crate) fn merge(records: &[&Value]) -> Option<Value> {
 }
 
 /// A copy of `fields` without the field `name`: what a leaf that replaces or removes it keeps,
-/// the field itself not copied.
+/// the field itself not copied. A record without it is cloned whole, as the tree it is, rather than
+/// built again key by key: the same fields, for less (a record built a field at a time never has
+/// the one it adds).
 pub(crate) fn without(fields: &BTreeMap<String, Value>, name: &str) -> BTreeMap<String, Value> {
+    if !fields.contains_key(name) {
+        return fields.clone();
+    }
     fields.iter().filter(|(k, _)| k.as_str() != name).map(|(k, x)| (k.clone(), x.clone())).collect()
 }
 
@@ -116,6 +121,21 @@ pub(crate) fn same_value(a: &Value, b: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `without` cloned whole where the name is missing gives what the filter gives: records of
+    /// none to five fields, without each of their names, a name that sorts between two, and one
+    /// past them all.
+    #[test]
+    fn a_record_without_a_field_is_the_record_less_that_field() {
+        for size in 0..6 {
+            let fields: BTreeMap<String, Value> = (0..size).map(|i| (format!("k{}", i * 2), Value::Number(f64::from(i)))).collect();
+            let names: Vec<String> = fields.keys().cloned().chain(["k1".to_string(), "z".to_string(), String::new()]).collect();
+            for name in names {
+                let filtered: BTreeMap<String, Value> = fields.iter().filter(|(k, _)| **k != name).map(|(k, v)| (k.clone(), v.clone())).collect();
+                assert_eq!(without(&fields, &name), filtered, "{size} fields, without {name:?}");
+            }
+        }
+    }
     use crate::json::parse;
     use crate::primitives::compute;
 
