@@ -362,7 +362,9 @@ In the nav's second group, each to whoever may view it (an admin, all of them):
   and revoke; an admin adds one and names its owner.
 - **Policy**: the host's `holon.toml`: what it grants without asking, which exceptions it ever
   grants, whether agents may propose versions, and each limit's default and ceiling. A viewer reads
-  it; **read the policy again** is `policy.edit`'s.
+  it; **read the policy again** is `policy.edit`'s. The file itself, and where it backs up the runs
+  logs let go of, are shown only to someone who may view the host (`host.view`): anyone else reads
+  that there is a backup folder, not where, and in place of the file why it isn't shown.
 
 The **Overview**'s *What was done* says who did what, and when. Every one of these has a command
 too: `holon people`, `holon bind`, `holon roles`, `holon groups`, `holon access`, `holon oidc`, `holon folder`,
