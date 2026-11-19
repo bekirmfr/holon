@@ -100,8 +100,13 @@ fn server() -> Server {
     let mut state = test_state_at(dir.join("deployments.json").to_string_lossy().to_string().into());
     // The secrets read the same .env, as a server's do: what an env secret can name, offered.
     state.secrets = Arc::new(SecretStore::memory().with_sources(sources()));
-    let policy = "[grants]\nallow_plain_http = true\nallow_private_addresses = true\n";
-    *state.policy.write().unwrap() = Arc::new(Policy::parse(policy).unwrap());
+    // A backup folder in the data folder, named in the policy's file, read as a server reads it
+    // (R74).
+    let policy = format!("[grants]\nallow_plain_http = true\nallow_private_addresses = true\n[storage]\nbackup = {:?}\n", dir.join("backup").display().to_string());
+    let file = dir.join("holon.toml");
+    std::fs::write(&file, &policy).unwrap();
+    state.policy_path = file.display().to_string().into();
+    *state.policy.write().unwrap() = Arc::new(Policy::load(&state.policy_path).unwrap());
     state.folders = Arc::new(
         folders::Folders::memory()
             .with_feeds(feeds::Feeds::memory().with_sources(sources()))
@@ -202,8 +207,10 @@ fn swept(state: &AppState, token: &str, who: &str, canaries: &[&str]) -> Vec<Str
 /// doesn't view the host where its data is; an editor on one flow isn't told of another by the
 /// summary or a check of the logs, nor is a caller who may check them but view no flow; an admin
 /// is told each. Nor is any of them told the data folder's path or the .env's, as written or as
-/// JSON escapes them, nor the variables an env secret can name. Deleting a deployment says where its records are kept to whoever views the host,
-/// and within the data folder to anyone else.
+/// JSON escapes them, nor the variables an env secret can name, nor the backup folder the
+/// policy names in it or the policy's file, by the policy or a reload of it (R74). Deleting a
+/// deployment says where its records are kept to whoever views the host, and within the data
+/// folder to anyone else.
 #[test]
 fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_host() {
     let s = server();
@@ -229,6 +236,9 @@ fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_hos
     let offered = get(&s.ada, "/admin/secrets/env");
     assert_eq!(offered["dotenv"], json!(env), "the admin is told where the .env is: {offered}");
     assert!(offered["names"].to_string().contains(SOURCE), "and what an env secret can name: {offered}");
+    let policy = get(&s.ada, "/permissions");
+    let named = |v: &Value| v.as_str().is_some_and(|t| t.contains(DATA));
+    assert!(named(&policy["storage"]["backup"]) && named(&policy["text"]), "the admin is told where the backup folder is, and the policy's file: {policy}");
 
     // A connection's error names where it is (sse.rs's "<address> answered 404", a refused
     // connection its host and port): w's timeline noted with each place the admin is shown, whole
@@ -288,6 +298,16 @@ fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_hos
         }
     }
     assert_eq!(get(&s.rv, "/summary")["chain"]["witness"], json!({ "taken_ms": 1_763_283_600_000u64, "waiting": 2 }), "that one is set, and when it took the heads");
+    // rv reads the policy: told there is a backup folder, not where, and not the file, in the
+    // server's words; and the same by a reload, which rv may ask for (R74).
+    let policy = get(&s.rv, "/permissions");
+    assert_eq!((&policy["storage"]["backup"], &policy["text_withheld"], policy.get("text")), (&json!("a folder"), &json!(crate::deploy::POLICY_TEXT_WITHHELD), None), "{policy}");
+    let (code, said) = ask(state, Some(&s.rv), "POST", "/permissions/reload", vec![]);
+    assert_eq!(code, 200, "{said}");
+    for canary in &canaries {
+        assert!(!said.contains(canary), "rv's reload says {canary}: {said}");
+    }
+    assert_eq!(serde_json::from_str::<Value>(&said).unwrap()["storage"]["backup"], json!("a folder"), "{said}");
     let mails = get(&s.rv, "/admin/mails");
     assert_eq!((mails[0]["to"].clone(), mails[0]["mailbox"]["folder"].clone()), (json!(["*@acme.example"]), json!("INBOX")), "what it does is shown: {mails}");
 

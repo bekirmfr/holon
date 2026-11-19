@@ -3118,6 +3118,22 @@ fn the_policy_part_shows_its_text() {
     assert!(app.note.as_ref().is_some_and(|n| n.error) && note(&app).contains("no file"), "{}", note(&app));
 }
 
+/// A viewer, who may read the policy and not view the host, is shown what flows get and why the
+/// file's text isn't shown, in the server's words, and no line of it (R74).
+#[test]
+fn the_policy_part_says_why_its_text_isnt_shown_to_a_viewer() {
+    let (state, _, tokens) = host_server(test_state(), &[("vi", "viewer")]);
+    let (mut app, _) = admin_page_as(state, &tokens["vi"]);
+    app.admin_part(Part::Policy);
+    let rows = app.admin.pane.as_ref().map(|(_, r)| r.clone()).unwrap_or_default();
+    assert!(!rows.iter().any(|r| matches!(r, Row::Code { .. })), "{rows:?}");
+    // The pane's words, each row on a line (the screen wraps a long one).
+    assert!(detail(&app).contains(crate::deploy::POLICY_TEXT_WITHHELD), "{}", detail(&app));
+    assert!(!screen(&mut app, 140, 40).contains("allow_plain_http = true"));
+    press(&mut app, KeyCode::Down);
+    assert!(detail(&app).contains("plain http         allowed"), "{}", detail(&app));
+}
+
 /// Someone whose role holds resource.view alone sees the resources and the server's secrets,
 /// and none of the keys that bind or unbind them; the storage and the policy say why not.
 #[test]

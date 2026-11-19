@@ -1479,7 +1479,7 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
       <div style={about}>
         <code>holon.toml</code> as the server read it, at its start or when it was last read again: an edit on the server&apos;s machine holds once it is.
       </div>
-      <PolicyText text={policy?.text} />
+      <PolicyText text={policy?.text} withheld={policy?.text_withheld} />
 
       <div className="hl-host-page__head" data-section="held-off">held off</div>
       <div style={about}>

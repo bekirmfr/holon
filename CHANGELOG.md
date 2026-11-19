@@ -16,6 +16,12 @@
   as the policy is read, so a server whose policy has one doesn't start. It says the file's path,
   then `storage.backup: say where: a folder's whole path (/mnt/archive), or "none" to delete them`
   (`D:\archive` on Windows), until the line names a folder or `none`.
+- **Where the server backs up its runs goes only to whoever may view the host.** Anyone who may
+  read the policy (a viewer, an editor, an agent) was sent the policy file's text and the backup
+  folder's whole path. Now someone who may not view the host is told `a folder`, and in place of
+  the file's text a sentence saying it is read only by those who may view the host: on the
+  editor's Policy page, in the terminal editor, in `holon policy` and in what reading the policy
+  again answers. Admins and anyone else who may view the host see both as before.
 - **Changing a secret while a run waits no longer sends its earlier requests again** where the
   request holds the secret as it is: in a header, a URL or a JSON body. When the run goes on, such
   a request is recognised as sent and answered from its record; the same holds for a run tried

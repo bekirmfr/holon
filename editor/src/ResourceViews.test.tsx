@@ -156,6 +156,13 @@ describe("Policy's views", () => {
     expect(el.textContent).toContain("no holon.toml");
   });
 
+  it("says why the file isn't shown to someone who doesn't view the host, and shows no line of it", async () => {
+    const why = "the policy file itself is read only by those who may view the host";
+    const el = await render(<PolicyText text={undefined} withheld={why} />);
+    expect(el.textContent).toBe(why);
+    expect(el.querySelector(".hl-policy-text")).toBeNull();
+  });
+
   it("checks the deployments and each waiting version against the policy", async () => {
     const policy: HostPolicy = { defaults: { max_requests: 50 }, ceilings: { max_requests: 500 }, auto: [], allow_plain_http: false, allow_private_addresses: false };
     const deployments = [{ slug: "refunds" }, { slug: "chat", attention: "it needs HttpRequest(\"api.anthropic.com\")" }] as DeploymentEntry[];

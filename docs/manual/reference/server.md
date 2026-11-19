@@ -253,7 +253,9 @@ allow_plain_http = true
     bytes (13 times smaller than its line), a listing's about 2 KB (30 times). If it can't be
     written to, a log doesn't cut back: it keeps the runs until it can, and the host warns; only
     `roll` past `full_at` lets them go without. Object storage (`s3://`) is to come, and Holon
-    Cloud. Set with `holon policy --backup`, or on the admin page.
+    Cloud. Set with `holon policy --backup`, or on the admin page. Where it is goes only to whoever
+    may view the host (`host.view`); anyone else who reads the policy is told `a folder`, and isn't
+    sent the policy file's text.
 
 An unknown section or key is a mistake, and so is a limit name the server doesn't know. The limits,
 their defaults and their ceilings are in [Permissions](permissions.md#limits).

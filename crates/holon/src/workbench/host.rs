@@ -430,9 +430,11 @@ impl App {
             Part::Policy => match i {
                 0 => {
                     let mut rows = vec![text(Tone::Head, "holon.toml: what flows get without asking, and the most they may ask for")];
-                    match a.policy["text"].as_str().filter(|t| !t.trim().is_empty()) {
-                        Some(t) => rows.extend(t.lines().enumerate().map(|(n, l)| Row::Code { n: n as u32 + 1, text: l.to_string(), notes: vec![] })),
-                        None => rows.push(text(Tone::Dim, "No policy file: the server's defaults hold.")),
+                    // Below host.view the file's text isn't sent, and the server says why (R74).
+                    match (a.policy["text"].as_str().filter(|t| !t.trim().is_empty()), a.policy["text_withheld"].as_str()) {
+                        (Some(t), _) => rows.extend(t.lines().enumerate().map(|(n, l)| Row::Code { n: n as u32 + 1, text: l.to_string(), notes: vec![] })),
+                        (None, Some(why)) => rows.push(text(Tone::Dim, why)),
+                        (None, None) => rows.push(text(Tone::Dim, "No policy file: the server's defaults hold.")),
                     }
                     rows.push(text(Tone::Dim, "enter: read holon.toml again and hold every deployment to it"));
                     rows
