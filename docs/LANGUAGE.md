@@ -558,8 +558,8 @@ A waiting run's writes and sends wait for it to finish, though a request or a ca
 it parked has gone out (and is answered from its record when it resumes, a secret it holds set
 anew meanwhile too: a request is told from another with each secret's value as its name. One
 asked differently is sent: one holding a value computed from a secret set anew, a signature, a
-Basic credential or another encoding; one built from a row or a file read again that changed;
-R113). Its progress goes out
+Basic credential or another encoding; one built from a row or a file read again that changed).
+Its progress goes out
 too: the packs it has settled when it parks,
 the ones that don't wait for the payment, are sent then (and logged with the parked part, its
 `progress`); the rest when it finishes. The resumed part runs again from the start and settles the

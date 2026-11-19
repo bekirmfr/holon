@@ -95,18 +95,22 @@ or file it read changed meanwhile, it runs again from where it last waited, ever
 event answered from its record (`approved-payout`). A waiting run holds no claims
 (`a_parked_run_releases_its_claims`), so a deposit can go ahead while a payout waits.
 
-A request is answered from the record by its node and its key (`holon_host::Keys`): the request
-with each value of the secrets that try was given written as its name (`secrets::Named`, where
-the record marks a value as the secret: in each of its JSON spellings). The key is made as the
-request is sent and kept with its exchange (`StoredExchange::key`), since a secret set anew may
-have no older value left to make it from (a reference read again keeps its version). So a part
-asked again with another value of a secret, set while the run waited or between two tries,
-sends nothing again (R113; `tests/secret_rounds.rs`). `holon verify` and a replay ask the record
-by the same key, each secret's mark by its name alone (`Marks` as `Keys`). What the key doesn't
-cover is sent again: a value computed from a secret (a signature, a Basic credential, another
-encoding: the record marks it by a print of its own value, which a check can't put a name to,
-so the server doesn't either), and a request built from a row or file read again that changed
-(the class the wait-walk rule is for; a try after a send shows it too, with no wait).
+A request is answered from the record by its node and either the request as it was sent, byte
+for byte, or its key (`holon_host::Keys`): the request with each value the record marks as a
+secret's written as that secret's name (`secrets::Named::of`: every secret's current value and
+the older ones the vault keeps, as `Redactor::of` marks them, in each of their JSON spellings).
+The key is made as the request is sent and kept with its exchange (`StoredExchange::key`), since
+a secret set anew may have no older value left to make it from (a reference read again keeps
+its version). So a part asked again with another value of a secret, set while the run waited or
+between two tries, sends nothing again (R113; `tests/secret_rounds.rs`); and one asked again
+the same byte for byte sends nothing whatever its key now says (a text that was the secret's
+value when it was sent, an older one the vault no longer keeps now). `holon verify` and a replay
+ask the record by the same key, each secret's mark by its name alone (`Marks` as `Keys`). What
+the key doesn't cover is sent again: a value computed from a secret (a signature, a Basic
+credential, another encoding: the record marks it by a print of its own value, which a check
+can't put a name to, so the server doesn't either), and a request built from a row or file read
+again that changed (the class the wait-walk rule is for; a try after a send shows it too, with
+no wait).
 
 ### Decide
 

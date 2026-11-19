@@ -119,6 +119,73 @@ fn a_value_computed_from_a_key_set_anew_is_another_request() {
     verifies(&state, &slug);
 }
 
+/// The class, the same bytes named another way: a request is answered from the record when it is
+/// the same as one the run sent, byte for byte, whatever its key now says. A far side sends the key
+/// back (`/ascii` answers with what it was sent), and the run builds its next request from that
+/// reply, both before it waits; the key is set anew while it waits. The resumed part asks the
+/// first again with the new key (answered by its key) and gets the reply as it was, the old value
+/// in it, so it asks the second again the same byte for byte: sent before, the value was the
+/// key's, and its key named it; now it is an older value. It is answered from the record, the far
+/// side is hit once, and the record checks offline (`holon verify` names each of the key's values
+/// by its mark, so it answers it from the record too: a call sent again would be "a call its line
+/// records that no node makes run again").
+/// (A run started with the key's value in its input, a gateway passing its caller's credential on
+/// to an action, is refused before it starts: a secret isn't sent to another flow.)
+/// If it fails: a count of 2 is the double send main never made: `run_rounds` answers a request
+/// only by its key, and not also by the request as it was sent.
+#[test]
+fn a_request_asked_again_the_same_byte_for_byte_is_answered_from_the_record() {
+    let (host, hits) = counting_server();
+    let state = claims_state("");
+    let text = format!(
+        r#"import {{ action, event, flow, route }} from "holon"
+import api_key from "secret:api_key"
+import host from "host:{host}"
+
+flow("echo-key", {{ port: 18243 }})
+
+route.post("/hold", () => {{
+  const started = forward()
+  return {{ token: started.waiting.paid }}
+}})
+
+export const forward = action(async () => {{
+  const echoed = await host.post("/ascii", {{
+    headers: {{ authorization: `Bearer ${{api_key}}` }},
+    body: api_key,
+  }})
+  const looked = await host.post("/lookup", {{
+    headers: {{ authorization: `Bearer ${{echoed.body}}` }},
+    body: {{ amount: 100 }},
+  }})
+  const paid = await event("paid", {{ expires: "1h" }})
+  const captured = await host.post("/capture", {{
+    headers: {{ authorization: `Bearer ${{api_key}}`, "x-paid": JSON.stringify(paid.body) }},
+    body: {{ amount: 100, looked: looked.status }},
+  }})
+  return captured.status
+}})
+
+route.get("/paid/:token", () => "ok", {{ resumes: "paid" }})
+"#
+    );
+    let slug = deploy_text(&state, &text, &host);
+    set_key(&state, &slug, &made_up_key());
+    let (status, held, _) = data_call(&state, &slug, "POST", "/hold", "");
+    assert_eq!(status, 200, "{held}");
+    let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
+    assert_eq!((hits_of(&hits, "/ascii"), hits_of(&hits, "/lookup"), hits_of(&hits, "/capture")), (1, 1, 0), "it called out and waits");
+    set_key(&state, &slug, &made_up_key());
+    let (status, body, _) = data_call(&state, &slug, "GET", &format!("/paid/{token}"), "");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!((hits_of(&hits, "/ascii"), hits_of(&hits, "/capture")), (1, 1), "the first answered by its key; the capture sent");
+    // Both said at once: the count, and what the check finds.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let lookups = hits_of(&hits, "/lookup");
+    assert!(lookups == 1 && report.ok(), "/lookup hit {lookups} times (once: the same bytes, answered from the record); the check: {}", verify::describe(&report, None));
+}
+
 /// The key a request is told apart by holds nothing of the secret's value: two runs that differ
 /// only in the key's value, each waiting, keep the same keys with their requests, wherever the
 /// key is written (the waiting run's record, as the deployments file keeps it).

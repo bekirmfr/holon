@@ -1171,41 +1171,64 @@ pub(crate) fn spelled_any(s: &str, found: &dyn Fn(&str) -> bool) -> bool {
     }
 }
 
-/// What tells a run's requests apart ([`holon_host::Keys`]): the request with each value of the
-/// secrets the try was given written as its name, so one asked again with another value of the
+/// What tells a run's requests apart ([`holon_host::Keys`]): the request with each value its record
+/// marks as a secret's written as that secret's name, so one asked again with another value of the
 /// same secret (set since, a reference read again, a version let go of) is the request it sent,
-/// answered from its record and not sent twice (R113). A value is found where the record marks it
-/// as the secret ([`Redactor`]), in each of its spellings ([`spellings`]), and nowhere else, so
-/// `holon verify` reads the record's requests to the same keys (`Marks` as `Keys`). A value
-/// computed from one (a signature, a Basic credential, another encoding) isn't found: the record
-/// marks it by a print of its own value, which a check can't put a name to, and such a request is
-/// another. Two requests that differ only in a secret's value have one key, and the key holds
-/// nothing more of it (not even its length: each spelling is put in place as one name, as deep as
-/// it stands).
+/// answered from its record and not sent twice (R113). The values are the ones [`Redactor::of`]
+/// marks, each secret's current one and the older ones the vault keeps (granted to the try or
+/// not), in each of their spellings ([`spellings`]), so `holon verify` reads the record's requests
+/// to the same keys (`Marks` as `Keys`). A value computed from one (a signature, a Basic
+/// credential, another encoding) isn't found: the record marks it by a print of its own value,
+/// which a check can't put a name to, and such a request is another. Two requests that differ
+/// only in a secret's value have one key, and the key holds nothing more of it (not even its
+/// length: each spelling is put in place as one name, as deep as it stands).
+/// A value the vault no longer keeps (a reference read again keeps no older one) is left as it
+/// is; `run_rounds` answers a request sent again the same byte for byte all the same. And a name
+/// is written beginning with [`NAMED`], which a text's own is doubled from, so a text that spells
+/// a name's writing out is never taken for the secret.
 pub(crate) struct Named {
     /// Each spelling of each value and what it is written as, the longest first: one that holds
     /// another is written whole.
     spelled: Vec<(Zeroizing<String>, String)>,
 }
 
+/// What a name [`Named`] puts in place begins with: a character for private use, so one in a
+/// text of its own is doubled.
+const NAMED: char = '\u{e000}';
+
 impl Named {
+    /// The values the record marks as a secret's, as [`Redactor::of`] reads them from `vault`.
+    pub(crate) fn of(vault: &Resolved) -> Named {
+        let current = vault.current.iter().map(|(name, value)| (name.clone(), value.clone()));
+        Named::new(current.chain(vault.retired.iter().map(|(name, _, value)| (name.clone(), value.clone()))))
+    }
+
     pub(crate) fn new(given: impl IntoIterator<Item = (String, Zeroizing<String>)>) -> Named {
         let mut spelled: Vec<(Zeroizing<String>, String)> = given
             .into_iter()
             .filter(|(_, v)| !v.is_empty())
-            .flat_map(|(name, value)| spellings(&value).into_iter().map(move |s| (Zeroizing::new(s), format!("\u{e000}secret:{name}\u{e001}"))))
+            .flat_map(|(name, value)| spellings(&value).into_iter().map(move |s| (Zeroizing::new(s), format!("{NAMED}secret:{name}\u{e001}"))))
             .collect();
-        spelled.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.1.cmp(&b.1)));
+        spelled.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)).then_with(|| a.1.cmp(&b.1)));
+        // A value two secrets share, or one secret's in two versions, is looked for once: as the
+        // first name's.
+        spelled.dedup_by(|later, first| *later.0 == *first.0);
         Named { spelled }
     }
 
-    /// `s` with each value written as its name, if it holds one in a spelling this knows.
+    /// Whether `s` holds a value in a spelling this knows, or a [`NAMED`] of its own.
+    fn holds(&self, s: &str) -> bool {
+        s.contains(NAMED) || self.spelled.iter().any(|(value, _)| s.contains(value.as_str()))
+    }
+
+    /// `s` with each value written as its name, and each [`NAMED`] of its own doubled, if it holds
+    /// either.
     fn named(&self, s: &str) -> Option<String> {
-        // One pass, the longest spelling first where several begin: what is put in isn't looked
-        // through again.
-        if !self.spelled.iter().any(|(value, _)| s.contains(value.as_str())) {
+        if !self.holds(s) {
             return None;
         }
+        // One pass, the longest spelling first where several begin: what is put in isn't looked
+        // through again.
         let (mut out, mut rest) = (String::with_capacity(s.len()), s);
         while let Some(c) = rest.chars().next() {
             match self.spelled.iter().find(|(value, _)| rest.starts_with(value.as_str())) {
@@ -1214,6 +1237,9 @@ impl Named {
                     rest = &rest[value.len()..];
                 }
                 None => {
+                    if c == NAMED {
+                        out.push(NAMED);
+                    }
                     out.push(c);
                     rest = &rest[c.len_utf8()..];
                 }
@@ -1225,7 +1251,9 @@ impl Named {
 
 impl holon_host::Keys for Named {
     fn key(&self, request: &holon_core::Value) -> holon_core::Hash {
-        if self.spelled.is_empty() {
+        // A request that holds nothing to write is its own key, as `texts_mapped` would leave it:
+        // not copied to be hashed.
+        if !value_holds(request, &|s: &str| self.holds(s)) {
             return holon_host::Whole.key(request);
         }
         holon_host::Whole.key(&texts_mapped(request, &|s| self.named(s)))
@@ -3001,9 +3029,11 @@ mod tests {
     /// body written out once or twice. Another request has another key, and so does one that holds
     /// a value computed from the secret some other way (a Basic credential, hex), which is the
     /// limit [`Named`] states: the record marks such a value by a print of its own, so `holon
-    /// verify` couldn't key it by the secret's name either.
+    /// verify` couldn't key it by the secret's name either. A kept older value is named as the
+    /// current one is, and a text that spells a name's writing out is never the secret.
     /// If it fails: `Named` writes a value only in some of its spellings, or one value inside
-    /// another's name (it isn't one pass), or the key depends on the value's length.
+    /// another's name (it isn't one pass), or the key depends on the value's length; or a text's
+    /// own `NAMED` isn't doubled, or `Named::of` leaves out the older values `Redactor::of` marks.
     #[test]
     fn a_request_is_keyed_the_same_whatever_its_secrets_value() {
         use holon_core::Value;
@@ -3038,5 +3068,13 @@ mod tests {
         // name holds it.
         let short = Named::new([("api_key".to_string(), Zeroizing::new("sk_test_whole".to_string())), ("b".to_string(), Zeroizing::new("api".to_string()))]);
         assert_eq!(short.named("Bearer sk_test_whole").as_deref(), Some("Bearer \u{e000}secret:api_key\u{e001}"));
+        // A text that spells a name's writing out is another request than the secret's, with the
+        // secret known or none: its own private-use character is doubled.
+        let spelled_out = request("/pay", "\u{e000}secret:k\u{e001}", None);
+        assert_ne!(keyed(values[0]).key(&spelled_out), first, "a name's writing, sent as it is");
+        assert_ne!(Named::new(Vec::new()).key(&spelled_out), first, "and with no secret known");
+        // An older value the vault keeps is named as the current one is: the record marks both.
+        let kept = |current: &str| Named::new([("k".to_string(), Zeroizing::new(current.to_string())), ("k".to_string(), Zeroizing::new(values[0].to_string()))]);
+        assert_eq!(kept(values[1]).key(&request("/pay", values[0], None)), first, "a kept older value, one key");
     }
 }

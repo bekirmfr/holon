@@ -308,9 +308,9 @@ impl Waits for NoWaits {
 /// `performer` within `limits`, and the final round's effects with `host`, unless the run waits. `observer` sees every round's steps (after a
 /// `round(n)` call) as in a single evaluation. `waits` answers waiting points and tokens;
 /// `prior` holds the rounds of an earlier part of the same run (a resumed one), and of its earlier
-/// tries, whose requests are answered from it, not sent again: each asked by its node and its
-/// [`Keys`] key, the one it was sent with where it kept one. The outcome's rounds are the new
-/// ones, each exchange with the key it was sent with.
+/// tries, whose requests are answered from it, not sent again: each asked by its node and the
+/// request as it was sent, or else its [`Keys`] key, the one it was sent with where it kept one.
+/// The outcome's rounds are the new ones, each exchange with the key it was sent with.
 #[allow(clippy::too_many_arguments)]
 pub fn run_rounds(
     root: &Unit,
@@ -330,11 +330,16 @@ pub fn run_rounds(
     // computes and sends nothing reads the clock as it steps ([`Asking::late`]).
     let deadline = started.checked_add(limits.run_budget);
     let resolver = SourcedResolver::lent(sourced.iter().map(|(cap, value)| (cap, *value)), real);
-    let mut answers: BTreeMap<(Vec<u32>, Hash), Value> = prior
-        .iter()
-        .flat_map(|r| &r.exchanges)
-        .map(|x| ((x.path.clone(), x.key.unwrap_or_else(|| keys.key(&x.request))), x.response.clone()))
-        .collect();
+    // Each exchange answers its request as it was sent, byte for byte, and by its key: the same
+    // request but for its secrets' values. A text that was a secret's value when it was sent and
+    // is an older one now makes another key, but not another request (R113). Two maps: a
+    // request's own hash is never asked among keys, nor a key among requests.
+    let mut answers: BTreeMap<(Vec<u32>, Hash), Value> = BTreeMap::new();
+    let mut as_sent: BTreeMap<(Vec<u32>, Hash), Value> = BTreeMap::new();
+    for x in prior.iter().flat_map(|r| &r.exchanges) {
+        answers.insert((x.path.clone(), x.key.unwrap_or_else(|| keys.key(&x.request))), x.response.clone());
+        as_sent.insert((x.path.clone(), request_key(&x.request)), x.response.clone());
+    }
     let mut rounds: Vec<Round> = Vec::new();
     let mut sent = 0usize;
     let fail = |rounds: Vec<Round>, error: RunError| RunOutcome {
@@ -348,6 +353,7 @@ pub fn run_rounds(
         let mut asking = Asking {
             inner: &mut *observer,
             answers: &answers,
+            as_sent: &as_sent,
             keys,
             pending: Vec::new(),
             waits: &mut *waits,
@@ -412,6 +418,7 @@ pub fn run_rounds(
             let key = keys.key(&ex.request);
             ex.key = Some(key);
             answers.insert((ex.path.clone(), key), ex.response.clone());
+            as_sent.insert((ex.path.clone(), request_key(&ex.request)), ex.response.clone());
         }
         rounds.push(Round { exchanges });
         if started.elapsed() > limits.run_budget {
@@ -455,6 +462,8 @@ fn request_key(request: &Value) -> Hash {
 struct Asking<'a, O: Observer, W: Waits> {
     inner: &'a mut O,
     answers: &'a BTreeMap<(Vec<u32>, Hash), Value>,
+    /// The same answers, each by its request as it was sent.
+    as_sent: &'a BTreeMap<(Vec<u32>, Hash), Value>,
     /// What a request is asked by among `answers`.
     keys: &'a dyn Keys,
     pending: Vec<(Vec<u32>, Value)>,
@@ -579,8 +588,9 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
         if ["collection", "folder", "database"].iter().any(|k| text_field(request, k).is_some()) {
             return self.waits.read(path, request).into();
         }
-        let key = (path.to_vec(), self.keys.key(request));
-        if let Some(answer) = self.answers.get(&key) {
+        // The request it sent, byte for byte; else the same but for its secrets' values.
+        let answer = self.as_sent.get(&(path.to_vec(), request_key(request))).or_else(|| self.answers.get(&(path.to_vec(), self.keys.key(request))));
+        if let Some(answer) = answer {
             return Answer::Value(answer.clone());
         }
         if !self.pending.iter().any(|(p, r)| p == path && r == request) {
@@ -822,12 +832,15 @@ mod tests {
     /// secret the request carries was set to another value, is answered from the run's record and
     /// not sent a second time (R113); the same holds for a run tried again, whose earlier tries'
     /// rounds are its `prior` too. Two requests that differ only in the secret's value have one
-    /// key; any other difference makes another.
+    /// key; any other difference makes another. One asked again the same byte for byte is
+    /// answered too, whatever its key now says.
     /// Why: a resumed run is evaluated again from its start, and its earlier requests answered
     /// from its record by their key. Keyed by the whole request, the one built with the new value
-    /// matched nothing, and the authorization it stood for went out twice.
+    /// matched nothing, and the authorization it stood for went out twice. Keyed only by name, a
+    /// text that was the secret's value and is an older one now made the same request another.
     /// If it fails: `run_rounds` asks `prior` by the whole request and not by the key each
-    /// exchange was sent with (`Exchange::key`), or `Asking::answer` doesn't ask by `keys`.
+    /// exchange was sent with (`Exchange::key`), or `Asking::answer` doesn't ask by `keys`; or,
+    /// at the same bytes sent again, it asks only by the key, not by the request as it was sent.
     #[test]
     fn a_request_asked_again_with_another_value_of_its_secret_is_answered_from_the_record() {
         /// Keys that write the one secret's value, as this try was given it, as its name.
@@ -901,6 +914,14 @@ mod tests {
         assert_eq!(echo.0.lock().unwrap().len(), 1, "the request isn't sent a second time: {:?}", echo.0.lock().unwrap());
         assert!(resumed.rounds.is_empty(), "nothing new was sent");
         assert_eq!(host.0, vec![(Capability::NetworkEgress, txt(&format!("/pay/{first_value}"))), (Capability::NetworkEgress, txt("ok"))], "it goes on with what the request was answered");
+
+        // Asked again the same byte for byte, though its key now says another request (the
+        // value it holds is no longer the secret's, set anew meanwhile): answered from the record
+        // all the same, by the request as it was sent.
+        let same = Echo::default();
+        let first_sourced = [(first_given.0.clone(), &first_given.1)];
+        let again_same = run_rounds(&flow, &[], &first_sourced, &r, &mut Performed::default(), &same, &limits, &mut holon_core::NoObserver, &mut waits, &first.rounds, &ByName("k", second_value));
+        assert!(same.0.lock().unwrap().is_empty() && again_same.rounds.is_empty(), "the same bytes aren't sent again: {:?}", same.0.lock().unwrap());
 
         // Asked by the whole request instead, it is sent again: what this test is about.
         let again = Echo::default();
