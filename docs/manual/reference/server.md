@@ -524,7 +524,8 @@ People are still added here, with a role; the provider only proves who is signin
 provider says who each person here is, setting it (`POST /admin/oidc`) takes holding what each
 person holds: an admin; and while an access change that gives more waits for people, it is set
 only through this machine's run file. An ID token is good until it expires, wherever it is shown, so signing out
-with one (`POST /auth/sign-out`, the editor's **Sign out**) keeps it refused until then; another
+with one (`POST /auth/sign-out`, the editor's **Sign out**) keeps it refused until then, however
+it is spelled (an ES256 or ES384 signature can be written two ways, each as good); another
 sign-in of theirs at the provider still is one. A sign-out answers 204 only when it ended the
 sign-in it came with: a session, or a provider's sign-in. An agent's or a service's API token is
 refused (409, revoke it instead), and so is the machine's run file (409, it ends when the server

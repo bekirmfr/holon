@@ -565,7 +565,10 @@ What is not defended, or only partly:
   `what_a_cheap_check_refuses_waits_for_no_password_check`,
   `a_token_crosses_a_network_only_over_https` (every way `--server` is given, with and without a
   token, for `holon mcp` too), `accounts_through_the_routes` (an ID token signed out of is refused,
-  another of the same person's isn't), `the_run_file_is_the_account_that_set_the_server_up` (a
+  another of the same person's isn't),
+  `a_signed_out_sign_in_is_refused_however_its_token_is_spelled` (each algorithm taken; an ECDSA
+  token's other spelling, (r, n − s), which anyone holding the token writes, was let in after the
+  sign-out until the token expired: the sign-out is kept by what the signature signs, R111), `the_run_file_is_the_account_that_set_the_server_up` (a
   person named as the OS user owns nothing it made),
   `a_binding_at_a_flow_lets_its_holder_act_there_and_nowhere_else` (a unit only another flow
   places is answered 404),

@@ -348,7 +348,8 @@ impl Book {
     }
 }
 
-/// A provider's ID token signed out of: its hash, and when it expires (seconds since the epoch).
+/// A provider's ID token signed out of: the hash of what its signature signs (`signed_part`),
+/// and when it expires (seconds since the epoch).
 #[derive(Clone, Serialize, Deserialize)]
 struct Ended {
     hash: String,
@@ -515,6 +516,15 @@ fn new_token(prefix: &str) -> String {
 
 fn hash_of(token: &str) -> String {
     blake3::hash(token.as_bytes()).to_hex().to_string()
+}
+
+/// What a provider's ID token is signed out of by: its header and claims, which its signature
+/// signs, not the token as spelled. An ECDSA signature (r, s) has another, (r, n − s), as good,
+/// which anyone holding the token can write: ended by its spelling, a sign-out ended one of the
+/// two and the other was let in until the token expired (R111). A token whose signature isn't
+/// taken signs nobody in, and signs nobody out (auth.rs checks it first).
+fn signed_part(token: &str) -> &str {
+    token.rsplit_once('.').map_or(token, |(signed, _)| signed)
 }
 
 /// Constant time, as tokens are compared everywhere (access.rs).
@@ -1149,9 +1159,10 @@ impl Accounts {
     }
 
     /// Sign out of a provider's sign-in: its ID token `token`, good until `until` (its expiry,
-    /// with the clocks' leeway), is refused from now until then. Those past theirs are forgotten.
+    /// with the clocks' leeway), is refused from now until then, however it is spelled
+    /// (`signed_part`). Those past theirs are forgotten.
     pub(crate) fn end_provider_sign_in(&self, token: &str, until: u64) -> Result<(), String> {
-        let (hash, now) = (hash_of(token), epoch_now());
+        let (hash, now) = (hash_of(signed_part(token)), epoch_now());
         self.change(|book| {
             book.ended.retain(|e| e.until > now && e.hash != hash);
             book.ended.push(Ended { hash, until });
@@ -1159,9 +1170,9 @@ impl Accounts {
         })
     }
 
-    /// Whether the provider's ID token `token` was signed out of.
+    /// Whether the provider's ID token `token` was signed out of, however it is spelled.
     pub(crate) fn provider_sign_in_ended(&self, token: &str) -> bool {
-        let hash = hash_of(token);
+        let hash = hash_of(signed_part(token));
         hold(&self.book).ended.iter().any(|e| same(&e.hash, &hash))
     }
 

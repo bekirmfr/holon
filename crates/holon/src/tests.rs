@@ -8155,6 +8155,57 @@ fn a_sign_out_answers_204_only_when_it_ended_a_sign_in() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A provider's sign-in, once signed out of, is refused however its token is spelled: every
+/// spelling the provider's signature check takes signs the same header and claims, which only the
+/// provider signs, so it is the same sign-in. For each algorithm a token is taken signed with:
+/// the token as issued and its other spelling, if its signature has one (ECDSA's (r, n − s)), each
+/// let in before; after a sign-out with the one, then (a new sign-in) with the other, each refused,
+/// saying it was signed out of. A new algorithm taken is a row (oidc.rs's test keys).
+///
+/// **Why:** a sign-out ended the token as spelled (its hash), so the other spelling of an
+/// ECDSA-signed one, made from the token alone, was let in until the token expired (R111).
+#[test]
+fn a_signed_out_sign_in_is_refused_however_its_token_is_spelled() {
+    use crate::oidc::tests::{algorithms, signing_with, twin};
+    let mut state = test_state();
+    let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    state.access = access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+    accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+    accounts.set_email("ada", Some("ada@example.com".into()), "ada").unwrap();
+    let call = |method: &str, url: &str, token: &str| {
+        let mut headers = vec![("Host".to_string(), "localhost:7420".to_string()), ("Authorization".to_string(), format!("Bearer {token}"))];
+        let body = if method == "POST" { b"{}".to_vec() } else { vec![] };
+        if method == "POST" {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        }
+        let r = route(&state, &Request::fake_http(method, url, headers, body));
+        let status = r.status_code;
+        (status, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    let mut others = 0;
+    for alg in algorithms() {
+        let (provider, sign) = signing_with(alg);
+        accounts.use_oidc(provider);
+        for out_with in [0, 1] {
+            let issued = sign(serde_json::json!({ "email": "ada@example.com", "email_verified": true, "nonce": rand::random::<u32>() }));
+            let spellings: Vec<(&str, String)> = std::iter::once(("as issued", issued.clone())).chain(twin(&issued, alg).map(|t| ("spelled the other way", t))).collect();
+            let Some((by, out)) = spellings.get(out_with) else { continue };
+            for (spelled, token) in &spellings {
+                // The signature check takes both spellings; were it to stop taking the other,
+                // that row would hold nothing more and could go.
+                assert_eq!(call("GET", "/auth/me", token).0, 200, "{alg:?}, {spelled}: let in before");
+            }
+            assert_eq!(call("POST", "/auth/sign-out", out).0, 204, "{alg:?}: signed out with the token {by}");
+            for (spelled, token) in &spellings {
+                let (status, said) = call("GET", "/auth/me", token);
+                assert!(status == 401 && said.contains("you signed out"), "{alg:?}, signed out with the token {by}: the token {spelled}: {status} {said}");
+            }
+            others += spellings.len() - 1;
+        }
+    }
+    assert!(others > 0, "a token whose signature has another spelling was tried");
+}
+
 #[test]
 fn accounts_through_the_routes() {
     let mut state = test_state();
