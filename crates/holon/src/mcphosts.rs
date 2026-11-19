@@ -568,10 +568,13 @@ fn sign_in(server: Option<&str>, agent: Option<&str>, remove: bool) -> Result<()
         && agent.is_none_or(|a| a == name)
     {
         println!("holon mcp signs in to {server} as {name}, an agent, as before.");
+        println!("{}", local::shell_note(&local::user()));
         return Ok(());
     }
     let (name, owner, _) = local_agent(&crate::mcp::Http::new(&server, Some(&run_token)), agent, &file)?;
     println!("holon mcp signs in to {server} as {name}, an agent owned by {owner}. Its token is kept in {}, readable only by you.", file.display());
+    // On a server this user runs, its agent's shell is the user (local.rs).
+    println!("{}", local::shell_note(&local::user()));
     Ok(())
 }
 

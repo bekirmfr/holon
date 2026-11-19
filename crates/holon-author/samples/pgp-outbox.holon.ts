@@ -7,7 +7,7 @@
 // to. Each report the bank delivers to download with its detached signature (a .sig beside it) is
 // verified with the bank's key: kept as verified, with the key that signed it and when, or as
 // refused. The bank's key is one a person trusts, by running the trust action, which answers its
-// fingerprint to compare with the one the bank gave; an agent can't trust a key on its own.
+// fingerprint to compare with the one the bank gave; an agent signed in as one can't trust a key.
 //
 // Before it works, an admin binds the folders:
 //   holon folder add payments ~/holon-payments --read-only

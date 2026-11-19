@@ -291,7 +291,7 @@ refused, besides, what only a person does: approving, granting, starting, stoppi
 ",
     );
     text.push_str(&format!(
-        "Reaches: {}.\n\nGuarded by: {}.\n\nSo on the server's own machine, whoever can read the run file is the server's admin, whatever the\ngrants say: the grants hold the run file to nothing, and keeping the machine's accounts to those\nwho should be its admin is what guards it. A command run with an agent's or a service's token\n(HOLON_TOKEN) or a `holon login` session signs in as that instead, and is held to its grants.\n`holon access local` says which account the run file signs in as.\n\n",
+        "Reaches: {}.\n\nGuarded by: {}.\n\nSo on the server's own machine, whoever can read the run file is the server's admin, whatever the\ngrants say: the grants hold the run file to nothing, and keeping the machine's accounts to those\nwho should be its admin is what guards it. A command run with an agent's or a service's token\n(HOLON_TOKEN) or a `holon login` session signs in as that instead, and is held to its grants.\n`holon access local` says which account the run file signs in as. An agent's shell running as that\nuser is such a command: [An agent with a shell](../guides/agents.md#an-agent-with-a-shell).\n\n",
         run_file.reads, run_file.guarded_by
     ));
     text.push_str(

@@ -122,6 +122,15 @@ pub(crate) fn user() -> String {
     std::env::var(var).ok().filter(|u| !u.trim().is_empty()).unwrap_or_else(|| "this user".into())
 }
 
+/// What `holon serve` says once its run file is written, and `holon mcp setup` once it has set up
+/// `user`'s agent on a server they run here: an agent with a shell, running as `user`, signs in
+/// through the run file as they do, the server's admin, whatever its agent is held to. Said, not
+/// refused: a rule in the server would not make that shell less than the user it runs as. The
+/// manual's "An agent with a shell" (agents.md) says what keeps such an agent to its token.
+pub(crate) fn shell_note(user: &str) -> String {
+    format!("holon: commands run as {user} on this machine sign in as this server's admin, an agent's shell running as {user} too (the manual: \"An agent with a shell\")")
+}
+
 /// The address a client on this machine reaches a server bound at `bound` on: loopback for a
 /// server listening on every interface.
 pub(crate) fn local_url(bound: std::net::SocketAddr) -> String {

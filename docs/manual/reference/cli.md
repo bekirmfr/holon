@@ -220,7 +220,9 @@ prints what it approved, in the deployment's timeline as yours. Agents never app
 with an agent's token, as through [`holon mcp`](#holon-mcp), each version is proposed for a person,
 whatever it asks for, unless a person let the flow take its agents' versions that ask for nothing
 more at once. It prints the proposal, what it asks for, and that a person approves it in the
-editor's Approvals; [`holon wait`](#holon-wait) ends when they decide. Signed in as someone who
+editor's Approvals; [`holon wait`](#holon-wait) ends when they decide. An agent's shell on the
+server's machine with no `HOLON_TOKEN` signs in as you, though, and `--approve` there approves as
+you: see [An agent with a shell](../guides/agents.md#an-agent-with-a-shell). Signed in as someone who
 may propose versions but not approve them, a version that asks for something new is proposed the
 same way, and `--approve` gives nothing.
 

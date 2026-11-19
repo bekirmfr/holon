@@ -80,8 +80,10 @@ handler's log level.
 `holon editor`, `holon deploy` (when it needs approval), `holon restore --dry-run` and the agent
 tools show the same rows, worked out by the server.
 
-Only a person can approve. Each version an agent deploys is saved instead, for you to read and
-deploy ([Working with agents](agents.md)), and what you read is what deploys: the server refuses
+Only a person can approve. Each version an agent deploys with its own token is saved instead,
+for you to read and deploy ([Working with agents](agents.md)); an agent whose shell runs as you on
+the server's machine signs in as you, though ([An agent with a
+shell](agents.md#an-agent-with-a-shell)). What you read is what deploys: the server refuses
 a proposal whose text builds another version than the one proposed, or whose `browsers` line
 isn't the sites it sends.
 

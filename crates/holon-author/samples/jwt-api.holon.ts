@@ -2,7 +2,7 @@
 //
 // A payouts API for partners' services. Each partner signs its own tokens (JWTs, as OAuth's
 // private_key_jwt does) with a key only it holds; the API keeps each partner's public key, which
-// a person adds by running the trust action, so an agent can't add a partner on its own. A
+// a person adds by running the trust action, so an agent signed in as one can't add a partner. A
 // request's bearer token is read for who says it signed it (jwt_decode), then verified with that
 // partner's key, for this API, at the time of the run (jwt_verify): its signature, its expiry and
 // its audience. The key decides the algorithm (RS256, PS256, ES256 or EdDSA), so a token naming

@@ -118,8 +118,10 @@ the canvas and in the flow's text (**text** in the toolbar opens it).
 holon mcp setup claude-code      # or cursor, vscode, … (holon mcp hosts lists them)
 ```
 
-The agent writes the flow, checks it and deploys it through `holon mcp`. It can't approve what a
-flow may do: a first deploy waits under **Approvals** for you to approve.
+The agent writes the flow, checks it and deploys it through `holon mcp`. Through it, the agent
+can't approve what a flow may do: a first deploy waits under **Approvals** for you to approve. A
+shell it has on this machine runs as you, though: see [An agent with a
+shell](docs/manual/guides/agents.md#an-agent-with-a-shell).
 
 **5. Or write flows as text,** on any machine:
 
@@ -152,7 +154,9 @@ the log tamper-evident even to someone holding the server's data.
 
 **Agents.** `holon mcp` gives an agent tools to read the language, check, save, deploy, call and
 explain flows. It acts as the `agent` role: it reads, proposes and calls, and never approves,
-grants, starts, stops, deletes or sets a secret.
+grants, starts, stops, deletes or sets a secret. An agent with a shell on the server's machine
+signs in as you there, unless you keep it to its own token ([An agent with a
+shell](docs/manual/guides/agents.md#an-agent-with-a-shell)).
 
 ## What a flow can do
 

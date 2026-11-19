@@ -1361,8 +1361,11 @@ fn serve(args: Vec<String>) {
     if let Some(warning) = plain_http_warning(bound, state.data_limits.host) {
         eprintln!("{warning}");
     }
-    // Commands this user runs on this machine find it, and sign in, from here (local.rs).
-    local::publish(bound, &accounts.new_local(&local::user()));
+    // Commands this user runs on this machine find it, and sign in, from here (local.rs), an
+    // agent's shell among them: said once, as the run file is written.
+    if local::publish(bound, &accounts.new_local(&local::user())).is_some() {
+        println!("{}", local::shell_note(&local::user()));
+    }
     if state_cell.set(state).is_err() {
         unreachable!("the state is set once");
     }
