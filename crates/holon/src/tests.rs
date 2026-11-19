@@ -184,6 +184,49 @@ pub(crate) fn unique_temp_path(label: &str) -> String {
     path.to_string_lossy().to_string()
 }
 
+/// What a file opened by `at_rest::opened` keeps in the clear, for a test that looks for words
+/// it must not: every key and every string of its JSON, but the values of its `sealed` fields, one
+/// to a line. A word looked for here is a word kept in the clear; what a sealed field holds is
+/// checked by opening it, never by reading it.
+/// Why: a sealed field is ciphertext written in base64url (letters, digits, `-` and `_`), random
+/// to look at, so any short word of those letters turns up in it by chance. A four-letter
+/// lowercase word is one in about 16.8 million places, and a deployments file with nine waiting
+/// runs held 121,000 of them: about one run in 140, a test found "acme" there, though every run
+/// was sealed (R135).
+pub(crate) fn outside_sealed(opened: &str) -> String {
+    fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            serde_json::Value::Array(items) => items.iter().for_each(|i| walk(i, out)),
+            serde_json::Value::Object(fields) => {
+                for (key, value) in fields {
+                    out.push(key.clone());
+                    if key != "sealed" {
+                        walk(value, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(&serde_json::from_str(opened).expect("a sealed file opens to JSON"), &mut out);
+    out.join("\n")
+}
+
+/// Guards: `outside_sealed` leaves out a sealed field's value, at any depth, and keeps every
+/// other key and string. If it fails: a test looking for a word kept in the clear reads ciphertext
+/// again, and fails by chance (R135), or misses a word kept beside it.
+#[test]
+fn outside_sealed_leaves_out_the_sealed_fields_alone() {
+    let file = r#"[{"slug":"p0","parked":[{"run_id":"r1","sealed":"xacmex","waiting":[{"name":"payout"}]}],"memo":{"payee":"acme"}}]"#;
+    // Sorted: whether a record's keys keep their order depends on the build's features.
+    let mut clear: Vec<String> = outside_sealed(file).lines().map(String::from).collect();
+    clear.sort();
+    assert_eq!(clear, ["acme", "memo", "name", "p0", "parked", "payee", "payout", "r1", "run_id", "sealed", "slug", "waiting"]);
+    assert!(!outside_sealed(r#"{"sealed":"xacmex"}"#).contains("acme"));
+}
+
 /// `store_read(key)` — reads this deployment's own state at `key`.
 fn test_store_read(key: &str) -> Unit {
     Unit {
