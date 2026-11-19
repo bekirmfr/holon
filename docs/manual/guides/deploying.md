@@ -501,7 +501,9 @@ its event). Picked:
   result in a dry-run window (nothing has changed yet) that says what it would change, part by
   part (the code; what it touches, row by row, as `holon restore --dry-run` says it; the keys,
   and what the runs since did outside, which a restore doesn't undo), and asks to approve what
-  the code needs that today's grant doesn't cover. It opens with what
+  the code needs that today's grant doesn't cover: as a deploy's review, it does so once you
+  tick that you read them (`t` marks it in `holon editor`), and a dry run read again asks for
+  the tick again. It opens with what
   it changes, a line each (`code: version 5's is deployed again, as version 12, in place of
   version 11`, the permissions added and dropped, the keys and items of the state). Its **diff**
   button compares each part with what is there now: the flow's text, line by line, deployed now
