@@ -123,8 +123,11 @@ fn a_run_says_which_effects_it_held_and_didnt_make() {
 /// The places the walk can meet something computed from a secret, as handler bodies: `{T}` a
 /// test on the secret (true with one secret, false with the other), `{S}` a value computed from it
 /// that arrives with one secret and not the other; `req.json.v` and `notes["none"]` are clean,
-/// the one there or not as the request says, the other a read that finds nothing.
+/// the one there or not as the request says, the other a read that finds nothing. And a write the
+/// host refuses for a secret without it being computed from one: what a reply that sent the
+/// secret back gave (`far` answers with what it is sent).
 const SECRET_PLACES: &[(&str, &str)] = &[
+    ("a write of what a reply sent back", "const got = await far.post(\"/e\", { body: k })\nstate.w = got.body.slice(8, 20)"),
     ("a trigger's guard", "if ({T}) {\nstate.w = req.json.v\n}"),
     ("a trigger's guard, nothing clean missing", "if ({T}) {\nstate.w = \"x\"\n}"),
     ("a guard's value", "state.w = req.json.c ? {S} : undefined"),
@@ -146,28 +149,59 @@ const SECRET_PLACES: &[(&str, &str)] = &[
     ("a row", "if ({T}) {\nnotes[\"k\"] = req.json.v\n}"),
 ];
 
+/// The flow of [`SECRET_PLACES`], one route each, `/p<i>`: `{T}` true for a secret that starts
+/// `live_`, `{S}` there for such a one; `far` a host that answers with what it is sent.
+fn places_flow(far: &str) -> String {
+    let routes: String = SECRET_PLACES
+        .iter()
+        .enumerate()
+        .map(|(i, (_, body))| {
+            let body = body.replace("{T}", "k.startsWith(\"live_\")").replace("{S}", "(k.startsWith(\"live_\") ? \"s\" : undefined)");
+            let r#async = if body.contains("await ") { "async " } else { "" };
+            format!("route.post(\"/p{i}\", {async}(req) => {{\n{body}\nreturn \"end\"\n}})\n\n")
+        })
+        .collect();
+    format!(
+        "import {{ flow, route }} from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\nimport k from \"secret:k\"\nimport far from \"host:{far}\"\n\nflow(\"either\", {{ port: {} }})\n\nfunction pick(x) {{\n  const s = k.startsWith(\"live_\") ? \"s\" : undefined\n  return {{ s, v: x + \"!\" }}\n}}\n\n{routes}",
+        free_port()
+    )
+}
+
 /// Where two runs that did the same may still read apart, older than `skipped` and allowed: each
 /// named with the decision that allows it, still compared. A difference that is one of these is
 /// said, not failed; the test fails on any other, and on one of these that no pair shows any more
 /// (the record changed: take it out, so the list can't outlive what it allows).
-const ALLOWED: &[(&str, &str)] = &[(
-    "a refused effect's output",
-    "the route's effect output is the refused write's (withheld) in one run and null where the write wasn't reached: allowed by the owner's decision of 2026-11-15 (a run's steps show which way a choice went, a secret's included; a grant on who reads them, not scrubbing), R125 closed on SV's reading: the refused write's step is entered and timed and the unreached one is not in the timeline, so the steps already tell the two apart to the same readers, and only holders of the grant on a run's steps (run.steps) read its outputs",
-)];
+const ALLOWED: &[(&str, &str)] = &[
+    (
+        "a refused effect's output",
+        "the route's effect output is the refused write's (withheld) in one run and null where the write wasn't reached: allowed by the owner's decision of 2026-11-15 (a run's steps show which way a choice went, a secret's included; a grant on who reads them, not scrubbing), R125 closed on SV's reading: the refused write's step is entered and timed and the unreached one is not in the timeline, so the steps already tell the two apart to the same readers, and only holders of the grant on a run's steps (run.steps) read its outputs",
+    ),
+    (
+        "an echoed reply's length",
+        "a far side that sends the secret back answers with a content-length, and the record keeps a far side's headers as they came, so the reply says how long the secret is: a known limit kept by the owner's choice (R69, 2026-11-17: the log stays as it is, the docs say so, and who may read a run's details is what is controlled; tests::a_far_sides_spelling_says_whether_a_secret_has_a_letter_past_ascii)",
+    ),
+];
 
 /// Which of [`ALLOWED`] the difference `d` (as `differs` words it) is: a run's output, withheld in
-/// one run and absent in the other.
-fn allowed(d: &str) -> Option<usize> {
+/// one run and absent in the other; or a value in a recorded reply that reads as each secret's
+/// length (`lengths`), as text, and nothing else.
+fn allowed(d: &str, lengths: (usize, usize)) -> Option<usize> {
     let withheld_or_none = d.starts_with(".outputs[") && d.contains("‹withheld: computed from a secret›") && (d.ends_with("| null") || d.contains(": null |"));
-    withheld_or_none.then_some(0)
+    let length = d.starts_with(".rounds[") && d.contains(".response.") && d.ends_with(&format!(": \"{}\" | \"{}\"", lengths.0, lengths.1));
+    if withheld_or_none {
+        Some(0)
+    } else {
+        length.then_some(1)
+    }
 }
 
 /// **Guards:** two runs that differ only in something computed from a secret (which way a test
 /// on it went, whether a value computed from it arrived), with everything clean the same, leave
 /// records that read the same but for their steps (which show which way a choice went, as the
-/// owner decided) and the differences `ALLOWED` names: their `skipped` field for field, in
-/// the same order. Each place the walk can meet such a step (`SECRET_PLACES`), with each request,
-/// run with one secret and then another.
+/// owner decided) and the differences `ALLOWED` names: their `skipped` field for field, in the
+/// same order. Each place the walk can meet such a step, and a write the
+/// host refuses for a reply that sent the secret back (`SECRET_PLACES`), with each request, run
+/// with one secret and then another.
 /// **Why:** otherwise a run's record answers yes or no about the secret, one guess a run: the
 /// walk read whether a step computed from a secret gave anything before it asked whether it may,
 /// and a write a secret decided read "refused" where it was made and the host refused it, and
@@ -178,19 +212,8 @@ fn allowed(d: &str) -> Option<usize> {
 #[test]
 fn a_runs_skipped_effects_read_the_same_whatever_its_secret() {
     let state = claims_state("");
-    let routes: String = SECRET_PLACES
-        .iter()
-        .enumerate()
-        .map(|(i, (_, body))| {
-            let body = body.replace("{T}", "k.startsWith(\"live_\")").replace("{S}", "(k.startsWith(\"live_\") ? \"s\" : undefined)");
-            format!("route.post(\"/p{i}\", (req) => {{\n{body}\nreturn \"end\"\n}})\n\n")
-        })
-        .collect();
-    let text = format!(
-        "import {{ flow, route }} from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\nimport k from \"secret:k\"\n\nflow(\"either\", {{ port: {} }})\n\nfunction pick(x) {{\n  const s = k.startsWith(\"live_\") ? \"s\" : undefined\n  return {{ s, v: x + \"!\" }}\n}}\n\n{routes}",
-        free_port()
-    );
-    let slug = deploy_plain_text(&state, &text);
+    let far = echoing_server(false);
+    let slug = deploy_text(&state, &places_flow(&far), &far);
     let bodies = [r#"{}"#, r#"{"v":"y","c":true}"#, r#"{"c":false}"#, r#"{"v":"y"}"#];
     let secrets = ["live_alpha-key", "test_bravo-another-secret-value-22"];
     let mut seen = None;
@@ -211,6 +234,7 @@ fn a_runs_skipped_effects_read_the_same_whatever_its_secret() {
     }
     let (mut wrong, mut table) = (Vec::new(), Vec::new());
     let mut shown = vec![0; ALLOWED.len()];
+    let lengths = (secrets[0].len(), secrets[1].len());
     for (n, (one, other)) in records[0].iter().zip(&records[1]).enumerate() {
         let (place, body) = (SECRET_PLACES[n / bodies.len()].0, bodies[n % bodies.len()]);
         let words = |e: &serde_json::Value| e["skipped"].as_array().map_or("-".to_string(), |s| s.iter().map(|n| format!("{} {}", n["effect"].as_str().unwrap_or(""), n["level"].as_str().unwrap_or(""))).collect::<Vec<_>>().join(", "));
@@ -220,7 +244,7 @@ fn a_runs_skipped_effects_read_the_same_whatever_its_secret() {
         // The steps show which way a choice went, as the owner decided.
         at.retain(|d| !d.starts_with(".timeline"));
         // A difference `ALLOWED` names is said with the decision that allows it, not failed.
-        at.retain(|d| match allowed(d) {
+        at.retain(|d| match allowed(d, lengths) {
             Some(k) => {
                 shown[k] += 1;
                 false
@@ -369,7 +393,8 @@ fn tally(name: &str, reruns: &[(u64, verify::Rerun)], values: &[serde_json::Valu
 
 /// **Guards:** `holon verify` works each run's `skipped` out again, by the server's walk on the
 /// steps it runs again and the refusals it can tell (a never-kept value in a write or a line, a
-/// write computed from a secret), and holds the line to it: every run of the table's flow, of the
+/// write computed from a secret, one of what a reply that sent a secret back gave or of the secret
+/// itself), and holds the line to it: every run of the table's flow, of the
 /// secret places' flow with each secret, and of a flow whose writes and lines are refused, that
 /// verify runs again comes to its notes, every level among them; and a line changed and chained
 /// again differs where its notes do (a note taken out, one put in, a level, a read or a rule
@@ -400,19 +425,8 @@ fn verify_works_out_what_each_run_didnt_make_again() {
     tally("the table", &verified(&table_export, &table_values, None, &|_| {}), &table_values, &mut table, &mut wrong, &mut levels);
 
     // The secret places' flow, with each secret.
-    let routes: String = SECRET_PLACES
-        .iter()
-        .enumerate()
-        .map(|(i, (_, body))| {
-            let body = body.replace("{T}", "k.startsWith(\"live_\")").replace("{S}", "(k.startsWith(\"live_\") ? \"s\" : undefined)");
-            format!("route.post(\"/p{i}\", (req) => {{\n{body}\nreturn \"end\"\n}})\n\n")
-        })
-        .collect();
-    let text = format!(
-        "import {{ flow, route }} from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\nimport k from \"secret:k\"\n\nflow(\"either\", {{ port: {} }})\n\nfunction pick(x) {{\n  const s = k.startsWith(\"live_\") ? \"s\" : undefined\n  return {{ s, v: x + \"!\" }}\n}}\n\n{routes}",
-        free_port()
-    );
-    let places = deploy_plain_text(&state, &text);
+    let far = echoing_server(false);
+    let places = deploy_text(&state, &places_flow(&far), &far);
     for secret in ["live_alpha-key", "test_bravo-another-secret-value-22"] {
         let set = req("POST", &format!("/deployments/{places}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
         assert_eq!(route(&state, &set).status_code, 200);
@@ -426,15 +440,16 @@ fn verify_works_out_what_each_run_didnt_make_again() {
     tally("the secret places", &verified(&places_export, &places_values, None, &|_| {}), &places_values, &mut table, &mut wrong, &mut levels);
 
     // Refused: a write and a line holding a value the flow never keeps, a write computed from a
-    // secret too short to be a mark.
+    // secret too short to be a mark, a write of what a reply that sent the secret back gave (a
+    // piece of it, and the secret whole, which the server refuses by that rule first).
     let text = format!(
-        "import {{ flow, route }} from \"holon\"\nimport state from \"state\"\nimport k from \"secret:k\"\n\nflow(\"refuses\", {{ port: {}, never_keep: [\"cvc\"] }})\n\nroute.post(\"/keep\", (req) => {{\n  state.last = req.json\n  return \"ok\"\n}})\n\nroute.post(\"/said\", (req) => {{\n  console.log(req.json)\n  return \"ok\"\n}})\n\nroute.post(\"/short\", (req) => {{\n  state.n = k.length\n  return \"ok\"\n}})\n",
+        "import {{ flow, route }} from \"holon\"\nimport state from \"state\"\nimport k from \"secret:k\"\nimport far from \"host:{far}\"\n\nflow(\"refuses\", {{ port: {}, never_keep: [\"cvc\"] }})\n\nroute.post(\"/keep\", (req) => {{\n  state.last = req.json\n  return \"ok\"\n}})\n\nroute.post(\"/said\", (req) => {{\n  console.log(req.json)\n  return \"ok\"\n}})\n\nroute.post(\"/short\", (req) => {{\n  state.n = k.length\n  return \"ok\"\n}})\n\nroute.post(\"/echoed\", async (req) => {{\n  const got = await far.post(\"/e\", {{ body: k }})\n  state.p = got.body.slice(8, 20)\n  return \"ok\"\n}})\n\nroute.post(\"/echoed-whole\", async (req) => {{\n  const got = await far.post(\"/e\", {{ body: k }})\n  state.e = got.body\n  return \"ok\"\n}})\n",
         free_port()
     );
-    let refuses = deploy_plain_text(&state, &text);
+    let refuses = deploy_text(&state, &text, &far);
     let set = req("POST", &format!("/deployments/{refuses}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": "s3cr3t-value-for-test" })).unwrap());
     assert_eq!(route(&state, &set).status_code, 200);
-    for path in ["/keep", "/said", "/short"] {
+    for path in ["/keep", "/said", "/short", "/echoed", "/echoed-whole"] {
         data_call(&state, &refuses, "POST", path, r#"{"amount":1737,"cvc":"737"}"#);
     }
     let (refuses_export, refuses_values) = exported(&state, &refuses);
@@ -442,19 +457,27 @@ fn verify_works_out_what_each_run_didnt_make_again() {
     for v in refuses_values.iter().filter(|v| v["kind"] == "request") {
         table.push(format!("the refusals, {}: performed {}, skipped {}", v["url"].as_str().unwrap_or(""), v["performed"], v["skipped"]));
     }
-    // Each is noted: refused where it holds a never-kept value, withheld where it may carry what
-    // is computed from a secret.
+    // Each is noted, none a reader of `skipped` can't see: refused by its rule, or withheld where
+    // it may carry what is computed from a secret.
     let notes = |url: &str| refuses_values.iter().find(|v| v["url"].as_str().is_some_and(|u| u.ends_with(url))).map_or(serde_json::Value::Null, |v| v["skipped"].clone());
-    for (url, level) in [("/keep", "refused"), ("/said", "refused"), ("/short", "withheld")] {
-        if notes(url)[0]["level"] != level {
-            wrong.push(format!("the refusals, {url}: the line's notes are {}, not one at level {level}", notes(url)));
+    let said = [
+        ("/keep", "refused", Some(crate::skipped::NEVER_KEPT)),
+        ("/said", "refused", Some(crate::skipped::NEVER_KEPT)),
+        ("/short", "withheld", None),
+        ("/echoed", "refused", Some(crate::skipped::ECHOED)),
+        ("/echoed-whole", "refused", Some(crate::skipped::SECRET_VALUE)),
+    ];
+    for (url, level, rule) in said {
+        let n = notes(url);
+        if n.as_array().map(Vec::len) != Some(1) || n[0]["level"] != level || n[0]["rule"].as_str() != rule {
+            wrong.push(format!("the refusals, {url}: the line's notes are {n}, not one at level {level} by {rule:?}"));
         }
     }
 
     // Changed lines: each differs. `/r0_1`: a write whose read found nothing; `/r0_0`: a write made.
     let line_of = |values: &[serde_json::Value], url: &str| values.iter().position(|v| v["url"].as_str().is_some_and(|u| u.ends_with(url))).unwrap_or_else(|| panic!("no line for {url}"));
     let (read_line, made_line) = (line_of(&table_values, "/r0_1"), line_of(&table_values, "/r0_0"));
-    let keep_line = line_of(&refuses_values, "/keep");
+    let (keep_line, echoed_line) = (line_of(&refuses_values, "/keep"), line_of(&refuses_values, "/echoed"));
     let made = table_values[made_line]["performed"].clone();
     type Change = Box<dyn Fn(&mut serde_json::Value)>;
     let changes: Vec<(&str, &verify::Export, &[serde_json::Value], usize, Change)> = vec![
@@ -473,6 +496,7 @@ fn verify_works_out_what_each_run_didnt_make_again() {
             }),
         ),
         ("a refused write's note taken out", &refuses_export, &refuses_values, keep_line, Box::new(|v| v["skipped"] = serde_json::json!([]))),
+        ("an echoed write's note taken out", &refuses_export, &refuses_values, echoed_line, Box::new(|v| v["skipped"] = serde_json::json!([]))),
         ("a refused write's rule changed", &refuses_export, &refuses_values, keep_line, Box::new(|v| v["skipped"][0]["rule"] = "not granted".into())),
         (
             "a refused write said made",

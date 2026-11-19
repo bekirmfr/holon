@@ -930,7 +930,7 @@ fn run_attempt(
         if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) | Capability::ChannelSend(key) | Capability::MailSend(key) | Capability::QueueSend(key) | Capability::FileWrite(key) = cap {
             if let Some(name) = secrets::secret_in(payload, secrets) {
                 eprintln!("holon: refused to store or send secret {name:?} in {key:?}");
-                refuse("it holds a secret's value");
+                refuse(skipped::SECRET_VALUE);
                 return false;
             }
             if secret_fed.derives_effect(cap) {
@@ -938,8 +938,11 @@ fn run_attempt(
                 refuse(skipped::DERIVED);
                 return false;
             }
+            // Said too, as every refusal is: whether the reply sent the secret back is read off
+            // the reply, and the write landing or not already shows it in the state.
             if echoed.fed.feeds_effect(cap) {
                 eprintln!("holon: refused to store or send in {key:?} what was read from a reply that sent a secret back: store a number, a true or false, or a text shorter than six characters");
+                refuse(skipped::ECHOED);
                 return false;
             }
             if let Some(name) = holds_answered(payload) {

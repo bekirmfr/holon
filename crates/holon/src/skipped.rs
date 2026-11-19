@@ -32,9 +32,12 @@ use holon_core::{capabilities_of, Capability, Resolver, Type, Unit, UnitBody, CA
 use std::collections::HashMap;
 
 /// The rules a refusal is said by that `holon verify` works out again from the run (the others
-/// it can't: a grant isn't in the export), in the words the server says them.
+/// it can't: a grant isn't in the export), in the words the server says them. Every refusal is
+/// said by one: none a reader of `skipped` can't see.
 pub(crate) const NEVER_KEPT: &str = "it holds a value its flow never keeps";
+pub(crate) const SECRET_VALUE: &str = "it holds a secret's value";
 pub(crate) const DERIVED: &str = "it holds what is computed from a secret";
+pub(crate) const ECHOED: &str = "it holds what was read from a reply that sent a secret back";
 
 /// The effects `root`'s run held and didn't make, by its steps (`timeline`, as its `Timer` kept
 /// them, before anything of them is withheld) and the reads it made (`read`: a read step's place

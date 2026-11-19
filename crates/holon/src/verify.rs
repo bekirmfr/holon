@@ -1925,7 +1925,16 @@ fn rerun(
         if host.performed.iter().chain(&waiting).any(|(c, _)| keeps(c) && most.feeds_effect(c) && !least.feeds_effect(c) && !logged(c)) {
             return Rerun::Skipped("it wrote what it read out of a reply that sent a secret back, past a step whose outputs its line doesn't keep: whether the server refused that write can't be told, so it isn't run again".into());
         }
-        host.performed.retain(|(c, _)| !(keeps(c) && least.feeds_effect(c)));
+        // Each noted as the server notes it, in its order: one holding a secret's value by that
+        // rule (`secrets::secret_in`: here its mark, or one for a spelling no mark stands for),
+        // one computed from a secret noted already (above), the rest by the reply.
+        host.performed.retain(|(c, p)| {
+            let out = keeps(c) && least.feeds_effect(c);
+            if out && !fed.derives_effect(c) {
+                noted.push((c.clone(), if secrets_held(p).is_empty() { skipped::ECHOED } else { skipped::SECRET_VALUE }));
+            }
+            !out
+        });
         let writes = least.clone();
         refused = Box::new(move |c| keeps(c) && writes.feeds_effect(c));
         trail = Some((most, least));
