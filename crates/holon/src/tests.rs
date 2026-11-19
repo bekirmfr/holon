@@ -1143,7 +1143,8 @@ fn the_host_warns_of_a_full_disk_and_a_full_cache_once_each() {
     let warnings = || body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].as_array().cloned().unwrap();
     let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
     // Nothing near a 2 KiB floor (nor past the 1 KiB it acts at, warned of too): no warning.
-    assert_eq!(set(r#"{"warn_at":"2K","full_at":"1K"}"#).status_code, 200);
+    // Where runs go chosen (none), or a host is warned until it is (backup_choice.rs, R123).
+    assert_eq!(set(r#"{"warn_at":"2K","full_at":"1K","backup":"none"}"#).status_code, 200);
     assert_eq!(warnings(), Vec::<serde_json::Value>::new());
     // A floor no disk has: its disk warns, with what to do.
     assert_eq!(set(r#"{"warn_at":"1000T","full_at":"1K"}"#).status_code, 200);
