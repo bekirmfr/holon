@@ -782,6 +782,11 @@ pub(crate) struct StoredExchange {
     pub(crate) response: SValue,
     pub(crate) start_us: f64,
     pub(crate) end_us: f64,
+    /// What it was told apart by as it was sent (hex; `holon_host::Exchange::key`): its request
+    /// with the secrets it held written as their names, so a later part asking it again with
+    /// another value of one is answered from here (R113). Absent for one stored before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) key: Option<String>,
 }
 
 /// A run waiting for an event. Persisted with its deployment.
@@ -896,6 +901,7 @@ fn store_rounds(rounds: &[Round]) -> Vec<Vec<StoredExchange>> {
                     response: SValue::from_core(&x.response),
                     start_us: x.start_us,
                     end_us: x.end_us,
+                    key: x.key.as_ref().map(holon_core::hex),
                 })
                 .collect()
         })
@@ -1005,22 +1011,21 @@ impl ParkedRun {
             .collect::<Option<Vec<u8>>>()
             .and_then(|v| <[u8; 16]>::try_from(v).ok())
             .ok_or("the run's nonce isn't 128 bits of hex")?;
+        let exchange = |x: &StoredExchange| -> Result<Exchange, &'static str> {
+            Ok(Exchange {
+                path: x.path.clone(),
+                request: x.request.clone().into_core(),
+                response: x.response.clone().into_core(),
+                start_us: x.start_us,
+                end_us: x.end_us,
+                key: x.key.as_deref().map(|k| parse_hash(k).ok_or("an exchange's key isn't a hash")).transpose()?,
+            })
+        };
         let prior = self
             .rounds
             .iter()
-            .map(|r| Round {
-                exchanges: r
-                    .iter()
-                    .map(|x| Exchange {
-                        path: x.path.clone(),
-                        request: x.request.clone().into_core(),
-                        response: x.response.clone().into_core(),
-                        start_us: x.start_us,
-                        end_us: x.end_us,
-                    })
-                    .collect(),
-            })
-            .collect();
+            .map(|r| Ok(Round { exchanges: r.iter().map(exchange).collect::<Result<_, _>>()? }))
+            .collect::<Result<Vec<_>, &'static str>>()?;
         Ok(Resumption { unit, inputs, sourced, waits, resumed: Resumed { state_before, nonce, prior } })
     }
 

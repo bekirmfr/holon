@@ -384,7 +384,7 @@ pub(crate) fn note_seen(at: &crate::paths::Place, file: Option<&Path>, result: R
 pub(crate) fn seen_forgotten(at: &crate::paths::Place, dir: &Path) {
     for (told, place, _) in crate::failing::files_now(at) {
         if told == SEEN_UNREAD && Path::new(&place).starts_with(dir) {
-            crate::failing::note_file(at, &told, &place, Ok(()));
+            crate::failing::note_file(at, told, &place, Ok(()));
         }
     }
 }

@@ -10,6 +10,7 @@
 
 use holon_core::Capabilities;
 
+use crate::access::Caller;
 use crate::permissions::ChangeRequest;
 use crate::*;
 
@@ -85,7 +86,7 @@ pub(crate) fn handle_get_admin_grants(state: &AppState) -> Response {
 /// `POST /deployments/<slug>/grant` — change what it is granted:
 /// `{"revoke": [item], "grant": [item], "lower": {limit: n}, "keep_running": bool}`, every part
 /// optional. Applied whole or not at all; answers with the grant as it now is.
-pub(crate) fn handle_post_grant(state: &AppState, slug: &str, request: &Request, by: Option<&str>) -> Response {
+pub(crate) fn handle_post_grant(state: &AppState, slug: &str, request: &Request, who: &Caller) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
         Err(r) => return r,
@@ -94,18 +95,28 @@ pub(crate) fn handle_post_grant(state: &AppState, slug: &str, request: &Request,
         Ok(c) => c,
         Err(e) => return err(400, format!("not a valid grant change: {e}")),
     };
-    match change_grant(state, slug, &change, by) {
+    match change_grant(state, slug, &change, who) {
         Ok(view) => Response::json(&view),
         Err(r) => r,
     }
 }
 
-/// Apply `change` to the grant of `slug`, whole or not at all, as `by`: each change noted on the
+/// Apply `change` to the grant of `slug`, whole or not at all, as `who`: each change noted on the
 /// deployment, which is checked again and kept. The grant as it now is, or the refusal.
-pub(crate) fn change_grant(state: &AppState, slug: &str, change: &ChangeRequest, by: Option<&str>) -> Result<serde_json::Value, Response> {
+///
+/// What it grants back is held as a deploy holds it: a call of another flow's action only by
+/// someone who may run that action (deploy.rs's `borrowed`, the launch review's H1). Without it,
+/// an editor of the flow alone, refused the deploy of a version calling it, gave it back here once
+/// an admin had taken it away (R111).
+pub(crate) fn change_grant(state: &AppState, slug: &str, change: &ChangeRequest, who: &Caller) -> Result<serde_json::Value, Response> {
+    let by = who.name.as_deref();
     let Some(unit) = state.deployments.lock().unwrap().get(slug).map(|d| d.unit) else {
         return Err(err(404, format!("no deployment {slug:?}")));
     };
+    let back: BTreeSet<String> = change.grant.iter().cloned().collect();
+    if let Some((_, why)) = crate::deploy::borrowed(&state.deployments, &back, slug, who, "grants it back").into_iter().next() {
+        return Err(err(403, why));
+    }
     let caps = derived_capabilities(&state.store, unit).map_err(|e| err(500, e))?;
     let policy = state.policy();
     let reply = {

@@ -339,7 +339,7 @@ the flow's own route.
 holon run <slug> [--fresh | --session N]
 holon pause <slug>
 holon stop <slug>
-holon remove <slug> --yes [--forget]
+holon remove <slug> --yes [--forget] [--give-up RUNS]
 ```
 
 `run` starts a paused or stopped deployment again, from its latest state, from none (`--fresh`),
@@ -359,6 +359,19 @@ Editors and admins. `--forget` forgets its keys too, once it is removed ([`holon
 forget`](#holon-key), which needs `host.operate`): its kept log, events, records and backups
 can't be opened again; the values only it named are swept from the shared content store, and its
 code stays there.
+
+If part of its log couldn't be read as the server started (a sealed segment damaged, which `holon
+host` warns of), its records can't be kept whole, and nothing is removed: `remove` says which runs
+can't be read, and how to give them up, `runs 137 to 147 can't be read; to remove it anyway,
+giving them up (an admin's to do): holon remove hist --yes --give-up 137-147`. Restore the segment
+from a copy of the data folder, and nothing is lost: a removal reads it again. Or, with
+`--give-up` and exactly those runs (`137-147,286-298` for two), it is removed without them: its
+records name them given up, by whom and when, sealed with them, and `holon verify` says so, `runs
+137 to 147 GIVEN UP when the deployment was removed by ada at …`, and checks the rest (exit 3, as
+for anything it doesn't check). The damaged files are kept beside the records
+(`removed/<slug>-runs-<ms>.given-up/`), and go when they do. Other runs named, or some read again
+meanwhile, remove nothing, and say what can't be read now. It needs `host.operate` as well; an
+agent never gives runs up.
 
 ### `holon call`
 
@@ -548,8 +561,9 @@ changes. Changed without a redeploy, the whole change or none of it: `--revoke` 
 back (written as this prints it: `StateWrite("orders")`), `--grant` gives back one its version
 asks for, `--lower` holds a limit below what it was (raising one takes a deploy, which asks for
 approval). A grant that no longer covers the deployment pauses it until it does again, unless
-`--keep-running`: then the calls it lacks fail. Editors and admins. See [Changing a
-grant](../guides/deploying.md#changing-a-grant).
+`--keep-running`: then the calls it lacks fail. Editors and admins; a call of another flow's
+action (`RunsAction("billing/charge")`) is granted back only by someone who may run it, as its
+deploy is. See [Changing a grant](../guides/deploying.md#changing-a-grant).
 
 ### `holon grants`
 
@@ -629,9 +643,10 @@ never an argument, which the shell's history would keep), or read by the server 
 environment or a vault. `rollback` makes a kept version current again, as a new one; `--dry-run`
 names the two values by their fingerprints. `remove` forgets every version. `env`: the
 `HOLON_SECRET_*` names the server can read. Admins set, roll back and remove. A run waiting as a
-secret is `set` sends again, with the new value, the requests that carried it before its wait,
-when it goes on: set one when `holon runs <slug> --waiting` lists none (see
-[Deploying](../guides/deploying.md#secrets)).
+secret is `set` sends again, with the new value, the requests before its wait that held a value
+computed from the secret (a signature, a Basic credential), when it goes on; those that held it as
+it is are answered from its record. For such a flow, set one when `holon runs <slug> --waiting`
+lists none (see [Deploying](../guides/deploying.md#secrets)).
 
 `bind` sets the server's own secret, read by every deployment that reads a secret of that name
 and has none of its own (one set for a deployment overrides it), its value piped in or `--from`,
@@ -668,7 +683,9 @@ holon activity [--last N] [--json]
 ```
 
 What was done on the server, newest first, and by whom: saves, deploys, runs, pauses, stops,
-grants, deletes, bindings, sweeps, people and tokens. The newest 50; `--last` up to 500.
+grants, deletes, bindings, sweeps, people and tokens. The newest 50; `--last` up to 500. Each
+holds the flows its reader may view; the server's warnings, each in a few fixed words, never where
+or why, are shown only to whoever may view the host (the whole of each is in `holon host`).
 
 ## People and sign-in
 

@@ -181,7 +181,7 @@ impl Failed {
 
 /// The files failing now, by the deployments file's place, what whoever asked was told, and where
 /// (an admin's words: a path): why ([`note_file`]).
-static FILES: Mutex<BTreeMap<(PathBuf, String, String), String>> = Mutex::new(BTreeMap::new());
+static FILES: Mutex<BTreeMap<(PathBuf, &'static str, String), String>> = Mutex::new(BTreeMap::new());
 
 /// A file the server reads or writes, failing now: kept, with why, until the same (told, place)
 /// goes through. Listed in the admin's warnings (storage.rs), never /health's 503. `place` is
@@ -189,9 +189,11 @@ static FILES: Mutex<BTreeMap<(PathBuf, String, String), String>> = Mutex::new(BT
 /// again with Ok: the key is it, not `Failed`'s own told, so a Failed told in other words still
 /// clears. Two places under one told (two packs, two deployments' seen files) never clear each
 /// other. A server whose deployments file is kept nowhere notes nothing, as [`note`] doesn't.
-pub(crate) fn note_file(at: &Place, told: &str, place: &str, result: Result<(), &Failed>) {
+/// `told` is words written in the source (`'static`): the warning's line in the activity record
+/// is it alone, never where or why (storage.rs `Warning::told`, release audit R114).
+pub(crate) fn note_file(at: &Place, told: &'static str, place: &str, result: Result<(), &Failed>) {
     let Some(path) = at.at() else { return };
-    let key = (PathBuf::from(path.clone()), told.to_string(), place.to_string());
+    let key = (PathBuf::from(path.clone()), told, place.to_string());
     let mut files = FILES.lock().unwrap();
     match result {
         Ok(()) => drop(files.remove(&key)),
@@ -200,10 +202,10 @@ pub(crate) fn note_file(at: &Place, told: &str, place: &str, result: Result<(), 
 }
 
 /// What fails now for the server whose deployments file is `at`: (told, place, why).
-pub(crate) fn files_now(at: &Place) -> Vec<(String, String, String)> {
+pub(crate) fn files_now(at: &Place) -> Vec<(&'static str, String, String)> {
     let Some(path) = at.at() else { return Vec::new() };
     let path = PathBuf::from(path.clone());
-    FILES.lock().unwrap().iter().filter(|((p, _, _), _)| *p == path).map(|((_, told, place), why)| (told.clone(), place.clone(), why.clone())).collect()
+    FILES.lock().unwrap().iter().filter(|((p, _, _), _)| *p == path).map(|((_, told, place), why)| (*told, place.clone(), why.clone())).collect()
 }
 
 /// Where in `text` byte `at` is: its line and column, from 1.

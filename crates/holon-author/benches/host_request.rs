@@ -194,7 +194,7 @@ fn run(name: &str, r: &Route, req: Value) {
     let once = || {
         let mut host = Recording(Vec::new());
         let mut timer = Timer::new();
-        let out = run_rounds(root, &inputs, &sourced, &r.resolver, &mut host, &Stub, &limits, &mut timer, &mut Reads, &[]);
+        let out = run_rounds(root, &inputs, &sourced, &r.resolver, &mut host, &Stub, &limits, &mut timer, &mut Reads, &[], &holon_host::Whole);
         (out, host, timer)
     };
     let (out, _, timer) = once();

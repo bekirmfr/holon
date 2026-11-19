@@ -476,7 +476,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     let previous = previous_of(deployments, &body.slug);
     // What it runs of other flows that whoever deploys it may not run: a person who approves is
     // refused it, and what someone proposes waits for someone who may run it.
-    let borrowed = borrowed(deployments, &manifest.items(), &body.slug, who);
+    let borrowed = borrowed(deployments, &manifest.items(), &body.slug, who, DEPLOYS_IT);
     if approves && let Some((_, why)) = borrowed.first() {
         return err(403, why.clone());
     }
@@ -775,13 +775,17 @@ fn as_it_would_be(who: &Caller, action: Action, slug: &str, now: Option<&[String
     )))
 }
 
+/// Who does it instead, as a deploy's refusal of a call of another flow's action says it.
+const DEPLOYS_IT: &str = "deploys this version";
+
 /// The actions of other flows that `items` (a version's) run, `RunsAction("billing/charge")`,
-/// which `who` may not run, each with why. A call runs the other flow's action under that flow's
-/// grant, with whatever this flow's code sends it, so deploying the code runs it as surely as
-/// running it by hand: whoever deploys it may run it (the launch review's H1). An agent runs only
-/// what the other flow's grant lets agents run, as by hand. A flow starting its own action runs
-/// nothing of another's.
-fn borrowed(deployments: &Mutex<BTreeMap<String, Deployment>>, items: &BTreeSet<String>, slug: &str, who: &Caller) -> Vec<(String, String)> {
+/// which `who` may not run, each with why, ending "so someone who may run it `then`". A call runs
+/// the other flow's action under that flow's grant, with whatever this flow's code sends it, so
+/// deploying the code runs it as surely as running it by hand: whoever deploys it may run it (the
+/// launch review's H1), and so may whoever grants such a call back (grants.rs, R111). An agent runs
+/// only what the other flow's grant lets agents run, as by hand. A flow starting its own action
+/// runs nothing of another's.
+pub(crate) fn borrowed(deployments: &Mutex<BTreeMap<String, Deployment>>, items: &BTreeSet<String>, slug: &str, who: &Caller, then: &str) -> Vec<(String, String)> {
     let deployments = deployments.lock().unwrap();
     items
         .iter()
@@ -797,7 +801,7 @@ fn borrowed(deployments: &Mutex<BTreeMap<String, Deployment>>, items: &BTreeSet<
             let why = refusal.0.strip_prefix(&format!("{name} may not do that: ")).unwrap_or(&refusal.0);
             Some((
                 item.clone(),
-                format!("this version runs {flow:?}'s action {action:?}, which {name} may not run ({why}): a call runs it under {flow:?}'s grant with what this flow sends, so someone who may run it deploys this version"),
+                format!("this version runs {flow:?}'s action {action:?}, which {name} may not run ({why}): a call runs it under {flow:?}'s grant with what this flow sends, so someone who may run it {then}"),
             ))
         })
         .collect()
@@ -969,7 +973,7 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
     let code = code_rows(&previous, server.as_ref());
     // What it runs of other flows that `who` may not run: refused to a person who approves,
     // waiting for someone who may when proposed.
-    let borrowed = borrowed(deployments, &manifest.items(), &body.slug, who);
+    let borrowed = borrowed(deployments, &manifest.items(), &body.slug, who, DEPLOYS_IT);
     let name = who.name.as_deref().unwrap_or_default();
     let mut unready: BTreeMap<String, String> = borrowed
         .iter()
@@ -1583,6 +1587,16 @@ pub(crate) fn handle_get_state(deployments: &Mutex<BTreeMap<String, Deployment>>
 /// after the records are taken, so they hold every run its log does, and a strict one is answered
 /// 500, its record not kept, never 200 (release audit R41). The witness is told it is removed
 /// (heads.rs, `"removed"`), so the old chain's last head stays apart from the new one's.
+///
+/// A sealed segment of its log that couldn't be read as the server started fails that, and
+/// nothing is removed: the answer names its runs, and how to give them up. `give_up` (`?give_up=`,
+/// an admin's word: http.rs) names them: when they are exactly the runs it can't read now, the
+/// records are kept without them, naming them given up (`Export::given_up`, by `by`, for `holon
+/// verify`), and the segments that held them are moved beside the records, never deleted
+/// (`given_up_dir`). Other runs named, or none while some can't be read: 409 with those it can't
+/// read now, nothing removed. All read again by then: removed as ever, nothing given up. What was
+/// given up goes in `given` (release audit R110).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_delete_deployment(
     store: &SharedStore,
     folders: &folders::Folders,
@@ -1590,6 +1604,9 @@ pub(crate) fn handle_delete_deployment(
     deployments_path: &Place,
     slug: &str,
     sees_data: bool,
+    give_up: &[(u64, u64)],
+    by: Option<&str>,
+    given: &mut Vec<(u64, u64)>,
 ) -> Response {
     // What its records are read from, with the table's lock released while they are written.
     let held = match deployments.lock().unwrap().get(slug) {
@@ -1599,7 +1616,17 @@ pub(crate) fn handle_delete_deployment(
     };
     let log = Arc::clone(&held.0);
     log.with(|log| log.close());
-    let records = match keep_records(store, folders, deployments_path, slug, held) {
+    // Its records whole, or none and nothing removed: the log goes once they are kept.
+    let read = match log.lines_to_head_giving_up(give_up) {
+        Ok(read) => read,
+        Err(not) => {
+            log.with(|log| log.reopen());
+            return not_removed(slug, give_up, not);
+        }
+    };
+    let at_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let given_up: Vec<verify::GivenUp> = read.given_up.iter().map(|&(from, to)| verify::GivenUp { from, to, by: by.map(String::from), at_ms }).collect();
+    let records = match keep_records(store, folders, deployments_path, slug, held, (read.lines, read.head), given_up, at_ms) {
         Ok(at) => at,
         Err(e) => {
             log.with(|log| log.reopen());
@@ -1620,6 +1647,12 @@ pub(crate) fn handle_delete_deployment(
     };
     match removed {
         Some(dep) => {
+            // What was given up, moved beside its records before its log's files go: the only copy
+            // of those runs, should a copy of its keys or a repair read them later.
+            if let Some(at) = &records {
+                keep_given_up(at, &read.segments);
+            }
+            *given = read.given_up.clone();
             dep.log.with(|log| {
                 log.note_removed();
                 log.delete_file();
@@ -1645,6 +1678,9 @@ pub(crate) fn handle_delete_deployment(
                 None => p.display().to_string(),
             });
             answer["records"] = serde_json::json!(records);
+            if !read.given_up.is_empty() {
+                answer["given_up"] = serde_json::json!(read.given_up);
+            }
             Response::json(&answer)
         }
         None => err(404, format!("no deployment {slug:?}")),
@@ -1660,25 +1696,28 @@ pub(crate) fn removed_file(deployments_path: &Place, slug: &str, at_ms: u64, unt
 }
 
 /// Write a deployment's log and timeline (`held`: its log, its secrets' redactor, its events and
-/// their head) as an export, gzipped and sealed as a backup's is (storage.rs, at_rest.rs §5.5;
-/// `holon verify` opens it with the data folder's keys), kept as long as its retention would have
-/// kept its newest run: where it went, or None with no data folder or nothing on record.
+/// their head; `lines`, its log's read to its head) as an export, gzipped and sealed as a
+/// backup's is (storage.rs, at_rest.rs §5.5; `holon verify` opens it with the data folder's
+/// keys), naming the runs `given_up` in it, sealed with it: kept as long as its retention would
+/// have kept its newest run. Where it went, or None with no data folder or nothing on record.
+#[allow(clippy::too_many_arguments)]
 fn keep_records(
     store: &SharedStore,
     folders: &folders::Folders,
     deployments_path: &Place,
     slug: &str,
     (log, redactor, events, events_head): (Arc<recorder::LogCell>, crate::secrets::Redactor, Vec<String>, String),
+    (lines, head): (Vec<String>, String),
+    given_up: Vec<verify::GivenUp>,
+    at_ms: u64,
 ) -> Result<Option<PathBuf>, String> {
-    let at_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-    // Its records whole, or none and nothing removed: the log goes once they are kept.
-    let (lines, head) = log.lines_to_head().map_err(|e| format!("its run log can't all be read: {e}"))?;
     let max_age_ms = log.with(|log| log.max_age_ms());
     let Some(to) = removed_file(deployments_path, slug, at_ms, max_age_ms.map(|age| at_ms.saturating_add(age))) else { return Ok(None) };
-    if lines.is_empty() && events.is_empty() {
+    if lines.is_empty() && events.is_empty() && given_up.is_empty() {
         return Ok(None);
     }
-    let export = verify::export_of(store, folders, Some(&redactor), slug, lines, head, events, events_head, u64::MAX)?;
+    let mut export = verify::export_of(store, folders, Some(&redactor), slug, lines, head, events, events_head, u64::MAX)?;
+    export.given_up = given_up;
     let json = serde_json::to_vec(&export).map_err(|e| e.to_string())?;
     let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     std::io::Write::write_all(&mut gz, &json).map_err(|e| e.to_string())?;
@@ -1688,6 +1727,89 @@ fn keep_records(
     }
     crate::at_rest::write_sealed(&to, &crate::at_rest::deployment(slug), &crate::at_rest::role::export(slug), &bytes).map_err(|e| e.to_string())?;
     Ok(Some(to))
+}
+
+/// What a removal whose log's read didn't go answers (`handle_delete_deployment`): nothing kept,
+/// nothing removed. The runs it can't read now, by number alone (no place, no system's words:
+/// those are the admin's warnings'), and how to give them up.
+fn not_removed(slug: &str, give_up: &[(u64, u64)], not: recorder::NotGivenUp) -> Response {
+    let told = format!("{slug:?}'s run records couldn't be kept, so nothing was removed");
+    let how = |now: &[(u64, u64)]| format!("to remove it anyway, giving them up (an admin's to do): holon remove {slug} --yes --give-up {}", give_up_arg(now));
+    match not {
+        recorder::NotGivenUp::Named(now) if give_up.is_empty() => err(500, format!("{told}: {} can't be read; {}", runs_said(&now), how(&now))),
+        recorder::NotGivenUp::Named(now) => err(
+            409,
+            format!("nothing was removed: the runs of {slug:?} that can't be read now are {}, not {}; {}", spans_said(&now), spans_said(&recorder::joined(give_up.iter().copied())), how(&now)),
+        ),
+        recorder::NotGivenUp::Unknown => err(
+            500,
+            format!("{told}: what of its run log can't be read isn't known by run (the server's warnings say why), so none of it can be given up: make it readable again, or restore it from a copy of the data folder"),
+        ),
+        recorder::NotGivenUp::Read(e) => err(500, crate::failing::Failed::reason(told, format!("{slug:?}'s run records: its run log can't all be read: {e}")).said()),
+    }
+}
+
+/// Where the sealed segments of a removed deployment's log whose runs were given up are kept:
+/// beside its records, in a folder named after them (`shop-runs-1762963200000.given-up/`), each
+/// by its own name. They go when the records do (storage.rs `expire_removed`).
+pub(crate) fn given_up_dir(records: &std::path::Path) -> PathBuf {
+    let name = records.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    records.with_file_name(format!("{}.given-up", name.strip_suffix(".json.gz").unwrap_or(&name)))
+}
+
+/// Move `segments`, given up, beside `records` ([`given_up_dir`]), copied where they can't be
+/// moved: the only copy of those runs. One that can't be kept is said on stderr, for the admin;
+/// it goes with its log.
+fn keep_given_up(records: &std::path::Path, segments: &[PathBuf]) {
+    if segments.is_empty() {
+        return;
+    }
+    let dir = given_up_dir(records);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("holon: warning: {} can't be made, and the sealed segments given up go with their log: {e}", dir.display());
+        return;
+    }
+    for segment in segments {
+        let Some(name) = segment.file_name() else { continue };
+        let to = dir.join(name);
+        if let Err(e) = std::fs::rename(segment, &to).or_else(|_| std::fs::copy(segment, &to).map(drop)) {
+            eprintln!("holon: warning: the sealed segment {} was given up, and can't be kept in {}: it goes with its log: {e}", segment.display(), dir.display());
+        }
+    }
+}
+
+/// Runs, as an answer says them: `run 7`, `runs 137 to 147`, `runs 137 to 147 and 286 to 298`.
+pub(crate) fn runs_said(spans: &[(u64, u64)]) -> String {
+    format!("{} {}", if matches!(spans, [(a, b)] if a == b) { "run" } else { "runs" }, spans_said(spans))
+}
+
+/// Runs, listed: `7`, `137 to 147`, `137 to 147 and 286 to 298`, `none`.
+pub(crate) fn spans_said(spans: &[(u64, u64)]) -> String {
+    let each: Vec<String> = spans.iter().map(|(a, b)| if a == b { a.to_string() } else { format!("{a} to {b}") }).collect();
+    match each.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => "none".into(),
+    }
+}
+
+/// Runs as `--give-up` and `?give_up=` take them: `137-147,286-298`.
+pub(crate) fn give_up_arg(spans: &[(u64, u64)]) -> String {
+    spans.iter().map(|(a, b)| if a == b { a.to_string() } else { format!("{a}-{b}") }).collect::<Vec<_>>().join(",")
+}
+
+/// `?give_up=`'s runs: first-last spans, or single runs, by commas (`137-147,286-298`).
+pub(crate) fn parse_give_up(text: &str) -> Result<Vec<(u64, u64)>, String> {
+    text.split(',')
+        .map(|span| {
+            let span = span.trim();
+            let (first, last) = span.split_once('-').unwrap_or((span, span));
+            match (first.trim().parse::<u64>(), last.trim().parse::<u64>()) {
+                (Ok(first), Ok(last)) if first <= last => Ok((first, last)),
+                _ => Err(format!("give_up names runs, first-last by commas (137-147,286-298): {span:?} isn't one")),
+            }
+        })
+        .collect()
 }
 
 /// Bump a deployment's trigger/error counters after a fire attempt — a small, shared tail

@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 mod common;
-use common::{answering, free_port};
+use common::{answering, free_port, own_folder};
 
 #[path = "../src/surfaces.rs"]
 #[allow(dead_code)]
@@ -230,8 +230,7 @@ impl World {
 /// HOLON_TOKEN; sage, an agent bound a viewer's role on the host besides, so holding run.steps.
 /// And `steps2.holon.ts`, a version of `steps` that answers the canary's run otherwise.
 fn world() -> (World, [Caller; 4], u64) {
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let home = std::env::temp_dir().join(format!("holon-surfaces-{}-{stamp}", std::process::id()));
+    let home = own_folder("holon-surfaces");
     let server_home = home.join("server");
     std::fs::create_dir_all(server_home.join("run")).unwrap();
     let files = home.join("files");

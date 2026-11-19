@@ -215,7 +215,16 @@ struct Inner {
 }
 
 /// What a mail is called in the admin's warnings (spools.rs).
-const KIND: spools::Kind = spools::Kind { key: "spool:mail", one: "mail", many: "mails", folder: "mail spool" };
+const KIND: spools::Kind = spools::Kind {
+    key: "spool:mail",
+    one: "mail",
+    many: "mails",
+    folder: "mail spool",
+    told: [
+        "the mail spool folder can't all be listed: what was spooled in it before the server started is neither sent nor removed",
+        "mails spooled before the server started are neither sent nor removed: whether their runs landed can't be told",
+    ],
+};
 
 impl std::fmt::Debug for Mails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

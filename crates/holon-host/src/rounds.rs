@@ -147,6 +147,29 @@ pub struct Exchange {
     /// When it was sent and answered, in microseconds since the run began.
     pub start_us: f64,
     pub end_us: f64,
+    /// What the request was told apart by as it was sent ([`Keys`]), with the values that try was
+    /// given: kept with the exchange, so a later try or part asks by it whatever became of those
+    /// values since (a secret set again, a reference read again, a version let go of). None for
+    /// one kept without it: its key is then taken from its request as it stands.
+    pub key: Option<Hash>,
+}
+
+/// What tells a run's requests apart, so a later round, try or part of the run is answered from
+/// the record for a request it already sent, and not sent again (R113). The whole request, as
+/// [`Whole`] has it, but for values a run is given that may change between its tries or parts
+/// without making it another request: a secret's, written as its name ([`Keys::key`]). Two
+/// requests that differ only in such a value have one key, and nothing else of the value is in it.
+pub trait Keys: Sync {
+    fn key(&self, request: &Value) -> Hash;
+}
+
+/// Requests told apart whole: what a run given no secret asks by.
+pub struct Whole;
+
+impl Keys for Whole {
+    fn key(&self, request: &Value) -> Hash {
+        request_key(request)
+    }
 }
 
 /// The requests performed after one round, to answer the next.
@@ -284,8 +307,10 @@ impl Waits for NoWaits {
 /// the caller checks one it reads back from storage. Outbound requests are performed with
 /// `performer` within `limits`, and the final round's effects with `host`, unless the run waits. `observer` sees every round's steps (after a
 /// `round(n)` call) as in a single evaluation. `waits` answers waiting points and tokens;
-/// `prior` holds the rounds of an earlier part of the same run (a resumed one), whose requests
-/// are answered from it, not sent again. The outcome's rounds are the new ones.
+/// `prior` holds the rounds of an earlier part of the same run (a resumed one), and of its earlier
+/// tries, whose requests are answered from it, not sent again: each asked by its node and the
+/// request as it was sent, or else its [`Keys`] key, the one it was sent with where it kept one.
+/// The outcome's rounds are the new ones, each exchange with the key it was sent with.
 #[allow(clippy::too_many_arguments)]
 pub fn run_rounds(
     root: &Unit,
@@ -298,17 +323,23 @@ pub fn run_rounds(
     observer: &mut impl Observer,
     waits: &mut impl Waits,
     prior: &[Round],
+    keys: &dyn Keys,
 ) -> RunOutcome {
     let started = Instant::now();
     // The run's time runs out at its budget's end, inside a round as between them: a round that
     // computes and sends nothing reads the clock as it steps ([`Asking::late`]).
     let deadline = started.checked_add(limits.run_budget);
     let resolver = SourcedResolver::lent(sourced.iter().map(|(cap, value)| (cap, *value)), real);
-    let mut answers: BTreeMap<(Vec<u32>, Hash), Value> = prior
-        .iter()
-        .flat_map(|r| &r.exchanges)
-        .map(|x| ((x.path.clone(), request_key(&x.request)), x.response.clone()))
-        .collect();
+    // Each exchange answers its request as it was sent, byte for byte, and by its key: the same
+    // request but for its secrets' values. A text that was a secret's value when it was sent and
+    // is an older one now makes another key, but not another request (R113). Two maps: a
+    // request's own hash is never asked among keys, nor a key among requests.
+    let mut answers: BTreeMap<(Vec<u32>, Hash), Value> = BTreeMap::new();
+    let mut as_sent: BTreeMap<(Vec<u32>, Hash), Value> = BTreeMap::new();
+    for x in prior.iter().flat_map(|r| &r.exchanges) {
+        answers.insert((x.path.clone(), x.key.unwrap_or_else(|| keys.key(&x.request))), x.response.clone());
+        as_sent.insert((x.path.clone(), request_key(&x.request)), x.response.clone());
+    }
     let mut rounds: Vec<Round> = Vec::new();
     let mut sent = 0usize;
     let fail = |rounds: Vec<Round>, error: RunError| RunOutcome {
@@ -322,6 +353,8 @@ pub fn run_rounds(
         let mut asking = Asking {
             inner: &mut *observer,
             answers: &answers,
+            as_sent: &as_sent,
+            keys,
             pending: Vec::new(),
             waits: &mut *waits,
             waiting: Vec::new(),
@@ -379,9 +412,13 @@ pub fn run_rounds(
         }
         // No request may outlast the run.
         let this_round = Limits { request_timeout: limits.request_timeout.min(left), ..limits.clone() };
-        let exchanges = perform_all(pending, performer, &this_round, started);
-        for ex in &exchanges {
-            answers.insert((ex.path.clone(), request_key(&ex.request)), ex.response.clone());
+        let mut exchanges = perform_all(pending, performer, &this_round, started);
+        // Each keyed as it was asked, with the values this try was given, and kept so.
+        for ex in &mut exchanges {
+            let key = keys.key(&ex.request);
+            ex.key = Some(key);
+            answers.insert((ex.path.clone(), key), ex.response.clone());
+            as_sent.insert((ex.path.clone(), request_key(&ex.request)), ex.response.clone());
         }
         rounds.push(Round { exchanges });
         if started.elapsed() > limits.run_budget {
@@ -425,6 +462,10 @@ fn request_key(request: &Value) -> Hash {
 struct Asking<'a, O: Observer, W: Waits> {
     inner: &'a mut O,
     answers: &'a BTreeMap<(Vec<u32>, Hash), Value>,
+    /// The same answers, each by its request as it was sent.
+    as_sent: &'a BTreeMap<(Vec<u32>, Hash), Value>,
+    /// What a request is asked by among `answers`.
+    keys: &'a dyn Keys,
     pending: Vec<(Vec<u32>, Value)>,
     waits: &'a mut W,
     waiting: Vec<Waiting>,
@@ -547,8 +588,9 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
         if ["collection", "folder", "database"].iter().any(|k| text_field(request, k).is_some()) {
             return self.waits.read(path, request).into();
         }
-        let key = (path.to_vec(), request_key(request));
-        if let Some(answer) = self.answers.get(&key) {
+        // The request it sent, byte for byte; else the same but for its secrets' values.
+        let answer = self.as_sent.get(&(path.to_vec(), request_key(request))).or_else(|| self.answers.get(&(path.to_vec(), self.keys.key(request))));
+        if let Some(answer) = answer {
             return Answer::Value(answer.clone());
         }
         if !self.pending.iter().any(|(p, r)| p == path && r == request) {
@@ -599,6 +641,7 @@ fn perform_all(
                                             response,
                                             start_us: us(t0),
                                             end_us: us(Instant::now()),
+                                            key: None,
                                         }
                                     })
                                 })
@@ -727,7 +770,7 @@ mod tests {
         let mut r = MapResolver::new();
         let flow = chained(&mut r);
         let (echo, mut host) = (Echo::default(), Performed::default());
-        let out = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[]);
+        let out = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[], &Whole);
         assert_eq!(out.error, None);
         assert_eq!(*echo.0.lock().unwrap(), vec!["https://api.example.com/first", "https://api.example.com/first/next"]);
         assert_eq!(out.rounds.len(), 2, "one request per round: the second needed the first's answer");
@@ -774,15 +817,122 @@ mod tests {
         };
         let (echo, mut host) = (Echo::default(), Performed::default());
         let mut waits = Delivered::default();
-        let first = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut waits, &[]);
+        let first = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut waits, &[], &Whole);
         assert_eq!(first.waiting.iter().map(|w| (w.name.as_str(), w.expires, w.approval.as_deref(), w.shows.as_ref())).collect::<Vec<_>>(), vec![("paid", 60, None, None)]);
         assert!(host.0.is_empty(), "a waiting run performs nothing");
         assert!(matches!(&first.outputs[0], Some(Value::Effect { payload, .. }) if **payload == txt("tok-paid")), "its interim output is there");
 
         waits.events.insert("paid".into(), txt("ok"));
-        let resumed = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut waits, &first.rounds);
+        let resumed = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut waits, &first.rounds, &Whole);
         assert!(resumed.waiting.is_empty());
         assert_eq!(host.0, vec![(Capability::NetworkEgress, txt("tok-paid")), (Capability::NetworkEgress, txt("ok"))]);
+    }
+
+    /// Guards: a request a run sent before it waited, asked again as the run goes on after the
+    /// secret the request carries was set to another value, is answered from the run's record and
+    /// not sent a second time (R113); the same holds for a run tried again, whose earlier tries'
+    /// rounds are its `prior` too. Two requests that differ only in the secret's value have one
+    /// key; any other difference makes another. One asked again the same byte for byte is
+    /// answered too, whatever its key now says.
+    /// Why: a resumed run is evaluated again from its start, and its earlier requests answered
+    /// from its record by their key. Keyed by the whole request, the one built with the new value
+    /// matched nothing, and the authorization it stood for went out twice. Keyed only by name, a
+    /// text that was the secret's value and is an older one now made the same request another.
+    /// If it fails: `run_rounds` asks `prior` by the whole request and not by the key each
+    /// exchange was sent with (`Exchange::key`), or `Asking::answer` doesn't ask by `keys`; or,
+    /// at the same bytes sent again, it asks only by the key, not by the request as it was sent.
+    #[test]
+    fn a_request_asked_again_with_another_value_of_its_secret_is_answered_from_the_record() {
+        /// Keys that write the one secret's value, as this try was given it, as its name.
+        struct ByName(&'static str, &'static str);
+        fn named(v: &Value, value: &str, name: &str) -> Value {
+            match v {
+                Value::Text(t) => Value::Text(t.replace(value, &format!("\u{e000}{name}"))),
+                Value::Record(r) => Value::Record(r.iter().map(|(k, v)| (k.clone(), named(v, value, name))).collect()),
+                Value::List(l) => Value::List(l.iter().map(|v| named(v, value, name)).collect()),
+                other => other.clone(),
+            }
+        }
+        impl Keys for ByName {
+            fn key(&self, request: &Value) -> Hash {
+                request_key(&named(request, self.1, self.0))
+            }
+        }
+        #[derive(Default)]
+        struct Delivered(BTreeMap<String, Value>);
+        impl Waits for Delivered {
+            fn event(&self, name: &str) -> Option<Value> {
+                self.0.get(name).cloned()
+            }
+            fn token(&mut self, name: &str) -> String {
+                format!("tok-{name}")
+            }
+        }
+        let (first_value, second_value) = ("sk_test_first_value", "sk_test_second_val");
+        let mut r = MapResolver::new();
+        let constant = leaf("const", vec![Param::frozen("value", "/pay/"), Param::frozen("type", "Text")], 0, Type::Text);
+        let secret = leaf("secret", vec![Param::frozen("name", "k")], 0, Type::Text);
+        let request = leaf("http_request", vec![Param::frozen("method", "POST"), Param::frozen("host", "api.example.com")], 3, Type::Record);
+        let body = leaf("field", vec![Param::frozen("name", "body")], 1, Type::Any);
+        let wait = leaf("await", vec![Param::frozen("name", "paid"), Param::frozen("expires", "60")], 0, Type::Any);
+        let egress = leaf("egress", vec![], 1, Type::Effect);
+        let children = vec![
+            r.insert(constant).unwrap(),                                 // 0
+            r.insert(secret).unwrap(),                                   // 1
+            r.insert(leaf("concat", vec![], 2, Type::Text)).unwrap(),    // 2
+            r.insert(request).unwrap(),                                  // 3
+            r.insert(body).unwrap(),                                     // 4
+            r.insert(egress.clone()).unwrap(),                           // 5
+            r.insert(wait).unwrap(),                                     // 6
+            r.insert(egress).unwrap(),                                   // 7
+        ];
+        let edges = vec![e(0, 0, 2, 0), e(1, 0, 2, 1), e(2, 0, 3, 0), e(3, 0, 4, 0), e(4, 0, 5, 0), e(5, 0, BOUNDARY, 0), e(6, 0, 7, 0), e(7, 0, BOUNDARY, 1)];
+        let flow = Unit {
+            body: UnitBody::Composite { children, edges },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "paid".into(), ty: Type::Effect }, Port { name: "done".into(), ty: Type::Effect }],
+        };
+        let given = |value: &'static str| (Capability::SecretRead("k".into()), txt(value));
+        let limits = Limits::request_run();
+
+        // Sent once, with the first value, and kept with the key it was sent by.
+        let (echo, mut host, mut waits) = (Echo::default(), Performed::default(), Delivered::default());
+        let first_given = given(first_value);
+        let sourced = [(first_given.0.clone(), &first_given.1)];
+        let first = run_rounds(&flow, &[], &sourced, &r, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut waits, &[], &ByName("k", first_value));
+        assert_eq!(first.waiting.len(), 1, "it waits");
+        assert_eq!(*echo.0.lock().unwrap(), vec![format!("https://api.example.com/pay/{first_value}")]);
+        assert!(first.rounds.iter().flat_map(|r| &r.exchanges).all(|x| x.key.is_some()), "each exchange keeps the key it was sent by");
+
+        // Gone on with the secret set to another value: answered from the record, not sent again.
+        waits.0.insert("paid".into(), txt("ok"));
+        let second_given = given(second_value);
+        let sourced = [(second_given.0.clone(), &second_given.1)];
+        let resumed = run_rounds(&flow, &[], &sourced, &r, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut waits, &first.rounds, &ByName("k", second_value));
+        assert!(resumed.waiting.is_empty() && resumed.error.is_none(), "{:?}", resumed.error);
+        assert_eq!(echo.0.lock().unwrap().len(), 1, "the request isn't sent a second time: {:?}", echo.0.lock().unwrap());
+        assert!(resumed.rounds.is_empty(), "nothing new was sent");
+        assert_eq!(host.0, vec![(Capability::NetworkEgress, txt(&format!("/pay/{first_value}"))), (Capability::NetworkEgress, txt("ok"))], "it goes on with what the request was answered");
+
+        // Asked again the same byte for byte, though its key now says another request (the
+        // value it holds is no longer the secret's, set anew meanwhile): answered from the record
+        // all the same, by the request as it was sent.
+        let same = Echo::default();
+        let first_sourced = [(first_given.0.clone(), &first_given.1)];
+        let again_same = run_rounds(&flow, &[], &first_sourced, &r, &mut Performed::default(), &same, &limits, &mut holon_core::NoObserver, &mut waits, &first.rounds, &ByName("k", second_value));
+        assert!(same.0.lock().unwrap().is_empty() && again_same.rounds.is_empty(), "the same bytes aren't sent again: {:?}", same.0.lock().unwrap());
+
+        // Asked by the whole request instead, it is sent again: what this test is about.
+        let again = Echo::default();
+        run_rounds(&flow, &[], &sourced, &r, &mut Performed::default(), &again, &limits, &mut holon_core::NoObserver, &mut waits, &first.rounds, &Whole);
+        assert_eq!(*again.0.lock().unwrap(), vec![format!("https://api.example.com/pay/{second_value}")]);
+
+        // One key for two requests that differ only in the secret's value; another for any other change.
+        let asked = |path: String| record(&[("method", txt("POST")), ("url", txt(&format!("https://api.example.com{path}")))]);
+        let key = |value: &'static str, path: String| ByName("k", value).key(&asked(path));
+        assert_eq!(key(first_value, format!("/pay/{first_value}")), key(second_value, format!("/pay/{second_value}")));
+        assert_ne!(key(first_value, format!("/pay/{first_value}")), key(second_value, format!("/refund/{second_value}")));
     }
 
     /// Guards: every node a round evaluates is a step, counted afresh each round: the least
@@ -800,7 +950,7 @@ mod tests {
         let run = |max_steps: u64| {
             let (echo, mut host) = (Echo::default(), Performed::default());
             let limits = Limits { max_steps, ..Limits::request_run() };
-            let out = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
+            let out = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[], &Whole);
             (out, host.0)
         };
         let least = (1..100).find(|&m| run(m).0.error.is_none()).expect("it finishes");
@@ -892,7 +1042,7 @@ mod tests {
             engine.1.borrow_mut().clear();
             let (echo, mut host) = (Echo::default(), Performed::default());
             let limits = Limits { max_memory, ..Limits::request_run() };
-            let out = run_rounds(flow, inputs, &[], &engine, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
+            let out = run_rounds(flow, inputs, &[], &engine, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[], &Whole);
             (out, host.0)
         };
         let run = |max_memory: u64| run_on(&flow, &[], max_memory);
@@ -932,7 +1082,7 @@ mod tests {
         let run = |max_fuel: u64| {
             let (echo, mut host) = (Echo::default(), Performed::default());
             let limits = Limits { max_fuel, ..Limits::request_run() };
-            let out = run_rounds(&flow, &[], &[], &engine, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
+            let out = run_rounds(&flow, &[], &[], &engine, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[], &Whole);
             (out, host.0)
         };
         let (out, performed) = run(COST);
@@ -953,7 +1103,7 @@ mod tests {
         let flow = chained(&mut r);
         let (echo, mut host) = (Echo::default(), Performed::default());
         let limits = Limits { max_requests: 1, ..Limits::request_run() };
-        let out = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
+        let out = run_rounds(&flow, &[], &[], &r, &mut host, &echo, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[], &Whole);
         assert_eq!(out.error, Some(RunError::RequestBudget { max: 1 }));
         assert_eq!(out.outputs, vec![None]);
         assert!(host.0.is_empty(), "nothing performed");
@@ -973,7 +1123,7 @@ mod tests {
         let flow = chained(&mut r);
         let mut host = Performed::default();
         let limits = Limits { run_budget: Duration::from_millis(20), ..Limits::request_run() };
-        let out = run_rounds(&flow, &[], &[], &r, &mut host, &Slow, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
+        let out = run_rounds(&flow, &[], &[], &r, &mut host, &Slow, &limits, &mut holon_core::NoObserver, &mut NoWaits, &[], &Whole);
         assert_eq!(out.error, Some(RunError::TimeBudget { budget: Duration::from_millis(20) }));
         assert!(host.0.is_empty());
     }
@@ -1012,7 +1162,7 @@ mod tests {
         let limits = Limits { run_budget: budget, max_steps: holon_core::MAX_STEPS_CEILING, ..Limits::request_run() };
         let mut host = Performed::default();
         let started = Instant::now();
-        let out = run_rounds(&each, &[Some(xs.clone()), Some(xs)], &[], &r, &mut host, &Echo::default(), &limits, &mut holon_core::NoObserver, &mut NoWaits, &[]);
+        let out = run_rounds(&each, &[Some(xs.clone()), Some(xs)], &[], &r, &mut host, &Echo::default(), &limits, &mut holon_core::NoObserver, &mut NoWaits, &[], &Whole);
         let took = started.elapsed();
         // The error is a step's own word that it found the time up: a round that only computes
         // and runs its work out ends with none, the clock being read only as it steps. How soon
@@ -1049,7 +1199,7 @@ mod tests {
         };
         let paths = Value::List(vec![txt("/a"), txt("/b")]);
         let echo = Echo::default();
-        let out = run_rounds(&flow, &[Some(paths.clone())], &[], &r, &mut Performed::default(), &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[]);
+        let out = run_rounds(&flow, &[Some(paths.clone())], &[], &r, &mut Performed::default(), &echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[], &Whole);
         assert_eq!(out.outputs, vec![Some(Value::List(vec![txt("/a"), txt("/b")]))]);
         assert_eq!(out.rounds.len(), 1, "both items' requests go out in one round");
         assert_eq!(out.rounds[0].exchanges.iter().map(|x| x.path.clone()).collect::<Vec<_>>(), vec![vec![0, 0, 0], vec![0, 1, 0]]);
@@ -1089,7 +1239,7 @@ mod tests {
     fn a_request_in_a_branch_not_taken_is_not_sent() {
         let mut r = MapResolver::new();
         let flow = branch(&mut r, leaf("http_request", vec![Param::frozen("method", "GET"), Param::frozen("host", "api.example.com")], 3, Type::Record));
-        let run = |go: bool, echo: &Echo| run_rounds(&flow, &[Some(Value::Boolean(go))], &[], &r, &mut Performed::default(), echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[]);
+        let run = |go: bool, echo: &Echo| run_rounds(&flow, &[Some(Value::Boolean(go))], &[], &r, &mut Performed::default(), echo, &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[], &Whole);
 
         let echo = Echo::default();
         let out = run(false, &echo);
@@ -1108,7 +1258,7 @@ mod tests {
     fn an_await_in_a_branch_not_taken_does_not_park_the_run() {
         let mut r = MapResolver::new();
         let flow = branch(&mut r, leaf("await", vec![Param::frozen("name", "paid"), Param::frozen("expires", "60")], 0, Type::Any));
-        let run = |go: bool| run_rounds(&flow, &[Some(Value::Boolean(go))], &[], &r, &mut Performed::default(), &Echo::default(), &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[]);
+        let run = |go: bool| run_rounds(&flow, &[Some(Value::Boolean(go))], &[], &r, &mut Performed::default(), &Echo::default(), &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[], &Whole);
         let out = run(false);
         assert!(out.waiting.is_empty());
         assert_eq!(out.outputs, vec![Some(txt("skipped"))]);
@@ -1136,7 +1286,7 @@ mod tests {
         }
         let mut r = MapResolver::new();
         let flow = branch(&mut r, leaf("collection_get", vec![Param::frozen("collection", "prices")], 1, Type::Any));
-        let run = |go: bool, reads: &mut Reads| run_rounds(&flow, &[Some(Value::Boolean(go))], &[], &r, &mut Performed::default(), &Echo::default(), &Limits::request_run(), &mut holon_core::NoObserver, reads, &[]);
+        let run = |go: bool, reads: &mut Reads| run_rounds(&flow, &[Some(Value::Boolean(go))], &[], &r, &mut Performed::default(), &Echo::default(), &Limits::request_run(), &mut holon_core::NoObserver, reads, &[], &Whole);
         let mut reads = Reads::default();
         assert_eq!(run(false, &mut reads).outputs, vec![Some(txt("skipped"))]);
         assert!(reads.0.is_empty());
@@ -1156,7 +1306,7 @@ mod tests {
             outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         };
         let mut host = Performed::default();
-        let out = run_rounds(&flow, &[Some(txt("hi"))], &[], &r, &mut host, &Echo::default(), &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[]);
+        let out = run_rounds(&flow, &[Some(txt("hi"))], &[], &r, &mut host, &Echo::default(), &Limits::request_run(), &mut holon_core::NoObserver, &mut NoWaits, &[], &Whole);
         assert!(out.rounds.is_empty() && out.error.is_none() && out.waiting.is_empty());
         assert_eq!(host.0, vec![(Capability::NetworkEgress, txt("hi"))]);
     }

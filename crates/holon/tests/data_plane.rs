@@ -8,7 +8,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 mod common;
-use common::{answering, free_port, raw_http, raw_http_then, status, EVENTUALLY};
+use common::{answering, free_port, own_folder, raw_http, raw_http_then, status, EVENTUALLY};
 
 const HOLON: &str = env!("CARGO_BIN_EXE_holon");
 
@@ -26,8 +26,7 @@ impl Server {
 
     /// One started with `options` besides its own.
     fn start_with(options: &[&str]) -> Server {
-        let home = std::env::temp_dir().join(format!("holon-data-plane-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        std::fs::create_dir_all(&home).unwrap();
+        let home = own_folder("holon-data-plane");
         let port = free_port();
         let said = home.with_extension("err");
         let child = Command::new(HOLON)

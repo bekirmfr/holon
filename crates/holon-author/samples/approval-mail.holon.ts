@@ -7,7 +7,8 @@
 // and whoever asked for it is mailed that it was: an address from the request, which the grant
 // can't name, so the binding's --to holds it (*@acme.com here). Mail goes once its run is over and
 // its writes have landed, from the binding's sender, and is tried again for a day when the server
-// can't take it.
+// can't take it. A day with no approval ends the run at its wait: the payout isn't recorded, and
+// nobody is mailed that it was.
 //
 // Before it works, an admin binds the mail, its server's URL and login in a secret source:
 //   HOLON_SECRET_OPS_SMTP=smtps://user:password@smtp.example.com   (the server's environment)
@@ -44,9 +45,15 @@ route.post("/payouts", (req) => {
   return status(202, { id: asked.id, waiting: "approval" })
 })
 
-// The payout's run: waits for its approval, then records it and tells whoever asked.
+// The payout's run: waits for its approval, then records it and tells whoever asked. A day with no
+// approval ends the wait with { expired: true } in the event's place, and the run returns there:
+// what follows the if is held by its not having returned, the mail too, which reads nothing of the
+// event. An event that came has no expired, so the if reads it ?? false.
 export const payout = action(async (asked) => {
   const approved = await event("approved", { expires: "1d" })
+  if (approved.expired ?? false) {
+    return { expired: asked.id }
+  }
   payouts[asked.id] = { ...asked, approved: now, approved_via: approved.method }
   ops.send({
     to: asked.by,

@@ -863,7 +863,7 @@ const WRITERS: &[(&str, usize, &str)] = &[
     ("sealing.rs", 5, "the writers themselves, the root key's own file, and the keys files listed beside it: paths, kept with the root, never in the data folder"),
     ("selfmanage.rs", 1, "holon's own install, edited on update"),
     ("stopping.rs", 1, "the clean-stop mark: a sentence, in clear on purpose (§2.5)"),
-    ("storage.rs", 2, "the policy (holon.toml): hand-edited, in clear on purpose (§2.5); and a removed deployment's records moved to the backup, sealed already, byte for byte (R41)"),
+    ("storage.rs", 3, "the policy (holon.toml): hand-edited, in clear on purpose (§2.5); and a removed deployment's records moved to the backup, sealed already, byte for byte (R41); and the sealed segments a removal gave up, copied there beside them (R110)"),
     ("verify.rs", 2, "holon export: the plain export a person asked for, where they asked (§6)"),
     ("workbench/app.rs", 1, "the terminal app writing what a person saved"),
     ("workbench/flow.rs", 1, "the terminal app writing a deployment's export where a person asked"),
