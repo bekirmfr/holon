@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, type LogEntry, type Tally } from "./server";
 import { decidedLine, decisionSaid, decisionsOf } from "./decisions";
-import { claimNotes, field, runActions, runLabel, text } from "./runs";
+import { answeredHead, claimNotes, field, runActions, runLabel, text } from "./runs";
 import { useFlowLog } from "./useFlowLog";
 import { tallyRows } from "./tallies";
 import { BackButton, everything, useHistory, useRestore } from "./HistoryPane";
@@ -806,7 +806,7 @@ function LogTab({
                     <Field key={i} name={`did ${p.capability}`} value={formatValue(p.payload)} rawValue={p.payload} />
                   ))}
                   {selected.response_body !== null && (
-                    <Field name={`answered ${selected.status}`} value={selected.response_body || "(empty)"} rawValue={selected.response_body ? { type: "Text" as const, value: selected.response_body } : undefined} />
+                    <Field name={answeredHead(selected.status)} value={selected.response_body || "(empty)"} rawValue={selected.response_body ? { type: "Text" as const, value: selected.response_body } : undefined} />
                   )}
                   {selected.error && <Field name="error" value={selected.error} color={bad} />}
                   {(selected.rounds ?? []).map((r, i) =>
@@ -919,7 +919,7 @@ function runSectionsForCompare(e: LogEntry): RunSection[] {
   if (e.request) s.push({ key: "request", value: formatValue(e.request), rawValue: e.request });
   for (const [cap, v] of e.sourced) s.push({ key: cap.toLowerCase(), value: formatValue(v), rawValue: v });
   for (const p of e.performed) s.push({ key: `did ${p.capability.toLowerCase()}`, value: formatValue(p.payload), rawValue: p.payload });
-  if (e.response_body !== null) s.push({ key: "answered", value: `${e.status ?? ""}: ${e.response_body || "(empty)"}`, rawValue: e.response_body ? { type: "Text" as const, value: e.response_body } : undefined });
+  if (e.response_body !== null) s.push({ key: "answered", value: `${e.status == null ? "" : `${e.status}: `}${e.response_body || "(empty)"}`, rawValue: e.response_body ? { type: "Text" as const, value: e.response_body } : undefined });
   if (e.error) s.push({ key: "error", value: e.error, color: bad });
   const rounds = e.rounds ?? [];
   if (rounds.length > 0) {
