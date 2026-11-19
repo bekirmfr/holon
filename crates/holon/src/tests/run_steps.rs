@@ -1210,6 +1210,8 @@ const REASONS: &[(&str, &str)] = &[
     ("storage.rs: archive#2", TICK),
     ("storage.rs: expire_removed#1", TICK),
     ("storage.rs: expire_removed#2", TICK),
+    ("storage.rs: expire_removed#3", TICK),
+    ("storage.rs: expire_removed#4", TICK),
 ];
 
 /// `text` deployed as `slug` by ada, approving what it asks for: the deploy's answer.

@@ -1348,6 +1348,30 @@ fn expire_removed(state: &AppState, backup: Option<&Path>, now_ms: u64) -> Resul
                 continue;
             }
         }
+        // The segments given up removing it (deploy.rs `given_up_dir`) go with it, to the backup
+        // beside it first when there is one.
+        let given_up = crate::deploy::given_up_dir(&entry.path());
+        if given_up.is_dir() {
+            if let Some(backup) = backup {
+                let to = backup.join(slug).join(format!("{}.given-up", removed_export_name(slug, at_ms).trim_end_matches(".json.gz")));
+                let copied = std::fs::create_dir_all(&to).and_then(|_| {
+                    for segment in crate::at_rest::disk::read_dir(&given_up)? {
+                        let segment = segment?;
+                        crate::sealing::write_private(&to.join(segment.file_name()), &crate::at_rest::disk::read(segment.path())?)?;
+                    }
+                    Ok(())
+                });
+                if let Err(e) = copied {
+                    if failed.is_ok() {
+                        failed = Err(format!("{}: {e}", to.display()));
+                    }
+                    continue;
+                }
+            }
+            if let Err(e) = std::fs::remove_dir_all(&given_up) {
+                eprintln!("holon: {} is past its time, and couldn't be removed: {e}", given_up.display());
+            }
+        }
         if let Err(e) = std::fs::remove_file(entry.path()) {
             eprintln!("holon: {} is past its time, and couldn't be removed: {e}", entry.path().display());
         }

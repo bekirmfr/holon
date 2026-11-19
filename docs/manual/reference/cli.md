@@ -339,7 +339,7 @@ the flow's own route.
 holon run <slug> [--fresh | --session N]
 holon pause <slug>
 holon stop <slug>
-holon remove <slug> --yes [--forget]
+holon remove <slug> --yes [--forget] [--give-up RUNS]
 ```
 
 `run` starts a paused or stopped deployment again, from its latest state, from none (`--fresh`),
@@ -359,6 +359,19 @@ Editors and admins. `--forget` forgets its keys too, once it is removed ([`holon
 forget`](#holon-key), which needs `host.operate`): its kept log, events, records and backups
 can't be opened again; the values only it named are swept from the shared content store, and its
 code stays there.
+
+If part of its log couldn't be read as the server started (a sealed segment damaged, which `holon
+host` warns of), its records can't be kept whole, and nothing is removed: `remove` says which runs
+can't be read, and how to give them up, `runs 137 to 147 can't be read; to remove it anyway,
+giving them up (an admin's to do): holon remove hist --yes --give-up 137-147`. Restore the segment
+from a copy of the data folder, and nothing is lost: a removal reads it again. Or, with
+`--give-up` and exactly those runs (`137-147,286-298` for two), it is removed without them: its
+records name them given up, by whom and when, sealed with them, and `holon verify` says so, `runs
+137 to 147 GIVEN UP when the deployment was removed by ada at …`, and checks the rest (exit 3, as
+for anything it doesn't check). The damaged files are kept beside the records
+(`removed/<slug>-runs-<ms>.given-up/`), and go when they do. Other runs named, or some read again
+meanwhile, remove nothing, and say what can't be read now. It needs `host.operate` as well; an
+agent never gives runs up.
 
 ### `holon call`
 

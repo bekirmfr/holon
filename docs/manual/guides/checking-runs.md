@@ -93,7 +93,13 @@ ok
    the server couldn't write (a full disk) isn't a break: the line after it says so, and the
    report lists it, `run 17 isn't in the file: the server couldn't write its line, and the line
    after says so`. The server numbers runs one after another, so runs missing that no line says
-   were lost were removed, and the lines after them chained again: `runs 5 to 7 MISSING`. The
+   were lost were removed, and the lines after them chained again: `runs 5 to 7 MISSING`. Runs an
+   admin gave up removing the deployment, because part of its log couldn't be read
+   ([`holon remove --give-up`](../reference/cli.md#holon-run-pause-stop-remove)), aren't missing:
+   the records the server sealed name them, and `verify` says them `GIVEN UP`, by whom and when,
+   where the chain breaks for them and nowhere else, and doesn't check them (exit 3). Only the
+   sealed records are taken at their word: a plain copy naming runs given up is checked as if it
+   named none. The
    deployment's events are checked the same way: an event the server couldn't write is said
    lost by the next (`event 3 isn't in the file`), and one missing that none says was lost was
    removed. A run whose line couldn't be written sends nothing: no pack, queue message or mail
