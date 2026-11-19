@@ -33,6 +33,16 @@
   `--give-up 134-144`, which must name exactly those runs. The removed records say which runs
   were given up, by whom and when, and `holon verify` reads them as given up and not checked,
   never as changed. The damaged files are kept beside the records.
+- **The control port no longer stops for good when the server runs out of open files.** A
+  connection it can't take is tried again, less often while it keeps failing, and the server's
+  log says when it starts failing and when it takes connections again. Before, the editor and
+  every command were refused until a restart, while the flows went on.
+- **Approving new permissions takes a mark first, in both editors.** In the terminal editor, a
+  deploy, a proposal picked on Approvals and a restore that ask for new permissions are approved
+  only once `t` has marked them read; one key press approved them before. In the web editor, a
+  restore that brings back permissions has the tick a deploy's review has, and its button stays
+  off until it is ticked; it took one click before. A mark counts only for the list it was made
+  for: when what is asked changes, it is gone. With nothing new asked, nothing changes.
 
 ## 0.1.0-rc.36
 
