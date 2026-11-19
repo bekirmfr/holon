@@ -91,6 +91,10 @@ test("joining by the link, a viewer reads and can't change anything", async ({ b
   await expect(cy.getByRole("heading", { level: 1, name: "Policy" })).toBeVisible();
   await expect(cy.getByLabel("limits")).toContainText("The calls out one run may make.");
   await expect(cy.getByRole("button", { name: "read the policy again" })).toBeDisabled();
+  // The file itself is for whoever views the host: she is told why it isn't shown, in the
+  // server's words, and no line of it (R74).
+  await expect(cy.getByText("the policy file itself is read only by those who may view the host")).toBeVisible();
+  await expect(cy.getByLabel("the policy file")).toHaveCount(0);
   // The link is used up.
   const again = await someoneElse(browser);
   await again.goto(invite);
