@@ -221,6 +221,19 @@ test("a failing run replays exactly and opens on where it failed", async ({ page
   await expect(page.locator(".hl-view__bottom")).toContainText("failed at field author");
 });
 
+test("a run that answered but held a write says, in view mode, what it didn't make and why (loyalty)", async ({ page, request }) => {
+  await openSample(page, "Loyalty points (what a run held and didn't make)");
+  const port = await deploy(page);
+  // No member bob: the purchase answers "recorded", and its write of bob's points isn't made.
+  const answer = await request.post(`http://127.0.0.1:${port}/purchases`, { data: { member: "bob", amount: 50 } });
+  expect(answer.status()).toBe(200);
+  await viewNewestRun(page);
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  await run.getByRole("button", { name: "Not made", exact: true }).click();
+  await expect(run).toContainText("answered 200; an effect not made");
+  await expect(run).toContainText("found nothing at members[bob]");
+});
+
 test("a holon expands into a canvas of its own, and ungroups in place", async ({ page }) => {
   await openSample(page, "A flow inside a flow (holon)");
   await nodesLevel(page);
