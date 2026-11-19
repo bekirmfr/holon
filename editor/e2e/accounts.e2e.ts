@@ -46,6 +46,13 @@ test("installing: the server answers nothing until its admin is set up with the 
   await expect(setup.getByRole("alert")).toContainText("isn't the setup code");
   await fill(page, "setup code", "E2E0-SETUP");
   await setup.getByRole("button", { name: "set up" }).click();
+  // Set up, the first admin is asked where the runs a log lets go of go, while no one has chosen:
+  // a folder, none, or later, which leaves the host's warning (what each choice writes is held by
+  // AuthGate.backup.test.tsx and the server's tests).
+  const backup = page.getByRole("form", { name: "where runs go" });
+  await expect(backup).toBeVisible();
+  await expect(backup.getByRole("button", { name: "none: delete them" })).toBeVisible();
+  await backup.getByRole("button", { name: "later" }).click();
   await editorLoaded(page);
   await expect(page.getByRole("button", { name: "account: ada" })).toBeVisible();
   // Now everyone signs in.

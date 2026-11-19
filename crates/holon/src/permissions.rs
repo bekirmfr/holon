@@ -501,16 +501,61 @@ pub(crate) struct Storage {
     /// When it is full enough for `when_full` to act, and what that does.
     pub(crate) full_at: Threshold,
     pub(crate) when_full: WhenFull,
-    /// Where the runs a log lets go of are written first, gzipped exports `holon verify` checks:
-    /// a folder (an external drive, a folder a cloud client keeps in sync). None: they go.
-    pub(crate) backup: Option<crate::paths::HostPath>,
+    /// Where the runs a log lets go of go: not chosen yet, nowhere, or a folder (`Backup`).
+    pub(crate) backup: Backup,
 }
 
-/// `[storage] backup` as written: a folder's whole path, or `none`.
-pub(crate) fn parse_backup(text: &str) -> Result<Option<crate::paths::HostPath>, String> {
+/// `[storage] backup`: where the runs a log lets go of (past its keep, or its age) go. Three
+/// states, each its own, since the first is a question no one has answered yet:
+/// - **not chosen**: no `backup` line. They are deleted for good, and the host warns its admins
+///   until one chooses (storage.rs `warnings`; setup asks, the editor's AuthGate).
+/// - **nowhere**: `backup = "none"`, chosen. They are deleted for good, on purpose; no warning.
+/// - **a folder**: written there first, as gzipped exports `holon verify` checks (an external
+///   drive, a folder a cloud client keeps in sync).
+///
+/// Only a line written makes a choice: `POST /admin/storage` writes the keys it is asked to and
+/// leaves the others as they are, so setting another key never turns "not chosen" into one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) enum Backup {
+    #[default]
+    NotChosen,
+    Nowhere,
+    Folder(crate::paths::HostPath),
+}
+
+impl Backup {
+    /// The folder they are written to, if one is chosen.
+    pub(crate) fn dir(&self) -> Option<&crate::paths::HostPath> {
+        match self {
+            Backup::Folder(dir) => Some(dir),
+            Backup::NotChosen | Backup::Nowhere => None,
+        }
+    }
+
+    /// Whether an admin has chosen: a folder, or none on purpose.
+    pub(crate) fn chosen(&self) -> bool {
+        !matches!(self, Backup::NotChosen)
+    }
+
+    /// As `GET /permissions` gives it: the folder's whole path, `"none"`, or null while not chosen.
+    pub(crate) fn json(&self) -> serde_json::Value {
+        match self {
+            Backup::NotChosen => serde_json::Value::Null,
+            Backup::Nowhere => serde_json::json!("none"),
+            Backup::Folder(dir) => serde_json::json!(dir.display().to_string()),
+        }
+    }
+}
+
+/// `[storage] backup` as written: a folder's whole path, or `none`. Written empty, it is neither:
+/// a line is a choice, and an empty one would read as one no one made.
+pub(crate) fn parse_backup(text: &str) -> Result<Backup, String> {
     let t = text.trim();
-    if t.is_empty() || t == "none" {
-        return Ok(None);
+    if t == "none" {
+        return Ok(Backup::Nowhere);
+    }
+    if t.is_empty() {
+        return Err(format!("say where: a folder's whole path ({}), or \"none\" to delete them", crate::paths::EXAMPLE));
     }
     if t.starts_with("s3://") || t.contains("://") {
         return Err(format!("{t:?}: object storage is to come; for now a folder: an external drive, or a folder a cloud client keeps in sync (Dropbox, Google Drive, OneDrive)"));
@@ -519,14 +564,14 @@ pub(crate) fn parse_backup(text: &str) -> Result<Option<crate::paths::HostPath>,
         return Err("Holon Cloud is coming; for now a folder: an external drive, or a folder a cloud client keeps in sync".into());
     }
     match crate::paths::HostPath::whole(t) {
-        Some(path) => Ok(Some(path)),
+        Some(path) => Ok(Backup::Folder(path)),
         None => Err(format!("{t:?}: the backup is a folder's whole path ({})", crate::paths::EXAMPLE)),
     }
 }
 
 impl Default for Storage {
     fn default() -> Storage {
-        Storage { sweep_every: Some(Duration::from_secs(10 * 60)), warn_at: Threshold::Full(85), full_at: Threshold::Full(95), when_full: WhenFull::Warn, backup: None }
+        Storage { sweep_every: Some(Duration::from_secs(10 * 60)), warn_at: Threshold::Full(85), full_at: Threshold::Full(95), when_full: WhenFull::Warn, backup: Backup::NotChosen }
     }
 }
 
@@ -1372,10 +1417,12 @@ mod tests {
         assert!(Policy::parse("[storage]\nwarn_at = \"5G\"\nfull_at = \"10G\"").unwrap_err().contains("past storage.warn_at"));
         assert!(Policy::parse("[storage]\nwhen_full = \"panic\"").unwrap_err().contains("warn, pause or roll"));
         // Backups: a folder, by its whole path; object storage and Holon Cloud not yet.
-        assert_eq!(Policy::default().storage.backup, None);
+        assert_eq!(Policy::default().storage.backup, Backup::NotChosen);
+        assert_eq!(Policy::parse("[storage]\nwarn_at = \"90%\"").unwrap().storage.backup, Backup::NotChosen, "no line: not chosen");
         let example = crate::paths::EXAMPLE;
-        assert_eq!(Policy::parse(&format!("[storage]\nbackup = {example:?}")).unwrap().storage.backup, crate::paths::HostPath::whole(example));
-        assert_eq!(Policy::parse("[storage]\nbackup = \"none\"").unwrap().storage.backup, None);
+        assert_eq!(Policy::parse(&format!("[storage]\nbackup = {example:?}")).unwrap().storage.backup, Backup::Folder(crate::paths::HostPath::whole(example).unwrap()));
+        assert_eq!(Policy::parse("[storage]\nbackup = \"none\"").unwrap().storage.backup, Backup::Nowhere);
+        assert!(Policy::parse("[storage]\nbackup = \"\"").unwrap_err().contains("\"none\" to delete them"), "an empty line is no choice");
         assert!(Policy::parse("[storage]\nbackup = \"archive\"").unwrap_err().contains("whole path"));
         assert!(Policy::parse("[storage]\nbackup = \"s3://bucket/runs\"").unwrap_err().contains("object storage is to come"));
         assert!(Policy::parse("[storage]\nbackup = \"holon-cloud\"").unwrap_err().contains("Holon Cloud is coming"));

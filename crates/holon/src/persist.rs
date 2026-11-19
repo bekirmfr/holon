@@ -349,7 +349,7 @@ pub(crate) fn load_deployments(
         // (deploy.rs), not only from the housekeeping's first look; and before its retention,
         // which cuts back a file past its age at once: set after, the aged runs a restart found
         // were let go of with no backup written (release audit R46).
-        log.set_backup(policy.storage.backup.clone().map(|dir| (dir.into(), false)));
+        log.set_backup(policy.storage.backup.dir().cloned().map(|dir| (dir.into(), false)));
         log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms());
         if !log.breaks().is_empty() {
             let runs: Vec<String> = log.breaks().iter().map(u64::to_string).collect();

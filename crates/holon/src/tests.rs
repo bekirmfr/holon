@@ -35,6 +35,8 @@ mod semantics;
 mod writers;
 /// What is there and can't be read is an error at every reader of a deployment's runs (R92).
 mod unread_readers;
+/// Where the runs a log lets go of go: not chosen, none, or a folder, every way (R123).
+mod backup_choice;
 /// A request asked again with another value of its secret isn't sent again (R113).
 mod secret_rounds;
 /// Which lines of a source file are a test module's, for the sweeps of the source (R78).
@@ -1141,7 +1143,8 @@ fn the_host_warns_of_a_full_disk_and_a_full_cache_once_each() {
     let warnings = || body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].as_array().cloned().unwrap();
     let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
     // Nothing near a 2 KiB floor (nor past the 1 KiB it acts at, warned of too): no warning.
-    assert_eq!(set(r#"{"warn_at":"2K","full_at":"1K"}"#).status_code, 200);
+    // Where runs go chosen (none), or a host is warned until it is (backup_choice.rs, R123).
+    assert_eq!(set(r#"{"warn_at":"2K","full_at":"1K","backup":"none"}"#).status_code, 200);
     assert_eq!(warnings(), Vec::<serde_json::Value>::new());
     // A floor no disk has: its disk warns, with what to do.
     assert_eq!(set(r#"{"warn_at":"1000T","full_at":"1K"}"#).status_code, 200);
@@ -5353,7 +5356,7 @@ fn a_restart_backs_up_the_runs_it_finds_past_their_age_before_it_lets_them_go() 
     drop(log);
     let backup = std::path::PathBuf::from(unique_temp_path("aged-backup"));
     let mut policy = (*state.policy()).clone();
-    policy.storage.backup = Some(crate::paths::HostPath::new(&backup));
+    policy.storage.backup = crate::permissions::Backup::Folder(crate::paths::HostPath::new(&backup));
     let reloaded = load_deployments(&Place::parse(&path), &state.store, &policy).unwrap();
     assert_eq!(reloaded["aged"].log.with(|l| l.holds().3), 1, "the aged runs let go of at load");
     let batches: Vec<String> = std::fs::read_dir(backup.join("aged")).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();

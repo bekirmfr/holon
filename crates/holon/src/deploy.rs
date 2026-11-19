@@ -644,7 +644,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
                 // housekeeping's next look (storage.rs `act`, which also says whether a full disk
                 // may let them go without): or a flow running past its `keep` in its first seconds
                 // lets its oldest go unbacked.
-                log.set_backup(policy.storage.backup.clone().map(|dir| (dir.into(), false)));
+                log.set_backup(policy.storage.backup.dir().cloned().map(|dir| (dir.into(), false)));
                 (Arc::new(LogCell::new(log)), None, Vec::new(), events)
             }
         };
@@ -1478,7 +1478,7 @@ pub(crate) fn permissions_view(policy: &Policy) -> serde_json::Value {
         "allow_unrecorded": policy.allow_unrecorded,
         "agents_propose": policy.agents_propose,
         "agents_deploy_at_once": policy.agents_deploy_at_once,
-        "storage": { "sweep_every": crate::permissions::every_text(policy.storage.sweep_every), "warn_at": crate::permissions::threshold_text(policy.storage.warn_at), "full_at": crate::permissions::threshold_text(policy.storage.full_at), "when_full": policy.storage.when_full.text(), "backup": policy.storage.backup.as_ref().map(|b| b.display().to_string()) },
+        "storage": { "sweep_every": crate::permissions::every_text(policy.storage.sweep_every), "warn_at": crate::permissions::threshold_text(policy.storage.warn_at), "full_at": crate::permissions::threshold_text(policy.storage.full_at), "when_full": policy.storage.when_full.text(), "backup": policy.storage.backup.json() },
         "text": policy.text,
     })
 }
