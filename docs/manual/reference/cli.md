@@ -595,7 +595,8 @@ written there too ([Warnings](server.md#warnings)). `--full-at` and `--when-full
 warns, when it acts and what it does then: `warn`, `pause` (every flow that records runs, until
 there is room) or `roll` (cut the oldest runs of the biggest logs); an admin's
 ([The policy](server.md#the-policy)). `--backup DIR` keeps the runs logs let go of there, as
-gzipped exports (`none`: they go); an admin's. See [The host's policy](../guides/deploying.md#the-hosts-policy).
+gzipped exports; `--backup none` deletes them, on purpose; an admin's. Until one is chosen they are
+deleted all the same, and the host warns ([Warnings](server.md#warnings)). See [The host's policy](../guides/deploying.md#the-hosts-policy).
 
 ### `holon host`
 

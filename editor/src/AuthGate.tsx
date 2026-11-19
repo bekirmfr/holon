@@ -3,7 +3,8 @@
 // holder set their password; otherwise one signs in, with a name and password or, when the
 // server has one, through its identity provider (signin.ts). Signed in, the editor shows, with
 // the account in its header: who is signed in and what they may decide, change password,
-// Getting started and sign out.
+// Getting started and sign out. The first admin, once made, is asked where the runs a flow's log
+// lets go of go (BackupStep), while no one has chosen.
 //
 // A sign-in that ends while the editor is open (the server answers 401: signed out elsewhere,
 // expired, the person disabled; or the provider's ID token expired) keeps the editor as it is,
@@ -13,7 +14,8 @@
 // open flows have changes not saved (R44).
 
 import { Fragment, useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
-import { acceptInvite, changePassword, getAuthState, getSession, inviteFor, mayI, setUp, signInWith, signOutHere, whoAmI, type Kind, type Role } from "./server";
+import { acceptInvite, changePassword, getAuthState, getSession, getWarnings, inviteFor, mayI, setStorage, setUp, signInWith, signOutHere, whoAmI, type Kind, type Role } from "./server";
+import { FolderPicker } from "./FolderPicker";
 import { adoptSignIn, claimsOf, finishSignIn, signedIn, SIGNED_IN_KEY, SIGNED_IN_MESSAGE, startSignIn, type AuthConfig } from "./signin";
 import { useDialog } from "./Dialog";
 import { unsavedFlows } from "./useTabs";
@@ -55,7 +57,8 @@ const field: CSSProperties = {
 const primary: CSSProperties = { font: "inherit", fontSize: 12, padding: "6px 12px", color: "var(--accent-ink)", background: "var(--accent)", border: "none", borderRadius: 3, cursor: "pointer" };
 const quiet: CSSProperties = { font: "inherit", fontSize: 12, padding: "6px 12px", color: "var(--muted)", background: "transparent", border: "1px solid var(--border)", borderRadius: 3, cursor: "pointer" };
 
-function Screen({ title, lead, children, onSubmit, error }: { title: string; lead?: ReactNode; children: ReactNode; onSubmit: () => Promise<void>; error: string }) {
+/** A form on its own: `submit` labels its button (its title unless said), `actions` beside it. */
+function Screen({ title, lead, children, onSubmit, error, submit: label, actions }: { title: string; lead?: ReactNode; children: ReactNode; onSubmit: () => Promise<void>; error: string; submit?: string; actions?: ReactNode }) {
   const [busy, setBusy] = useState(false);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -76,8 +79,9 @@ function Screen({ title, lead, children, onSubmit, error }: { title: string; lea
           </div>
         )}
         <button type="submit" style={{ ...primary, opacity: busy ? 0.6 : 1 }} disabled={busy}>
-          {title}
+          {label ?? title}
         </button>
+        {actions}
       </form>
     </div>
   );
@@ -98,6 +102,7 @@ type Stage =
   | { kind: "loading" }
   | { kind: "unreachable"; message: string }
   | { kind: "setup" }
+  | { kind: "backup"; me: Me }
   | { kind: "invite"; token: string; name: string }
   | { kind: "sign-in"; oidc: AuthConfig | null }
   | { kind: "in"; me: Me; ended?: boolean }
@@ -180,12 +185,16 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
   const matched = () => {
     if (password !== again) throw new Error("the two passwords differ");
   };
-  const attempt = async (f: () => Promise<{ name: string; kind: Kind; role: Role }>) => {
+  /** `askBackup`: the first admin, just made, is asked where the runs logs let go of go, while the
+   *  host warns that no one has chosen (BackupStep). */
+  const attempt = async (f: () => Promise<{ name: string; kind: Kind; role: Role }>, askBackup = false) => {
     try {
       const s = await f();
       setPassword("");
       setAgain("");
-      setStage({ kind: "in", me: { name: s.name, kind: s.kind, role: s.role } });
+      const me = { name: s.name, kind: s.kind, role: s.role };
+      if (askBackup && (await backupUnchosen())) return setStage({ kind: "backup", me });
+      setStage({ kind: "in", me });
     } catch (e) {
       setError(messageOf(e));
     }
@@ -217,7 +226,7 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
             attempt(async () => {
               matched();
               return setUp(code, name, password);
-            })
+            }, true)
           }
         >
           <Field label="setup code" value={code} onChange={setCode} autoComplete="off" />
@@ -226,6 +235,8 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
           <Field label="the password again" value={again} onChange={setAgain} type="password" autoComplete="new-password" />
         </Screen>
       );
+    case "backup":
+      return <BackupStep onDone={() => setStage({ kind: "in", me: stage.me })} />;
     case "invite":
       return (
         <Screen
@@ -270,6 +281,79 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
     case "popup":
       return <div style={{ padding: 24, color: "var(--muted)" }}>Signed in: the editor that asked goes on. This window can be closed.</div>;
   }
+}
+
+/** Whether the host warns that no one has chosen where the runs logs let go of go (storage.rs
+ *  `backup-choice`): its own condition, so a server whose policy is no file isn't asked. Unread,
+ *  not asked: the overview shows the warning all the same. */
+const backupUnchosen = () => getWarnings().then((w) => w.some((x) => x.key === "backup-choice"), () => false);
+
+/** Set up, the first admin is asked where the runs a flow's log lets go of (past its keep, or
+ *  its age) go: a folder on the server's machine, none on purpose (deleted for good), or later.
+ *  A choice is written as `holon policy --backup` writes it (`POST /admin/storage`) and ends the
+ *  host's warning; later leaves it, on the overview, for whoever may view the host. An admin made
+ *  another way (an invite, the command line) meets the question in that warning. */
+export function BackupStep({ onDone }: { onDone: () => void }) {
+  const [dir, setDir] = useState("");
+  const [error, setError] = useState("");
+  const [browsing, setBrowsing] = useState(false);
+  const choose = async (backup: string) => {
+    setError("");
+    try {
+      await setStorage({ backup });
+      onDone();
+    } catch (e) {
+      setError(messageOf(e));
+    }
+  };
+  return (
+    <>
+      <Screen
+        title="where runs go"
+        lead={
+          <>
+            Each flow&apos;s log keeps its newest runs (500 unless the flow says otherwise) and lets go of older ones. Where should they go? Into a folder on the server&apos;s machine (an
+            external drive, or one a cloud client keeps in sync), as exports <code>holon verify</code> checks; or nowhere: deleted for good. Until someone chooses, the overview warns.
+            It can be changed later on the Host page, or with <code>holon policy --backup</code>.
+          </>
+        }
+        error={error}
+        submit="keep them in this folder"
+        onSubmit={() => (dir.trim() ? choose(dir.trim()) : Promise.resolve(setError("say a folder, or choose none")))}
+        actions={
+          <>
+            <button type="button" style={quiet} onClick={() => choose("none")}>
+              none: delete them
+            </button>
+            <button type="button" style={quiet} onClick={onDone}>
+              later
+            </button>
+          </>
+        }
+      >
+        <label style={{ display: "grid", gap: 4 }}>
+          a folder on the server&apos;s machine
+          <span style={{ display: "flex", gap: 6 }}>
+            <input style={{ ...field, flex: 1 }} value={dir} placeholder="/mnt/archive" onChange={(e) => setDir(e.target.value)} autoComplete="off" />
+            <button type="button" style={quiet} onClick={() => setBrowsing(true)}>
+              browse…
+            </button>
+          </span>
+        </label>
+      </Screen>
+      {/* Outside the form: its own buttons and form would submit this one. */}
+      {browsing && (
+        <FolderPicker
+          start={dir}
+          onChoose={(path) => {
+            setDir(path);
+            setBrowsing(false);
+          }}
+          onClose={() => setBrowsing(false)}
+        />
+      )}
+    </>
+  );
 }
 
 /** Over an editor whose sign-in ended: sign in again, as on the sign-in screen, the editor kept

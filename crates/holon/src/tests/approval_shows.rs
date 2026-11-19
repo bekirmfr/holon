@@ -136,8 +136,12 @@ export const pay = action(async (order) => {
     assert_eq!((&listed["runs"][0]["waiting"][0]["name"], &listed["runs"][0]["waiting"][0]["shows"]), (&json!("payout"), &json!({ "amount": 30, "checked": true })), "{listed}");
 
     // Sealed on disk with the run, and read back after a restart.
+    // Looked for outside the sealed fields: in their ciphertext a short word turns up by chance
+    // (`outside_sealed`, R135).
     let on_disk = crate::at_rest::opened(format!("{dir}/deployments.json"), crate::at_rest::role::DEPLOYMENTS);
-    assert!(!on_disk.contains("acme") && !on_disk.contains("checked"), "the deployments file holds what a run shows: {on_disk}");
+    let clear = outside_sealed(&on_disk);
+    assert!(!clear.contains("acme") && !clear.contains("checked"), "the deployments file holds what a run shows: {on_disk}");
+    assert!(on_disk.contains("\"sealed\""), "the runs are sealed: {on_disk}");
     let mut reloaded = load_deployments(&state.deployments_path, &state.store, &state.policy()).unwrap();
     for (slug, dep) in reloaded.iter_mut() {
         dep.secrets = state.secrets.vault(slug);

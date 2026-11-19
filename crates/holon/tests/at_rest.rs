@@ -1439,3 +1439,88 @@ fn only_what_is_for_the_admin_reads_why_a_file_failed() {
     let spans = source::fn_spans(code);
     assert_eq!((source::fn_at(&spans, 2), source::fn_at(&spans, 5)), (Some("Failed::why"), Some("f")));
 }
+
+/// Guards, against the real server: a new server says, as it starts, beside its setup code, that
+/// no one has chosen where the runs its logs let go of go, and what to do; `holon host` (its
+/// warning and its line) and `holon policy` say "not chosen"; another setting written keeps it
+/// so; `holon policy --backup none` ends the warning (said in its log at the next look), and a
+/// folder after it keeps it ended; the line taken out by hand and the policy reloaded, it is not
+/// chosen again; started again, the server reads the choice from its file, and doesn't warn.
+/// Why: a new server deleted the runs its logs let go of for good without asking anyone, and an
+/// absent `backup` read as `none` (R123).
+/// If it fails: permissions.rs `Backup`, storage.rs `warnings` or `set_storage`, or the commands'
+/// lines (storage.rs `host_lines`, grantcmd.rs `policy_lines`) tell a state as another.
+#[test]
+fn a_new_server_warns_until_an_admin_chooses_where_runs_go() {
+    let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
+    let base = std::env::temp_dir().join(format!("holon-backup-choice-{}-{stamp}", std::process::id()));
+    let (home, backup) = (base.join("home"), base.join("backup"));
+    std::fs::create_dir_all(&home).unwrap();
+    let root = format!("file:{}", base.join("root.key").display());
+    let start = |port: u16, n: u32| {
+        Command::new(HOLON)
+            .args(["serve", "--at", &format!("127.0.0.1:{port}"), "--root-key", &root])
+            .env("HOLON_HOME", &home)
+            .env_remove("HOLON_DATA")
+            .env_remove("HOLON_RUN_DIR")
+            .stdout(std::fs::File::create(base.join(format!("console{n}.out"))).unwrap())
+            .stderr(std::fs::File::create(base.join(format!("console{n}.err"))).unwrap())
+            .spawn()
+            .expect("holon serve starts")
+    };
+    let console = |n: u32| ["out", "err"].map(|f| std::fs::read_to_string(base.join(format!("console{n}.{f}"))).unwrap_or_default()).concat();
+    let until = |n: u32, words: &str| {
+        let by = Instant::now() + EVENTUALLY;
+        while !console(n).contains(words) {
+            assert!(Instant::now() < by, "{words:?} in the server's log: {}", console(n));
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    const WARNED: &str = "holon: warning: no backup folder is chosen: the runs each flow's log lets go of (past its keep, or its age) are deleted for good; choose a folder";
+    let port = free_port();
+    let mut server = Server { child: start(port, 1), dirs: vec![base.clone()], port, home: home.clone() };
+    answering(&mut server.child, port, &base.join("console1.err"));
+    until(1, WARNED);
+    let said = console(1);
+    assert!(said.contains("no accounts yet. Open the editor and set up the first admin with this code"), "beside its setup code: {said}");
+    assert_eq!(said.matches(WARNED).count(), 1, "said once: {said}");
+
+    let line = |server: &Server, args: &[&str]| server.holon(args).lines().find(|l| l.starts_with("backup ")).map(String::from).unwrap_or_default();
+    let warns = |server: &Server| server.holon(&["host"]).contains("! no backup folder is chosen");
+    assert!(warns(&server), "holon host shows the warning first");
+    assert!(line(&server, &["host"]).contains("not chosen: the runs a log lets go of are deleted for good"), "{}", line(&server, &["host"]));
+    assert!(line(&server, &["policy"]).contains("not chosen"), "{}", line(&server, &["policy"]));
+
+    // Another setting written: still not chosen, and no backup line in the file.
+    server.holon(&["policy", "--sweep-every", "1h"]);
+    let mut files = Vec::new();
+    files_under(&home, &mut files);
+    let policy = files.into_iter().find(|f| f.file_name().is_some_and(|n| n == "holon.toml")).expect("the policy file, written");
+    assert!(!std::fs::read_to_string(&policy).unwrap().contains("backup"), "no backup line written");
+    assert!(warns(&server) && line(&server, &["host"]).contains("not chosen"), "another setting keeps it not chosen");
+
+    // None, on purpose: no longer warned of, and the log says so at the next look.
+    server.holon(&["policy", "--backup", "none"]);
+    assert!(!warns(&server), "chosen none: no warning");
+    assert!(line(&server, &["host"]).contains("none, chosen"), "{}", line(&server, &["host"]));
+    until(1, "holon: no longer warning of backup-choice");
+    // A folder: chosen too.
+    server.holon(&["policy", "--backup", &backup.display().to_string()]);
+    assert!(!warns(&server) && line(&server, &["policy"]).contains(&backup.display().to_string()), "{}", line(&server, &["policy"]));
+
+    // The line taken out by hand, the policy reloaded: not chosen again.
+    let text: String = std::fs::read_to_string(&policy).unwrap().lines().filter(|l| !l.trim_start().starts_with("backup")).map(|l| format!("{l}\n")).collect();
+    std::fs::write(&policy, text).unwrap();
+    server.holon(&["policy", "--reload"]);
+    assert!(warns(&server) && line(&server, &["host"]).contains("not chosen"), "taken out by hand: not chosen again");
+
+    // Chosen, and started again: read from its file, and no warning.
+    server.holon(&["policy", "--backup", "none"]);
+    server.stop();
+    let port = free_port();
+    let mut again = Server { child: start(port, 2), dirs: Vec::new(), port, home: home.clone() };
+    answering(&mut again.child, port, &base.join("console2.err"));
+    assert!(!warns(&again) && line(&again, &["host"]).contains("none, chosen"), "started again: {}", line(&again, &["host"]));
+    again.stop();
+    assert!(!console(2).contains("no backup folder is chosen"), "nothing said of it as it started again: {}", console(2));
+}

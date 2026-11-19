@@ -7,7 +7,11 @@ The editor is built into the server: `holon serve` serves it at its own address
 ## Signing in
 
 A new server has no accounts. The first screen, **set up**, asks for the setup code the server
-printed when it started, then your name and a password: that makes you its admin. After that,
+printed when it started, then your name and a password: that makes you its admin. Then, while no
+one has chosen, **where runs go** asks where the runs each flow's log lets go of should go: a
+folder on the server's machine (**browse…** picks one there), **none: delete them**, or **later**,
+which leaves the host's warning on the home page until someone chooses (on the admin page's
+**the host**, or with `holon policy --backup`). After that,
 everyone signs in with a name and password, or through an identity provider if the admin set one
 up. An admin adds people from **People and access**, and each gets a one-time link to set their
 password.

@@ -45,6 +45,7 @@ holon: data in /home/you/.holon/data
 holon: no accounts yet. Open the editor and set up the first admin with this code: K7QM-4XWP
 holon: the editor (built in) at http://127.0.0.1:7420/
 holon: listening on http://127.0.0.1:7420 (waiting to be set up; see access.rs)
+holon: warning: no backup folder is chosen: the runs each flow's log lets go of (past its keep, or its age) are deleted for good; choose a folder (an external drive, or one a cloud client keeps in sync): holon policy --backup DIR, or the editor's Host page; or choose none on purpose: holon policy --backup none
 ```
 
 The server keeps everything in `~/.holon/data`. It listens on 127.0.0.1 only: nobody else on the
@@ -55,6 +56,12 @@ network can reach it until you say so ([Server configuration](reference/server.m
 Open http://127.0.0.1:7420. The editor asks for the **setup code** the server printed, your name
 and a password (at least ten characters). The code works once: whoever enters it first is the
 server's admin, which is why it is printed only where the server runs.
+
+Then it asks **where runs go**. Each flow's log keeps its newest runs (500 unless the flow says
+otherwise) and lets go of older ones. A folder keeps them, as exports `holon verify` checks: an
+external drive, or a folder a cloud client keeps in sync. **None** deletes them. **Later** is fine
+for trying Holon out: they are deleted meanwhile, and the server warns until you choose (the
+`holon: warning: no backup folder is chosen` line above).
 
 The editor opens on **Getting started**. It has the same steps as this page, each with the
 command that does it from a terminal, and short docs.

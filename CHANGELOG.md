@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **A new server asks its first admin where the runs its logs let go of go.** Each flow's log
+  keeps its newest runs and lets older ones go, past its `keep` or its age, and a server without a
+  `backup` folder deleted those for good without asking anyone. Setting up the first admin in the
+  editor now asks for a folder on the server's machine (an external drive, or one a cloud client
+  keeps in sync), "none: delete them", or "later". A server whose policy has no `backup` line, new
+  or upgraded, warns its admins from its start until one of them chooses, on its output, in
+  `holon host` and on the editor's Host page. They choose with `holon policy --backup DIR` or
+  `holon policy --backup none`, or on that page. Choosing none on purpose ends the warning as a
+  folder does; "later" leaves it on. Where `holon host` and `holon policy` said "none" for both,
+  they now say "not chosen" or "none, chosen".
+- **A `backup` line written empty is refused.** `backup = ""` was read as none. It is now refused
+  as the policy is read, so a server whose policy has one doesn't start. It says the file's path,
+  then `storage.backup: say where: a folder's whole path (/mnt/archive), or "none" to delete them`
+  (`D:\archive` on Windows), until the line names a folder or `none`.
 - **A run's record says what it held and didn't make, and why** (`skipped`). Each write, row, log
   line, call or action start whose value never arrived is noted with where it stopped: a read that
   found nothing (and what it asked), a field a value lacked, a step that failed. One the server

@@ -295,7 +295,11 @@ pub(crate) fn policy_lines(v: &Value) -> Vec<String> {
             (Some(at), Some(what)) => format!("past {at}: {what}"),
             _ => "past 95%: warn".to_string(),
         }),
-        format!("backup             {}", v["storage"]["backup"].as_str().unwrap_or("none: what logs let go of goes")),
+        format!("backup             {}", match v["storage"]["backup"].as_str() {
+            Some("none") => "none, chosen: what logs let go of is deleted".to_string(),
+            Some(dir) => dir.to_string(),
+            None => "not chosen: what logs let go of is deleted for good (holon policy --backup DIR, or --backup none)".to_string(),
+        }),
         String::new(),
     ];
     // Each limit: what a flow gets unless it asks, and the most it may ask for.
@@ -374,7 +378,7 @@ mod tests {
                 "sweeps             every 2h",
                 "warns at           5G free",
                 "when full          past 1G: pause",
-                "backup             none: what logs let go of goes",
+                "backup             not chosen: what logs let go of is deleted for good (holon policy --backup DIR, or --backup none)",
                 "",
                 "limit           default  ceiling",
                 "keep_runs       500      20000",

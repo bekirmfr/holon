@@ -35,6 +35,8 @@ mod semantics;
 mod writers;
 /// What is there and can't be read is an error at every reader of a deployment's runs (R92).
 mod unread_readers;
+/// Where the runs a log lets go of go: not chosen, none, or a folder, every way (R123).
+mod backup_choice;
 /// A request asked again with another value of its secret isn't sent again (R113).
 mod secret_rounds;
 /// Which lines of a source file are a test module's, for the sweeps of the source (R78).
@@ -182,6 +184,49 @@ pub(crate) fn unique_temp_path(label: &str) -> String {
     let mut path = std::env::temp_dir();
     path.push(format!("holon-server-test-{label}-{}-{nanos}-{n}", std::process::id()));
     path.to_string_lossy().to_string()
+}
+
+/// What a file opened by `at_rest::opened` keeps in the clear, for a test that looks for words
+/// it must not: every key and every string of its JSON, but the values of its `sealed` fields, one
+/// to a line. A word looked for here is a word kept in the clear; what a sealed field holds is
+/// checked by opening it, never by reading it.
+/// Why: a sealed field is ciphertext written in base64url (letters, digits, `-` and `_`), random
+/// to look at, so any short word of those letters turns up in it by chance. A four-letter
+/// lowercase word is one in about 16.8 million places, and a deployments file with nine waiting
+/// runs held 121,000 of them: about one run in 140, a test found "acme" there, though every run
+/// was sealed (R135).
+pub(crate) fn outside_sealed(opened: &str) -> String {
+    fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            serde_json::Value::Array(items) => items.iter().for_each(|i| walk(i, out)),
+            serde_json::Value::Object(fields) => {
+                for (key, value) in fields {
+                    out.push(key.clone());
+                    if key != "sealed" {
+                        walk(value, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(&serde_json::from_str(opened).expect("a sealed file opens to JSON"), &mut out);
+    out.join("\n")
+}
+
+/// Guards: `outside_sealed` leaves out a sealed field's value, at any depth, and keeps every
+/// other key and string. If it fails: a test looking for a word kept in the clear reads ciphertext
+/// again, and fails by chance (R135), or misses a word kept beside it.
+#[test]
+fn outside_sealed_leaves_out_the_sealed_fields_alone() {
+    let file = r#"[{"slug":"p0","parked":[{"run_id":"r1","sealed":"xacmex","waiting":[{"name":"payout"}]}],"memo":{"payee":"acme"}}]"#;
+    // Sorted: whether a record's keys keep their order depends on the build's features.
+    let mut clear: Vec<String> = outside_sealed(file).lines().map(String::from).collect();
+    clear.sort();
+    assert_eq!(clear, ["acme", "memo", "name", "p0", "parked", "payee", "payout", "r1", "run_id", "sealed", "slug", "waiting"]);
+    assert!(!outside_sealed(r#"{"sealed":"xacmex"}"#).contains("acme"));
 }
 
 /// `store_read(key)` — reads this deployment's own state at `key`.
@@ -1143,7 +1188,8 @@ fn the_host_warns_of_a_full_disk_and_a_full_cache_once_each() {
     let warnings = || body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].as_array().cloned().unwrap();
     let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
     // Nothing near a 2 KiB floor (nor past the 1 KiB it acts at, warned of too): no warning.
-    assert_eq!(set(r#"{"warn_at":"2K","full_at":"1K"}"#).status_code, 200);
+    // Where runs go chosen (none), or a host is warned until it is (backup_choice.rs, R123).
+    assert_eq!(set(r#"{"warn_at":"2K","full_at":"1K","backup":"none"}"#).status_code, 200);
     assert_eq!(warnings(), Vec::<serde_json::Value>::new());
     // A floor no disk has: its disk warns, with what to do.
     assert_eq!(set(r#"{"warn_at":"1000T","full_at":"1K"}"#).status_code, 200);
@@ -5355,7 +5401,7 @@ fn a_restart_backs_up_the_runs_it_finds_past_their_age_before_it_lets_them_go() 
     drop(log);
     let backup = std::path::PathBuf::from(unique_temp_path("aged-backup"));
     let mut policy = (*state.policy()).clone();
-    policy.storage.backup = Some(crate::paths::HostPath::new(&backup));
+    policy.storage.backup = crate::permissions::Backup::Folder(crate::paths::HostPath::new(&backup));
     let reloaded = load_deployments(&Place::parse(&path), &state.store, &policy).unwrap();
     assert_eq!(reloaded["aged"].log.with(|l| l.holds().3), 1, "the aged runs let go of at load");
     let batches: Vec<String> = std::fs::read_dir(backup.join("aged")).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();

@@ -72,8 +72,11 @@ if (readFileSync(binary).includes("the data folder made to fail")) {
 }
 // Its policy lets a flow call plain HTTP and private addresses when its deploy asks: the
 // chat-proxy test points the sample at a stand-in upstream on loopback.
+// The main one has chosen where the runs a log lets go of go: none, on purpose, so its pages show
+// no warning that no one has (storage.rs `backup-choice`). The fresh one, left as installed,
+// hasn't: its admin, set up in accounts.e2e.ts, is asked (AuthGate.tsx's BackupStep).
 const policy = join(dir, "holon.toml");
-writeFileSync(policy, "[grants]\nallow_plain_http = true\nallow_private_addresses = true\n");
+writeFileSync(policy, "[grants]\nallow_plain_http = true\nallow_private_addresses = true\n" + (fresh ? "" : '\n[storage]\nbackup = "none"\n'));
 // The folders the main one binds for flows to read and write (folders.rs): outside its data, as an
 // admin binds them; fixtures.ts names them.
 const folders = join(tmpdir(), `holon-e2e-folders-${port}`);

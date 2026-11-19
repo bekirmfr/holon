@@ -63,7 +63,9 @@ journalctl -u holon
 
 The root key is made at the first start in `/var/lib/holon/.holon/keys/`, outside the data
 folder. The first start prints the setup code for the first admin in the journal (or give it one
-in `HOLON_SETUP_CODE`). systemd sends SIGTERM to stop it, then SIGKILL once `TimeoutStopSec` has
+in `HOLON_SETUP_CODE`), and, until an admin chooses where the runs each flow's log lets go of go,
+a warning that they are deleted: choose with `holon policy --backup DIR` (a second drive, say) or
+`--backup none` ([Warnings](../reference/server.md#warnings)). systemd sends SIGTERM to stop it, then SIGKILL once `TimeoutStopSec` has
 passed.
 
 ## A container
