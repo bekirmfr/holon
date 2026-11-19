@@ -911,6 +911,19 @@ fn no_answer_says_where_or_why_the_data_folder_failed() {
     }
     crate::faults::heal();
     crate::at_rest::heal_folder(&dir);
+    // What the server writes by itself as its warnings start (storage.rs `Sweeps::watch`, on the
+    // housekeeping tick no request runs): a line in the activity record, which more than the admin
+    // reads (release audit R114: it held each warning whole, where and why). Run with the fault
+    // healed, the files it failed still noted failing (nothing has read them since), and the
+    // activity read again by each caller.
+    let _ = crate::at_rest::fired();
+    state.sweeps.watch(&state);
+    let _ = crate::at_rest::fired();
+    for (who, token) in callers {
+        let (code, said) = send(&state, token, "GET", "/activity?limit=500", Value::Null);
+        assert!(who != "ada" || said.contains("\"warned\""), "the watcher wrote no warning to read: {said}");
+        look(who, "GET", "/activity", code, &said);
+    }
 
     // The second pass: each place a request reaches only behind another that passes there, or
     // that reads what was kept before, failed alone (at_rest::fail_sites), for the files under
@@ -1048,6 +1061,47 @@ fn no_answer_says_where_or_why_the_data_folder_failed() {
         found.join("\n"),
         table.join("\n")
     );
+}
+
+/// Guards: what the server warns of by itself is in its activity record in the warning's told
+/// words alone, and only for whoever views the host, as the warnings are: ada (the admin) reads the
+/// line, without where or why; cy (a viewer on the host), wes (a role reading every flow) and scout
+/// (an agent) read no `warned` line at all.
+/// Why: every warning went into the activity whole, its file's path and the OS's words, and GET
+/// /activity gave all of it to whoever views every flow (release audit R114; shown live with a
+/// viewer, an editor and an agent, each with its own token).
+/// If it fails: storage.rs `Sweeps::watch` records more than `Warning::told`, or activity.rs
+/// `handle_get_activity` gives `warned` lines to whoever doesn't view the host.
+#[test]
+fn what_the_server_warns_of_is_the_hosts_in_the_activity_in_fixed_words() {
+    let dir = std::path::PathBuf::from(unique_temp_path("r114-warned"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut state = test_state_at(Place::parse(&dir.join("deployments.json").display().to_string()));
+    state.activity = crate::activity::Activity::beside(&state.deployments_path);
+    let (state, _, tokens) = serve(state, Arc::new(Accounts::memory()));
+    // A file failing now, as a reader notes one: where and why, the admin's.
+    let place = dir.join("seen").join("events.json").display().to_string();
+    let told = crate::recorder::RUNS_UNREAD;
+    let failed = crate::failing::Failed::new(told, format!("{place}: Access is denied. (os error 5)"));
+    crate::failing::note_file(&state.deployments_path, told, &place, Err(&failed));
+    state.sweeps.watch(&state);
+    for (who, token) in &tokens {
+        let (code, said) = send(&state, token, "GET", "/activity?limit=500", Value::Null);
+        assert_eq!(code, 200, "{who}: {said}");
+        let answer: Value = serde_json::from_str(&said).unwrap();
+        let warned: Vec<&str> = answer["entries"].as_array().unwrap().iter().filter(|e| e["action"] == crate::activity::WARNED).map(|e| e["target"].as_str().unwrap_or_default()).collect();
+        if *who == "ada" {
+            assert!(warned.contains(&told), "ada reads what it warned of in its told words: {warned:?}");
+        } else {
+            assert!(warned.is_empty(), "{who} doesn't view the host, and reads what it warned of: {warned:?}");
+        }
+        assert!(!said.contains("r114-warned") && !said.contains("os error"), "{who} reads where or why in the activity: {said}");
+    }
+    // The admin's warnings say where and why, as they are meant to.
+    let (_, warnings) = send(&state, &tokens["ada"], "GET", "/admin/warnings", Value::Null);
+    assert!(warnings.contains("r114-warned") && warnings.contains("os error 5"), "{warnings}");
+    crate::failing::note_file(&state.deployments_path, told, &place, Ok(()));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The hooks that failed since last asked (at_rest::fired), each counted in `hooks` against one

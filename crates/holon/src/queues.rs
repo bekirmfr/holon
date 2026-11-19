@@ -176,7 +176,16 @@ struct Inner {
 }
 
 /// What a queue's message is called in the admin's warnings (spools.rs).
-const KIND: spools::Kind = spools::Kind { key: "spool:message", one: "message to a queue", many: "messages to queues", folder: "queue spool" };
+const KIND: spools::Kind = spools::Kind {
+    key: "spool:message",
+    one: "message to a queue",
+    many: "messages to queues",
+    folder: "queue spool",
+    told: [
+        "the queue spool folder can't all be listed: what was spooled in it before the server started is neither sent nor removed",
+        "messages to queues spooled before the server started are neither sent nor removed: whether their runs landed can't be told",
+    ],
+};
 
 impl std::fmt::Debug for Queues {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

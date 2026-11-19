@@ -668,7 +668,9 @@ holon activity [--last N] [--json]
 ```
 
 What was done on the server, newest first, and by whom: saves, deploys, runs, pauses, stops,
-grants, deletes, bindings, sweeps, people and tokens. The newest 50; `--last` up to 500.
+grants, deletes, bindings, sweeps, people and tokens. The newest 50; `--last` up to 500. Each
+holds the flows its reader may view; the server's warnings, each in a few fixed words, never where
+or why, are shown only to whoever may view the host (the whole of each is in `holon host`).
 
 ## People and sign-in
 

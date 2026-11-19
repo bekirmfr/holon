@@ -147,8 +147,10 @@ The server looks at what it holds every ten seconds, and warns of:
 
 Each says what to do. They are shown first in `holon host` and on the admin page's **the host**,
 on the home page for admins, and in the terminal editor's top bar and overview
-(`GET /admin/warnings`); and each is said once in the server's log and its activity as it starts,
-and in the log as it ends.
+(`GET /admin/warnings`); and each is said once in the server's log as it starts and as it ends,
+and in its activity as it starts. The activity keeps a few fixed words for each warning, never
+where or why, and gives them only to whoever may view the host: the rest of the activity is read
+by more.
 
 `GET /health`, which anyone who reaches the server may ask, answers `ok`; while the deployments
 file can't be written or the logs can't be synced, 503 `not ok: ` and which (`not ok: the run logs
