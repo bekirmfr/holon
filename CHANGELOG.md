@@ -10,6 +10,19 @@
   read instead of showing it as empty. `holon action` printing such a value, `holon replay` on such
   a flow, an agent's save of a flow and the admin lists (`holon database`, `feed`, `folder`,
   `mail`, `queue`, `store`) read the same way.
+- **In an action, what is written after a wait now comes after it.** A write, a send, a request,
+  a call or a start of another action written after `await event(…)` or `await approval(…)` is
+  asked for only once the wait is answered, even one that uses nothing of the wait. Before, such a
+  step could be made while the run still waited: an action that waited for a payment, then called
+  a host with only what it was first sent, called the host before anyone paid. The action's
+  answer comes after its last wait too. A wait that runs out gives `{ expired: true }`, so such a
+  step is made then too: return on `paid.expired ?? false` before a step only an answer should
+  make. What a step reads after a wait is still the state as the run found it when it began. A
+  wait now stands on a line of its own at the top of the action's body (`const paid = await
+  event(…)`); one in an `if`, a `try`, after a `return` that may answer, or inside another
+  expression is refused, saying so. Two waits in a row still wait together from
+  the start; what follows the second waits for the second, not the first. A flow that waits
+  compiles to a new version; deploying it again asks for no new permission.
 - **A request's headers sent to the control port a byte at a time are cut off after 30
   seconds.** The server waited for as long as each byte came within a minute of the last, so
   headers sent slowly enough held their connection for as long as their sender liked. A request's
