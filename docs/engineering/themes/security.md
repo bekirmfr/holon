@@ -223,7 +223,9 @@ exceptions are ever granted. At deploy (deploy.rs):
    what the caller sends, so deploying the caller is running it (H1). A person who may not is
    refused (403); an agent's version waits as a proposal for someone who may. Before, only the
    caller's grant was asked, so an editor bound on one tag drove any flow's actions through a
-   flow of their own.
+   flow of their own. The grant route gives such a call back under the same check
+   (`grants::change_grant`, R111): before, an editor of the caller alone, refused its deploy, gave
+   the call back once an admin had revoked it.
 3. The `Grant` is kept with the deployment; the **`Permit`** applies it to the policy in force
    (a ceiling lowered since wins; an exception holds only while the policy still allows it).
    What a deploy needs, and whether it waits for a person, is worked out from the deployment as

@@ -454,7 +454,9 @@ can narrow it:
   not: the first it has of receiving requests, a folder's new files, its schedule and an action.
   A flow with several kinds of handler (routes and a clock, say) has the others' triggers as
   ordinary required items.
-- **grant back** restores a revoked item.
+- **grant back** restores a revoked item. A call of another flow's action comes back only from
+  someone who may run that action, as its deploy would (a call runs it under that flow's grant,
+  with what this flow sends).
 - a limit can be **lowered**. Raising one needs a new deploy, and approval.
 
 Each change goes on the deployment's [timeline](#the-timeline), with who made it, and each run

@@ -476,7 +476,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     let previous = previous_of(deployments, &body.slug);
     // What it runs of other flows that whoever deploys it may not run: a person who approves is
     // refused it, and what someone proposes waits for someone who may run it.
-    let borrowed = borrowed(deployments, &manifest.items(), &body.slug, who);
+    let borrowed = borrowed(deployments, &manifest.items(), &body.slug, who, DEPLOYS_IT);
     if approves && let Some((_, why)) = borrowed.first() {
         return err(403, why.clone());
     }
@@ -775,13 +775,17 @@ fn as_it_would_be(who: &Caller, action: Action, slug: &str, now: Option<&[String
     )))
 }
 
+/// Who does it instead, as a deploy's refusal of a call of another flow's action says it.
+const DEPLOYS_IT: &str = "deploys this version";
+
 /// The actions of other flows that `items` (a version's) run, `RunsAction("billing/charge")`,
-/// which `who` may not run, each with why. A call runs the other flow's action under that flow's
-/// grant, with whatever this flow's code sends it, so deploying the code runs it as surely as
-/// running it by hand: whoever deploys it may run it (the launch review's H1). An agent runs only
-/// what the other flow's grant lets agents run, as by hand. A flow starting its own action runs
-/// nothing of another's.
-fn borrowed(deployments: &Mutex<BTreeMap<String, Deployment>>, items: &BTreeSet<String>, slug: &str, who: &Caller) -> Vec<(String, String)> {
+/// which `who` may not run, each with why, ending "so someone who may run it `then`". A call runs
+/// the other flow's action under that flow's grant, with whatever this flow's code sends it, so
+/// deploying the code runs it as surely as running it by hand: whoever deploys it may run it (the
+/// launch review's H1), and so may whoever grants such a call back (grants.rs, R111). An agent runs
+/// only what the other flow's grant lets agents run, as by hand. A flow starting its own action
+/// runs nothing of another's.
+pub(crate) fn borrowed(deployments: &Mutex<BTreeMap<String, Deployment>>, items: &BTreeSet<String>, slug: &str, who: &Caller, then: &str) -> Vec<(String, String)> {
     let deployments = deployments.lock().unwrap();
     items
         .iter()
@@ -797,7 +801,7 @@ fn borrowed(deployments: &Mutex<BTreeMap<String, Deployment>>, items: &BTreeSet<
             let why = refusal.0.strip_prefix(&format!("{name} may not do that: ")).unwrap_or(&refusal.0);
             Some((
                 item.clone(),
-                format!("this version runs {flow:?}'s action {action:?}, which {name} may not run ({why}): a call runs it under {flow:?}'s grant with what this flow sends, so someone who may run it deploys this version"),
+                format!("this version runs {flow:?}'s action {action:?}, which {name} may not run ({why}): a call runs it under {flow:?}'s grant with what this flow sends, so someone who may run it {then}"),
             ))
         })
         .collect()
@@ -969,7 +973,7 @@ fn preview_value(state: &AppState, body: &DeployRequestBody, who: &Caller, propo
     let code = code_rows(&previous, server.as_ref());
     // What it runs of other flows that `who` may not run: refused to a person who approves,
     // waiting for someone who may when proposed.
-    let borrowed = borrowed(deployments, &manifest.items(), &body.slug, who);
+    let borrowed = borrowed(deployments, &manifest.items(), &body.slug, who, DEPLOYS_IT);
     let name = who.name.as_deref().unwrap_or_default();
     let mut unready: BTreeMap<String, String> = borrowed
         .iter()

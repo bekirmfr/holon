@@ -147,6 +147,74 @@ fn a_flow_call_runs_only_what_whoever_deploys_it_may_run() {
     assert_eq!(code, 200, "agents may run payout now: {answer}");
 }
 
+/// R111: a call of another flow's action, taken away, comes back only past the deploy's own check
+/// (H1), whichever way it comes back: a deploy of a version that runs it, a restore of one, or the
+/// grant route giving it back. For each, after ada takes `promo`'s call of `payments`' payout away:
+/// bob, a person, and ci, a service, each editor on `marketing` alone (neither may run payout), are
+/// refused, saying why, and give nothing back; scout, an agent holding all a deploy takes on both
+/// flows, gives nothing back either (its version and its restore wait for a person, and granting is
+/// a person's); pat, editor on both, gives it back. A new way for a grant to come back is a row.
+///
+/// **Why:** the grant route gave such a call back with no check of who may run it (the launch
+/// review's H1 residual, R111): someone bound as editor on the calling flow alone, refused that
+/// version's deploy, made it run the other flow's action again by granting the item back.
+#[test]
+fn every_way_a_call_comes_back_is_checked_as_its_deploy() {
+    let (state, book, ada) = server();
+    let (bob, pat) = (person(&book, "bob"), person(&book, "pat"));
+    book.add("ci", Kind::Service, "viewer", "ada", "ada").unwrap();
+    let ci = book.create_token("ci", "ci", "ada").unwrap().0;
+    let scout = agent(&book, "scout");
+    let all = ["flow.view", "flow.edit", "flow.propose", "flow.deploy", "flow.approve-deploy", "flow.restore", "run.call"].map(String::from).to_vec();
+    book.define_role(crate::bindings::RoleText { name: "everything".into(), about: None, allows: all, kinds: vec![Kind::Agent] }, "ada", None).unwrap();
+    let both: &[&str] = &["marketing", "payments"];
+    for (who, role, tags) in [("bob", "editor", &both[..1]), ("ci", "editor", &both[..1]), ("scout", "everything", both), ("pat", "editor", both)] {
+        for tag in tags {
+            bind(&book, who, role, Selector::Tag((*tag).into()));
+        }
+    }
+    let payments = stage(&state, &ada, PAYMENTS);
+    let first = stage(&state, &ada, PROMO);
+    let second = stage(&state, &ada, &PROMO.replace("return paid", "return { paid }"));
+    assert_eq!(deploy_as(&state, &ada, "payments", &payments, false).0, 200);
+    assert_eq!(deploy_as(&state, &ada, "promo", &first, false).0, 200, "version 1");
+    let call = "RunsAction(\"payments/payout\")";
+    let granted = || send(&state, &ada, "GET", "/deployments/promo/grant", Value::Null).1["grant"]["items"].as_array().unwrap().contains(&json!(call));
+    let refused = |name: &str, then: &str| {
+        format!("this version runs \"payments\"'s action \"payout\", which {name} may not run (a viewer only reads): a call runs it under \"payments\"'s grant with what this flow sends, so someone who may run it {then}")
+    };
+    // Each way, by whoever holds `token` (an agent's, `agent`); what a refusal ends with; and what
+    // scout's attempt answers.
+    type Way<'a> = Box<dyn Fn(&str, bool) -> (u16, Value) + 'a>;
+    let ways: [(&str, Way<'_>, &str, u16); 3] = [
+        ("a deploy of the version that runs it", Box::new(|t: &str, agent: bool| deploy_as(&state, t, "promo", &second, agent)), "deploys this version", 202),
+        (
+            "a restore of version 1, which runs it",
+            Box::new(|t: &str, _| send(&state, t, "POST", "/deployments/promo/restore", json!({ "version": 1, "code": true, "acknowledge": [call] }))),
+            "deploys this version",
+            202,
+        ),
+        ("the grant route", Box::new(|t: &str, _| send(&state, t, "POST", "/deployments/promo/grant", json!({ "grant": [call] }))), "grants it back", 403),
+    ];
+    for (way, back, then, scouts) in ways {
+        // The version that runs it deployed, and ada takes the call away.
+        assert_eq!(deploy_as(&state, &ada, "promo", &second, false).0, 200, "{way}");
+        let (code, said) = send(&state, &ada, "POST", "/deployments/promo/grant", json!({ "revoke": [call], "keep_running": true }));
+        assert!(code == 200 && !granted(), "{way}: ada took it away: {said}");
+        for (name, token) in [("bob", &bob), ("ci", &ci)] {
+            let (code, said) = back(token, false);
+            assert_eq!((code, said["error"].as_str().unwrap_or_default()), (403, refused(name, then).as_str()), "{way}, {name}: {said}");
+            assert!(!granted(), "{way}: {name} gave nothing back");
+        }
+        let (code, said) = back(&scout, true);
+        assert_eq!(code, scouts, "{way}, scout: {said}");
+        assert!(!granted(), "{way}: scout gave nothing back");
+        let (code, said) = back(&pat, false);
+        assert_eq!(code, 200, "{way}, pat: {said}");
+        assert!(granted(), "{way}: pat gave it back");
+    }
+}
+
 const TALLY: &str = r#"import { action, flow } from "holon"
 import state from "state"
 

@@ -414,7 +414,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
                 return handle_get_permission_view(&state.store, &state.deployments, slug, which);
             }
             if method == "POST" && which == "grant" {
-                return recorded(state, grants::handle_post_grant(state, slug, request, by), "granted", slug, by);
+                return recorded(state, grants::handle_post_grant(state, slug, request, &caller), "granted", slug, by);
             }
         } else if let Some(slug) = rest.strip_suffix("/sessions") {
             if method == "GET" {

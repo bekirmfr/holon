@@ -548,8 +548,9 @@ changes. Changed without a redeploy, the whole change or none of it: `--revoke` 
 back (written as this prints it: `StateWrite("orders")`), `--grant` gives back one its version
 asks for, `--lower` holds a limit below what it was (raising one takes a deploy, which asks for
 approval). A grant that no longer covers the deployment pauses it until it does again, unless
-`--keep-running`: then the calls it lacks fail. Editors and admins. See [Changing a
-grant](../guides/deploying.md#changing-a-grant).
+`--keep-running`: then the calls it lacks fail. Editors and admins; a call of another flow's
+action (`RunsAction("billing/charge")`) is granted back only by someone who may run it, as its
+deploy is. See [Changing a grant](../guides/deploying.md#changing-a-grant).
 
 ### `holon grants`
 
