@@ -92,6 +92,12 @@ export function runOutcome(e: LogEntry): Outcome {
   return "ok";
 }
 
+/** How a run's answer is headed: by its status, or by none for a run that has none (an action's,
+ *  a clock's, a resumed part's: `holon runs` prints none for it either), never "null". */
+export function answeredHead(status: number | null | undefined): string {
+  return status == null ? "answered" : `answered ${status}`;
+}
+
 /** What a run did outside the flow: the requests it sent (↗) and the effects it performed (✎:
  *  writes, messages, files). */
 export function outside(e: LogEntry): { sent: number; did: number } {

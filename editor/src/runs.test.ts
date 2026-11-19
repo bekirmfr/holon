@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { outside, runLabel, runOutcome, startedBy } from "./runs";
+import { answeredHead, outside, runLabel, runOutcome, startedBy } from "./runs";
 import type { LogEntry } from "./server";
 
 const run = (over: Partial<LogEntry>): LogEntry => ({
@@ -29,6 +29,12 @@ describe("runs", () => {
     expect(runOutcome(run({ status: 503 }))).toBe("failed");
     expect(runOutcome(run({ status: null, error: "boom" }))).toBe("failed");
     expect(runOutcome(run({ parked: ["approval"] }))).toBe("waiting");
+  });
+
+  it("heads a run's answer by its status, by none where it has none (an action's run)", () => {
+    expect(answeredHead(200)).toBe("answered 200");
+    expect(answeredHead(null)).toBe("answered");
+    expect(answeredHead(undefined)).toBe("answered");
   });
 
   it("counts what it did outside: the requests it sent and the effects it performed", () => {

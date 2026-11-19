@@ -13,7 +13,7 @@ import type { WValue } from "./holon";
 import { secretUses, witnessed, type Witness } from "./flowFacts";
 import { executionOrder, nodeTimings } from "./replay";
 import type { Route } from "./routes";
-import { field, outside, runLabel, runOutcome, startedBy, text } from "./runs";
+import { answeredHead, field, outside, runLabel, runOutcome, startedBy, text } from "./runs";
 import { downloadRuns, getDeployedDocument, getLog, getSummary, ServerError, type FlowDocument, type LogEntry } from "./server";
 import { useKeys } from "./ui/Keys";
 
@@ -182,7 +182,7 @@ export function RunDetail({ slug, seq, navigate }: { slug: string; seq: number; 
           </Line>
         </Section>
         <Section title="Out">
-          {run.response_body !== null ? <Line name={`answered ${run.status ?? ""}`}>{run.response_body || "(empty)"}</Line> : <p className="hl-flow__note">no answer</p>}
+          {run.response_body !== null ? <Line name={answeredHead(run.status)}>{run.response_body || "(empty)"}</Line> : <p className="hl-flow__note">no answer</p>}
           {run.outputs.length > 0 && run.response_body === null && run.outputs.map((v, i) => <Value key={i} v={v} />)}
         </Section>
       </div>
