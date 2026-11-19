@@ -136,6 +136,12 @@ The server looks at what it holds every ten seconds, and warns of:
 - **a cache at its size** most of the last hour: it let go of flows (or values) to make room at
   most looks, so runs load them from disk again;
 - **sweeping off** while the store takes more than a tenth of its disk;
+- **no backup chosen**: no one has said where the runs each flow's log lets go of (past its keep,
+  or its age) go, so they are deleted for good. It says so from the first start, and ends once an
+  admin chooses a folder, or none on purpose (`holon policy --backup DIR|none`, the editor's Host
+  page, or the step the editor shows the first admin after setting up). An admin made another way,
+  by an invite or acting through the run file, meets the question here. A server whose policy is
+  no file (`--policy :memory:`) isn't asked: nothing could be written;
 - **a backup that can't be written to**: a log keeps the runs it would let go of until it can,
   trying again after a pause that grows while it fails, up to five minutes, and at once when the
   backup is set again;
@@ -224,8 +230,11 @@ allow_plain_http = true
     both, each log keeps its runs as granted again (what was cut stays cut). Each is said on
     the deployment's timeline. Set with `holon policy --full-at --when-full`, or on the admin page.
   - `backup`: a folder's whole path (an external or second drive, or a folder a cloud client
-    keeps in sync: Dropbox, Google Drive, OneDrive), or `none` (the default). The runs a log lets
-    go of, as it cuts back to what it keeps (or as `roll` cuts it), are written there first, and
+    keeps in sync: Dropbox, Google Drive, OneDrive), or `none`. Without the line, no one has
+    chosen: the runs a log lets go of are deleted for good, as with `none`, and the host warns until
+    an admin chooses ([Warnings](#warnings)); `none` is the choice to delete them, and ends the
+    warning. Written empty, it is neither, and refused. Setting another key leaves it as it is.
+    The runs a log lets go of, as it cuts back to what it keeps (or as `roll` cuts it), are written there first, and
     within ten seconds made into exports `holon verify` checks, gzipped, then sealed under the
     server's keys as its data folder is: `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>-<head>.json.gz`,
     `<head>` the first 16 hex digits of the last run's hash, so a slug removed and deployed again,

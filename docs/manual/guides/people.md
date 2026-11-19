@@ -46,6 +46,10 @@ Open the editor, enter the code, your name and a password: you are its admin. Un
 does, nobody signs in, and the code can't be guessed at speed: five wrong in a row from one address
 refuse setting up from there for a minute.
 
+Set up, the editor asks where the runs a flow's log lets go of should go ([Signing in](editor.md#signing-in)).
+An admin made another way, by an invite or acting through the run file below, isn't asked there:
+they meet the same question in the host's warning, until someone chooses ([Warnings](../reference/server.md#warnings)).
+
 Commands you run on the server's machine (`holon deploy`, `holon people`, `holon decide`…) need
 no sign-in: they reach it through its run file, while that server runs, as you, the person who set
 it up: holding what is bound to you, and admin on the host. So you are one person whichever way
