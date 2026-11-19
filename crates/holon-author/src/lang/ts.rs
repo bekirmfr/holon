@@ -1458,6 +1458,10 @@ impl<'s, 't> Reader<'s, 't> {
     /// first only once the second was answered (a guard reads its value once its test holds). It
     /// is bound at the end of the latest wait's line, so the wait's line keeps the wait's name;
     /// print.rs `without_block_ties` leaves it out of the text, which writes it by order alone.
+    ///
+    /// The hold stands in until a wait takes a trigger (stage 1 of the wait-and-resume design):
+    /// it reads the action's input, which a run parked at a wait would then keep sealed, so stage 1
+    /// takes it out, the wait's trigger holding what follows in the action instead.
     fn waited_on(&mut self, ts: &str, stmts: &mut Vec<Stmt>, at: Span) {
         let Some(Local::Bound(name) | Local::Var(Some(name))) = self.lookup(ts) else { return };
         // The hold's nodes are the wait's statement's, whose span is its name's.
@@ -5469,7 +5473,7 @@ const FUNCTION_WAITS: &str = "a function computes and never waits: await event(�
 /// Why a wait is refused where it is written, in an action's body: everything after a wait waits
 /// for it, so a run waits at one point after another, every run at the same ones
 /// (the wait-and-resume design note, §2, stage 1).
-const WAIT_ALONE: &str = "an action waits on a line of its own, at the top of its body: const paid = await event(\"paid\", { expires: \"1d\" }), and what follows waits for it. In an if, a ?:, a try, after a return that may answer, or inside another expression, a wait comes in a later slice";
+const WAIT_ALONE: &str = "an action waits on a line of its own, at the top of its body: const paid = await event(\"paid\", { expires: \"1d\" }), and what follows waits for it. In an if, a ?:, a try, after a return that may answer, or inside another expression, a wait comes in a later slice: to answer without waiting, test in the route before starting the action, or test after the wait";
 
 /// A method given a function (`map`, `filter`, `sort`, a reviver…) is handed what it returns: an
 /// `async` one would hand it promises, which `Promise.all` gathers, and that comes with the L4's

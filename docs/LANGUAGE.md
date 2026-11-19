@@ -466,7 +466,7 @@ an action, what is written after a wait comes after it, as in JavaScript: a writ
 request, a call or a start of another action is asked for only once the wait is answered, never
 before, even one that uses nothing of it. What it reads there is the state as the run found it
 when it began, until each part of a run is saved as it parks. The answer comes after the last wait
-too. A wait that runs out gives `{ expired: true }` in its place, so what follows it is made then
+too. For now, a wait that runs out gives `{ expired: true }` in its place, so what follows it is made then
 too: a step that uses nothing of the wait is made whether it was answered or ran out, and
 `if (paid.expired ?? false) return …` before it keeps it to an answer. Each such step takes its
 trigger from what the wait gave, `paid`; one hold for the action, read by nothing,

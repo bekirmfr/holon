@@ -1060,7 +1060,7 @@ misled, the compiler refuses instead.
   sets how long it waits. What is written after the wait comes after it, as in JavaScript: a
   write, a send, a request, a call or a start of another action is asked for only once the wait
   is answered, never before, even one that uses nothing of it, and the action answers after its
-  last wait. A wait that runs out gives `{ expired: true }`, so such a step is made then too:
+  last wait. For now, a wait that runs out gives `{ expired: true }`, so such a step is made then too:
   return on `paid.expired ?? false` before a step only an answer should make. What it reads there is the state as the run found it when it began, until each part
   of a run is saved as it parks. A wait stands on a line of its own at the top of the action's
   body, `const paid = await event(…)`; in an `if`, a `try`, after a `return` that may answer or

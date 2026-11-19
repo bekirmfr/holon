@@ -380,8 +380,8 @@ the route answers at once with the link. When the link is opened, the third rout
 event, and the order's run finishes: it writes the order. If nobody opens the link within a day,
 the run expires. Order in the text matters in one place: in an action, what is written after a wait
 comes after it, as in JavaScript. A write, a send, a request, a call or a start of another action
-is asked for only once the wait is answered, never before, even one that uses nothing of it. A
-wait that runs out gives `{ expired: true }`, so such a step is made then too: return on
+is asked for only once the wait is answered, never before, even one that uses nothing of it. For
+now, a wait that runs out gives `{ expired: true }`, so such a step is made then too: return on
 `paid.expired ?? false` before a step only an answer should make. What it reads there is the state
 as the run found it when it began. Elsewhere a value is computed when
 what it needs has arrived.

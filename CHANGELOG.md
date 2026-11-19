@@ -15,7 +15,7 @@
   asked for only once the wait is answered, even one that uses nothing of the wait. Before, such a
   step could be made while the run still waited: an action that waited for a payment, then called
   a host with only what it was first sent, called the host before anyone paid. The action's
-  answer comes after its last wait too. A wait that runs out gives `{ expired: true }`, so such a
+  answer comes after its last wait too. For now, a wait that runs out gives `{ expired: true }`, so such a
   step is made then too: return on `paid.expired ?? false` before a step only an answer should
   make. What a step reads after a wait is still the state as the run found it when it began. A
   wait now stands on a line of its own at the top of the action's body (`const paid = await
