@@ -415,7 +415,13 @@ impl App {
             }
             Part::Storage => {
                 let Some((key, label, what, _)) = STORAGE.get(i) else { return vec![] };
-                let mut rows = vec![text(Tone::Head, *label), text(Tone::Plain, *what), field("Now", self.storage_value(key))];
+                // No `backup` line: no one has chosen yet (permissions.rs `Backup`), which the host
+                // warns of; its ask starts empty all the same.
+                let now = match self.storage_value(key) {
+                    v if *key == "backup" && v == "-" => "not chosen".to_string(),
+                    v => v,
+                };
+                let mut rows = vec![text(Tone::Head, *label), text(Tone::Plain, *what), field("Now", now)];
                 rows.push(text(Tone::Dim, "enter: change it (it is written into holon.toml's [storage], then read again)"));
                 rows.push(text(Tone::Head, "The host"));
                 rows.extend(crate::storage::host_lines(&a.host).into_iter().map(|l| text(Tone::Plain, l)));

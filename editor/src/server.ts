@@ -737,8 +737,12 @@ export type HostView = {
   when_full: "warn" | "pause" | "roll";
   /** What `when_full` has done and not yet undone. */
   acting: { paused: string[]; rolled: string[] };
-  /** `[storage] backup`: where the runs a log lets go of go first, and what it holds; null: none. */
+  /** `[storage] backup`: the folder the runs a log lets go of go to first, and what it holds;
+   *  null without one. */
   backup: { dir: string; exports: number; bytes: number; waiting: number; error: string | null } | null;
+  /** Whether an admin has chosen where they go: a folder, or none on purpose. Not chosen, they
+   *  are deleted for good and the host warns (`backup-choice`) until someone chooses. */
+  backup_chosen: boolean;
   warnings: HostWarning[];
 };
 /** Something about the host an admin should know (storage.rs `Warning`), and what to do about it. */
@@ -1160,8 +1164,9 @@ export type HostPolicy = {
   /** `[agents] deploy_at_once`: whether a flow's settings may let its agent versions that ask for
    *  nothing more deploy without a person (off: each waits for one, whatever a flow says). */
   agents_deploy_at_once?: boolean;
-  /** `[storage]`: how often the server sweeps (`"10m"`, `"off"`). */
-  storage?: { sweep_every: string; warn_at?: string };
+  /** `[storage]`: how often the server sweeps (`"10m"`, `"off"`); where the runs a log lets go of
+   *  go (a folder's whole path, `"none"`, or null while no one has chosen). */
+  storage?: { sweep_every: string; warn_at?: string; backup?: string | null };
   /** The policy file's text as it was read (null: there is none, and the defaults hold). */
   text?: string | null;
 };

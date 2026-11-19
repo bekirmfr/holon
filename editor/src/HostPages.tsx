@@ -1199,7 +1199,9 @@ export function ResourcesPage({ tab, deployments, onOpenDeployment }: { tab: Res
                     ·{" "}
                     {host.backup
                       ? `the runs logs let go of are kept in ${host.backup.dir}: ${host.backup.exports} exports, ${sizeText(host.backup.bytes)}${host.backup.waiting ? `, ${host.backup.waiting} to make` : ""}`
-                      : "none: the runs logs let go of go"}
+                      : host.backup_chosen
+                        ? "none, chosen: the runs logs let go of are deleted"
+                        : "not chosen: the runs logs let go of are deleted for good; set a folder, or none"}
                   </span>
                 </span>
                 <input

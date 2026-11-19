@@ -308,6 +308,12 @@ pub(crate) struct Warning {
     pub(crate) todo: String,
 }
 
+/// The warning while no backup is chosen: no place in it (none is chosen), and no number, so it
+/// reads the same to everyone who may view the host and to the activity record (R114).
+pub(crate) const BACKUP_NOT_CHOSEN: &str = "no backup folder is chosen: the runs each flow's log lets go of (past its keep, or its age) are deleted for good";
+/// What to do about it: either choice ends it.
+pub(crate) const BACKUP_CHOOSE: &str = "choose a folder (an external drive, or one a cloud client keeps in sync): holon policy --backup DIR, or the editor's Host page; or choose none on purpose: holon policy --backup none";
+
 /// What the host should warn of now: a writer that fails (the deployments file, the logs' sync,
 /// the witness); a file failing now, with where and why (failing::note_file); each disk past
 /// `[storage] warn_at`, with the flow that grew most since the store was last counted; a cache at
@@ -372,6 +378,13 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
             says: format!("the value cache has been at its size ({}) most of the last hour: it lets go of values runs read again from disk", size(values.2)),
             todo: "raise it: holon serve --value-cache (or HOLON_VALUE_CACHE)".into(),
         });
+    }
+    // No one has chosen where the runs a log lets go of go (permissions.rs `Backup`): they are
+    // deleted for good, and the admins are asked until one chooses, a folder or none on purpose.
+    // Only where the policy is a file: one read from nowhere (`--policy :memory:`) can't be
+    // written to, and the warning would be one no one could end.
+    if !policy.storage.backup.chosen() && state.policy_path.at().is_some() {
+        out.push(Warning { key: "backup-choice".into(), told: BACKUP_NOT_CHOSEN, says: BACKUP_NOT_CHOSEN.into(), todo: BACKUP_CHOOSE.into() });
     }
     if let Some(e) = log_backup_error(state) {
         out.push(Warning {
@@ -568,7 +581,7 @@ impl Sweeps {
         // Each log writes what it lets go of to the backup, as the policy says now; a full disk
         // rolling may let them go without, if it can't (the admin chose room over history).
         let may_drop = policy.storage.when_full == crate::permissions::WhenFull::Roll && full_pct.is_some();
-        let backup = policy.storage.backup.clone().map(|dir| (dir.into(), may_drop));
+        let backup = policy.storage.backup.dir().cloned().map(|dir| (dir.into(), may_drop));
         let logs: Vec<std::sync::Arc<crate::recorder::LogCell>> = state.deployments.lock().unwrap().values().map(|d| std::sync::Arc::clone(&d.log)).collect();
         for log in logs {
             log.with(|l| l.set_backup(backup.clone()));
@@ -1009,6 +1022,7 @@ pub(crate) fn host_view(state: &AppState) -> serde_json::Value {
         "when_full": state.policy().storage.when_full.text(),
         "acting": state.sweeps.acting(state),
         "backup": backup_view(state),
+        "backup_chosen": state.policy().storage.backup.chosen(),
         "warnings": warnings(state),
     })
 }
@@ -1112,7 +1126,8 @@ pub(crate) fn host_lines(v: &serde_json::Value) -> Vec<String> {
             size(&b["bytes"]),
             if n(&b["waiting"]) > 0 { format!(", {} batches to make into exports", n(&b["waiting"])) } else { String::new() }
         )),
-        None => lines.push(format!("backup       none: the runs a log lets go of go (holon policy --backup {})", crate::paths::EXAMPLE)),
+        None if v["backup_chosen"] == true => lines.push("backup       none, chosen: the runs a log lets go of are deleted".into()),
+        None => lines.push(format!("backup       not chosen: the runs a log lets go of are deleted for good (holon policy --backup {}, or --backup none)", crate::paths::EXAMPLE)),
     }
     let k = &v["kept"];
     let counted = k["at_ms"].as_u64().map_or("not counted yet".to_string(), |at| format!("counted {} ago", span(now_ms().saturating_sub(at))));
@@ -1275,7 +1290,7 @@ fn sweep_folders(state: &AppState, now_ms: u64) -> Report {
 /// deployments' records whose time is up at `now_ms` go too, to the backup first
 /// (`expire_removed`).
 pub(crate) fn archive(state: &AppState, now_ms: u64) {
-    let Some(dir) = state.policy().storage.backup.clone() else {
+    let Some(dir) = state.policy().storage.backup.dir().cloned() else {
         crate::at_rest::keys().no_backup();
         let _ = expire_removed(state, None, now_ms);
         return;
@@ -1401,7 +1416,7 @@ fn archive_one(state: &AppState, slug: &str, batch: &Path) -> Result<(), String>
 /// What the backup holds: its exports and their bytes, the batches still to be made into one,
 /// and why it couldn't be written to last, if it couldn't.
 fn backup_view(state: &AppState) -> serde_json::Value {
-    let Some(dir) = state.policy().storage.backup.clone() else { return serde_json::Value::Null };
+    let Some(dir) = state.policy().storage.backup.dir().cloned() else { return serde_json::Value::Null };
     let (mut exports, mut bytes, mut waiting) = (0u64, 0u64, 0u64);
     for slug_dir in crate::at_rest::disk::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.path().is_dir()) {
         for f in crate::at_rest::disk::read_dir(slug_dir.path()).into_iter().flatten().flatten() {
@@ -1644,7 +1659,7 @@ mod tests {
                 "  flow cache   12 flows, 32 MiB of 256 MiB (12%)",
                 "  value cache  1234 values, 48 MiB of 64 MiB (75%)",
                 "disk         60% full: 40 GiB free of 100 GiB (60 GiB in use): data, logs, store (/data)",
-                &format!("backup       none: the runs a log lets go of go (holon policy --backup {})", crate::paths::EXAMPLE),
+                &format!("backup       not chosen: the runs a log lets go of are deleted for good (holon policy --backup {}, or --backup none)", crate::paths::EXAMPLE),
                 "kept         counted 3 min ago",
                 "  store        432808 values, 2 GiB on disk (1 GiB of bytes); 3200 put since",
                 "  logs         34 logs, 192 MiB on disk",
