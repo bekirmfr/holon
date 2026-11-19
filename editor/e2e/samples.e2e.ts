@@ -10,7 +10,7 @@
 // `holon deploy` (no browser), so pointer-event layout changes can't break them.
 
 import { appendFileSync, readFileSync } from "node:fs";
-import { dropWhole, expect, FOLDERS, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test } from "./fixtures";
+import { dropWhole, expect, FOLDERS, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SAMPLES_RS, SERVER, test, WAITS } from "./fixtures";
 import { enter, flowRow, gotoPage, navLink, newFlow, nodesLevel, notices, openSample, resourcesTab, still, openDeployPanel, deploySettings, deploy, settingsSayPort, dropFromPalette, viewNewestRun, expectVerified } from "./helpers";
 
 const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
@@ -90,7 +90,7 @@ test("a flow nothing would start can't deploy; given an action, it deploys and r
   // Deployed under a name of its own (asked, as for any new flow), its action answers. With the
   // text open the canvas's toolbar runs under the text pane at 1280px: pressed as a button, not at
   // a point another element covers.
-  await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeEnabled();
+  await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeEnabled({ timeout: WAITS.read });
   await canvas.getByRole("button", { name: /^deploy/ }).dispatchEvent("click");
   await page.locator('[aria-modal="true"]').locator("input").fill(`by-hand-${Date.now()}`);
   await enter(page);
@@ -137,7 +137,7 @@ test("Replay the draft on a deployed sample: its newest runs, run again on the t
   const bottom = page.getByRole("region", { name: "bottom" });
   await bottom.getByRole("tab", { name: "Replay the draft" }).click();
   const replay = bottom.getByRole("tabpanel", { name: "Replay the draft" });
-  await expect(replay.getByLabel("replay summary")).toHaveText(/^\d+ replayed · 0 same · \d+ differs?$/, { timeout: 15_000 });
+  await expect(replay.getByLabel("replay summary")).toHaveText(/^\d+ replayed · 0 same · \d+ differs?$/, { timeout: WAITS.replay });
   const rows = replay.getByRole("table", { name: "replayed runs" }).locator("tbody tr");
   await expect(rows.first()).toContainText("GET /hello/:name");
   await expect(rows.first()).toContainText("differs");
@@ -147,7 +147,7 @@ test("Replay the draft on a deployed sample: its newest runs, run again on the t
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
   await page.keyboard.press("Control+A");
   await page.keyboard.insertText(text.replace("port: 8101", `port: ${port}`));
-  await expect(replay.getByLabel("replay summary")).toHaveText(/^(\d+) replayed · \1 same$/, { timeout: 15_000 });
+  await expect(replay.getByLabel("replay summary")).toHaveText(/^(\d+) replayed · \1 same$/, { timeout: WAITS.replay });
 });
 
 test("a deployment whose port another program holds says, in view mode, it isn't answering", async ({ page, request }) => {
@@ -470,7 +470,7 @@ test("ticker's clock ticks beside its routes: its count grows on its own, tick n
   const port = await deploy(page, SAMPLE_SHIFT, (settings) => settings.getByLabel("agents may run reset").check());
   const count = async () => Number(await (await request.get(`http://127.0.0.1:${port}/count`)).text());
   // Its every block runs on the scheduler, every 2 seconds, with no request to start it.
-  await expect.poll(count, { timeout: 15_000 }).toBeGreaterThan(0);
+  await expect.poll(count, { timeout: WAITS.arrival }).toBeGreaterThan(0);
   const before = await count();
   await page.getByRole("button", { name: "tick now" }).click();
   await expect(page.getByText(/^every 2s: ticked, 2 effects performed$/)).toBeVisible();
@@ -553,9 +553,9 @@ test("drop-board's file handlers run beside its routes: a file dropped in, and o
   // A file that settles in the folder runs the block for new files; removed, the one for deleted.
   const name = `dropped-${Date.now()}.txt`;
   writeFileSync(join(FOLDERS, "board", name), "hello");
-  await expect(board.locator("li.new").first()).toHaveText(`new ${name} (5 bytes)`, { timeout: 15_000 });
+  await expect(board.locator("li.new").first()).toHaveText(`new ${name} (5 bytes)`, { timeout: WAITS.arrival });
   rmSync(join(FOLDERS, "board", name));
-  await expect(board.locator("li.new").first()).toHaveText(`deleted ${name}`, { timeout: 15_000 });
+  await expect(board.locator("li.new").first()).toHaveText(`deleted ${name}`, { timeout: WAITS.arrival });
   await board.close();
   // The newest run is the deleted file's, named by its line, and view mode replays it over its block.
   await viewNewestRun(page);
@@ -689,7 +689,7 @@ test("price-rules: a new version is replayed on its recent runs before it goes l
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
   const dialog = page.getByRole("dialog");
   const replayed = dialog.getByRole("group", { name: "on recent runs" });
-  await expect(replayed.getByLabel("replay summary")).toHaveText("3 replayed · 2 same · 1 differs");
+  await expect(replayed.getByLabel("replay summary")).toHaveText("3 replayed · 2 same · 1 differs", { timeout: WAITS.replay });
   await expect(replayed.locator(".hl-replay__run--differs")).toContainText("its answer");
   await expect(replayed.locator(".hl-replay__run--differs")).toContainText("POST /price");
   // Nothing was sent or changed: the version deployed still answers 72.
@@ -711,7 +711,7 @@ test("price-rules: a new version is replayed on its recent runs before it goes l
   await page.getByRole("navigation", { name: "main" }).getByRole("link", { name: /^Approvals/ }).click();
   await page.getByRole("region", { name: "deploys" }).getByRole("row").filter({ hasText: "price-rules" }).getByRole("link", { name: "review price-rules" }).click();
   const card = page.getByRole("group", { name: "on recent runs" });
-  await expect(card.getByLabel("replay summary")).toHaveText(/^\d+ replayed · \d+ same · \d+ differs?/);
+  await expect(card.getByLabel("replay summary")).toHaveText(/^\d+ replayed · \d+ same · \d+ differs?/, { timeout: WAITS.replay });
   await expect(card.locator(".hl-replay__run--differs").first()).toContainText("its answer");
 });
 
@@ -1100,7 +1100,7 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   const seqs = async () =>
     ((await (await request.get(`${SERVER}/deployments/rolling-log/log`, { headers: auth })).json()) as { entries: { seq: number }[] }).entries.map((e) => e.seq);
   // A beat a second: past the fifth, the oldest drop off the front, the seqs climbing on.
-  await expect.poll(async () => (await seqs())[0] ?? 0, { timeout: 20_000 }).toBeGreaterThan(0);
+  await expect.poll(async () => (await seqs())[0] ?? 0, { timeout: WAITS.arrival }).toBeGreaterThan(0);
   const kept = await seqs();
   expect(kept).toEqual([0, 1, 2, 3, 4].map((i) => kept[0] + i));
   const state = (await (await request.get(`${SERVER}/deployments/rolling-log/state`, { headers: auth })).json()) as { state: { beats: { value: number } } };
@@ -1111,7 +1111,7 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   // after it was put).
   type Swept = { dry_run: boolean; swept: { values: number }; kept: { values: number }; spared: { values: number } };
   const dryRun = async () => (await (await request.post(`${SERVER}/admin/store/sweep`, { data: { dry_run: true }, headers: auth })).json()) as Swept;
-  await expect.poll(async () => (await dryRun()).spared.values, { message: "the cut runs' states, put just now", timeout: 30_000 }).toBeGreaterThan(0);
+  await expect.poll(async () => (await dryRun()).spared.values, { message: "the cut runs' states, put just now", timeout: WAITS.arrival }).toBeGreaterThan(0);
   const swept = await dryRun();
   expect(swept.dry_run).toBe(true);
   expect(swept.kept.values, "what the kept runs and the live state name").toBeGreaterThan(0);
@@ -1437,7 +1437,7 @@ test("drop-box runs once for a file dropped in its folder, sends it by handle, w
   const text = "region,amount\nnorth,10\nsouth,32\n";
   writeFileSync(join(FOLDERS, "drop", name), text);
   const receipt = join(FOLDERS, "receipts", `${name}.json`);
-  await expect.poll(() => existsSync(receipt), { timeout: 15_000 }).toBe(true);
+  await expect.poll(() => existsSync(receipt), { timeout: WAITS.arrival }).toBe(true);
   const said = JSON.parse(readFileSync(receipt, "utf8"));
   expect(said.file).toBe(name);
   expect(said.size).toBe(text.length);
@@ -1469,7 +1469,7 @@ test("approval-mail mails a payout's approval link, its page's button approves i
   const unquoted = (data: string) =>
     Buffer.from(data.replace(/=\r\n/g, "").replace(/=([0-9A-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16))), "latin1").toString("utf8");
   const mailed = async (subject: string) => {
-    await expect.poll(() => mails().some((m) => m.data.includes(`\r\nSubject: ${subject}\r\n`)), { timeout: 15_000 }).toBe(true);
+    await expect.poll(() => mails().some((m) => m.data.includes(`\r\nSubject: ${subject}\r\n`)), { timeout: WAITS.arrival }).toBe(true);
     return mails().find((m) => m.data.includes(`\r\nSubject: ${subject}\r\n`))!;
   };
 
@@ -1507,7 +1507,7 @@ test("approval-mail mails a payout's approval link, its page's button approves i
     const events = await request.get(`${SERVER}/deployments/approval-mail/events`, { headers: { Authorization: `Bearer ${adminToken}` } });
     return ((await events.json()) as { events: { kind: string; what: string }[] }).events;
   };
-  await expect.poll(said, { timeout: 15_000 }).toContainEqual(expect.objectContaining({ kind: "mail", what: `mailed "Payout ${id} approved" to sam@acme.com through ops` }));
+  await expect.poll(said, { timeout: WAITS.arrival }).toContainEqual(expect.objectContaining({ kind: "mail", what: `mailed "Payout ${id} approved" to sam@acme.com through ops` }));
 
   // The admin's resources show the binding, its server without a login, and who mails through
   // it; permissions, to whom.
@@ -1563,18 +1563,18 @@ test("remittance-mail settles an invoice from an authenticated mail, refuses one
   const port = await deploy(page);
   expect((await request.post(`http://127.0.0.1:${port}/invoices`, { data: { id: invoice, amount: "100.00", customer: "customer.example" } })).status()).toBe(201);
   // Once it listens, what the mailbox held then isn't run on; what comes after is.
-  await expect.poll(async () => (await said()).some((w) => w.startsWith("listens to the mailbox of remit (its folder INBOX)")), { timeout: 15_000 }).toBe(true);
+  await expect.poll(async () => (await said()).some((w) => w.startsWith("listens to the mailbox of remit (its folder INBOX)")), { timeout: WAITS.arrival }).toBe(true);
   writeFileSync(join(mailbox, "INBOX", `${id}.eml`), remittance(id, "mx.acme.com", `${invoice},100.00`));
   writeFileSync(join(mailbox, "INBOX", `${id}-forged.eml`), remittance(`${id}-forged`, "evil.example", `${invoice},100.00`));
 
   // Within a look (every 10s): paid by the authenticated one, the other kept with its verdict.
   const paid = async () => ((await (await request.get(`http://127.0.0.1:${port}/invoices`)).json()) as { paid: Record<string, { by: string }> }).paid[invoice];
-  await expect.poll(paid, { timeout: 30_000 }).toEqual(expect.objectContaining({ by: "billing@customer.example", message: `${id}@customer.example` }));
+  await expect.poll(paid, { timeout: WAITS.arrival }).toEqual(expect.objectContaining({ by: "billing@customer.example", message: `${id}@customer.example` }));
   const remittances = await (await request.get(`http://127.0.0.1:${port}/remittances`)).json();
   expect(remittances[`${id}@customer.example`]).toEqual(expect.objectContaining({ settled: [invoice], unmatched: [] }));
   expect(remittances[`${id}-forged@customer.example`]).toEqual(expect.objectContaining({ refused: "not authenticated", verdict: { spf: "none", dkim: "none", dmarc: "none" } }));
   // Each moved to Processed once its run was over.
-  await expect.poll(() => [`${id}.eml`, `${id}-forged.eml`].map((f) => [existsSync(join(mailbox, "INBOX", f)), existsSync(join(mailbox, "Processed", f))]), { timeout: 15_000 }).toEqual([
+  await expect.poll(() => [`${id}.eml`, `${id}-forged.eml`].map((f) => [existsSync(join(mailbox, "INBOX", f)), existsSync(join(mailbox, "Processed", f))]), { timeout: WAITS.arrival }).toEqual([
     [false, true],
     [false, true],
   ]);
@@ -1612,22 +1612,22 @@ test("price-feed runs on each event its feed sends, and opens the feed again fro
 
   await openSample(page, "Price feed (server-sent events, each event a run)");
   const port = await deploy(page);
-  await expect.poll(async () => (await said()).some((w) => w === "listens to the feed prices"), { timeout: 15_000 }).toBe(true);
+  await expect.poll(async () => (await said()).some((w) => w === "listens to the feed prices"), { timeout: WAITS.arrival }).toBe(true);
   // Its key never shown.
   expect((await said()).some((w) => w.includes("e2e-not-a-key"))).toBe(false);
   dropWhole(feed, `${symbol}-1.json`, JSON.stringify({ symbol, price: 10.5 }));
   type Price = { price: number; at: number };
   const prices = async () => (await (await request.get(`http://127.0.0.1:${port}/prices`)).json()) as Record<string, Price>;
-  await expect.poll(async () => (await prices())[symbol]?.price, { timeout: 15_000 }).toBe(10.5);
+  await expect.poll(async () => (await prices())[symbol]?.price, { timeout: WAITS.arrival }).toBe(10.5);
   // The server panel says what its connection is doing, and where it is.
-  await expect(page.getByText(`connected, at ${symbol}-1`)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(`connected, at ${symbol}-1`)).toBeVisible({ timeout: WAITS.arrival });
 
   // Every connection dropped: opened again from the last event run on, and what comes is run on.
   const before = opened().length;
   writeFileSync(join(feed, "cut"), "");
-  await expect.poll(() => opened().slice(before), { timeout: 15_000 }).toEqual([`${symbol}-1`]);
+  await expect.poll(() => opened().slice(before), { timeout: WAITS.arrival }).toEqual([`${symbol}-1`]);
   dropWhole(feed, `${symbol}-2.json`, JSON.stringify({ symbol, price: 11 }));
-  await expect.poll(async () => (await prices())[symbol]?.price, { timeout: 15_000 }).toBe(11);
+  await expect.poll(async () => (await prices())[symbol]?.price, { timeout: WAITS.arrival }).toBe(11);
 
   // The admin's resources show the feed without its query; permissions, that price-feed listens.
   await page.goto("/");
@@ -1664,23 +1664,23 @@ test("payout-events runs each message its queue holds once, and sends a failed p
 
   await openSample(page, "Payout events (an SQS queue in, a FIFO queue of retries out)");
   const port = await deploy(page);
-  await expect.poll(async () => (await said()).some((w) => w === "listens to the queue payout_events"), { timeout: 15_000 }).toBe(true);
+  await expect.poll(async () => (await said()).some((w) => w === "listens to the queue payout_events"), { timeout: WAITS.arrival }).toBe(true);
   // Its key never shown.
   expect((await said()).some((w) => w.includes("e2e-not-a-secret"))).toBe(false);
   dropWhole(join(sqs, "payout-events"), `${stamp}-1.json`, event("payout.paid", 1));
   dropWhole(join(sqs, "payout-events"), `${stamp}-2.json`, event("payout.failed", 2));
   type Payout = { status: string; event: string; account: string };
   const payouts = async () => (await (await request.get(`http://127.0.0.1:${port}/payouts`)).json()) as Record<string, Payout>;
-  await expect.poll(async () => [(await payouts())[id(1)]?.status, (await payouts())[id(2)]?.status], { timeout: 15_000 }).toEqual(["paid", "failed"]);
+  await expect.poll(async () => [(await payouts())[id(1)]?.status, (await payouts())[id(2)]?.status], { timeout: WAITS.arrival }).toEqual(["paid", "failed"]);
   // Each deleted once its run was over; the failed one's retry in the FIFO queue, its group the
   // account, sent once.
-  await expect.poll(() => lines("deleted.log").filter((d) => d.body.includes(String(stamp))).length, { timeout: 15_000 }).toBe(2);
-  await expect.poll(() => lines("sent.log").filter((s) => s.body.includes(String(stamp))).map((s) => [s.queue, JSON.parse(s.body).id, s.group]), { timeout: 15_000 }).toEqual([
+  await expect.poll(() => lines("deleted.log").filter((d) => d.body.includes(String(stamp))).length, { timeout: WAITS.arrival }).toBe(2);
+  await expect.poll(() => lines("sent.log").filter((s) => s.body.includes(String(stamp))).map((s) => [s.queue, JSON.parse(s.body).id, s.group]), { timeout: WAITS.arrival }).toEqual([
     ["payout-retries.fifo", id(2), `acct_${stamp}`],
   ]);
   // The server panel says what the listener did and what was sent.
-  await expect(page.getByText("receiving, 2 run")).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText("1 sent")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("receiving, 2 run")).toBeVisible({ timeout: WAITS.arrival });
+  await expect(page.getByText("1 sent")).toBeVisible({ timeout: WAITS.arrival });
 
   // The admin's resources show each queue without its key; permissions, who takes and who sends.
   await page.goto("/");
@@ -1720,23 +1720,23 @@ test("ledger-watch keeps each account's balance from its ledger's channel, and r
 
   await openSample(page, LEDGER_WATCH);
   const port = await deploy(page);
-  await expect.poll(async () => (await feed())?.status, { timeout: 15_000 }).toBe("connected");
+  await expect.poll(async () => (await feed())?.status, { timeout: WAITS.arrival }).toBe("connected");
   expect((await feed()).address).toMatch(/^postgres:\/\/127\.0\.0\.1:\d+\/\w+, channel ledger_entries$/);
   type Balance = { balance: string; entries: number; read: number; last: number };
   const balance = async () => ((await (await request.get(`http://127.0.0.1:${port}/balances`)).json()) as Record<string, Balance>)[account];
   await write(1, "120.00");
   await write(2, "-20.50");
-  await expect.poll(balance, { timeout: 15_000 }).toEqual({ balance: "99.50", entries: 2, read: 0, last: 2 });
+  await expect.poll(balance, { timeout: WAITS.arrival }).toEqual({ balance: "99.50", entries: 2, read: 0, last: 2 });
 
   // Stopped, its session closed: entry 3 is never sent. Run again, entry 4's run reads it from the
   // ledger.
   expect((await request.post(`${SERVER}/deployments/ledger-watch/stop`, { data: {}, headers: auth })).ok()).toBe(true);
-  await expect.poll(async () => (await feed())?.status, { timeout: 15_000 }).toBe("closed");
+  await expect.poll(async () => (await feed())?.status, { timeout: WAITS.arrival }).toBe("closed");
   await write(3, "10.00");
   expect((await request.post(`${SERVER}/deployments/ledger-watch/run`, { data: {}, headers: auth })).ok()).toBe(true);
-  await expect.poll(async () => (await feed())?.status, { timeout: 15_000 }).toBe("connected");
+  await expect.poll(async () => (await feed())?.status, { timeout: WAITS.arrival }).toBe("connected");
   await write(4, "2.25");
-  await expect.poll(balance, { timeout: 15_000 }).toEqual({ balance: "111.75", entries: 4, read: 1, last: 4 });
+  await expect.poll(balance, { timeout: WAITS.arrival }).toEqual({ balance: "111.75", entries: 4, read: 1, last: 4 });
   expect((await said()).some((w) => w === "listens to the feed entries")).toBe(true);
   // Its login never shown.
   const login = `:${new URL(process.env.HOLON_TEST_POSTGRES ?? "").password}@`;
@@ -1809,13 +1809,13 @@ test("file-audit runs on a csv dropped in the inbox and on a file removed from i
   const entries = () => (existsSync(join(FOLDERS, "audit", "inbox")) ? readdirSync(join(FOLDERS, "audit", "inbox")) : []);
   writeFileSync(join(FOLDERS, "inbox", `audit-${stamp}.csv`), "a,1\n");
   writeFileSync(join(FOLDERS, "inbox", `audit-${stamp}.txt`), "not a csv");
-  await expect.poll(() => entries().filter((e) => e.endsWith(`-new-audit-${stamp}.csv.json`)).length, { timeout: 15_000 }).toBe(1);
+  await expect.poll(() => entries().filter((e) => e.endsWith(`-new-audit-${stamp}.csv.json`)).length, { timeout: WAITS.arrival }).toBe(1);
   const entry = entries().find((e) => e.endsWith(`-new-audit-${stamp}.csv.json`))!;
   expect(JSON.parse(readFileSync(join(FOLDERS, "audit", "inbox", entry), "utf8"))).toMatchObject({ event: "new", folder: "inbox", name: `audit-${stamp}.csv`, size: 4 });
 
   // A file removed: one more entry, as it was last seen.
   rmSync(join(FOLDERS, "inbox", `audit-${stamp}.txt`));
-  await expect.poll(() => entries().filter((e) => e.endsWith(`-deleted-audit-${stamp}.txt.json`)).length, { timeout: 15_000 }).toBe(1);
+  await expect.poll(() => entries().filter((e) => e.endsWith(`-deleted-audit-${stamp}.txt.json`)).length, { timeout: WAITS.arrival }).toBe(1);
   expect(entries().some((e) => e.endsWith(`-new-audit-${stamp}.txt.json`)), "a .txt dropped in starts nothing").toBe(false);
   await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).dispatchEvent("click");
   await expect(page.locator(".hl-view__bottom")).toContainText(`deleted file audit-${stamp}.txt`);

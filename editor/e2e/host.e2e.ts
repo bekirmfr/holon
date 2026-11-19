@@ -5,7 +5,7 @@
 // resource.view alone sees it.
 
 import type { APIResponse } from "@playwright/test";
-import { expect, FOLDERS, SERVER, test } from "./fixtures";
+import { expect, FOLDERS, SERVER, test, WAITS } from "./fixtures";
 import { gotoPage, navLink, peopleTab, resourcesTab } from "./helpers";
 
 test("a server secret's versions, and rolling one back after its dry run", async ({ page }) => {
@@ -121,7 +121,7 @@ test("a role holding resource.view alone sees Resources, binds nothing, and isn'
     await page.goto("/");
     await expect(page.getByRole("button", { name: `account: ${person}` })).toBeVisible();
     // Resources is theirs to read; People and access and Policy aren't.
-    await expect(navLink(page, "Resources")).toBeVisible();
+    await expect(navLink(page, "Resources")).toBeVisible({ timeout: WAITS.read });
     await expect(navLink(page, "People and access")).toHaveCount(0);
     await gotoPage(page, "resources");
     await resourcesTab(page, "Folders");

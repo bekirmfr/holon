@@ -1,7 +1,7 @@
 // The address says where the editor is (routes.ts): a reload keeps the place, Back goes back, a
 // flow's address opens it, and an address that names nothing says so.
 
-import { expect, test } from "./fixtures";
+import { expect, test, WAITS } from "./fixtures";
 import { deploy, gotoPage, navLink, notices, openSample, viewNewestRun } from "./helpers";
 
 test("a reload keeps the page, the flow and its mode; Back goes back", async ({ page }) => {
@@ -101,7 +101,7 @@ test("the side nav says the page, the crumbs the way up, the host card the host"
   await expect(host).toContainText(/as of \d/);
   await expect(host).toContainText(/Run log(intact|\d+ breaks?)/);
   await host.getByRole("button", { name: "refresh the host card" }).click();
-  await expect(host.getByRole("button", { name: "refresh the host card" })).toBeEnabled();
+  await expect(host.getByRole("button", { name: "refresh the host card" })).toBeEnabled({ timeout: WAITS.read });
   // The top bar opens the palette.
   await page.getByRole("button", { name: /^Search flows, runs, pages/ }).click();
   await expect(page.getByRole("dialog", { name: "command palette" })).toBeVisible();
