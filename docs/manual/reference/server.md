@@ -467,8 +467,11 @@ of "payout": each step of an approval is someone else's`).
   of sign-ins keeps sign-ins waiting, never the rest of what the server answers. An invite link is
   checked before its password is.
 - The server answers up to 512 requests at once, and 64 from one address (counted as for
-  sign-ins); one more is told to try again (503). A request's
-  body must arrive within 30 seconds, or it is told 408 and its place goes back.
+  sign-ins); one more is told to try again (503). A request's body over 1 KiB must arrive within
+  30 seconds: past that its place goes back, and it is told 408 when its connection next reads, a
+  minute after its last byte at most. A body of 1 KiB or less is read before the request takes a
+  place, by its connection, which waits a minute at most for each next byte: one that stops is
+  told 408 then, and closed.
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
 - The server never lets the last enabled person holding admin be removed, disabled, given
   another role or unbound, bound to them or to a group of theirs. The run file's admin (below)
