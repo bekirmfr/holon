@@ -19,7 +19,10 @@ itself.
   version, offline, on a deployment's last runs, and says which it answers the same.
 
 The sample `witness` is a flow that takes the heads a server sends (`holon serve --export-heads`),
-keeps each batch and answers a receipt; `rolling-log` shows retention.
+keeps each batch and answers a receipt; `rolling-log` shows retention. `loyalty` shows a run's
+notes of the effects it held and didn't make (`skipped`, `skipped.rs`, R99): its purchases answer
+"recorded" whatever became of the points write, and the run names the write that wasn't made and
+why.
 
 ## 2. How it works
 

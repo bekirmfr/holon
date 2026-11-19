@@ -14,7 +14,11 @@
   time named the request as what gave nothing. `holon verify` works the notes out again and says a
   run differs where they don't match. A run recorded before this release has no notes, so verify
   says DIFFERS for one of those runs that held an effect. A run where nothing was held pays
-  nothing for it; one that dropped an effect pays about 7.5 µs (performance.md).
+  nothing for it; one that dropped an effect pays about 7.5 µs (performance.md). The editor's run
+  view marks the node that would have made the effect and says why in explain's words, a js
+  body's error at the body's line as explain says it. The sample `loyalty` shows it, and the
+  manual's [Checking runs](docs/manual/guides/checking-runs.md#what-a-run-didnt-make) says what
+  each note means and which refusals `holon verify` can't work out again (those of a grant).
 - **Changing a secret while a run waits no longer sends its earlier requests again** where the
   request holds the secret as it is: in a header, a URL or a JSON body. When the run goes on, such
   a request is recognised as sent and answered from its record; the same holds for a run tried

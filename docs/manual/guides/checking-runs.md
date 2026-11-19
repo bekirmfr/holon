@@ -5,6 +5,58 @@ everything it did. This guide shows how to export a deployment's runs and check 
 machine, and how a witness makes the log tamper-evident. [Concepts](../concepts.md#the-run-record)
 explains why this works.
 
+## What a run didn't make
+
+A run makes its writes, sends, log lines and calls, and starts actions, from values. When one of
+those values doesn't arrive, the effect isn't made, and the run can still answer as if nothing had
+happened. Its line in the log names each effect it held and didn't make, and where the absence
+began. `holon runs <slug> --run N` shows that under the line that would have made the effect. Here
+is a run of the sample **loyalty** (`holon new --sample loyalty`), whose purchases always answer
+"recorded":
+
+```
+16  route.post("/purchases", (req) => {
+      ⇒ req.json = { amount: 50, member: "bob" }
+17    const member = members[req.json.member]
+        ⇒ nothing: collection_get "members" gave nothing
+18    members[req.json.member] = { ...member, points: member.points + earned(req.json.amount) }
+        ⇒ not made: collection_get "members" found nothing at members[bob]
+19    return "recorded"
+        ⇒ { body: "recorded", status: 200 }
+```
+
+What it says, and when:
+
+| Said | When |
+|---|---|
+| `collection_get "members" found nothing at members[bob]` | a read found nothing: an item, a row, a file, a state key; for a collection, with the key it asked |
+| `field "amount" gave nothing: what it read lacked it` | a value lacked a field or an item: a request sent without it, a body that isn't JSON |
+| `earned failed: an amount is more than 0` | a step failed: a function that threw, with the throw's message; a js body's exception, at the body's line; an engine out of fuel |
+| `withheld: where it stopped may be computed from a secret` | where it began may be computed from a secret, so the note reads the same whichever way the secret went |
+| `refused: not granted` | it was made, and the host refused it, by the rule named |
+
+Where the absence began inside a `map` or a fold, whose items the record doesn't keep one by one,
+the note adds "as far as the record sees".
+
+An effect the flow itself chose to leave out isn't named. That covers an `if` not taken, an early
+`return`, the side of `??` not needed, a throw its own `catch` took, and a write tied to a value the
+flow tested (`if (x !== undefined)`). A throw in the handler's own body is its answer, a `return`
+of nothing (a route's 404), so what comes after it isn't named either. A function that throws,
+with no `catch` around it, fails instead: it gives nothing, and neither does anything fed by it.
+**loyalty**'s `earned` throws on an amount of 0, and the points write is named "not made: earned
+failed: an amount is more than 0". A run that failed, or waits, names none: its failure, or its
+wait, is what it says. The editor's
+view mode shows the same notes, in the same words
+([View mode](editor.md#view-mode-replaying-runs)).
+
+`holon verify` works these notes out again from what each run ran and read: a note dropped,
+added or changed makes the run differ. Four of the rules a refusal names it can work out again:
+"it holds a value its flow never keeps", "it holds a secret's value", "it holds what is computed
+from a secret" and "it holds what was read from a reply that sent a secret back". The three that
+turn on what the deployment was granted ("not granted", "a recipient its grant doesn't name", "a
+copy from a folder it doesn't read") it can't. An export holds the runs and the units they ran,
+not the grants, so such a refusal is the server's word.
+
 ## The chain
 
 Each entry of the log includes the hash of the entry before it; the newest entry's hash is the
