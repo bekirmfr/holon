@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+## 0.1.0-rc.36
+
+- **Known limits of this release.** The first three are the first work after it.
+  - Changing a secret while a run waits sends that run's earlier requests again. When the run goes
+    on, the requests it made before its wait that carried the secret go out a second time, with the
+    new value (`holon secret set`, or an env or vault secret that changes). Change a secret when
+    `holon runs <slug> --waiting` lists none.
+  - A warning for the admin is also written to the activity record, where everyone who views every
+    flow reads it: a viewer or an editor bound on the host, an agent with such a role. Its text can
+    say where the data folder is and the system's words for the failure, which the admin's
+    warnings keep for whoever views the host.
+  - The approval-mail sample mails the asker "Your payout … was approved, and is recorded" when its
+    approval only ran out, and nothing is recorded then. Copying it, return before the mail when
+    the answer says it expired, as the trading-bot sample does:
+    `if (approved.expired ?? false) return …`.
+  - A file whose writing pauses for a second or more is read part way, and the rest starts a
+    second run, `changed`, with the whole file. Write a file under another name, or elsewhere on
+    the same disk, and rename it into the folder once it is complete.
+  - `holon verify` reads DIFFERS for a run that read a never-kept value under six characters out
+    of its key, though nothing in its record was changed.
+  - A deployment whose run records are truly damaged can't be removed until the damaged file is
+    restored from a backup of the data folder. Moving it out by hand, with the server stopped, is a
+    last resort and only for the oldest of its sealed files: from anywhere else the kept records
+    then fail `holon verify` for good.
+  - A client whose upload stops is told 408 when the server's 60-second idle limit ends the read,
+    up to a minute after it stopped, not at the body's own deadline.
+- **A mail or a queue message waiting to be sent is no longer dropped as the server starts.** A
+  mail a run sent while its mail server was down, or a message waiting for its queue, was deleted
+  at the next start when the run log could no longer vouch for its run: the run had aged out of
+  what the log keeps, or the log couldn't be read. Each is now marked once its run's line is on
+  disk, and a marked one is sent without asking the log. One the log can't vouch for because the
+  log can't be read is kept back, unsent, with a warning for the admin that says what to do.
+- **The editor gives up on a request the server never answers, and asks a read again.** A read is
+  given up after 8 seconds and asked again twice, after 1 and after 3 seconds; meanwhile the
+  buttons that wait on the server say "couldn't reach the server: trying again". A read that has
+  the server work first (a replay, a database's tables, an export, the logs) and a change are
+  given 2 minutes and are never sent twice; a change that ran out says it may or may not have been
+  done. The server tells a browser to keep its answer to the cross-origin check for ten minutes
+  (`Access-Control-Max-Age: 600`).
+- **When a file of the server's own fails, whoever asked is told what failed; only the admin is
+  told where and why.** Answers that passed on a file's path on the server's disk and the system's
+  error text (a table that couldn't be written, the policy file, the access history, `keys.json`,
+  a sealed file that doesn't open) now say what failed in fixed words; where and why go to the
+  server's output and to the admin's warnings. A listener held because its record of what it has
+  seen can't be opened says what to do. `GET /admin/secrets/env` gives the `.env` file's path only
+  to whoever views the host.
+- **A deployment's past runs that can't be read are an error, never fewer runs.** The runs page and
+  `holon runs` reaching back, a cell's history, a restore's preview, an export, a replay and a
+  collection read at an earlier point answered with what they could read when part of the run log
+  couldn't be read (a permission, a disk fault, a damaged file). Each now fails in fixed words,
+  `holon export` writes no file, and the admin's warnings name the file and why; a part that
+  couldn't be read as the server started stays an error until a restart reads it. Removing a
+  deployment keeps its records whole or removes nothing. The store's clean-up removes nothing while
+  it can't read every log, and a store value not found while a pack can't be read is an error, not
+  "missing".
 - **What a flow reads from a reply that sent its secret back is treated as the secret.** A
   service that answers with the secret it was sent (its headers echoed, an account record with
   the key in it) handed the flow the secret again in a reply the server took as ordinary. A

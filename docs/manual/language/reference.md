@@ -162,9 +162,13 @@ the value as its mark: a CVC of four digits and one of three leave the same reco
 What this doesn't do yet: a flow that never keeps a key can't wait (`await event`, `await
 approval`), since a waiting run is stored whole until it goes on, the value with it; the mistake
 is said where it waits. And a value read out of its key into a value of its own (`const c =
-req.json.cvc`) stands under no key: `state.c = c` or `console.log(c)` keeps it. Following it
-through the flow is the next stage. The value is in the server's memory while the run goes on, as
-everything the run has is. The **card-check** sample shows it.
+req.json.cvc`) stands under no key: `state.c = c` or `console.log(c)` keeps it. The run's record
+then has the value as it is wherever it stands outside its key, and `holon verify` reads that run
+as DIFFERS, though nothing in its record was changed: it runs the run again with the mark where
+the request held the value, so the step that read it out gives the mark where the record has the
+value. Only a value shorter than six characters does this; a longer one is marked by its text
+wherever it stands. Following it through the flow is the next stage. The value is in the server's
+memory while the run goes on, as everything the run has is. The **card-check** sample shows it.
 
 ## Names and literals
 
@@ -817,10 +821,13 @@ route.get("/seen/:name", (req) => seen[req.params.name])
   ([Actions](../guides/actions.md)).
 
 A file starts a run once it stops changing: the server looks at the folder every second, and a
-file that is the same at two looks in a row is new. Files already there when the flow is first
-deployed aren't new; files that arrive while the server is down or the deployment is paused start
-their runs when it is back; a file the flow's own runs wrote into the folder doesn't start it
-again.
+file that is the same at two looks in a row is new. A file whose writing pauses for a second or
+more is read part way, and the rest starts a second run, `changed`, with the whole file: write a
+file under a name the handler doesn't take (or elsewhere on the same disk) and rename it in once
+it is complete ([Files](../guides/files.md#a-run-per-new-file)). Files already there when the flow
+is first deployed aren't new; files that arrive while the server is down or the deployment is
+paused start their runs when it is back; a file the flow's own runs wrote into the folder doesn't
+start it again.
 
 **How runs are recorded.** Every handler is *strict* unless its options say otherwise: each run
 is a line of the deployment's log, which is what the runs table, replay, revert and explain read.

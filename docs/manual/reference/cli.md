@@ -57,12 +57,12 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 The install scripts are on each [release](https://github.com/bekirmfr/holon/releases):
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.35/holon-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.36/holon-installer.sh | sh
 ```
 
 ```powershell
 cd $env:TEMP
-irm https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.35/holon-installer.ps1 -OutFile holon-installer.ps1
+irm https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.36/holon-installer.ps1 -OutFile holon-installer.ps1
 powershell -ExecutionPolicy Bypass -File .\holon-installer.ps1
 ```
 
@@ -628,7 +628,10 @@ set shop api_key`; typed at a terminal, it is refused, since it would show as ty
 never an argument, which the shell's history would keep), or read by the server from its
 environment or a vault. `rollback` makes a kept version current again, as a new one; `--dry-run`
 names the two values by their fingerprints. `remove` forgets every version. `env`: the
-`HOLON_SECRET_*` names the server can read. Admins set, roll back and remove.
+`HOLON_SECRET_*` names the server can read. Admins set, roll back and remove. A run waiting as a
+secret is `set` sends again, with the new value, the requests that carried it before its wait,
+when it goes on: set one when `holon runs <slug> --waiting` lists none (see
+[Deploying](../guides/deploying.md#secrets)).
 
 `bind` sets the server's own secret, read by every deployment that reads a secret of that name
 and has none of its own (one set for a deployment overrides it), its value piped in or `--from`,
