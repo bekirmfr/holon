@@ -15861,6 +15861,155 @@ fn approval_mail_mails_the_link_then_the_approval_through_its_binding() {
     assert!(!logged.contains(&token) && !logged.contains("GET /approve"), "{logged}");
 }
 
+/// **Guards:** a sample whose wait runs out does nothing its answer would: it makes nothing that
+/// says or records the thing it waited for. Every action of every sample that waits is evaluated
+/// three ways at its `await`:
+/// - parked there, nothing delivered;
+/// - answered: an event as a resume route delivers one, an approval approved;
+/// - run out, with what `expire_waiting` delivers: `expired_event`, or an approval's decision as
+///   it runs out undecided, which `decided_as` takes as one.
+///
+/// What an ending does beyond the parked part is what its outputs perform, less the channel sends
+/// a parked run sends as it parks, plus the calls and requests it asks that the parked part
+/// hadn't. Run out, a sample may do something of its own (trading-bot deletes the order it showed
+/// as waiting), but nothing the answered ending does. A sample that waits, whose wait this doesn't
+/// reach, fails, naming it.
+/// **Why:** an expiry is delivered as a value, and statement order holds nothing after a wait
+/// (LANGUAGE.md: it carries "no meaning beyond names being defined before use"). So whatever
+/// follows the wait without reading the event is made when the wait runs out as when it is
+/// answered: approval-mail mailed "Your payout … was approved, and is recorded" to whoever asked,
+/// when nobody had approved it. A sample holds what follows behind its own test of `expired`, as
+/// trading-bot does.
+/// **Limit:** an effect written above the wait, other than a channel send, is made only as the run
+/// finishes (a run that waits makes nothing), so it shows in both endings and fails here, though
+/// it says nothing of the wait. No sample has one.
+#[test]
+fn a_sample_whose_wait_runs_out_does_nothing_its_answer_would() {
+    use holon_core::{Answer, Observer, Resolver, Value};
+    use std::collections::BTreeMap;
+
+    #[derive(Clone, Copy)]
+    enum Deliver {
+        Nothing,
+        Answered,
+        RanOut,
+    }
+    /// One evaluation: what it delivers at each wait, the waits it reached, and the calls and
+    /// requests it asked (not its reads, waits or tokens).
+    struct Ending {
+        deliver: Deliver,
+        reached: Vec<String>,
+        asked: Vec<Value>,
+    }
+    fn json(s: &str) -> Value {
+        holon_core::parse_json(s).unwrap()
+    }
+    impl Observer for Ending {
+        fn answer(&mut self, _path: &[u32], request: &Value) -> Answer {
+            let field = |key: &str| match request {
+                Value::Record(r) => r.get(key),
+                _ => None,
+            };
+            let text = |key: &str| match field(key) {
+                Some(Value::Text(t)) => Some(t.clone()),
+                _ => None,
+            };
+            if let Some(name) = text("await") {
+                self.reached.push(name.clone());
+                return match (self.deliver, text("steps")) {
+                    (Deliver::Nothing, _) => Answer::NotYet,
+                    (Deliver::RanOut, None) => Answer::Value(crate::durable::expired_event()),
+                    (Deliver::RanOut, Some(steps)) => {
+                        let ran_out = json(r#"{"approved":false,"by":[],"decisions":[],"expired":true}"#);
+                        crate::durable::StoredWaiting::decided_as(&name, &steps, &ran_out, None).unwrap_or_else(|e| panic!("{name}: {e}"));
+                        Answer::Value(ran_out)
+                    }
+                    (Deliver::Answered, None) => Answer::Value(json(
+                        r#"{"method":"POST","path":"/approve/rt_case","params":{"token":"rt_case"},"query":{},"headers":{"content-type":"application/json"},"body":"{\"by\":\"ada@acme.com\"}"}"#,
+                    )),
+                    (Deliver::Answered, Some(_)) => Answer::Value(json(
+                        r#"{"approved":true,"by":["ada","bo"],"decisions":[{"slot":0,"who":"ada","kind":"person","approved":true,"note":{"text":"The draft.","class":"routine"}},{"slot":1,"who":"bo","kind":"person","approved":true}]}"#,
+                    )),
+                };
+            }
+            if text("resume_token").is_some() {
+                return Answer::Value(Value::Text("rt_case".into()));
+            }
+            // A database query: a row holding each column it selects. Any other read: nothing.
+            if let (Some(_), Some(sql)) = (text("database"), text("query")) {
+                let lower = sql.to_lowercase();
+                if let Some(columns) = lower.strip_prefix("select ").and_then(|s| s.split(" from ").next()) {
+                    let row: BTreeMap<String, Value> = columns
+                        .split(',')
+                        .map(|c| (c.trim().rsplit(|ch: char| ch == ' ' || ch == '.').next().unwrap_or_default().to_string(), Value::Number(1.0)))
+                        .collect();
+                    let row = Value::Record(row);
+                    return Answer::Value(if field("one") == Some(&Value::Boolean(true)) { row } else { Value::List(vec![row]) });
+                }
+            }
+            if ["collection", "folder", "database"].iter().any(|k| field(k).is_some()) {
+                return Answer::Absent;
+            }
+            if !self.asked.contains(request) {
+                self.asked.push(request.clone());
+            }
+            Answer::Absent
+        }
+    }
+
+    // Every field the samples' waiting actions read of what starts them.
+    let input = json(r#"{"id":"p1","item":"tea","amount":5000,"iban":"DE89370400440532013000","by":"sam@acme.com","account":1,"title":"Hello","brief":"A short note","product":"BTC-USD","price":"100","size":"1","side":"buy"}"#);
+    let (mut cases, mut failures) = (Vec::new(), Vec::new());
+    for sample in holon_author::samples::samples() {
+        let lowered = holon_author::lang::ts::compile(sample.text).unwrap_or_else(|e| panic!("{}: {e}", sample.name));
+        let mut store = holon_core::MapResolver::new();
+        holon_author::text::restore(&lowered.doc, &mut store, &BTreeMap::new());
+        let port = lowered.doc.server.as_ref().map(|s| s.port.clone()).unwrap_or_default();
+        let server = holon_author::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.unit_settings());
+        let mut waits = false;
+        for action in &server.actions {
+            let hash = holon_core::parse_hash(&action.hash).unwrap();
+            let unit = store.resolve(&hash).unwrap_or_else(|| panic!("{} {}: its unit", sample.name, action.label)).clone();
+            let run = |deliver: Deliver| {
+                let mut ending = Ending { deliver, reached: Vec::new(), asked: Vec::new() };
+                let outputs = holon_core::eval_observed(&unit, &[Some(input.clone())], &store, &mut ending);
+                (outputs, ending)
+            };
+            let (parked, at) = run(Deliver::Nothing);
+            if at.reached.is_empty() {
+                continue;
+            }
+            waits = true;
+            let progress = crate::channels::settled_sends(&parked);
+            let done = |deliver: Deliver| -> Vec<String> {
+                let (outputs, ending) = run(deliver);
+                let mut host = crate::firing::RecordingHost::new();
+                for output in outputs.iter().flatten() {
+                    holon_host::perform_effects(output, &mut host);
+                }
+                let made = host.performed.into_iter().filter(|p| !progress.contains(p)).map(|(c, v)| format!("{c:?} {}", holon_core::stringify_json(&v).unwrap_or_default()));
+                let asked = ending.asked.into_iter().filter(|r| !at.asked.contains(r)).map(|r| format!("asks {}", holon_core::stringify_json(&r).unwrap_or_default()));
+                made.chain(asked).collect()
+            };
+            let (answered, ran_out) = (done(Deliver::Answered), done(Deliver::RanOut));
+            let case = format!("{} {} (waits at {:?})", sample.name, action.label, at.reached);
+            if answered.is_empty() {
+                failures.push(format!("{case}: answered, it does nothing here, so this says nothing of it: give it what it reads"));
+            }
+            let both: Vec<&String> = ran_out.iter().filter(|d| answered.contains(d)).collect();
+            if !both.is_empty() {
+                failures.push(format!("{case}: run out, it does what it does when answered: {both:?}"));
+            }
+            cases.push(case);
+        }
+        if waits != (sample.text.contains("await event(") || sample.text.contains("await approval(")) {
+            failures.push(format!("{}: it waits, and this reaches no wait of it (or the reverse)", sample.name));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+    assert!(cases.len() >= 5, "{cases:#?}");
+}
+
 fn smtp_base64(bytes: &[u8]) -> String {
     const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();

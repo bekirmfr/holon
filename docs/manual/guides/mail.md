@@ -113,7 +113,10 @@ $ holon check approval-mail.holon.ts
 Mail goes once its run is over: after the run's writes have landed and its record is on disk,
 never from a run that failed. A mail sent from a run that waits (`await event(…)`) goes once the
 run is over, after the event; a link to the event is mailed by the route that starts the run,
-which knows its token (`started.waiting.approved`), as the approval-mail sample does.
+which knows its token (`started.waiting.approved`), as the approval-mail sample does. A wait that
+runs out also ends the run, its event `{ expired: true }`, and a mail that reads nothing of the
+event goes then too. So a flow returns first when the event says it ran out, as approval-mail does:
+`if (approved.expired ?? false) return …`.
 
 - Each binding has a queue, sent in order, so a slow SMTP server holds up no run.
 - A failure that may pass (no connection, a `4xx` answer) is tried again after a minute, then 5,
