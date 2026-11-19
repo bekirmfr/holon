@@ -36,12 +36,21 @@ const ORIGINS: &[(&str, &str, &str, &str, Option<&str>)] = &[
     ("a function that throws", "{S}\nreturn \"end\"", "checked(req.json.n)", r#"{"n":0}"#, Some("failed")),
     ("a map, as far as the record sees", "{S}\nreturn \"end\"", "req.json.items.map((i) => i.n)", r#"{"items":[{"m":1}]}"#, Some("missing")),
     ("a fold, as far as the record sees", "{S}\nreturn \"end\"", "req.json.items.reduce((a, i) => a + i.n, 0)", r#"{"items":[{"m":1}]}"#, Some("missing")),
+    // A function given a value too large for the record to keep and a state read for the first
+    // time: the note names the read, not the large value's step (whose outputs the record lacks).
+    ("a read beside a value too large to record", "{S}\nreturn \"end\"", "both(req.json.pad, state.none)", "{BIG}", Some("read")),
 ];
+
+/// The body a line of `ORIGINS` is sent: `{BIG}` a field past what the record keeps of a step
+/// (`recorder::Timer::MAX_RECORDED_BYTES`).
+fn sent(body: &str) -> String {
+    body.replace("{BIG}", &format!(r#"{{"pad":"{}"}}"#, "p".repeat(2 * crate::recorder::Timer::MAX_RECORDED_BYTES)))
+}
 
 /// A flow of one route per effect and origin, `/r<effect>_<origin>`.
 fn flow_of(port: u16, host: &str) -> String {
     let mut text = format!(
-        "import {{ action, flow, route }} from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\nimport api from \"host:{host}\"\n\nflow(\"skips\", {{ port: {port} }})\n\nfunction checked(n) {{\n  if (n <= 0) throw new Error(\"not more than 0\")\n  return n\n}}\n\nexport const ping = action((x) => ++state.pinged)\n"
+        "import {{ action, flow, route }} from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\nimport api from \"host:{host}\"\n\nflow(\"skips\", {{ port: {port} }})\n\nfunction checked(n) {{\n  if (n <= 0) throw new Error(\"not more than 0\")\n  return n\n}}\n\nfunction both(first, second) {{\n  return [first, second]\n}}\n\nexport const ping = action((x) => ++state.pinged)\n"
     );
     for (e, (_, statement, _)) in EFFECTS.iter().enumerate() {
         for (o, (_, body, value, _, _)) in ORIGINS.iter().enumerate() {
@@ -66,12 +75,13 @@ fn gained(state: &AppState, slug: &str, seen: &mut Option<u64>) -> Vec<serde_jso
 }
 
 /// **Guards:** a run that held an effect and didn't make it says so in its record (`skipped`),
-/// with the level of where the absence began: a read that found nothing (and which read), a field
-/// a value lacked, a step that failed, as far as the record sees into a map or a fold; and says
-/// nothing where the flow's own choice left it out (an `if` not taken, an early return, a throw
-/// under its own test that its own catch took, the side of a `??` not needed, a tie to a value the
-/// flow tested), or where it was made. A throw no catch takes is a failure. The same for
-/// every kind of effect: a write, a row, a line, a call, an action started.
+/// with the level of where the absence began: a read that found nothing (and which read; one
+/// beside a value too large for the record to keep is still the read, the large value's step not
+/// taken for one that gave nothing), a field a value lacked, a step that failed, as far as the record sees into a map or a fold;
+/// and says nothing where the flow's own choice left it out (an `if` not taken, an early return,
+/// a throw under its own test that its own catch took, the side of a `??` not needed, a tie to a
+/// value the flow tested), or where it was made. A throw no catch takes is a failure. The same
+/// for every kind of effect: a write, a row, a line, a call, an action started.
 /// **Why:** an effect whose value didn't arrive was dropped without a word: the run answered 200,
 /// `performed` was empty, and a person reading the record couldn't tell "the write was never
 /// meant" from "the write was meant and its value never came" (register item R99).
@@ -88,7 +98,7 @@ fn a_run_says_which_effects_it_held_and_didnt_make() {
     let mut wrong = Vec::new();
     for (e, (effect, _, name)) in EFFECTS.iter().enumerate() {
         for (o, (origin, _, _, body, level)) in ORIGINS.iter().enumerate() {
-            data_call(&state, &slug, "POST", &format!("/r{e}_{o}"), body);
+            data_call(&state, &slug, "POST", &format!("/r{e}_{o}"), &sent(body));
             let entries = gained(&state, &slug, &mut seen);
             let entry = entries.last().unwrap_or_else(|| panic!("{effect} | {origin}: no entry"));
             let notes = entry["skipped"].as_array().cloned().unwrap_or_default();
@@ -110,6 +120,11 @@ fn a_run_says_which_effects_it_held_and_didnt_make() {
             }
             if *origin == "a read that found nothing" && notes.first().is_some_and(|n| n.get("read").is_none()) {
                 wrong.push(format!("{effect} | {origin} | the note doesn't name the read"));
+            }
+            // A state read is kept as the state the run began with, not among its reads: the note
+            // names it by its step, which is the read's and not the large value's.
+            if *origin == "a read beside a value too large to record" && notes.first().is_some_and(|n| n["leaf"] != "store_read") {
+                wrong.push(format!("{effect} | {origin} | the note names another step than the state read: {notes:?}"));
             }
             if *origin == "made" && *effect == "a write" && entry["performed"].as_array().is_none_or(|p| p.is_empty()) {
                 wrong.push(format!("{effect} | made | performed is empty for a run that wrote: {entry}"));
@@ -418,7 +433,7 @@ fn verify_works_out_what_each_run_didnt_make_again() {
     let table_slug = deploy_text(&state, &flow_of(free_port(), &host), &host);
     for (e, _) in EFFECTS.iter().enumerate() {
         for (o, (_, _, _, body, _)) in ORIGINS.iter().enumerate() {
-            data_call(&state, &table_slug, "POST", &format!("/r{e}_{o}"), body);
+            data_call(&state, &table_slug, "POST", &format!("/r{e}_{o}"), &sent(body));
         }
     }
     let (table_export, table_values) = exported(&state, &table_slug);
