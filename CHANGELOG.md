@@ -43,6 +43,13 @@
   restore that brings back permissions has the tick a deploy's review has, and its button stays
   off until it is ticked; it took one click before. A mark counts only for the list it was made
   for: when what is asked changes, it is gone. With nothing new asked, nothing changes.
+- **The manual says what an agent with a shell on the server's machine can do.** Commands run on
+  that machine sign in as its user, the server's admin, and an agent's shell runs as that user:
+  `holon deploy --approve` there approves what its own flow asks for. The guides said an agent
+  with a shell couldn't approve anything; they now say this, and how to keep such an agent to its
+  own token (no shell and only `holon mcp`, another OS user, a container or another machine).
+  `holon serve` and `holon mcp setup` print one line saying so. No rule in the server changes:
+  to the operating system that shell is the user.
 
 ## 0.1.0-rc.36
 
