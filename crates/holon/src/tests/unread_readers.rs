@@ -159,6 +159,32 @@ fn answer(response: Response) -> (u16, String) {
     (status, body)
 }
 
+/// Every string an answer holds, its keys too, read out of its JSON, with `leave` taken off its
+/// top first; the text itself if it isn't JSON. What is looked for in them is looked for as it
+/// is told: in the text as sent, a Windows path's backslashes are each written twice.
+fn strings_of(said: &str, leave: &[&str]) -> Vec<String> {
+    fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            serde_json::Value::Array(items) => items.iter().for_each(|x| walk(x, out)),
+            serde_json::Value::Object(fields) => fields.iter().for_each(|(k, x)| {
+                out.push(k.clone());
+                walk(x, out)
+            }),
+            _ => {}
+        }
+    }
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(said) else { return vec![said.to_string()] };
+    if let Some(fields) = v.as_object_mut() {
+        for key in leave {
+            fields.remove(*key);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&v, &mut out);
+    out
+}
+
 fn get(k: &Kept, url: &str) -> (u16, String) {
     answer(route(&k.state, &req("GET", url, vec![])))
 }
@@ -535,8 +561,17 @@ fn give_up_row(damage: Damage, ask: Ask, status: u16) {
     let url = if give_up.is_empty() { "/deployments/kept".to_string() } else { format!("/deployments/kept?give_up={}", crate::deploy::give_up_arg(&give_up)) };
     let (code, said) = answer(route(&k.state, &req("DELETE", &url, vec![])));
     assert_eq!(code, status, "{row}: {said}");
+    // No place and no system's words, in what is told: a refusal whole, and a removal's answer but
+    // its `records`, which is the admin's (held below). Read out of the JSON: as sent, a Windows
+    // path's backslashes are doubled, and the data folder looked for in the text was never found
+    // there, whatever the answer held. Its two forms: as `{}` writes it, and as `{:?}` does, which
+    // doubles them in the words themselves (the same on Linux).
     let data = k.logs.parent().unwrap().display().to_string();
-    assert!(!said.contains(&data) && !said.contains("os error") && !said.contains(".jsonl"), "{row}: no place and no system's words: {said}");
+    let places = [data.clone(), data.replace('\\', "\\\\")];
+    let told = strings_of(&said, if code == 200 { &["records"] } else { &[] });
+    assert!(told.iter().any(|s| !s.is_empty()), "{row}: read out of the answer: {said}");
+    let a_place = |s: &String| places.iter().any(|p| s.contains(p.as_str()));
+    assert!(told.iter().all(|s| !a_place(s) &&!s.contains("os error") && !s.contains(".jsonl")), "{row}: no place and no system's words: {said}");
     let deleted = k.state.activity.newest(50, |e| e.action == "deleted");
     if code != 200 {
         assert!(k.state.deployments.lock().unwrap().contains_key("kept"), "{row}: nothing removed");
@@ -551,6 +586,12 @@ fn give_up_row(damage: Damage, ask: Ask, status: u16) {
         return;
     }
     let answer: serde_json::Value = serde_json::from_str(&said).unwrap();
+    // Its records, where the admin who removed it finds them: the whole path, in the removed
+    // records' folder, by the deployment's name.
+    let records = PathBuf::from(answer["records"].as_str().unwrap_or_else(|| panic!("{row}: its records: {said}")));
+    let name = records.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    assert!(records.parent() == Some(k.logs.join("removed").as_path()) && name.starts_with("kept-runs-") && name.ends_with(".json.gz"), "{row}: {}", records.display());
+    assert!(records.is_file(), "{row}: {}", records.display());
     let given: Vec<(u64, u64)> = serde_json::from_value(answer["given_up"].clone()).unwrap_or_default();
     let expect = if picked.is_empty() { vec![] } else { crate::recorder::joined(named.clone()) };
     assert_eq!(given, expect, "{row}: {said}");
