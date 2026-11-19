@@ -1503,6 +1503,13 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         Ok(a) => a,
         Err(code) => return code,
     };
+    let answer = match crate::wire::answer(answer.as_bytes()) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("holon database: {server} answered, but {e}");
+            return 1;
+        }
+    };
     let line = |d: &serde_json::Value| {
         let access = if d["access"] == "read" { "read only" } else { "read and write" };
         let only = d["deployment"].as_str().map_or(String::new(), |s| format!(", for {s} only"));
@@ -1515,7 +1522,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     };
     match words[0] {
         "list" => {
-            let all: Vec<serde_json::Value> = serde_json::from_str(&answer).unwrap_or_default();
+            let all: Vec<serde_json::Value> = answer.as_array().cloned().unwrap_or_default();
             if all.is_empty() {
                 println!("no databases are bound on {server}: holon database add NAME PATH|env:… binds one");
             }
@@ -1523,9 +1530,9 @@ pub(crate) fn cli(args: &[String]) -> i32 {
                 println!("{}", line(d));
             }
         }
-        "add" => println!("bound {}", line(&serde_json::from_str(&answer).unwrap_or_default())),
+        "add" => println!("bound {}", line(&answer)),
         "tables" => {
-            let tables: serde_json::Value = serde_json::from_str(&answer).unwrap_or_default();
+            let tables = answer;
             let tables: Vec<&str> = tables["tables"].as_array().into_iter().flatten().filter_map(|t| t.as_str()).collect();
             if tables.is_empty() {
                 println!("{} has no table yet", words[1]);

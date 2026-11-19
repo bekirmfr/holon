@@ -130,6 +130,18 @@ pub(crate) fn read_json<T: serde::de::DeserializeOwned + Send>(text: &[u8]) -> s
     })
 }
 
+/// A Holon server's answer, as a client reads it: the terminal's, the command line's and the agents'
+/// tools' every reading goes through here. Read as deep as the values it holds may nest
+/// ([`read_json`]): serde_json's own reader stops at 128 levels, which a value about 40 records deep
+/// passes, and the terminal took such a page of runs for none. One that can't be read is said, never
+/// taken for an empty answer; an empty body is null.
+pub(crate) fn answer(bytes: &[u8]) -> Result<serde_json::Value, String> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(serde_json::Value::Null);
+    }
+    read_json(bytes).map_err(|e| format!("its answer can't be read: {e}"))
+}
+
 /// How deep `text`'s brackets nest, those in strings aside (JSON or not: reading it says).
 fn nesting(text: &[u8]) -> usize {
     let (mut depth, mut deepest, mut in_string, mut escaped) = (0usize, 0, false, false);

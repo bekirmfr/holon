@@ -537,11 +537,17 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         return 2;
     }
     let body = serde_json::json!({ "dry_run": dry_run });
-    let (_, answer) = match crate::local::admin_call("holon store", server.as_deref(), "POST", "/admin/store/sweep", Some(&body)) {
+    let (server, answer) = match crate::local::admin_call("holon store", server.as_deref(), "POST", "/admin/store/sweep", Some(&body)) {
         Ok(a) => a,
         Err(code) => return code,
     };
-    let s: serde_json::Value = serde_json::from_str(&answer).unwrap_or_default();
+    let s = match crate::wire::answer(answer.as_bytes()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("holon store: {server} answered, but {e}");
+            return 1;
+        }
+    };
     let n = |v: &serde_json::Value| v.as_u64().unwrap_or(0);
     let (swept, kept, spared) = (&s["swept"], &s["kept"], &s["spared"]);
     println!(

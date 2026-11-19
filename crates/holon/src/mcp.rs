@@ -134,10 +134,11 @@ impl Api for Http {
 /// The JSON a request answered, or why not, in the server's own words.
 pub(crate) fn json_of(api: &dyn Api, method: &str, path: &str, body: Option<Body>) -> Result<Value, String> {
     let (status, bytes) = api.send(method, path, body)?;
-    let value: Value = crate::wire::read_json(&bytes).unwrap_or(Value::Null);
     if (200..300).contains(&status) {
-        return Ok(value);
+        return crate::wire::answer(&bytes).map_err(|e| format!("{} answered, but {e}", api.server()));
     }
+    // An error's own words, when it says them as JSON; else its text as it is.
+    let value = crate::wire::answer(&bytes).unwrap_or(Value::Null);
     let why = value.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| String::from_utf8_lossy(&bytes).trim().to_string());
     Err(match status {
         401 => format!("{} wants a sign-in ({why}): holon mcp setup --server {} keeps an agent's token for it", api.server(), api.server()),
@@ -585,7 +586,7 @@ fn save_flow(api: &dyn Api, name: &str, document: &Value) -> Result<Option<Strin
     let (status, bytes) = api.send("GET", &format!("/flows/{}", seg(name)), None)?;
     let mut base = Value::Null;
     if status == 200 {
-        let saved: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        let saved = crate::wire::answer(&bytes).map_err(|e| format!("{} answered, but {e}", api.server()))?;
         let by = saved.get("saved_by").and_then(Value::as_str);
         if by.is_some() && by != me.as_deref() {
             return Ok(Some(by.unwrap_or("someone").to_string()));

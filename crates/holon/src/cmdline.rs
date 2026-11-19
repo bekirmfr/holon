@@ -84,12 +84,9 @@ pub(crate) fn json(who: &str, args: &Args, method: &str, path: &str, body: Optio
     // Every POST names its content type, or the server refuses it: an empty one sends `{}`.
     let empty = Value::Object(Default::default());
     let body = body.or((method == "POST").then_some(&empty));
-    let (_, answer) = local::admin_call(who, args.server(), method, path, body)?;
-    if answer.trim().is_empty() {
-        return Ok(Value::Null);
-    }
-    crate::wire::read_json(answer.as_bytes()).map_err(|e| {
-        eprintln!("{who}: the server's answer isn't JSON: {e}");
+    let (server, answer) = local::admin_call(who, args.server(), method, path, body)?;
+    crate::wire::answer(answer.as_bytes()).map_err(|e| {
+        eprintln!("{who}: {server} answered, but {e}");
         1
     })
 }

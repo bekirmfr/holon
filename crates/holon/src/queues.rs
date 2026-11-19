@@ -1052,9 +1052,16 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         Ok(a) => a,
         Err(code) => return code,
     };
+    let answer = match crate::wire::answer(answer.as_bytes()) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("holon queue: {server} answered, but {e}");
+            return 1;
+        }
+    };
     match words[0] {
         "list" => {
-            let all: Vec<serde_json::Value> = serde_json::from_str(&answer).unwrap_or_default();
+            let all: Vec<serde_json::Value> = answer.as_array().cloned().unwrap_or_default();
             if all.is_empty() {
                 println!("no queues are bound on {server}: holon queue add NAME --url env:… binds one");
             }
@@ -1062,7 +1069,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
                 println!("{}", line(q));
             }
         }
-        "add" => println!("bound {}", line(&serde_json::from_str(&answer).unwrap_or_default())),
+        "add" => println!("bound {}", line(&answer)),
         _ => println!("unbound {}{}: its listener stops", words[1], for_deployment.as_ref().map_or(String::new(), |d| format!(" (for {d})"))),
     }
     0

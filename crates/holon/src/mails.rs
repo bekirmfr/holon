@@ -1154,9 +1154,16 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         Ok(a) => a,
         Err(code) => return code,
     };
+    let answer = match crate::wire::answer(answer.as_bytes()) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("holon mail: {server} answered, but {e}");
+            return 1;
+        }
+    };
     match words[0] {
         "list" => {
-            let all: Vec<serde_json::Value> = serde_json::from_str(&answer).unwrap_or_default();
+            let all: Vec<serde_json::Value> = answer.as_array().cloned().unwrap_or_default();
             if all.is_empty() {
                 println!("no mails are bound on {server}: holon mail add NAME --smtp env:… --from … --to … (or --imap env:…) binds one");
             }
@@ -1164,7 +1171,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
                 println!("{}", line(m));
             }
         }
-        "add" => println!("bound {}", line(&serde_json::from_str(&answer).unwrap_or_default())),
+        "add" => println!("bound {}", line(&answer)),
         _ => println!("unbound {}{}: its mail on the way is given up", words[1], for_deployment.as_ref().map_or(String::new(), |d| format!(" (for {d})"))),
     }
     0

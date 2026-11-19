@@ -1503,6 +1503,13 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         Ok(a) => a,
         Err(code) => return code,
     };
+    let answer = match crate::wire::answer(answer.as_bytes()) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("holon folder: {server} answered, but {e}");
+            return 1;
+        }
+    };
     let line = |f: &serde_json::Value| {
         let access = if f["access"] == "read" { "read only" } else { "read and write" };
         let keep = match f["keep"].as_str() {
@@ -1517,7 +1524,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     };
     match words[0] {
         "list" => {
-            let all: Vec<serde_json::Value> = serde_json::from_str(&answer).unwrap_or_default();
+            let all: Vec<serde_json::Value> = answer.as_array().cloned().unwrap_or_default();
             if all.is_empty() {
                 println!("no folders are bound on {server}: holon folder add NAME PATH binds one");
             }
@@ -1525,9 +1532,9 @@ pub(crate) fn cli(args: &[String]) -> i32 {
                 println!("{}", line(f));
             }
         }
-        "add" => println!("bound {}", line(&serde_json::from_str(&answer).unwrap_or_default())),
+        "add" => println!("bound {}", line(&answer)),
         "sweep" => {
-            let s: serde_json::Value = serde_json::from_str(&answer).unwrap_or_default();
+            let s = answer;
             let n = |v: &serde_json::Value| v.as_u64().unwrap_or(0);
             println!(
                 "swept {} file texts no kept run refers to ({} freed); it keeps {} ({})",

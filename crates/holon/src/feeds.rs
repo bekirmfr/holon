@@ -1041,9 +1041,16 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         Ok(a) => a,
         Err(code) => return code,
     };
+    let answer = match crate::wire::answer(answer.as_bytes()) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("holon feed: {server} answered, but {e}");
+            return 1;
+        }
+    };
     match words[0] {
         "list" => {
-            let all: Vec<serde_json::Value> = serde_json::from_str(&answer).unwrap_or_default();
+            let all: Vec<serde_json::Value> = answer.as_array().cloned().unwrap_or_default();
             if all.is_empty() {
                 println!("no feeds are bound on {server}: holon feed add NAME --url env:… (or --database NAME --channel CHANNEL) binds one");
             }
@@ -1051,7 +1058,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
                 println!("{}", line(f));
             }
         }
-        "add" => println!("bound {}", line(&serde_json::from_str(&answer).unwrap_or_default())),
+        "add" => println!("bound {}", line(&answer)),
         _ => println!("unbound {}{}: its connections close", words[1], for_deployment.as_ref().map_or(String::new(), |d| format!(" (for {d})"))),
     }
     0
