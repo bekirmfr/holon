@@ -16000,7 +16000,7 @@ fn a_sample_whose_wait_runs_out_does_nothing_its_answer_would() {
                 if let Some(columns) = lower.strip_prefix("select ").and_then(|s| s.split(" from ").next()) {
                     let row: BTreeMap<String, Value> = columns
                         .split(',')
-                        .map(|c| (c.trim().rsplit(|ch: char| ch == ' ' || ch == '.').next().unwrap_or_default().to_string(), Value::Number(1.0)))
+                        .map(|c| (c.trim().rsplit([' ', '.']).next().unwrap_or_default().to_string(), Value::Number(1.0)))
                         .collect();
                     let row = Value::Record(row);
                     return Answer::Value(if field("one") == Some(&Value::Boolean(true)) { row } else { Value::List(vec![row]) });
