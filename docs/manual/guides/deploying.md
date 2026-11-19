@@ -132,13 +132,16 @@ that the current one is kept (`POST …/secrets/<name>/rollback` with `"dry_run"
 changes nothing). Its **diff** tells the two values apart by their fingerprints, as the log marks
 them (`v2 #a1b2c3d4 → v4 #e5f6a7b8`). The history says who changed what, never the values.
 
-Change a secret when no run waits. A run that waits (`await event`, `await approval`) and goes on
-after its secret changed sends again, with the new value, the requests it made before the wait
-that carried the secret: it runs again from its start, and no longer recognises them as sent. For
-example, a flow that posted "authorize" with the key in a header, then waited, posts "authorize"
-a second time, then "capture". This is so for a value set with `holon secret set`, and for an env
-or vault secret whose value changes while the run waits. `holon runs <slug> --waiting` lists the
-runs that wait.
+A run that waits (`await event`, `await approval`) and goes on after its secret changed runs
+again from its start, and recognises the requests it made before the wait that held the secret as
+it is (in a header, a URL or a JSON body): they are answered from its record, not sent again, and
+the requests after the wait go with the new value. For example, a flow that posted "authorize"
+with the key in a header, then waited, posts only "capture", with the new key. A request that
+held a value the flow computed from the secret (a signature, a Basic credential, another
+encoding) isn't recognised, and is sent again with the new value: for a flow that does that,
+change the secret when no run waits. This is so for a value set with `holon secret set`, and for
+an env or vault secret whose value changes while the run waits. `holon runs <slug> --waiting`
+lists the runs that wait.
 
 A secret's value never appears in the run log, the editor, an export or a replay: wherever it
 would, it shows as `‹secret:name v3 #a1b2c3d4›`: the name, the version the value is of, and a
@@ -451,7 +454,9 @@ can narrow it:
   not: the first it has of receiving requests, a folder's new files, its schedule and an action.
   A flow with several kinds of handler (routes and a clock, say) has the others' triggers as
   ordinary required items.
-- **grant back** restores a revoked item.
+- **grant back** restores a revoked item. A call of another flow's action comes back only from
+  someone who may run that action, as its deploy would (a call runs it under that flow's grant,
+  with what this flow sends).
 - a limit can be **lowered**. Raising one needs a new deploy, and approval.
 
 Each change goes on the deployment's [timeline](#the-timeline), with who made it, and each run

@@ -210,6 +210,28 @@ pub(crate) struct Export {
     /// The hash of the newest event's line.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) events_head: String,
+    /// The runs given up when the deployment was removed, on an admin's word: those of its log's
+    /// sealed segments that couldn't be read (deploy.rs `handle_delete_deployment`, release audit
+    /// R110). The chain's break where they were is that gap, and no other: `holon verify` says
+    /// them given up, not missing, and takes them only from an export the server sealed
+    /// ([`Export::sealed`]), never from a plain one, whose list anyone could write.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) given_up: Vec<GivenUp>,
+    /// Whether it was read sealed under the server's keys ([`read_export`]): what it says it gave
+    /// up is then the server's word, held by the seal.
+    #[serde(skip)]
+    pub(crate) sealed: bool,
+}
+
+/// Runs given up removing a deployment ([`Export::given_up`]): the first and the last, who gave
+/// them up and when (ms since the epoch).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct GivenUp {
+    pub(crate) from: u64,
+    pub(crate) to: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) by: Option<String>,
+    pub(crate) at_ms: u64,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -360,6 +382,8 @@ pub(crate) fn export_of(
         files_not_kept: not_kept,
         events,
         events_head,
+        given_up: Vec::new(),
+        sealed: false,
     })
 }
 
@@ -369,7 +393,8 @@ pub(crate) fn export_of(
 /// `keys` opens: asked for only then, so a plain export needs none.
 pub(crate) fn read_export(path: &Path, keys: impl FnOnce() -> Result<std::sync::Arc<crate::at_rest::Keyring>, String>) -> Result<Export, String> {
     let mut bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    if crate::at_rest::is_sealed(&bytes) {
+    let sealed = crate::at_rest::is_sealed(&bytes);
+    if sealed {
         let keys = keys()?;
         bytes = crate::at_rest::open_export(&keys, &bytes).map(|mut plain| std::mem::take(&mut *plain)).map_err(|e| format!("it is sealed, and doesn't open: {e}"))?;
     }
@@ -380,7 +405,9 @@ pub(crate) fn read_export(path: &Path, keys: impl FnOnce() -> Result<std::sync::
     } else {
         String::from_utf8(bytes).map_err(|e| e.to_string())?
     };
-    serde_json::from_str(&text).map_err(|e| e.to_string())
+    let mut export: Export = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    export.sealed = sealed;
+    Ok(export)
 }
 
 fn hex_of(bytes: &[u8]) -> String {
@@ -441,6 +468,15 @@ pub(crate) struct Report {
     /// The server numbers runs one after another and says each it couldn't write, so a gap nothing
     /// says is runs removed, the lines after them chained again.
     pub(crate) gaps: Vec<(u64, u64)>,
+    /// Runs given up removing the deployment, as a sealed export names them ([`Export::given_up`]),
+    /// each the chain's gap where they were, with its break, or the runs just before its first: not
+    /// a gap nor a break, and not checked ([`Report::complete`]: `holon verify` exits 3).
+    pub(crate) given_up: Vec<GivenUp>,
+    /// Runs a sealed export names given up that are no such gap, nor just before its first run: it
+    /// fails. The server names only what it left out, so the export was changed.
+    pub(crate) given_up_unmatched: Vec<(u64, u64)>,
+    /// Whether a plain export names runs given up: none taken, its gaps missing as any are.
+    pub(crate) given_up_unsealed: bool,
     /// Its newest line's hash, and whether that is the head the export names.
     pub(crate) head: String,
     pub(crate) head_matches: bool,
@@ -704,6 +740,7 @@ impl Report {
             && self.states.as_ref().is_none_or(|s| s.breaks.is_empty())
             && self.secrets_outside.is_empty()
             && self.tokens_outside.is_empty()
+            && self.given_up_unmatched.is_empty()
     }
 
     /// Whether everything in it was checked: every run run again (none [`Rerun::Skipped`]), and
@@ -711,12 +748,48 @@ impl Report {
     /// has nothing found wrong in it, and not everything in it checked: `holon verify` exits 3,
     /// so a script reading its exit code doesn't take it as checked.
     pub(crate) fn complete(&self) -> bool {
-        self.all_run_again() && self.states.as_ref().is_none_or(|s| s.unchecked.is_empty())
+        self.all_run_again() && self.states.as_ref().is_none_or(|s| s.unchecked.is_empty()) && self.given_up.is_empty()
     }
 
     /// Whether every run was run again: none [`Rerun::Skipped`].
     fn all_run_again(&self) -> bool {
         !self.reruns.iter().any(|(_, r)| matches!(r, Rerun::Skipped(_)))
+    }
+}
+
+/// The runs `export` says were given up removing its deployment ([`Export::given_up`]), as its
+/// chain shows them: each span (those side by side joined, as segments are) the gap where they
+/// were, with the break at the run after it, both then said given up and no longer a failure; or
+/// runs before its first, in an export that begins after the log's first run. Any other is
+/// unmatched, and
+/// fails: the server names only what it left out, and never chains a line over a gap. A plain
+/// export's list is taken for nothing: only the server's seal holds it.
+fn given_up(export: &Export, entries: &[(LogEntry, &str)], report: &mut Report) {
+    if export.given_up.is_empty() {
+        return;
+    }
+    if !export.sealed {
+        report.given_up_unsealed = true;
+        return;
+    }
+    let first = entries.first().map(|(e, _)| e.seq);
+    for (from, to) in crate::recorder::joined(export.given_up.iter().map(|g| (g.from, g.to))) {
+        let said = export.given_up.iter().find(|g| from <= g.from && g.to <= to).cloned();
+        let span = GivenUp { from, to, ..said.unwrap_or(GivenUp { from, to, by: None, at_ms: 0 }) };
+        let after = entries.iter().map(|(e, _)| e.seq).find(|seq| *seq > to);
+        let gap = report.gaps.iter().position(|g| *g == (from, to));
+        let broken = after.and_then(|seq| report.breaks.iter().position(|b| *b == seq));
+        match (gap, broken) {
+            (Some(gap), Some(broken)) => {
+                report.gaps.remove(gap);
+                report.breaks.remove(broken);
+                report.given_up.push(span);
+            }
+            // Before its first run, which follows one not here: those runs aren't here either way
+            // (a segment past what its retention keeps, not yet let go of, may be one given up).
+            _ if report.trimmed && first.is_some_and(|first| to < first) => report.given_up.push(span),
+            _ => report.given_up_unmatched.push((from, to)),
+        }
     }
 }
 
@@ -787,6 +860,7 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
     if witnessed.is_some() && report.witnessed.is_none() {
         report.witnessed = Some(None);
     }
+    given_up(export, &entries, &mut report);
     check_events(export, witnessed, &mut report);
     report.head_matches = head == export.head;
     report.head = head;
@@ -866,7 +940,8 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
         report.reruns.push((entry.seq, came_to));
     }
     let events: Vec<crate::events::Event> = export.events.iter().filter_map(|l| serde_json::from_str(l).ok()).collect();
-    report.states = check_states(&entries, &lefts, &events, &marks, &resolver, !report.trimmed);
+    let given: Vec<(u64, u64)> = report.given_up.iter().map(|g| (g.from, g.to)).collect();
+    report.states = check_states(&entries, &lefts, &events, &marks, &resolver, !report.trimmed, &given);
     check_sends(&entries, &resolver, &marks, &mut report);
     report
 }
@@ -1013,6 +1088,10 @@ fn began_from_nothing(b: &LogEntry) -> bool {
     b.state_before.is_empty() && b.commit.as_ref().and_then(|c| c.after).unwrap_or(0) == 0
 }
 
+/// Why a run after runs given up removing the deployment ([`Report::given_up`]) isn't checked where
+/// it began.
+pub(crate) const GIVEN_UP_BEFORE: &str = "where it began: runs between it and the run before it here were given up when the deployment was removed, and may have left it";
+
 /// Why a run that began from the state the server loaded after a crash isn't checked where it began.
 pub(crate) const CUT_OFF: &str =
     "where it began: from the state the server loaded after a crash, which a run the crash cut off between its commit and its line may have left (its events say so)";
@@ -1049,7 +1128,10 @@ pub(crate) const CUT_OFF: &str =
 /// its author chose, not a break. A cell no such handler writes, a handler whose units aren't all
 /// here, or a run before it that couldn't be run again leaves it a break. Nor is a run whose line
 /// the server couldn't write, which the line after it says: a run after the one before it here,
-/// and after it, may have begun from what it left, and is said unchecked.
+/// and after it, may have begun from what it left, and is said unchecked. Nor are runs given up
+/// removing the deployment (`given_up`, [`Report::given_up`]): a run after them may have begun
+/// from what they left.
+#[allow(clippy::too_many_arguments)]
 fn check_states(
     entries: &[(LogEntry, &str)],
     lefts: &[Option<Left>],
@@ -1057,6 +1139,7 @@ fn check_states(
     marks: &Marks,
     resolver: &impl holon_core::Resolver,
     from_the_first: bool,
+    given_up: &[(u64, u64)],
 ) -> Option<States> {
     if !entries.iter().any(|(e, _)| e.state_after.is_some()) {
         return None;
@@ -1112,7 +1195,7 @@ fn check_states(
                 if let Some(p) = began_after(entries, b)
                     && p.state_after.is_some()
                     && !events.iter().any(|ev| (moves_state(ev) || ev.loaded.is_some()) && p.seq < ev.run_seq && ev.run_seq <= b.seq)
-                    && !lost.iter().any(|(from, to)| p.seq < *to && *from < b.seq) =>
+                    && !lost.iter().chain(given_up).any(|(from, to)| p.seq < *to && *from < b.seq) =>
             {
                 states.breaks.push((b.seq, format!("it began after run {}'s commit, from a state other than the one that run left", p.seq)));
             }
@@ -1164,6 +1247,8 @@ fn check_states(
                                 states.unchecked(why, b.seq);
                             } else if lost.iter().any(|(from, to)| p.seq < *to && *from < b.seq) {
                                 states.unchecked("where it began: a run between it and the run before it here, whose line the server couldn't write, may have left it", b.seq);
+                            } else if given_up.iter().any(|(from, to)| p.seq < *to && *from < b.seq) {
+                                states.unchecked(GIVEN_UP_BEFORE, b.seq);
                             } else if events.iter().any(|ev| ev.loaded.as_ref() == Some(h) && p.seq < ev.run_seq && ev.run_seq <= b.seq) {
                                 states.unchecked(CUT_OFF, b.seq);
                             } else {
@@ -1781,7 +1866,7 @@ fn rerun(
     let given_one = entry.secrets.keys().any(|name| caps.iter().any(|c| matches!(c, Capability::SecretRead(s) if s == *name)));
     let fed = if given_one { taint::SecretFed::of(root, resolver) } else { taint::SecretFed::default() };
     let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped, fed.clone());
-    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &network, &limits, &mut observer, &mut waits, &prior);
+    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &network, &limits, &mut observer, &mut waits, &prior, marks);
     // A node computed on its placeholders gives what the run gave, written with them; the log
     // recording other for it is a record that isn't the run's.
     if observer.belied {
@@ -2509,6 +2594,8 @@ fn round_of(round: &recorder::LoggedRound, marks: &Marks, escaped: bool) -> Roun
                 response: marks.read(&x.response, escaped),
                 start_us: x.start_us,
                 end_us: x.end_us,
+                // Keyed as the check asks it (`Marks` as `Keys`).
+                key: None,
             })
             .collect(),
     }
@@ -2875,6 +2962,16 @@ struct Marks {
     start: String,
 }
 
+/// A request as the server keyed it when it sent it (`holon_host::Keys`, `secrets::Named`): each
+/// secret by its name, whatever value it had. A later part asked again with another value of a
+/// secret than an earlier part sent (set while the run waited) is the request that part sent, as
+/// the server answered it from its record (R113).
+impl holon_host::Keys for Marks {
+    fn key(&self, request: &Value) -> holon_core::Hash {
+        holon_host::Whole.key(&secrets::texts_mapped(request, &|s| self.by_name(s)))
+    }
+}
+
 impl Marks {
     /// What follows a placeholder's start for a value a run computed from a secret, up to its
     /// print (`secrets::DERIVED_MARK`, less the `‹`).
@@ -2899,6 +2996,28 @@ impl Marks {
     /// The placeholder of a secret's (`kind` "secret") or a token's value.
     fn of(&self, kind: &str, name: &str) -> String {
         format!("{}{kind}:{name}›", self.start)
+    }
+
+    /// `s` with each secret's placeholder written by its name alone (`‹<tag>|secret:k›`, its
+    /// version and print left out), if it holds one: a request as the server told it apart when
+    /// it sent it (`secrets::Named`), where a secret stands as its name whatever its value.
+    fn by_name(&self, s: &str) -> Option<String> {
+        let start = format!("{}secret:", self.start);
+        if !s.contains(start.as_str()) {
+            return None;
+        }
+        let (mut out, mut rest) = (String::with_capacity(s.len()), s);
+        while let Some(i) = rest.find(start.as_str()) {
+            let after = &rest[i + start.len()..];
+            let name_ends = after.find([' ', '›']).unwrap_or(after.len());
+            let mark_ends = after.find('›').map_or(after.len(), |e| e + '›'.len_utf8());
+            out.push_str(&rest[..i + start.len()]);
+            out.push_str(&after[..name_ends]);
+            out.push('›');
+            rest = &after[mark_ends..];
+        }
+        out.push_str(rest);
+        Some(out)
     }
 
     /// The secrets whose placeholder is in `v` (as [`Marks::read`] gives it), by name.
@@ -3373,6 +3492,8 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
     };
     if r.trimmed && r.runs == 1 {
         chain += &format!(" (run {} alone: the line before it hashes to {}, which only the log has)", r.first.unwrap_or(0), short(&r.after));
+    } else if r.trimmed && r.given_up.iter().any(|g| Some(g.to.saturating_add(1)) == r.first) {
+        chain += &format!(" (from run {}; the runs just before it were given up, as said below)", r.first.unwrap_or(0));
     } else if r.trimmed {
         chain += &format!(" (from run {}; older runs were trimmed)", r.first.unwrap_or(0));
     }
@@ -3404,6 +3525,25 @@ pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
             if one { "run" } else { "runs" },
             if one { "it" } else { "them" }
         );
+    }
+    // Runs given up removing the deployment, on an admin's word, as its sealed records say.
+    for g in &r.given_up {
+        let (runs, one) = spans(&[(g.from, g.to)]);
+        let by = g.by.as_deref().map(|b| format!(" by {b}")).unwrap_or_default();
+        let at = crate::engines::time_text(g.at_ms as i64 * 1_000);
+        out += &format!(
+            "  {} {runs} GIVEN UP when the deployment was removed{by} at {at}: {} couldn't be read, and {} not checked\n",
+            if one { "run" } else { "runs" },
+            if one { "it" } else { "they" },
+            if one { "is" } else { "are" }
+        );
+    }
+    if !r.given_up_unmatched.is_empty() {
+        let (runs, one) = spans(&r.given_up_unmatched);
+        out += &format!("  {} {runs} SAID GIVEN UP, but not where runs are missing: the export was changed\n", if one { "run" } else { "runs" });
+    }
+    if r.given_up_unsealed {
+        out += "  it names runs given up, and isn't sealed: none taken, as only the server's sealed records give runs up (check the sealed file, with --data)\n";
     }
     out += &if r.head_matches {
         format!("  head: {} is the newest run's\n", short(&r.head))

@@ -254,14 +254,75 @@ pub(crate) mod tests {
 
     /// As `token`, its header naming the key `kid`.
     fn signed(kid: &str, claims: serde_json::Value) -> String {
+        sign(Algorithm::RS256, kid, &EncodingKey::from_rsa_pem(include_bytes!("testdata/oidc-test-key.pem")).unwrap(), claims)
+    }
+
+    /// An ID token signed with `key` by `alg`, its header naming `kid`, with these claims over the
+    /// usual ones.
+    fn sign(alg: Algorithm, kid: &str, key: &EncodingKey, claims: serde_json::Value) -> String {
         let now = crate::deploy::epoch_now();
         let mut all = serde_json::json!({ "iss": ISSUER, "aud": CLIENT, "sub": "user-1", "iat": now, "exp": now + 600 });
         for (k, v) in claims.as_object().unwrap() {
             all[k] = v.clone();
         }
-        let mut header = Header::new(Algorithm::RS256);
+        let mut header = Header::new(alg);
         header.kid = Some(kid.into());
-        jsonwebtoken::encode(&header, &all, &EncodingKey::from_rsa_pem(include_bytes!("testdata/oidc-test-key.pem")).unwrap()).unwrap()
+        jsonwebtoken::encode(&header, &all, key).unwrap()
+    }
+
+    /// Every algorithm an ID token is taken signed with.
+    pub(crate) fn algorithms() -> [Algorithm; 5] {
+        ALGORITHMS
+    }
+
+    /// A provider whose one key signs with `alg`, and what signs ID tokens with it (with these
+    /// claims over the usual ones): the test RSA key for RS*, a P-256 or P-384 key made for the
+    /// run for ES*. An algorithm with no key here fails, so a new one taken gets one.
+    pub(crate) fn signing_with(alg: Algorithm) -> (Oidc, impl Fn(serde_json::Value) -> String) {
+        use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
+        let (keys, key, kid) = match alg {
+            Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 => {
+                (serde_json::from_str(include_str!("testdata/oidc-test-jwks.json")).unwrap(), EncodingKey::from_rsa_pem(include_bytes!("testdata/oidc-test-key.pem")).unwrap(), "test-key")
+            }
+            Algorithm::ES256 | Algorithm::ES384 => {
+                let (signing, crv) = if alg == Algorithm::ES256 { (&ECDSA_P256_SHA256_FIXED_SIGNING, "P-256") } else { (&ECDSA_P384_SHA384_FIXED_SIGNING, "P-384") };
+                let rng = ring::rand::SystemRandom::new();
+                let pkcs8 = EcdsaKeyPair::generate_pkcs8(signing, &rng).unwrap();
+                // The public point, 0x04 then x then y.
+                let point = EcdsaKeyPair::from_pkcs8(signing, pkcs8.as_ref(), &rng).unwrap().public_key().as_ref().to_vec();
+                let half = (point.len() - 1) / 2;
+                let b64 = |b: &[u8]| holon_core::bytes_text(b, "base64url").unwrap();
+                let jwk = serde_json::json!({ "keys": [{ "kty": "EC", "crv": crv, "kid": "ec-key", "alg": format!("{alg:?}"), "use": "sig", "x": b64(&point[1..=half]), "y": b64(&point[1 + half..]) }] });
+                (serde_json::from_value(jwk).unwrap(), EncodingKey::from_ec_der(pkcs8.as_ref()), "ec-key")
+            }
+            other => panic!("no test key signs with {other:?}: give it one"),
+        };
+        (Oidc::with_keys(ISSUER, CLIENT, keys), move |claims| sign(alg, kid, &key, claims))
+    }
+
+    /// `token`, signed by `alg`, with its signature spelled another way that is as good a
+    /// signature of the same header and claims, when there is one: an ECDSA signature (r, s)
+    /// as (r, n − s), n the curve's order, which a check that doesn't ask for the lower s takes.
+    /// None for RSA's, which has no other.
+    pub(crate) fn twin(token: &str, alg: Algorithm) -> Option<String> {
+        let order = match alg {
+            Algorithm::ES256 => "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551",
+            Algorithm::ES384 => "ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973",
+            _ => return None,
+        };
+        let n = holon_core::text_bytes(order, "hex").unwrap();
+        let (signed, signature) = token.rsplit_once('.').unwrap();
+        let signature = holon_core::text_bytes(signature, "base64url").unwrap();
+        let (r, s) = signature.split_at(n.len());
+        // n − s, a byte at a time from the last.
+        let mut other = vec![0u8; n.len()];
+        let mut borrow = 0i16;
+        for i in (0..n.len()).rev() {
+            let d = i16::from(n[i]) - i16::from(s[i]) - borrow;
+            borrow = i16::from(d < 0);
+            other[i] = (d + 256 * borrow) as u8;
+        }
+        Some(format!("{signed}.{}", holon_core::bytes_text(&[r, &other].concat(), "base64url").unwrap()))
     }
 
     #[test]

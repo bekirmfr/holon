@@ -27,7 +27,7 @@ examples:
 const LIFECYCLE_USAGE: &str = "usage: holon run <slug> [--fresh | --session N]
        holon pause <slug>
        holon stop <slug>
-       holon remove <slug> --yes [--forget]
+       holon remove <slug> --yes [--forget] [--give-up RUNS]
        (each with [--server PORT|URL])
 
   Starts, holds, ends or deletes a deployment, as the editor's buttons do.
@@ -45,6 +45,11 @@ const LIFECYCLE_USAGE: &str = "usage: holon run <slug> [--fresh | --session N]
                            file it left can't be opened again, here or in a copy of the
                            folder taken before (the root key is rotated too, unless it is in
                            an environment variable). Needs host.operate
+    --give-up RUNS         when part of its log couldn't be read as the server started, and
+                           remove says which runs: remove it anyway, giving those runs up
+                           (137-147,286-298, as it says them). Its kept records name them
+                           given up, for holon verify, and the damaged files are kept beside
+                           them. Only those exactly; needs host.operate
 
 examples:
   holon pause shop
@@ -236,7 +241,7 @@ pub(crate) fn detail_lines(d: &Value, waiting: &[Value]) -> Vec<String> {
 pub(crate) fn lifecycle(action: &str, args: &[String]) -> i32 {
     let who = format!("holon {action}");
     let usage = usage(LIFECYCLE_USAGE);
-    let args = match cmdline::parse(&who, &usage, args, &["--session"], &["--fresh", "--yes", "--forget"]) {
+    let args = match cmdline::parse(&who, &usage, args, &["--session", "--give-up"], &["--fresh", "--yes", "--forget"]) {
         Ok(a) => a,
         Err(code) => return code,
     };
@@ -269,13 +274,30 @@ pub(crate) fn lifecycle(action: &str, args: &[String]) -> i32 {
                 eprintln!("{who}: this deletes {slug:?} for good: its state, its sessions and its secrets (its runs' log and timeline are kept on the host, for holon verify). Run it again with --yes to go ahead.");
                 return 2;
             }
-            cmdline::json(&who, &args, "DELETE", &path, None)
+            match args.value("--give-up") {
+                // Checked here first, said as the server would: it checks again.
+                Some(runs) => match crate::deploy::parse_give_up(runs) {
+                    Ok(spans) => cmdline::json(&who, &args, "DELETE", &format!("{path}?give_up={}", crate::deploy::give_up_arg(&spans)), None),
+                    Err(e) => {
+                        eprintln!("{who}: --give-up: {e}");
+                        return 2;
+                    }
+                },
+                None => cmdline::json(&who, &args, "DELETE", &path, None),
+            }
         }
         _ => cmdline::json(&who, &args, "POST", &format!("{path}/{action}"), None),
     };
     match answer {
         Ok(d) if action == "remove" => {
             println!("{slug}: removed{}", if d["status"].is_string() { ", its secrets forgotten" } else { "" });
+            let given: Vec<(u64, u64)> = serde_json::from_value(d["given_up"].clone()).unwrap_or_default();
+            if !given.is_empty() {
+                let one = matches!(given.as_slice(), [(a, b)] if a == b);
+                println!("{} given up: {} couldn't be read (holon verify says so of its run records)", crate::deploy::runs_said(&given), if one { "it" } else { "they" });
+            } else if args.value("--give-up").is_some() {
+                println!("nothing given up: every run could be read");
+            }
             if !args.flag("--forget") {
                 // In full to whoever views the host; within the data folder to anyone else.
                 if let Some(at) = d["records"].as_str() {

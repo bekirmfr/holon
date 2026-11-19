@@ -326,12 +326,12 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
 
     // What it was answered and what it read, by what it asked: the earlier parts' too.
     let parts = || earlier.iter().copied().chain([entry]);
-    let answers: Vec<(Value, Value)> = parts()
+    let answers: Vec<(holon_core::Hash, Value)> = parts()
         .flat_map(|e| e.rounds.iter().map(|r| round_of(r, marks, e.escaped)))
         .flat_map(|r| r.exchanges)
-        .map(|x| (x.request, x.response))
+        .map(|x| (holon_host::Keys::key(marks, &x.request), x.response))
         .collect();
-    let performer = ByRequest { used: Mutex::new(vec![false; answers.len()]), answers, missed: Mutex::new(Vec::new()), plain_http };
+    let performer = ByRequest { used: Mutex::new(vec![false; answers.len()]), answers, missed: Mutex::new(Vec::new()), plain_http, marks };
     let own = entry.reads.iter().map(|r| (r, entry.escaped));
     let reads = own
         .chain(earlier.iter().rev().flat_map(|e| e.reads.iter().map(|r| (r, e.escaped))))
@@ -352,7 +352,7 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
     };
     let mut host = RecordingHost::new();
     let mut observer = Fed::new(marks, resolver, limits);
-    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &performer, limits, &mut observer, &mut waits, &[]);
+    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &performer, limits, &mut observer, &mut waits, &[], marks);
 
     if let Some(missed) = performer.missed.lock().unwrap().first().cloned() {
         return Replay::CantTell(format!("it sends {missed}, which the run didn't: what it would be answered can't be told offline"));
@@ -480,19 +480,26 @@ fn effects(then: &[PerformedEntry], now: &[PerformedEntry]) -> String {
 }
 
 /// The network, for a replay: what the run was answered to the very same request, each answer
-/// once while another for the same request is left; a request it never made is missed.
+/// once while another for the same request is left; a request it never made is missed. The same
+/// as the server told it when it sent it (`Marks` as `holon_host::Keys`): a secret in it by its
+/// name, so a later part asking with another value of one than an earlier part sent is answered
+/// as the server answered it, from that part's (R113).
 struct ByRequest<'a> {
-    answers: Vec<(Value, Value)>,
+    /// Each request's key, and what it was answered.
+    answers: Vec<(holon_core::Hash, Value)>,
     used: Mutex<Vec<bool>>,
     missed: Mutex<Vec<String>>,
     /// The hosts granted plain HTTP, where a missed request would go as `http://`.
     plain_http: &'a BTreeSet<String>,
+    marks: &'a Marks,
 }
 
 impl Performer for ByRequest<'_> {
     fn perform(&self, request: &Value, limits: &Limits) -> Value {
+        use holon_host::Keys;
+        let key = self.marks.key(request);
         let mut used = self.used.lock().unwrap();
-        let same: Vec<usize> = (0..self.answers.len()).filter(|&i| self.answers[i].0 == *request).collect();
+        let same: Vec<usize> = (0..self.answers.len()).filter(|&i| self.answers[i].0 == key).collect();
         match same.iter().find(|&&i| !used[i]).or(same.last()) {
             Some(&i) => {
                 used[i] = true;
@@ -667,8 +674,10 @@ mod tests {
         let get = |url: &str| Value::Record([("method".to_string(), Value::Text("GET".into())), ("url".to_string(), Value::Text(url.into()))].into());
         let limits = super::super::rerun_limits();
         for (row, asks, reads) in [("answered", "https://api.example.com/a", false), ("request", "https://api.example.com/b", false), ("read", "https://api.example.com/a", true)] {
-            let sent = ByRequest { answers: vec![(get("https://api.example.com/a"), Value::Number(200.0))], used: Mutex::new(vec![false]), missed: Mutex::new(Vec::new()), plain_http: &BTreeSet::new() };
-            let mut waits = ByRead { reads: Vec::new(), events: BTreeMap::new(), marks: Marks::new(), missed: Vec::new(), sent: &sent };
+            let marks = Marks::new();
+            let answers = vec![(holon_host::Keys::key(&marks, &get("https://api.example.com/a")), Value::Number(200.0))];
+            let sent = ByRequest { answers, used: Mutex::new(vec![false]), missed: Mutex::new(Vec::new()), plain_http: &BTreeSet::new(), marks: &marks };
+            let mut waits = ByRead { reads: Vec::new(), events: BTreeMap::new(), marks: marks.clone(), missed: Vec::new(), sent: &sent };
             assert!(matches!(waits.claim(), holon_host::Claim::Held), "{row}: before it asks");
             sent.perform(&get(asks), &limits);
             if reads {

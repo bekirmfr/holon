@@ -35,6 +35,8 @@ mod semantics;
 mod writers;
 /// What is there and can't be read is an error at every reader of a deployment's runs (R92).
 mod unread_readers;
+/// A request asked again with another value of its secret isn't sent again (R113).
+mod secret_rounds;
 /// Which lines of a source file are a test module's, for the sweeps of the source (R78).
 mod source;
 /// What a run's record says of an effect it held and didn't make (R99).
@@ -2053,6 +2055,7 @@ const KEPT_READS: &[(&str, &str)] = &[
     ("src/recorder.rs", "pub fn shows(&self"),
     ("src/recorder.rs", "fn shows_in("),
     ("src/recorder.rs", "pub fn lines_to_head("),
+    ("src/recorder.rs", "pub fn lines_to_head_giving_up("),
     ("src/recorder.rs", "pub fn open_retaining("),
     ("src/events.rs", "pub(crate) fn try_lines("),
     ("src/at_rest.rs", "pub(crate) fn try_read_lines("),
@@ -2084,6 +2087,11 @@ const KEPT_READS_ALLOWED: &[(&str, &str, &str)] = &[
     ("fn each_unnoted(self", "Err(_) => {}", "a line cut short or changed: left out, as the log leaves it out as it opens; one whose key is missing is an error before it"),
     ("fn each_kept(self", "if let Ok(entry) = crate::wire::read_json", "a line's parse: one that doesn't parse names no run, as the log leaves a damaged line out as it opens"),
     ("fn read_segment(", "map(slug_of).unwrap_or_default()", "a path's folder name: not a read"),
+    (
+        "pub fn lines_to_head_giving_up(",
+        "Err(_) => still.push(",
+        "a segment that couldn't be read as the log opened, read again: still failing is runs it can't read now, which only an admin's exact word gives up; none is taken as none",
+    ),
     ("pub fn open_retaining(", "holon_host::listed(crate::at_rest::disk::read_dir(&dir)).unwrap_or_else", "noted as the log's `unread`, which fails every read of all its lines"),
     ("pub fn open_retaining(", "let _ = std::fs::remove_file(&p)", "a crashed cut-back's leftover removed: not a read"),
     ("pub fn open_retaining(", "std::fs::metadata(&p).map_or(0", "a segment's size, for the counts only"),
@@ -8153,6 +8161,57 @@ fn a_sign_out_answers_204_only_when_it_ended_a_sign_in() {
     assert_eq!(call("POST", "/auth/sign-out", &session).0, 204, "kept again, it ends");
     assert!(!let_in(&session) && let_in(&ada), "only the one signed out");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A provider's sign-in, once signed out of, is refused however its token is spelled: every
+/// spelling the provider's signature check takes signs the same header and claims, which only the
+/// provider signs, so it is the same sign-in. For each algorithm a token is taken signed with:
+/// the token as issued and its other spelling, if its signature has one (ECDSA's (r, n − s)), each
+/// let in before; after a sign-out with the one, then (a new sign-in) with the other, each refused,
+/// saying it was signed out of. A new algorithm taken is a row (oidc.rs's test keys).
+///
+/// **Why:** a sign-out ended the token as spelled (its hash), so the other spelling of an
+/// ECDSA-signed one, made from the token alone, was let in until the token expired (R111).
+#[test]
+fn a_signed_out_sign_in_is_refused_however_its_token_is_spelled() {
+    use crate::oidc::tests::{algorithms, signing_with, twin};
+    let mut state = test_state();
+    let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    state.access = access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+    accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+    accounts.set_email("ada", Some("ada@example.com".into()), "ada").unwrap();
+    let call = |method: &str, url: &str, token: &str| {
+        let mut headers = vec![("Host".to_string(), "localhost:7420".to_string()), ("Authorization".to_string(), format!("Bearer {token}"))];
+        let body = if method == "POST" { b"{}".to_vec() } else { vec![] };
+        if method == "POST" {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        }
+        let r = route(&state, &Request::fake_http(method, url, headers, body));
+        let status = r.status_code;
+        (status, String::from_utf8(body_bytes(r)).unwrap())
+    };
+    let mut others = 0;
+    for alg in algorithms() {
+        let (provider, sign) = signing_with(alg);
+        accounts.use_oidc(provider);
+        for out_with in [0, 1] {
+            let issued = sign(serde_json::json!({ "email": "ada@example.com", "email_verified": true, "nonce": rand::random::<u32>() }));
+            let spellings: Vec<(&str, String)> = std::iter::once(("as issued", issued.clone())).chain(twin(&issued, alg).map(|t| ("spelled the other way", t))).collect();
+            let Some((by, out)) = spellings.get(out_with) else { continue };
+            for (spelled, token) in &spellings {
+                // The signature check takes both spellings; were it to stop taking the other,
+                // that row would hold nothing more and could go.
+                assert_eq!(call("GET", "/auth/me", token).0, 200, "{alg:?}, {spelled}: let in before");
+            }
+            assert_eq!(call("POST", "/auth/sign-out", out).0, 204, "{alg:?}: signed out with the token {by}");
+            for (spelled, token) in &spellings {
+                let (status, said) = call("GET", "/auth/me", token);
+                assert!(status == 401 && said.contains("you signed out"), "{alg:?}, signed out with the token {by}: the token {spelled}: {status} {said}");
+            }
+            others += spellings.len() - 1;
+        }
+    }
+    assert!(others > 0, "a token whose signature has another spelling was tried");
 }
 
 #[test]
@@ -15861,6 +15920,155 @@ fn approval_mail_mails_the_link_then_the_approval_through_its_binding() {
     // route that resumes, keeps it redacted.
     let logged = serde_json::to_string(&entries).unwrap();
     assert!(!logged.contains(&token) && !logged.contains("GET /approve"), "{logged}");
+}
+
+/// **Guards:** a sample whose wait runs out does nothing its answer would: it makes nothing that
+/// says or records the thing it waited for. Every action of every sample that waits is evaluated
+/// three ways at its `await`:
+/// - parked there, nothing delivered;
+/// - answered: an event as a resume route delivers one, an approval approved;
+/// - run out, with what `expire_waiting` delivers: `expired_event`, or an approval's decision as
+///   it runs out undecided, which `decided_as` takes as one.
+///
+/// What an ending does beyond the parked part is what its outputs perform, less the channel sends
+/// a parked run sends as it parks, plus the calls and requests it asks that the parked part
+/// hadn't. Run out, a sample may do something of its own (trading-bot deletes the order it showed
+/// as waiting), but nothing the answered ending does. A sample that waits, whose wait this doesn't
+/// reach, fails, naming it.
+/// **Why:** an expiry is delivered as a value, and statement order holds nothing after a wait
+/// (LANGUAGE.md: it carries "no meaning beyond names being defined before use"). So whatever
+/// follows the wait without reading the event is made when the wait runs out as when it is
+/// answered: approval-mail mailed "Your payout … was approved, and is recorded" to whoever asked,
+/// when nobody had approved it. A sample holds what follows behind its own test of `expired`, as
+/// trading-bot does.
+/// **Limit:** an effect written above the wait, other than a channel send, is made only as the run
+/// finishes (a run that waits makes nothing), so it shows in both endings and fails here, though
+/// it says nothing of the wait. No sample has one.
+#[test]
+fn a_sample_whose_wait_runs_out_does_nothing_its_answer_would() {
+    use holon_core::{Answer, Observer, Resolver, Value};
+    use std::collections::BTreeMap;
+
+    #[derive(Clone, Copy)]
+    enum Deliver {
+        Nothing,
+        Answered,
+        RanOut,
+    }
+    /// One evaluation: what it delivers at each wait, the waits it reached, and the calls and
+    /// requests it asked (not its reads, waits or tokens).
+    struct Ending {
+        deliver: Deliver,
+        reached: Vec<String>,
+        asked: Vec<Value>,
+    }
+    fn json(s: &str) -> Value {
+        holon_core::parse_json(s).unwrap()
+    }
+    impl Observer for Ending {
+        fn answer(&mut self, _path: &[u32], request: &Value) -> Answer {
+            let field = |key: &str| match request {
+                Value::Record(r) => r.get(key),
+                _ => None,
+            };
+            let text = |key: &str| match field(key) {
+                Some(Value::Text(t)) => Some(t.clone()),
+                _ => None,
+            };
+            if let Some(name) = text("await") {
+                self.reached.push(name.clone());
+                return match (self.deliver, text("steps")) {
+                    (Deliver::Nothing, _) => Answer::NotYet,
+                    (Deliver::RanOut, None) => Answer::Value(crate::durable::expired_event()),
+                    (Deliver::RanOut, Some(steps)) => {
+                        let ran_out = json(r#"{"approved":false,"by":[],"decisions":[],"expired":true}"#);
+                        crate::durable::StoredWaiting::decided_as(&name, &steps, &ran_out, None).unwrap_or_else(|e| panic!("{name}: {e}"));
+                        Answer::Value(ran_out)
+                    }
+                    (Deliver::Answered, None) => Answer::Value(json(
+                        r#"{"method":"POST","path":"/approve/rt_case","params":{"token":"rt_case"},"query":{},"headers":{"content-type":"application/json"},"body":"{\"by\":\"ada@acme.com\"}"}"#,
+                    )),
+                    (Deliver::Answered, Some(_)) => Answer::Value(json(
+                        r#"{"approved":true,"by":["ada","bo"],"decisions":[{"slot":0,"who":"ada","kind":"person","approved":true,"note":{"text":"The draft.","class":"routine"}},{"slot":1,"who":"bo","kind":"person","approved":true}]}"#,
+                    )),
+                };
+            }
+            if text("resume_token").is_some() {
+                return Answer::Value(Value::Text("rt_case".into()));
+            }
+            // A database query: a row holding each column it selects. Any other read: nothing.
+            if let (Some(_), Some(sql)) = (text("database"), text("query")) {
+                let lower = sql.to_lowercase();
+                if let Some(columns) = lower.strip_prefix("select ").and_then(|s| s.split(" from ").next()) {
+                    let row: BTreeMap<String, Value> = columns
+                        .split(',')
+                        .map(|c| (c.trim().rsplit([' ', '.']).next().unwrap_or_default().to_string(), Value::Number(1.0)))
+                        .collect();
+                    let row = Value::Record(row);
+                    return Answer::Value(if field("one") == Some(&Value::Boolean(true)) { row } else { Value::List(vec![row]) });
+                }
+            }
+            if ["collection", "folder", "database"].iter().any(|k| field(k).is_some()) {
+                return Answer::Absent;
+            }
+            if !self.asked.contains(request) {
+                self.asked.push(request.clone());
+            }
+            Answer::Absent
+        }
+    }
+
+    // Every field the samples' waiting actions read of what starts them.
+    let input = json(r#"{"id":"p1","item":"tea","amount":5000,"iban":"DE89370400440532013000","by":"sam@acme.com","account":1,"title":"Hello","brief":"A short note","product":"BTC-USD","price":"100","size":"1","side":"buy"}"#);
+    let (mut cases, mut failures) = (Vec::new(), Vec::new());
+    for sample in holon_author::samples::samples() {
+        let lowered = holon_author::lang::ts::compile(sample.text).unwrap_or_else(|e| panic!("{}: {e}", sample.name));
+        let mut store = holon_core::MapResolver::new();
+        holon_author::text::restore(&lowered.doc, &mut store, &BTreeMap::new());
+        let port = lowered.doc.server.as_ref().map(|s| s.port.clone()).unwrap_or_default();
+        let server = holon_author::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.unit_settings());
+        let mut waits = false;
+        for action in &server.actions {
+            let hash = holon_core::parse_hash(&action.hash).unwrap();
+            let unit = store.resolve(&hash).unwrap_or_else(|| panic!("{} {}: its unit", sample.name, action.label)).clone();
+            let run = |deliver: Deliver| {
+                let mut ending = Ending { deliver, reached: Vec::new(), asked: Vec::new() };
+                let outputs = holon_core::eval_observed(&unit, &[Some(input.clone())], &store, &mut ending);
+                (outputs, ending)
+            };
+            let (parked, at) = run(Deliver::Nothing);
+            if at.reached.is_empty() {
+                continue;
+            }
+            waits = true;
+            let progress = crate::channels::settled_sends(&parked);
+            let done = |deliver: Deliver| -> Vec<String> {
+                let (outputs, ending) = run(deliver);
+                let mut host = crate::firing::RecordingHost::new();
+                for output in outputs.iter().flatten() {
+                    holon_host::perform_effects(output, &mut host);
+                }
+                let made = host.performed.into_iter().filter(|p| !progress.contains(p)).map(|(c, v)| format!("{c:?} {}", holon_core::stringify_json(&v).unwrap_or_default()));
+                let asked = ending.asked.into_iter().filter(|r| !at.asked.contains(r)).map(|r| format!("asks {}", holon_core::stringify_json(&r).unwrap_or_default()));
+                made.chain(asked).collect()
+            };
+            let (answered, ran_out) = (done(Deliver::Answered), done(Deliver::RanOut));
+            let case = format!("{} {} (waits at {:?})", sample.name, action.label, at.reached);
+            if answered.is_empty() {
+                failures.push(format!("{case}: answered, it does nothing here, so this says nothing of it: give it what it reads"));
+            }
+            let both: Vec<&String> = ran_out.iter().filter(|d| answered.contains(d)).collect();
+            if !both.is_empty() {
+                failures.push(format!("{case}: run out, it does what it does when answered: {both:?}"));
+            }
+            cases.push(case);
+        }
+        if waits != (sample.text.contains("await event(") || sample.text.contains("await approval(")) {
+            failures.push(format!("{}: it waits, and this reaches no wait of it (or the reverse)", sample.name));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+    assert!(cases.len() >= 5, "{cases:#?}");
 }
 
 fn smtp_base64(bytes: &[u8]) -> String {

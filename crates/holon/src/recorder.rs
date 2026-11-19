@@ -953,6 +953,14 @@ pub struct Log {
     /// so what reads every line it holds (`Lines::each`, the sweeps' names) fails while this is
     /// set, rather than take what they name as gone (release audit R92).
     unread: Option<String>,
+    /// The sealed segments in `unread`, each by the runs its name says it holds
+    /// (`<first>-<last>.jsonl.gz`), and where it is: what an admin may give up, removing the
+    /// deployment ([`LogCell::lines_to_head_giving_up`], release audit R110).
+    unread_segments: Vec<(u64, u64, PathBuf)>,
+    /// Whether `unread` holds what isn't one of them: its segments' folder not listed, or a
+    /// segment whose name says no runs. What is missing isn't known by run then, and nothing of it
+    /// can be given up.
+    unread_unknown: bool,
     /// Where what its reads fail on is noted for the admin's warnings (failing::note_file): the
     /// deployments file of the server whose deployment it is the log of ([`Log::for_deployment`]).
     notes: Option<Place>,
@@ -1405,6 +1413,63 @@ fn sealed_dir(file: &Path) -> PathBuf {
 /// says of it (where the data folder is, is the admin's; stderr says it).
 fn segment_name(p: &Path) -> std::borrow::Cow<'_, str> {
     p.file_name().map_or("a segment".into(), |n| n.to_string_lossy())
+}
+
+/// The runs a sealed segment's name says it holds, its first and its last
+/// (`<first>-<last>.jsonl.gz`, as `write_segment` names it), read without opening it.
+fn segment_runs(p: &Path) -> Option<(u64, u64)> {
+    let name = p.file_name()?.to_str()?.strip_suffix(".jsonl.gz")?;
+    let (first, last) = name.split_once('-')?;
+    let number = |n: &str| (!n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).then(|| n.parse::<u64>().ok()).flatten();
+    let (first, last) = (number(first)?, number(last)?);
+    (first <= last).then_some((first, last))
+}
+
+/// Runs, as first-to-last spans, oldest first, those that overlap or follow one another joined:
+/// two segments `137-147` and `148-285` are runs 137 to 285. How runs given up are compared and
+/// said (deploy.rs, verify.rs).
+pub(crate) fn joined(spans: impl IntoIterator<Item = (u64, u64)>) -> Vec<(u64, u64)> {
+    let mut spans: Vec<(u64, u64)> = spans.into_iter().map(|(a, b)| (a.min(b), a.max(b))).collect();
+    spans.sort_unstable();
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    for (first, last) in spans {
+        match out.last_mut() {
+            Some(prev) if first <= prev.1.saturating_add(1) => prev.1 = prev.1.max(last),
+            _ => out.push((first, last)),
+        }
+    }
+    out
+}
+
+/// `lines`, a log's read whole, ending at `head`: from the newest, the head is the last line, or
+/// one of the few written since it was taken.
+fn to_head(lines: &mut Vec<String>, head: &str) {
+    if let Some(at) = lines.iter().rposition(|l| line_hash(l) == head) {
+        lines.truncate(at + 1);
+    }
+}
+
+/// What a removal read of a log ([`LogCell::lines_to_head_giving_up`]): its lines to its head, as
+/// `lines_to_head` reads them but for the runs given up; those runs, and the sealed segments that
+/// held them, to keep beside the records (deploy.rs).
+#[derive(Debug)]
+pub(crate) struct GivenUpRead {
+    pub(crate) lines: Vec<String>,
+    pub(crate) head: String,
+    pub(crate) given_up: Vec<(u64, u64)>,
+    pub(crate) segments: Vec<PathBuf>,
+}
+
+/// Why a removal's read of a log didn't go.
+#[derive(Debug)]
+pub(crate) enum NotGivenUp {
+    /// Runs it can't read now, which aren't the runs named to give up (`joined`): nothing named,
+    /// or other runs.
+    Named(Vec<(u64, u64)>),
+    /// What couldn't be read as it opened isn't known by run (`Log::unread_unknown`).
+    Unknown,
+    /// A read of the rest failed, as `lines_to_head`'s does.
+    Read(std::io::Error),
 }
 
 fn read_segment(path: &Path) -> std::io::Result<String> {
@@ -1885,11 +1950,49 @@ impl LogCell {
         let (its, head) = self.with(|log| (log.its_lines(), log.head().to_string()));
         let mut lines = Vec::new();
         its.each(|l| lines.push(l.to_string()))?;
-        // From the newest: the head is the last line, or one of the few written since.
-        if let Some(at) = lines.iter().rposition(|l| line_hash(l) == head) {
-            lines.truncate(at + 1);
-        }
+        to_head(&mut lines, &head);
         Ok((lines, head))
+    }
+
+    /// Its lines to its head, as [`lines_to_head`](LogCell::lines_to_head) reads them, for its
+    /// deployment's removal, giving up `give_up`: the runs of its sealed segments that couldn't
+    /// be read as it opened (`Log::unread`), on an admin's word (deploy.rs, release audit R110).
+    ///
+    /// Each such segment is read again first: one that reads now is read with the rest, and
+    /// nothing of it is given up. The runs of those that still don't are what it can't read now;
+    /// read over only when they are `give_up` exactly (as runs: `joined`), else
+    /// [`NotGivenUp::Named`] with them, and nothing is read. None left: its lines whole, nothing
+    /// given up, whatever was named. What isn't known by run can't be given up
+    /// ([`NotGivenUp::Unknown`]); and any other read that fails fails it, as `lines_to_head`.
+    pub fn lines_to_head_giving_up(&self, give_up: &[(u64, u64)]) -> Result<GivenUpRead, NotGivenUp> {
+        let (mut its, head, unread) = self.with(|log| (log.its_lines(), log.head().to_string(), log.unread.as_ref().map(|_| (log.unread_segments.clone(), log.unread_unknown))));
+        let mut still: Vec<(u64, u64, PathBuf)> = Vec::new();
+        if let Some((segments, unknown)) = unread {
+            if unknown {
+                return Err(NotGivenUp::Unknown);
+            }
+            for (first, last, path) in segments {
+                // A segment that reads now is read again below, in its place among the others (their
+                // names sort by run); one that doesn't, or is gone, can't be read now. Why, for the
+                // admin, is in the warning noted as it opened.
+                match read_segment(&path) {
+                    Ok(_) => its.segments.push(path),
+                    Err(_) => still.push((first, last, path)),
+                }
+            }
+            its.segments.sort();
+            let now = joined(still.iter().map(|(a, b, _)| (*a, *b)));
+            if !now.is_empty() && now != joined(give_up.iter().copied()) {
+                return Err(NotGivenUp::Named(now));
+            }
+            // What it couldn't read as it opened is read again, or given up.
+            its.unread = None;
+        }
+        let mut lines = Vec::new();
+        its.each(|l| lines.push(l.to_string())).map_err(NotGivenUp::Read)?;
+        to_head(&mut lines, &head);
+        let given_up = joined(still.iter().map(|(a, b, _)| (*a, *b)));
+        Ok(GivenUpRead { lines, head, given_up, segments: still.into_iter().map(|(.., p)| p).collect() })
     }
 
     /// The runs it keeps, read a run at a time, and whether they could all be read: what a
@@ -2063,6 +2166,8 @@ impl Log {
             hot: HOT,
             refused: None,
             unread: None,
+            unread_segments: Vec::new(),
+            unread_unknown: false,
             notes: None,
         };
         let Some(path) = log.file.clone() else { return log };
@@ -2076,6 +2181,7 @@ impl Log {
         let listed = holon_host::listed(crate::at_rest::disk::read_dir(&dir)).unwrap_or_else(|e| {
             eprintln!("holon: the sealed segments in {} can't be listed, their runs are missing from the log", dir.display());
             log.unread = Some(format!("its sealed segments' folder can't be listed: {e}"));
+            log.unread_unknown = true;
             Vec::new()
         });
         for e in listed {
@@ -2097,6 +2203,10 @@ impl Log {
                 Err(e) => {
                     eprintln!("holon: the sealed segment {} can't be read, its runs are missing from the log: {e}", p.display());
                     log.unread = Some(format!("its sealed segment {} can't be read: {e}", segment_name(&p)));
+                    match segment_runs(&p) {
+                        Some((first, last)) => log.unread_segments.push((first, last, p)),
+                        None => log.unread_unknown = true,
+                    }
                     continue;
                 }
             };
@@ -3952,6 +4062,74 @@ not a sealed line
         std::fs::rename(folder.with_extension("aside"), &folder).unwrap();
         let log = Log::open_keeping(Some(path.clone()), 200);
         assert_eq!(seqs(log.plan(None, usize::MAX).read()).unwrap().len(), 120, "listed again, as it opens");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guards: a removal's read giving up runs (`lines_to_head_giving_up`) reads over the sealed
+    /// segments that couldn't be read as the log opened only when the runs named are exactly those
+    /// it can't read now, in any order (as runs: segments side by side are one span), and gives
+    /// their files to keep; else `Named` with what it can't read now, nothing named included. A
+    /// segment that reads again by then is read with the rest, never given up; none left, its
+    /// lines are whole whatever was named. A folder that couldn't be listed isn't known by run:
+    /// `Unknown`. The lines are `lines_to_head`'s, those runs left out.
+    /// Why: a deployment whose sealed segment was damaged couldn't be removed at all (500), and
+    /// the segment taken out by hand, its records failed their own check for good (release audit
+    /// R110).
+    /// If it fails: what `lines_to_head_giving_up` compares, or reads again, changed.
+    #[test]
+    fn a_removal_gives_up_exactly_the_runs_it_cant_read() {
+        assert_eq!(joined([(148, 285), (137, 147), (300, 300), (290, 295)]), vec![(137, 285), (290, 295), (300, 300)]);
+        assert_eq!(segment_runs(Path::new("00000000000000000137-00000000000000000147.jsonl.gz")), Some((137, 147)));
+        assert_eq!(segment_runs(Path::new("x-147.jsonl.gz")), None);
+        let dir = temp_dir("give-up");
+        let path = dir.join("give.jsonl");
+        let cell = LogCell::new(Log::open_keeping(Some(path.clone()), 200));
+        cell.with(|l| l.set_hot(20));
+        for i in 0..120 {
+            cell.with(|l| l.push(LogEntry { at_ms: 1_000 + i, ..entry() }));
+            cell.cut_if_planned();
+        }
+        let (whole, head) = cell.lines_to_head().unwrap();
+        drop(cell);
+        let seqs = |lines: &[String]| lines.iter().map(|l| crate::wire::read_json::<LogEntry>(l.as_bytes()).unwrap().seq).collect::<Vec<_>>();
+        let mut segments: Vec<PathBuf> = std::fs::read_dir(sealed_dir(&path)).unwrap().flatten().map(|e| e.path()).collect();
+        segments.sort();
+        assert!(segments.len() >= 3, "three segments or more: {segments:?}");
+        // The oldest and the third, cut short: two spans apart.
+        let (a, b) = (segments[0].clone(), segments[2].clone());
+        let (sa, sb) = (segment_runs(&a).unwrap(), segment_runs(&b).unwrap());
+        let (bytes_a, bytes_b) = (std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
+        std::fs::write(&a, &bytes_a[..bytes_a.len() - 10]).unwrap();
+        std::fs::write(&b, &bytes_b[..bytes_b.len() - 10]).unwrap();
+        let damaged = LogCell::new(Log::open_keeping(Some(path.clone()), 200));
+        assert!(damaged.lines_to_head().is_err(), "a plain read fails on it, as before");
+        let named = |give_up: &[(u64, u64)]| match damaged.lines_to_head_giving_up(give_up) {
+            Err(NotGivenUp::Named(now)) => now,
+            other => panic!("{give_up:?}: {other:?}"),
+        };
+        assert_eq!(named(&[]), vec![sa, sb], "nothing named");
+        assert_eq!(named(&[sa]), vec![sa, sb], "one of the two");
+        assert_eq!(named(&[sa, sb, (500, 510)]), vec![sa, sb], "more than it can't read");
+        let read = damaged.lines_to_head_giving_up(&[sb, sa]).unwrap();
+        assert_eq!((read.given_up.clone(), read.segments.clone(), read.head.clone()), (vec![sa, sb], vec![a.clone(), b.clone()], head.clone()));
+        let without: Vec<u64> = seqs(&whole).into_iter().filter(|s| !(sa.0..=sa.1).contains(s) && !(sb.0..=sb.1).contains(s)).collect();
+        assert_eq!(seqs(&read.lines), without, "every other run, in order");
+        // One read again meanwhile: what it can't read now is the other alone.
+        std::fs::write(&b, &bytes_b).unwrap();
+        assert_eq!(named(&[sa, sb]), vec![sa], "one healed meanwhile");
+        let read = damaged.lines_to_head_giving_up(&[sa]).unwrap();
+        assert_eq!((read.given_up, read.segments), (vec![sa], vec![a.clone()]));
+        assert_eq!(seqs(&read.lines), seqs(&whole).into_iter().filter(|s| !(sa.0..=sa.1).contains(s)).collect::<Vec<_>>(), "the healed one's runs read with the rest");
+        // Both: its lines whole, nothing given up, whatever was named.
+        std::fs::write(&a, &bytes_a).unwrap();
+        let read = damaged.lines_to_head_giving_up(&[sa]).unwrap();
+        assert_eq!((read.lines, read.given_up, read.segments), (whole.clone(), vec![], vec![]));
+        // A folder that couldn't be listed as it opened: not known by run.
+        let folder = sealed_dir(&path);
+        std::fs::rename(&folder, folder.with_extension("aside")).unwrap();
+        std::fs::write(&folder, b"not a folder").unwrap();
+        let unlisted = LogCell::new(Log::open_keeping(Some(path.clone()), 200));
+        assert!(matches!(unlisted.lines_to_head_giving_up(&[sa]), Err(NotGivenUp::Unknown)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

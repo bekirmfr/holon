@@ -74,6 +74,9 @@ pub(crate) struct Kind {
     pub(crate) many: &'static str,
     /// Its spool folder.
     pub(crate) folder: &'static str,
+    /// The warnings' told words (storage.rs `Warning::told`): its folder not listed, and items of
+    /// it kept back.
+    pub(crate) told: [&'static str; 2],
 }
 
 /// What a start kept back, unsent, until the next: by deployment, how many items and why their
@@ -102,6 +105,7 @@ impl KeptBack {
         if let Some(why) = self.folder.lock().unwrap().as_ref() {
             out.push(Warning {
                 key: kind.key.to_string(),
+                told: kind.told[0],
                 says: format!("the {} folder can't all be listed ({why}): what was spooled in it before the server started is neither sent nor removed", kind.folder),
                 todo: "make it readable again, then restart the server: what it holds is sent or removed then".into(),
             });
@@ -109,6 +113,7 @@ impl KeptBack {
         for (slug, (n, why)) in self.items.lock().unwrap().iter() {
             out.push(Warning {
                 key: format!("{}:{slug}", kind.key),
+                told: kind.told[1],
                 says: format!(
                     "{n} {} of {slug:?} spooled before the server started {} neither sent nor removed: whether {} landed can't be told, since its run log can't all be read ({why})",
                     if *n == 1 { kind.one } else { kind.many },

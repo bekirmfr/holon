@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **Changing a secret while a run waits no longer sends its earlier requests again** where the
+  request holds the secret as it is: in a header, a URL or a JSON body. When the run goes on, such
+  a request is recognised as sent and answered from its record; the same holds for a run tried
+  again after a secret changed between its tries. Still sent again, with the new value: a request
+  holding a value computed from the secret in the flow (a signature, a Basic credential, another
+  encoding); change such a secret when `holon runs <slug> --waiting` lists none. `holon verify`
+  and replays read the record the same way.
+- **A provider's sign-in signed out of is refused however its token is spelled.** The server
+  remembered a signed-out ID token by its exact text. A token signed with an elliptic-curve key
+  (ES256 or ES384) has a second spelling of its signature that is as valid, which anyone holding
+  the token can write, and that one was let in as the same person until the token expired. A
+  signed-out sign-in is now remembered by what the provider signed, which both spellings share.
+  Providers that sign with RSA keys, password sign-ins and API tokens were not affected. Sign-outs
+  made before the upgrade are forgotten: a token signed out just before it is taken again until
+  it expires.
+- **A revoked call of another flow's action is granted back only by someone who may run that
+  action**, as a deploy of a version that calls it is. Before, whoever could change the calling
+  flow's grant could give back a call an admin had revoked, though they could not have deployed
+  it. It is refused with the deploy's reason.
+- **A warning for the admin no longer reaches the activity's other readers.** The activity keeps a
+  few fixed words for each warning, never where or why, and gives them only to whoever may view
+  the host. The whole of each stays in the admin's warnings (`holon host`).
+- **The approval-mail sample no longer mails "approved" when its approval only ran out.** Its
+  action returns when the event says the wait ran out, before the mail, as the trading-bot sample
+  does.
+- **A deployment whose run records are truly damaged can be removed, giving up only the runs that
+  can't be read.** `holon remove <slug> --yes` names the runs it can't read and the command that
+  gives them up. An admin (who may operate the host as well as remove flows) gives them up with
+  `--give-up 134-144`, which must name exactly those runs. The removed records say which runs
+  were given up, by whom and when, and `holon verify` reads them as given up and not checked,
+  never as changed. The damaged files are kept beside the records.
+
 ## 0.1.0-rc.36
 
 - **Known limits of this release.** The first three are the first work after it.

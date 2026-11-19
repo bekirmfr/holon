@@ -147,8 +147,10 @@ The server looks at what it holds every ten seconds, and warns of:
 
 Each says what to do. They are shown first in `holon host` and on the admin page's **the host**,
 on the home page for admins, and in the terminal editor's top bar and overview
-(`GET /admin/warnings`); and each is said once in the server's log and its activity as it starts,
-and in the log as it ends.
+(`GET /admin/warnings`); and each is said once in the server's log as it starts and as it ends,
+and in its activity as it starts. The activity keeps a few fixed words for each warning, never
+where or why, and gives them only to whoever may view the host: the rest of the activity is read
+by more.
 
 `GET /health`, which anyone who reaches the server may ask, answers `ok`; while the deployments
 file can't be written or the logs can't be synced, 503 `not ok: ` and which (`not ok: the run logs
@@ -522,7 +524,8 @@ People are still added here, with a role; the provider only proves who is signin
 provider says who each person here is, setting it (`POST /admin/oidc`) takes holding what each
 person holds: an admin; and while an access change that gives more waits for people, it is set
 only through this machine's run file. An ID token is good until it expires, wherever it is shown, so signing out
-with one (`POST /auth/sign-out`, the editor's **Sign out**) keeps it refused until then; another
+with one (`POST /auth/sign-out`, the editor's **Sign out**) keeps it refused until then, however
+it is spelled (an ES256 or ES384 signature can be written two ways, each as good); another
 sign-in of theirs at the provider still is one. A sign-out answers 204 only when it ended the
 sign-in it came with: a session, or a provider's sign-in. An agent's or a service's API token is
 refused (409, revoke it instead), and so is the machine's run file (409, it ends when the server

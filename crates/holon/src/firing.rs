@@ -758,6 +758,10 @@ fn run_attempt(
     let mut committed = BTreeMap::new();
     let mut granted = Vec::new();
     let vault = secrets.lock().unwrap();
+    // What its requests are told apart by: each with the values its record marks as a secret's
+    // written as their names, so one its record answers isn't sent again with another value of
+    // the same secret (R113).
+    let keys = secrets::Named::of(&vault);
     for (name, value) in vault.current.iter() {
         let cap = Capability::SecretRead(name.clone());
         if permit.allows(&cap) {
@@ -857,7 +861,7 @@ fn run_attempt(
         calls: Some(&caller),
         secret_sends,
     };
-    let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &sender, limits, &mut timer, waits, &prior);
+    let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &sender, limits, &mut timer, waits, &prior, &keys);
     let overtaken = outcome.error == Some(holon_host::RunError::Overtaken);
     // A read that failed (a file too big, or not text; a folder not bound) fails the run: it
     // performs nothing. Why names what it asked for (a file's name, a key, a parameter): where a

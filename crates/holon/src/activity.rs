@@ -3,7 +3,8 @@
 //! an in-memory server). A deployment or flow that is deleted takes its own records with it;
 //! this log keeps that it was, and who did it. Secrets have their own audit (secrets.rs).
 //! `GET /activity?limit=n` answers the newest first: all of it to a caller who views every flow,
-//! and only what was done to the flows they view to one bound at some flows.
+//! and only what was done to the flows they view to one bound at some flows. What the server
+//! warned of goes to whoever views the host alone, in its told words ([`WARNED`]).
 
 use std::path::PathBuf;
 use crate::sync::Mutex;
@@ -122,10 +123,19 @@ fn flow_of(e: &ActivityEntry) -> Option<&str> {
     DONE_TO_A_FLOW.contains(&e.action.as_str()).then(|| e.target.split(" run ").next().unwrap_or_default())
 }
 
+/// What the server warned of, by itself, as each warning started (storage.rs `Sweeps::watch`):
+/// shown only to whoever views the host, as the warnings are. Its target is the warning's told
+/// words alone (`Warning::told`), never where or why (release audit R114).
+pub(crate) const WARNED: &str = "warned";
+
 /// `GET /activity?limit=n` (default 50): what was done, newest first, as far as `who` may see it.
 pub(crate) fn handle_get_activity(activity: &Activity, request: &Request, who: &Caller) -> Response {
     let limit = request.get_param("limit").and_then(|l| l.parse().ok()).unwrap_or(50);
     let all = everywhere(who, Action::FlowView);
-    let keep = |e: &ActivityEntry| all || flow_of(e).is_some_and(|slug| can(who, Action::FlowView, &Resource::Flow(slug)).is_ok());
+    let host = can(who, Action::HostView, &Resource::Host).is_ok();
+    let keep = |e: &ActivityEntry| match e.action.as_str() {
+        WARNED => host,
+        _ => all || flow_of(e).is_some_and(|slug| can(who, Action::FlowView, &Resource::Flow(slug)).is_ok()),
+    };
     Response::json(&serde_json::json!({ "entries": activity.newest(limit, keep) }))
 }

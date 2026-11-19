@@ -414,7 +414,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
                 return handle_get_permission_view(&state.store, &state.deployments, slug, which);
             }
             if method == "POST" && which == "grant" {
-                return recorded(state, grants::handle_post_grant(state, slug, request, by), "granted", slug, by);
+                return recorded(state, grants::handle_post_grant(state, slug, request, &caller), "granted", slug, by);
             }
         } else if let Some(slug) = rest.strip_suffix("/sessions") {
             if method == "GET" {
@@ -446,7 +446,31 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
                 return scheduler::handle_post_tick(state, slug, request, &caller);
             }
         } else if method == "DELETE" {
-            let response = handle_delete_deployment(&state.store, &state.folders, &state.deployments, &state.deployments_path, rest, crate::can::sees_data(&caller));
+            // Runs given up removing it (`?give_up=`: what of its log can't be read) are an
+            // admin's word, beside flow.delete: it is the one way, but retention, that run
+            // records go (release audit R110). An agent holds neither (can.rs `fixed`).
+            let give_up = match request.get_param("give_up").map(|text| crate::deploy::parse_give_up(&text)) {
+                None => Vec::new(),
+                Some(Ok(spans)) => spans,
+                Some(Err(e)) => return err(400, e),
+            };
+            if !give_up.is_empty()
+                && let Err(refusal) = crate::can::can(&caller, crate::can::Action::HostOperate, &crate::can::Resource::Host)
+            {
+                return refusal.response();
+            }
+            let mut given = Vec::new();
+            let response = handle_delete_deployment(
+                &state.store,
+                &state.folders,
+                &state.deployments,
+                &state.deployments_path,
+                rest,
+                crate::can::sees_data(&caller),
+                &give_up,
+                by,
+                &mut given,
+            );
             // Deleted, it is on no tag.
             if response.status_code == 200
                 && let Some(accounts) = state.access.accounts()
@@ -459,6 +483,13 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
                 eprintln!("warning: {rest:?}'s secrets weren't removed: {e}");
             }
             sync_listeners(state);
+            if response.is_success() && !given.is_empty() {
+                // By number alone: the activity is read by whoever views the flow.
+                let they = if matches!(given.as_slice(), [(a, b)] if a == b) { "it" } else { "they" };
+                let note = format!("gave up {}: {they} couldn't be read", crate::deploy::runs_said(&given));
+                state.activity.record_noted("deleted", rest, by, Some(&note));
+                return response;
+            }
             return recorded(state, response, "deleted", rest, by);
         }
     }

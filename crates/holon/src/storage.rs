@@ -298,6 +298,12 @@ const LOOKS_AN_HOUR: usize = 360;
 pub(crate) struct Warning {
     /// What it is about, the same from one look to the next: `disk:<path>`, `cache:flows`.
     pub(crate) key: String,
+    /// What it is, in words written in the source: no place, no OS words, no why. What the
+    /// activity record keeps of it as it starts (`Sweeps::watch`), since more than the admin reads
+    /// that record and the rest is the admin's (release audit R114). `'static`, so nothing made at
+    /// run time can be put in it.
+    #[serde(skip)]
+    pub(crate) told: &'static str,
     pub(crate) says: String,
     pub(crate) todo: String,
 }
@@ -333,6 +339,7 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
         let grew = fastest.as_ref().map(|(slug, g)| format!("; the flow that grew most since the store was last counted: {slug}, by {}", size(*g))).unwrap_or_default();
         out.push(Warning {
             key: format!("disk:{}", d["path"].as_str().unwrap_or("")),
+            told: "a disk the server writes to is past the fullness it warns at",
             says: format!(
                 "the disk with {} is {}% full for the server: {} free of {} (it warns at {}){grew}",
                 holds.join(", "),
@@ -353,6 +360,7 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
     if full && flows_full * 2 > looks {
         out.push(Warning {
             key: "cache:flows".into(),
+            told: "the flow cache has been at its size most of the last hour",
             says: format!("the flow cache has been at its size ({}) most of the last hour: it lets go of flows their runs load again from disk", size(flows.2)),
             todo: "raise it: holon serve --flow-cache".into(),
         });
@@ -360,6 +368,7 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
     if full && values_full * 2 > looks {
         out.push(Warning {
             key: "cache:values".into(),
+            told: "the value cache has been at its size most of the last hour",
             says: format!("the value cache has been at its size ({}) most of the last hour: it lets go of values runs read again from disk", size(values.2)),
             todo: "raise it: holon serve --value-cache (or HOLON_VALUE_CACHE)".into(),
         });
@@ -367,6 +376,7 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
     if let Some(e) = log_backup_error(state) {
         out.push(Warning {
             key: "backup".into(),
+            told: "the backup can't be written to",
             says: format!("the backup can't be written to: {e}"),
             todo: "the runs it would hold are kept in the logs until it can: check the drive or folder is there and writable, or change [storage] backup (holon policy --backup)".into(),
         });
@@ -374,6 +384,7 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
     if let Some(e) = state.sweeps.backup_error.lock().unwrap().clone() {
         out.push(Warning {
             key: "backup-export".into(),
+            told: "a batch of runs in the backup can't be made an export",
             says: format!("a batch of runs in the backup can't be made an export: {e}"),
             todo: "its runs are in the batch still, as the log wrote them, and the other batches are made exports all the same; check the drive or folder is writable and the batch is whole, it is tried again every ten seconds".into(),
         });
@@ -383,20 +394,24 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
     // What couldn't be read as the server started is read again only as it starts again: a run
     // log's segments, the store's packs (release audit R92). Its advice says so, never "it goes
     // when it next reads": nothing reads it before.
-    let at_start = files.iter().any(|(told, ..)| told == crate::recorder::RUNS_UNREAD_AT_START) || !unreadable_packs.is_empty();
+    let at_start = files.iter().any(|(told, ..)| *told == crate::recorder::RUNS_UNREAD_AT_START) || !unreadable_packs.is_empty();
     for (told, place, why) in files {
         let todo = if told == crate::recorder::RUNS_UNREAD_AT_START {
             "make it readable again, or restore it from a copy of the data folder, then restart the server: what couldn't be read as it started is read again only as it starts; until then a read of all its runs (a page reaching back, its history, a restore, an export, a replay) answers an error, and nothing is swept"
         } else {
             "make it readable (or writable) again, or restore it from a copy of the data folder; the warning goes when it next reads or writes"
         };
-        out.push(Warning { key: format!("file:{told}:{place}"), says: format!("{told}: {place} ({why})"), todo: todo.into() });
+        out.push(Warning { key: format!("file:{told}:{place}"), told, says: format!("{told}: {place} ({why})"), todo: todo.into() });
     }
     {
         // A round that couldn't read all that names what is kept removed nothing (release audit
         // R92); until one can, the store and the folders' texts only grow.
         let kept = state.sweeps.kept.lock().unwrap();
-        for (what, report) in [("store", &kept.store), ("file texts", &kept.folders)] {
+        let rounds = [
+            ("store", &kept.store, "the last sweep of the store removed nothing"),
+            ("file texts", &kept.folders, "the last sweep of the file texts removed nothing"),
+        ];
+        for (what, report, told) in rounds {
             if let Some(e) = report.as_ref().and_then(|r| r.error.as_ref()) {
                 let then = if at_start {
                     "then restart the server: what couldn't be read as it started (the warnings above say which) is read again only as it starts, and the rounds before remove nothing"
@@ -405,6 +420,7 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
                 };
                 out.push(Warning {
                     key: format!("sweep:{what}"),
+                    told,
                     says: format!("the last sweep of the {what} removed nothing: {e}"),
                     todo: format!("nothing is removed while what names what is kept can't all be read: make it readable again (a file's permissions, a disk, the server's open files), or restore it from a copy of the data folder; {then}"),
                 });
@@ -414,6 +430,7 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
     for (pack, e) in unreadable_packs {
         out.push(Warning {
             key: format!("pack:{}", pack.display()),
+            told: "a pack of the store's values can't be read, and its values are missing",
             says: format!("a pack of the store's values can't be read, and its values are missing: {} ({e})", pack.display()),
             todo: "restore the file from a copy of the data folder and restart the server; the store's other values read as they were".into(),
         });
@@ -424,6 +441,7 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
         if disk > 0 && store * 10 > disk {
             out.push(Warning {
                 key: "sweep-off".into(),
+                told: "the server doesn't sweep on its own, and its store takes over a tenth of its disk",
                 says: format!("the server doesn't sweep on its own, and its store takes {} of its disk's {}", size(store), size(disk)),
                 todo: "sweep now (holon store sweep), or turn sweeping on: holon policy --sweep-every 10m".into(),
             });
@@ -439,11 +457,13 @@ pub(crate) fn writer_warning(writer: crate::failing::Writer, why: &str) -> Warni
     match writer {
         Writer::Deployments => Warning {
             key: "write:deployments".into(),
+            told: "the deployments file can't be written",
             says: format!("the deployments file can't be written ({why}): a deploy, a grant, a pause or a waiting run kept now is lost when the server starts again"),
             todo: todo("it is written again at the next change, and every second while runs are counted"),
         },
         Writer::Logs => Warning {
             key: "write:logs".into(),
+            told: "the run logs can't be synced to disk",
             says: format!("the run logs can't be synced to disk ({why}): a strict run answers 500 until they are, and a lazy run's newest lines may be lost to a power loss"),
             todo: todo("it is tried again every second"),
         },
@@ -455,6 +475,7 @@ pub(crate) fn witness_warning(witness: &crate::heads::Witness, why: &str) -> War
     let taken = if witness.taken_ms.is_some() { "" } else { "; it has taken none since the server started" };
     Warning {
         key: "witness".into(),
+        told: "the witness doesn't take the runs' heads",
         says: format!("the witness at {} doesn't take the runs' heads ({why}): {} wait{taken}", witness.address, witness.waiting),
         todo: format!(
             "check the witness is up and takes this server's token (HOLON_EXPORT_HEADS_TOKEN); the heads wait on disk and are sent again, each deployment's newest kept once more than {} wait. The flows run on: GET /health doesn't say this",
@@ -505,7 +526,7 @@ impl Sweeps {
 
     /// Note how full the caches are, and say each warning once, as it starts and as it ends: in
     /// the server's log and its activity.
-    fn watch(&self, state: &AppState) {
+    pub(crate) fn watch(&self, state: &AppState) {
         {
             // A cache at its size lets go of what runs read, to make room: since the last look?
             let evicted = (state.store.3.evicted(), state.store.4.evicted());
@@ -522,7 +543,9 @@ impl Sweeps {
         let mut watch = self.watch.lock().unwrap();
         for w in now.iter().filter(|w| !watch.said.contains(&w.key)) {
             eprintln!("holon: warning: {}; {}", w.says, w.todo);
-            state.activity.record("warned", &w.says, None);
+            // Its told words alone, never where or why: those are the warnings' and stderr's, and
+            // the activity record is read by more than whoever views the host. Release audit R114.
+            state.activity.record(crate::activity::WARNED, w.told, None);
         }
         for key in watch.said.difference(&keys) {
             println!("holon: no longer warning of {key}");
@@ -1323,6 +1346,30 @@ fn expire_removed(state: &AppState, backup: Option<&Path>, now_ms: u64) -> Resul
                     failed = Err(format!("{}: {e}", to.display()));
                 }
                 continue;
+            }
+        }
+        // The segments given up removing it (deploy.rs `given_up_dir`) go with it, to the backup
+        // beside it first when there is one.
+        let given_up = crate::deploy::given_up_dir(&entry.path());
+        if given_up.is_dir() {
+            if let Some(backup) = backup {
+                let to = backup.join(slug).join(format!("{}.given-up", removed_export_name(slug, at_ms).trim_end_matches(".json.gz")));
+                let copied = std::fs::create_dir_all(&to).and_then(|_| {
+                    for segment in crate::at_rest::disk::read_dir(&given_up)? {
+                        let segment = segment?;
+                        crate::sealing::write_private(&to.join(segment.file_name()), &crate::at_rest::disk::read(segment.path())?)?;
+                    }
+                    Ok(())
+                });
+                if let Err(e) = copied {
+                    if failed.is_ok() {
+                        failed = Err(format!("{}: {e}", to.display()));
+                    }
+                    continue;
+                }
+            }
+            if let Err(e) = std::fs::remove_dir_all(&given_up) {
+                eprintln!("holon: {} is past its time, and couldn't be removed: {e}", given_up.display());
             }
         }
         if let Err(e) = std::fs::remove_file(entry.path()) {

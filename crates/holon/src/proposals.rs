@@ -337,7 +337,7 @@ pub(crate) fn handle_post_settings(state: &AppState, slug: &str, request: &Reque
     }
     if !body.lower.is_empty() {
         let change = crate::permissions::ChangeRequest { lower: body.lower, ..Default::default() };
-        if let Err(r) = crate::grants::change_grant(state, slug, &change, by) {
+        if let Err(r) = crate::grants::change_grant(state, slug, &change, who) {
             return r;
         }
     }

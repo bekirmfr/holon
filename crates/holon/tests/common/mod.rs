@@ -5,11 +5,12 @@
 //! Each binary uses some of it.
 #![allow(dead_code)]
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Longer than this, what a test waits for is taken never to come: a guard so a hang fails the
 /// test, never a measure of how long anything took (on a loaded machine anything takes longer).
@@ -17,6 +18,25 @@ pub const EVENTUALLY: Duration = Duration::from_secs(60);
 
 pub fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+/// A folder of its own in the system's temp folder, named `name`, this process, the time and a
+/// count kept by this process, made here: never one that was there, never another test's. The
+/// time alone isn't enough: a binary's tests run at once, and on Windows two can read the same
+/// time. data_plane.rs's two tests were given one server home that way (3 runs in 30 here): the
+/// second server found the first's lock and ended with exit 1, and as both wrote their words into
+/// one file, made afresh by each, what it said could be lost under the other's.
+pub fn own_folder(name: &str) -> PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    loop {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("{name}-{}-{nanos}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return dir,
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+            Err(e) => panic!("{} can't be made: {e}", dir.display()),
+        }
+    }
 }
 
 /// Waits [`EVENTUALLY`] for `holon serve` (`child`) to answer on `port`: an answer, not a
