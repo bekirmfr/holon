@@ -57,52 +57,57 @@ function Probe({ tab, ev, out, seen }: { tab: TabState; ev: Evaluator; out: { cu
   return null;
 }
 
+// A row per sample, each with its own limit (up to seconds alone beside a whole run's other files,
+// past vitest's five): one test over them all held the worker's thread past the runner's 60 s on a
+// busy machine (vitest.setup.ts).
+const DRAWS = 30_000;
+
 describe("the text and the canvas find each other", () => {
-  it("on every sample's draft: each node's range revealed near, and the cursor there picks it and brings it into view", () => {
+  describe("on every sample's draft: each node's range revealed near, and the cursor there picks it and brings it into view", () => {
     for (const sample of samples()) {
-      const ev = new Evaluator();
-      const tab = tabFromDocument(sample.name, buildSample(sample, ev), false, ev);
-      tab.meta.text = { ...tab.meta.text, open: true };
-      const out: { current: Pane | null } = { current: null };
-      const seen: string[][] = [];
-      root = createRoot(document.createElement("div"));
-      act(() => root!.render(<Probe tab={tab} ev={ev} out={out} seen={seen} />));
-      const ids = new Set(tab.nodes.map((n) => n.id));
-      let revealed = 0;
-      // Up to forty nodes, spread over the flow: the first, the last, and between.
-      const step = Math.max(1, Math.ceil(tab.nodes.length / 40));
-      for (const n of tab.nodes.filter((_, i) => i % step === 0 || i === tab.nodes.length - 1)) {
-        act(() => out.current!.revealNode(n.id, true));
-        const linked = out.current!.pane.linked!;
-        expect(linked, sample.name).toBeDefined();
-        const r = linked.reveal;
-        // A node inside a holon's body has no range of its own: it is linked through its call. One
-        // whose range is empty or backwards (a guard the core lowers from an `if`) has nothing to
-        // mark or pick either: the pane leaves it out.
-        if (r === null || r.to <= r.from) continue;
-        revealed++;
-        expect(linked.revealNear, `${sample.name} ${n.id}`).toBe(true);
-        seen.length = 0;
-        act(() => out.current!.pane.onCursor(r.from));
-        // What the cursor picked holds the cursor and is no larger than the node's range (the
-        // node, one written inside it, or one ending where it starts: textLink.ts's pickAt); and
-        // that is what the canvas is asked to bring into view.
-        expect(seen, `${sample.name} ${n.id}`).toHaveLength(1);
-        const picked = seen[0];
-        expect(picked.length, `${sample.name} ${n.id}`).toBeGreaterThan(0);
-        for (const id of picked) {
-          expect(ids.has(id), `${sample.name} ${id}`).toBe(true);
-          act(() => out.current!.revealNode(id, true));
-          const inner = out.current!.pane.linked!.reveal!;
-          expect(inner.from <= r.from && r.from <= inner.to && inner.to - inner.from <= r.to - r.from, `${sample.name}: ${id} at ${n.id}`).toBe(true);
+      it(sample.name, { timeout: DRAWS }, () => {
+        const ev = new Evaluator();
+        const tab = tabFromDocument(sample.name, buildSample(sample, ev), false, ev);
+        tab.meta.text = { ...tab.meta.text, open: true };
+        const out: { current: Pane | null } = { current: null };
+        const seen: string[][] = [];
+        root = createRoot(document.createElement("div"));
+        act(() => root!.render(<Probe tab={tab} ev={ev} out={out} seen={seen} />));
+        const ids = new Set(tab.nodes.map((n) => n.id));
+        let revealed = 0;
+        // Up to forty nodes, spread over the flow: the first, the last, and between.
+        const step = Math.max(1, Math.ceil(tab.nodes.length / 40));
+        for (const n of tab.nodes.filter((_, i) => i % step === 0 || i === tab.nodes.length - 1)) {
+          act(() => out.current!.revealNode(n.id, true));
+          const linked = out.current!.pane.linked!;
+          expect(linked, sample.name).toBeDefined();
+          const r = linked.reveal;
+          // A node inside a holon's body has no range of its own: it is linked through its call.
+          // One whose range is empty or backwards (a guard the core lowers from an `if`) has
+          // nothing to mark or pick either: the pane leaves it out.
+          if (r === null || r.to <= r.from) continue;
+          revealed++;
+          expect(linked.revealNear, `${sample.name} ${n.id}`).toBe(true);
+          seen.length = 0;
+          act(() => out.current!.pane.onCursor(r.from));
+          // What the cursor picked holds the cursor and is no larger than the node's range (the
+          // node, one written inside it, or one ending where it starts: textLink.ts's pickAt); and
+          // that is what the canvas is asked to bring into view.
+          expect(seen, `${sample.name} ${n.id}`).toHaveLength(1);
+          const picked = seen[0];
+          expect(picked.length, `${sample.name} ${n.id}`).toBeGreaterThan(0);
+          for (const id of picked) {
+            expect(ids.has(id), `${sample.name} ${id}`).toBe(true);
+            act(() => out.current!.revealNode(id, true));
+            const inner = out.current!.pane.linked!.reveal!;
+            expect(inner.from <= r.from && r.from <= inner.to && inner.to - inner.from <= r.to - r.from, `${sample.name}: ${id} at ${n.id}`).toBe(true);
+          }
         }
-      }
-      // A draft whose text stands for its canvas links its nodes: none revealed is the bug.
-      expect(revealed, sample.name).toBeGreaterThan(0);
-      act(() => root!.unmount());
-      root = null;
+        // A draft whose text stands for its canvas links its nodes: none revealed is the bug.
+        expect(revealed, sample.name).toBeGreaterThan(0);
+      });
     }
-  }, 300_000);
+  });
 
   it("a reveal from elsewhere (show the node) centres, as before", () => {
     const sample = samples().find((s) => s.name === "trading-bot")!;

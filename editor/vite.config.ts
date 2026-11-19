@@ -15,9 +15,13 @@ import react from "@vitejs/plugin-react";
 // Vitest by default; the hooks/components are only ever defined, never invoked, since nothing
 // renders `<App />`) but "likely fine" isn't the same as verified, and this couldn't be run here
 // to confirm either way. jsdom removes the question entirely for a small, one-time cost.
+//
+// `setupFiles`: before every test file, src/vitest.setup.ts makes the worker's event loop turn
+// after every test, so a file of plain tests can't hold the runner's answers past their limit.
 export default defineConfig({
   plugins: [react()],
   test: {
     environment: "jsdom",
+    setupFiles: ["src/vitest.setup.ts"],
   },
 });
