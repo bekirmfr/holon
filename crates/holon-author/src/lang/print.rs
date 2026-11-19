@@ -4036,10 +4036,13 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 _ => break cur,
             }
         };
-        chain.reverse();
+        // Every link but `node`, which its own render places, on the line it is written on: the
+        // first of them too, once the chain is turned (it was left off, its field's value read
+        // as the line's by explain).
         for c in &chain[1..] {
             self.touch(c);
         }
+        chain.reverse();
         let mut items = self.base_items(base)?;
         for c in &chain {
             let value = self.required(c, "value", COND)?;
@@ -5134,6 +5137,26 @@ export const t = action((input) => {
         let first = compile(src).unwrap();
         let (_, lines) = print_lines(Some("f"), &first.doc, &mut MapResolver::new(), &Names::new(), &first.names).unwrap();
         assert!(first.doc.nodes.iter().all(|n| lines[&n.id] == 5), "{lines:?}");
+    }
+
+    /// **Guards:** every step of every sample is on a line of the printed text.
+    /// **Why:** explain reads what a line did by the steps on it, the roots first (those feeding
+    /// no other step on it), and the editor links text and canvas by them: a record literal
+    /// setting two fields after a spread (`{ ...found, state: "done", via }`) left its first
+    /// field's step off its line, so that field's value (`"done"`) stood as a root and explain
+    /// said the line gave it (found by R99's explain of a resumed run, 2026-11-19).
+    #[test]
+    fn every_samples_steps_each_have_a_line() {
+        let mut wrong = Vec::new();
+        for (name, src) in crate::lang::lower::tests::sample_texts() {
+            let first = compile(src).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let (_, lines) = print_lines(Some(name), &first.doc, &mut MapResolver::new(), &Names::new(), &first.names).unwrap_or_else(|e| panic!("{name}: {e}"));
+            // An answer the text leaves out has no line: a route of calls alone answering 204
+            // (`answer`'s `nothing && calls_alone`, the fan-out sample's).
+            let left_out = |n: &Node| n.data.name == "respond" && n.param("status") == "204" && !first.doc.edges.iter().any(|w| w.target == n.id && w.target_handle.as_deref() == Some("body"));
+            wrong.extend(first.doc.nodes.iter().filter(|n| !lines.contains_key(&n.id) && !left_out(n)).map(|n| format!("{name}: {} ({})", n.id, n.data.name)));
+        }
+        assert!(wrong.is_empty(), "{} steps on no line:\n{}", wrong.len(), wrong.join("\n"));
     }
 
     #[test]
