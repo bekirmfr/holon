@@ -15,14 +15,15 @@
   asked for only once the wait is answered, even one that uses nothing of the wait. Before, such a
   step could be made while the run still waited: an action that waited for a payment, then called
   a host with only what it was first sent, called the host before anyone paid. The action's
-  answer comes after its last wait too. For now, a wait that runs out gives `{ expired: true }`, so such a
+  answer comes after its waits too. For now, a wait that runs out gives `{ expired: true }`, so such a
   step is made then too: return on `paid.expired ?? false` before a step only an answer should
   make. What a step reads after a wait is still the state as the run found it when it began. A
   wait now stands on a line of its own at the top of the action's body (`const paid = await
   event(…)`). A `return` before the first wait still answers without it, and then nothing waits;
   the canvas can't write such an action as text yet, and says so. A wait in an `if`, a `try`, after
   a `return` between two waits, or inside another expression is refused, saying so. Two waits in a row still wait together from
-  the start; what follows the second waits for the second, not the first. A flow that waits
+  the start, listed in the order written; what follows the second waits for both, whichever is
+  answered first. A flow that waits
   compiles to a new version; deploying it again asks for no new permission.
 - **A request's headers sent to the control port a byte at a time are cut off after 30
   seconds.** The server waited for as long as each byte came within a minute of the last, so

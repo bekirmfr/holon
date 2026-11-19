@@ -497,6 +497,36 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, 
             gone.extend(parts);
         }
     }
+    // What follows several waits is tied to the list of what each gave, in order (ts.rs
+    // `Reader::waited`): a trigger, the answer's test `same_value([a, b], [a, b]) ?? false` (the
+    // list written twice) or a value's held so, `same_value(l, l)`. The text writes it after the
+    // last wait, by order alone, as it writes what follows one wait: each read of such a list is
+    // read off the last wait, and the list goes.
+    let listed = |id: &str| -> Option<Vec<Src>> {
+        let mut items: Vec<(&String, &Src)> = wires.iter().filter(|(_, to, _)| to == id).map(|(s, _, input)| (input, s)).collect();
+        items.sort_by(|x, y| x.0.cmp(y.0));
+        (leaf(id, "list") && !gone.contains(id) && items.len() >= 2 && items.iter().all(|(_, s)| waits(s))).then(|| items.into_iter().map(|(_, s)| s.clone()).collect())
+    };
+    let tests_lists = |same: &str| match (into(same, "a"), into(same, "b")) {
+        (Some(Src::Node { id: a, .. }), Some(Src::Node { id: b, .. })) => leaf(same, "same_value") && listed(a).is_some() && listed(a) == listed(b),
+        _ => false,
+    };
+    let mut last_of: HashMap<String, Src> = HashMap::new();
+    for n in &nodes {
+        let Some(items) = listed(&n.id) else { continue };
+        let reads: Vec<&BlockWire> = wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id, .. } if *id == n.id)).collect();
+        if !reads.is_empty() && reads.iter().all(|(_, to, input)| input == TRIGGER || tests_lists(to)) {
+            last_of.insert(n.id.clone(), items.last().expect("two or more").clone());
+        }
+    }
+    gone.extend(last_of.keys().cloned());
+    let wires: Vec<BlockWire> = wires
+        .iter()
+        .map(|(s, to, input)| match s {
+            Src::Node { id, .. } if last_of.contains_key(id) => (last_of[id].clone(), to.clone(), input.clone()),
+            _ => (s.clone(), to.clone(), input.clone()),
+        })
+        .collect();
     let touches_gone = |(src, to, _): &BlockWire| gone.contains(to) || matches!(src, Src::Node { id, .. } if gone.contains(id));
     let kept: Vec<BlockWire> = wires.iter().filter(|w| !tie(&w.0, &w.2) && !touches_gone(w)).cloned().collect();
     // What a wait's value triggers is made when the run reaches it past the wait, as what the
@@ -1847,7 +1877,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     }
 
     /// The `guard` that holds an action's answer when its body waits (ts.rs `finish`):
-    /// `when(value, has_value(x))`, `x` what its last wait gave, with the leaves that test `x`.
+    /// `when(value, has_value(x))`, `x` what its last wait gave (past several the list of what
+    /// each gave, read off the last by `without_block_ties`), with the leaves that test `x`.
     /// Written as the value alone: in TypeScript a return after an `await` answers once it is
     /// reached, and reading it back holds it so again.
     fn waited_answer(&self, respond: &Node) -> Option<[&'g Node; 3]> {

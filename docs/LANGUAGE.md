@@ -465,11 +465,12 @@ statement order carries no meaning beyond names being defined before use; past a
 an action, what is written after a wait comes after it, as in JavaScript: a write, a send, a
 request, a call or a start of another action is asked for only once the wait is answered, never
 before, even one that uses nothing of it. What it reads there is the state as the run found it
-when it began, until each part of a run is saved as it parks. The answer comes after the last wait
+when it began, until each part of a run is saved as it parks. The answer comes after the waits
 too. For now, a wait that runs out gives `{ expired: true }` in its place, so what follows it is made then
 too: a step that uses nothing of the wait is made whether it was answered or ran out, and
 `if (paid.expired ?? false) return …` before it keeps it to an answer. Each such step takes its
-trigger from what the wait gave, `paid`; one hold for the action, read by nothing,
+trigger from what the wait gave, `paid` (past two waits the list of what each gave, `[a, b]`); one
+hold for the action, read by nothing,
 `when(<the action's input>, has_value(paid))` (past two waits `has_value([a, b])`, so the run
 reaches both at once), keeps a step that uses nothing of what was sent in the action. The text
 writes both by order alone, and the canvas prints them back so. A
@@ -477,12 +478,13 @@ wait stands on a line of its own at the top of
 the action's body, `const paid = await event(…)`. A `return` before the first wait may answer
 without it (`if (order.skip ?? false) return "skipped"`): where it does, the wait isn't asked for,
 as the hold too reads the wait only where no such return was taken (`when(<the hold>, c)`, `c`
-the returns not taken), and the answer is held to the last wait only past the first. The canvas
+the returns not taken), and the answer is held to the waits only past the first. The canvas
 can't write such an action as text yet: change it in its text. A wait in an `if`, a `try`, after
 a `return` between two waits, or inside another expression is refused, as is an `if (x !== undefined)` after a wait
 whose `x` is there before the wait is answered (a read, `now`, `random`, what was sent). Two waits
-in a row still park together: the run waits at both from the start, and what follows the second
-waits for the second, not for the first. A state key written before a wait and after it is written once, after it, with the
+in a row still park together: the run waits at both from the start, asks for them in the order
+written (the order it lists them in), and what follows the second waits for both, whichever is
+answered first. A state key written before a wait and after it is written once, after it, with the
 last value. `{ ...order, paid_via: … }` is `with_field` over an existing record (§5.5).
 
 `await approval("payout", { expires: "1d", people: 2 })` waits the same way, as

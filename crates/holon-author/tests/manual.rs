@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use holon_author::lang::ast::Pos;
 use holon_author::{agent, commands, samples};
 
 fn manual() -> PathBuf {
@@ -378,14 +379,37 @@ export const job = action(async (order) => {
 })
 "#;
 
+/// A flow whose action waits at an event and then at an approval, sends what uses neither, and
+/// answers with both: a run parks at both at once, and lists them in the order written (the
+/// shape of approval_shows.rs's `hold`); the send and the answer wait for both, whichever is
+/// answered first.
+const AN_EVENT_THEN_AN_APPROVAL: &str = r#"import { action, approval, event, flow, route } from "holon"
+import updates from "channel:updates"
+
+flow("twowaits", { port: 8996 })
+
+route.post("/hold", (req) => hold(req.json).waiting.paid)
+
+route.get("/paid/:token", () => "ok", { resumes: "paid" })
+
+export const hold = action(async (order) => {
+  const paid = await event("paid", { expires: "1h" })
+  const decision = await approval("release", { expires: "1h" })
+  updates.send({ released: order.id })
+  return [paid, decision.approved]
+})
+"#;
+
 /// Each text that waits, with the name a failure gives it: the samples that do, the README's
 /// and the manual's flows that do, LANGUAGE.md's that compile, [`EVERY_STEP_AFTER_A_WAIT`],
-/// [`NOTHING_OF_THE_WAIT_AFTER_IT`] and [`A_RETURN_BEFORE_THE_WAIT`].
+/// [`NOTHING_OF_THE_WAIT_AFTER_IT`], [`A_RETURN_BEFORE_THE_WAIT`] and
+/// [`AN_EVENT_THEN_AN_APPROVAL`].
 fn waiting_texts() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = samples::samples().iter().filter(|s| waits(s.text)).map(|s| (format!("sample {}", s.name), s.text.to_string())).collect();
     out.push(("every step after a wait".to_string(), EVERY_STEP_AFTER_A_WAIT.to_string()));
     out.push(("nothing of the wait after it".to_string(), NOTHING_OF_THE_WAIT_AFTER_IT.to_string()));
     out.push(("a return before the wait".to_string(), A_RETURN_BEFORE_THE_WAIT.to_string()));
+    out.push(("an event then an approval".to_string(), AN_EVENT_THEN_AN_APPROVAL.to_string()));
     let language = std::fs::read_to_string(manual().join("../LANGUAGE.md")).unwrap().replace("\r\n", "\n");
     for (name, text) in docs().into_iter().chain([("docs/LANGUAGE.md".to_string(), language)]) {
         for block in fences(&text) {
@@ -539,72 +563,192 @@ fn a_start_and_a_call_out_after_a_wait_using_nothing_of_it_wait_for_it() {
     assert_eq!(after, BTreeMap::from([("flow_start", true), ("http_request", true)]), "each call after the wait, and whether the wait reaches it");
 }
 
-/// Guards: a run reaches every wait of its action at once. Each action of each text that waits,
-/// built as a server runs it and run with nothing delivered, asks for every wait its text has:
-/// two waits in a row park together, as the docs say ("the run waits at both from the start").
+/// A text's actions, each with its label and its unit, and the text's waits in the order written:
+/// the units as the lowering built them, and as a store keeps them. A store keeps a composite's
+/// children in their canonical order, by hash (holon-core `canonical_child_order`), which a
+/// unit's hash doesn't see, and a run walks the children it starts from in that order: the server
+/// runs this form, the editor's tests the first. Both are run.
+struct Built {
+    waits: Vec<String>,
+    actions: Vec<(String, holon_core::Hash)>,
+    authored: holon_core::MapResolver,
+    stored: holon_core::MapResolver,
+}
+
+fn built(at: &str, src: &str) -> Built {
+    let lowered = holon_author::lang::compile(src).unwrap_or_else(|e| panic!("{at}: {e}"));
+    let mut waits: Vec<(Pos, String)> = lowered
+        .doc
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.data.name.as_str(), "await" | "approval"))
+        .map(|n| (lowered.spans.get(&n.id).map_or(Pos::default(), |s| s.start), n.param("name").to_string()))
+        .collect();
+    waits.sort_by_key(|(at, _)| (at.line, at.col));
+    let mut authored = holon_core::MapResolver::new();
+    holon_author::text::restore(&lowered.doc, &mut authored, &BTreeMap::new());
+    let port = lowered.doc.server.as_ref().map(|s| s.port.clone()).unwrap_or_default();
+    let server = holon_author::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut authored, &port, lowered.doc.unit_settings());
+    let mut stored = holon_core::MapResolver::new();
+    for unit in authored.units() {
+        let kept = holon_core::decode_preimage(&holon_core::encode_preimage(unit).unwrap()).unwrap();
+        stored.insert(kept).unwrap();
+    }
+    let actions = server.actions.iter().map(|a| (a.label.clone(), holon_core::parse_hash(&a.hash).unwrap())).collect();
+    let mut names: Vec<String> = vec![];
+    for (_, name) in waits {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    Built { waits: names, actions, authored, stored }
+}
+
+/// A run of an action that waits, as a host answers it: each wait asked for is noted the first
+/// time it is, and left waiting, or answered (`answered`, all but `held`); a database query is
+/// answered with a row holding each column it selects (as tests.rs's expiry test answers it), as
+/// what a wait is asked with may read one; any other read, nothing.
+struct Waiting {
+    asked: Vec<String>,
+    answered: bool,
+    held: Option<String>,
+}
+
+impl holon_core::Observer for Waiting {
+    fn answer(&mut self, _path: &[u32], request: &holon_core::Value) -> holon_core::Answer {
+        use holon_core::{Answer, Value};
+        let Value::Record(r) = request else { return Answer::Absent };
+        let text = |key: &str| match r.get(key) {
+            Some(Value::Text(t)) => Some(t.to_lowercase()),
+            _ => None,
+        };
+        if let Some(name) = r.get("await").and_then(|n| if let Value::Text(n) = n { Some(n.clone()) } else { None }) {
+            if !self.asked.contains(&name) {
+                self.asked.push(name.clone());
+            }
+            if !self.answered || self.held.as_ref() == Some(&name) {
+                return Answer::NotYet;
+            }
+            // What an event or an approval gives, enough of it for what the texts read.
+            return Answer::Value(holon_core::parse_json(r#"{"method":"POST","body":{},"approved":true,"by":["ada"]}"#).unwrap());
+        }
+        if let (Some(_), Some(sql)) = (text("database"), text("query"))
+            && let Some(columns) = sql.strip_prefix("select ").and_then(|s| s.split(" from ").next())
+        {
+            let row = Value::Record(columns.split(',').map(|c| (c.trim().rsplit([' ', '.']).next().unwrap_or_default().to_string(), Value::Number(1.0))).collect());
+            return Answer::Value(if r.get("one") == Some(&Value::Boolean(true)) { row } else { Value::List(vec![row]) });
+        }
+        Answer::Absent
+    }
+}
+
+/// Every field the waiting texts' actions read of what starts them (tests.rs's expiry test's).
+fn started_with() -> holon_core::Value {
+    holon_core::parse_json(r#"{"id":"p1","item":"tea","amount":5000,"iban":"DE89370400440532013000","by":"sam@acme.com","account":1,"title":"Hello","brief":"A short note","product":"BTC-USD","price":"100","size":"1","side":"buy","n":1,"pad":"p"}"#).unwrap()
+}
+
+/// `action` of `b` in the form `stored` says, run with `input` as `watch` answers it: which of its
+/// outputs settled (a value, not pending or absent).
+fn run(b: &Built, action: &holon_core::Hash, stored: bool, input: Option<holon_core::Value>, watch: &mut Waiting) -> Vec<bool> {
+    let store = if stored { &b.stored } else { &b.authored };
+    let unit = holon_core::Resolver::resolve(store, action).expect("the action's unit").clone();
+    holon_core::eval_observed(&unit, &[input], store, watch).iter().map(Option::is_some).collect()
+}
+
+/// Guards: a run reaches every wait of its action at once, in the order they are written. Each
+/// action of each text that waits, built as a server runs it and run with nothing delivered, asks
+/// for every wait its text has: two waits in a row park together, as the docs say ("the run waits
+/// at both from the start"); and it asks for them in the order written, which is the order a
+/// parked run lists them in (`GET …/runs`, the editor's Approvals, `holon runs`): as a store keeps
+/// its units and as they were lowered, started with a record and with nothing.
 /// Why: a hold reading the hold before (ts.rs `waited_on`) reached the first wait only once the
 /// second was answered, as a guard reads its value once its test holds: the run parked at the
 /// second alone, and the first's token found no run waiting (tests.rs
-/// a_waiting_run_is_sealed_once…, 2026-11-19).
+/// a_waiting_run_is_sealed_once…, 2026-11-19). And an answer held to the last wait alone asked
+/// for it first where the store's order put the answer first: a run waiting at an event and then
+/// an approval listed the approval first (approval_shows.rs, found by the long run, 2026-11-20).
 /// If it fails: something written after a wait holds an earlier wait behind a guard on a later
-/// one. Hold it where every wait is read at once, as the action's hold's list does.
+/// one, or reads a later wait before the earlier ones. Tie it to every wait so far, read in order
+/// (ts.rs `Reader::waited`), as the action's hold's list does.
 #[test]
-fn a_run_reaches_every_wait_of_its_action_at_once() {
-    use holon_core::{Answer, Value};
-    // Every wait asked for is left waiting; a database query is answered with a row holding each
-    // column it selects (as tests.rs's expiry test answers it), as what a wait is asked with may
-    // read one; any other read, nothing.
-    struct Parked(BTreeSet<String>);
-    impl holon_core::Observer for Parked {
-        fn answer(&mut self, _path: &[u32], request: &Value) -> Answer {
-            let Value::Record(r) = request else { return Answer::Absent };
-            let text = |key: &str| match r.get(key) {
-                Some(Value::Text(t)) => Some(t.to_lowercase()),
-                _ => None,
-            };
-            if let Some(name) = r.get("await").and_then(|n| if let Value::Text(n) = n { Some(n.clone()) } else { None }) {
-                self.0.insert(name);
-                return Answer::NotYet;
-            }
-            if let (Some(_), Some(sql)) = (text("database"), text("query"))
-                && let Some(columns) = sql.strip_prefix("select ").and_then(|s| s.split(" from ").next())
-            {
-                let row = Value::Record(columns.split(',').map(|c| (c.trim().rsplit([' ', '.']).next().unwrap_or_default().to_string(), Value::Number(1.0))).collect());
-                return Answer::Value(if r.get("one") == Some(&Value::Boolean(true)) { row } else { Value::List(vec![row]) });
-            }
-            Answer::Absent
-        }
-    }
-    // Every field the waiting texts' actions read of what starts them (tests.rs's expiry test's).
-    let input = holon_core::parse_json(r#"{"id":"p1","item":"tea","amount":5000,"iban":"DE89370400440532013000","by":"sam@acme.com","account":1,"title":"Hello","brief":"A short note","product":"BTC-USD","price":"100","size":"1","side":"buy","n":1,"pad":"p"}"#).unwrap();
+fn a_run_reaches_every_wait_of_its_action_at_once_in_the_order_written() {
     let mut wrong = vec![];
     let mut two = 0;
     for (at, src) in waiting_texts() {
-        let lowered = holon_author::lang::compile(&src).unwrap_or_else(|e| panic!("{at}: {e}"));
-        let written: BTreeSet<String> = lowered.doc.nodes.iter().filter(|n| matches!(n.data.name.as_str(), "await" | "approval")).map(|n| n.param("name").to_string()).collect();
-        let mut store = holon_core::MapResolver::new();
-        holon_author::text::restore(&lowered.doc, &mut store, &BTreeMap::new());
-        let port = lowered.doc.server.as_ref().map(|s| s.port.clone()).unwrap_or_default();
-        let server = holon_author::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.unit_settings());
-        let mut reached = Parked(BTreeSet::new());
-        for action in &server.actions {
-            let unit = holon_core::Resolver::resolve(&store, &holon_core::parse_hash(&action.hash).unwrap()).unwrap_or_else(|| panic!("{at}: {}'s unit", action.label)).clone();
-            holon_core::eval_observed(&unit, &[Some(input.clone())], &store, &mut reached);
+        let b = built(&at, &src);
+        let mut reached = BTreeSet::new();
+        for (label, action) in &b.actions {
+            for stored in [true, false] {
+                // Started with a record, and with nothing (`job()`, or a body that isn't JSON):
+                // what reads the action's input may then not be read at all.
+                for given in [Some(started_with()), None] {
+                    let mut watch = Waiting { asked: vec![], answered: false, held: None };
+                    run(&b, action, stored, given.clone(), &mut watch);
+                    let in_order: Vec<String> = b.waits.iter().filter(|w| watch.asked.contains(w)).cloned().collect();
+                    if watch.asked != in_order {
+                        let (form, with) = (if stored { "as stored" } else { "as lowered" }, if given.is_some() { "a record" } else { "nothing" });
+                        wrong.push(format!("{at}: {label} {form}, started with {with}, asked for its waits as {:?}, written {in_order:?}", watch.asked));
+                    }
+                    if given.is_some() && stored {
+                        two += usize::from(watch.asked.len() >= 2);
+                        reached.extend(watch.asked);
+                    }
+                }
+            }
         }
-        two += usize::from(written.len() >= 2);
-        if reached.0 != written {
-            wrong.push(format!("{at}: written {written:?}, reached with nothing delivered {:?}", reached.0));
+        let written: BTreeSet<String> = b.waits.iter().cloned().collect();
+        if reached != written {
+            wrong.push(format!("{at}: written {written:?}, reached with nothing delivered {reached:?}"));
         }
     }
-    assert!(two >= 1, "no text waits twice: the test needs one that does");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert!(two >= 2, "fewer than two actions wait twice: the test needs some that do");
+}
+
+/// Guards: what an action writes, sends or answers after two waits in a row waits for both. Each
+/// action of each text that waits at two or more, run with every wait answered but the first it
+/// writes, settles nothing it doesn't settle with none answered: what follows the first wait waits
+/// for it, whatever the later ones gave; as a store keeps its units and as they were lowered.
+/// Why: the waits after the first are answered in any order (each has its own token, or its own
+/// people), and what was tied to the last wait alone was made once it was answered while the run
+/// still waited at the first: a send written after both went out as the run parked again
+/// (firing.rs `progress`, found by reading, 2026-11-20).
+/// If it fails: something written after the waits is tied to the last one only. Tie it to every
+/// wait so far (ts.rs `Reader::waited`).
+#[test]
+fn what_follows_two_waits_waits_for_both() {
+    let mut wrong = vec![];
+    let mut checked = 0;
+    for (at, src) in waiting_texts() {
+        let b = built(&at, &src);
+        for (label, action) in &b.actions {
+            for stored in [true, false] {
+                let mut none = Waiting { asked: vec![], answered: false, held: None };
+                let before = run(&b, action, stored, Some(started_with()), &mut none);
+                let Some(first) = b.waits.iter().find(|w| none.asked.contains(w)).cloned() else { continue };
+                if none.asked.len() < 2 {
+                    continue;
+                }
+                checked += 1;
+                let mut rest = Waiting { asked: vec![], answered: true, held: Some(first.clone()) };
+                let after = run(&b, action, stored, Some(started_with()), &mut rest);
+                let early: Vec<usize> = (0..after.len()).filter(|&i| after[i] && !before.get(i).copied().unwrap_or(false)).collect();
+                if !early.is_empty() {
+                    let form = if stored { "as stored" } else { "as lowered" };
+                    wrong.push(format!("{at}: {label} {form}, every wait answered but {first:?}, settled its outputs {early:?}, which it doesn't with none answered"));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert!(checked >= 4, "only {checked} runs of actions that wait twice: the test needs some");
 }
 
 /// Guards: a return before an action's first wait answers without it. Run as a server runs it,
 /// [`A_RETURN_BEFORE_THE_WAIT`] started with the return taken answers at once and asks for no
 /// wait and sends nothing; started with it not taken, it asks for its wait, answers nothing yet,
 /// and sends nothing yet (the send after the wait waits for it).
-/// Why: the answer of an action that waits is held to its last wait (ts.rs `finish`); held whole,
+/// Why: the answer of an action that waits is held to its waits (ts.rs `finish`); held whole,
 /// it would hold the early return too, and a run that returned before its wait would never
 /// answer. And the action's hold reads the wait: read directly, it asked for the wait in a run
 /// that had already answered (found by this test, 2026-11-19).

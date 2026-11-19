@@ -233,7 +233,8 @@ struct Frame {
 /// The latest wait of an action's body, past it.
 #[derive(Clone)]
 struct Waited {
-    /// What the wait gave: its binding's name, as the tree reads it. What follows is tied to it.
+    /// What the latest wait gave: its binding's name, as the tree reads it. What follows is tied
+    /// to it and to the waits before it ([`Waited::tie`]).
     value: Expr,
     /// Where the statements after the wait begin.
     from: usize,
@@ -246,6 +247,17 @@ struct Waited {
     /// alone, with no return between the waits.
     exits: usize,
     guards: usize,
+}
+
+impl Waited {
+    /// What follows the waits is tied to ([`Reader::waited`]): what the one wait gave, or the list
+    /// of what each gave, in the order written.
+    fn tie(&self) -> Expr {
+        match self.waits.as_slice() {
+            [one] => one.clone(),
+            all => Expr { kind: ExprKind::List(all.to_vec()), span: self.value.span },
+        }
+    }
 }
 
 /// What the `++` and `--` written as values in a statement did: the bindings they made (the
@@ -1334,11 +1346,11 @@ impl<'s, 't> Reader<'s, 't> {
         let span = exits.last().map_or(at, |e| e.span);
         // An action that waits answers once it is done: each return after its first wait is after
         // its last (`waits_here` refuses a return between two), so what they answer is there once
-        // that wait is answered, and not before; a run parked at it has answered nothing yet. A
-        // return before the first wait answers as it is: where it is taken, the wait isn't asked.
-        // What tests the wait is the answer's, where it is written.
+        // every wait is answered (`Reader::waited`), and not before; a run parked at one has
+        // answered nothing yet. A return before the first wait answers as it is: where it is
+        // taken, the wait isn't asked. What tests the waits is the answer's, where it is written.
         let tie = match block {
-            Block::Action => self.frame.waited.as_ref().map(|w| (w.exits, Expr { span, ..w.value.clone() })),
+            Block::Action => self.frame.waited.as_ref().map(|w| (w.exits, Expr { span, ..w.tie() })),
             _ => None,
         };
         match self.fold(exits, matches!(ret, Ret::Always), tie)? {
@@ -1486,26 +1498,31 @@ impl<'s, 't> Reader<'s, 't> {
             None => (self.hidden_name("waited"), vec![], self.frame.exits.len(), self.frame.guards.len()),
         };
         waits.push(value.clone());
-        let tested = match waits.as_slice() {
-            [one] => one.clone(),
-            all => Expr { kind: ExprKind::List(all.to_vec()), span: here },
-        };
+        let mut waited = Waited { value, from: 0, hold: hold.clone(), waits, exits, guards };
         let end = Span { start: at.end, end: at.end };
         // Where a return before the first wait may have answered, the hold tests the waits only
         // where none did: a guard reads its test first, so where one did, no wait is asked for.
-        let held = when(received, has_value(tested));
+        let held = when(received, has_value(waited.tie()));
         let held = match self.live() {
             Some(c) => when(held, c),
             None => held,
         };
-        stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: hold.clone(), span: end }, value: held }, span: end, after: None });
-        self.frame.waited = Some(Waited { value, from: stmts.len(), hold, waits, exits, guards });
+        stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: hold, span: end }, value: held }, span: end, after: None });
+        waited.from = stmts.len();
+        self.frame.waited = Some(waited);
     }
 
     /// What the statement being read waits for, past a wait in its action's body: what the wait
-    /// gave.
+    /// gave, or past several the list of what each gave, in the order written. Every wait so far,
+    /// not the latest alone: each has its own token or its own people, so they are answered in
+    /// any order, and what follows the second, tied to it alone, was made while the run still
+    /// waited at the first. And a list reads its items in order, so whatever a run starts from
+    /// (a store keeps a unit's children in their hash's order, holon-core
+    /// `canonical_child_order`), it asks for the waits as they are written, which is how a parked
+    /// run lists them. print.rs `without_block_ties` writes such a list as the last wait: the text
+    /// says it by order alone.
     fn waited(&self) -> Option<Expr> {
-        self.frame.waited.as_ref().map(|w| w.value.clone())
+        self.frame.waited.as_ref().map(Waited::tie)
     }
 
     /// Whether `e` is made after the wait that gave `w`, and so waits for it: it reads `w`, or a
@@ -3004,7 +3021,8 @@ impl<'s, 't> Reader<'s, 't> {
     /// The returns, last to first, folded into one answer (`None` where none answers). The last
     /// answers whenever the ones before it didn't, if the body ends with a return on every path
     /// (`ended`). With `tie`, an action's that waits (`from`, the returns before its first wait;
-    /// `w`, what its last gave): the returns from `from` on, folded, answer once `w` has a value.
+    /// `w`, what its waits gave, [`Waited::tie`]): the returns from `from` on, folded, answer once
+    /// `w` has a value.
     fn fold(&mut self, exits: Vec<Exit>, ended: bool, tie: Option<(usize, Expr)>) -> R<Option<Answer>> {
         let tied = |acc: Option<Answer>| match (acc, &tie) {
             (Some(Answer::Value { value, .. }), Some((_, w))) => Some(Answer::Value { value: when(value, has_value(w.clone())), name: None, fields: None }),
