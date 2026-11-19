@@ -505,6 +505,50 @@ Live, on a release build, the default limits: the scan of 100,000 ids is refused
 100,000 in 0.04 s, as before. The scan of 100,000 with `max_steps` at its ceiling (200 million) and
 `run_budget_ms: "1s"` stops at 1.0 s, `the run took longer than 1s`.
 
+**What the count cost, and what was taken back (2026-11-19).** `crunch` rose from 25.09 M
+instructions a run at rc.35 to 35.31 M on `main` (`32b7f29c`). Measured at nine of the merges
+between, then inside the one that held the jump (callgrind, `profile_one_route`, a run at 50 and
+100): 26.09 M at `6ea3028d`, 35.70 M at `cbc76f5c`, this change, +9.6 M (+37%); the rest +1.0 M in
+merges #83–#86 (not bisected) and moves of ±0.5 M that are the build's layout. Function by function,
+7.8 M of it was the count itself: every `+`, `*` and `-` of a fold over numbers gathered its inputs
+twice, read how its leaf reads, walked each input and counted a set-up, to find nothing to charge.
+The rest is what made values are charged (a list `map` makes, a record of three fields: real
+steps), and `with_field` building a record again key by key where it had cloned it.
+
+Taken back, the charge the same:
+
+- **Numbers and booleans alone are nothing to read** for every leaf but the 25 that charge for one
+  (`charges_a_scalar`: those that write a number as text or add it as a decimal, and those with a
+  set-up or a count of their own): `reading` answers no step for them without counting, from the
+  same pass that gathers its inputs, and notes there whether the leaf builds on one given to it.
+  The count is `counting`, as it was; `a_leaf_handed_only_numbers_and_booleans_reads_as_its_whole_count_says`
+  holds the two to the same answer for every `Op`, handed none to four inputs drawn from zero,
+  minus zero, fractions, NaN, the infinities, counts within and past what `business_day_add` and
+  the decimals step through, and both booleans, given and lent. Taking `to_text`, `gzip`,
+  `business_day_add`, `decimal_sum` or `join` off the list fails it, as does never noting a leaf
+  builds on what it was given.
+- **The inputs gathered once:** `counted` reads them as `reading` holds them, where it gathered them
+  again.
+- **A record without the field `with_field` sets is cloned whole** (`records::without`), as before
+  `cbc76f5c`, rather than built again key by key; with the field, the rest are still copied
+  without it, so a large value replaced is still not copied.
+  `a_record_without_a_field_is_the_record_less_that_field` holds it to the filter.
+
+Callgrind, a run: `crunch` 35.31 → 31.05 M (−12.1%: the count 3.1 M, the record 1.1 M); `hello`
+126.2 → 124.8 K (−1.1%). Live, `holon load` through release `holon` binaries, 16 connections,
+five rounds in turn, medians (no errors):
+
+| route | `main` | after | ×req/s | ×CPU less |
+|---|---:|---:|---:|---:|
+| `crunch`, 100 / 1,000 / 5,000 | 6,316 / 941 / 212 | 6,979 / 1,059 / 237 | 1.10 / 1.13 / 1.12 | 1.14 / 1.14 / 1.13 |
+| `filter`, 1,000 / 5,000 | 2,462 / 617 | 2,718 / 672 | 1.10 / 1.09 | 1.07 / 1.08 |
+| `hello`, `calc` | 43,061, 35,487 | 43,400, 35,917 | 1.01, 1.01 | 1.02, 1.02 |
+
+Every pure leaf is still held to the step's bound (`no_step_of_a_pure_leaf_takes_more_than_a_few_nodes_work`),
+and every host test passes. What is left above rc.35, about 6 M a `crunch`: the inputs still
+gathered and looked at for each leaf (about 1.3 M), what made values are charged (1.5 M, the
+limit's own work), and the count for leaves handed a list or a record.
+
 ### Nothing computes on a data-plane worker (2026-11-13)
 
 Every run goes to the blocking pool, however short. The shortcut of 12.1, a short route answered
