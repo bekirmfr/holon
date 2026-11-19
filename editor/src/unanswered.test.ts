@@ -4,7 +4,7 @@
 // worker that keeps its own for as long as its client does: a request written into the others
 // gets no answer at all, until another connection closes. Here a stand-in server accepts the
 // first connection and never reads it, and answers every other: the editor's read, given up at
-// its time (server.ts's ANSWER_WITHIN), drops that connection and is asked again on another,
+// its time (limits.ts's ANSWER_WITHIN), drops that connection and is asked again on another,
 // and is answered within its time and one try. With the real fetch (Node's), on real
 // connections, not a stand-in for them; in Node, not the page's jsdom, whose AbortSignal Node's
 // fetch doesn't take.

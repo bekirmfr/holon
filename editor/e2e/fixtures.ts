@@ -7,6 +7,7 @@ import { mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ANSWER_WITHIN, READ_AGAIN_MS } from "../src/limits";
 import { test as base, expect, type Page } from "@playwright/test";
 import { PORTS, RUN_DIR, SAMPLE_SHIFT } from "./ports.mjs";
 
@@ -61,6 +62,27 @@ export const ADMIN = { name: "e2e", password: "e2e-password-0123" };
  *  tests) downloads and compiles before any of its pages shows. In a fresh browser context on CI's
  *  slow runner that took up to 25 s, past the 15 s an expectation waits. */
 export const LOADING = 120_000;
+
+/** How long a test waits on the server's time, by what it waits for: set here alone, for the
+ *  slowest runner (a self-hosted one, beside a build), and never under what the editor itself
+ *  waits for the same (src/limits.ts), so no test gives up on what the page still waits for. An
+ *  expectation's own 15 s (playwright.config.ts) is for what a page shows of what it holds; on
+ *  a busy runner the server's work ran past it, failing tests with nothing answered wrong (R97).
+ *  A wait that runs out still fails: nothing is tried again. */
+export const WAITS = {
+  /** A read of what the server holds, given up past its time and asked again by the editor
+   *  (three tries and the pauses between: 28 s), then the answer shown (15 s). Above all what
+   *  someone may do, and the buttons and links that follow it: Deploy, a viewer's Policy link,
+   *  what a new binding gives. */
+  read: ANSWER_WITHIN.read * (READ_AGAIN_MS.length + 1) + READ_AGAIN_MS.reduce((a, b) => a + b, 0) + 15_000,
+  /** A version replayed on a deployment's recent runs: as long as the editor gives it. */
+  replay: ANSWER_WITHIN.work,
+  /** What the server does in its own time, unasked, and the run that starts: what arrives from
+   *  outside, seen at its next look (a file once it stops changing, a mail, a queue's or a feed's
+   *  message, a connection made or closed), a clock's tick, a binding that ends; then what that
+   *  run writes, after the calls it makes. */
+  arrival: 60_000,
+};
 /** The editors the tests open: the main test server's, and the accounts tests'. */
 const EDITORS = [`http://localhost:${PORTS.editor}`, FRESH_EDITOR];
 

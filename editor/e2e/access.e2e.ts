@@ -20,7 +20,7 @@ import { join } from "node:path";
 import type { Browser, Locator } from "@playwright/test";
 import { givesOf, type Tagged } from "../src/access";
 import type { Principal, RoleEntry } from "../src/server";
-import { ADMIN, expect, HOLON, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
+import { ADMIN, expect, HOLON, OWN_PORTS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test, WAITS } from "./fixtures";
 import { enter, flowRow, gotoPage, navLink, peopleTab } from "./helpers";
 
 /** A call to the control plane as whoever `token` signs in. */
@@ -208,7 +208,7 @@ test("what a principal's page says it may do is what the server's can answers th
 
     // Once the short binding has ended.
     await expect
-      .poll(async () => (await json<Principal[]>(control(adminToken, "/people"))).find((x) => x.name === p("ends"))?.bindings.every((b) => b.expired), { timeout: 15_000 })
+      .poll(async () => (await json<Principal[]>(control(adminToken, "/people"))).find((x) => x.name === p("ends"))?.bindings.every((b) => b.expired), { timeout: WAITS.arrival })
       .toBe(true);
     const people = await json<Principal[]>(control(adminToken, "/people"));
     const roles = (await json<{ roles: RoleEntry[] }>(control(adminToken, "/roles"))).roles;
@@ -250,7 +250,8 @@ test("a viewer's flow page has each button that changes something disabled, sayi
     const reads = `${vic} may not do that: a viewer only reads`;
     const disabled = async (button: Locator, title: string) => {
       await expect(button).toBeDisabled();
-      await expect(button).toHaveAttribute("title", title);
+      // Its title is the server's answer to what the viewer may do.
+      await expect(button).toHaveAttribute("title", title, { timeout: WAITS.read });
     };
 
     // The header: pausing is an editor's.
@@ -260,7 +261,7 @@ test("a viewer's flow page has each button that changes something disabled, sayi
     // Status: its action is seen, not run.
     const shout = flowPage.locator('[aria-label="action shout"]');
     await disabled(shout.getByRole("button", { name: "run", exact: true }), reads);
-    await expect(shout).toContainText(reads);
+    await expect(shout).toContainText(reads, { timeout: WAITS.read });
     // Settings: revoking, whether agents may propose, stopping it, removing it.
     await asVic.goto(`/#${slug}.settings`);
     const revokes = flowPage.getByRole("button", { name: "Revoke", exact: true });
@@ -272,7 +273,7 @@ test("a viewer's flow page has each button that changes something disabled, sayi
 
     // The host's pages: the policy is a viewer's to read, not to read again; resources and
     // people aren't.
-    await expect(navLink(asVic, "Policy")).toBeVisible();
+    await expect(navLink(asVic, "Policy")).toBeVisible({ timeout: WAITS.read });
     await expect(navLink(asVic, "Resources")).toHaveCount(0);
     await expect(navLink(asVic, "People and access")).toHaveCount(0);
     await asVic.goto("/#policy");
@@ -282,7 +283,7 @@ test("a viewer's flow page has each button that changes something disabled, sayi
 
     // The admin's page has them all.
     await page.goto(`/#${slug}`);
-    await expect(page.locator(`[aria-label="flow ${slug}"]`).getByRole("button", { name: "Pause", exact: true })).toBeEnabled();
+    await expect(page.locator(`[aria-label="flow ${slug}"]`).getByRole("button", { name: "Pause", exact: true })).toBeEnabled({ timeout: WAITS.read });
 
     // Bound editor on the flow, the page follows once it reads the access version again (as it
     // does now and then, and on coming back to the window).
@@ -291,7 +292,7 @@ test("a viewer's flow page has each button that changes something disabled, sayi
     await expect(pause).toBeDisabled();
     await sure(control(adminToken, "/bindings", { who: { principal: vic }, role: "editor", scope: { flows: { slug } }, why: "e2e: runs it" }));
     await asVic.evaluate(() => window.dispatchEvent(new Event("focus")));
-    await expect(pause).toBeEnabled();
+    await expect(pause).toBeEnabled({ timeout: WAITS.read });
     await expect(pause).toHaveAttribute("title", "stop answering, keep the port and the session");
     await asVic.context().close();
   } finally {
@@ -323,7 +324,7 @@ test("someone who may deploy a flow but not approve what it asks proposes it fro
     // Compiled: the tools panel lists its new action.
     await expect(asPia.locator('[aria-label="action ping"]')).toBeVisible({ timeout: 15_000 });
     const deployButton = canvas.getByRole("button", { name: /^deploy/ });
-    await expect(deployButton).toBeEnabled();
+    await expect(deployButton).toBeEnabled({ timeout: WAITS.read });
     await deployButton.dispatchEvent("click");
     await asPia.locator('[aria-modal="true"]').locator("input").fill(slug);
     await enter(asPia);
@@ -541,7 +542,7 @@ test("while access changes wait for people, an admin's binding of a role that de
     // In Approvals, its author withdraws it, and doesn't approve it.
     await page.goto("/#approvals.access");
     const mine = page.getByRole("table", { name: "access changes waiting" }).getByRole("row").filter({ hasText: what });
-    await expect(mine.getByRole("button", { name: /^withdraw access change \d+$/ })).toBeEnabled();
+    await expect(mine.getByRole("button", { name: /^withdraw access change \d+$/ })).toBeEnabled({ timeout: WAITS.read });
     await expect(mine.getByRole("button", { name: /^approve/ })).toHaveCount(0);
 
     // bob approves it there, reading who could act as dee: it is made, and the binding holds.

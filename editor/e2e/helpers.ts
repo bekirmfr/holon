@@ -3,7 +3,7 @@
 // pages), these change, and the tests that use them don't.
 
 import type { Locator, Page } from "@playwright/test";
-import { expect, SAMPLE_SHIFT } from "./fixtures";
+import { expect, SAMPLE_SHIFT, WAITS } from "./fixtures";
 
 /** The pages the side nav goes to (ui/Shell.tsx), and "new" for its new flow. */
 export type MenuPage = "flows" | "library" | "docs" | "resources" | "people" | "policy" | "new";
@@ -132,7 +132,8 @@ export async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Loc
   if (port) await portField.fill(String(port));
   if (set) await set(settings);
   const deployBtn = page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ });
-  await expect(deployBtn).toBeEnabled();
+  // Enabled once the editor has read what the person may do (WAITS.read).
+  await expect(deployBtn).toBeEnabled({ timeout: WAITS.read });
   await deployBtn.dispatchEvent("click");
   // Wait for the server's answer to the deploy, which comes once the flow listens on its port
   // (http.rs syncs the listeners first). The tab's "deployed" can't say so: it shows as soon as a

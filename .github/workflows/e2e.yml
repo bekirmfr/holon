@@ -123,13 +123,38 @@ jobs:
           fi
         working-directory: editor
         timeout-minutes: 12
-      - run: npx playwright test --fully-parallel --shard=${{ env.SHARD }}/2
+      # The server the tests start (e2e/server.mjs builds it the same way, then finds it built), as
+      # a step of its own: a build past its time, on a cold runner (over 15 minutes once, #116),
+      # fails here, named, not as the tests' servers not starting.
+      - name: The server's build
+        id: build
+        run: cargo build -p holon
+        timeout-minutes: 45
+      - name: The tests
+        id: tests
+        run: npx playwright test --fully-parallel --shard=${{ env.SHARD }}/2
         working-directory: editor
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: playwright-traces-${{ env.SHARD }}
           path: editor/test-results
+      # A failed job says whose failure it was, in its summary: a test's (Playwright's lines above
+      # name it), the server's build, or the runner's before either (its disk, the databases, the
+      # toolchain, npm, Chromium). Not one of the steps runs when the runner fails at "Set up job"
+      # (an action it couldn't download, once): GitHub names that step itself.
+      - name: Whose failure
+        if: failure()
+        run: |
+          if [ "${{ steps.tests.outcome }}" = failure ]; then
+            said="A test failed: its name and its expectation are in the tests' lines; its trace is in playwright-traces-${SHARD}."
+          elif [ "${{ steps.build.outcome }}" = failure ]; then
+            said="The server's build failed, or ran past its 45 minutes, before any test ran: not a test's failure."
+          else
+            said="The runner failed before the server's build and the tests (its disk, the databases, the toolchain, npm, Chromium): not a test's failure."
+          fi
+          echo "$said"
+          echo "$said" >> "$GITHUB_STEP_SUMMARY"
       # And after, however the run ended (failed, cancelled): its MongoDB and Postgres with their
       # volumes, and what an e2e server killed before its own cleanup left in the temp folder. The
       # kept build stays.

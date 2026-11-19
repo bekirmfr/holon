@@ -12,6 +12,9 @@ import { PORTS, SLOT } from "./e2e/ports.mjs";
 
 const SERVER = `http://127.0.0.1:${PORTS.server}`;
 const FRESH = `http://127.0.0.1:${PORTS.fresh}`;
+/** How long a test server may take to start, its build included: as long as CI's build step
+ *  (e2e.yml, "The server's build"). */
+const BUILDS = 45 * 60_000;
 
 export default defineConfig({
   testDir: "e2e",
@@ -21,6 +24,9 @@ export default defineConfig({
   // One server, deployments shared between tests: one at a time.
   workers: 1,
   timeout: 180_000,
+  // For what a page shows of what it holds. What waits on the server's time (what someone may do,
+  // a replay, what arrives) waits as long as fixtures.ts's WAITS says, by what it waits for. No
+  // test is tried again: one that runs out fails.
   expect: { timeout: 15_000 },
   reporter: process.env.CI ? [["github"], ["list"]] : "list",
   use: { baseURL: `http://localhost:${PORTS.editor}`, trace: "retain-on-failure" },
@@ -28,8 +34,9 @@ export default defineConfig({
     {
       command: "node e2e/server.mjs",
       url: `${SERVER}/health`,
-      // The first run compiles the server.
-      timeout: 900_000,
+      // The first run compiles the server: past 15 minutes once on a cold runner (#116). CI builds
+      // it in a step of its own first (e2e.yml), so there this waits on a build already done.
+      timeout: BUILDS,
       reuseExistingServer: false,
       stdout: "pipe",
     },
@@ -42,7 +49,7 @@ export default defineConfig({
     {
       command: "node e2e/server.mjs --fresh",
       url: `${FRESH}/health`,
-      timeout: 900_000,
+      timeout: BUILDS,
       reuseExistingServer: false,
       stdout: "pipe",
     },
