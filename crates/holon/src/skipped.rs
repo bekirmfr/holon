@@ -70,8 +70,11 @@ pub(crate) fn of(root: &Unit, resolver: &impl Resolver, timeline: &[NodeTiming],
     out
 }
 
+/// What a note says, field by field, in the order it is sorted by.
+type Key<'a> = (&'a str, &'a str, &'a [u32], &'a [u32], &'a str, Option<usize>, bool, &'a str);
+
 /// A note's place in the list: by what it says, so it can't turn on which of two things happened.
-fn key(s: &Skipped) -> (&str, &str, &[u32], &[u32], &str, Option<usize>, bool, &str) {
+fn key(s: &Skipped) -> Key<'_> {
     (&s.effect, &s.level, &s.at, &s.from, &s.leaf, s.read, s.unseen, &s.rule)
 }
 
