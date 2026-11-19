@@ -1225,7 +1225,11 @@ impl App {
     /// at an approval no one here can decide.
     fn approve(&mut self) {
         let Some(deploy @ Modal::Approve { .. }) = self.modal.take() else { return };
-        let Modal::Approve { slug, staged, .. } = &deploy else { return };
+        let Modal::Approve { slug, staged, review, .. } = &deploy else { return };
+        if let Some(why) = review.unread(&staged.needs) {
+            self.modal = Some(deploy);
+            return self.fail(why);
+        }
         if let Some(lines) = super::approvals::ask_again(slug, &staged.touches) {
             let go = if staged.needs.is_empty() { "Deploy" } else { "Approve and deploy" };
             self.modal = Some(Modal::Confirm { title: format!("{go} \"{slug}\" anyway?"), lines, then: Then::Deploy(Box::new(deploy)) });
@@ -2047,12 +2051,14 @@ impl App {
         let n = self.waiting().len();
         let at = index(Page::Approvals);
         let Some(a) = self.approval.as_mut() else { return false };
+        // The mark (t) is the review's whether or not it has the keys.
+        if (a.keys || k.code == KeyCode::Char('t'))
+            && let Pending::Deploy(s) = &mut a.what
+            && s.review.key(k)
+        {
+            return true;
+        }
         if a.keys {
-            if let Pending::Deploy(s) = &mut a.what
-                && s.review.key(k)
-            {
-                return true;
-            }
             match k.code {
                 KeyCode::Esc | KeyCode::Left => a.keys = false,
                 KeyCode::Enter => self.approve_picked(),
@@ -2096,6 +2102,12 @@ impl App {
         // What a person does elsewhere stays picked, said again.
         if let Some(Approval { what: Pending::Said(why) | Pending::Failed(why) | Pending::Proposal(_, why), .. }) = &self.approval {
             let why = why.clone();
+            return self.fail(why);
+        }
+        // Its new permissions not marked read, or another list than the one marked: not yet.
+        if let Some(Approval { what: Pending::Deploy(s), .. }) = &self.approval
+            && let Some(why) = s.review.unread(&s.staged.needs)
+        {
             return self.fail(why);
         }
         // Its runs would wait where no one here can decide: asked again.
@@ -2649,6 +2661,7 @@ fn deploy_review(slug: &str, plan: &agent::Plan, staged: &Staged, now: Option<&s
         0 => (Tone::Good, "Nothing new to approve: its grant covers all of this.".into()),
         n => (Tone::Warn, format!("You approve the {n} marked +, as you, by deploying it.")),
     });
+    review.asks = staged.needs.clone();
     review
 }
 
