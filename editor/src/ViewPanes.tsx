@@ -480,9 +480,11 @@ function LogTab({
   }, [refreshHistory, onRestored]);
   const restorer = useRestore(slug, restoreDone, history.versions, codeText);
 
+  // A failed run opens on why; one that only held effects keeps the tab it was on (its tab is
+  // there, "Not made").
   useEffect(() => {
-    if (diagnosis) setRightTab("errors");
-    else setRightTab((t) => (t === "errors" ? "details" : t));
+    if (diagnosis?.failed) setRightTab("errors");
+    else if (!diagnosis) setRightTab((t) => (t === "errors" ? "details" : t));
   }, [selected?.seq]);
 
   const fitPendingSeq = useRef<number | null>(null);
@@ -781,7 +783,7 @@ function LogTab({
           <Tabs
             tabs={[
               ["details", "Details"],
-              ...(diagnosis ? [["errors", "Errors"] as ["errors", string]] : []),
+              ...(diagnosis ? [["errors", diagnosis.failed ? "Errors" : "Not made"] as ["errors", string]] : []),
               ["timeline", "Timeline"],
             ]}
             tab={rightTab}
@@ -846,8 +848,8 @@ function LogTab({
             </div>
           ) : rightTab === "errors" && diagnosis ? (
             <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 6 }}>
-              <span style={{ color: FAIL }}>{diagnosis.summary}</span>
-              {diagnosis.origins.length === 0 && <span style={{ color: dim }}>no node on the canvas stopped the run</span>}
+              <span style={{ color: diagnosis.failed ? FAIL : "var(--warn-ink)" }}>{diagnosis.summary}</span>
+              {diagnosis.failed && diagnosis.origins.length === 0 && <span style={{ color: dim }}>no node on the canvas stopped the run</span>}
               {diagnosis.origins.map((id) => {
                 const n = nodes.find((x) => x.id === id);
                 const lbl = n ? nodeLabel(n) : id;
@@ -858,6 +860,20 @@ function LogTab({
                   </span>
                 );
               })}
+              {/* Each effect the run held and didn't make, as the server noted it: by the node
+                  that would have made it, or with none (refused, withheld). */}
+              {diagnosis.held.map((h, i) => (
+                <span key={`held:${i}`} data-held style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                  <span>
+                    not made: <b>{h.effect}</b>: {h.reason}
+                  </span>
+                  {h.id !== null && (
+                    <button style={{ ...small, color: "var(--warn-ink)", borderColor: "var(--warn)" }} onClick={() => onShowNode(h.id!)} title="show it on the canvas">
+                      show
+                    </button>
+                  )}
+                </span>
+              ))}
             </div>
           ) : (
             <TimelineTab
@@ -1105,7 +1121,7 @@ function TimelineTab({
             <span
               style={{
                 width: 170,
-                color: issue?.role === "origin" ? FAIL : issue ? "var(--bad-ink)" : done || active ? ink : dim,
+                color: issue?.role === "origin" ? FAIL : issue?.role === "held" ? "var(--warn-ink)" : issue ? "var(--bad-ink)" : done || active ? ink : dim,
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
@@ -1115,6 +1131,7 @@ function TimelineTab({
               {n ? nodeLabel(n) : id}
               {writes && <span style={{ color: "var(--warn)" }}> ✎</span>}
               {issue?.role === "starved" && <span> · didn't get its input</span>}
+              {issue?.role === "held" && <span> · not made</span>}
             </span>
             <div style={{ flex: 1, position: "relative", height: 10, background: "var(--surface-2)", borderRadius: 2 }}>
               {(t || !timed) && (
@@ -1706,8 +1723,8 @@ function ComponentTab({
         </Section>
       )}
       {trace?.issue && (
-        <div style={{ color: trace.issue.role === "origin" ? FAIL : "var(--bad-ink)" }}>
-          {trace.issue.role === "origin" ? "✗ failed here: " : "↯ "}
+        <div style={{ color: trace.issue.role === "origin" ? FAIL : trace.issue.role === "held" ? "var(--warn-ink)" : "var(--bad-ink)" }}>
+          {trace.issue.role === "origin" ? "✗ failed here: " : trace.issue.role === "held" ? "⊘ " : "↯ "}
           {trace.issue.reason}
         </div>
       )}

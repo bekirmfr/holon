@@ -14,7 +14,7 @@ import { signedIn, signInExpired, signOut, type AuthConfig } from "./signin";
 import { usesIn, type Placed } from "./holonUsage";
 import type { WValue, ModuleEntry } from "./holon";
 import type { EndpointDraft } from "./endpoint";
-import type { NodeTiming } from "./replay";
+import type { NodeTiming, SkippedNote } from "./replay";
 import type { SettingChange, Touch } from "./touches";
 
 /** The server: VITE_HOLON_SERVER when set; else, built (`npm run build`), the server it is served
@@ -1441,6 +1441,9 @@ export type LogEntry = {
   grant?: string;
   /** The waiting points it settled waiting at (a durable run's part), if any. */
   parked?: string[];
+  /** The effects it held and didn't make, each with why (recorder.rs `Skipped`; absent when
+   *  none, and in runs from before it). */
+  skipped?: SkippedNote[];
   /** For a resumed part: the events delivered so far, by waiting point. */
   events?: Record<string, WValue>;
   /** The secrets the run was given: the version and fingerprint their marks name (`v3 #a1b2c3d4`). */

@@ -1,0 +1,317 @@
+{
+  "cases": [
+    {
+      "from": {
+        "name": "collection_get",
+        "params": [
+          {
+            "kind": "Frozen",
+            "name": "collection",
+            "value": "tasks"
+          }
+        ]
+      },
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "from": [
+          0,
+          1
+        ],
+        "leaf": "collection_get",
+        "level": "read",
+        "read": 0
+      },
+      "reason": null,
+      "says": "collection_get \"tasks\" found nothing at tasks[t1]",
+      "what": "a read, by its key"
+    },
+    {
+      "from": {
+        "name": "collection_get",
+        "params": [
+          {
+            "kind": "Frozen",
+            "name": "collection",
+            "value": "tasks"
+          }
+        ]
+      },
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "from": [
+          0,
+          1
+        ],
+        "leaf": "collection_get",
+        "level": "read",
+        "read": 1
+      },
+      "reason": null,
+      "says": "collection_get \"tasks\" found nothing at tasks[*]",
+      "what": "a read of a listing"
+    },
+    {
+      "from": {
+        "name": "collection_get",
+        "params": [
+          {
+            "kind": "Frozen",
+            "name": "collection",
+            "value": "tasks"
+          }
+        ]
+      },
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "from": [
+          0,
+          1
+        ],
+        "leaf": "collection_get",
+        "level": "read",
+        "read": 7
+      },
+      "reason": null,
+      "says": "collection_get \"tasks\" found nothing",
+      "what": "a read whose request the record doesn't keep"
+    },
+    {
+      "from": {
+        "name": "store_read",
+        "params": [
+          {
+            "kind": "Frozen",
+            "name": "key",
+            "value": "none"
+          }
+        ]
+      },
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "from": [
+          0,
+          2
+        ],
+        "leaf": "store_read",
+        "level": "read"
+      },
+      "reason": null,
+      "says": "store_read \"none\" found nothing",
+      "what": "a state read (not one of the entry's reads)"
+    },
+    {
+      "from": {
+        "name": "field",
+        "params": [
+          {
+            "kind": "Frozen",
+            "name": "name",
+            "value": "id"
+          }
+        ]
+      },
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "from": [
+          0,
+          2
+        ],
+        "leaf": "field",
+        "level": "missing"
+      },
+      "reason": null,
+      "says": "field \"id\" gave nothing: what it read lacked it",
+      "what": "a value lacking a field"
+    },
+    {
+      "from": {
+        "name": "field",
+        "params": [
+          {
+            "kind": "Frozen",
+            "name": "name",
+            "value": "id"
+          }
+        ]
+      },
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "from": [
+          0,
+          2,
+          1
+        ],
+        "leaf": "field",
+        "level": "missing",
+        "unseen": true
+      },
+      "reason": null,
+      "says": "field \"id\" gave nothing: what it read lacked it, as far as the record sees",
+      "what": "as far as the record sees"
+    },
+    {
+      "from": {
+        "name": "js",
+        "params": []
+      },
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "from": [
+          0,
+          2
+        ],
+        "leaf": "js",
+        "level": "failed"
+      },
+      "reason": "out of fuel",
+      "says": "js failed: out of fuel",
+      "what": "a failure, its reason recorded"
+    },
+    {
+      "from": {
+        "name": "js",
+        "params": []
+      },
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "from": [
+          0,
+          2
+        ],
+        "leaf": "js",
+        "level": "failed"
+      },
+      "reason": null,
+      "says": "js failed",
+      "what": "a failure, no reason recorded"
+    },
+    {
+      "from": null,
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "level": "withheld"
+      },
+      "reason": null,
+      "says": "withheld: where it stopped may be computed from a secret",
+      "what": "withheld"
+    },
+    {
+      "from": null,
+      "note": {
+        "effect": "DbWrite(\"shop/orders\")",
+        "level": "refused",
+        "rule": "a value read from a reply that sent a secret back isn't written"
+      },
+      "reason": null,
+      "says": "refused: a value read from a reply that sent a secret back isn't written",
+      "what": "refused"
+    },
+    {
+      "from": null,
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "from": [
+          0,
+          9
+        ],
+        "leaf": "collection_get",
+        "level": "read",
+        "read": 0
+      },
+      "reason": null,
+      "says": "collection_get found nothing at tasks[t1]",
+      "what": "a step with no node of the text"
+    },
+    {
+      "from": null,
+      "note": {
+        "at": [
+          0,
+          3
+        ],
+        "effect": "StateWrite(\"g\")",
+        "level": "missing"
+      },
+      "reason": null,
+      "says": "a step gave nothing: what it read lacked it",
+      "what": "a step with no node and no leaf"
+    }
+  ],
+  "reads": [
+    {
+      "request": {
+        "type": "Record",
+        "value": [
+          [
+            "collection",
+            {
+              "type": "Text",
+              "value": "tasks"
+            }
+          ],
+          [
+            "get",
+            {
+              "type": "Text",
+              "value": "t1"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "request": {
+        "type": "Record",
+        "value": [
+          [
+            "collection",
+            {
+              "type": "Text",
+              "value": "tasks"
+            }
+          ]
+        ]
+      }
+    }
+  ]
+}

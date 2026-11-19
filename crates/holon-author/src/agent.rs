@@ -1271,4 +1271,65 @@ mod tests {
         let p = plan(example.trim_start()).unwrap();
         assert_eq!(p.routes, ["POST /posts/:id/like"]);
     }
+
+    /// **Guards:** the editor says a run's notes (`skipped`) in explain's words:
+    /// `editor/src/skipped.fixture.json` is [`skipped_why`] over a table of notes (each level; a
+    /// read by its key, of a listing, with no request kept, of state; a failure with its reason and
+    /// without; as far as the record sees; a step with no node), and the editor's `heldWhy` is held
+    /// to it (replay.test.ts).
+    /// **Why:** explain and the editor say one note in two places: written twice, they drift.
+    #[test]
+    fn the_editor_says_a_runs_notes_in_explains_words() {
+        let step = |name: &str, params: Value| -> crate::canvas::Node {
+            serde_json::from_value(json!({ "id": "from", "data": { "name": name, "body": { "kind": "Primitive" }, "params": params } })).unwrap()
+        };
+        let frozen = |name: &str, value: &str| json!({ "kind": "Frozen", "name": name, "value": value });
+        let text = |v: &str| json!({ "type": "Text", "value": v });
+        let entry = json!({ "reads": [
+            { "request": { "type": "Record", "value": [["collection", text("tasks")], ["get", text("t1")]] } },
+            { "request": { "type": "Record", "value": [["collection", text("tasks")]] } },
+        ] });
+        let (tasks, state, field, js) = (
+            step("collection_get", json!([frozen("collection", "tasks")])),
+            step("store_read", json!([frozen("key", "none")])),
+            step("field", json!([frozen("name", "id")])),
+            step("js", json!([])),
+        );
+        let write = "StateWrite(\"g\")";
+        let cases: [(&str, Value, Option<&crate::canvas::Node>, Option<&str>); 12] = [
+            ("a read, by its key", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 1], "leaf": "collection_get", "read": 0 }), Some(&tasks), None),
+            ("a read of a listing", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 1], "leaf": "collection_get", "read": 1 }), Some(&tasks), None),
+            ("a read whose request the record doesn't keep", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 1], "leaf": "collection_get", "read": 7 }), Some(&tasks), None),
+            ("a state read (not one of the entry's reads)", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 2], "leaf": "store_read" }), Some(&state), None),
+            ("a value lacking a field", json!({ "effect": write, "level": "missing", "at": [0, 3], "from": [0, 2], "leaf": "field" }), Some(&field), None),
+            ("as far as the record sees", json!({ "effect": write, "level": "missing", "at": [0, 3], "from": [0, 2, 1], "leaf": "field", "unseen": true }), Some(&field), None),
+            ("a failure, its reason recorded", json!({ "effect": write, "level": "failed", "at": [0, 3], "from": [0, 2], "leaf": "js" }), Some(&js), Some("out of fuel")),
+            ("a failure, no reason recorded", json!({ "effect": write, "level": "failed", "at": [0, 3], "from": [0, 2], "leaf": "js" }), Some(&js), None),
+            ("withheld", json!({ "effect": write, "level": "withheld", "at": [0, 3] }), None, None),
+            ("refused", json!({ "effect": "DbWrite(\"shop/orders\")", "level": "refused", "rule": "a value read from a reply that sent a secret back isn't written" }), None, None),
+            ("a step with no node of the text", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 9], "leaf": "collection_get", "read": 0 }), None, None),
+            ("a step with no node and no leaf", json!({ "effect": write, "level": "missing", "at": [0, 3] }), None, None),
+        ];
+        let fixture: Vec<Value> = cases
+            .iter()
+            .map(|(what, note, from, reason)| {
+                let reasons: HashMap<String, String> = reason.map(|r| ("from".to_string(), r.to_string())).into_iter().collect();
+                json!({
+                    "what": what,
+                    "note": note,
+                    "from": from.map(|n| json!({ "name": n.data.name, "params": n.data.params })),
+                    "reason": reason,
+                    "says": skipped_why(note, *from, &entry, &reasons),
+                })
+            })
+            .collect();
+        let text = serde_json::to_string_pretty(&json!({ "reads": entry["reads"], "cases": fixture })).unwrap() + "\n";
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../editor/src/skipped.fixture.json");
+        let kept = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
+        if kept != text && std::env::var_os("HOLON_BLESS").is_some() {
+            std::fs::write(&path, &text).unwrap();
+            return;
+        }
+        assert!(kept == text, "{} is out of date: HOLON_BLESS=1 cargo test -p holon-author the_editor_says_a_runs_notes_in_explains_words writes it again", path.display());
+    }
 }

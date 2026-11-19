@@ -226,10 +226,134 @@ export type NodeTiming = {
 /** Which of the deployed flow's traces places a run's steps, and how deep they sit: a request's
  *  route, or a clock's, file handler's, websocket block's or action's label (`every 2s`, `on file
  *  inbox`, `WebSocket /room/:name message`, `action reset`), one level down, inside its handler
- *  unit; else the whole flow's (`"*"`), at the top. */
-function placedBy(entry: { kind: string; route: string | null }): { key: string; depth: 1 | 2 } {
-  const handler = entry.kind === "request" || ((entry.kind === "tick" || entry.kind === "file" || entry.kind === "trigger" || entry.kind === "websocket") && !!entry.route);
+ *  unit; else the whole flow's (`"*"`), at the top. A run that went on from a wait (`resume`) is
+ *  placed as its first part is, by its handler's label (holon-author's agent.rs `run_trace`). */
+export function placedBy(entry: { kind: string; route: string | null }): { key: string; depth: 1 | 2 } {
+  const handler =
+    entry.kind === "request" || ((entry.kind === "tick" || entry.kind === "file" || entry.kind === "trigger" || entry.kind === "websocket" || entry.kind === "resume") && !!entry.route);
   return handler ? { key: entry.route ?? "", depth: 2 } : { key: "*", depth: 1 };
+}
+
+/** The canvas node a recorded step path belongs to: its own, or, for a step inside one (a
+ *  function's write), the node holding it (holon-author's agent.rs `node_of_path`). */
+function nodeHolding(
+  entry: { kind: string; route: string | null },
+  trace: Record<string, string[]> | undefined,
+): (path: number[]) => string | undefined {
+  const { key, depth } = placedBy(entry);
+  const map = trace?.[key];
+  return (path) => {
+    if (!map || path.length < depth || (depth === 2 && path[0] !== 0)) return undefined;
+    return map[path[depth - 1]];
+  };
+}
+
+/** An effect a run held and didn't make, as the server noted it (holon-server's recorder.rs
+ *  `Skipped`, R99): the effect, as `performed` names one; why (`read`: a read found nothing,
+ *  `missing`: a value lacked a field or an item, `failed`: a `throw` or a module, `withheld`: where
+ *  it began may be computed from a secret, `refused`: made, and the host refused it); the step
+ *  that would have made it (`at`) and the one where its absence began (`from`, and its `leaf`);
+ *  where that step is a read, its place in the entry's `reads`; whether the record sees no
+ *  further than `from` (`unseen`); and a refusal's rule. */
+export type SkippedNote = { effect: string; level: string; at?: number[]; from?: number[]; leaf?: string; read?: number; unseen?: boolean; rule?: string };
+
+/** An effect a run held and didn't make, said: the node that would have made it (`null` for one
+ *  with no step to stand at, a refused or a withheld one), the effect, and why. The effect is
+ *  named by that node, as the canvas shows it (`collection_put "tasks"`); one with no node by the
+ *  record's name for it (`DbWrite("shop/orders")`), as explain says such a note. */
+export type Held = { id: string | null; effect: string; reason: string };
+
+/** A step as explain names it (holon-author's agent.rs `node_name`): its leaf, and the first of
+ *  the parameters that tell it apart, as JSON. */
+export function stepName(n: { data: { name: string; params: WParam[] } }): string {
+  for (const k of ["name", "key", "collection", "host", "value"]) {
+    const p = n.data.params.find((q) => q.kind === "Frozen" && q.name === k && q.value !== "");
+    if (p?.kind === "Frozen") return `${n.data.name} ${JSON.stringify(p.value)}`;
+  }
+  return n.data.name;
+}
+
+/** A read's key as the record keeps what it asked: `seen[k2]`, or `seen[*]` for a listing
+ *  (holon-author's agent.rs `read_key`). */
+function readKey(request: WValue | null | undefined): string | null {
+  const text = (name: string) => {
+    const v = request?.type === "Record" ? request.value.find(([k]) => k === name)?.[1] : undefined;
+    return v?.type === "Text" ? v.value : null;
+  };
+  const collection = text("collection");
+  if (collection === null) return null;
+  const get = text("get");
+  return get === null ? `${collection}[*]` : `${collection}[${get}]`;
+}
+
+/**
+ * Why an effect wasn't made, in words, from the server's note of it: the step where its absence
+ * began (`from`, its node), what a read asked (the entry's `reads`), and a failed step's own
+ * reason. Explain's words (holon-author's agent.rs `skipped_why`): `skipped.fixture.json`, written
+ * by its test, holds the two to the same.
+ */
+export function heldWhy(note: SkippedNote, from: { data: { name: string; params: WParam[] } } | undefined, reads: { request: WValue }[] | undefined, reason: string | undefined): string {
+  const name = from ? stepName(from) : note.leaf || "a step";
+  const seen = note.unseen ? ", as far as the record sees" : "";
+  switch (note.level) {
+    case "read": {
+      const key = note.read === undefined ? null : readKey(reads?.[note.read]?.request);
+      return key === null ? `${name} found nothing${seen}` : `${name} found nothing at ${key}${seen}`;
+    }
+    case "missing":
+      return `${name} gave nothing: what it read lacked it${seen}`;
+    case "failed":
+      return reason ? `${name} failed: ${reason}${seen}` : `${name} failed${seen}`;
+    case "withheld":
+      return "withheld: where it stopped may be computed from a secret";
+    case "refused":
+      return `refused: ${note.rule || "?"}`;
+    default:
+      return note.level;
+  }
+}
+
+/** Why a step failed, as the run recorded it, from its last round: its own `reason`, or one of a
+ *  step inside it (a js node's engine: its failure, or a body's exception, the engine's
+ *  `{ error }` answer), as explain reads it (holon-author's agent.rs `recorded`). */
+function failedReason(timeline: NodeTiming[] | undefined, path: number[]): string | undefined {
+  const steps = timeline ?? [];
+  const last = Math.max(0, ...steps.map((t) => t.round ?? 0));
+  const within = (p: number[]) => p.length >= path.length && path.every((x, i) => p[i] === x);
+  for (const t of steps.filter((s) => (s.round ?? 0) === last && within(s.path))) {
+    const own = (t as NodeTiming & { reason?: string }).reason;
+    if (own) return own;
+    const [record] = t.outputs ?? [];
+    if (t.path.length > path.length && t.outputs?.length === 1 && record?.type === "Record") {
+      const error = record.value.find(([k]) => k === "error")?.[1];
+      if (error?.type === "Text") return error.value;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Each effect the run held and didn't make, from the server's notes (`skipped`): on the node that
+ * would have made it, and why. Read, never worked out again: the server's walk saw each step, and
+ * the record may not keep one (a value too large to record), which a walk here would take for one
+ * that gave nothing.
+ */
+export function heldEffects(
+  entry: { kind: string; route: string | null; skipped?: SkippedNote[]; reads?: { request: WValue }[]; timeline?: NodeTiming[] },
+  trace: Record<string, string[]> | undefined,
+  nodes: ReplayNode[],
+): Held[] {
+  const at = nodeHolding(entry, trace);
+  const { depth } = placedBy(entry);
+  return (entry.skipped ?? []).map((note) => {
+    const fromId = note.from?.length ? at(note.from) : undefined;
+    const from = fromId ? nodes.find((n) => n.id === fromId) : undefined;
+    // A failed step's reason is its node's, as explain reads it: the node's own, or a step's inside.
+    const reason = note.level === "failed" && fromId !== undefined && note.from ? failedReason(entry.timeline, note.from.slice(0, depth)) : undefined;
+    const id = note.at?.length ? at(note.at) : undefined;
+    const node = id !== undefined ? nodes.find((n) => n.id === id) : undefined;
+    return { id: node ? node.id : null, effect: node ? stepName(node) : note.effect, reason: heldWhy(note, from, entry.reads, reason) };
+  });
 }
 
 /** A run's step paths, as the server records them, against canvas node ids. `trace` comes with
@@ -796,10 +920,15 @@ export const wireKey = (w: ReplayEdge) => `${w.source}:${w.sourceHandle ?? ""}â†
 
 /** A node's part in a failed run. `origin`: it got all its inputs and produced nothing (or its
  *  outbound call failed): where the failure starts. `starved`: an input never arrived, so it
- *  didn't run, or fell back (a `respond`'s `missing` status). */
-export type Issue = { role: "origin" | "starved"; reason: string };
+ *  didn't run, or fell back (a `respond`'s `missing` status). `held`, in any run: an effect it
+ *  would have made and didn't, as the server noted it (`heldEffects`), which says why in place of
+ *  `starved`'s working out. */
+export type Issue = { role: "origin" | "starved" | "held"; reason: string };
 
 export type Diagnosis = {
+  /** Whether the run failed (an error, a status of 400 or more): else it is here for the
+   *  effects it held. */
+  failed: boolean;
   /** What went wrong, in a line: the answer, or the run's error. */
   summary: string;
   /** The origins, in evaluation order. */
@@ -807,6 +936,9 @@ export type Diagnosis = {
   issues: Map<string, Issue>;
   /** The wires the failure travelled along (`wireKey`), from each origin downstream. */
   path: Set<string>;
+  /** The effects the run held and didn't make, as the server noted them: those on a node also
+   *  in `issues`, as `held`; those with none to stand at (refused, withheld) only here. */
+  held: Held[];
 };
 
 const keysOf = (v: WValue | null) => (v?.type === "Record" ? v.value.map(([k]) => k) : null);
@@ -961,19 +1093,34 @@ function whyFailed(response: WValue | null): string | null {
 }
 
 /**
- * Why `entry` failed, traced over its replay: `null` when it didn't (no error, a status under
- * 400). Every node that got all its wired inputs and still left a wired output empty, or whose
- * outbound call failed, is an origin; every node missing a wired input is starved; the path runs
- * from each origin along the wires that carried nothing (and the origin's own wires out).
+ * Why `entry` failed, traced over its replay, and the effects it held and didn't make (`held`,
+ * `heldEffects`'): `null` when it didn't fail (no error, a status under 400) and held none. Every
+ * node that got all its wired inputs and still left a wired output empty, or whose outbound call
+ * failed, is an origin; every node missing a wired input is starved; the path runs from each
+ * origin along the wires that carried nothing (and the origin's own wires out). A held effect's
+ * node says the server's note, not a starved node's working out.
  */
 export function diagnose(
   nodes: ReplayNode[],
   edges: ReplayEdge[],
   entry: { status: number | null; error: string | null },
   run: Replay,
+  held: Held[] = [],
 ): Diagnosis | null {
   const failed = entry.error !== null || (entry.status !== null && entry.status >= 400);
-  if (!failed) return null;
+  const noted = (issues: Map<string, Issue>) => {
+    for (const h of held) {
+      if (h.id !== null && issues.get(h.id)?.role !== "origin") issues.set(h.id, { role: "held", reason: `not made: ${h.reason}` });
+    }
+    return issues;
+  };
+  if (!failed) {
+    if (held.length === 0) return null;
+    // An action's run (or a clock's, a resumed part) has no answer to say: only what it held.
+    const notMade = `${held.length === 1 ? "an effect" : `${held.length} effects`} not made`;
+    const summary = entry.status === null ? notMade : `answered ${entry.status}; ${notMade}`;
+    return { failed, summary, origins: [], issues: noted(new Map()), path: new Set(), held };
+  }
   const inRun = new Set(run.order);
   const wires = edges.filter((w) => inRun.has(w.source) && inRun.has(w.target));
   const node = (id: string) => nodes.find((n) => n.id === id)!;
@@ -1030,5 +1177,5 @@ export function diagnose(
   // Starved nodes the absence never reached from an origin (fed by an unwired, absent input) keep
   // their mark but stay off the path.
   const summary = entry.error ? `the run failed: ${entry.error}` : `answered ${entry.status}`;
-  return { summary, origins, issues, path };
+  return { failed, summary, origins, issues: noted(issues), path, held };
 }
