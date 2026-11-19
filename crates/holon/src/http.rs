@@ -298,11 +298,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "GET" && url == "/permissions" {
-        return handle_get_permissions(&state.policy());
+        return handle_get_permissions(&state.policy(), &caller);
     }
 
     if method == "POST" && url == "/permissions/reload" {
-        return grants::handle_post_permissions_reload(state);
+        return grants::handle_post_permissions_reload(state, &caller);
     }
 
     if method == "GET" && url == "/deployments" {

@@ -1463,13 +1463,30 @@ fn secrets_of(
 }
 
 /// `GET /permissions` — this host's policy: each limit's default and ceiling, what it grants
-/// without asking, which exceptions it ever grants, and its file's text as read.
-pub(crate) fn handle_get_permissions(policy: &Policy) -> Response {
-    Response::json(&permissions_view(policy))
+/// without asking, which exceptions it ever grants, and its file's text as read: as `who` may
+/// see it (`permissions_view`).
+pub(crate) fn handle_get_permissions(policy: &Policy, who: &Caller) -> Response {
+    Response::json(&permissions_view(policy, crate::can::sees_data(who)))
 }
 
-pub(crate) fn permissions_view(policy: &Policy) -> serde_json::Value {
-    serde_json::json!({
+/// What a caller who doesn't view the host is told in place of the policy file's text
+/// (`permissions_view`).
+pub(crate) const POLICY_TEXT_WITHHELD: &str = "the policy file itself is read only by those who may view the host";
+
+/// The policy, as `GET /permissions` and a reload answer it. To a caller who doesn't view the host
+/// (`sees_host` false: `can::sees_data`), a backup folder is "a folder", and the file's text isn't
+/// sent: [`POLICY_TEXT_WITHHELD`] says so in its place.
+/// Why: the file names where the server's runs are backed up, and may name any other place on its
+/// machine in a comment; a viewer, an agent and an editor may read the policy, and where the
+/// server keeps its data goes only to whoever views the host (release audit R74, the rule of
+/// R114). The whole text is withheld, not its backup line blanked: what else a file holds can't be
+/// told line by line.
+pub(crate) fn permissions_view(policy: &Policy, sees_host: bool) -> serde_json::Value {
+    let backup = match &policy.storage.backup {
+        crate::permissions::Backup::Folder(_) if !sees_host => serde_json::json!("a folder"),
+        backup => backup.json(),
+    };
+    let mut view = serde_json::json!({
         "defaults": policy.defaults(),
         "ceilings": policy.ceilings,
         "auto": policy.auto,
@@ -1478,9 +1495,13 @@ pub(crate) fn permissions_view(policy: &Policy) -> serde_json::Value {
         "allow_unrecorded": policy.allow_unrecorded,
         "agents_propose": policy.agents_propose,
         "agents_deploy_at_once": policy.agents_deploy_at_once,
-        "storage": { "sweep_every": crate::permissions::every_text(policy.storage.sweep_every), "warn_at": crate::permissions::threshold_text(policy.storage.warn_at), "full_at": crate::permissions::threshold_text(policy.storage.full_at), "when_full": policy.storage.when_full.text(), "backup": policy.storage.backup.json() },
-        "text": policy.text,
-    })
+        "storage": { "sweep_every": crate::permissions::every_text(policy.storage.sweep_every), "warn_at": crate::permissions::threshold_text(policy.storage.warn_at), "full_at": crate::permissions::threshold_text(policy.storage.full_at), "when_full": policy.storage.when_full.text(), "backup": backup },
+    });
+    match sees_host {
+        true => view["text"] = serde_json::json!(policy.text),
+        false => view["text_withheld"] = serde_json::json!(POLICY_TEXT_WITHHELD),
+    }
+    view
 }
 
 /// `GET /deployments/<slug>/manifest` — what it needs, re-derived from its unit; and

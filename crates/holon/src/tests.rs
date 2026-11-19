@@ -2306,7 +2306,7 @@ fn storage_settings_set_at_once_are_each_kept() {
         for (key, value) in &set {
             assert_eq!(doc["storage"][*key].as_str(), Some(value.as_str()), "round {round}: {key} kept\n{written}");
         }
-        assert_eq!(permissions_view(&state.policy())["storage"], permissions_view(&in_file)["storage"], "round {round}: what is in force is what the file says");
+        assert_eq!(permissions_view(&state.policy(), true)["storage"], permissions_view(&in_file, true)["storage"], "round {round}: what is in force is what the file says");
     }
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_dir_all(&backups);

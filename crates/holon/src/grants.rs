@@ -147,16 +147,18 @@ pub(crate) fn change_grant(state: &AppState, slug: &str, change: &ChangeRequest,
 
 /// `POST /permissions/reload` — read the policy file again and hold every deployment to it: a
 /// lowered ceiling or a withdrawn exception applies at once. A file that doesn't parse changes
-/// nothing. Answers with the policy and each deployment's attention.
-pub(crate) fn handle_post_permissions_reload(state: &AppState) -> Response {
+/// nothing. Answers with the policy as `who` may see it (`permissions_view`) and each deployment's
+/// attention.
+pub(crate) fn handle_post_permissions_reload(state: &AppState, who: &Caller) -> Response {
     let file = state.hold_policy_file();
-    reload_policy(state, &file)
+    reload_policy(state, &file, crate::can::sees_data(who))
 }
 
 /// A reload, with the policy file held (`AppState::hold_policy_file`) by whoever asked for it: no
 /// setting is written into the file between this reading it and putting it in force, so a reload
-/// that read it before a write never puts the policy before that write back after it (R75).
-pub(crate) fn reload_policy(state: &AppState, _file: &crate::policy_file::Held<'_>) -> Response {
+/// that read it before a write never puts the policy before that write back after it (R75). Its
+/// answer gives the policy as a caller who views the host (`sees_host`) or one who doesn't sees it.
+pub(crate) fn reload_policy(state: &AppState, _file: &crate::policy_file::Held<'_>, sees_host: bool) -> Response {
     let policy = match Policy::load(&state.policy_path) {
         Ok(p) => Arc::new(p),
         Err(e) => return err(400, format!("the policy wasn't reloaded: {}", e.said())),
@@ -192,7 +194,7 @@ pub(crate) fn reload_policy(state: &AppState, _file: &crate::policy_file::Held<'
     // Not saved, nothing is lost: a restart reads the policy again and holds each deployment to it.
     let _ = persist_deployments(&state.deployments_path, &state.deployments);
     sync_listeners(state);
-    let mut reply = permissions_view(&policy);
+    let mut reply = permissions_view(&policy, sees_host);
     reply["attention"] = serde_json::to_value(attention).unwrap_or_default();
     Response::json(&reply)
 }
