@@ -522,7 +522,7 @@ Taken back, the charge the same:
   set-up or a count of their own): `reading` answers no step for them without counting, from the
   same pass that gathers its inputs, and notes there whether the leaf builds on one given to it.
   The count is `counting`, as it was; `a_leaf_handed_only_numbers_and_booleans_reads_as_its_whole_count_says`
-  holds the two to the same answer for every `Op`, handed none to four inputs drawn from zero,
+  holds the two to the same answer for every `Op`, handed none to eight inputs drawn from zero,
   minus zero, fractions, NaN, the infinities, counts within and past what `business_day_add` and
   the decimals step through, and both booleans, given and lent. Taking `to_text`, `gzip`,
   `business_day_add`, `decimal_sum` or `join` off the list fails it, as does never noting a leaf

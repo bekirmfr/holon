@@ -2647,7 +2647,8 @@ mod tests {
     fn p(name: &str, value: &str) -> Param { Param::frozen(name, value) }
 
     /// `reading`'s shortcut for plain numbers and booleans answers what the whole count does, for
-    /// every leaf: a table of every `Op` by up to four inputs drawn from numbers at the edges a
+    /// every leaf: a table of every `Op` by up to eight inputs (a variadic leaf, `list`, takes any
+    /// number) drawn from numbers at the edges a
     /// count reads (zero, minus zero, fractions, NaN, the infinities, counts past and within what
     /// `business_day_add` and the decimals step through) and both booleans, each given or lent.
     /// - Guards: the step limit (audit R14, performance.md "A step is a unit of work"): a leaf is
@@ -2685,12 +2686,12 @@ mod tests {
         let mut taken = 0;
         for (name, op) in Op::ALL {
             let mut cases: Vec<Vec<(usize, bool)>> = vec![vec![]];
-            // Each value alone, given and lent; then drawn tuples of two to four.
+            // Each value alone, given and lent; then drawn tuples of two to eight.
             for i in 0..pool.len() {
                 cases.extend([vec![(i, false)], vec![(i, true)]]);
             }
             for _ in 0..300 {
-                let arity = 2 + draw(3);
+                let arity = 2 + draw(7);
                 cases.push((0..arity).map(|_| (draw(pool.len()), draw(2) == 1)).collect());
             }
             for case in cases {
