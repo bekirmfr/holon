@@ -33,6 +33,23 @@
   `--give-up 134-144`, which must name exactly those runs. The removed records say which runs
   were given up, by whom and when, and `holon verify` reads them as given up and not checked,
   never as changed. The damaged files are kept beside the records.
+- **The control port no longer stops for good when the server runs out of open files.** A
+  connection it can't take is tried again, less often while it keeps failing, and the server's
+  log says when it starts failing and when it takes connections again. Before, the editor and
+  every command were refused until a restart, while the flows went on.
+- **Approving new permissions takes a mark first, in both editors.** In the terminal editor, a
+  deploy, a proposal picked on Approvals and a restore that ask for new permissions are approved
+  only once `t` has marked them read; one key press approved them before. In the web editor, a
+  restore that brings back permissions has the tick a deploy's review has, and its button stays
+  off until it is ticked; it took one click before. A mark counts only for the list it was made
+  for: when what is asked changes, it is gone. With nothing new asked, nothing changes.
+- **The manual says what an agent with a shell on the server's machine can do.** Commands run on
+  that machine sign in as its user, the server's admin, and an agent's shell runs as that user:
+  `holon deploy --approve` there approves what its own flow asks for. The guides said an agent
+  with a shell couldn't approve anything; they now say this, and how to keep such an agent to its
+  own token (no shell and only `holon mcp`, another OS user, a container or another machine).
+  `holon serve` and `holon mcp setup` print one line saying so. No rule in the server changes:
+  to the operating system that shell is the user.
 
 ## 0.1.0-rc.36
 
@@ -89,6 +106,331 @@
   deployment keeps its records whole or removes nothing. The store's clean-up removes nothing while
   it can't read every log, and a store value not found while a pack can't be read is an error, not
   "missing".
+- **A run's record names a file, a folder or a database only as the flow does.** When a run's
+  read or write failed, its error, kept in the run's log and read by whoever may read or decide
+  the flow's runs, could name a place on the server's disk or a database's address: the state's
+  folder, the server's store of texts, a bound folder's full path, SQLite's file, a Postgres or
+  MySQL `postgres://host:port/db` with the driver's words, or each server MongoDB tried. Now a run
+  is told `it wasn't kept on the server's disk`, `the server couldn't keep its text`, `the folder
+  "reports" can't be listed: …` (or `reports/a/b` below it), `the database "shop" couldn't be
+  opened`, or `the database couldn't be reached` for one reached before and gone since; where and
+  why go to the admin on the server's output. A command's or a write's error is still the
+  database's own message, and whoever binds a database still reads why it can't be reached,
+  address and driver's words included, as soon as it is bound. A first deploy whose keys couldn't
+  be made, one onto a run log that is there and can't be opened (`"shop"'s run log is there and
+  can't be opened`), and a removal whose run records couldn't be kept answer in fixed words too.
+- **With no one signed in, the editor asks the server nothing it would refuse.** When a sign-in
+  ended while the editor was open, it stayed open under its "sign in again" box, so the open flows
+  weren't lost, but every page beneath it went on reading: the access check, the approvals, the
+  deployments, a flow's log, history and cells, every few seconds, each refused `401`. A tab left
+  open over lunch had the server refuse thousands of requests. Now, with no sign-in, the editor
+  sends only what the server answers anyone (its state, its identity provider's settings, an
+  invite, setting up, signing in and accepting an invite) and answers the rest itself, as the
+  server would: `sign in first`. Signing in reads what you may do at once, as whoever signed in;
+  each page reads again at its next beat. Setting up, signing in and accepting an invite no
+  longer carry a sign-in the tab still held.
+- **The editor's buttons wait for the server's answer, and never show another person's.**
+  - Until the server first answered what a person may do, every button it gates was enabled: on
+    a slow or lost answer, a viewer saw **Save** enabled. Now each is disabled until it answers,
+    saying `a moment: asking the server what you may do`; a read that gets no answer is asked
+    again after a second, then twice as long each time, up to 15 seconds. The server still
+    decides every request.
+  - Signing in again as someone else through the identity provider's pop-up, once a sign-in had
+    ended, kept the previous person's buttons: their **Save**, their refusals, the host's pages
+    in the menu. Each answer is now kept with whom it was read for, and shown only while the tab
+    acts as them.
+  - The panes under a page (view mode's log, the history and **Try a request**) read nothing
+    while a page covers them: the log polled every second and a half and drew up to 500 runs
+    again on every tick, under whatever page was open. Shown again, each reads at once, and the
+    log carries on without a gap.
+- **Storage settings set at once are each kept.** Two admins setting two of them at once
+  (`holon policy --warn-at …` and `--full-at …`, or from two editors) were both answered 200, and
+  the second write left the first's setting out of `holon.toml`. Reading the policy again beside
+  them could also put back what was in force before a write. Now each change is read, checked,
+  written and put in force whole before the next, and reading the policy again waits for it.
+- **`holon editor`, the terminal one, does what the web editor does.**
+  - Its admin page reads each part only for whoever may see it, says why a part isn't shown, and
+    a key you may not use says what it takes and sends nothing. It gains the web's parts:
+    groups, roles, bindings (a person's page lists what they hold, and `b` binds from there),
+    the access history and its approval settings, your agents and their keys; folders,
+    databases, mail, feeds and queues, each listed and bound with the command's own flags and
+    saying which deployments use it; the server's secrets (a value is never shown), storage and
+    the policy.
+  - **Approvals** has three parts, as the web's: deploys waiting (an agent's proposal reviewed
+    and deployed as proposed, never the newest save; `m` keeps a note with the deploy, `v`
+    replays the version on the flow's last 20 runs), runs waiting at an approval (with who has
+    approved so far; a decline always says why), and access changes.
+  - A flow's page has **Settings**: limits and runs kept beside the host's default and ceiling
+    (a lower one at once, a higher one takes a version a person approves), whether to keep
+    running when something it requires is revoked, what agents may do, its sessions (a stopped
+    flow runs again from one), and removing it once stopped. On **Access**, `R` rolls a secret
+    back after its dry run.
+  - The graph has the web's three levels, nodes, statements and grouped; `a` steps through them.
+  - A run's detail shows each decision on its approvals, the secrets it read (version and
+    fingerprint, never a value), what it read, and what was witnessed; `O` writes the run alone
+    for `holon verify`. A collection is shown a page of 100 at a time, an item's history with
+    `i`; a flow's status says how its feeds, queues and channels are; **Check now** lists the
+    runs whose line was changed outside Holon.
+  - `del` deletes a saved flow, asked first; the palette (`ctrl+p`) finds a run by its number,
+    the latest runs that failed or waited, each deploy waiting and each access change yours to
+    approve; `?` lists every key, page by page.
+- **An agent reads a run's steps and values only once a person gives it `run.steps`.** Anyone who
+  could view a flow's runs read every run's steps and values: what a request carried in its body
+  and query, an action's input, what a run waiting at an approval holds, through `explain`,
+  `replay`, `holon runs --run`, an export and the editor's run page. An agent bound to watch a flow
+  read whatever its callers had sent it. Reading them is now an action of its own, `run.steps`,
+  which the viewer, editor and admin roles hold and the agent role doesn't; a role an admin defines
+  holds it only when it says so. If your agents explain or replay runs, a person gives each one it
+  where it works: `holon bind viewer --to scout --flow payouts --why …`, or a role bound in People
+  and access. Refused, an agent is told that command.
+  - The list of runs is `run.view`'s: `GET /deployments/<slug>/log/heads` answers each run's
+    number, when and for how long, its kind, route (the pattern, not the URL), method and status,
+    whether it failed (not why), who sent it, where it waits and whether it left a state to restore
+    to (`left_state`), and no value. `GET …/log` asks `run.steps`; an export and a replay ask
+    `run.steps` and `run.export`. `holon runs`, `holon history`, the editor's Runs tab and the MCP
+    tools `call`, `run`, `runs` and `history` read the list; `call` and `run` say which run it was
+    and whether `explain` may read it. What a waiting run shows goes to whoever holds `run.steps`
+    or may decide that approval.
+  - A flow's state is `state.view`'s, and a clock's ticks are `run.steps`'. `GET …/changes` (a
+    cell's values before and after each run) asked `flow.view`, `GET …/sessions` (each session's
+    state) `run.view`, and `GET …/history` (the last ticks, with their outputs) `flow.view`. Now the
+    first two ask `state.view` and the third `run.steps`. `holon tick` and the editor's tick still
+    tick under `flow.lifecycle`, and to anyone without `run.steps` say the tick's outputs were left
+    out and what would give them; a restore with `"state": true`, dry run or not, is refused
+    without `state.view`, naming it.
+  - The terminal editor (`holon editor`) opens a flow for someone who holds `run.view` alone, from
+    the list of runs: it showed them no page at all.
+  - The manual's new [surfaces](docs/manual/reference/surfaces.md) page lists every command,
+    subcommand, MCP tool and the run file, with the routes each calls and the grant each thing it
+    shows takes. `holon --help` now names every subcommand each command's own usage does:
+    `secret`'s `bind`, `cap`, `bound` and `unbind`, `access`'s `approvals`, `local`, `proposals`,
+    `approve` and `decline`, and `folder`'s `sweep` were missing.
+- **Every version an agent deploys waits for a person, unless a person lets the flow take them at
+  once.** An agent's version of a deployed flow that asked for nothing new deployed at once, so
+  code no person had read ran under the old code's permissions. Now each version an agent deploys
+  (or a service that doesn't approve the flow's deploys) is kept as a proposal, the same code
+  included; a person's own deploy is as before. If your agents deployed small changes on their
+  own, someone who may approve the flow's deploys turns on **agents' versions deploy at once** in
+  its settings (`POST /deployments/<slug>/settings` with `"agents_deploy_at_once": true`); an
+  agent, or a person who may only deploy, is refused it, and whoever changes the settings turns it
+  off. With it on, a version that asks for nothing more deploys from the agent, and what waited
+  before still waits: a new permission, a secret read by changed code, changed code sending
+  something out, another flow's action, a new site it answers, a key no longer tainted. A host's
+  `[agents] deploy_at_once = false` keeps it off on every flow, and `holon policy` says which
+  (`agents at once`). The setting is said on the flow's timeline with who changed it and on
+  `GET /deployments`, and kept across a person's redeploy and a restart.
+  - **`holon deploy` with an agent's token proposes, as `holon mcp` does.** It was answered 403:
+    the command acknowledged what the version asks for, which only someone who approves may. Now
+    it proposes, printing the version and the proposal's number, what it asks for (or that it asks
+    for nothing new), and that `holon wait <slug>` ends when a person decides; `--approve` given
+    anyway says it gives nothing.
+  - **A review shows everything a version changes.** Beside a deployed version, the preview begins
+    with **Its handlers**: each handler whose code it changes, adds or removes. Its settings add
+    the port, the keys it keeps out of its records and each handler's log level to how often it
+    runs and the sites it answers pages from, and the editor sends the sites a deploy will send, so
+    a new one is read in the deploy dialog, a proposal's review and Approvals' card.
+  - **What a person reads is what deploys.** A proposal's document (an agent's, or a person's who
+    may only deploy) must build the unit sent, and its browsers line be the browsers sent, or the
+    deploy is refused (400), saying which, before anything is proposed.
+  - **A deploy puts its version in only while the flow is as it was read.** What a deploy needs
+    was worked out from a copy read before the version went in, so a revoke, a limit lowered,
+    at once turned off or another version deployed meanwhile was undone: an agent redeploying in a
+    loop took back what a person had just taken away. That deploy is now answered 409
+    (`"payouts" changed while this deploy was worked out …: deploy again, and what it needs is
+    asked anew`).
+  - An agent's version proposed in the same second as the last deploy said "Nothing waits" in its
+    review, though Approvals counted it as waiting; it shows what it changes.
+- **One party takes one step of an approval, and whoever started a run started each run it leads
+  to.** An agent or a service counted apart from the person who owns it, so the admin who owned the
+  agent that classified a payout could also approve it. And a run another flow's call started was
+  started by "flow relay, run N", no one's name: an agent ran `shop`, `shop` started
+  `payments/payout`, and the agent classified the payout it had led to. Now an agent or a service
+  is one party with whoever owns it and whoever made a token of it (an invite or a reset link makes
+  no party), and each step of an approval is another party's, refused saying how (`quill and dee,
+  who started this run, are one party (dee owns quill)`). A run a call starts is started by
+  whoever started the run that called, through any chain of calls and the later parts of a waiting
+  run (`bob started this run: someone else decides its approval "payout"`); the log still says
+  which run made the call.
+  - A step that says `starter: true` takes the starter's party, one principal each, and an agent's
+    step may now say it: you ask for a draft, your own agent drafts it, and you read it. `holon
+    check` and the review say "…, who may be whoever started the run, or acting for them". An agent
+    never decides a run it started.
+  - With `exclude_deployer`, the deployer's party is kept out too. Runs waiting lists only the
+    steps your party may still take, and the deploy review counts parties (`a run fay starts can't
+    be decided, as they and kit take no step of it: …`).
+  - The `approved-payout` sample's admin owns scout and takes no step: bob reviews and cy approves.
+    In `reviewed-draft`, both steps say `starter: true`.
+- **A run waiting at an approval goes on only when, and as, it should.**
+  - **A paused or stopped deployment's waiting runs wait on.** Pausing a deployment in an incident
+    left its waiting runs going: a decision, or a deadline passing, resumed one and it did what it
+    does (a payout sent), though the deployment took no new run. Now a decision is refused (409,
+    `"payouts" is paused: a run waiting in it goes on once it runs again`) and nothing of it is
+    kept, and a deadline passes it by; once the deployment runs again, each goes on.
+  - **Two waits of one name are refused where they are written.** A run keeps one decision a name,
+    so a flow with two approvals named alike, the second asking for a CFO's step, had the second
+    answered with the first's decision: one approval by someone without the role completed the
+    run. `holon check`, the editor and a deploy now refuse the second at its line (`… are both
+    named "payout": a run keeps one decision a name, … Name them apart`), and an event named as an
+    approval too. The same approval in two handlers is one wait, and compiles.
+  - **An approval decided before its deadline is given its decision.** When its last decision
+    couldn't be handed to the run at once (something else held the run at that moment), the run
+    waited on with every decision kept, and if no one decided again before the deadline it was
+    given `{approved: false, expired: true}`: a fully approved run went on as not approved. Now it
+    is given its decision, past its deadline too; only one still undecided runs out.
+  - **A decided approval is delivered again only by someone who could have decided a step of it.**
+    In that same case, anyone holding `run.decide` there could push the run on with the next
+    decide, at a step not theirs. Now a step must take them as a first decision would, or it is
+    403.
+  - **A slow run past its deadline holds no other.** Expired runs went on one after another, so one
+    whose part waited on a slow host held every deadline after it. Each now goes on in a thread of
+    its own, 16 at once, the rest a second later.
+  - **What an approval shows can't be padded out of sight.** Past 16 KiB it is now cut down after
+    it is redacted (each text to its first KiB, each list or record to its first 64 items, each
+    saying how much more), where it was shown as its size alone, so one padded field hid the amount
+    beside it. The editor shows it a field a row, each text quoted and each row cut at 120
+    characters, and the question that approves or declines names the run, its flow and how it
+    started (`Approve "payout" for run r7f3 of payments (POST /pay)?`) and repeats what it shows.
+    An access change's question says what it gives before its author's why, which is cut at 300
+    characters.
+- **Access is given only by someone who may give it, and an access change is made as its
+  approvers read it.**
+  - **A change that waits is made only as it was approved.** Approving a waiting access change read
+    it again only in part, so a role widened, a group joined or a way in made while it waited could
+    give more than its approvers read. Each approval now reads it against the access document as
+    it is: it is made only if it gives exactly what it said, to exactly whom (someone removed and
+    invited again under the name is someone else), its author still holds what it gives, and no way
+    in to them was made since; an earlier approval from someone disabled since, or holding less, no
+    longer counts. Otherwise it is stale, saying why (`since it was proposed, cy made eve's reset
+    link`), and nothing changes.
+  - **Giving a role takes `people.assign`.** `POST` and `PATCH /people` with a role bound it on the
+    host for anyone holding `people.manage`; now they are refused (`giving editor binds it on the
+    host, which takes people.assign there, which you don't hold`).
+  - **A binding lasts no longer than what lets its author make it.** Someone admin until next week
+    could make themselves, or an invitee, admin for good. A binding, an invite's role and a group's
+    new member now last no longer than the author's own bindings that let them make it.
+  - Declining an access change takes what approving it does, but for its author, who withdraws it.
+    Raising `holon access approvals --changes N` past the number of others holding `people.assign`
+    is refused (409), as changes, the settings among them, could then wait for good. While changes
+    wait for people, a deploy whose new tag would give someone `run.decide` or an admin's action
+    through a binding on the tag is refused (409, naming who and what): give it to them on the flow
+    first, or deploy without the tag.
+  - **Whoever acts as an owner reaches what they own.** Someone managing people could reset a
+    person who held less but owned a stronger agent, sign in as them and make the agent a token.
+    Changing a person now counts what each agent or service of theirs holds (`bob owns bot, which
+    holds editor on this host, which holds flow.edit there, which you don't: …`), and while changes
+    wait for people, no way in is made to someone who owns an agent holding what that governs.
+  - **Tying the run file to someone is held to what its caller holds, and waits for people.**
+    `holon access local --as NAME` (`PUT /access/local`) tied this machine's run file to anyone, at
+    once, for whoever held `people.assign`, and whoever held the machine then decided as that
+    person. Now it ties it to no one holding more than the caller, and where access changes wait it
+    waits as one (`this machine's run file signs in as cy, holding run.decide on this host, as
+    approver`), which the command prints with how many people it waits for; through the run file
+    itself it is made at once. A decision or an approval made through the run file keeps
+    `via: "local:<user>"` in the run's record and its export, so an auditor tells it from one made
+    by someone signed in.
+- **Behind a reverse proxy, each client is counted as itself: `holon serve --trust-proxy IP`.**
+  Behind the proxy the guides set up, every request came from the proxy: five wrong passwords for a
+  name from anywhere locked that name for everyone, and the sign-in limits were everyone's at once.
+  `--trust-proxy 127.0.0.1` (repeatable) names the proxy by the address it connects from, and a
+  request from it is counted as the address it forwarded for: the nearest in `X-Forwarded-For`,
+  read from the end, that isn't a trusted proxy, so what a client writes there is never read. A
+  value that isn't an address exits 2. Without it nothing changes, but the first forwarded request
+  from a peer not trusted prints, once, how to trust it; the public HTTPS guide's command trusts
+  127.0.0.1. And one client no longer holds the control plane: slow bodies from one client kept
+  everyone out, signing in included. Past 64 requests at once from one address (an IPv6 one by its
+  /64), one more is answered 503 (`the server is answering too many requests from your address at
+  once: …`), and the rest of the 512 places stay for others.
+- **Signing in and out say what happened, and hold against guesses spread over many addresses.**
+  - **A name's wrong passwords have one ceiling from every address together.** Five wrong passwords
+    locked a name only from the address they came from, so guesses spread over many addresses had
+    no ceiling. Past 20 wrong in a quarter of an hour, a name is refused from each address it hasn't
+    signed in from (`too many wrong passwords for this name, from many places: sign in from where
+    you did before, or wait a quarter of an hour`); its owner still signs in from the last eight
+    addresses they used. A name with no account is counted the same way.
+  - **A sign-out answers 204 only when it ended a sign-in.** `POST /auth/sign-out` answered 204 to
+    anything, so an agent's API token or the run file was "signed out" and went on working. Now an
+    API token is answered 409, saying to revoke it, and the run file 409, saying it ends when the
+    server stops; a sign-in that had ended is 401, and one whose ending couldn't be kept 500,
+    saying you are still signed in.
+  - **A disabled person's agents and services are refused too.** Disabling a person ended their
+    sessions, but the tokens of what they own went on working. Those tokens are now refused until
+    the owner is enabled again; the agent or service isn't disabled itself, and the People page and
+    `holon people` say `its owner is disabled: its tokens are refused`.
+  - **A refused sign-in through the identity provider names no account.** One whose email was an
+    account's here, from another subject, was told whose account it was. Now it is told `the
+    account here with ada@example.com signs in as someone else at your identity provider: ask an
+    admin to set that account's email again, …`.
+  - **`holon mcp setup --agent NAME` takes an agent already there only when it is yours.** It made
+    a token for the agent of that name whoever owned it, so this machine's `holon mcp` acted as
+    another person's agent. Now that is refused and nothing is made (`eve-bot on … is eve's agent,
+    not ada's: …`).
+  - **An agent's token kept by rc.35 is read as the agent's.** rc.35's `holon mcp setup --server`
+    kept its token under the server's URL, where `holon login` keeps a person's session, so after
+    an update a person's `holon decide` or `holon deploy` signed in as the agent. Such a token is
+    now read as that server's agent's, never a session, and `~/.holon/tokens.json` is written so
+    with the next token kept.
+  - **A change to the accounts that can't be written changes nothing.** A token revoked while the
+    disk refused the write was refused until the server restarted, then came back. A change is now
+    put in place only once it is written, and a sign-in or a token check no longer waits for a
+    write. A sign-in's tries are kept by a digest of the name, so a stream of huge names no longer
+    fills the server's memory.
+- **A record saved from a stale copy is refused, and saved flows are bounded.** A page, a tab or an
+  agent that wrote a record whole wrote it from the copy it had read, so a stale copy quietly put
+  back what a colleague had changed: a saved flow, a group's members, a role's actions.
+  `POST /flows` now takes `"base"`, the save it was made from (`null` for a new flow), and one made
+  from another save, or from one removed since, is answered 409, naming the save there now and who
+  made it; the editor then asks before replacing theirs. `PUT /groups/<name>` and
+  `PUT /roles/<name>` take the access version the page read them at, and a record changed since is
+  409; an access change waiting for people goes stale the same way. The editor, `holon flows save`,
+  `holon mcp`'s `save` and `holon groups add|drop` send it. A server keeps at most 1,000 saved
+  flows, 4 MiB a document (413) and 64 MiB of documents in all (409), and a save the flows file
+  doesn't take answers 500 and changes nothing, where it answered 200.
+- **The editor asks before what can't be undone, and a question takes no answer typed for the
+  page.** A deploy's consent opened a moment after Ctrl+D, beside Ctrl+S, with the focus on
+  **Approve and deploy**, and the next Enter or `y` typed for the page approved it unread.
+  - A question now takes no answer but no until it has been shown half a second with no key
+    pressed; a key or a click meanwhile starts the wait again, its answers show as unavailable, and
+    a held key never answers. No (Esc, Cancel, a click beside it) is taken at once. A screen reader
+    hears why (`Not yet: it takes an answer a moment after it shows, and after the last key
+    pressed.`), and an answer that came too soon is said not taken.
+  - What was one click is asked first: removing a flow's secret (every version forgotten),
+    disabling or enabling a person or an agent, and a role or an owner picked from a list, which an
+    arrow key on the focused list changed at once.
+  - A password or a key is never shown as it is typed. Change password asked the current and the
+    new one as a line of plain text; it now asks in password fields a password manager fills, the
+    new one twice (`Not changed: the two new passwords differ.`). The marketplace's publish key is
+    asked the same way.
+  - Three prompts that offered an empty answer took it as Cancel, so the email for signing in
+    through the provider, the marketplace's address and where a server's secret may go couldn't be
+    cleared. Empty now clears it, and Cancel changes nothing.
+- **The editor keeps your work when a page fails, a sign-in ends or another tab signs in.**
+  - **A tab acts as whoever it signed in as.** Every request read the browser's kept session, so a
+    second tab signing in as someone else changed whom the first acted as. Each tab now keeps its
+    own from when it loaded.
+  - **An ended sign-in keeps the editor.** A 401 (signed out elsewhere, the session expired, the
+    person disabled) drew the sign-in in place of the editor, and every open flow's unsaved changes
+    went; a provider's ID token that expired left the editor dead. Now the editor stays under a
+    sign-in, its name filled in: the same person goes on as they were, someone else gets an editor
+    of their own, and a provider's sign-in happens in a pop-up. Signing out asks first while open
+    flows have changes not saved.
+  - **A page or the canvas that fails says so in its place,** with **Try again**, and the rest goes
+    on; it blanked the whole editor, unsaved changes with it.
+  - **A list that couldn't be read says so** (`Couldn't read …: …`), never that it is empty.
+    Approvals' "No run is waiting.", the overview's "Nothing waits for approval.", a flow's secrets'
+    "not set" and the activity's "nothing yet" were shown when the server didn't answer, and
+    whoever was to decide read that nothing waited. The counts say `?` then.
+  - **People and access follows what the server would answer you**, as the other pages do: someone
+    holding `people.view` alone saw email, reset, disable, remove, the role and owner lists, the add
+    forms, groups, roles and the identity provider's settings enabled, and learned only from the
+    refusal. Each is now disabled, saying why on hover.
+  - **What a link to the editor carries is shown quoted, never as the editor's own.**
+    `#docs.<page>` put the page name into the "Not found" page's markdown, where a backtick broke
+    out to a heading and a link anywhere, and a sign-in return with any `state` showed its
+    `error_description` as the editor's own sentence. Such text is now shown on one line, in
+    quotes, cut at 80 characters, and a sign-in return says what it carries only when it answers a
+    sign-in this browser started.
+  - The editor opened from an invite link shows the join form whatever order the server answers
+    in; now and then it showed the sign-in over it.
 - **What a flow reads from a reply that sent its secret back is treated as the secret.** A
   service that answers with the secret it was sent (its headers echoed, an account record with
   the key in it) handed the flow the secret again in a reply the server took as ordinary. A
@@ -602,8 +944,8 @@
   kind: "agent" }, { role: "proofreader", starter: true }]` lets the one who started the run take
   the second step. Left out, they may not, as before. It is part of what the flow asks for
   (`Approval("shape/agent:drafter>person:proofreader^")`, said "…, who may be whoever started the
-  run"), so letting the starter in, or no longer, is a changed row in the version's review. An
-  agent never decides a run it started, whatever a step says (an agent's step can't say it).
+  run, or acting for them"), so letting the starter in, or no longer, is a changed row in the
+  version's review. An agent never decides a run it started, whatever a step says.
   `holon access approvals --starter off` lets no step take whoever started a run, on this host:
   a version with such a step is refused at deploy, saying how to let it, and a run already
   waiting goes by it at once (`approvals.starter`, on by default). The deploy review sets the
@@ -687,7 +1029,8 @@
   `holon login` again; `HOLON_TOKEN` not taken; none, how to sign in. A password goes over https
   only, as a token does. The sign-in answer says when the session ends (`expires_at`). An agent's
   token `holon mcp setup --server` keeps for a server elsewhere is now kept as `agent:<URL>`, apart
-  from a person's session: set it up again. Signing in through a provider isn't in the command
+  from a person's session; one rc.35 kept under the server's URL is read as the agent's, never as
+  a session. Signing in through a provider isn't in the command
   line yet.
 - **Those who decide an approval see what they approve, and nothing else of the flow's runs.**
   An approval listed its steps and who had taken them, never what the run would do: a reviewer
@@ -697,7 +1040,9 @@
   with (an action's argument, a request without its headers, what a source delivered; nothing
   for a clock). Either is kept when the run parks as its log keeps it: a field tainted by a
   secret's mark redacted (`‹taint:card›`), a value a secret may have made withheld whole, one
-  past 16 KiB its size instead, sealed on disk with the run. Runs waiting in the editor's
+  past 16 KiB cut down after that (each text to its first KiB, each list or record to its first
+  64 items, each saying how much more) and its size only if it is still past, sealed on disk with
+  the run. Runs waiting in the editor's
   Approvals and the flow's Waiting list, `holon decide` and `holon mcp`'s `runs` show it under
   the approval (`it shows {"amount":30,"payee":"acme"}`). Listing a flow's runs took `run.view`;
   now `run.decide` on its approvals lists the runs waiting at an approval the caller may decide,
@@ -722,6 +1067,8 @@
     a process, a folder or a database), and a route among them that reads a database or folder
     the host binds, for its answers. The review says `asked again` on those rows. What the host
     grants without asking isn't asked again, nor what a route answers from the flow's own state.
+    Every version an agent deploys now waits for a person in any case, unless the flow lets
+    agents' versions deploy at once; with that on, this is what still waits.
   - **The deploy review says when an approval can't be decided here.** A row for an approval
     whose steps can't all be taken is marked not ready, saying why: `approver: 1 person holds it
     here; it needs 2`, `classifier: no agent holds it here`, `its steps take 2 different
@@ -767,7 +1114,7 @@
   of a bound group, and a defined role changed only by someone holding what it gives. Setting the
   identity provider takes holding what each person holds, since it says who each of them is.
   And a provider's sign-in is matched by the email it verified only the first time: from then on
-  by its issuer and subject, so another subject given that email is refused, saying whose it is,
+  by its issuer and subject, so another subject given that email is refused, naming no account,
   until an admin sets that person's email again. A sweep of the route table holds every route
   that changes a principal or what it holds to the rule, with a case for each.
 - **A flow's taint keys are a deploy setting, listed in the editor.** `taint: [...]` stays in the
@@ -796,12 +1143,14 @@
   `people: 2`, and a run they start or a version they deploy from the command line is theirs,
   which the starter rule and `exclude_deployer` refuse them in the editor too. The access document
   keeps the tie (`local`), set at setup, which `holon access local --as NAME` (or
-  `PUT /access/local`, `people.assign`) moves to another person, as a version; `holon access local`
+  `PUT /access/local`, `people.assign`) moves to another person holding no more than whoever moves
+  it, as a version, waiting for people where access changes wait; `holon access local`
   (`GET /access/local`) says it and whether it holds now, and `holon access show` prints it. Removing that account clears it; while it is disabled, the run file is the OS user's
   admin, `local:<user>`, and decides no approval. Each activity entry made through the run file
   says `via: "local:<user>"`, `/auth/me` answers `local`, and an agent the OS user made before
   setup (`holon mcp`'s) is the account's. A decision's `binding` is always an id: `"local"` goes.
-  The `approved-payout` sample's approver is you, approving with `holon decide`.
+  In the `approved-payout` sample, two people its admin invites review and approve, with
+  `holon decide` or in the editor.
 - **Each decision keeps what let it.** A decision on an approval is kept, and given to the run,
   with `binding`, the id of the binding its decider took the step through (the step's role, or
   for a step with none what holds `run.decide` there), and `access`, the version of the access

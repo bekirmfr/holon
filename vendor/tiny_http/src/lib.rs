@@ -311,6 +311,8 @@ impl Server {
         let inside_open = open.clone();
         let tasks_pool = Arc::new(util::TaskPool::new());
         let inside_pool = tasks_pool.clone();
+        // Holon (PATCHED.md): the accepts that failed in a row, said as they start and end.
+        let mut failing = limits::Failing::new(local_addr.to_string());
         thread::spawn(move || {
             // a tasks pool is used to dispatch the connections into threads
             let tasks_pool = inside_pool;
@@ -322,6 +324,9 @@ impl Server {
                 let new_client = match server.accept() {
                     Ok((sock, addr)) => {
                         use util::RefinedTcpStream;
+                        if let Some(again) = failing.accepted(std::time::Instant::now()) {
+                            eprintln!("{}", again);
+                        }
                         // Holon (PATCHED.md): past a bound, told so and closed at once; inside
                         // them, counted for as long as any half of it is alive, and each read
                         // waits no longer than the idle limit.
@@ -379,10 +384,18 @@ impl Server {
                         }));
                     }
 
+                    // Holon (PATCHED.md): an accept that fails (no file handle left, above all) is
+                    // waited on and tried again, until the server closes, and said as a run of
+                    // them starts and ends, a line or two a minute at most (`limits::Failing`).
+                    // Upstream's thread ended here, and with it the server: its listener closed,
+                    // and the error it queued ended rouille's `run()`, while nothing said so.
                     Err(e) => {
                         log::error!("Error accepting new client: {}", e);
-                        inside_messages.push(e.into());
-                        break;
+                        let (said, wait) = failing.failed(&e, std::time::Instant::now());
+                        if let Some(said) = said {
+                            eprintln!("{}", said);
+                        }
+                        thread::sleep(wait);
                     }
                 }
             }

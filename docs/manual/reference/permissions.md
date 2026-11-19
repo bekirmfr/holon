@@ -225,7 +225,9 @@ At each deploy, every item of the manifest is:
    doesn't allow, or an `await` longer than `max_await_seconds`, or a folder that isn't bound);
 2. **granted without asking**, if the policy's `auto` list has it, it is a limit at or below its
    default, or the deployment's last grant had it;
-3. otherwise, **shown to a person**, who approves it or not. An agent can't.
+3. otherwise, **shown to a person**, who approves it or not. An agent signed in as one can't
+   (one whose shell runs as you on the server's machine signs in as you: [An agent with a
+   shell](../guides/agents.md#an-agent-with-a-shell)).
 
 At each effect, while it runs, the server checks the item is in the grant: an effect outside it
 is refused. A grant can be narrowed while the deployment runs: each run from then on has the

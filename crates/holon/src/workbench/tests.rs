@@ -112,6 +112,7 @@ fn deploying_shows_what_it_may_do_and_deploys_on_enter() {
     press(&mut app, KeyCode::Char('m'));
     press(&mut app, KeyCode::Esc);
     assert!(screen(&mut app, 120, 40).contains("Note: for the pilot"));
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     assert!(app.modal.is_none());
     let events = app.client.as_ref().unwrap().get("/deployments/beats/events").unwrap();
@@ -133,6 +134,7 @@ fn a_flow_renamed_in_its_text_deploys_under_its_new_name() {
     let (mut app, _) = app();
     tab_with(&mut app, BEATS);
     ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.tabs[0].slug.as_deref(), Some("beats"));
     let renamed = BEATS.replace("flow(\"beats\")", "flow(\"pulse\")");
@@ -144,6 +146,7 @@ fn a_flow_renamed_in_its_text_deploys_under_its_new_name() {
     assert_eq!(slug, "pulse");
     let shown = screen(&mut app, 140, 40);
     assert!(shown.contains("deploys as a new flow") && shown.contains("\"beats\", which this tab deployed before, stays"), "{shown}");
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     let c = app.client.as_ref().unwrap();
     assert!(c.deployment("pulse").is_some() && c.deployment("beats").is_some());
@@ -200,6 +203,7 @@ fn a_saved_flow_waits_for_a_person_who_approves_it_from_the_approvals_page() {
     assert_eq!(app.page, Page::Editor);
     press(&mut app, KeyCode::Esc);
     app.go(Page::Approvals);
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.page, Page::Approvals);
     assert!(app.waiting().is_empty(), "{:?}", app.waiting());
@@ -210,6 +214,7 @@ fn bumped(times: usize) -> (App, &'static AppState) {
     let (mut app, state) = app();
     tab_with(&mut app, BUMP);
     ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     for _ in 0..times {
         let ran = route(state, &req("POST", "/trigger/bump/bump", b"{}".to_vec()));
@@ -227,6 +232,7 @@ fn loud_page() -> App {
     let (mut app, state) = app();
     tab_with(&mut app, LOUD);
     ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     for who in ["ada", "bob"] {
         let ran = route(state, &req("POST", "/trigger/loud/shout", format!("{{\"who\":\"{who}\"}}").into_bytes()));
@@ -364,6 +370,7 @@ fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_t
     let (mut app, state) = app();
     tab_with(&mut app, TWO);
     ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     let ran = route(state, &req("POST", "/trigger/two/bump", b"{}".to_vec()));
     let status = ran.status_code;
@@ -460,6 +467,7 @@ fn going_back_offers_what_can_be_put_back_then_a_dry_run_then_restores() {
     // Its approval shows what it touches beside what it touches now.
     let shown = screen(&mut app, 120, 40);
     assert!(shown.contains("What it keeps") && shown.contains("+ key last: write") && shown.contains("  key n: read, write"), "{shown}");
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     assert!(app.note.as_ref().is_some_and(|n| !n.error), "{:?}", app.note.as_ref().map(|n| &n.text));
     let c = app.client.as_ref().unwrap();
@@ -1485,6 +1493,7 @@ fn a_secret_is_set_as_a_value_a_name_the_server_reads_or_a_vault_field() {
     app.attach(Client::new(Box::new(InProcess(state, None))));
     tab_with(&mut app, include_str!("../../../holon-author/samples/sign-payload.holon.ts"));
     ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     app.open_flow("sign-payload");
     app.flow_section(Section::Access);
@@ -1561,6 +1570,7 @@ fn a_flows_unrecorded_handlers_show_counted_beside_its_runs() {
     let Some(Modal::Approve { .. }) = &app.modal else { panic!("no dialog: {:?}", app.note.as_ref().map(|n| &n.text)) };
     let shown = screen(&mut app, 140, 44);
     assert!(shown.contains("+ log action peek: not recorded"), "the approval says it: {shown}");
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     assert!(app.note.as_ref().is_some_and(|n| !n.error), "{:?}", app.note.as_ref().map(|n| &n.text));
     let c = app.client.as_ref().unwrap();
@@ -1601,6 +1611,7 @@ fn the_text_says_how_it_differs_from_live() {
     tab_with(&mut app, BUMP);
     assert!(screen(&mut app, 130, 30).contains("not deployed"), "{}", screen(&mut app, 130, 30));
     ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     let shown = screen(&mut app, 130, 30);
     assert!(shown.contains("v1, live"), "{shown}");
@@ -1767,6 +1778,7 @@ fn approvals_review_beside_the_list() {
     assert!(shown.contains("bump  ·  2 of 2"), "{shown}");
     press(&mut app, KeyCode::Right);
     assert!(app.approval.as_ref().is_some_and(|a| a.keys), "the review has the keys");
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     assert!(app.client.as_ref().unwrap().deployment("bump").is_some(), "{:?}", app.note.as_ref().map(|n| &n.text));
     let shown = screen(&mut app, 150, 40);
@@ -2130,6 +2142,7 @@ fn approving_a_proposal_deploys_what_was_proposed_not_the_newest_save() {
     app.go(Page::Approvals);
     let shown = screen(&mut app, 140, 40);
     assert!(shown.contains("Proposed by claude (an agent)") && shown.contains("Why: says hello"), "{shown}");
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     assert!(note(&app).starts_with("deployed \"greet\""), "{}", note(&app));
     let deployed = app.client.as_ref().unwrap().deployment("greet").cloned().unwrap();
@@ -2265,6 +2278,7 @@ export const close = action(async (books) => {
     tab_with(&mut ada, text);
     ctrl(&mut ada, 'd');
     assert!(matches!(ada.modal, Some(Modal::Approve { .. })), "{}", note(&ada));
+    press(&mut ada, KeyCode::Char('t'));
     press(&mut ada, KeyCode::Enter);
     let Some(Modal::Confirm { title, lines, .. }) = &ada.modal else { panic!("not asked again: {}", note(&ada)) };
     assert!(title.contains("\"audited\" anyway?"), "{title}");
@@ -2276,6 +2290,173 @@ export const close = action(async (books) => {
     press(&mut ada, KeyCode::Enter);
     press(&mut ada, KeyCode::Char('y'));
     assert!(note(&ada).starts_with("deployed \"audited\""), "{}", note(&ada));
+}
+
+/// R121: approving new permissions takes a mark first (t), one rule over every way the editor
+/// approves, as the web's tick: a deploy from a tab, a proposal picked on the Approvals page, a
+/// restore's dry run. Each says why it waits while unmarked, and goes through once marked. The mark
+/// approves only the list it was made for: read afresh (the dialog opened again, another proposal
+/// picked and back) it is gone, and a list grown under it is refused, so a mark made for three
+/// permissions never approves four. Asking nothing new, each goes at once, no mark asked. Each
+/// way's guard taken out, this fails.
+#[test]
+fn approving_new_permissions_takes_a_mark_first_however_it_is_approved() {
+    let deployed = |app: &App| app.note.as_ref().is_some_and(|n| !n.error && n.text.starts_with("deployed"));
+
+    // A deploy from a tab: the first asks for what bump keeps; read afresh, it is opened again.
+    let (mut app, _) = app();
+    tab_with(&mut app, BUMP);
+    ctrl(&mut app, 'd');
+    takes_a_mark("a deploy", &mut app, KeyCode::Char('y'), |app| {
+        press(app, KeyCode::Esc);
+        ctrl(app, 'd');
+    }, deployed);
+    app.tabs[0].buf.replace(&BUMP.replace("+ 1", "+ 3"));
+    ctrl(&mut app, 'd');
+    goes_at_once("a deploy", &mut app, KeyCode::Char('y'), deployed);
+
+    // A proposal picked on the Approvals page: an agent proposes bump and beats, each a first
+    // deploy; read afresh, the next is picked and then this one again. Then a version of bump
+    // asking nothing new.
+    let mut state = test_state();
+    let book = std::sync::Arc::new(crate::accounts::Accounts::memory());
+    let (ada, _) = book.setup(&book.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+    book.add("claude", crate::accounts::Kind::Agent, "agent", "ada", "ada").unwrap();
+    let claude = book.create_token("claude", "the test", "ada").unwrap().0;
+    let texts = [BUMP.to_string(), BEATS.to_string(), BUMP.replace("+ 1", "+ 2")];
+    // Staged before accounts, which a stage then needs a sign-in for.
+    for text in &texts {
+        crate::tests::stage_text(&state, text);
+    }
+    state.access = crate::access::Access::new(std::sync::Arc::clone(&book), vec![], vec![]);
+    let state: &'static AppState = Box::leak(Box::new(state));
+    let agent = Client::new(Box::new(InProcess(state, Some(claude))));
+    let propose = |text: &str| {
+        let plan = holon_author::agent::plan(text).unwrap();
+        let said = agent.post("/deploy", serde_json::json!({ "slug": plan.name, "unit": plan.unit, "document": plan.document, "why": "r121" }));
+        assert!(said.as_ref().is_ok_and(|s| s["proposal"]["id"].is_u64()), "a proposal: {said:?}");
+    };
+    let pick = |app: &mut App, slug: &str| {
+        app.refresh();
+        app.go(Page::Approvals);
+        app.sel[1] = app.waiting().iter().position(|(s, _)| s == slug).unwrap_or_else(|| panic!("{slug} waits: {:?}", app.waiting()));
+        screen(app, 140, 40);
+    };
+    propose(&texts[0]);
+    propose(&texts[1]);
+    let mut app = App::new(None);
+    app.attach(Client::new(Box::new(InProcess(state, Some(ada)))));
+    pick(&mut app, "bump");
+    takes_a_mark("a picked proposal", &mut app, KeyCode::Enter, |app| {
+        for k in [']', '['] {
+            press(app, KeyCode::Char(k));
+            screen(app, 140, 40);
+        }
+    }, deployed);
+    propose(&texts[2]);
+    pick(&mut app, "bump");
+    goes_at_once("a picked proposal", &mut app, KeyCode::Enter, deployed);
+
+    // A restore's dry run: bump's first version keeps one more key than its second, so going back
+    // to its run asks for it again; read afresh, the dry run is shown again. Then going back to the
+    // same run, its code deployed now, asks nothing new.
+    let (mut app, _) = super::tests::app();
+    tab_with(&mut app, &BUMP.replace("  return n", "  state.last = n\n  return n"));
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
+    press(&mut app, KeyCode::Char('y'));
+    assert!(deployed(&app), "{}", note(&app));
+    let (_, failed) = app.client.as_ref().unwrap().action("bump", "bump", "{}").unwrap();
+    assert!(!failed);
+    app.tabs[0].buf.replace(BUMP);
+    ctrl(&mut app, 'd');
+    goes_at_once("a deploy keeping less", &mut app, KeyCode::Char('y'), deployed);
+    let restored = |app: &App| app.note.as_ref().is_some_and(|n| !n.error && n.text.contains("live again"));
+    go_back_to_the_first_run(&mut app);
+    takes_a_mark("a restore", &mut app, KeyCode::Char('y'), |app| {
+        press(app, KeyCode::Esc);
+        go_back_to_the_first_run(app);
+    }, restored);
+    go_back_to_the_first_run(&mut app);
+    goes_at_once("a restore", &mut app, KeyCode::Char('y'), restored);
+}
+
+/// The review of what `app` approves now: a dialog's, else the Approvals page's pick's.
+fn review_of(app: &App) -> Option<&super::review::Review> {
+    match (&app.modal, &app.approval) {
+        (Some(Modal::Approve { review, .. } | Modal::DryRun { review, .. }), _) => Some(review),
+        (None, Some(super::app::Approval { what: super::app::Pending::Deploy(s), .. })) => Some(&s.review),
+        _ => None,
+    }
+}
+
+/// The new permissions approving it would grant, as it would send them.
+fn approving(app: &mut App) -> Option<&mut Vec<String>> {
+    match (&mut app.modal, &mut app.approval) {
+        (Some(Modal::Approve { staged, .. }), _) => Some(&mut staged.needs),
+        (Some(Modal::DryRun { needs, .. }), _) => Some(needs),
+        (None, Some(super::app::Approval { what: super::app::Pending::Deploy(s), .. })) => Some(&mut s.staged.needs),
+        _ => None,
+    }
+}
+
+/// The review's last line: its mark, when it asks for one.
+fn mark_line(app: &App) -> String {
+    review_of(app).and_then(|r| r.said().last().map(|(_, l)| l.clone())).unwrap_or_default()
+}
+
+/// The rule through one way to approve: `app` shows something that asks for new permissions; `go`
+/// approves it, `again` reads it afresh, `went` says it went through.
+fn takes_a_mark(way: &str, app: &mut App, go: KeyCode, again: impl Fn(&mut App), went: impl Fn(&App) -> bool) {
+    let asks = approving(app).unwrap_or_else(|| panic!("{way}: nothing to approve")).clone();
+    assert!(!asks.is_empty(), "{way}: it asks for nothing new");
+    assert_eq!(review_of(app).unwrap().asks, asks, "{way}: the review counts what approving grants");
+    let unmarked = |app: &App| mark_line(app).starts_with("[ ] I read the");
+    let approve = |app: &mut App| {
+        app.note = None;
+        press(app, go);
+    };
+    let refused = |app: &App, why: &str| !went(app) && app.note.as_ref().is_some_and(|n| n.error && n.text.contains(why));
+    assert!(unmarked(app), "{way}: {}", mark_line(app));
+    approve(app);
+    assert!(refused(app, "Not yet: mark that you read"), "{way}: approved unmarked: {}", note(app));
+    press(app, KeyCode::Char('t'));
+    assert!(mark_line(app).starts_with("[x] I read the"), "{way}: {}", mark_line(app));
+    again(app);
+    assert!(unmarked(app), "{way}: read afresh, the mark is gone: {}", mark_line(app));
+    approve(app);
+    assert!(refused(app, "Not yet: mark that you read"), "{way}: approved after it was read afresh: {}", note(app));
+    press(app, KeyCode::Char('t'));
+    approving(app).unwrap().push("State(\"more\", write)".into());
+    approve(app);
+    assert!(refused(app, "changed since you marked"), "{way}: a mark for {} approved {}: {}", asks.len(), asks.len() + 1, note(app));
+    approving(app).unwrap().pop();
+    approve(app);
+    assert!(went(app), "{way}: marked, it goes: {}", note(app));
+}
+
+/// Asking nothing new, `go` approves at once, no mark asked.
+fn goes_at_once(way: &str, app: &mut App, go: KeyCode, went: impl Fn(&App) -> bool) {
+    assert_eq!(approving(app).map(|n| n.len()), Some(0), "{way}: {}", note(app));
+    assert!(!mark_line(app).contains("I read the"), "{way}: {}", mark_line(app));
+    app.note = None;
+    press(app, go);
+    assert!(went(app), "{way}: nothing new, it goes at once: {}", note(app));
+}
+
+/// bump's history, its first run picked, both put back: the dry run.
+fn go_back_to_the_first_run(app: &mut App) {
+    app.refresh();
+    app.open_flow("bump");
+    app.flow_section(Section::History);
+    let d = app.detail.as_ref().unwrap();
+    let first = d.runs.iter().filter_map(|r| r["seq"].as_u64()).min().unwrap();
+    app.flow.sel[Section::History as usize] = d.moments().iter().position(|m| matches!(m, Moment::Run(i) if d.runs[*i]["seq"] == first)).unwrap();
+    app.flow_load();
+    press(app, KeyCode::Enter);
+    assert!(matches!(app.modal, Some(Modal::Restore { .. })), "{}", note(app));
+    press(app, KeyCode::Enter);
+    assert!(matches!(app.modal, Some(Modal::DryRun { .. })), "{}", note(app));
 }
 
 /// v in the deploy review replays the version offline on the flow's last runs, and says which
@@ -2392,6 +2573,7 @@ fn live_approvals() {
     assert!(shown.contains("Proposed by claude (an agent)") && shown.contains("Why: to say hello"), "{shown}");
     press(&mut a, KeyCode::Char('v'));
     keep("ada: replayed", &mut a);
+    press(&mut a, KeyCode::Char('t'));
     press(&mut a, KeyCode::Enter);
     keep("ada deployed it", &mut a);
     assert!(note(&a).starts_with("deployed \"greet\""), "{}", note(&a));
@@ -2524,6 +2706,7 @@ fn live_settings() {
     app.attach(Client::new(Box::new(crate::mcp::Http::new(&server, Some(&ada)))));
     tab_with(&mut app, BUMP);
     ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     keep("deployed from a tab", &mut app);
     for _ in 0..2 {
@@ -2816,6 +2999,7 @@ fn a_queue_is_bound_for_one_deployment_and_unbound() {
     app.go(Page::Editor);
     tab_with(&mut app, BUMP);
     ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     assert!(app.client.as_ref().unwrap().deployment("bump").is_some(), "{}", note(&app));
     press(&mut app, KeyCode::Esc);
@@ -2897,6 +3081,7 @@ fn a_resource_says_who_uses_it_and_what_a_waiting_version_would_add() {
     app.go(Page::Editor);
     tab_with(&mut app, &reader("reader"));
     ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     assert!(app.client.as_ref().unwrap().deployment("reader").is_some(), "{}", note(&app));
     let agent = Client::new(Box::new(InProcess(state, Some(claude))));
@@ -3144,6 +3329,7 @@ fn live_host() {
     app.go(Page::Editor);
     tab_with(&mut app, &reader("reader"));
     ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     assert!(app.client.as_ref().unwrap().deployment("reader").is_some(), "{}", note(&app));
     let plan = holon_author::agent::plan(&reader("later")).unwrap();
@@ -3290,6 +3476,7 @@ fn a_collection_of_250_items_pages_to_the_end() {
     let (mut app, state) = app();
     tab_with(&mut app, many);
     ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     for _ in 0..250 {
         assert_eq!(route(state, &req("POST", "/trigger/many/add", b"{}".to_vec())).status_code, 200);
@@ -3332,6 +3519,7 @@ fn check_now_on_a_log_edited_outside_holon_reports_the_break() {
     app.attach(Client::new(Box::new(Recorded(InProcess(state, None), std::sync::Arc::clone(&calls)))));
     tab_with(&mut app, BUMP);
     ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     for _ in 0..3 {
         assert_eq!(route(state, &req("POST", "/trigger/bump/bump", b"{}".to_vec())).status_code, 200);
@@ -3401,6 +3589,7 @@ fn live_record() {
     let deploy = |app: &mut App, text: &str| {
         tab_with(app, text);
         ctrl(app, 'd');
+        press(app, KeyCode::Char('t'));
         press(app, KeyCode::Enter);
         app.refresh();
     };
@@ -3510,6 +3699,7 @@ fn live_small() {
     app.refresh();
     tab_with(&mut app, BUMP);
     ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Enter);
     for _ in 0..3 {
         ok(as_ada.post("/trigger/bump/bump", serde_json::json!({})), "bump");

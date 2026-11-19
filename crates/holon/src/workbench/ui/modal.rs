@@ -103,6 +103,7 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("n  N", "the next hunk or fold, the one before (tab, shift+tab too)"),
     ("space  → ←", "open or close the hunk the line is in (a click on its head too); a fold opens"),
     ("w  d", "the whole of it, every hunk open; back to the diff"),
+    ("t", "mark that you read its new permissions: approving them waits for it (a click on its line too)"),
     ("enter  esc", "approve it (deploy, restore); cancel (x too)"),
     ("s", "a deploy: save it on the server, not deployed, for whoever may approve it (Approvals)"),
     ("", ""),
@@ -172,6 +173,10 @@ fn reviewed(f: &mut Frame, app: &mut App, area: Rect, review: &mut Review, title
     if !go.is_empty() {
         buttons.push(("enter", go, KeyCode::Enter, NONE));
     }
+    // Its new permissions marked read, which enter waits for.
+    if !review.asks.is_empty() {
+        buttons.push(("t", if review.read.is_some() { "unmark" } else { "I read it" }, KeyCode::Char('t'), NONE));
+    }
     // What else it may do than enter's: save it for another to approve.
     if let Some((key, what)) = other {
         buttons.push((key, what, KeyCode::Char(key.chars().next().unwrap_or(' ')), NONE));
@@ -222,6 +227,7 @@ fn review_row(review: &Review, row: Row, width: usize) -> (Line<'static>, Option
     match row {
         Row::Top(i) => (said_line(&review.top[i], width), None),
         Row::Foot(i) => (said_line(&review.foot[i], width), None),
+        Row::Mark => (said_line(&review.mark_said(), width), None),
         Row::Blank => (Line::default(), None),
         Row::Head(h) => {
             let hunk = &review.hunks[h];

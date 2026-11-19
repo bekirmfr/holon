@@ -80,8 +80,10 @@ handler's log level.
 `holon editor`, `holon deploy` (when it needs approval), `holon restore --dry-run` and the agent
 tools show the same rows, worked out by the server.
 
-Only a person can approve. Each version an agent deploys is saved instead, for you to read and
-deploy ([Working with agents](agents.md)), and what you read is what deploys: the server refuses
+Only a person can approve. Each version an agent deploys with its own token is saved instead,
+for you to read and deploy ([Working with agents](agents.md)); an agent whose shell runs as you on
+the server's machine signs in as you, though ([An agent with a
+shell](agents.md#an-agent-with-a-shell)). What you read is what deploys: the server refuses
 a proposal whose text builds another version than the one proposed, or whose `browsers` line
 isn't the sites it sends.
 
@@ -501,7 +503,9 @@ its event). Picked:
   result in a dry-run window (nothing has changed yet) that says what it would change, part by
   part (the code; what it touches, row by row, as `holon restore --dry-run` says it; the keys,
   and what the runs since did outside, which a restore doesn't undo), and asks to approve what
-  the code needs that today's grant doesn't cover. It opens with what
+  the code needs that today's grant doesn't cover: as a deploy's review, it does so once you
+  tick that you read them (`t` marks it in `holon editor`), and a dry run read again asks for
+  the tick again. It opens with what
   it changes, a line each (`code: version 5's is deployed again, as version 12, in place of
   version 11`, the permissions added and dropped, the keys and items of the state). Its **diff**
   button compares each part with what is there now: the flow's text, line by line, deployed now

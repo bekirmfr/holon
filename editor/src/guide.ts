@@ -56,7 +56,7 @@ export const START_STEPS: Step[] = [
   },
   {
     title: "Let an agent write one",
-    body: "An agent reads the language, checks its flow and deploys it, over MCP. It never approves what a flow may do: its first deploy waits under Approvals for a person.",
+    body: "An agent reads the language, checks its flow and deploys it, over MCP, where it never approves what a flow may do: its first deploy waits under Approvals for a person. A shell it has on the server's machine runs as you, though (the manual: An agent with a shell).",
     commands: [
       { line: "holon mcp setup claude-code", does: "adds Holon's tools to Claude Code's settings; holon mcp setup alone lists the other hosts" },
     ],

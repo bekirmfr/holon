@@ -55,6 +55,22 @@ or, while the history keeps it, against the commit that added the copy unchanged
    dropped a `Connection` header the application set. Now `Connection: close` is sent, and the
    response is the connection's last: no request after it is read and the client is sent the
    end of the stream. Holon's 408 for a body that stops relies on it.
+5. **An accept that fails** (`src/lib.rs`, the accept thread; `src/limits.rs`, `Failing`).
+   Upstream's accept thread ended at the first error from `accept`: it queued the error, which
+   ended rouille's `run()` (a loop over `incoming_requests()`, whose `next` is `recv().ok()`),
+   and dropped the listener. The control port was gone until a restart, while the flows' ports
+   and their runs went on, and nothing said so (tiny_http speaks through `log`, which has no
+   backend in Holon). An accept fails when the process has no file handle left (the data plane's
+   sockets count against the same limit). A client that resets while it waits to be accepted
+   doesn't fail it on Linux or Windows 11 (seen 2026-11-19: the connection is accepted, and its
+   reset met at its first read), though some systems' documentation says it may. Now the thread
+   waits and tries again, until the server closes: 5 ms, doubled while they fail in a row, to
+   1 s (an accept that fails for want of a handle fails again at once), as Holon's data plane
+   does. The first of a run is said on the server's error stream, with the system's words, and
+   so is its end ("accepts connections again, after N that failed"); a run that starts within a
+   minute of the last line is counted instead, and said with the next line, so a client that
+   holds the server near its limit, runs ending and starting as handles come and go, gets a
+   line or two a minute, not two a run. The error is no longer queued.
 
 `Server::from_listener_limited` takes other limits; every other constructor (rouille's
 included) uses `Limits::default()`.

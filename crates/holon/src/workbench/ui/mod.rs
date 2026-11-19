@@ -1125,10 +1125,17 @@ fn draw_approvals(f: &mut Frame, app: &mut App, area: Rect) {
         _ => "",
     };
     let proposed = matches!(&a.what, crate::workbench::app::Pending::Proposal(..)) || matches!(&a.what, crate::workbench::app::Pending::Deploy(s) if s.proposal.is_some());
+    let mark = match &a.what {
+        crate::workbench::app::Pending::Deploy(s) if !s.review.asks.is_empty() => Some(if s.review.read.is_some() { "unmark" } else { "I read it" }),
+        _ => None,
+    };
     app.approval = Some(a);
     let mut keys: Vec<(&str, &str, KeyCode, KeyModifiers)> = vec![];
     if !go.is_empty() {
         keys.push(("enter", go, KeyCode::Enter, KeyModifiers::NONE));
+    }
+    if let Some(mark) = mark {
+        keys.push(("t", mark, KeyCode::Char('t'), KeyModifiers::NONE));
     }
     if proposed {
         keys.push(("d", "decline", KeyCode::Char('d'), KeyModifiers::NONE));

@@ -18,7 +18,11 @@ const PATIENCE: Duration = Duration::from_secs(10);
 /// with `Connection: close`, a request with a body with its length, and anything else `ok`;
 /// each request on a thread of its own, as rouille answers them.
 fn serve(limits: Limits) -> (Arc<Server>, SocketAddr) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    serve_on(TcpListener::bind("127.0.0.1:0").unwrap(), limits)
+}
+
+/// The same, on `listener`.
+fn serve_on(listener: TcpListener, limits: Limits) -> (Arc<Server>, SocketAddr) {
     let server = Arc::new(Server::from_listener_limited(listener, None, limits).unwrap());
     let at = server.server_addr().to_ip().unwrap();
     let inside = server.clone();
@@ -447,4 +451,98 @@ fn refused_sockets_held_never_pass_the_bound_and_the_oldest_are_closed_first() {
         );
     }
     assert_eq!(refusals.held(), LINGERING);
+}
+
+/// An accept that fails doesn't end the server. Upstream's accept thread ended at the first: its
+/// listener closed, and the error it queued ended the loop over the requests (rouille's `run()`
+/// as this one), so nothing was answered again and nothing said so. Here every accept fails for
+/// a while, an error from the system each time (the listener made non-blocking, with no
+/// connection waiting: `WouldBlock`), then the listener blocks again (through a clone kept of
+/// it), and the next connection is answered.
+///
+/// Unix only: there a clone is the same open socket, its mode shared. On Windows a clone is a
+/// socket of its own (`WSADuplicateSocket`), its mode not the listener's, and making the
+/// listener itself non-blocking for good would hand the connection a non-blocking socket, whose
+/// reads fail as if timed out. The waits and what is said are held on every system by the test
+/// after this one; the code that fails over is the same.
+#[cfg(unix)]
+#[test]
+fn an_accept_that_fails_is_waited_on_and_the_next_connection_answered() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let same = listener.try_clone().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let kind = listener.accept().map(|_| ()).map_err(|e| e.kind());
+    assert_eq!(kind, Err(std::io::ErrorKind::WouldBlock), "the listener made non-blocking");
+    let (server, at) = serve_on(listener, Limits::default());
+    // Accepts fail, waited on 5, 10, 20, 40 and 80 ms.
+    thread::sleep(Duration::from_millis(150));
+    // The clone is the same open socket: the listener blocks again.
+    same.set_nonblocking(false).unwrap();
+    let mut c = connect(at);
+    c.write_all(get("/").as_bytes()).unwrap();
+    assert_eq!(answer(&mut c).map(|(status, ..)| status), Ok(200), "the next connection is answered");
+    server.unblock();
+}
+
+/// Accepts that fail are said once a run of them, as it starts and as it ends, and waited on
+/// longer each time, to a second: an accept that fails for want of a file handle fails again at
+/// once, and a loop that tried again at once would spin on a core. A run that starts within a
+/// minute of the last line is counted, not said, and the next line says how many: runs that end
+/// and start again as handles come and go get a line or two a minute, not two a run.
+#[test]
+fn accepts_that_fail_are_said_once_a_run_and_waited_on_longer_each_time() {
+    use crate::limits::{Failing, ACCEPT_WAIT_FIRST, ACCEPT_WAIT_MOST, SAY_EVERY};
+    let e = std::io::Error::new(std::io::ErrorKind::Other, "no file handle left");
+    let t0 = Instant::now();
+    let at = |s: u64| t0 + Duration::from_secs(s);
+    let mut failing = Failing::new("127.0.0.1:7".to_string());
+    assert_eq!(failing.accepted(at(0)), None, "nothing said while none failed");
+
+    // A run: its start said, with where and why; waited on longer each time; its end said.
+    let (said, wait) = failing.failed(&e, at(0));
+    let said = said.expect("the first is said");
+    assert!(said.contains("127.0.0.1:7") && said.contains("no file handle left"), "{}", said);
+    assert_eq!(wait, ACCEPT_WAIT_FIRST);
+    let mut waits = vec![wait];
+    for _ in 0..11 {
+        let (said, wait) = failing.failed(&e, at(0));
+        assert_eq!(said, None, "said once a run");
+        waits.push(wait);
+    }
+    assert!(waits.windows(2).all(|w| w[1] == (w[0] * 2).min(ACCEPT_WAIT_MOST)), "{:?}", waits);
+    assert_eq!(waits.last(), Some(&ACCEPT_WAIT_MOST), "{:?}", waits);
+    let again = failing.accepted(at(1)).expect("its end is said");
+    assert!(again.contains("after 12 that failed"), "{}", again);
+    assert_eq!(failing.accepted(at(1)), None, "said once");
+
+    // Runs within a minute of the last line: counted, not said, start or end; each waits afresh.
+    for (s, failures) in [(2, 1), (3, 3)] {
+        for i in 0..failures {
+            let (said, wait) = failing.failed(&e, at(s));
+            assert_eq!(said, None, "a run {} s after the last line, said", s);
+            if i == 0 {
+                assert_eq!(wait, ACCEPT_WAIT_FIRST, "a new run waits afresh");
+            }
+        }
+        assert_eq!(failing.accepted(at(s)), None, "the end of a run not said, said");
+    }
+
+    // Past a minute, the next run's start is said, with the two before it.
+    let later = SAY_EVERY.as_secs() + 1;
+    let (said, _) = failing.failed(&e, at(later));
+    let said = said.expect("a run past a minute is said");
+    assert!(said.contains("2 more times") && said.contains("(4 accepts that failed in all)"), "{}", said);
+    let again = failing.accepted(at(later)).expect("its end is said");
+    assert!(again.contains("after 1 that failed"), "{}", again);
+
+    // Runs that keep coming: one more not said; when one ends a minute after the last line, what
+    // came of those not said is said, once.
+    failing.failed(&e, at(later + 1));
+    assert_eq!(failing.accepted(at(later + 1)), None);
+    failing.failed(&e, at(later + 2));
+    failing.failed(&e, at(later + 2));
+    let quiet = failing.accepted(at(later + 1 + SAY_EVERY.as_secs())).expect("said a minute on");
+    assert!(quiet.contains("accepts connections again") && quiet.contains("2 more times") && quiet.contains("(3 accepts that failed in all)"), "{}", quiet);
+    let (said, _) = failing.failed(&e, at(later + 2 + SAY_EVERY.as_secs()));
+    assert_eq!(said, None, "within a minute of that line");
 }

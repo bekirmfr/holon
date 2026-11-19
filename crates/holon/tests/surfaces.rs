@@ -245,7 +245,7 @@ fn world() -> (World, [Caller; 4], u64) {
         .env("HOLON_SETUP_CODE", code)
         .env_remove("HOLON_DATA")
         .env_remove("HOLON_TOKEN")
-        .stdout(Stdio::null())
+        .stdout(std::fs::File::create(home.join("serve.out")).unwrap())
         .stderr(std::fs::File::create(&said).unwrap())
         .spawn()
         .expect("holon serve starts");
@@ -834,6 +834,9 @@ fn everything_else(world: &World, callers: &[Caller], found: &mut Found) {
 /// nothing and the sweep's callers without a grant don't apply to it. Tied to wes, who holds
 /// neither run.steps nor state.view, it still reads a run's values and a flow's state; an agent's
 /// token in HOLON_TOKEN, on the same machine, signs in as the agent instead, and is refused them.
+/// An agent's shell running as the user is such a command: `holon serve` says so once as it
+/// writes the run file, and `holon mcp setup` once as it sets up the user's agent there (the
+/// manual's "An agent with a shell").
 #[test]
 fn the_run_file_signs_in_as_the_local_admin_whatever_its_account_holds() {
     let (world, callers, seq) = world();
@@ -858,6 +861,19 @@ fn the_run_file_signs_in_as_the_local_admin_whatever_its_account_holds() {
     assert!(!shown && said.contains("run.steps"), "an agent's token wins over the run file: {said}");
     let run_file = &surfaces::RUN_FILE;
     assert!(run_file.routes.is_empty() && run_file.shows.len() == 3 && run_file.local.as_ref().is_some_and(|l| l.reads.contains("local admin")));
+
+    // Said, once each: by the server as it starts, and by the agent's setup on it (its host's
+    // file written into a folder of the test's own, as the homes are).
+    let note = "an agent's shell running as";
+    let serve_said = std::fs::read_to_string(world.home.join("serve.out")).unwrap_or_default();
+    assert_eq!(serve_said.matches(note).count(), 1, "holon serve says it once: {serve_said}");
+    assert!(serve_said.contains("the manual: \"An agent with a shell\""), "{serve_said}");
+    let project = world.home.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let setup = world.bare(&machine, &["mcp", "setup", "claude-code", "--project", project.to_str().unwrap()], "");
+    assert_eq!(setup.code, 0, "{}", setup.said);
+    assert!(setup.said.contains("an agent owned by"), "it made the agent: {}", setup.said);
+    assert_eq!(setup.said.matches(note).count(), 1, "holon mcp setup says it once: {}", setup.said);
 }
 
 /// `holon mcp` as `caller`, through the proxy, initialized: its stdin, and its answers' lines.

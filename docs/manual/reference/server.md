@@ -423,7 +423,9 @@ An admin also defines roles of their own, and groups:
   owner's way in, and whoever else made a token of it.
 - **No role gives an agent what is a person's**: whatever it holds, an agent never approves a
   deploy, starts, stops, deletes or restores a flow (it may dry-run a restore), writes a secret,
-  or manages people, roles, resources or the host.
+  or manages people, roles, resources or the host. That holds for an agent signed in as one; an
+  agent's shell running as you on this machine signs in as you, through the run file (below, and
+  [An agent with a shell](../guides/agents.md#an-agent-with-a-shell)).
 
 `GET /auth/me/can?actions=flow.deploy,run.decide&flow=payout` answers, for each action, `true`
 or the words its refusal would say: on the flow named (on its approval point for `run.decide`,
@@ -467,8 +469,11 @@ of "payout": each step of an approval is someone else's`).
   of sign-ins keeps sign-ins waiting, never the rest of what the server answers. An invite link is
   checked before its password is.
 - The server answers up to 512 requests at once, and 64 from one address (counted as for
-  sign-ins); one more is told to try again (503). A request's
-  body must arrive within 30 seconds, or it is told 408 and its place goes back.
+  sign-ins); one more is told to try again (503). A request's body over 1 KiB must arrive within
+  30 seconds: past that its place goes back, and it is told 408 when its connection next reads, a
+  minute after its last byte at most. A body of 1 KiB or less is read before the request takes a
+  place, by its connection, which waits a minute at most for each next byte: one that stops is
+  told 408 then, and closed.
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
 - The server never lets the last enabled person holding admin be removed, disabled, given
   another role or unbound, bound to them or to a group of theirs. The run file's admin (below)
@@ -498,6 +503,9 @@ of "payout": each step of an approval is someone else's`).
   Before setup, or tied to no one (its person removed or disabled), the run file is
   `local:<your user>`, admin on the host, and decides no approval. Each activity entry made
   through it says `via: "local:<your user>"`, and `/auth/me` answers `local`.
+  `holon serve` says once, as it writes the run file, that these commands sign in as its admin,
+  an agent's shell running as you among them ([An agent with a
+  shell](../guides/agents.md#an-agent-with-a-shell)).
 - `holon mcp` never does: it signs in as an agent. On a server you run, the run file's admin makes
   yours the first time, `<your user>-agent`, even before anyone has set the server up (it is set
   up by the first person, as ever), owned by you: by `local:<your user>` until then (a name no

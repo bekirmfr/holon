@@ -3200,8 +3200,10 @@ the syntax to TypeScript's, keeping the lowering.
    at once only on a flow whose settings a person set so, where the host lets them).
    The server holds it to that too: `holon mcp` signs in as an agent, a principal of its own
    whose `agent` role proposes and calls and never approves, grants, starts, stops or deletes,
-   shown by its own name (`bma-agent`, made for the OS user on a server they run); its own token
-   is the guarantee for an agent with a shell. Tests: the tools against the in-process router (text to an explained failing run), the
+   shown by its own name (`ada-agent`, made for the OS user on a server they run). Its own token
+   holds it only where it signs in with it: a shell running as the server's OS user signs in
+   through the run file as that user, the admin, and the server says so at start (the manual's
+   "An agent with a shell" says what keeps such an agent to its token). Tests: the tools against the in-process router (text to an explained failing run), the
    protocol on raw lines, a person's saved flow never replaced, and an end-to-end test where a
    person approves the agent's flow in the real editor and the agent calls and explains it.
    `holon mcp setup` (`docs/L4s/mcp-setup-L4.md`) adds it to a host's own settings file, for
