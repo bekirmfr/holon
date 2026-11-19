@@ -460,9 +460,26 @@ starts the action `payment` with the order (`flow_start{flow: approval, action: 
 answered once that run parks, with the token for each point it waits at, so the route answers the
 link at once. `await event("paid", { expires: "1d" })` is `await{name: paid, expires: 86400}`. When
 the link is opened, the third route delivers the event (`{ resumes: "paid" }` is the request
-template's `resume` param), and the order's run finishes: the state write happens then. Statement
-order carries no meaning beyond names being defined before use. `{ ...order, paid_via: … }` is
-`with_field` over an existing record (§5.5).
+template's `resume` param), and the order's run finishes: the state write happens then. Elsewhere
+statement order carries no meaning beyond names being defined before use; past a wait it does. In
+an action, what is written after a wait comes after it, as in JavaScript: a write, a send, a
+request, a call or a start of another action is asked for only once the wait is answered, never
+before, even one that uses nothing of it. What it reads there is the state as the run found it
+when it began, until each part of a run is saved as it parks. The answer comes after the last wait
+too. A wait that runs out gives `{ expired: true }` in its place, so what follows it is made then
+too: a step that uses nothing of the wait is made whether it was answered or ran out, and
+`if (paid.expired ?? false) return …` before it keeps it to an answer. Each such step takes its
+trigger from what the wait gave, `paid`; one hold for the action, read by nothing,
+`when(<the action's input>, has_value(paid))` (past two waits `has_value([a, b])`, so the run
+reaches both at once), keeps a step that uses nothing of what was sent in the action. The text
+writes both by order alone, and the canvas prints them back so. A
+wait stands on a line of its own at the top of
+the action's body, `const paid = await event(…)`: one in an `if`, a `try`, after a `return` that
+may answer, or inside another expression is refused, as is an `if (x !== undefined)` after a wait
+whose `x` is there before the wait is answered (a read, `now`, `random`, what was sent). Two waits
+in a row still park together: the run waits at both from the start, and what follows the second
+waits for the second, not for the first. A state key written before a wait and after it is written once, after it, with the
+last value. `{ ...order, paid_via: … }` is `with_field` over an existing record (§5.5).
 
 `await approval("payout", { expires: "1d", people: 2 })` waits the same way, as
 `approval{name: payout, expires: 86400, steps: "person*2"}`, for people rather than a request: no

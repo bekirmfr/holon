@@ -16273,12 +16273,15 @@ fn approval_mail_mails_the_link_then_the_approval_through_its_binding() {
 /// hadn't. Run out, a sample may do something of its own (trading-bot deletes the order it showed
 /// as waiting), but nothing the answered ending does. A sample that waits, whose wait this doesn't
 /// reach, fails, naming it.
-/// **Why:** an expiry is delivered as a value, and statement order holds nothing after a wait
-/// (LANGUAGE.md: it carries "no meaning beyond names being defined before use"). So whatever
-/// follows the wait without reading the event is made when the wait runs out as when it is
-/// answered: approval-mail mailed "Your payout … was approved, and is recorded" to whoever asked,
-/// when nobody had approved it. A sample holds what follows behind its own test of `expired`, as
-/// trading-bot does.
+/// Also a flow whose action, after its wait, sends on a channel using nothing of it: that send is
+/// made in both endings, as the docs say (LANGUAGE.md, the tour and the reference: "a wait that
+/// runs out gives `{ expired: true }`, so such a step is made then too"), today's truth until an
+/// expiry is a failure.
+/// **Why:** an expiry is delivered as a value, and what is written after a wait comes after it
+/// whether the wait was answered or ran out. So whatever follows the wait without reading the
+/// event is made when the wait runs out as when it is answered: approval-mail mailed "Your payout
+/// … was approved, and is recorded" to whoever asked, when nobody had approved it. A sample holds
+/// what follows behind its own test of `expired`, as trading-bot does.
 /// **Limit:** an effect written above the wait, other than a channel send, is made only as the run
 /// finishes (a run that waits makes nothing), so it shows in both endings and fails here, though
 /// it says nothing of the wait. No sample has one.
@@ -16359,7 +16362,15 @@ fn a_sample_whose_wait_runs_out_does_nothing_its_answer_would() {
     // Every field the samples' waiting actions read of what starts them.
     let input = json(r#"{"id":"p1","item":"tea","amount":5000,"iban":"DE89370400440532013000","by":"sam@acme.com","account":1,"title":"Hello","brief":"A short note","product":"BTC-USD","price":"100","size":"1","side":"buy"}"#);
     let (mut cases, mut failures) = (Vec::new(), Vec::new());
-    for sample in holon_author::samples::samples() {
+    // A step after a wait that uses nothing of it: made in both endings (`both` below).
+    const NOTHING_OF_IT: &str = "import { action, event, flow, route } from \"holon\"\nimport updates from \"channel:updates\"\n\nflow(\"after-it\", { port: 18209 })\n\nroute.post(\"/start\", (req) => {\n  const started = job(req.json)\n  return started.waiting.go\n})\n\nroute.post(\"/go/:token\", () => \"ok\", { resumes: \"go\" })\n\nexport const job = action(async (asked) => {\n  const go = await event(\"go\", { expires: \"1h\" })\n  updates.send({ done: asked.id })\n  return go.method\n})\n";
+    struct Text {
+        name: &'static str,
+        text: &'static str,
+        both: bool,
+    }
+    let texts = holon_author::samples::samples().iter().map(|s| Text { name: s.name, text: s.text, both: false }).chain([Text { name: "a step after a wait using nothing of it", text: NOTHING_OF_IT, both: true }]);
+    for sample in texts {
         let lowered = holon_author::lang::ts::compile(sample.text).unwrap_or_else(|e| panic!("{}: {e}", sample.name));
         let mut store = holon_core::MapResolver::new();
         holon_author::text::restore(&lowered.doc, &mut store, &BTreeMap::new());
@@ -16396,7 +16407,9 @@ fn a_sample_whose_wait_runs_out_does_nothing_its_answer_would() {
                 failures.push(format!("{case}: answered, it does nothing here, so this says nothing of it: give it what it reads"));
             }
             let both: Vec<&String> = ran_out.iter().filter(|d| answered.contains(d)).collect();
-            if !both.is_empty() {
+            if sample.both && both.is_empty() {
+                failures.push(format!("{case}: run out, it doesn't send what it sends when answered, as the docs say it does: answered {answered:?}, run out {ran_out:?}"));
+            } else if !sample.both && !both.is_empty() {
                 failures.push(format!("{case}: run out, it does what it does when answered: {both:?}"));
             }
             cases.push(case);

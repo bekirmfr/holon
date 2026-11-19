@@ -203,6 +203,7 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
         Some(Part { name: name_of(id), leaf: n.data.name.clone(), params: params.collect(), inputs: inputs.collect() })
     };
     let effectful = |leaf: &str| leaf.starts_with("http") || leaf.starts_with("db_") || leaf == "await" || leaf == "approval" || leaf == "respond";
+    let holds = lower::wait_holds(doc, &lowered.names);
 
     let mut bands = vec![];
     for (b, block) in all.iter().enumerate() {
@@ -293,8 +294,10 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
                 }
                 continue;
             }
-            // Its outermost nodes: those feeding nothing else of the statement.
-            let roots: Vec<&str> = ids.iter().copied().filter(|id| !doc.edges.iter().any(|w| w.source == *id && ids.contains(&w.target.as_str()))).collect();
+            // Its outermost nodes: those feeding nothing else of the statement, a wait's hold
+            // left out (`wait_holds`: it is what follows the wait, not what the wait does).
+            let shown: Vec<&str> = ids.iter().copied().filter(|id| !holds.contains(id)).collect();
+            let roots: Vec<&str> = shown.iter().copied().filter(|id| !doc.edges.iter().any(|w| w.source == *id && shown.contains(&w.target.as_str()))).collect();
             for id in &ids {
                 row_of.insert(id, rows.len());
             }
@@ -318,7 +321,8 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
         // The wires between rows, each once, in the order the rows come.
         let mut from: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         let mut outside: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-        for w in &doc.edges {
+        // A wait's hold reads the action's input, or the hold before: its wires are no row's.
+        for w in doc.edges.iter().filter(|w| !holds.contains(w.source.as_str()) && !holds.contains(w.target.as_str())) {
             let Some(&t) = row_of.get(w.target.as_str()) else { continue };
             match row_of.get(w.source.as_str()) {
                 Some(&s) if s != t => from.entry(t).or_default().push(s),

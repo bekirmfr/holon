@@ -1057,7 +1057,15 @@ misled, the compiler refuses instead.
 - **Waiting.** `await event(name)` parks the run, an action's: a route answers and is done, and
   starts the action that waits by calling it without `await`. A later request to a route with
   `{ resumes: name }`, carrying the token, delivers the event and the run continues. `expires`
-  sets how long it waits.
+  sets how long it waits. What is written after the wait comes after it, as in JavaScript: a
+  write, a send, a request, a call or a start of another action is asked for only once the wait
+  is answered, never before, even one that uses nothing of it, and the action answers after its
+  last wait. A wait that runs out gives `{ expired: true }`, so such a step is made then too:
+  return on `paid.expired ?? false` before a step only an answer should make. What it reads there is the state as the run found it when it began, until each part
+  of a run is saved as it parks. A wait stands on a line of its own at the top of the action's
+  body, `const paid = await event(…)`; in an `if`, a `try`, after a `return` that may answer or
+  inside another expression it is refused. Two waits in a row still park together: the run waits
+  at both from the start, and what follows the second waits for the second, not for the first.
 - **People decide an approval.** `await approval(name, { people: 2 })` parks the run as an event
   does, but nothing the flow hands out resumes it: it has no token, and a route `{ resumes: name }`
   that names it is refused. People signed in to Holon decide it, and who is part of what the

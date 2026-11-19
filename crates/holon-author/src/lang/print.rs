@@ -461,9 +461,47 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, 
             }
         }
     }
+    // The hold ts.rs `waited_on` binds after the waits in an action's body, which nothing reads:
+    // `when(t, has_value(w))`, `has_value(w)` lowered as `same_value(w, w) ?? false`, `t` the
+    // block's trigger and `w` what the wait gave, or past several the list of what each gave (as
+    // `same_value([a, b], [a, b])`, the list written twice). It keeps what follows each wait in the
+    // action; the text writes that by order alone, so it goes, with its test.
+    let feeds = |id: &str| wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id: from, .. } if from == id)).count();
+    let leaf = |id: &str, name: &str| by_id.get(id).is_some_and(|n| n.data.body == PlacedBody::Primitive && n.data.name == name);
+    let waits = |src: &Src| matches!(src, Src::Node { id, .. } if leaf(id, "await") || leaf(id, "approval"));
+    // A list of what several waits gave, read by the hold's test alone: its id and its items in
+    // the order of its inputs.
+    let list_of_waits = |src: &Src| -> Option<(String, Vec<Src>)> {
+        let Src::Node { id, .. } = src else { return None };
+        let mut items: Vec<(&String, &Src)> = wires.iter().filter(|(_, to, _)| to == id).map(|(s, _, input)| (input, s)).collect();
+        items.sort_by(|x, y| x.0.cmp(y.0));
+        (leaf(id, "list") && feeds(id) == 1 && items.len() >= 2 && items.iter().all(|(_, s)| waits(s))).then(|| (id.clone(), items.into_iter().map(|(_, s)| s.clone()).collect()))
+    };
+    for n in nodes.iter().filter(|n| leaf(&n.id, "guard") && feeds(&n.id) == 0) {
+        let hold = || -> Option<Vec<String>> {
+            let base = into(&n.id, "value")?;
+            let Some(Src::Node { id: held, .. }) = into(&n.id, "cond") else { return None };
+            let no = by_id.get(held.as_str()).is_some_and(|d| d.param("type") == "Boolean" && d.param("value") == "false");
+            let Some(Src::Node { id: same, .. }) = into(held, "value") else { return None };
+            let (a, b) = (into(same, "a")?, into(same, "b")?);
+            let parts = leaf(held, "default") && no && feeds(held) == 1 && leaf(same, "same_value") && feeds(same) == 1;
+            let lists = match (list_of_waits(a), list_of_waits(b)) {
+                (Some((la, xs)), Some((lb, ys))) if la != lb && xs == ys => Some([la, lb]),
+                _ => None,
+            };
+            let tests = (a == b && waits(a)) || lists.is_some();
+            (tie(base, TRIGGER) && parts && tests).then(|| [held.clone(), same.clone()].into_iter().chain(lists.into_iter().flatten()).collect())
+        };
+        if let Some(parts) = hold() {
+            gone.insert(n.id.clone());
+            gone.extend(parts);
+        }
+    }
     let touches_gone = |(src, to, _): &BlockWire| gone.contains(to) || matches!(src, Src::Node { id, .. } if gone.contains(id));
     let kept: Vec<BlockWire> = wires.iter().filter(|w| !tie(&w.0, &w.2) && !touches_gone(w)).cloned().collect();
-    let tied: HashSet<String> = wires.iter().filter(|w| tie(&w.0, &w.2)).map(|w| w.1.clone()).collect();
+    // What a wait's value triggers is made when the run reaches it past the wait, as what the
+    // block's trigger feeds is when the run starts.
+    let tied: HashSet<String> = wires.iter().filter(|w| tie(&w.0, &w.2) || (w.2 == TRIGGER && waits(&w.0))).map(|w| w.1.clone()).collect();
     (nodes.into_iter().filter(|n| !gone.contains(&n.id)).collect(), kept, tied)
 }
 
@@ -1778,9 +1816,38 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     }
 
     /// Whether `node`'s trigger is fed by something other than its block's trigger: it goes in
-    /// `if (x !== undefined)`.
+    /// `if (x !== undefined)`. One fed by what a wait gave isn't: it is written after the wait, in
+    /// plain order, as TypeScript writes what follows an `await` ([`Self::waits_for`]).
     fn tied_elsewhere(&self, node: &Node) -> bool {
-        self.g.incoming.contains_key(&(node.id.clone(), TRIGGER.to_string()))
+        self.g.incoming.get(&(node.id.clone(), TRIGGER.to_string())).is_some_and(|src| !self.waits_for(src))
+    }
+
+    /// The `guard` that holds an action's answer when its body waits (ts.rs `finish`):
+    /// `when(value, has_value(x))`, `x` what its last wait gave, with the leaves that test `x`.
+    /// Written as the value alone: in TypeScript a return after an `await` answers once it is
+    /// reached, and reading it back holds it so again.
+    fn waited_answer(&self, respond: &Node) -> Option<[&'g Node; 3]> {
+        let guard = self.part(respond, "body", "guard", 1)?;
+        let [held, same] = self.held_to_a_wait(guard)?;
+        Some([guard, held, same])
+    }
+
+    /// The test of `guard`, when it holds its value to what a wait gave: `when(value, has_value(x))`,
+    /// `x` an `await`'s or an `approval`'s output, `has_value(x)` written `same_value(x, x) ??
+    /// false`, its fallback frozen in a `default`. The answer of an action that waits is held so
+    /// (ts.rs `finish`), and a value bound past a wait with a call in one of its branches (lower.rs
+    /// `stmt`). Past the wait, the text writes either as the value alone.
+    fn held_to_a_wait(&self, guard: &Node) -> Option<[&'g Node; 2]> {
+        let held = self.part(guard, "cond", "default", 1).filter(|d| d.param("type") == "Boolean" && d.param("value") == "false")?;
+        let same = self.part(held, "value", "same_value", 1)?;
+        let (a, b) = (self.g.incoming.get(&(same.id.clone(), "a".to_string()))?, self.g.incoming.get(&(same.id.clone(), "b".to_string()))?);
+        (a == b && self.waits_for(a)).then_some([held, same])
+    }
+
+    /// Whether `src` is what a wait gave: an `await`'s or an `approval`'s output, which every write
+    /// and call written after it in an action's body is tied to (ts.rs `Reader::waited`).
+    fn waits_for(&self, src: &Src) -> bool {
+        matches!(src, Src::Node { id, .. } if self.g.nodes.iter().any(|n| n.id == *id && n.data.body == PlacedBody::Primitive && matches!(n.data.name.as_str(), "await" | "approval")))
     }
 
     /// Whether a trigger waits for `node`: it is a statement of its own, before what waits.
@@ -2636,7 +2703,15 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         if let Some(top) = self.switch_answer.clone() {
             return self.switch_returns(node, &top, &status, &missing);
         }
-        let body = self.arg(node, "body")?;
+        let body = match self.waited_answer(node) {
+            Some(held) if self.kind == Kind::Action => {
+                for n in held {
+                    self.touch(n);
+                }
+                self.arg(held[0], "value")?
+            }
+            _ => self.arg(node, "body")?,
+        };
         let headers = if node.param("headers") == "true" { self.arg(node, "headers")? } else { None };
         let wired = if node.param("status_input") == "true" { self.arg(node, "status")? } else { None };
         // The body of a streamed call: the reply forwards it, with the call's status.
@@ -2780,7 +2855,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
 /// Whether `name` is one ts.rs makes for a value the text doesn't name (`cond_1`, `subject_2`,
 /// `parts_3`): the value is written where it was, and the name made again.
 fn hidden(name: &str) -> bool {
-    ["cond_", "subject_", "parts_"].iter().any(|p| name.strip_prefix(p).is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
+    ["cond_", "subject_", "parts_", "waited_"].iter().any(|p| name.strip_prefix(p).is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
 }
 
 /// `name` without the `_2` a new value of it was given: `r_4` is `r`.
@@ -3129,6 +3204,12 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let a = self.coalesce_left(node, "a")?;
                 let b = self.required(node, "b", BITOR)?;
                 Ok((format!("{a} ?? {b}"), COALESCE))
+            }
+            "guard" if self.kind == Kind::Action && self.held_to_a_wait(node).is_some() => {
+                for n in self.held_to_a_wait(node).expect("just found") {
+                    self.touch(n);
+                }
+                self.arg(node, "value")?.ok_or_else(|| "guard: its value isn't wired".to_string())
             }
             "guard" => {
                 let c = self.condition(node, "cond", COALESCE)?;
@@ -5154,7 +5235,11 @@ export const t = action((input) => {
             // An answer the text leaves out has no line: a route of calls alone answering 204
             // (`answer`'s `nothing && calls_alone`, the fan-out sample's).
             let left_out = |n: &Node| n.data.name == "respond" && n.param("status") == "204" && !first.doc.edges.iter().any(|w| w.target == n.id && w.target_handle.as_deref() == Some("body"));
-            wrong.extend(first.doc.nodes.iter().filter(|n| !lines.contains_key(&n.id) && !left_out(n)).map(|n| format!("{name}: {} ({})", n.id, n.data.name)));
+            // A wait's hold, which the text writes by order alone, is on no line, and must not
+            // be: on the wait's line it would stand for what the wait gave (`wait_holds`).
+            let holds = crate::lang::lower::wait_holds(&first.doc, &first.names);
+            wrong.extend(first.doc.nodes.iter().filter(|n| !lines.contains_key(&n.id) && !left_out(n) && !holds.contains(n.id.as_str())).map(|n| format!("{name}: {} ({})", n.id, n.data.name)));
+            wrong.extend(holds.iter().filter(|id| lines.contains_key(**id)).map(|id| format!("{name}: {id}, of a wait's hold, is on line {}", lines[*id])));
         }
         assert!(wrong.is_empty(), "{} steps on no line:\n{}", wrong.len(), wrong.join("\n"));
     }
