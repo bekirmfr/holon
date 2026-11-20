@@ -3,7 +3,8 @@
 //! escapes its backslashes, so `!said.contains(path)` holds whatever the answer says, and a check
 //! written that way can't fail on Windows (it fails on Linux alone, where a path has none). Here
 //! a place is looked for in every string read out of the answer, and in the text as sent, each as
-//! `{}` writes it and as `{:?}` does (its backslashes doubled in the words themselves).
+//! `{}` writes it, as `{:?}` does (its backslashes doubled in the words themselves) and with its
+//! backslashes as forward slashes (as a file URL or a path made uniform writes it).
 //! tests.rs's `no_test_looks_for_a_place_in_an_answers_text` holds every such check to this
 //! file. The server's integration tests take it by its path, as they take source.rs.
 
@@ -34,18 +35,21 @@ pub(crate) fn strings_of(said: &str, leave: &[&str]) -> Vec<String> {
 
 /// Each of `places` that `said` tells, with `leave` taken off the top of its JSON: looked for in
 /// each string read out of it ([`strings_of`]), and in the text as sent unless something is left
-/// out, each as `{}` writes it and as `{:?}` does. A place that is empty is looked for nowhere.
+/// out, each as `{}` writes it, as `{:?}` does and with forward slashes. No places, or an empty
+/// one, is refused: an empty place is in every text, and none is nothing looked for, so a check
+/// handed either could hold nothing.
+#[track_caller]
 pub(crate) fn places_told(said: &str, leave: &[&str], places: &[&str]) -> Vec<String> {
+    assert!(!places.is_empty() && !places.contains(&""), "no place to look for in {places:?}: an empty one is in every text, and none is nothing looked for");
     let mut texts = strings_of(said, leave);
     if leave.is_empty() {
         texts.push(said.to_string());
     }
     places
         .iter()
-        .filter(|place| !place.is_empty())
         .filter(|place| {
-            let doubled = place.replace('\\', "\\\\");
-            texts.iter().any(|t| t.contains(**place) || t.contains(&doubled))
+            let forms = [place.to_string(), place.replace('\\', "\\\\"), place.replace('\\', "/")];
+            texts.iter().any(|t| forms.iter().any(|form| t.contains(form.as_str())))
         })
         .map(|place| place.to_string())
         .collect()

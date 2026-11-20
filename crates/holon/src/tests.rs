@@ -10723,7 +10723,7 @@ fn no_test_looks_for_a_place_in_an_answers_text() {
     }
 
     // What the sweep stands on: a Windows path in a JSON answer isn't in its text as sent, and
-    // places_told finds it, written as `{}` writes it or as `{:?}` does.
+    // places_told finds it, written as `{}` writes it, as `{:?}` does or with forward slashes.
     let place = r"C:\Users\ada\AppData\Local\Temp\holon-1";
     let said = serde_json::json!({ "error": format!("can't read {place}\\kept.jsonl") }).to_string();
     assert!(!said.contains(place), "as sent, the path isn't in the text: {said}");
@@ -10732,6 +10732,15 @@ fn no_test_looks_for_a_place_in_an_answers_text() {
     assert_eq!(places::places_told(&debug, &[], &[place]), [place], "as {{:?}} writes it: {debug}");
     assert_eq!(places::places_told(&format!("can't read {place}"), &[], &[place]), [place], "in a text that isn't JSON");
     assert!(places::places_told(&serde_json::json!({ "error": "fixed words", "records": place }).to_string(), &["records"], &[place]).is_empty(), "what is left out isn't read");
+    let url = serde_json::json!({ "error": format!("can't open file:///{}", place.replace('\\', "/")) }).to_string();
+    assert_eq!(places::places_told(&url, &[], &[place]), [place], "with forward slashes: {url}");
+    // A check that could hold nothing is refused: an empty place is in every text, and no place
+    // is nothing looked for.
+    let nothings: [&[&str]; 3] = [&[""], &[place, ""], &[]];
+    for nothing in nothings {
+        let refused = std::panic::catch_unwind(|| places::places_told("fixed words", &[], nothing)).is_err();
+        assert!(refused, "places_told refuses {nothing:?}");
+    }
 
     // Every crate's tests.
     let (crates, files) = crates_sources();
