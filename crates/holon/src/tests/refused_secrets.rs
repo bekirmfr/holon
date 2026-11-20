@@ -55,8 +55,9 @@ fn kind(cap: &Capability) -> String {
 /// it says "the host refuses it" exactly when the host refuses that effect by the rule it refuses
 /// by (`taint::refuses`: a call or a start at its node, as calls.rs asks it; the rest after the
 /// run, as firing.rs does); and it says the secret only "decides" where it reaches the trigger
-/// alone or a choice takes it. And every kind of effect a sink has is either one the host refuses a secret to
-/// (`refuses_a_secret`) or named here with what the host does with one.
+/// alone or a choice takes it. And every kind of effect a sink has is either one the host
+/// refuses a secret to (`refuses_a_secret`) or named here with what the host does with one; and
+/// every leaf that does something outside the run is a sink (`TRIGGERED`), so none escapes this.
 /// **Why:** check told a person approving a flow that a start in a `try` block a secret can fail
 /// "would hand the secret … to another flow …: the host refuses it", and the host made it
 /// whenever the secret parsed, and not when it didn't: calls.rs refused by what a start sends
@@ -75,6 +76,14 @@ fn what_check_says_the_host_refuses_of_a_secret_it_refuses_on_every_input_of_eve
         ("Log", "the line, with what is computed from a secret withheld (firing.rs, `withholds_effect`)"),
         ("NetworkEgress", "performed in the run and acted on by nothing of the server: nothing leaves"),
     ]);
+    // Every leaf core knows that does something outside the run is walked below: a sink, but
+    // a route's two answers, never performed.
+    for &name in holon_core::GENESIS {
+        let Some(unit) = interface_of(name) else { continue };
+        let performs = holon_core::capabilities_of(name, &unit.params).is_some_and(|c| c.iter().any(|c| !c.is_sourced()));
+        let answers = ["channel_subscribe", "file_serve"].contains(&name);
+        assert_eq!(performs && !answers, holon_core::TRIGGERED.contains(&name), "{name}: a leaf that does something outside the run is a sink, and only such a leaf");
+    }
     let mut kinds: BTreeSet<String> = BTreeSet::new();
     let mut refused: BTreeSet<String> = BTreeSet::new();
     for &name in holon_core::TRIGGERED {
@@ -161,9 +170,9 @@ fn trier(host: &str) -> String {
 /// **Guards:** in runs, under a secret whose first four characters are JSON and one whose aren't:
 /// an effect check says "the host refuses it" of is made in neither run, whether the secret is
 /// in what it is given or only decides whether it runs (a statement in a `try` block it can
-/// fail, a ternary on a test of it); one check says nothing of refusing is
-/// made where the secret lets it (a request is approved to go where the secret goes). And check's
-/// line says which: the secret kept, handed on, or deciding.
+/// fail, in `if (test)` or a ternary on a test of it); one check says nothing of refusing is made
+/// where the secret lets it (a request is approved to go where the secret goes). And check's line
+/// says which: the secret kept, handed on, or deciding.
 /// **Why:** a start in a `try` block a secret can fail was made in one run and not the other,
 /// so the other flow's log said which way the secret went, while check told the approval the
 /// host refuses it (R165).
@@ -217,4 +226,130 @@ fn an_effect_check_says_the_host_refuses_is_made_in_no_run_whatever_the_secret()
         assert_eq!(*how == "made", !refused, "{path}");
     }
     assert_eq!(made["/request-decided"], 1, "a request the secret decides goes where it lets it: {made:?}");
+}
+
+/// The flow `worker`, whose action `touch` answers what it was asked.
+fn worker() -> String {
+    format!("import {{ action, flow }} from \"holon\"\n\nflow(\"worker\", {{ port: {} }})\n\nexport const touch = action((asked) => {{\n  return \"touched\"\n}})\n", free_port())
+}
+
+/// **Guards:** a signature checked with a secret (`secure_equals` against `hmac_sha256` of the
+/// secret whole, what a webhook does) isn't a test of the secret: nothing of it comes out of a
+/// one-way leaf, so the steps it decides are made and written with a good signature, none of
+/// them with a bad one, and check marks nothing. Three spellings: a `return` of 401 above the
+/// steps, the steps in `if (verified)`, a start in a ternary on it.
+/// **Why:** what a secret decides is refused (see the tests above); a webhook's verified steps
+/// aren't that, and refusing them would break every webhook.
+/// **If it fails:** a one-way leaf's answer counts as computed from the secret
+/// (holon-core taint.rs, `ONE_WAY`), or a step a choice takes is refused whatever decides it.
+#[test]
+fn a_signature_checked_with_a_secret_decides_its_steps_and_none_is_refused() {
+    let state = claims_state("");
+    let text = format!(
+        r#"import {{ flow, hmac_sha256, route, secure_equals, status }} from "holon"
+import state from "state"
+import key from "secret:signing_key"
+import {{ touch }} from "flow:worker"
+
+flow("hook", {{ port: {} }})
+
+route.post("/returns", async (req) => {{
+  if (!secure_equals(req.headers["x-signature"], hmac_sha256(key, req.body))) return status(401)
+  touch({{ n: 1, at: req.path }})
+  state.paid = req.path
+  return "done"
+}})
+
+route.post("/inside", async (req) => {{
+  if (secure_equals(req.headers["x-signature"], hmac_sha256(key, req.body))) {{
+    touch({{ n: 2, at: req.path }})
+    state.seen = req.path
+  }}
+  return "done"
+}})
+
+route.post("/picked", async (req) => {{
+  const started = secure_equals(req.headers["x-signature"], hmac_sha256(key, req.body)) ? touch({{ n: 3, at: req.path }}) : undefined
+  return "done"
+}})
+"#,
+        free_port()
+    );
+    let checked = holon_author::commands::check("hook.holon.ts", &text);
+    assert_eq!(checked.code, 0, "{checked:?}");
+    assert!(!checked.out.iter().any(|l| l.contains("refuses") || l.contains("decides")), "check marks nothing of a signature's test: {:#?}", checked.out);
+    let worker = deploy_text_to(&state, &worker(), &[]);
+    let hook = deploy_text_to(&state, &text, &[]);
+    let key = "whsec-dummy-signing-value";
+    let set = req("POST", &format!("/deployments/{hook}/secrets/signing_key"), serde_json::to_vec(&serde_json::json!({ "value": key })).unwrap());
+    assert_eq!(route(&state, &set).status_code, 200);
+    const BODY: &str = r#"{"order":"o1"}"#;
+    let good = match holon_core::primitives::compute("hmac_sha256", &[&Value::Text(key.into()), &Value::Text(BODY.into())], &[Param::frozen("encoding", "hex")]) {
+        Some(Value::Text(hex)) => hex,
+        other => panic!("{other:?}"),
+    };
+    let bad = "0".repeat(good.len());
+    let post = |path: &str, signature: &str| {
+        let request = data::DataRequest { headers: vec![("x-signature".into(), signature.into())], ..fake_data("POST", path, BODY.as_bytes().to_vec()) };
+        let answered = serve_data(&state.store, &state.deployments, &state.deployments_path, &hook, &request);
+        (answered.status, String::from_utf8_lossy(&answered.body).into_owned())
+    };
+    let runs = || log_entries(&state, &worker).len();
+    let kept = |key: &str| !body_json(route(&state, &req("GET", &format!("/deployments/{hook}/state"), vec![])))["state"][key].is_null();
+    // A bad signature first: nothing made, nothing written. Then a good one: each made and written.
+    for (signature, made, status) in [(bad.as_str(), 0, [401, 200, 200]), (good.as_str(), 1, [200, 200, 200])] {
+        for ((path, key), status) in [("/returns", Some("paid")), ("/inside", Some("seen")), ("/picked", None)].into_iter().zip(status) {
+            let before = runs();
+            let (s, b) = post(path, signature);
+            assert_eq!(s, status, "{path}: {b}");
+            assert_eq!(runs() - before, made, "{path}: started with a signature that is {}", if made == 1 { "good" } else { "bad" });
+            if let Some(key) = key {
+                assert_eq!(kept(key), made == 1, "{path}: wrote {key}");
+            }
+        }
+    }
+}
+
+/// **Guards:** two starts of one action in one route, one a secret decides (in a `try` block it
+/// can fail) and one it doesn't: the one it doesn't is made in every run and recorded as made,
+/// the other in none. The host refuses a call or a start by its own node, never by its action:
+/// a start is a request the host answers between rounds (eval.rs `Request::FlowStart`), never an
+/// effect performed after the run, where a write is refused by its kind for the whole flow.
+/// **Why:** a refusal by the action (`derives_effect(RunsAction(..))`) would refuse every start of
+/// it once one is decided by a secret.
+/// **If it fails:** a start is refused, or recorded as refused, by another node's secret.
+#[test]
+fn a_start_no_secret_decides_is_made_beside_one_a_secret_decides() {
+    let state = claims_state("");
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport {{ touch }} from \"flow:worker\"\n\nflow(\"two\", {{ port: {} }})\n\nroute.post(\"/two\", async (req) => {{\n  touch({{ n: 6, at: req.path }})\n  try {{\n    touch({{ n: 7 }})\n    const p = JSON.parse(k.slice(0, 4))\n  }} catch {{\n    return \"caught\"\n  }}\n  return \"done\"\n}})\n",
+        free_port()
+    );
+    let worker = deploy_text_to(&state, &worker(), &[]);
+    let two = deploy_text_to(&state, &text, &[]);
+    for (secret, refused) in [("1234-dummy-value", 1), ("live-dummy-value", 0)] {
+        let set = req("POST", &format!("/deployments/{two}/secrets/k"), serde_json::to_vec(&serde_json::json!({ "value": secret })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+        let before = log_entries(&state, &worker);
+        let (s, b, _) = data_call(&state, &two, "POST", "/two", "");
+        assert_eq!(s, 200, "{b}");
+        let after = log_entries(&state, &worker);
+        let made: Vec<String> = after[before.len()..].iter().map(|e| e.to_string()).collect();
+        assert_eq!(made.len(), 1, "one start made: {made:?}");
+        let n = |n: u8| format!("[\"n\",{{\"type\":\"Number\",\"value\":{n}.0}}]");
+        assert!(made[0].contains(&n(6)) && !made[0].contains(&n(7)), "the one no secret decides: {made:?}");
+        // Its own record: the clean start answered with the run it made; the other refused where
+        // the run reached it (the secret parsed), not asked where it didn't.
+        let entry = log_entries(&state, &two).into_iter().rfind(|e| e["kind"] == "request").unwrap();
+        let exchanges: Vec<&serde_json::Value> = entry["rounds"].as_array().unwrap().iter().flat_map(|r| r["exchanges"].as_array().unwrap()).collect();
+        // An answer is a typed record: `{ type: "Record", value: [[key, { type, value }], ..] }`.
+        let field = |answer: &serde_json::Value, key: &str| {
+            answer["value"].as_array().and_then(|pairs| pairs.iter().find(|p| p[0] == key)).map(|p| p[1]["value"].clone())
+        };
+        let answered = |key: &str, is: &dyn Fn(&serde_json::Value) -> bool| {
+            exchanges.iter().filter(|x| field(&x["response"], key).is_some_and(|v| is(&v))).count()
+        };
+        assert_eq!(answered("run", &|_| true), 1, "{exchanges:?}");
+        assert_eq!(answered("error", &|v| v == "refused"), refused, "{exchanges:?}");
+    }
 }

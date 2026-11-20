@@ -7,17 +7,20 @@
   it), or one a test of the secret picks (`if (test) start(x)`, `test ? start(x) : undefined`).
   Before, the server made it whenever the secret let it, and not otherwise, so the other flow's
   log showed which way the secret went; `holon check`, the canvas and the deploy approval said
-  "the host refuses it" of some of these spellings and nothing of the ternary. Now the server
-  refuses it in every run: the call answers `{ error: "refused", … }`, and the run's record says
-  so. A write, a send to a channel or a queue and a mail a test of a secret picks are refused the
-  same way; one in such a `try` block already was. Who notices: a flow whose call or start sits
-  in such a spot, which made it before; none of the samples has one. `holon check` now marks the
-  ternary too, and says of
-  a step the secret only decides that it "would run the action … as the secret "k" decides: the
-  host refuses it". It also says the server refuses a message to a queue computed from a secret,
-  which it always did; before, check said it was sent. What check says the server refuses and
-  what the server refuses now come from one rule, held over every kind of step and each of its
-  inputs by a test.
+  "the host refuses it" of some of these spellings and nothing of the ternary. Now it is never
+  made: a run that reaches it is answered `{ error: "refused", … }`, and its record says so. A
+  check of a signature with a secret (`secure_equals` against `hmac_sha256` of it, as a webhook
+  does) isn't a test of the secret, since nothing of the secret comes out of it: what it decides
+  is made as before. Who notices: a flow whose call or start sits in such a spot, which made it
+  before; none of the samples has one. A write, a send to a channel or a queue and a mail in a
+  step a test of a secret picks (a function a ternary calls) are refused the same way, and so,
+  as before for one the secret reaches, is every write to the same state key, collection,
+  folder, channel, queue or mail in that flow. One under `if (test)` or in such a `try` block
+  already was. `holon check` now marks the ternary too, and says of a step the secret only
+  decides that it "would run the action … as the secret "k" decides: the host refuses it". It
+  also says the server refuses a message to a queue computed from a secret, which it always did;
+  before, check said it was sent. What check says the server refuses and what the server refuses
+  now come from one rule, held over every kind of step and each of its inputs by a test.
 - **The web console froze on a big flow whose runs are heavy.** A flow's page, each of its
   tabs and each run opened read the newest 200 runs whole, every value of every step: 33 MB on a
   flow that builds a page at each step. In the editor's View runs, live, each new run drew all of

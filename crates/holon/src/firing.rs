@@ -935,7 +935,7 @@ fn run_attempt(
         // A file too: another deployment that reads it logs its text, redacted only of its own
         // secrets, and a part of it read is kept as it is.
         // The kinds `holon check` says the host refuses a secret to (core's `refuses_a_secret`):
-        // one list, so the approval and the host can't say two things (R165).
+        // one list, so the approval and the host can't say two things.
         if holon_core::taint::refuses_a_secret(cap) {
             let key = cap;
             if let Some(name) = secrets::secret_in(payload, secrets) {
