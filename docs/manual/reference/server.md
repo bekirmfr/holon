@@ -480,16 +480,16 @@ of "payout": each step of an approval is someone else's`).
   of sign-ins keeps sign-ins waiting, never the rest of what the server answers. An invite link is
   checked before its password is.
 - The server answers up to 512 requests at once, and 64 from one address (counted as for
-  sign-ins); one more is told to try again (503). A request's body over 1 KiB must arrive within
-  30 seconds: past that its place goes back, and it is told 408 when its connection next reads, a
-  minute after its last byte at most. A body of 1 KiB or less is read before the request takes a
-  place, by its connection, which waits a minute at most for each next byte: one that stops is
-  told 408 then, and closed. A body is taken only with its length (`Content-Length`): a request
-  that streams one without it (a `Transfer-Encoding`, as `curl -T -` sends standard input) is
-  told 411, and one whose length isn't digits, with two lengths, or with a header line folded
-  onto the one before or holding a CR, LF or NUL, 400; each with why, and its connection is
-  closed. A request line is read up to 16 KiB (past it, 414), and a request's head up to 64 KiB
-  and 100 header lines (past them, 431).
+  sign-ins); one more is told to try again (503). A request's line, its headers and a body of 1 KiB
+  or less are read by its connection before the request takes a place, and must arrive within 30
+  seconds of its first byte: past that it is told 408, with why, and closed. A larger body must
+  arrive within 30 seconds of when the server starts to read it: past that its place goes back,
+  and it is told 408 when its connection next reads, a minute after its last byte at most. A body
+  is taken only with its length (`Content-Length`): a request that streams one without it (a
+  `Transfer-Encoding`, as `curl -T -` sends standard input) is told 411, and one whose length
+  isn't digits, with two lengths, or with a header line folded onto the one before or holding a
+  CR, LF or NUL, 400; each with why, and its connection is closed. A request line is read up to
+  16 KiB (past it, 414), and a request's head up to 64 KiB and 100 header lines (past them, 431).
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
 - The server never lets the last enabled person holding admin be removed, disabled, given
   another role or unbound, bound to them or to a group of theirs. The run file's admin (below)
