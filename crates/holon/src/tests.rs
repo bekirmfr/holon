@@ -16462,8 +16462,9 @@ fn a_sample_whose_wait_runs_out_does_nothing_its_answer_would() {
         }
     }
 
-    // Every field the samples' waiting actions read of what starts them.
-    let input = json(r#"{"id":"p1","item":"tea","amount":5000,"iban":"DE89370400440532013000","by":"sam@acme.com","account":1,"title":"Hello","brief":"A short note","product":"BTC-USD","price":"100","size":"1","side":"buy"}"#);
+    // Every field the samples' waiting actions read of what starts them (refund-review's `order`
+    // too: a refund naming none is answered before its wait).
+    let input = json(r#"{"id":"p1","order":"o-1","item":"tea","amount":5000,"iban":"DE89370400440532013000","by":"sam@acme.com","account":1,"title":"Hello","brief":"A short note","product":"BTC-USD","price":"100","size":"1","side":"buy"}"#);
     let (mut cases, mut failures) = (Vec::new(), Vec::new());
     // A step after a wait that uses nothing of it: made in both endings (`both` below).
     const NOTHING_OF_IT: &str = "import { action, event, flow, route } from \"holon\"\nimport updates from \"channel:updates\"\n\nflow(\"after-it\", { port: 18209 })\n\nroute.post(\"/start\", (req) => {\n  const started = job(req.json)\n  return started.waiting.go\n})\n\nroute.post(\"/go/:token\", () => \"ok\", { resumes: \"go\" })\n\nexport const job = action(async (asked) => {\n  const go = await event(\"go\", { expires: \"1h\" })\n  updates.send({ done: asked.id })\n  return go.method\n})\n";

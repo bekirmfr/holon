@@ -806,7 +806,7 @@ fn a_return_before_the_first_wait_answers_without_it() {
     let mut wrong = Vec::new();
     for ((head, returns, first, waits), (after_case, after)) in heads.iter().flat_map(|h| afters.iter().map(move |a| (h, a))) {
         let case = format!("{head}, then {after_case}");
-        let src = text(*returns, *after);
+        let src = text(returns, after);
         let lowered = holon_author::lang::compile(&src).unwrap_or_else(|e| panic!("{case}: {e}\n{src}"));
         let mut store = holon_core::MapResolver::new();
         holon_author::text::restore(&lowered.doc, &mut store, &BTreeMap::new());

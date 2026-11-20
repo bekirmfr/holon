@@ -644,7 +644,7 @@ fn early_answers(nodes: &[&Node], wires: &[BlockWire]) -> Result<EarlyAnswers, S
         xs.sort_by(|a, b| a.0.cmp(&b.0));
         xs.into_iter().map(|(_, s)| s).collect()
     };
-    let waits_list = |s: &Src| matches!(s, Src::Node { id, .. } if leaf(id, "list") && { let xs = items(id); xs.len() >= 2 && xs.iter().all(|x| waits(x)) });
+    let waits_list = |s: &Src| matches!(s, Src::Node { id, .. } if leaf(id, "list") && { let xs = items(id); xs.len() >= 2 && xs.iter().all(&waits) });
     // `when(value, has_value(w))`, `w` what the waits gave: the answer once they are answered.
     let waited = |id: &str| {
         leaf(id, "guard")
@@ -766,7 +766,7 @@ fn early_answers(nodes: &[&Node], wires: &[BlockWire]) -> Result<EarlyAnswers, S
             continue;
         }
         let Some(xs) = operands(&id) else { continue };
-        let (steps, rest) = match xs.first().and_then(|a| l(a)) {
+        let (steps, rest) = match xs.first().and_then(&l) {
             Some(steps) => (steps, xs[1..].to_vec()),
             None if k > 1 && xs.len() > k => match nots(&xs[..k]) {
                 Some(steps) => (steps, xs[k..].to_vec()),
@@ -1070,9 +1070,13 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     Ok((text, lines))
 }
 
+/// What [`written`] gives: the text, each step's line, and each action written with a row of
+/// returns above its first wait (its label and name).
+type Written = (String, BTreeMap<String, u32>, Vec<(String, String)>);
+
 /// What [`print_lines`] writes, before the actions with a row of returns above their first wait
-/// (the third part, each one's label and name) are read back ([`same_actions`]).
-fn written(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolver, known: &Names, bindings: &BTreeMap<String, String>) -> Result<(String, BTreeMap<String, u32>, Vec<(String, String)>), String> {
+/// (the third part) are read back ([`same_actions`]).
+fn written(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolver, known: &Names, bindings: &BTreeMap<String, String>) -> Result<Written, String> {
     let names = restore(doc, store, known);
     let mut p = Printer {
         store,
