@@ -169,22 +169,29 @@ pub fn describe_item_sending(item: &str, sent: &BTreeMap<String, BTreeSet<String
     }
 }
 
-/// What a sink does with the secret `secret` it is fed, as the canvas marks it: "sends the secret
-/// "k" to https://api.example.com"; a write or a call the host refuses says so.
-pub fn describe_secret_sink(secret: &str, sink: &holon_core::Capability) -> String {
+/// What a sink does with the secret `secret` that reaches it as `reach` says, as the canvas marks
+/// it: "sends the secret "k" to https://api.example.com". One of the kinds the host refuses a
+/// secret to says so, by core's one list (`refuses_a_secret`, the host refuses by it too): one
+/// given the secret "would keep" it, "would mail" it or "would hand" it "to another flow"; one
+/// it only decides (a write in a `try` block the secret can fail) "would" do what it does "as the
+/// secret decides".
+pub fn describe_secret_sink(secret: &str, sink: &holon_core::Capability, reach: holon_core::taint::Reach) -> String {
     use holon_core::Capability::*;
     let what = describe_item(&holon_core::consent_name(sink));
+    if holon_core::taint::refuses_a_secret(sink) {
+        return match (reach, sink) {
+            (holon_core::taint::Reach::Decided, _) => format!("would {what} as the secret \"{secret}\" decides: the host refuses it"),
+            (_, MailSend(_)) => format!("would mail the secret \"{secret}\" ({what}): the host refuses it"),
+            (_, RunsAction(_)) => format!("would hand the secret \"{secret}\" to another flow ({what}): the host refuses it"),
+            _ => format!("would keep the secret \"{secret}\" ({what}): the host refuses it"),
+        };
+    }
     match sink {
         HttpRequest(host) => format!("sends the secret \"{secret}\" to https://{host}"),
         DbRead(table) => match table.split_once('/') {
             Some((database, table)) => format!("sends the secret \"{secret}\" to the database \"{database}\", reading its table \"{table}\""),
             None => format!("{what}, with the secret \"{secret}\""),
         },
-        StateWrite(_) | CollectionWrite(_) | FileWrite(_) | DbWrite(_) | ChannelSend(_) => {
-            format!("would keep the secret \"{secret}\" ({what}): the host refuses it")
-        }
-        MailSend(_) => format!("would mail the secret \"{secret}\" ({what}): the host refuses it"),
-        RunsAction(_) => format!("would hand the secret \"{secret}\" to another flow ({what}): the host refuses it"),
         _ => format!("{what}, with the secret \"{secret}\""),
     }
 }
@@ -214,7 +221,7 @@ pub fn describe_made_sink(secret: &str, sink: &holon_core::Capability) -> String
             Some((database, table)) => format!("sends {made} to the database \"{database}\", reading its table \"{table}\""),
             None => format!("{what}, with {made}"),
         },
-        StateWrite(_) | CollectionWrite(_) | FileWrite(_) | DbWrite(_) | ChannelSend(_) => format!("keeps {made} ({what})"),
+        StateWrite(_) | CollectionWrite(_) | FileWrite(_) | DbWrite(_) | ChannelSend(_) | QueueSend(_) => format!("keeps {made} ({what})"),
         MailSend(_) => format!("mails {made} ({what})"),
         RunsAction(_) => format!("hands {made} to another flow ({what})"),
         _ => format!("{what}, with {made}"),
@@ -234,7 +241,7 @@ pub fn describe_answer_sink(secret: &str, sink: &holon_core::Capability) -> Stri
             Some((database, table)) => format!("sends {answered} to the database \"{database}\", reading its table \"{table}\""),
             None => format!("{what}, with {answered}"),
         },
-        StateWrite(_) | CollectionWrite(_) | FileWrite(_) | DbWrite(_) | ChannelSend(_) => format!("keeps {answered} ({what}); a token in it is refused"),
+        StateWrite(_) | CollectionWrite(_) | FileWrite(_) | DbWrite(_) | ChannelSend(_) | QueueSend(_) => format!("keeps {answered} ({what}); a token in it is refused"),
         MailSend(_) => format!("mails {answered} ({what}); a token in it is refused"),
         _ => format!("{what}, with {answered}"),
     }
@@ -275,7 +282,7 @@ mod tests {
         let queried = BTreeMap::from([("k".to_string(), BTreeSet::from(["db:audit".to_string(), "hooks.example.com".to_string()]))]);
         assert_eq!(describe_item_sending(r#"SecretRead("k")"#, &queried), r#"read the secret "k", and send it to https://hooks.example.com and the database "audit""#, "a database read's parameters");
         let read = holon_core::Capability::DbRead("audit/log".into());
-        assert_eq!(super::describe_secret_sink("k", &read), r#"sends the secret "k" to the database "audit", reading its table "log""#);
+        assert_eq!(super::describe_secret_sink("k", &read, holon_core::taint::Reach::Given), r#"sends the secret "k" to the database "audit", reading its table "log""#);
     }
 
     #[test]

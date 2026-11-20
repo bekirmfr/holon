@@ -128,7 +128,7 @@ writes; `run` is its number in billing's log), or `{error, message}` when nothin
 
 | `error` | Why |
 |---|---|
-| `refused` | the call isn't granted or was revoked; the flow is already in the chain of calls, itself included; or it would send a secret (or a value computed from one) |
+| `refused` | the call isn't granted or was revoked; the flow is already in the chain of calls, itself included; or it would send a secret (or a value computed from one), or a secret decides whether it is made (a call or a start in a `try` block the secret can fail): which way it went would be in the other flow's log |
 | `not_found` | no flow is deployed under that name |
 | `not_running` | it is paused or stopped |
 | `no_action` | it has no action of that name |

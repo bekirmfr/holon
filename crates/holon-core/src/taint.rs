@@ -296,6 +296,11 @@ pub struct SecretFed {
     /// write, a send, a call. A node not followed counts every effect it could make. What the
     /// editor marks on the canvas.
     sinks: BTreeSet<(Vec<u32>, Capability)>,
+    /// The sinks a secret reaches on what they are given: an input but their trigger, and every
+    /// one a node not followed could make. The rest of [`SecretFed::sinks`] it reaches only
+    /// through their trigger: it decides whether they run, and they carry nothing of it
+    /// ([`SecretFed::reach`]).
+    given: BTreeSet<Vec<u32>>,
     /// The nodes whose answer comes back to something a secret reached: a request or a database
     /// read fed one, and a node not followed that could make one. Where [`SecretFed::answers_of`]
     /// starts.
@@ -425,6 +430,7 @@ impl SecretFed {
         self.effects.extend(other.effects);
         self.sent.extend(other.sent);
         self.sinks.extend(other.sinks);
+        self.given.extend(other.given);
         self.asked.extend(other.asked);
         self.computing.extend(other.computing);
         self.taken.extend(other.taken);
@@ -569,6 +575,18 @@ impl SecretFed {
     /// Each sink a secret reaches: the node's path, and the effect it makes with it.
     pub fn sinks(&self) -> impl Iterator<Item = (&[u32], &Capability)> {
         self.sinks.iter().map(|(path, cap)| (path.as_slice(), cap))
+    }
+
+    /// How a secret reaches the sink at `path`, if it does: on any of its inputs, its trigger
+    /// too, or by a choice it decides taking the step the sink is in ([`SecretFed::chosen`]).
+    /// What `holon check` marks at a sink ([`SecretFed::sinks`]) and what the host refuses a call
+    /// or a start by, of the kinds it refuses a secret to ([`refuses_a_secret`]): one question,
+    /// so the approval and the host can't say two things of one node.
+    pub fn reach(&self, path: &[u32]) -> Option<Reach> {
+        if self.under_opaque(path) || self.given.contains(path) {
+            return Some(Reach::Given);
+        }
+        (self.fed(path) > Taint::Clean || self.chosen(path)).then_some(Reach::Decided)
     }
 
     /// How much of a secret output `port` of the node at `path` may carry.
@@ -757,6 +775,15 @@ impl<R: Resolver> Walk<'_, R> {
                         fed.sent.extend(caps.iter().filter_map(|c| destination_of(&c)));
                         let sinks = caps.iter().filter(|c| is_sink(c) && !(name == "http_stream" && matches!(c, Capability::ChannelSend(_))));
                         fed.sinks.extend(sinks.map(|c| (path.clone(), c)));
+                        // Fed on what it is given, or only on its trigger (the last input of a
+                        // sink that takes one, never read for its value).
+                        let given = match crate::takes_trigger(unit) {
+                            true => inputs.iter().rev().skip(1).any(|t| *t > Taint::Clean),
+                            false => true,
+                        };
+                        if given {
+                            fed.given.insert(path.clone());
+                        }
                         if ANSWERED.contains(&name.as_str()) {
                             fed.asked.insert(path.clone());
                         }
@@ -833,6 +860,7 @@ impl<R: Resolver> Walk<'_, R> {
         fed.sent.extend(caps.iter().filter_map(|c| destination_of(&c)));
         fed.effects.extend(caps.iter().filter(|c| !c.is_sourced()));
         fed.sinks.extend(caps.iter().filter(is_sink).map(|c| (path.to_vec(), c)));
+        fed.given.insert(path.to_vec());
         if caps.iter().any(|c| reads_own(&c)) {
             fed.own_reads.insert(path.to_vec());
         }
@@ -897,6 +925,33 @@ impl<R: Resolver> Walk<'_, R> {
             path.pop();
         }
         chosen_among(children.len(), edges, &choices, path, fed);
+        // A step a choice decided by a secret takes runs only when it does: an effect of a kind
+        // the host refuses a secret to ([`refuses_a_secret`]) made there, or not, says which way
+        // it went, as one in a `try` block the secret can fail does. So it is a sink the secret
+        // reaches, decided ([`SecretFed::reach`]): check marks it and the host refuses it, a
+        // write after the run ([`SecretFed::derives_effect`]) and a call or a start at its node.
+        // The secret's own walk only: what a call answered to it, or a hash made with it,
+        // deciding a step is another question.
+        if self.from.is_none() {
+            for (ci, hash) in children.iter().enumerate() {
+                let at: Vec<u32> = path.iter().copied().chain([ci as u32]).collect();
+                if !fed.chosen.contains(&at) {
+                    continue;
+                }
+                let resolver = self.resolver;
+                let Some(child) = resolver.resolve(hash) else { continue };
+                let caps = match &child.body {
+                    UnitBody::Primitive { name } => capabilities_of(name, &child.params).unwrap_or_default(),
+                    _ => {
+                        self.capabilities.entry(std::ptr::from_ref(child) as usize).or_insert_with(|| capabilities(child, resolver)).clone()
+                    }
+                };
+                for cap in caps.iter().filter(refuses_a_secret) {
+                    fed.sinks.insert((at.clone(), cap.clone()));
+                    fed.effects.insert(cap);
+                }
+            }
+        }
         let mut outputs = vec![Taint::Clean; unit.outputs.len()];
         for e in edges.iter().filter(|e| e.to_child == BOUNDARY) {
             let from = if e.from_child == BOUNDARY {
@@ -1060,6 +1115,30 @@ pub fn destination_of(capability: &Capability) -> Option<String> {
 /// effect, or a database read, whose parameters go to the database.
 fn is_sink(capability: &Capability) -> bool {
     !capability.is_sourced() || matches!(capability, Capability::DbRead(_))
+}
+
+/// Whether the host refuses an effect with `capability` a secret, or what is computed from one,
+/// wherever it reaches the node ([`SecretFed::reach`]): a write (state, a collection, a file, a
+/// database), a pack to a channel, a message to a queue, a mail, a call or a start of a flow's
+/// action. Each would keep it, or hand it on, where the flow's approval doesn't follow it; and
+/// where it only decides whether one is made, the one made, or not, says which way it went.
+/// One list: `holon check`, the canvas and the deploy approval say "the host refuses it" by it
+/// (holon-author's `describe_secret_sink`), and the host refuses by it (holon's `taint::refuses`,
+/// for its writes and its calls).
+pub fn refuses_a_secret(capability: &Capability) -> bool {
+    use Capability::*;
+    matches!(capability, StateWrite(_) | CollectionWrite(_) | FileWrite(_) | DbWrite(_) | ChannelSend(_) | QueueSend(_) | MailSend(_) | RunsAction(_))
+}
+
+/// How a secret reaches a sink ([`SecretFed::reach`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// On what it is given: the secret, or something computed from it, is in what it does.
+    Given,
+    /// Only in whether it runs: what it is given carries nothing of the secret, but whether it
+    /// runs at all is decided by it, through its trigger (a statement in a `try` block a secret
+    /// can fail, one in `if (test)`) or by a choice it decides (`test ? start(x) : undefined`).
+    Decided,
 }
 
 /// Whether `capability` reads the flow's own data by what it is handed: a collection's items, a
