@@ -369,6 +369,70 @@ fn the_list_of_runs_says_what_it_names() {
     assert!(!none.left_state, "a run that left no state says so");
 }
 
+/// A brief run (`GET …/log?brief=1`, `recorder::brief`) keeps each value's first part by one
+/// rule, wherever the value sits in the entry: a text's first 160 characters, a list's first 8
+/// items, a record's first 8 fields, 6 levels deep; bytes cut at a whole base64 group, so they
+/// still read. Its answer's body, error and URL are cut the same, its timeline is left out, and
+/// it says it is brief. A small value, and every count a list of runs shows (what it sent, did
+/// and read), stay whole.
+/// Why: the web console read 200 runs whole for its lists, 33 MB on the owner's hq flow, on each
+/// page and tab, and froze the browser (2026-11-20).
+/// If it fails: `recorder::brief` or its cut changed; a page listing runs reads them through it.
+#[test]
+fn a_brief_run_keeps_each_values_first_part() {
+    use crate::recorder::{brief, NodeTiming, BRIEF_DEPTH, BRIEF_ITEMS, BRIEF_TEXT};
+    use crate::wire::{PerformedEntry, SValue};
+    let long = "x".repeat(1000);
+    let mut deep = SValue::Text("leaf".into());
+    for _ in 0..12 {
+        deep = SValue::List(vec![deep]);
+    }
+    let page = SValue::Record(vec![("body".into(), SValue::Text(long.clone())), ("rows".into(), SValue::List((0..30).map(|i| SValue::Number(i as f64)).collect()))]);
+    let entry = crate::recorder::LogEntry {
+        seq: 9,
+        kind: "request".into(),
+        route: Some("GET /".into()),
+        url: Some(format!("/?q={long}")),
+        status: Some(200),
+        request: Some(page.clone()),
+        sourced: vec![("Random".into(), SValue::Number(4.0))],
+        state_before: BTreeMap::from([("blob".to_string(), SValue::Bytes(vec![7; 500]))]),
+        outputs: vec![Some(deep), None],
+        performed: vec![PerformedEntry { capability: "FileWrite(\"out\")".into(), payload: SValue::Record(vec![("name".into(), SValue::Text("a.txt".into())), ("text".into(), SValue::Text(long.clone()))]) }],
+        response_body: Some(long.clone()),
+        error: Some("short".into()),
+        timeline: (0..25).map(|i| NodeTiming { path: vec![i], start_us: 0.0, end_us: 1.0, round: 0, outputs: Some(vec![Some(page.clone())]), reason: None }).collect(),
+        ..Default::default()
+    };
+    let whole = serde_json::to_value(&entry).unwrap();
+    let b = brief(&entry);
+    assert_eq!(b["brief"], json!(true));
+    assert!(b.get("timeline").is_none(), "its timeline left out");
+    // The rule, wherever the value is.
+    let cut = format!("{}…", "x".repeat(BRIEF_TEXT));
+    assert_eq!(b["request"]["value"][0][1]["value"], json!(cut), "a text in its request");
+    assert_eq!(b["request"]["value"][1][1]["value"].as_array().unwrap().len(), BRIEF_ITEMS, "a list in its request");
+    assert_eq!(b["performed"][0]["payload"]["value"][1][1]["value"], json!(cut), "a text it wrote");
+    assert_eq!(b["performed"][0]["payload"]["value"][0][1]["value"], json!("a.txt"), "a short one stays whole");
+    assert_eq!((b["response_body"].as_str(), b["error"].as_str()), (Some(cut.as_str()), Some("short")));
+    assert!(b["url"].as_str().unwrap().ends_with('…') && b["url"].as_str().unwrap().chars().count() == BRIEF_TEXT + 1);
+    let mut at = &b["outputs"][0];
+    for _ in 0..BRIEF_DEPTH {
+        assert_eq!(at["type"], json!("List"));
+        at = &at["value"][0];
+    }
+    assert_eq!(at, &json!({ "type": "Text", "value": "…" }), "{BRIEF_DEPTH} levels deep");
+    assert_eq!(b["outputs"][1], json!(null), "a step that gave nothing");
+    let bytes = b["state_before"]["blob"]["value"].as_str().unwrap();
+    assert_eq!(bytes.len(), BRIEF_TEXT);
+    assert_eq!(holon_core::text_bytes(bytes, "base64").unwrap(), vec![7; BRIEF_TEXT / 4 * 3], "bytes still read: the first of them");
+    // What a list shows stays as it is: its counts, its outcome, what started it.
+    assert_eq!(b["sourced"], whole["sourced"]);
+    assert_eq!((b["performed"].as_array().unwrap().len(), b["seq"].clone(), b["route"].clone(), b["status"].clone()), (1, json!(9), json!("GET /"), json!(200)));
+    let (small, big) = (b.to_string().len(), whole.to_string().len());
+    assert!(small * 20 < big, "brief {small} bytes, whole {big}");
+}
+
 /// What the flow `kept` keeps in its state (R56): read by whoever holds state.view, by no one else.
 const KEPT_CANARY: &str = "kept_canary_4d2b";
 

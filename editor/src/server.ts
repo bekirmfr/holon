@@ -1447,6 +1447,10 @@ export type LogEntry = {
   /** The state it left, by hash in the content store: what a restore to this run puts back.
    *  Absent when it didn't commit, and in runs from before rc.30. */
   state_after?: string;
+  /** Read brief (`brief=1`, recorder.rs's `brief`): every value cut to its first part, its
+   *  timeline left out. What a list shows reads as it is; a run's own page, a replay, a comparison
+   *  or an export read it whole (`wholeRun`). */
+  brief?: boolean;
 };
 
 /** A key a run claimed before calling out: `charges[k2]`, or `charges[*]` for a listing. */
@@ -1467,10 +1471,45 @@ export type Tally = { runs: number; failed: number; total_ms: number; last_at_ms
  *  the seq the next entry will get; `head` the hash the log chains up to (what a witness holds),
  *  `breaks` the runs that don't follow the one before them (changed outside holon); `tallies` the
  *  counts of its unrecorded handlers' runs, by label (absent from a server before them). */
-export async function getLog(slug: string, after?: number): Promise<{ entries: LogEntry[]; next: number; head: string; breaks: number[]; tallies?: Record<string, Tally> }> {
-  const q = after === undefined ? "" : `?after=${after}`;
-  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/log${q}`);
+export async function getLog(
+  slug: string,
+  after?: number,
+  more: { through?: number; brief?: boolean } = {},
+): Promise<{ entries: LogEntry[]; next: number; head: string; breaks: number[]; tallies?: Record<string, Tally> }> {
+  const asked = [
+    ...(after === undefined ? [] : [`after=${after}`]),
+    ...(more.through === undefined ? [] : [`through=${more.through}`]),
+    ...(more.brief ? ["brief=1"] : []),
+  ];
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/log${asked.length > 0 ? `?${asked.join("&")}` : ""}`);
   return asJson(res);
+}
+
+/** Run `seq` whole, and the runs either side of it (whole too, for its page's links), read by
+ *  their seqs (`after=seq-2&through=seq+1`): never more, however many runs came after it. `run` is
+ *  null when the log no longer keeps it. */
+export async function getRun(slug: string, seq: number): Promise<{ run: LogEntry | null; before: number | null; after: number | null; head: string }> {
+  const { entries, head } = await getLog(slug, seq > 1 ? seq - 2 : undefined, { through: seq + 1 });
+  return {
+    run: entries.find((e) => e.seq === seq) ?? null,
+    before: entries.filter((e) => e.seq < seq).pop()?.seq ?? null,
+    after: entries.find((e) => e.seq > seq)?.seq ?? null,
+    head,
+  };
+}
+
+/** A run whole: as it is when it is, read again by its seq when it was read brief. Null when the
+ *  log no longer keeps it. */
+export async function wholeRun(slug: string, run: LogEntry): Promise<LogEntry | null> {
+  if (!run.brief) return run;
+  const { entries } = await getLog(slug, run.seq > 0 ? run.seq - 1 : undefined, { through: run.seq });
+  return entries.find((e) => e.seq === run.seq) ?? null;
+}
+
+/** Runs whole, in their order, those no longer kept left out (`wholeRun`). */
+export async function wholeRuns(slug: string, runs: LogEntry[]): Promise<LogEntry[]> {
+  const read = await Promise.all(runs.map((r) => wholeRun(slug, r)));
+  return read.filter((r): r is LogEntry => r !== null);
 }
 
 /** A run as the list of runs says it (recorder.rs's `RunHead`): when it ran, what started it (its

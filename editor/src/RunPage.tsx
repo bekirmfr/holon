@@ -14,7 +14,7 @@ import { secretUses, witnessed, type Witness } from "./flowFacts";
 import { executionOrder, nodeTimings } from "./replay";
 import type { Route } from "./routes";
 import { answeredHead, field, outside, runLabel, runOutcome, startedBy, text } from "./runs";
-import { downloadRuns, getDeployedDocument, getLog, getSummary, ServerError, type FlowDocument, type LogEntry } from "./server";
+import { downloadRuns, getDeployedDocument, getRun, getSummary, ServerError, type FlowDocument, type LogEntry } from "./server";
 import { useKeys } from "./ui/Keys";
 
 const show = (v: WValue | null | undefined) => (v === null || v === undefined ? "—" : formatValue(v));
@@ -35,14 +35,15 @@ function useRun(slug: string, seq: number) {
     setRun(undefined);
     setRefused("");
     setBeside({ before: null, after: null });
-    // From the run before it on: the log answers the runs after the seq it is given.
-    getLog(slug, seq > 1 ? seq - 2 : undefined)
-      .then(({ entries, head: h }) => {
+    // It and the runs either side of it, by their seqs: never the newest 200 after it, which
+    // read 33 MB for one run of the owner's hq flow and missed any run older than them ("The log
+    // here holds no run #12" for a run it holds, 2026-11-20).
+    getRun(slug, seq)
+      .then(({ run: found, before, after, head: h }) => {
         if (stale) return;
-        const found = entries.find((e) => e.seq === seq) ?? null;
         setRun(found);
         setHead(h);
-        setBeside({ before: entries.filter((e) => e.seq < seq).pop()?.seq ?? null, after: entries.find((e) => e.seq > seq)?.seq ?? null });
+        setBeside({ before, after });
         if (found?.unit) getDeployedDocument(slug, found.unit).then((d) => !stale && setDoc(d), () => undefined);
       })
       .catch((e: unknown) => {

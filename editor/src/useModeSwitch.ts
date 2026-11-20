@@ -12,7 +12,7 @@ import { useCallback, useRef, type MutableRefObject } from "react";
 import type { Edge, Viewport } from "@xyflow/react";
 import { restoreDocument } from "./docUnits";
 import { blankTab, settingsOf, type FlowMeta, type Mode, type TabState } from "./tabs";
-import { getDeployedDocument, getFlow, getLog, type DeploymentEntry, type FlowDocument } from "./server";
+import { getDeployedDocument, getFlow, getRun, type DeploymentEntry, type FlowDocument } from "./server";
 import { newHistory, snapshotOf, type Snapshot } from "./useCanvasHistory";
 import type { History } from "./history";
 import type { Evaluator } from "./holon";
@@ -89,7 +89,7 @@ export function useModeSwitch({
         return;
       }
       // Opened on a run (an action's view run): that run selected, when the log has it.
-      const run = seq === undefined ? null : await getLog(slug, seq - 1).then((l) => l.entries.find((e) => e.seq === seq) ?? null, () => null);
+      const run = seq === undefined ? null : await getRun(slug, seq).then((r) => r.run, () => null);
       if (!still()) return;
       // A unit that won't decode just stays unresolvable, like on Open.
       restoreDocument(doc, ev);

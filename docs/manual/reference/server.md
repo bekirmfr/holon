@@ -289,6 +289,13 @@ binding it a role that holds it on a flow or a tag (`holon bind viewer --to clau
 payout`). A refusal names that command, and says when the change waits for another person. A
 waiting run's shown values also go to whoever may decide it.
 
+`GET /deployments/{slug}/log` takes `after` (the runs past that seq), `through` (up to that seq:
+`after=11&through=12` is run 12 alone), `limit` (the newest so many of those, 200 by default) and
+`brief=1`: each run with every value cut to its first part (160 characters of a text, 8 items of a
+list or fields of a record, 6 levels deep) and its step-by-step timeline left out, marked
+`"brief": true`. The web console lists runs brief and reads a run whole when one is opened: a flow
+that builds a page at each step keeps about 170 KB a run, and 200 of them whole are 33 MB.
+
 What a role may not do is refused with 403, saying why. A path the control plane has no route for
 is answered 404, once its caller has signed in (401 before).
 
