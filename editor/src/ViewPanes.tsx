@@ -11,7 +11,7 @@
 // outputs it had in that run (replayed, replay.ts).
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { downloadRuns, getCollectionItems, type LogEntry, type Tally } from "./server";
+import { downloadRuns, getCollectionItems, wholeRun, wholeRuns, type LogEntry, type Tally } from "./server";
 import { decidedLine, decisionSaid, decisionsOf } from "./decisions";
 import { answeredHead, claimNotes, field, runActions, runLabel, text } from "./runs";
 import { useFlowLog } from "./useFlowLog";
@@ -538,12 +538,15 @@ function LogTab({
     return sortDir === "asc" ? cmp : -cmp;
   });
 
+  // A run copied, exported or compared is the whole run, read by its seq: the list's are brief
+  // (useFlowLog), their values cut.
   const copyRun = (e: LogEntry, ev: ReactMouseEvent) => {
     ev.stopPropagation();
-    navigator.clipboard.writeText(JSON.stringify(e, null, 2)).catch(() => {});
+    void wholeRun(slug, e).then((w) => navigator.clipboard.writeText(JSON.stringify(w ?? e, null, 2))).catch(() => {});
   };
-  const exportRun = (e: LogEntry, ev: ReactMouseEvent) => {
+  const exportRun = async (brief: LogEntry, ev: ReactMouseEvent) => {
     ev.stopPropagation();
+    const e = (await wholeRun(slug, brief).catch(() => null)) ?? brief;
     const blob = new Blob([JSON.stringify(e, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -559,11 +562,13 @@ function LogTab({
     else setSelectedSeqs((prev) => { const n = new Set(prev); sorted.forEach((e) => n.add(e.seq)); return n; });
   };
   const copySelected = () => {
-    const runs = entries.filter((e) => selectedSeqs.has(e.seq));
-    navigator.clipboard.writeText(JSON.stringify(runs, null, 2)).catch(() => {});
+    void wholeRuns(slug, entries.filter((e) => selectedSeqs.has(e.seq)))
+      .then((runs) => navigator.clipboard.writeText(JSON.stringify(runs, null, 2)))
+      .catch(() => {});
   };
-  const exportSelected = () => {
-    const runs = entries.filter((e) => selectedSeqs.has(e.seq));
+  const exportSelected = async () => {
+    const runs = await wholeRuns(slug, entries.filter((e) => selectedSeqs.has(e.seq))).catch(() => null);
+    if (!runs) return;
     const seqs = [...selectedSeqs].sort((a, b) => a - b);
     const blob = new Blob([JSON.stringify(runs, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -573,7 +578,11 @@ function LogTab({
     const seqs = [...selectedSeqs].sort((a, b) => a - b);
     const runA = entries.find((e) => e.seq === seqs[0]);
     const runB = entries.find((e) => e.seq === seqs[1]);
-    if (runA && runB) setCompareRuns([runA, runB]);
+    if (runA && runB)
+      void wholeRuns(slug, [runA, runB]).then(
+        (whole) => whole.length === 2 && setCompareRuns([whole[0], whole[1]]),
+        () => {},
+      );
   };
 
   useEffect(() => {

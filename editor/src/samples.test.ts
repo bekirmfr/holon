@@ -327,6 +327,12 @@ export const run = action((input) => slugify(input).toUpperCase())
     for (const e of lighterTriggers(failed, dropped).filter((x) => x.targetHandle === TRIGGER)) {
       expect(e.style).toEqual({ stroke: "var(--bad)", strokeWidth: 2.6, strokeDasharray: "6 3" });
     }
+    // The same wires in give the same wires out, so the canvas doesn't draw them again; a wire
+    // that changed is drawn anew.
+    const again = lighterTriggers(fixed, dropped);
+    again.forEach((e, i) => expect(e, e.id).toBe(drawn[i]));
+    const moved = fixed.map((e) => (e.targetHandle === TRIGGER ? { ...e } : e));
+    lighterTriggers(moved, dropped).forEach((e, i) => (moved[i].targetHandle === TRIGGER ? expect(e).not.toBe(drawn[i]) : expect(e).toBe(drawn[i])));
     // Already migrated, it is left as it is.
     expect(withTriggers(nodes, edges, primitive_catalog() as WUnit[]).nodes).toBe(nodes);
   });

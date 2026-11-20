@@ -4,7 +4,7 @@
 // operations live in canvasOps.ts, its panels in CanvasPanels.tsx, the pages over it in Pages.tsx,
 // and its undo history and deployment table in their hooks.
 
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -1237,6 +1237,19 @@ function Canvas({
     [flowStore, getInternalNode, fitView],
   );
   const textPane = useTextPane({ flow, setFlow, nodes, edges, canvasKey, live, setNodes, setEdges, ev, idRef, viewing: viewing !== null, run: textRun, onPick: view.pickNode, onCursorNodes: bringIntoView });
+  // The canvas's handlers, the same functions from one render to the next: a new one each render
+  // went to each of its nodes, and every render of the editor drew all of them again (0.15 to
+  // 0.8 s a time on a 2,000-node flow; in View runs, live, twice for each new run, 2026-11-20).
+  const clicked = useRef<(e: ReactMouseEvent, n: PrimitiveNodeType) => void>(() => {});
+  clicked.current = (e, n) => {
+    view.onNodeClick(e, n);
+    // Its code into the text's view, where the text shows.
+    textPane.revealNode(n.id, true);
+  };
+  const onNodeClick = useCallback((e: ReactMouseEvent, n: PrimitiveNodeType) => clicked.current(e, n), []);
+  const { setHoveredWire } = view;
+  const onWireIn = useCallback((_: unknown, edge: Edge) => setHoveredWire(edge.id), [setHoveredWire]);
+  const onWireOut = useCallback(() => setHoveredWire(null), [setHoveredWire]);
 
   // The canvas's level, Statements or Nodes (useCanvasLevel.ts): a row picked puts the text's
   // cursor on it (opening the text when it is shut); a row opened selects its nodes and frames
@@ -1434,13 +1447,9 @@ function Canvas({
           {...GESTURES}
           colorMode={dark ? "dark" : "light"}
           nodes={drawnNodes}
-          onNodeClick={(e, n) => {
-            view.onNodeClick(e, n);
-            // Its code into the text's view, where the text shows.
-            textPane.revealNode(n.id, true);
-          }}
-          onEdgeMouseEnter={viewing ? (_, edge) => view.setHoveredWire(edge.id) : undefined}
-          onEdgeMouseLeave={viewing ? () => view.setHoveredWire(null) : undefined}
+          onNodeClick={onNodeClick}
+          onEdgeMouseEnter={viewing ? onWireIn : undefined}
+          onEdgeMouseLeave={viewing ? onWireOut : undefined}
           onNodesChange={onNodesChange}
           edges={decoratedEdges}
           onEdgesChange={onEdgesChange}

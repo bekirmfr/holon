@@ -50,6 +50,8 @@ describe("a flow's log, polled", () => {
     expect(seen!.entries.map((e) => e.seq)).toEqual([1]);
     expect(seen!.steps).toBe("");
     expect(server.getLogHeads).not.toHaveBeenCalled();
+    // Brief, its values cut: a run shown whole is read again by its seq.
+    expect(server.getLog).toHaveBeenLastCalledWith("pay", undefined, { brief: true });
   });
 
   it("refused the steps, it says so in the server's words and polls the list of runs instead", async () => {
@@ -65,6 +67,19 @@ describe("a flow's log, polled", () => {
     await act(async () => void (await vi.advanceTimersByTimeAsync(1500)));
     expect(server.getLog).toHaveBeenCalledTimes(1);
     expect(server.getLogHeads).toHaveBeenLastCalledWith("pay", 3);
+  });
+
+  it("asks one read at a time: a slow answer is waited for, never asked again over it", async () => {
+    let answer: (v: unknown) => void = () => {};
+    server.getLog.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    await mounted();
+    await act(async () => void (await vi.advanceTimersByTimeAsync(4500)));
+    expect(server.getLog, "three ticks while the first read is unanswered").toHaveBeenCalledTimes(1);
+    server.getLog.mockResolvedValue(page([]));
+    await act(async () => answer(page([{ seq: 5 } as LogEntry])));
+    await act(async () => void (await vi.advanceTimersByTimeAsync(1500)));
+    expect(server.getLog).toHaveBeenCalledTimes(2);
+    expect(server.getLog).toHaveBeenLastCalledWith("pay", 5, { brief: true });
   });
 
   it("any other failure is an error, not a refusal of the steps", async () => {

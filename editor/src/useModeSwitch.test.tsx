@@ -23,7 +23,7 @@ vi.mock("./server", () => {
   return {
     getDeployedDocument: (slug: string) => hold(`document ${slug}`, doc),
     getFlow: (name: string) => Promise.resolve({ name, document: doc }),
-    getLog: (_slug: string, after?: number) => Promise.resolve({ entries: [{ seq: (after ?? 0) + 1 }] }),
+    getRun: (_slug: string, seq: number) => Promise.resolve({ run: { seq }, before: null, after: null, head: "" }),
   };
 });
 vi.mock("./docUnits", () => ({ restoreDocument: () => undefined }));

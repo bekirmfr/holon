@@ -1,5 +1,9 @@
 // A deployment's flow log, polled: everything at first, then only what came after the newest.
-// View mode's log and a flow's page read it. Whoever may see the flow's runs and not read their
+// View mode's log and a flow's page read it, each run brief (server.ts's `brief`): its values cut
+// to their first part, its timeline left out. A run shown whole (its page, view mode's run, a
+// comparison, an export) is read again by its seq (`wholeRun`). Why: whole, the newest 200 runs
+// of a flow that builds a page at each step were 33 MB (the owner's hq, 2026-11-20), read on each
+// page and tab, and the browser froze. Whoever may see the flow's runs and not read their
 // steps (run.steps, R55) is refused the log: then it polls the list of runs instead (`heads`), and
 // `steps` keeps the server's refusal, which says who gives it. Covered by another page (covered.tsx),
 // it reads nothing, and reads on from where it was once shown again.
@@ -64,7 +68,7 @@ export function useFlowLog(slug: string) {
     const poll = () =>
       refused.current
         ? listed()
-        : getLog(slug, last.current).then(
+        : getLog(slug, last.current, { brief: true }).then(
             ({ entries: fresh, head, breaks, tallies: counted }) => {
               if (stopped) return;
               const was = back;
@@ -80,8 +84,20 @@ export function useFlowLog(slug: string) {
               return listed();
             },
           );
-    void poll();
-    const timer = setInterval(() => void poll(), POLL_MS);
+    // One read at a time: a poll while the last is unanswered asks nothing. Why: on a slow server
+    // each tick asked the same runs again (the newest isn't known until an answer comes), the
+    // reads piled up, each was given up past its time and asked again, and the list stayed empty
+    // (a debug server reading 200 runs in 7 s, 2026-11-20).
+    let asking = false;
+    const next = () => {
+      if (asking) return;
+      asking = true;
+      void poll().finally(() => {
+        asking = false;
+      });
+    };
+    next();
+    const timer = setInterval(next, POLL_MS);
     return () => {
       stopped = true;
       clearInterval(timer);

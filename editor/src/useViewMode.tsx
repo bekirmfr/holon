@@ -5,7 +5,7 @@
 // side and bottom panes. App owns the canvas and the tab's flow state (tabs.ts's FlowMeta); this
 // reads them and asks for changes through the setters it is given.
 
-import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { Edge } from "@xyflow/react";
 import { buildPreimage, passesExtraPrimitives, readsFromOutside, type Evaluator, type WUnit, type WValue } from "./holon";
 import { FAIL, type PrimitiveNodeType } from "./PrimitiveNode";
@@ -33,9 +33,10 @@ import {
   type ReplayNode,
 } from "./replay";
 import { printHolon } from "./holonText";
-import { getDeployedDocument, getLog, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
+import { getDeployedDocument, getRun, wholeRun, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
 import { BottomPane, type InsideStep, type InspectorRun } from "./ViewPanes";
 import type { RunOnCanvas } from "./runRows";
+import { runNodes, type Drawn } from "./runNodes";
 import type { FlowMeta } from "./tabs";
 
 type Setter<T> = (value: T | ((prev: T) => T)) => void;
@@ -195,21 +196,32 @@ export function useViewMode(input: ViewModeInput) {
     if (origin) setInspectNode(origin);
   }, [origin, selectedRun?.seq, setInspectNode]);
 
+  // The run picked is shown whole: one the list read brief (its values cut, useFlowLog) is read
+  // again by its seq first, the last picked winning; one the log no longer keeps, or that can't be
+  // read, is none, never its brief values replayed as if they were the run's.
+  const picked = useRef(0);
   const onSelectRun = useCallback(
     (e: LogEntry | null) => {
-      setSelectedRun(e);
+      const n = ++picked.current;
       setStep(null);
+      if (!e?.brief || !viewing) {
+        setSelectedRun(e);
+        return;
+      }
+      wholeRun(viewing, e).then(
+        (whole) => picked.current === n && setSelectedRun(whole),
+        () => picked.current === n && setSelectedRun(null),
+      );
     },
-    [setSelectedRun, setStep],
+    [setSelectedRun, setStep, viewing],
   );
-  // A run named by its seq (a cell's history's row), read from the log and opened.
+  // A run named by its seq (a cell's history's row), read by it and opened.
   const openRun = useCallback(
     (seq: number) => {
       if (!viewing) return;
-      getLog(viewing, seq > 0 ? seq - 1 : undefined)
-        .then((r) => {
-          const e = r.entries.find((x) => x.seq === seq);
-          if (e) onSelectRun(e);
+      getRun(viewing, seq)
+        .then(({ run }) => {
+          if (run) onSelectRun(run);
         })
         .catch(() => {});
     },
@@ -275,18 +287,13 @@ export function useViewMode(input: ViewModeInput) {
     return innerSteps(selectedRun, viewTrace, node.id).map((st) => ({ label: label(children[st.child]), outputs: st.outputs, us: st.end_us - st.start_us }));
   }, [nodes, flow.inspectNode, selectedRun, viewTrace, ev]);
 
-  // The nodes as the run shows them: read only, each with what it produced and where in the run
-  // it is (done, active, pending, or outside the run), and its issue if the run failed there.
+  // The nodes as the run shows them (runNodes.ts): only those the new run changed made new.
+  const drawnNodes = useRef(new Map<string, Drawn>());
   const viewNodes = useMemo(() => {
-    const order = replayed?.order ?? [];
-    return nodes.map((n) => {
-      const i = order.indexOf(n.id);
-      const state: "active" | "done" | "pending" | "outside" | "skipped" =
-        i < 0 ? (replayed?.notRun.has(n.id) ? "skipped" : "outside") : step === null || i < step ? "done" : i === step ? "active" : "pending";
-      const issue = replayed?.diagnosis?.issues.get(n.id);
-      const trace = replayed ? { outputs: replayed.traces.get(n.id)?.outputs ?? [], state, issue, showValues } : undefined;
-      return { ...n, data: { ...n.data, readOnly: true, trace } };
-    });
+    const run = replayed && { order: replayed.order, notRun: replayed.notRun, traces: replayed.traces, issues: replayed.diagnosis?.issues };
+    const { nodes: out, drawn } = runNodes(nodes, run, step, showValues, drawnNodes.current);
+    drawnNodes.current = drawn;
+    return out;
   }, [nodes, replayed, step, showValues]);
 
   // The run as the statement graph draws it (runRows.ts): what it ran, the step, each row's value
@@ -299,14 +306,25 @@ export function useViewMode(input: ViewModeInput) {
 
   // The wires show the run: the way a failure took in its colour, a wire that carried nothing
   // faded, and the value a wire carried on hover.
+  // A wire drawn as it was keeps its object too (as a node does, above).
+  const shownEdges = useRef(new Map<string, { base: Edge; look: string; edge: Edge }>());
   const viewEdges = useMemo(() => {
     if (!replayed) return edges;
     const ran = new Set(replayed.order);
-    return edges.map((e) => {
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const was = shownEdges.current;
+    const now = new Map<string, { base: Edge; look: string; edge: Edge }>();
+    const kept = (e: Edge, look: string, make: () => Edge): Edge => {
+      const before = was.get(e.id);
+      const edge = before && before.base === e && before.look === look ? before.edge : make();
+      now.set(e.id, { base: e, look, edge });
+      return edge;
+    };
+    const out = edges.map((e) => {
       // A wire out of a node not run carried nothing, not even absence.
-      if (replayed.notRun.has(e.source)) return { ...e, style: { ...e.style, opacity: 0.2, strokeDasharray: "2 5" } };
+      if (replayed.notRun.has(e.source)) return kept(e, "not run", () => ({ ...e, style: { ...e.style, opacity: 0.2, strokeDasharray: "2 5" } }));
       if (!ran.has(e.source) || !ran.has(e.target)) return e;
-      const from = nodes.find((n) => n.id === e.source);
+      const from = byId.get(e.source);
       const at = from ? from.data.outputs.findIndex((p) => p.name === e.sourceHandle) : -1;
       const value = replayed.traces.get(e.source)?.outputs[at] ?? null;
       const hover =
@@ -319,11 +337,15 @@ export function useViewMode(input: ViewModeInput) {
               labelBgBorderRadius: 6,
             }
           : {};
-      if (replayed.diagnosis && failureWire(replayed.diagnosis, e)) {
-        return { ...e, ...hover, animated: true, style: { ...e.style, stroke: FAIL, strokeWidth: 2.6 } };
-      }
-      return value === null ? { ...e, ...hover, style: { ...e.style, opacity: hoveredWire === e.id ? 1 : 0.35, strokeDasharray: "4 4" } } : { ...e, ...hover };
+      const failed = !!replayed.diagnosis && failureWire(replayed.diagnosis, e);
+      const look = `${failed ? "failed" : value === null ? "empty" : "carried"}${hoveredWire === e.id ? ` hovered ${hover.label}` : ""}`;
+      if (failed) return kept(e, look, () => ({ ...e, ...hover, animated: true, style: { ...e.style, stroke: FAIL, strokeWidth: 2.6 } }));
+      return kept(e, look, () =>
+        value === null ? { ...e, ...hover, style: { ...e.style, opacity: hoveredWire === e.id ? 1 : 0.35, strokeDasharray: "4 4" } } : { ...e, ...hover },
+      );
     });
+    shownEdges.current = now;
+    return out;
   }, [edges, nodes, replayed, hoveredWire]);
 
   return {

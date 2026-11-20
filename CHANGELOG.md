@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **The web console froze on a big flow whose runs are heavy.** A flow's page, each of its
+  tabs and each run opened read the newest 200 runs whole, every value of every step: 33 MB on a
+  flow that builds a page at each step. In the editor's View runs, live, each new run drew all of
+  a 2,000-node canvas again, so the browser was frozen 11.7 s of 12 while runs came in. Lists
+  now read each run brief (`GET …/log?brief=1`: every value cut to its first part, its timeline
+  left out), and a run is read whole only when it is opened, compared, copied or exported, by its
+  number (`through=`). View runs draws again only the nodes and wires a new run changed (about
+  7 s of 12 on that flow, where each run changes every node), and the console asks for one page
+  of runs at a time, not a new one every 1.5 s while a slow one is still on its way.
+- **Opening an older run said the log didn't hold it.** A run's page asked for the newest 200
+  runs after the one before it, so run 12 of 444 read 33 MB and then said "The log here holds no
+  run #12". It now reads that run and the two beside it, however many came after.
 - **A flow whose runs held a deeply nested value showed no runs in the terminal editor.** Its
   Runs tab said 0 and "No runs yet" while its own Status card counted them, and `holon runs` and
   the web editor listed them. The terminal read a server's answer with a reader that gives up past

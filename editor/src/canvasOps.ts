@@ -372,10 +372,23 @@ export function lighterTriggers(edges: Edge[], nodes: { id: string; data: { name
   return edges.map((e) => {
     const target = byId.get(e.target);
     if (!(e.targetHandle === TRIGGER || (target && startsIt(target, e.targetHandle)))) return e;
-    if (e.animated) return { ...e, style: { ...e.style, strokeDasharray: "6 3" } };
-    return { ...e, style: { ...e.style, strokeWidth: 1, strokeDasharray: "4 3", opacity: e.style?.opacity ?? 0.55 } };
+    let lighter = lightened.get(e);
+    if (!lighter) {
+      lighter = e.animated
+        ? { ...e, style: { ...e.style, strokeDasharray: "6 3" } }
+        : { ...e, style: { ...e.style, strokeWidth: 1, strokeDasharray: "4 3", opacity: e.style?.opacity ?? 0.55 } };
+      lightened.set(e, lighter);
+    }
+    return lighter;
   });
 }
+
+/**
+ * Each trigger wire's lighter look, made once for the wire it is made from: a new object each call
+ * was a changed wire to the canvas, drawn again on every render of the editor (a 2,000-node flow
+ * in View runs, live, 2026-11-20). An unchanged wire in gives the same wire out.
+ */
+const lightened = new WeakMap<Edge, Edge>();
 
 /**
  * A saved canvas brought up to sinks that take their trigger: a write or call out saved before
