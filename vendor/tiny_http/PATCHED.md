@@ -194,7 +194,10 @@ included) uses `Limits::default()`.
 ## Keep in mind
 
 - **`cargo audit` doesn't watch this copy.** It checks the crates `Cargo.lock` takes from a
-  registry, and this one is a path. An advisory for tiny_http (RustSec, GitHub's) has to be
-  checked by hand, and a fix carried over here.
+  registry, and this one is a path. And an advisory filed with NVD alone reaches neither RustSec
+  nor a search of GitHub's by package: the six of 2026-07-28 for tiny_http and rouille didn't.
+  So before each tag, `.github/advisories-by-name.py` searches NVD by the crates' names, and
+  stops on one `.cargo/advisories-by-name.toml` doesn't list with what was done (README.md,
+  "Releasing"). A fix is carried over here as a change above.
 - Taking a new upstream release means copying it over this folder and putting the changes
   above back (the diff above), with their tests.

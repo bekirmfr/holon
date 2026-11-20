@@ -408,8 +408,14 @@ npm --prefix editor run e2e                     # end to end, through a real ser
 ```
 
 **Releasing.** Releases are built by `.github/workflows/release.yml` (cargo-dist, configured in
-`dist-workspace.toml`): set the version in `crates/holon/Cargo.toml` and `CHANGELOG.md`, commit,
-and push a signed tag for it (`git tag -s v0.1.0 -m v0.1.0 && git push origin v0.1.0`).
+`dist-workspace.toml`). Before each tag:
+
+1. Search NVD for the advisories `cargo audit` can't see, of the HTTP library the server's own
+   port is built on (`vendor/tiny_http`, a copy, and rouille above it):
+   `python3 .github/advisories-by-name.py`. It stops on one `.cargo/advisories-by-name.toml`
+   doesn't list: read it, deal with it, and add it with what was done.
+2. Set the version in `crates/holon/Cargo.toml` and `CHANGELOG.md`, commit, and push a signed
+   tag for it (`git tag -s v0.1.0 -m v0.1.0 && git push origin v0.1.0`).
 
 ## License
 
