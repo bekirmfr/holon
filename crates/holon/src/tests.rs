@@ -5716,7 +5716,8 @@ fn no_deployments_callers_hold_more_of_the_data_plane_than_its_share() {
 /// If it fails: on the third answered at once, the accept loop doesn't take a place in
 /// `DataLimits::connections` (dataplane.rs), or the WebSocket doesn't keep its places
 /// (`Places::keep` in websockets.rs `open`); on it never answered, `serve` doesn't let them go as
-/// the connection ends.
+/// the connection ends; on the kept connection let go, it idled past `header_timeout`, which also
+/// bounds how long a kept-alive connection waits for its next request.
 #[test]
 fn no_server_holds_more_connections_open_than_its_total() {
     use std::io::{Read, Write};
@@ -5725,6 +5726,10 @@ fn no_server_holds_more_connections_open_than_its_total() {
     state.listeners = Some(Mutex::new(BTreeMap::new()));
     state.data_limits.max_connections_total = 2;
     state.data_limits.connections = Arc::new(tokio::sync::Semaphore::new(2));
+    // The kept connection idles from its answer to the WebSocket's close: an allowance well past
+    // every wait here, however slow the machine. At the default ten seconds a slow run let it go,
+    // and the place it gave back answered the third (main, 2026-11-19).
+    state.data_limits.header_timeout = Duration::from_secs(600);
     let (one, other) = (free_port(), free_port());
     for (name, port) in [("one", one), ("other", other)] {
         let text = format!("import {{ flow, route }} from \"holon\"\n\nflow(\"{name}\", {{ port: {port} }})\n\nroute.get(\"/hi\", () => \"hi\")\n\nroute.websocket(\"/ws\", {{ message: (m) => `echo ${{m.text}}` }})\n");
@@ -5767,6 +5772,10 @@ fn no_server_holds_more_connections_open_than_its_total() {
     third.set_read_timeout(Some(Duration::from_millis(700))).unwrap();
     third.write_all(b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").unwrap();
     let early = answered(&mut third);
+    // The kept connection still open, so still holding its place: were it let go, the third had
+    // its place, and that is what fails here.
+    let again = kept.write_all(b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").map(|()| answered(&mut kept));
+    assert!(matches!(&again, Ok(a) if a.starts_with("HTTP/1.1 200")), "the kept connection was let go while the third waited, and the third had its place: {again:?}");
     assert_eq!(early, "", "answered past the server's two connections, a WebSocket's among them");
     // The WebSocket closed: its places go back, and the third is answered.
     ws.close(None).unwrap();
