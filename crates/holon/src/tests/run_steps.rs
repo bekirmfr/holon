@@ -985,8 +985,8 @@ fn no_answer_says_where_or_why_the_data_folder_failed() {
         ("blobs.rs: Blobs::sweep#1", "POST /admin/folders/sweep", Box::new(|| send(&state, &ada, "POST", "/admin/folders/sweep", json!({})))),
         ("blobs.rs: Blobs::sweep#2", "POST /admin/folders/sweep", Box::new(|| send(&state, &ada, "POST", "/admin/folders/sweep", json!({})))),
         ("blobs.rs: Blobs::sweep#3", "POST /admin/folders/sweep", Box::new(|| send(&state, &ada, "POST", "/admin/folders/sweep", json!({})))),
-        ("at_rest.rs: LineSeal::try_read_lines", forgot, Box::new(|| (200, crate::keys::forget(&state, &private, "gone-events", "ada", now + 2 * crate::sweep::SPARES_MS).to_string()))),
-        ("sweep.rs: pack", forgot, Box::new(|| (200, crate::keys::forget(&state, &private, "gone", "ada", now + 2 * crate::sweep::SPARES_MS).to_string()))),
+        ("at_rest.rs: LineSeal::try_read_lines", forgot, Box::new(|| (200, crate::keys::forget(&state, &private, "gone-events", "ada", now + 2 * crate::sweep::SPARES_MS).unwrap().to_string()))),
+        ("sweep.rs: pack", forgot, Box::new(|| (200, crate::keys::forget(&state, &private, "gone", "ada", now + 2 * crate::sweep::SPARES_MS).unwrap().to_string()))),
     ];
     let (mut rounds, mut missed) = (BTreeSet::new(), Vec::new());
     for (site, what, ask) in &alone {

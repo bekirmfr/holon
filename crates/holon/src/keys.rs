@@ -44,11 +44,11 @@ pub(crate) fn route_with(state: &AppState, request: &Request, by: &str, keys: &c
                 Ok(s) => s,
                 Err(r) => return Some(r),
             };
-            if state.deployments.lock().unwrap().contains_key(&slug) {
-                return Some(err(409, format!("{slug:?} is deployed: remove it first (holon remove {slug} --yes --forget)")));
-            }
             let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-            Response::json(&forget(state, keys, &slug, by, now_ms))
+            match forget(state, keys, &slug, by, now_ms) {
+                Ok(said) => Response::json(&said),
+                Err(deployed) => err(409, deployed),
+            }
         }
         _ => Response::empty_404(),
     })
@@ -63,14 +63,31 @@ pub(crate) fn route_with(state: &AppState, request: &Request, by: &str, keys: &c
 /// or the same value (release audit R30): the values nothing else names are swept from it at once
 /// (`now_ms`), but those written in the last hour, which the next sweep takes; its code (units)
 /// stays, as units are never swept.
-pub(crate) fn forget(state: &AppState, keys: &crate::at_rest::Keyring, slug: &str, by: &str, now_ms: u64) -> Value {
+///
+/// `Err`, nothing forgotten, while the slug is deployed. Whether it is, and its keys forgotten,
+/// under the deployments table's lock, one step: a deploy of the slug makes its keys under that
+/// lock (deploy.rs), so it comes before, and the forget is refused, or after, and seals under a
+/// version past those forgotten. Asked with the lock let go between, a deploy landing there went
+/// live under the version about to be forgotten, and what it sealed until the forget (its first
+/// runs' lines, its events) no longer opened, its log's reads leaving them out without a word.
+/// The root's rotation and the store's sweep come after, with the lock let go.
+pub(crate) fn forget(state: &AppState, keys: &crate::at_rest::Keyring, slug: &str, by: &str, now_ms: u64) -> Result<Value, String> {
     let scope = crate::at_rest::deployment(slug);
-    let had = match keys.forget(&scope) {
+    let forgot = {
+        let table = state.deployments.lock().unwrap();
+        if table.contains_key(slug) {
+            return Err(format!("{slug:?} is deployed: remove it first (holon remove {slug} --yes --forget)"));
+        }
+        #[cfg(test)]
+        crate::deploy::hold_here("forget", slug);
+        keys.forget(&scope)
+    };
+    let had = match forgot {
         Ok(had) => had,
-        Err(e) => return json!({ "slug": slug, "error": e }),
+        Err(e) => return Ok(json!({ "slug": slug, "error": e })),
     };
     if !had {
-        return json!({ "slug": slug, "forgotten": false, "root": { "rotated": false, "why": "nothing was sealed under its keys" } });
+        return Ok(json!({ "slug": slug, "forgotten": false, "root": { "rotated": false, "why": "nothing was sealed under its keys" } }));
     }
     let root = match keys.source() {
         Some(KeySource::Env(var)) => json!({
@@ -89,7 +106,7 @@ pub(crate) fn forget(state: &AppState, keys: &crate::at_rest::Keyring, slug: &st
         Ok(None) => json!({ "swept": 0, "spared": 0 }),
         Err(e) => json!({ "why": e }),
     };
-    json!({ "slug": slug, "forgotten": had, "root": root, "store": store })
+    Ok(json!({ "slug": slug, "forgotten": had, "root": root, "store": store }))
 }
 
 /// A text field of the request's JSON body, or the answer that says it is missing.

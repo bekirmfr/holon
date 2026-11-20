@@ -12,6 +12,12 @@
   `holon policy --backup none`, or on that page. Choosing none on purpose ends the warning as a
   folder does; "later" leaves it on. Where `holon host` and `holon policy` said "none" for both,
   they now say "not chosen" or "none, chosen".
+- **A flow deployed again under a name being removed, or whose keys are being forgotten, keeps
+  its first runs' records.** An admin forgetting a removed flow's keys (`holon remove … --forget`,
+  `holon key forget`), or removing a flow, at the very moment someone deployed that name again,
+  could leave the new deployment's first stored runs unreadable or deleted, with nothing saying
+  so. A deploy of that name now waits until the forget or the removal is done, then starts with
+  keys and files of its own.
 - **A `backup` line written empty is refused.** `backup = ""` was read as none. It is now refused
   as the policy is read, so a server whose policy has one doesn't start. It says the file's path,
   then `storage.backup: say where: a folder's whole path (/mnt/archive), or "none" to delete them`

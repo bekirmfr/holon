@@ -22,6 +22,8 @@ mod run_steps;
 mod expiring;
 /// A deploy puts its version in only while the deployment is what it was worked out from (R25).
 mod meanwhile;
+/// A removed slug's keys forgotten, or its files deleted, and a deploy of it again don't interleave.
+mod slug_meanwhile;
 mod scopes;
 mod never_keep;
 mod tags;
@@ -914,7 +916,7 @@ allow_private_addresses = true
 
     // Forgotten now: everything is new, so the sweep spares it, and says so.
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-    let said = crate::keys::forget(&state, crate::at_rest::keys(), &slug, "ada", now);
+    let said = crate::keys::forget(&state, crate::at_rest::keys(), &slug, "ada", now).unwrap();
     assert_eq!(said["forgotten"], true, "{said}");
     assert!(said["store"]["spared"].as_u64().unwrap() > 0 && said["store"]["swept"] == 0, "{said}");
     assert_eq!(files(), before);
@@ -924,7 +926,7 @@ allow_private_addresses = true
     deploy(&slug, "only the forgotten one holds this");
     assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
     assert_eq!(route(&state, &req("DELETE", &format!("/deployments/{slug}"), vec![])).status_code, 200);
-    let said = crate::keys::forget(&state, crate::at_rest::keys(), &slug, "ada", later);
+    let said = crate::keys::forget(&state, crate::at_rest::keys(), &slug, "ada", later).unwrap();
     assert!(said["store"]["swept"].as_u64().unwrap() >= 3, "at least its three states: {said}");
     assert!(files() < before, "{said}");
     for snapshot in &gone {

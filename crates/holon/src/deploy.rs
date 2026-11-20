@@ -153,10 +153,23 @@ impl Previous {
 #[cfg(test)]
 pub(crate) type Hold = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
 
-/// A test's hold on a deploy of a slug, between working out what it needs and putting it in
-/// (tests/meanwhile.rs).
+/// A test's holds, each on a step for a slug ([`hold_here`]): `"deploy"`, a deploy between working
+/// out what it needs and putting it in (tests/meanwhile.rs); `"forget"`, a forget of its keys
+/// between asking whether it is deployed and forgetting them; `"remove"`, a removal between taking
+/// it out of the table and deleting its files (tests/slug_meanwhile.rs).
 #[cfg(test)]
-pub(crate) static HELD: std::sync::LazyLock<Mutex<BTreeMap<String, Hold>>> = std::sync::LazyLock::new(Default::default);
+pub(crate) static HELD: std::sync::LazyLock<Mutex<BTreeMap<(&'static str, String), Hold>>> = std::sync::LazyLock::new(Default::default);
+
+/// Step `at` of `slug`, held if a test holds it ([`HELD`]): it says it is there, then waits to be
+/// let go (ten seconds at most).
+#[cfg(test)]
+pub(crate) fn hold_here(at: &'static str, slug: &str) {
+    let held = HELD.lock().unwrap().remove(&(at, slug.to_string()));
+    if let Some((there, go)) = held {
+        let _ = there.send(());
+        let _ = go.recv_timeout(std::time::Duration::from_secs(10));
+    }
+}
 
 /// The origins `browsers` answers pages from that the slug's deployment doesn't yet, as items a
 /// person approves for an agent (`Browser("https://app.example")`): a page from there, in its
@@ -562,13 +575,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     let version;
 
     #[cfg(test)]
-    {
-        let held = HELD.lock().unwrap().remove(&body.slug);
-        if let Some((there, go)) = held {
-            let _ = there.send(());
-            let _ = go.recv_timeout(std::time::Duration::from_secs(10));
-        }
-    }
+    hold_here("deploy", &body.slug);
     {
         let mut deployments = deployments.lock().unwrap();
         // What it needs, and whether it waits for a person, were worked out from the deployment
@@ -1656,24 +1663,30 @@ pub(crate) fn handle_delete_deployment(
             return err(500, crate::failing::Failed::reason(told, format!("{slug:?}'s run records: {e}")).said());
         }
     };
+    // Taken out of the table, and its files deleted, under the table's lock, one step: a deploy of
+    // the slug again (which opens the same files, by its slug) comes after, and starts on none.
+    // With the lock let go between, a deploy landing there opened the old log, still there, and
+    // went on from its chain, then had its files deleted under it: its first runs' lines, its
+    // events, its state's head and where it was in its feeds and queues were gone, saying nothing.
+    // These are a few files and folders, deleted; its records, the long part, were written above
+    // with the lock let go.
     let removed = {
         let mut table = deployments.lock().unwrap();
-        match table.get(slug) {
+        let removed = match table.get(slug) {
             Some(dep) if dep.life.status != Status::Stopped => {
                 log.with(|log| log.reopen());
                 return err(409, format!("stop {slug:?} before deleting it"));
             }
             _ => table.remove(slug),
-        }
-    };
-    match removed {
-        Some(dep) => {
+        };
+        #[cfg(test)]
+        hold_here("remove", slug);
+        if let Some(dep) = &removed {
             // What was given up, moved beside its records before its log's files go: the only copy
             // of those runs, should a copy of its keys or a repair read them later.
             if let Some(at) = &records {
                 keep_given_up(at, &read.segments);
             }
-            *given = read.given_up.clone();
             dep.log.with(|log| {
                 log.note_removed();
                 log.delete_file();
@@ -1687,6 +1700,12 @@ pub(crate) fn handle_delete_deployment(
             subscriptions::forget(deployments_path, slug, &dep.folders.all.feeds);
             dequeue::forget(deployments_path, slug, &dep.folders.all.queues);
             dep.folders.all.logs.forget(slug);
+        }
+        removed
+    };
+    match removed {
+        Some(dep) => {
+            *given = read.given_up.clone();
             dep.channels.close();
             dep.sockets.close_all(websockets::REMOVED);
             if let Err(e) = persist_deployments(deployments_path, deployments) {
