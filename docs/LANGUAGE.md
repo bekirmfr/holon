@@ -481,13 +481,19 @@ as the hold too reads the wait only where no such return was taken (`when(<the h
 the returns not taken), and the answer is held to the waits only past the first. Such returns
 are a row right above the wait, one to a line: `if (test) return value`, or `return` alone
 (`{ return value }` is the same), their tests and values over what the run already has; anything
-may be written above the row. That is the one shape the canvas, the step view and both editors
-write them back in, so it is the one taken. An `else`, an `if` inside another, a block holding
-more than the return, a `switch`, a `try` or a `throw` there, a statement between the row and
-the wait, or a test or value that calls a function of the flow's, makes a request, sends, starts
-an action or reads state, a collection or a database (make that above the row and name it) is
-refused, naming the row. So is a state key written above the row and again after the wait: a
-run that returned keeps the first value, which the text can't show, so write it once. A wait in an `if`, a `try`, after
+may be written above the row. A test may be a name made above the row (`const big = …`, `if
+(big) return …`) and read again past the wait: the printer writes it with its `const`, and shows
+an action with such a row only where its text reads back as that very action. A test with no
+value (a field not sent, with no `??`) ends the run there, answering nothing and waiting for
+nothing: every step past the wait, a write's too, is held to the returns not taken. That is the
+one shape the canvas, the step view and both editors write them back in, so it is the one taken.
+An `else`, an `if` inside another, a block holding more than the return, a `switch` or a `try`
+there, a statement between the row and the wait, or a test or value that calls a function of
+the flow's, makes a request, sends, starts an action or reads state, a collection or a database
+(make that above the row and name it) is refused, naming the row. So is a `throw` there: answer
+the failure in the row instead (`if (order.bad ?? false) return { error: "a bad order" }`), or
+throw in what starts the action. So is a state key written above the row and again after the
+wait: a run that returned keeps the first value, which the text can't show, so write it once. A wait in an `if`, a `try`, after
 a `return` between two waits, or inside another expression is refused, as is an `if (x !== undefined)` after a wait
 whose `x` is there before the wait is answered (a read, `now`, `random`, what was sent). Two waits
 in a row still park together: the run waits at both from the start, asks for them in the order

@@ -544,6 +544,7 @@ export const run = action((input) => outerHolon(input))
       'StateWrite("last_beat")',
     ]);
     expect(derive("approval").caps).toEqual(['Action("payment")', 'Await("paid")', 'ChannelRead("orders")', 'ChannelSend("orders")', "NetworkIngress", 'RunsAction("approval/payment")', 'StateWrite("last_order")']);
+    expect(derive("refund-review").caps).toEqual(['Action("refund")', 'Await("reviewed")', "NetworkIngress", 'RunsAction("refund-review/refund")', 'StateWrite("last_refund")']);
     expect(derive("fetch-json").caps).toEqual(['HttpRequest("httpbin.org")', "NetworkIngress"]);
     expect(derive("sign-payload").caps).toEqual(["NetworkIngress", 'SecretRead("signing_key")']);
     expect(derive("likes").caps).toEqual(['CollectionRead("likes")', 'CollectionWrite("likes")', "NetworkIngress"]);

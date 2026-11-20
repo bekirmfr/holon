@@ -3396,6 +3396,109 @@ fn what_a_run_throws_computed_from_a_secret_never_reaches_the_log() {
     assert!(plain.contains("fail gave nothing: no pears"), "{plain}");
 }
 
+/// Guards: the runs of an action that answers before its first wait are shown on its text as it
+/// is written, the returns right above the wait, each run's answer on the line of the return that
+/// gave it.
+/// Why: the step view and explain print a flow from its graph (print.rs `early_answers`). The
+/// printer had no return above a wait and refused such an action, so its runs had no text to be
+/// shown on (R7, 2026-11-20).
+/// If it fails: the returns' steps are off their lines (`early_answers`'s anchors), or the printer
+/// moved the row away from the wait.
+#[test]
+fn the_runs_of_an_action_that_answers_before_its_wait_are_shown_on_its_text() {
+    let state = test_state();
+    let text = "import { action, event, flow, route } from \"holon\"\n\nflow(\"early\", { port: 18431 })\n\nroute.post(\"/go/:token\", () => \"ok\", { resumes: \"go\" })\n\nexport const job = action(async (order) => {\n  if (order.skip ?? false) return \"skipped\"\n  if (order.amount > 100) return { held: order.id }\n  const go = await event(\"go\", { expires: \"1d\" })\n  return go.method\n})\n";
+    let flow_hash = stage_text(&state, text);
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "early", "unit": to_hex(&flow_hash) })).unwrap())));
+    assert_eq!(deploy_json(&state, "early", flow_hash, serde_json::json!({ "acknowledge": preview["needs_approval"] })).status_code, 200);
+    for order in [serde_json::json!({ "id": "o-1", "skip": true }), serde_json::json!({ "id": "o-2", "amount": 500 })] {
+        assert!(run_action_named(&state, "early", "job", order).is_success());
+    }
+    let log = body_json(route(&state, &req("GET", "/deployments/early/log", vec![])));
+    let entries = log["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "{log}");
+    let document = holon_author::agent::plan(text).unwrap().document;
+    // The notes under the line that holds `line`: what the run gave there.
+    let under = |shown: &str, line: &str| -> String {
+        let lines: Vec<&str> = shown.lines().collect();
+        let Some(at) = lines.iter().position(|l| l.ends_with(line)) else { return String::new() };
+        lines[at + 1..].iter().take_while(|l| !l.trim_start().starts_with(|c: char| c.is_ascii_digit() || c == '…')).map(|l| l.trim()).collect::<Vec<_>>().join("\n")
+    };
+    let (skip, held, wait) = ("  if (order.skip ?? false) return \"skipped\"", "  if (order.amount > 100) return { held: order.id }", "  const go = await event(\"go\", { expires: \"1d\" })");
+    let mut answered = Vec::new();
+    for e in entries {
+        let shown = holon_author::agent::explain("early", &document, e).unwrap();
+        assert!([skip, held, wait].iter().all(|l| shown.contains(&format!("{l}\n"))), "the returns and the wait as written:\n{shown}");
+        assert!(shown.find(skip) < shown.find(held) && shown.find(held) < shown.find(wait), "the row right above the wait:\n{shown}");
+        // The wait isn't asked for where a return answered.
+        assert_eq!(under(&shown, wait), "⇒ nothing: await \"go\" didn't run", "{shown}");
+        answered.push((under(&shown, skip), under(&shown, held), shown));
+    }
+    // One run returned on the first line, the other on the second, each answer on its line.
+    let returned = |s: &str, h: &str| answered.iter().any(|(a, b, _)| a == s && b.starts_with(h));
+    assert!(
+        returned("⇒ \"skipped\"", "⇒ nothing") && answered.iter().any(|(a, b, _)| a.starts_with("⇒ nothing") && b == "⇒ { held: \"o-2\" }"),
+        "each answer on its return's line:\n{}",
+        answered.iter().map(|(.., s)| s.as_str()).collect::<Vec<_>>().join("\n\n----\n\n")
+    );
+}
+
+/// Guards: a run that answers before its action's first wait ends there, whatever it was sent,
+/// with nothing waiting. The refund-review sample, deployed from its text, answers a small refund,
+/// one naming no order, one with no amount and an empty body at once and leaves no run waiting; a
+/// big one answers its review link and leaves one. A bare return taken and a test with no value,
+/// each with a write after the wait, answer nothing and leave none; past the returns, a run waits.
+/// Why: a write after the wait was tied to the wait alone, so a run that had answered asked for it
+/// through the write; the server parked the run there, its answer given, and its caller got a
+/// waiting run instead of the answer (R162, found by the sample's golden, 2026-11-20; rc.36 never
+/// did, run on it the same day).
+/// If it fails: a step after the wait asks for it in a run that returned (ts.rs `held`), or the
+/// server parks a run that asked for nothing.
+#[test]
+fn a_run_that_answers_before_its_wait_leaves_nothing_waiting() {
+    let state = test_state();
+    let ends = "import { action, event, flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"ends\", { port: 18432 })\n\nroute.post(\"/bare\", (req) => {\n  const started = bare(req.json ?? {})\n  return started.answer ?? \"nothing\"\n})\n\nroute.post(\"/unsure\", (req) => {\n  const started = unsure(req.json ?? {})\n  return started.answer ?? \"nothing\"\n})\n\nroute.get(\"/go/:token\", () => \"ok\", { resumes: \"go\" })\n\nexport const bare = action(async (order) => {\n  if (order.skip ?? false) return\n  const go = await event(\"go\", { expires: \"1d\" })\n  state.bare = go.method\n  return \"went on\"\n})\n\nexport const unsure = action(async (order) => {\n  if (order.amount > 100) return \"big\"\n  const go = await event(\"go\", { expires: \"1d\" })\n  state.unsure = go.method\n  return \"went on\"\n})\n";
+    let deploy = |slug: &str, text: &str| {
+        let flow_hash = stage_text(&state, text);
+        let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": slug, "unit": to_hex(&flow_hash) })).unwrap())));
+        let r = deploy_json(&state, slug, flow_hash, serde_json::json!({ "acknowledge": preview["needs_approval"] }));
+        let status = r.status_code;
+        assert_eq!(status, 200, "{slug}: {}", String::from_utf8_lossy(&body_bytes(r)));
+        slug.to_string()
+    };
+    let review = deploy("refund-review", include_str!("../../holon-author/samples/refund-review.holon.ts"));
+    let ends = deploy("ends", ends);
+    let waiting = |slug: &str| body_json(route(&state, &req("GET", &format!("/deployments/{slug}/runs"), vec![])))["runs"].as_array().map_or(0, Vec::len);
+    // Each request: its flow, path and body, what it answers, and how many of its flow's runs wait
+    // after it.
+    let rows = [
+        (&review, "/refunds", r#"{"order":"o-1","amount":5}"#, r#"{"by":"rule","refunded":"o-1"}"#, 0),
+        (&review, "/refunds", r#"{"amount":5}"#, r#"{"refused":"it names no order"}"#, 0),
+        (&review, "/refunds", r#"{"order":"o-1"}"#, r#"{"by":"rule","refunded":"o-1"}"#, 0),
+        (&review, "/refunds", "", r#"{"refused":"it names no order"}"#, 0),
+        (&review, "/refunds", r#"{"order":"o-3","amount":500}"#, "/review/", 1),
+        (&ends, "/bare", r#"{"skip":true}"#, "nothing", 0),
+        (&ends, "/unsure", "{}", "nothing", 0),
+        (&ends, "/unsure", r#"{"amount":500}"#, "big", 0),
+        (&ends, "/bare", "{}", "nothing", 1),
+        (&ends, "/unsure", r#"{"amount":5}"#, "nothing", 2),
+    ];
+    let mut wrong = Vec::new();
+    for (slug, path, body, answer, after) in rows {
+        let request = data::DataRequest { headers: vec![("content-type".into(), "application/json".into())], ..fake_data("POST", path, body.as_bytes().to_vec()) };
+        let got = serve_data(&state.store, &state.deployments, &state.deployments_path, slug.as_str(), &request);
+        let text = String::from_utf8_lossy(&got.body).to_string();
+        if got.status != 200 || !text.contains(answer) {
+            wrong.push(format!("{slug} {path} {body:?}: answered {} {text}, not {answer}", got.status));
+        }
+        let now = waiting(slug.as_str());
+        if now != after {
+            wrong.push(format!("{slug} {path} {body:?}: {now} runs wait, not {after}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 /// A durable run end to end. \`POST /orders\` answers with a resume token and waits at \`paid\`; its
 /// state write depends on the event, so nothing is written yet. \`GET /paid/:token\`, declared
 /// \`resume = paid\`, answers its caller and delivers its request to the run, which finishes: the

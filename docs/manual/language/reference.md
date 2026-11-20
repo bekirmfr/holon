@@ -1066,10 +1066,15 @@ misled, the compiler refuses instead.
   body, `const paid = await event(…)`. A `return` before the first wait may answer without it
   (`if (order.skip ?? false) return "skipped"`), and then nothing waits. Such returns are a row
   right above the wait, one `if (test) return value` (or `return` alone) to a line, tested on
-  what the run already has; anything may come above the row. Another shape there (an `else`, an
-  `if` inside another, a `switch`, a `try`, a `throw`, a statement between the row and the wait,
-  or a test that calls a function, makes a request or reads state or a collection) is refused,
-  and so is a state key written above the row and again after the wait. In an `if`, a `try`, after a `return`
+  what the run already has; anything may come above the row. A test may be a name made above the
+  row (`const big = order.amount > 100`, then `if (big) return "needs review"`), and read again
+  after the wait. A test with no value (a field that wasn't sent, with no `??`) ends the run
+  there: it answers nothing and waits for nothing. Another shape there (an `else`, an `if` inside
+  another, a `switch`, a `try`, a statement between the row and the wait, or a test that calls a
+  function, makes a request or reads state or a collection) is refused, and so is a state key
+  written above the row and again after the wait. So is a `throw` there: answer the failure in
+  the row instead, `if (order.bad ?? false) return { error: "a bad order" }`, or throw in what
+  starts the action. In an `if`, a `try`, after a `return`
   between two waits or inside another expression a wait is refused. Two waits in a row still park together: the run waits
   at both from the start, lists them in the order written, and what follows the second waits for
   both, whichever is answered first.

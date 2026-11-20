@@ -638,7 +638,7 @@ impl holon_core::Observer for Waiting {
 
 /// Every field the waiting texts' actions read of what starts them (tests.rs's expiry test's).
 fn started_with() -> holon_core::Value {
-    holon_core::parse_json(r#"{"id":"p1","item":"tea","amount":5000,"iban":"DE89370400440532013000","by":"sam@acme.com","account":1,"title":"Hello","brief":"A short note","product":"BTC-USD","price":"100","size":"1","side":"buy","n":1,"pad":"p"}"#).unwrap()
+    holon_core::parse_json(r#"{"id":"p1","order":"o-1","item":"tea","amount":5000,"iban":"DE89370400440532013000","by":"sam@acme.com","account":1,"title":"Hello","brief":"A short note","product":"BTC-USD","price":"100","size":"1","side":"buy","n":1,"pad":"p"}"#).unwrap()
 }
 
 /// `action` of `b` in the form `stored` says, run with `input` as `watch` answers it: which of its
@@ -738,17 +738,23 @@ fn what_follows_two_waits_waits_for_both() {
     assert!(checked >= 4, "only {checked} runs of actions that wait twice: the test needs some");
 }
 
-/// Guards: a return before an action's first wait answers without it. Run as a server runs it,
-/// [`A_RETURN_BEFORE_THE_WAIT`] started with the return taken answers at once and asks for no
-/// wait and sends nothing; started with it not taken, it asks for its wait, answers nothing yet,
-/// and sends nothing yet (the send after the wait waits for it).
-/// Why: the answer of an action that waits is held to its waits (ts.rs `finish`); held whole,
-/// it would hold the early return too, and a run that returned before its wait would never
-/// answer. And the action's hold reads the wait: read directly, it asked for the wait in a run
-/// that had already answered (found by this test, 2026-11-19).
+/// Guards: a return before an action's first wait answers without it, whatever follows the wait.
+/// Run as a server runs it, an action with two returns above its wait (with values, the first bare,
+/// or tests with no default) and each kind of step after it (a send, a state write of the wait's or
+/// of nothing of it, a collection write and delete, a write in `if (x !== undefined)`, a request, a
+/// branch): started with either return taken, it answers at once and asks for nothing, no wait, no
+/// request; started with neither taken, it asks for its wait alone, answers nothing yet and does
+/// nothing yet (what follows waits for it); sent neither field, a test with no value ends the run
+/// there: nothing asked, nothing answered, so nothing parks it.
+/// Why: the answer of an action that waits is held to its waits (ts.rs `finish`); held whole, it
+/// would hold the early return too, and a run that returned before its wait would never answer.
+/// The action's hold reads the wait: read directly, it asked for the wait in a run that had
+/// already answered (found by this test, 2026-11-19). And a write's `after` was tied to the wait
+/// alone, so a run that had answered asked for it through the write, and the server parked it
+/// there, its answer given (found by the refund-review sample's golden, 2026-11-20).
 /// If it fails: the returns before the first wait were folded under the wait's tie (ts.rs
-/// `fold`'s `tie`), or the hold no longer reads the wait under the returns not taken (ts.rs
-/// `waited_on`).
+/// `fold`'s `tie`), the hold no longer reads the wait under the returns not taken (ts.rs
+/// `waited_on`), or a step after the wait waits for it alone (ts.rs `held`, `trigger`).
 #[test]
 fn a_return_before_the_first_wait_answers_without_it() {
     use holon_core::{Answer, Value};
@@ -761,31 +767,84 @@ fn a_return_before_the_first_wait_answers_without_it() {
                         self.0.push(name.clone());
                         Answer::NotYet
                     }
-                    _ => Answer::Absent,
+                    _ => {
+                        self.0.push(format!("a request: {:?}", r.keys().collect::<Vec<_>>()));
+                        Answer::Absent
+                    }
                 },
                 _ => Answer::Absent,
             }
         }
     }
-    let lowered = holon_author::lang::compile(A_RETURN_BEFORE_THE_WAIT).unwrap_or_else(|e| panic!("{e}"));
-    let mut store = holon_core::MapResolver::new();
-    holon_author::text::restore(&lowered.doc, &mut store, &BTreeMap::new());
-    let port = lowered.doc.server.as_ref().map(|s| s.port.clone()).unwrap_or_default();
-    let server = holon_author::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.unit_settings());
-    let [action] = server.actions.as_slice() else { panic!("one action: {:?}", server.actions.iter().map(|a| &a.label).collect::<Vec<_>>()) };
-    let unit = holon_core::Resolver::resolve(&store, &holon_core::parse_hash(&action.hash).unwrap()).expect("its unit").clone();
-    let run = |input: &str| {
-        let mut asked = Asked(vec![]);
-        let outputs = holon_core::eval_observed(&unit, &[Some(holon_core::parse_json(input).unwrap())], &store, &mut asked);
-        (asked.0, format!("{outputs:?}"))
+    let text = |returns: &str, after: &str| {
+        let import = |name: &str, line: &str| if after.contains(&format!("{name}.")) || after.contains(&format!("{name}[")) { format!("{line}\n") } else { String::new() };
+        format!(
+            "import {{ action, event, flow, route }} from \"holon\"\n{}{}{}{}\nflow(\"early\", {{ port: 8997 }})\n\nroute.post(\"/start\", (req) => job(req.json).waiting)\n\nroute.post(\"/go/:token\", () => \"ok\", {{ resumes: \"go\" }})\n\nexport const job = action(async (order) => {{\n{returns}  const go = await event(\"go\", {{ expires: \"1d\" }})\n{after}  return go.method\n}})\n",
+            import("state", "import state from \"state\""),
+            import("updates", "import updates from \"channel:updates\""),
+            import("orders", "import orders from \"collection:orders\""),
+            import("api", "import api from \"host:api.example.com\""),
+        )
     };
-    let names = unit.outputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>();
-    let (asked, outputs) = run(r#"{"id":"early-7","skip":true}"#);
-    assert_eq!(asked, Vec::<String>::new(), "returned before the wait, it asked for it");
-    assert!(outputs.contains("Text(\"skipped\")"), "returned before the wait, it didn't answer: {names:?} {outputs}");
-    assert!(!outputs.contains("early-7"), "returned before the wait, it sent what follows the wait: {names:?} {outputs}");
-    let (asked, outputs) = run(r#"{"id":"early-7","skip":false}"#);
-    assert_eq!(asked, vec!["go".to_string()], "not returned, it didn't wait");
-    assert!(!outputs.contains("skipped"), "waiting, it answered the early return: {names:?} {outputs}");
-    assert!(!outputs.contains("early-7"), "waiting, it sent what follows the wait: {names:?} {outputs}");
+    // The returns: each with what the first answers, and whether a run sent neither field still
+    // waits (its tests have a value without them) or ends at the first test, which has none.
+    let heads = [
+        ("returns with values", "  if (order.skip ?? false) return \"skipped\"\n  if ((order.amount ?? 0) > 100) return { held: true }\n", Some("Text(\"skipped\")"), true),
+        ("a bare return", "  if (order.skip ?? false) return\n  if ((order.amount ?? 0) > 100) return { held: true }\n", None, true),
+        ("tests with no default", "  if (order.skip) return \"skipped\"\n  if (order.amount > 100) return { held: true }\n", Some("Text(\"skipped\")"), false),
+    ];
+    let afters = [
+        ("a send", "  updates.send({ sent: order.id })\n"),
+        ("a state write of the wait's", "  state.last = go.method\n"),
+        ("a state write of nothing of the wait", "  state.seen = order.id\n"),
+        ("a collection write", "  orders[order.id] = { by: go.method }\n"),
+        ("a collection delete", "  delete orders[order.id]\n"),
+        ("a write in if (x !== undefined)", "  const m = go.method\n  if (m !== undefined) {\n    state.m = m\n  }\n"),
+        ("a request", "  const sent = await api.post(\"/x\", { body: order.id })\n  state.status = sent.status\n"),
+        ("a branch", "  if (go.method === \"POST\") updates.send({ posted: order.id })\n"),
+    ];
+    let mut wrong = Vec::new();
+    for ((head, returns, first, waits), (after_case, after)) in heads.iter().flat_map(|h| afters.iter().map(move |a| (h, a))) {
+        let case = format!("{head}, then {after_case}");
+        let src = text(*returns, *after);
+        let lowered = holon_author::lang::compile(&src).unwrap_or_else(|e| panic!("{case}: {e}\n{src}"));
+        let mut store = holon_core::MapResolver::new();
+        holon_author::text::restore(&lowered.doc, &mut store, &BTreeMap::new());
+        let port = lowered.doc.server.as_ref().map(|s| s.port.clone()).unwrap_or_default();
+        let server = holon_author::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port, lowered.doc.unit_settings());
+        let [action] = server.actions.as_slice() else { panic!("{case}: one action: {:?}", server.actions.iter().map(|a| &a.label).collect::<Vec<_>>()) };
+        let unit = holon_core::Resolver::resolve(&store, &holon_core::parse_hash(&action.hash).unwrap()).expect("its unit").clone();
+        let run = |input: &str| {
+            let mut asked = Asked(vec![]);
+            let outputs = holon_core::eval_observed(&unit, &[Some(holon_core::parse_json(input).unwrap())], &store, &mut asked);
+            (asked.0, format!("{outputs:?}"))
+        };
+        for (taken, input, answer) in [("the first return", r#"{"id":"early-7","skip":true}"#, *first), ("the second return", r#"{"id":"early-7","skip":false,"amount":500}"#, Some("held"))] {
+            let (asked, outputs) = run(input);
+            if !asked.is_empty() {
+                wrong.push(format!("{case}, {taken} taken: it asked for {asked:?}"));
+            }
+            if let Some(answer) = answer
+                && !outputs.contains(answer)
+            {
+                wrong.push(format!("{case}, {taken} taken: it didn't answer {answer}: {outputs}"));
+            }
+            if outputs.contains("early-7") {
+                wrong.push(format!("{case}, {taken} taken: it did what follows the wait: {outputs}"));
+            }
+        }
+        // Neither taken, then sent neither field: a run past every return waits for the wait alone;
+        // one whose test has no value ends there, asking for nothing and answering nothing.
+        for (given, input, goes_on) in [("neither taken", r#"{"id":"early-7","skip":false,"amount":5}"#, true), ("sent neither field", r#"{"id":"early-7"}"#, *waits)] {
+            let (asked, outputs) = run(input);
+            let expected: &[&str] = if goes_on { &["go"] } else { &[] };
+            if asked != expected {
+                wrong.push(format!("{case}, {given}: it asked for {asked:?}, not {expected:?}"));
+            }
+            if outputs.contains("skipped") || outputs.contains("held") || outputs.contains("early-7") {
+                wrong.push(format!("{case}, {given}: it answered, or did what follows the wait, before it: {outputs}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }

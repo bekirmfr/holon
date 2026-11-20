@@ -582,7 +582,8 @@ fn returns_before_a_wait(nodes: &[&Node], wires: &[BlockWire]) -> bool {
 /// `v`, the value before it written nowhere: ts.rs refuses a key written above the row and again
 /// below it), and what is taken out goes on the line of what read it: the return's own step, `v`
 /// where `t` holds, on its `if`'s, the answer's on the last `return`'s, the hold's on none. Anything
-/// that still reads `t` is a shape the text can't write.
+/// that still reads `t` reads a value the text names (`const big = …`, `if (big) return …`); whether
+/// the whole is a flow the text writes, the action read back from its text says ([`same_actions`]).
 struct EarlyAnswers {
     /// A stand-in step for each `if (test) return value`, in the order written (`cond` its test,
     /// `value` its value, none for `return` alone), with the step that gives the value where the
@@ -598,7 +599,9 @@ struct EarlyAnswers {
 }
 
 /// A stand-in's template: no step of the flow's, only where an `if (test) return value` is written.
-const EARLY_RETURN: &str = "early_return";
+/// Its name holds a space, which no leaf's, template's or function's name does, and each stand-in
+/// is known by its own id (made fresh against the flow's ids), never by how an id starts.
+const EARLY_RETURN: &str = "early return";
 
 /// Each step the text leaves out (`gone`) put on the statement of the step it goes with, so it is
 /// on that line: explain reads what a line did by the steps on it. One that goes with none is on
@@ -812,10 +815,20 @@ fn early_answers(nodes: &[&Node], wires: &[BlockWire]) -> Result<EarlyAnswers, S
         .map(|(s, to, i)| (resolve(s), to.clone(), i.clone()))
         .collect();
     let mut stand_ins = Vec::new();
+    // Each stand-in's id, one no step of the flow's has.
+    let stand_in_ids: Vec<String> = (0..rows.len())
+        .map(|i| {
+            let mut id = format!("{EARLY_RETURN} {i}");
+            while ids.contains(id.as_str()) {
+                id.push('\'');
+            }
+            id
+        })
+        .collect();
     for (i, (t, v, g)) in rows.iter().enumerate() {
         let mut inputs = vec![WPort::new("cond", WType::Boolean)];
         inputs.extend(v.as_ref().map(|_| WPort::new("value", WType::Any)));
-        let id = format!("{EARLY_RETURN}-{i}");
+        let id = stand_in_ids[i].clone();
         kept.push((t.clone(), id.clone(), "cond".into()));
         if let Some(v) = v {
             kept.push((v.clone(), id.clone(), "value".into()));
@@ -839,23 +852,21 @@ fn early_answers(nodes: &[&Node], wires: &[BlockWire]) -> Result<EarlyAnswers, S
         kept.retain(|(_, to, _)| !gone.contains(to));
         taken.extend(gone);
     }
-    // What is taken out is read by nothing kept, and a test by its stand-in alone: anything else is
-    // a shape the text can't write.
+    // What is taken out is read by nothing kept: anything else is a shape the text can't write. A
+    // test read again (`const big = …`, `if (big) return …`, `big` past the wait) is a value the
+    // text names, and prints so; whether what reads it is one the text writes, the action read
+    // back says ([`same_actions`]).
     if kept.iter().any(|(s, _, _)| matches!(s, Src::Node { id, .. } if taken.contains(id))) {
         return Err("a step it takes apart is read elsewhere".into());
     }
-    for (i, t) in tests.iter().enumerate() {
-        let Src::Node { id, .. } = t else { return Err("its test isn't a step".into()) };
-        if let Some((_, to, _)) = kept.iter().find(|(s, to, _)| matches!(s, Src::Node { id: f, .. } if f == id) && !to.starts_with(EARLY_RETURN)) {
-            let by = by_id.get(to.as_str()).map_or(to.as_str(), |n| n.data.name.as_str());
-            return Err(format!("the test of its return {} is read again, by {by}", i + 1));
-        }
+    if tests.iter().any(|t| !matches!(t, Src::Node { .. })) {
+        return Err("its test isn't a step".into());
     }
     // Each step taken out on the line of what read it, through what was taken out with it.
     let mut gone = Vec::new();
     for id in nodes.iter().map(|n| &n.id).filter(|id| taken.contains(*id)) {
         let anchor = if let Some(i) = rows.iter().position(|(_, _, g)| g.as_ref() == Some(id)) {
-            Some(format!("{EARLY_RETURN}-{i}"))
+            Some(stand_in_ids[i].clone())
         } else if chain.contains(id) {
             Some(respond.id.clone())
         } else {
@@ -930,13 +941,14 @@ impl EarlyAnswers {
     /// Each step taken out put on the statement of the step it goes with, so it has that line.
     fn place(&self, body: &mut [Stmt]) {
         place_beside(body, &self.gone);
-        fn drop_stand_ins(body: &mut [Stmt]) {
+        fn drop_stand_ins(body: &mut [Stmt], ids: &[&str]) {
             for s in body.iter_mut() {
-                s.nodes.retain(|n| !n.starts_with(EARLY_RETURN));
-                drop_stand_ins(&mut s.kids);
+                s.nodes.retain(|n| !ids.contains(&n.as_str()));
+                drop_stand_ins(&mut s.kids, ids);
             }
         }
-        drop_stand_ins(body);
+        let ids: Vec<&str> = self.stand_ins.iter().map(|(s, _)| s.id.as_str()).collect();
+        drop_stand_ins(body, &ids);
     }
 }
 
@@ -1037,6 +1049,8 @@ pub struct Printer<'s> {
     avoid: HashSet<String>,
     /// `"holon"`'s words the first pass found the text uses.
     vocab_used: Option<BTreeSet<String>>,
+    /// The actions written with a row of returns above their first wait: each one's label and name.
+    early: Vec<(String, String)>,
 }
 
 /// A flow document as canonical TypeScript. `known` names composites the document doesn't;
@@ -1051,6 +1065,14 @@ pub fn print(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolver, kn
 /// where it starts (a `switch`'s case values, the case's). What view mode shows beside a selected
 /// node.
 pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolver, known: &Names, bindings: &BTreeMap<String, String>) -> Result<(String, BTreeMap<String, u32>), String> {
+    let (text, lines, early) = written(name, doc, store, known, bindings)?;
+    same_actions(doc, known, &text, &early)?;
+    Ok((text, lines))
+}
+
+/// What [`print_lines`] writes, before the actions with a row of returns above their first wait
+/// (the third part, each one's label and name) are read back ([`same_actions`]).
+fn written(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolver, known: &Names, bindings: &BTreeMap<String, String>) -> Result<(String, BTreeMap<String, u32>, Vec<(String, String)>), String> {
     let names = restore(doc, store, known);
     let mut p = Printer {
         store,
@@ -1086,6 +1108,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         action_local: HashMap::new(),
         avoid: HashSet::new(),
         vocab_used: None,
+        early: Vec::new(),
     };
     p.collect_collections(&doc.nodes)?;
     // A mail a handler reads is imported as one it sends through is.
@@ -1138,7 +1161,31 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     let raw = raw.join("\n") + "\n";
     let text = crate::lang::format::format_keeping_bodies(&raw).map_err(|e| format!("the TypeScript written for this flow doesn't read back ({e}), which is the printer's mistake:\n{raw}"))?;
     let lines = lines_of(&text, &defs, &items);
-    Ok((text, lines))
+    Ok((text, lines, std::mem::take(&mut p.early)))
+}
+
+/// Each action written with a row of returns above its first wait (`early`, its label and name)
+/// read back from `text` as the very action `doc` holds. The row's shapes are taken apart by
+/// pattern ([`early_answers`]); a canvas edit the row can't say (a test read again by a step past
+/// the wait that the text would hold to the returns not taken) could otherwise print as another
+/// flow. A text that doesn't read back, or an action `doc` can't make, isn't judged here: the
+/// reader's error, or the action's own, is what is shown.
+fn same_actions(doc: &FlowDocument, known: &Names, text: &str, early: &[(String, String)]) -> Result<(), String> {
+    if early.is_empty() {
+        return Ok(());
+    }
+    let Ok(back) = crate::lang::compile(text) else { return Ok(()) };
+    let actions = |doc: &FlowDocument, known: &Names| -> HashMap<String, String> {
+        let mut store = MapResolver::new();
+        restore(doc, &mut store, known);
+        let port = doc.server.as_ref().map(|s| s.port.clone()).unwrap_or_default();
+        crate::flow::derive_server(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings()).actions.into_iter().map(|a| (a.name, a.hash)).collect()
+    };
+    let (was, is) = (actions(doc, known), actions(&back.doc, &Names::new()));
+    match early.iter().find(|(_, name)| was.get(name).is_some_and(|h| is.get(name) != Some(h))) {
+        Some((label, _)) => Err(format!("{label} answers before its first wait in a shape the text can't write (its text reads back as another action): the text writes it as if (test) return value, right above the wait")),
+        None => Ok(()),
+    }
 }
 
 /// Each node's line in `text`, as `items` (after the imports, `flow(…)` and `defs`) wrote them:
@@ -1835,6 +1882,9 @@ impl<'s> Printer<'s> {
             true => Some(early_answers(&nodes, &ws).map_err(|why| format!("{label} answers before its first wait in a shape the text can't write ({why}): the text writes it as if (test) return value, right above the wait"))?),
             false => None,
         };
+        if early.is_some() && !self.early.iter().any(|(l, _)| l == label) {
+            self.early.push((label.to_string(), trigger.param("name").to_string()));
+        }
         let (nodes, ws) = match &early {
             Some(e) => (e.nodes(nodes), e.wires.clone()),
             None => (nodes, ws),
@@ -5735,24 +5785,50 @@ export const t = action((input) => {
             ("a return alone", "  if (order.skip ?? false) return\n"),
             ("a record", "  if (order.skip ?? false) return { id: order.id, skipped: true }\n"),
             ("three, one alone", "  if (order.skip ?? false) return\n  if (order.amount > 100) return \"big\"\n  if (order.amount < 0) return { id: order.id, refused: true }\n"),
+            ("a named test", "  const big = order.amount > 100\n  if (big) return \"big\"\n"),
         ];
+        // How each comes back: as written, as the printer's form of it, or as the same flow.
+        #[derive(Clone, Copy)]
+        enum Back {
+            Written,
+            As(&'static str),
+            Same,
+        }
         let afters = [
-            ("a send", "  updates.send({ sent: order.id })\n  return go.method\n"),
-            ("a write", "  state.last = order.id\n  return go.method\n"),
-            ("a branch", "  const guard = go.method === \"POST\" ? go : undefined\n  if (guard !== undefined) updates.send({ posted: order.id })\n  return go.method\n"),
-            // Gathered with the returns not taken into one `and` (`!t1 && !t2 && x && y`).
-            ("a branch on two tests", "  const guard = go.method === \"POST\" && order.amount > 1 ? go : undefined\n  if (guard !== undefined) updates.send({ posted: order.id })\n  return go.method\n"),
-            ("a second wait", "  const again = await event(\"again\", { expires: \"1d\" })\n  updates.send({ sent: order.id })\n  return again.method\n"),
-            ("the answer alone", "  return go.method\n"),
+            ("a send", "  updates.send({ sent: order.id })\n  return go.method\n", Back::Written),
+            ("a write", "  state.last = order.id\n  return go.method\n", Back::Written),
+            ("a branch", "  const guard = go.method === \"POST\" ? go : undefined\n  if (guard !== undefined) updates.send({ posted: order.id })\n  return go.method\n", Back::Written),
+            ("a branch on two tests", "  const guard = go.method === \"POST\" && order.amount > 1 ? go : undefined\n  if (guard !== undefined) updates.send({ posted: order.id })\n  return go.method\n", Back::Written),
+            // A branch past a wait prints as what its value waits for (`const guard = …`); with
+            // returns above the wait it is the same flow all the same (ts.rs `trigger`).
+            (
+                "a plain branch",
+                "  if (order.loud ?? false) {\n    updates.send({ loud: order.id })\n  }\n  return go.method\n",
+                Back::As("  const guard = (order.loud ?? false) ? go : undefined\n  if (guard !== undefined) updates.send({ loud: order.id })\n  return go.method\n"),
+            ),
+            ("a write in a branch", "  if (order.loud ?? false) {\n    state.loud = order.id\n  }\n  return go.method\n", Back::Same),
+            ("a second wait", "  const again = await event(\"again\", { expires: \"1d\" })\n  updates.send({ sent: order.id })\n  return again.method\n", Back::Written),
+            ("the answer alone", "  return go.method\n", Back::Written),
         ];
         let aboves = [("nothing above", ""), ("a send above", "  updates.send({ got: order.id })\n"), ("a write above", "  state.first = order.id\n")];
         // Each case, its failures gathered, so one run names them all.
-        let check = |case: &str, src: &str| -> Result<(), String> {
+        let check = |case: &str, src: &str, back: Option<&str>| -> Result<(), String> {
             let l = compile(src).map_err(|e| format!("{case}: doesn't compile: {e}"))?;
             let resolve = |doc: &FlowDocument, names: &BTreeMap<String, String>| print(Some("f"), doc, &mut MapResolver::new(), &Names::new(), names);
-            let printed = resolve(&l.doc, &l.names).map_err(|e| format!("{case}: doesn't print: {e}"))?;
-            if printed != src {
-                return Err(format!("{case}: printed as it isn't written:\n{printed}"));
+            // Refused, with what it would have written: a text that reads back as another action.
+            let unchecked = |names: &BTreeMap<String, String>| written(Some("f"), &l.doc, &mut MapResolver::new(), &Names::new(), names).map_or_else(|e| e, |(t, ..)| t);
+            let printed = resolve(&l.doc, &l.names).map_err(|e| format!("{case}: doesn't print: {e}\n{}", unchecked(&l.names)))?;
+            // `back`: the text it prints as (the source, or the printer's form of it), or none
+            // where any text that reads back as this very flow will do.
+            match back {
+                Some(back) if printed != back => return Err(format!("{case}: printed as it isn't written:\n{printed}")),
+                Some(_) => {}
+                None => {
+                    let again = compile(&printed).map_err(|e| format!("{case}: prints what doesn't compile: {e}\n{printed}"))?;
+                    if hash_of(&again.doc) != hash_of(&l.doc) {
+                        return Err(format!("{case}: prints another flow:\n{printed}"));
+                    }
+                }
             }
             // Each step on a line of the text, but a wait's hold (`wait_holds`), on none.
             let (_, lines) = print_lines(Some("f"), &l.doc, &mut MapResolver::new(), &Names::new(), &l.names).map_err(|e| format!("{case}: {e}"))?;
@@ -5762,7 +5838,7 @@ export const t = action((input) => {
                 return Err(format!("{case}: steps off their line, or a hold on one: {off:?}"));
             }
             // The canvas alone, its names gone, prints the same flow.
-            let bare = resolve(&l.doc, &BTreeMap::new()).map_err(|e| format!("{case}: without its names, doesn't print: {e}"))?;
+            let bare = resolve(&l.doc, &BTreeMap::new()).map_err(|e| format!("{case}: without its names, doesn't print: {e}\n{}", unchecked(&BTreeMap::new())))?;
             let back = compile(&bare).map_err(|e| format!("{case}: without its names, prints what doesn't compile: {e}\n{bare}"))?;
             if hash_of(&back.doc) != hash_of(&l.doc) {
                 return Err(format!("{case}: without its names, prints another flow:\n{bare}"));
@@ -5771,14 +5847,30 @@ export const t = action((input) => {
         };
         let mut wrong = Vec::new();
         for (above_case, above) in aboves {
-            for (after_case, after) in afters {
-                wrong.extend(check(&format!("without a return, {above_case}, then {after_case}"), &text(&format!("{above}{wait}{after}"))).err());
-                for (row_case, row) in rows {
-                    wrong.extend(check(&format!("{row_case}, {above_case}, then {after_case}"), &text(&format!("{above}{row}{wait}{after}"))).err());
+            for (after_case, after, back) in afters {
+                for (row_case, row) in std::iter::once(("without a return", "")).chain(rows) {
+                    let src = text(&format!("{above}{row}{wait}{after}"));
+                    let back = match back {
+                        Back::Written => Some(src.clone()),
+                        Back::As(form) => Some(text(&format!("{above}{row}{wait}{form}"))),
+                        Back::Same => None,
+                    };
+                    wrong.extend(check(&format!("{row_case}, {above_case}, then {after_case}"), &src, back.as_deref()).err());
                 }
             }
         }
-        assert!(wrong.is_empty(), "{} of {} cases:\n{}", wrong.len(), aboves.len() * afters.len() * (rows.len() + 1), wrong.join("\n\n"));
+        // A test the text names and reads again, and one written out twice: each as written.
+        let own = [
+            ("a named test read again past the wait", format!("  const big = order.amount > 100\n  if (big) return \"needs review\"\n{wait}  return {{ big, method: go.method }}\n"), true),
+            ("a named test read in a branch past the wait", format!("  const big = order.amount > 100\n  if (big) return \"needs review\"\n{wait}  if (big) {{\n    updates.send({{ big: order.id }})\n  }}\n  return go.method\n"), false),
+            ("a named test read above the row too", format!("  const big = order.amount > 100\n  updates.send({{ big }})\n  if (big) return \"big\"\n{wait}  return go.method\n"), true),
+            ("the same test written twice", format!("  if (order.amount > 100) return \"big\"\n{wait}  return {{ big: order.amount > 100, method: go.method }}\n"), true),
+        ];
+        for (case, body, as_written) in &own {
+            let src = text(body);
+            wrong.extend(check(case, &src, as_written.then_some(src.as_str())).err());
+        }
+        assert!(wrong.is_empty(), "{} of {} cases:\n{}", wrong.len(), aboves.len() * afters.len() * (rows.len() + 1) + own.len(), wrong.join("\n\n"));
         // `{ return v }` is the same flow, written in the plain form.
         let plain = text(&format!("  if (order.skip ?? false) return \"skipped\"\n{wait}  return go.method\n"));
         let block = text(&format!("  if (order.skip ?? false) {{\n    return \"skipped\"\n  }}\n{wait}  return go.method\n"));

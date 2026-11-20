@@ -21,10 +21,13 @@
   wait now stands on a line of its own at the top of the action's body (`const paid = await
   event(…)`). A `return` before the first wait still answers without it, and then nothing waits.
   Such returns are a row of `if (test) return value` right above the wait, which the canvas, the
-  step view and both editors show as written; another shape there (an `else`, an `if` inside
-  another, a `switch`, a `try`, a `throw`, a statement between the row and the wait, a test that
-  calls a function or reads state) is refused, saying so, and so is a state key written above
-  the row and again after the wait. A wait in an `if`, a `try`, after
+  step view and both editors show as written; a test may be a name made above the row and read
+  again after the wait, and a test with no value ends the run there, answering nothing and
+  waiting for nothing. Another shape there (an `else`, an `if` inside another, a `switch`, a
+  `try`, a statement between the row and the wait, a test that calls a function or reads state)
+  is refused, saying so, and so is a state key written above the row and again after the wait.
+  A `throw` there is refused too: answer the failure in the row, or throw in what starts the
+  action (rc.36 took `if (order.bad) throw …` above a wait). A wait in an `if`, a `try`, after
   a `return` between two waits, or inside another expression is refused, saying so. Two waits in a row still wait together from
   the start, listed in the order written; what follows the second waits for both, whichever is
   answered first. A flow that waits

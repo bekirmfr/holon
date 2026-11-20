@@ -1508,7 +1508,9 @@ impl<'s, 't> Reader<'s, 't> {
         if returned && self.frame.early.written.is_none() {
             self.frame.early.written = Some(self.frame.writes.iter().map(|(k, ..)| k.clone()).chain(self.frame.tied.iter().cloned()).collect());
         }
-        let why = if !returned {
+        let why = if throws(s) {
+            Some(EARLY_THROW)
+        } else if !returned {
             (self.frame.early.row > 0).then_some(EARLY_BETWEEN)
         } else if !matches!(r, Ret::When(_)) || !plain_return(s) {
             Some(EARLY_FORM)
@@ -2288,7 +2290,7 @@ impl<'s, 't> Reader<'s, 't> {
                 let key = self.tried(key, stmts);
                 let value = self.tried(value, stmts);
                 let value = self.guarded(value);
-                stmts.push(Stmt { kind: StmtKind::CollectionWrite { collection: Name { text: collection, span }, key, value }, span: at, after: self.after_value() });
+                stmts.push(Stmt { kind: StmtKind::CollectionWrite { collection: Name { text: collection, span }, key, value }, span: at, after: self.held(self.after_value()) });
                 Ok(())
             }
             Place::Member(root, span, path) => {
@@ -2314,7 +2316,7 @@ impl<'s, 't> Reader<'s, 't> {
             let key = self.guarded(key);
             self.frame.written.insert(collection.clone());
             let collection = self.name(&collection, c.object.span());
-            stmts.push(Stmt { kind: StmtKind::Delete { collection, key }, span: at, after: self.after_value() });
+            stmts.push(Stmt { kind: StmtKind::Delete { collection, key }, span: at, after: self.held(self.after_value()) });
             return Ok(());
         }
         let Place::Member(root, span, mut path) = self.member_place(m)? else { unreachable!("a member's place") };
@@ -2420,7 +2422,7 @@ impl<'s, 't> Reader<'s, 't> {
             }
             let value = self.guarded(value);
             self.frame.tied.insert(key.clone());
-            stmts.push(Stmt { kind: StmtKind::StateWrite { key: Name { text: key, span: key_span }, value }, span: at, after: Some(after) });
+            stmts.push(Stmt { kind: StmtKind::StateWrite { key: Name { text: key, span: key_span }, value }, span: at, after: self.held(Some(after)) });
             return Ok(());
         }
         if self.frame.tied.contains(&key) {
@@ -2457,7 +2459,7 @@ impl<'s, 't> Reader<'s, 't> {
         if self.frame.depth == 0 {
             stmts.retain(|s| !matches!(&s.kind, StmtKind::StateWrite { key: k, .. } if k.text == key));
             // Past a wait, written once it is answered.
-            stmts.push(Stmt { kind: StmtKind::StateWrite { key: Name { text: key, span: key_span }, value }, span: at, after: self.waited() });
+            stmts.push(Stmt { kind: StmtKind::StateWrite { key: Name { text: key, span: key_span }, value }, span: at, after: self.held(self.waited()) });
         }
         Ok(())
     }
@@ -2483,6 +2485,25 @@ impl<'s, 't> Reader<'s, 't> {
         self.after_guard().or_else(|| self.waited())
     }
 
+    /// Past an action's first wait, that none of the returns before it was taken (`!t1 && …`):
+    /// none where there is no wait, or no return before it.
+    fn not_returned(&self) -> Option<Expr> {
+        let w = self.frame.waited.as_ref()?;
+        conj(self.frame.guards.iter().take(w.guards).filter_map(|g| if let Guard::Live(c) = g { Some(c.clone()) } else { None }))
+    }
+
+    /// What a write waits for (`after`), held to the returns before the first wait not taken
+    /// ([`Self::not_returned`]). Tied to the wait alone, a write asked for the wait in a run that
+    /// had answered before it (a guard reads its test first, and an `after` was read whatever the
+    /// returns did), and the server parked that run there, its answer given.
+    fn held(&self, after: Option<Expr>) -> Option<Expr> {
+        let after = after?;
+        Some(match self.not_returned() {
+            Some(l) => when(after, l),
+            None => after,
+        })
+    }
+
     /// A write's value under the conditions it runs under: absent, so not written, when they
     /// don't hold.
     fn guarded(&self, value: Expr) -> Expr {
@@ -2497,11 +2518,27 @@ impl<'s, 't> Reader<'s, 't> {
     fn trigger(&self, at: Span) -> Option<Expr> {
         // Past a wait, its value where the statement is: what is made of it is the statement's.
         let after = self.after_guard().or_else(|| self.waited().map(|w| Expr { span: at, ..w }));
-        match (after, self.live()) {
+        // The returns before the first wait not taken hold the rest from outside, as they hold a
+        // write ([`Self::held`]), not joined with the branch's conditions: `if (c) send(…)` past
+        // the wait is then the flow `const g = c ? go : undefined` and `if (g !== undefined)
+        // send(…)` is, the form the printer writes it in. Joined (`when(go, L && c)` against
+        // `when(when(go, c), L)`), the text read back as another flow (found by print.rs's
+        // `same_actions`, 2026-11-20).
+        let first = self.frame.waited.as_ref().map_or(0, |w| w.guards);
+        let inner = conj(self.frame.guards.iter().enumerate().filter_map(|(i, g)| match g {
+            Guard::Live(_) if i < first => None,
+            Guard::Branch(c) | Guard::Live(c) | Guard::Arrived(c) => Some(c.clone()),
+            Guard::After(_) => None,
+        }));
+        let made = match (after, inner) {
             (Some(x), Some(c)) => Some(when(x, c)),
             (Some(x), None) => Some(x),
             (None, Some(c)) => Some(when(Expr { kind: ExprKind::Bool(true), span: at }, c)),
             (None, None) => None,
+        };
+        match self.not_returned() {
+            Some(l) => Some(when(made.unwrap_or(Expr { kind: ExprKind::Bool(true), span: at }), l)),
+            None => made,
         }
     }
 
@@ -5635,7 +5672,9 @@ const WAIT_ALONE: &str = "an action waits on a line of its own, at the top of it
 /// as written.
 const EARLY_ROW: &str = "An action answers before its first wait with a row of if (test) return value (or return alone) right above the wait, one return to a line: if (order.skip ?? false) return \"skipped\"";
 /// A return before the first wait in another shape.
-const EARLY_FORM: &str = "this may answer before the action's first wait in a shape its text can't show as written: an else, an if inside another, a block holding more than the return, a switch, a try or a throw";
+const EARLY_FORM: &str = "this may answer before the action's first wait in a shape its text can't show as written: an else, an if inside another, a block holding more than the return, a switch or a try";
+/// A throw before the first wait, and what to write instead.
+const EARLY_THROW: &str = "a throw before the action's first wait can't be shown as written: answer the failure in the row instead, if (order.bad ?? false) return { error: \"a bad order\" }, or throw in what starts the action";
 /// A statement between the row and the wait.
 const EARLY_BETWEEN: &str = "this comes between the returns before the action's first wait and the wait: move it above the returns, or after the wait";
 /// A return's test or value that asks something.
@@ -6324,6 +6363,17 @@ fn statements_of<'a, 'b>(s: &'a js::Statement<'b>) -> &'a [js::Statement<'b>] {
 fn plain_return(s: &js::Statement) -> bool {
     let js::Statement::IfStatement(f) = s else { return false };
     f.alternate.is_none() && matches!(statements_of(&f.consequent), [js::Statement::ReturnStatement(_)])
+}
+
+/// Whether a statement throws, itself or in an `if`'s branch or a block (not in a `try`, whose
+/// `catch` may take it): `if (order.bad) throw new Error(…)`.
+fn throws(s: &js::Statement) -> bool {
+    match s {
+        js::Statement::ThrowStatement(_) => true,
+        js::Statement::IfStatement(f) => statements_of(&f.consequent).iter().any(throws) || f.alternate.as_ref().is_some_and(|a| statements_of(a).iter().any(throws)),
+        js::Statement::BlockStatement(b) => b.body.iter().any(throws),
+        _ => false,
+    }
 }
 
 /// A case's statements without the `break` that ends it, and whether one did.
@@ -7460,7 +7510,9 @@ route.post("/n", (req) => {
             ("a block holding more than the return", action("  if (order.skip) {\n    updates.send({ id: order.id })\n    return 1\n  }\n", answer), EARLY_FORM),
             ("a switch", action("  switch (order.kind) {\n    case \"a\":\n      return 1\n    default:\n      break\n  }\n", answer), EARLY_FORM),
             ("a try", action("  try {\n    if (order.skip) return 1\n  } catch {\n    updates.send({ id: order.id })\n  }\n", answer), EARLY_FORM),
-            ("a throw", action("  if (order.bad) throw new Error(\"bad order\")\n", answer), EARLY_FORM),
+            ("a throw", action("  if (order.bad) throw new Error(\"bad order\")\n", answer), EARLY_THROW),
+            ("a throw in a block", action("  if (order.bad) {\n    throw new Error(\"bad order\")\n  }\n", answer), EARLY_THROW),
+            ("a throw after a return", action("  if (order.skip) return 1\n  if (order.bad) throw new Error(\"bad order\")\n", answer), EARLY_THROW),
             ("a block around the row", action("  {\n    if (order.skip) return 1\n  }\n", answer), EARLY_FORM),
             ("a send between", action("  if (order.skip) return 1\n  updates.send({ id: order.id })\n", answer), EARLY_BETWEEN),
             ("a binding between", action("  if (order.skip) return 1\n  const n = order.amount + 1\n", answer), EARLY_BETWEEN),
@@ -7486,6 +7538,11 @@ route.post("/n", (req) => {
             ("three in a row", action("  if (order.skip) return\n  if (order.amount > 100) return \"big\"\n  if (order.amount < 0) return { refused: order.id }\n", answer)),
             ("what asks, above", action("  const known = orders.get(order.id)\n  const open = hooks.get(\"/open\")\n  const huge = big(order)\n  updates.send({ id: order.id })\n  state.asked = order.id\n  if (known.closed ?? false) return known\n  if (open.status !== 200 || huge) return 1\n", answer)),
             ("a key above, another after", action("  state.first = order.id\n  if (order.skip) return 1\n", "  state.m = paid.method\n  return paid.method\n")),
+            // A test the text names (used nowhere else, or read again past the wait), and one
+            // written out twice: print.rs's table prints each back as written.
+            ("a named test", action("  const big = order.amount > 100\n  if (big) return \"needs review\"\n", answer)),
+            ("a named test read again past the wait", action("  const big = order.amount > 100\n  if (big) return \"needs review\"\n", "  return { big, method: paid.method }\n")),
+            ("the same test written twice", action("  if (order.amount > 100) return \"needs review\"\n", "  return { big: order.amount > 100, method: paid.method }\n")),
         ];
         for (case, ts) in &taken {
             if let Err(e) = parse(ts) {
