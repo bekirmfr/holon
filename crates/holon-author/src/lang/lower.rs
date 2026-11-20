@@ -48,6 +48,43 @@ pub struct Lowered {
     pub spans: BTreeMap<String, Span>,
 }
 
+/// The steps of an action's hold: ts.rs `waited_on` binds `waited_N = when(input, has_value(w))`
+/// after its waits, read by nothing (`w` what the wait gave, or past several the list of what each
+/// gave), `has_value(w)` lowered as `same_value(w, w) ?? false`; the guard, its `default`, its
+/// `same_value` and the list, written twice. The text writes the hold by the order of its
+/// statements alone, so it is on no line of the printed text: explain reads what a line gave by
+/// the steps feeding nothing else on it, and on the wait's line the hold would stand for what the
+/// wait gave. Nor is it what the wait's statement does (the graph's row).
+pub(crate) fn wait_holds<'d>(doc: &'d FlowDocument, names: &BTreeMap<String, String>) -> HashSet<&'d str> {
+    let into = |id: &str, input: &str| doc.edges.iter().find(|w| w.target == id && w.input() == input).map(|w| w.source.as_str());
+    let leaf = |id: &str, name: &str| doc.nodes.iter().any(|n| n.id == id && n.data.body == PlacedBody::Primitive && n.data.name == name);
+    let mut holds = HashSet::new();
+    for g in doc.nodes.iter().filter(|n| names.get(&n.id).is_some_and(|b| b.starts_with("waited_")) && leaf(&n.id, "guard")) {
+        // After a return before the first wait, the hold is itself held to the returns not taken:
+        // `when(<the hold>, c)`, with the steps of `c` that feed nothing else.
+        let mut g = g.id.as_str();
+        if let Some(inner) = into(g, "value").filter(|v| leaf(v, "guard") && into(v, "cond").is_some_and(|d| leaf(d, "default")))
+            && into(g, "cond").is_some_and(|d| !leaf(d, "default"))
+        {
+            holds.insert(g);
+            let mut todo: Vec<&str> = into(g, "cond").into_iter().collect();
+            while let Some(id) = todo.pop() {
+                let reads: Vec<&str> = doc.edges.iter().filter(|w| w.source == id).map(|w| w.target.as_str()).collect();
+                if !holds.contains(id) && !reads.is_empty() && reads.iter().all(|r| holds.contains(r)) {
+                    holds.insert(id);
+                    todo.extend(doc.edges.iter().filter(|w| w.target == id).map(|w| w.source.as_str()));
+                }
+            }
+            g = inner;
+        }
+        let Some(test) = into(g, "cond").filter(|d| leaf(d, "default")) else { continue };
+        let Some(same) = into(test, "value").filter(|s| leaf(s, "same_value")) else { continue };
+        holds.extend([g, test, same]);
+        holds.extend(["a", "b"].iter().filter_map(|port| into(same, port).filter(|l| leaf(l, "list"))));
+    }
+    holds
+}
+
 /// The source a `js` node's engine compiles: `(inputs) => { body }`, the declared names and the
 /// body verbatim, so the body's line 1 is the statement's header line in the file.
 pub fn js_source(def: &JsDef) -> String {
@@ -939,7 +976,19 @@ impl<'a> Lowerer<'a> {
             self.tie(&v, id, after.span)?;
         }
         if let Some(name) = held {
-            self.hold(name, v, after.span)?;
+            // A guard passes its value on only when its condition is `true`. What `after` names
+            // is that where it is made of conditions, `when(true, c)`; anything else (what a wait
+            // gave, the `x` of an `if (x !== undefined)`) is tested for having a value, or the
+            // value would never be made.
+            let conditions = matches!(&after.kind, ExprKind::Binary { op: BinOp::When, lhs, .. } if matches!(lhs.kind, ExprKind::Bool(true)));
+            let cond = if conditions {
+                v
+            } else {
+                // `same_value(v, v) ?? false`, as ts.rs `has_value` writes it.
+                let same = self.node_with("same_value", &[], &[("a", v.clone()), ("b", v)], after.span)?;
+                self.node_with("default", &[("value".into(), "false".into()), ("type".into(), "Boolean".into())], &[("value", same)], after.span)?
+            };
+            self.hold(name, cond, after.span)?;
         }
         Ok(())
     }

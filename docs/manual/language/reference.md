@@ -1057,7 +1057,27 @@ misled, the compiler refuses instead.
 - **Waiting.** `await event(name)` parks the run, an action's: a route answers and is done, and
   starts the action that waits by calling it without `await`. A later request to a route with
   `{ resumes: name }`, carrying the token, delivers the event and the run continues. `expires`
-  sets how long it waits.
+  sets how long it waits. What is written after the wait comes after it, as in JavaScript: a
+  write, a send, a request, a call or a start of another action is asked for only once the wait
+  is answered, never before, even one that uses nothing of it, and the action answers after its
+  waits. For now, a wait that runs out gives `{ expired: true }`, so such a step is made then too:
+  return on `paid.expired ?? false` before a step only an answer should make. What it reads there is the state as the run found it when it began, until each part
+  of a run is saved as it parks. A wait stands on a line of its own at the top of the action's
+  body, `const paid = await event(…)`. A `return` before the first wait may answer without it
+  (`if (order.skip ?? false) return "skipped"`), and then nothing waits. Such returns are a row
+  right above the wait, one `if (test) return value` (or `return` alone) to a line, tested on
+  what the run already has; anything may come above the row. A test may be a name made above the
+  row (`const big = order.amount > 100`, then `if (big) return "needs review"`), and read again
+  after the wait. A test with no value (a field that wasn't sent, with no `??`) ends the run
+  there: it answers nothing and waits for nothing. Another shape there (an `else`, an `if` inside
+  another, a `switch`, a `try`, a statement between the row and the wait, or a test that calls a
+  function, makes a request or reads state or a collection) is refused, and so is a state key
+  written above the row and again after the wait. So is a `throw` there: answer the failure in
+  the row instead, `if (order.bad ?? false) return { error: "a bad order" }`, or throw in what
+  starts the action. In an `if`, a `try`, after a `return`
+  between two waits or inside another expression a wait is refused. Two waits in a row still park together: the run waits
+  at both from the start, lists them in the order written, and what follows the second waits for
+  both, whichever is answered first.
 - **People decide an approval.** `await approval(name, { people: 2 })` parks the run as an event
   does, but nothing the flow hands out resumes it: it has no token, and a route `{ resumes: name }`
   that names it is refused. People signed in to Holon decide it, and who is part of what the

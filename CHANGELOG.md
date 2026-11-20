@@ -10,6 +10,28 @@
   read instead of showing it as empty. `holon action` printing such a value, `holon replay` on such
   a flow, an agent's save of a flow and the admin lists (`holon database`, `feed`, `folder`,
   `mail`, `queue`, `store`) read the same way.
+- **In an action, what is written after a wait now comes after it.** A write, a send, a request,
+  a call or a start of another action written after `await event(…)` or `await approval(…)` is
+  asked for only once the wait is answered, even one that uses nothing of the wait. Before, such a
+  step could be made while the run still waited: an action that waited for a payment, then called
+  a host with only what it was first sent, called the host before anyone paid. The action's
+  answer comes after its waits too. For now, a wait that runs out gives `{ expired: true }`, so such a
+  step is made then too: return on `paid.expired ?? false` before a step only an answer should
+  make. What a step reads after a wait is still the state as the run found it when it began. A
+  wait now stands on a line of its own at the top of the action's body (`const paid = await
+  event(…)`). A `return` before the first wait still answers without it, and then nothing waits.
+  Such returns are a row of `if (test) return value` right above the wait, which the canvas, the
+  step view and both editors show as written; a test may be a name made above the row and read
+  again after the wait, and a test with no value ends the run there, answering nothing and
+  waiting for nothing. Another shape there (an `else`, an `if` inside another, a `switch`, a
+  `try`, a statement between the row and the wait, a test that calls a function or reads state)
+  is refused, saying so, and so is a state key written above the row and again after the wait.
+  A `throw` there is refused too: answer the failure in the row, or throw in what starts the
+  action (rc.36 took `if (order.bad) throw …` above a wait). A wait in an `if`, a `try`, after
+  a `return` between two waits, or inside another expression is refused, saying so. Two waits in a row still wait together from
+  the start, listed in the order written; what follows the second waits for both, whichever is
+  answered first. A flow that waits
+  compiles to a new version; deploying it again asks for no new permission.
 - **A request's headers sent to the control port a byte at a time are cut off after 30
   seconds.** The server waited for as long as each byte came within a minute of the last, so
   headers sent slowly enough held their connection for as long as their sender liked. A request's

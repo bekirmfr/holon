@@ -346,6 +346,9 @@ enum Src {
 /// A wire within a block: its source, and the node and input it feeds.
 type BlockWire = (Src, String, String);
 
+/// Steps the text leaves out, each with the step whose line it is on, if any (`place_beside`).
+type Beside = Vec<(String, Option<String>)>;
+
 /// A connected set of nodes printed as one block: a handler's, or a function's.
 struct Group<'g> {
     nodes: Vec<&'g Node>,
@@ -356,11 +359,14 @@ struct Group<'g> {
     order: Vec<String>,
     /// The nodes tied to their block's trigger, which the text doesn't write.
     block_tied: HashSet<String>,
+    /// The nodes left out that the text writes with another: each, with the node whose line it
+    /// is on (`place_beside`).
+    beside: Beside,
 }
 
 impl<'g> Group<'g> {
     fn new(nodes: Vec<&'g Node>, wires: Vec<BlockWire>, outs: Vec<(String, String, String)>) -> Group<'g> {
-        let (nodes, wires, block_tied) = without_block_ties(nodes, wires);
+        let (nodes, wires, block_tied, beside) = without_block_ties(nodes, wires);
         let ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
         let mut incoming = HashMap::new();
         let mut consumers: HashMap<(String, String), usize> = HashMap::new();
@@ -403,7 +409,7 @@ impl<'g> Group<'g> {
                 }
             }
         }
-        Group { nodes, incoming, consumers, outs, order, block_tied }
+        Group { nodes, incoming, consumers, outs, order, block_tied, beside }
     }
 
     fn node(&self, id: &str) -> &'g Node {
@@ -429,7 +435,7 @@ impl<'g> Group<'g> {
 /// function's own `trigger`, or the pass-through the lowering places when that feeds several,
 /// which goes too, with its `true`). What's left on a trigger is written in an
 /// `if (x !== undefined)`. Also the nodes whose ties went.
-fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, Vec<BlockWire>, HashSet<String>) {
+fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, Vec<BlockWire>, HashSet<String>, Beside) {
     let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), *n)).collect();
     // The last wire into an input is the one that counts, as `Group` keeps it: a holon's
     // boundary is listed as its node first, then as the port.
@@ -461,10 +467,489 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, 
             }
         }
     }
+    // The hold ts.rs `waited_on` binds after the waits in an action's body, which nothing reads:
+    // `when(t, has_value(w))`, `has_value(w)` lowered as `same_value(w, w) ?? false`, `t` the
+    // block's trigger and `w` what the wait gave, or past several the list of what each gave (as
+    // `same_value([a, b], [a, b])`, the list written twice). It keeps what follows each wait in the
+    // action; the text writes that by order alone, so it goes, with its test.
+    let feeds = |id: &str| wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id: from, .. } if from == id)).count();
+    let leaf = |id: &str, name: &str| by_id.get(id).is_some_and(|n| n.data.body == PlacedBody::Primitive && n.data.name == name);
+    let waits = |src: &Src| matches!(src, Src::Node { id, .. } if leaf(id, "await") || leaf(id, "approval"));
+    // A list of what several waits gave, read by the hold's test alone: its id and its items in
+    // the order of its inputs.
+    let list_of_waits = |src: &Src| -> Option<(String, Vec<Src>)> {
+        let Src::Node { id, .. } = src else { return None };
+        let mut items: Vec<(&String, &Src)> = wires.iter().filter(|(_, to, _)| to == id).map(|(s, _, input)| (input, s)).collect();
+        items.sort_by(|x, y| x.0.cmp(y.0));
+        (leaf(id, "list") && feeds(id) == 1 && items.len() >= 2 && items.iter().all(|(_, s)| waits(s))).then(|| (id.clone(), items.into_iter().map(|(_, s)| s.clone()).collect()))
+    };
+    for n in nodes.iter().filter(|n| leaf(&n.id, "guard") && feeds(&n.id) == 0) {
+        let hold = || -> Option<Vec<String>> {
+            let base = into(&n.id, "value")?;
+            let Some(Src::Node { id: held, .. }) = into(&n.id, "cond") else { return None };
+            let no = by_id.get(held.as_str()).is_some_and(|d| d.param("type") == "Boolean" && d.param("value") == "false");
+            let Some(Src::Node { id: same, .. }) = into(held, "value") else { return None };
+            let (a, b) = (into(same, "a")?, into(same, "b")?);
+            let parts = leaf(held, "default") && no && feeds(held) == 1 && leaf(same, "same_value") && feeds(same) == 1;
+            let lists = match (list_of_waits(a), list_of_waits(b)) {
+                (Some((la, xs)), Some((lb, ys))) if la != lb && xs == ys => Some([la, lb]),
+                _ => None,
+            };
+            let tests = (a == b && waits(a)) || lists.is_some();
+            (tie(base, TRIGGER) && parts && tests).then(|| [held.clone(), same.clone()].into_iter().chain(lists.into_iter().flatten()).collect())
+        };
+        if let Some(parts) = hold() {
+            gone.insert(n.id.clone());
+            gone.extend(parts);
+        }
+    }
+    // What follows several waits is tied to the list of what each gave, in order (ts.rs
+    // `Reader::waited`): a trigger, the answer's test `same_value([a, b], [a, b]) ?? false` (the
+    // list written twice) or a value's held so, `same_value(l, l)`. The text writes it after the
+    // last wait, by order alone, as it writes what follows one wait: each read of such a list is
+    // read off the last wait, and the list goes.
+    let listed = |id: &str| -> Option<Vec<Src>> {
+        let mut items: Vec<(&String, &Src)> = wires.iter().filter(|(_, to, _)| to == id).map(|(s, _, input)| (input, s)).collect();
+        items.sort_by(|x, y| x.0.cmp(y.0));
+        (leaf(id, "list") && !gone.contains(id) && items.len() >= 2 && items.iter().all(|(_, s)| waits(s))).then(|| items.into_iter().map(|(_, s)| s.clone()).collect())
+    };
+    let tests_lists = |same: &str| match (into(same, "a"), into(same, "b")) {
+        (Some(Src::Node { id: a, .. }), Some(Src::Node { id: b, .. })) => leaf(same, "same_value") && listed(a).is_some() && listed(a) == listed(b),
+        _ => false,
+    };
+    let mut last_of: HashMap<String, Src> = HashMap::new();
+    for n in &nodes {
+        let Some(items) = listed(&n.id) else { continue };
+        let reads: Vec<&BlockWire> = wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id, .. } if *id == n.id)).collect();
+        if !reads.is_empty() && reads.iter().all(|(_, to, input)| input == TRIGGER || tests_lists(to)) {
+            last_of.insert(n.id.clone(), items.last().expect("two or more").clone());
+        }
+    }
+    gone.extend(last_of.keys().cloned());
+    // Each such list is on the line of the step that read it (`place_beside`).
+    let beside: Beside = last_of.keys().map(|l| (l.clone(), wires.iter().find(|(s, _, _)| matches!(s, Src::Node { id, .. } if id == l)).map(|(_, to, _)| to.clone()))).collect();
+    let wires: Vec<BlockWire> = wires
+        .iter()
+        .map(|(s, to, input)| match s {
+            Src::Node { id, .. } if last_of.contains_key(id) => (last_of[id].clone(), to.clone(), input.clone()),
+            _ => (s.clone(), to.clone(), input.clone()),
+        })
+        .collect();
     let touches_gone = |(src, to, _): &BlockWire| gone.contains(to) || matches!(src, Src::Node { id, .. } if gone.contains(id));
     let kept: Vec<BlockWire> = wires.iter().filter(|w| !tie(&w.0, &w.2) && !touches_gone(w)).cloned().collect();
-    let tied: HashSet<String> = wires.iter().filter(|w| tie(&w.0, &w.2)).map(|w| w.1.clone()).collect();
-    (nodes.into_iter().filter(|n| !gone.contains(&n.id)).collect(), kept, tied)
+    // What a wait's value triggers is made when the run reaches it past the wait, as what the
+    // block's trigger feeds is when the run starts.
+    let tied: HashSet<String> = wires.iter().filter(|w| tie(&w.0, &w.2) || (w.2 == TRIGGER && waits(&w.0))).map(|w| w.1.clone()).collect();
+    (nodes.into_iter().filter(|n| !gone.contains(&n.id)).collect(), kept, tied, beside)
+}
+
+/// Whether an action's body answers before its first wait: its hold (ts.rs `waited_on`) is held to
+/// the returns not taken, a guard read by nothing whose test isn't the hold's and whose value is
+/// the hold, `when(<input>, has_value(w))`. The text says that with a row of `if (test) return
+/// value` right above the wait ([`early_answers`]).
+fn returns_before_a_wait(nodes: &[&Node], wires: &[BlockWire]) -> bool {
+    let leaf = |id: &str, name: &str| nodes.iter().any(|n| n.id == id && n.data.body == PlacedBody::Primitive && n.data.name == name);
+    let into = |to: &str, input: &str| {
+        wires.iter().rev().find(|(_, t, i)| t == to && i == input).and_then(|(s, _, _)| match s {
+            Src::Node { id, .. } => Some(id.as_str()),
+            Src::In(_) => None,
+        })
+    };
+    let read = |id: &str| wires.iter().any(|(s, _, _)| matches!(s, Src::Node { id: from, .. } if from == id));
+    let hold = |h: &str| {
+        leaf(h, "guard")
+            && into(h, "cond").is_some_and(|d| leaf(d, "default") && into(d, "value").is_some_and(|s| leaf(s, "same_value") && into(s, "a").is_some_and(|a| leaf(a, "await") || leaf(a, "approval") || leaf(a, "list"))))
+    };
+    nodes.iter().any(|g| leaf(&g.id, "guard") && !read(&g.id) && into(&g.id, "cond").is_some_and(|c| !leaf(c, "default")) && into(&g.id, "value").is_some_and(hold))
+}
+
+/// What an action's body answers before its first wait, taken out of its graph: the rest prints as
+/// an action that waits, and each answer is written back as `if (test) return value` right above
+/// the wait, the one form ts.rs reads there (`early_row`).
+///
+/// ts.rs writes such a return in several places, each a plain shape of `t`, the return's test (a
+/// condition bound under a hidden name, which the text can't read again), and `!t` (`!t1 && !t2 &&
+/// …` past several, `L` below), what holds where none was taken:
+/// - the answer, `t ? v : (<the rest> when !t)`, lowered `coalesce(guard(t, v), guard(!(t ?? false),
+///   guard(!t, <the rest>)))`; a `return` with no value, `<the rest> when !t`; the rest the next
+///   answer's, the last the waited answer (`waited_answer`);
+/// - the hold, `when(<the hold>, L)`;
+/// - a call's trigger past the wait, `when(<the wait>, L)`, joined with its branch's conditions
+///   (`L && c`);
+/// - a value written, `when(v, L)`, and a key written again, `L ? v : <before>`.
+///
+/// Each is taken back to what the text without the returns gives (`L` dropped; `L ? v : …` is
+/// `v`, the value before it written nowhere: ts.rs refuses a key written above the row and again
+/// below it), and what is taken out goes on the line of what read it: the return's own step, `v`
+/// where `t` holds, on its `if`'s, the answer's on the last `return`'s, the hold's on none. Anything
+/// that still reads `t` reads a value the text names (`const big = …`, `if (big) return …`); whether
+/// the whole is a flow the text writes, the action read back from its text says ([`same_actions`]).
+struct EarlyAnswers {
+    /// A stand-in step for each `if (test) return value`, in the order written (`cond` its test,
+    /// `value` its value, none for `return` alone), with the step that gives the value where the
+    /// test holds.
+    stand_ins: Vec<(Node, Option<String>)>,
+    /// A branch's `and` that had the returns not taken gathered into it, with what it tests alone.
+    remade: Vec<Node>,
+    wires: Vec<BlockWire>,
+    /// The steps taken out, each with the step on whose line it is written (none: on no line).
+    gone: Beside,
+    /// The first wait: the stand-ins go just before it, so the row is written there.
+    before: String,
+}
+
+/// A stand-in's template: no step of the flow's, only where an `if (test) return value` is written.
+/// Its name holds a space, which no leaf's, template's or function's name does, and each stand-in
+/// is known by its own id (made fresh against the flow's ids), never by how an id starts.
+const EARLY_RETURN: &str = "early return";
+
+/// Each step the text leaves out (`gone`) put on the statement of the step it goes with, so it is
+/// on that line: explain reads what a line did by the steps on it. One that goes with none is on
+/// no line.
+fn place_beside(body: &mut [Stmt], gone: &[(String, Option<String>)]) {
+    fn find<'s>(body: &'s mut [Stmt], id: &str) -> Option<&'s mut Stmt> {
+        for s in body.iter_mut() {
+            if s.nodes.iter().any(|n| n == id) {
+                return Some(s);
+            }
+            if let Some(k) = find(&mut s.kids, id) {
+                return Some(k);
+            }
+        }
+        None
+    }
+    for (id, anchor) in gone {
+        if let Some(s) = anchor.as_deref().and_then(|a| find(body, a)) {
+            s.nodes.push(id.clone());
+        }
+    }
+}
+
+fn early_answers(nodes: &[&Node], wires: &[BlockWire]) -> Result<EarlyAnswers, String> {
+    let ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let wires: Vec<BlockWire> = wires.iter().filter(|(_, to, _)| ids.contains(to.as_str())).cloned().collect();
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), *n)).collect();
+    let leaf = |id: &str, name: &str| by_id.get(id).is_some_and(|n| n.data.body == PlacedBody::Primitive && n.data.name == name);
+    let into = |to: &str, input: &str| wires.iter().rev().find(|(_, t, i)| t == to && i == input).map(|(s, _, _)| s.clone());
+    let node_into = |to: &str, input: &str| match into(to, input) {
+        Some(Src::Node { id, .. }) => Some(id),
+        _ => None,
+    };
+    let readers = |id: &str| -> Vec<String> { wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id: f, .. } if f == id)).map(|(_, to, _)| to.clone()).collect() };
+    let once = |id: &str| readers(id).len() == 1;
+    let no = |id: &str| leaf(id, "default") && by_id[id].param("type") == "Boolean" && by_id[id].param("value") == "false";
+    let waits = |s: &Src| matches!(s, Src::Node { id, .. } if leaf(id, "await") || leaf(id, "approval"));
+    let items = |id: &str| -> Vec<Src> {
+        let mut xs: Vec<(String, Src)> = wires.iter().filter(|(_, to, _)| to == id).map(|(s, _, i)| (i.clone(), s.clone())).collect();
+        xs.sort_by(|a, b| a.0.cmp(&b.0));
+        xs.into_iter().map(|(_, s)| s).collect()
+    };
+    let waits_list = |s: &Src| matches!(s, Src::Node { id, .. } if leaf(id, "list") && { let xs = items(id); xs.len() >= 2 && xs.iter().all(&waits) });
+    // `when(value, has_value(w))`, `w` what the waits gave: the answer once they are answered.
+    let waited = |id: &str| {
+        leaf(id, "guard")
+            && node_into(id, "cond").is_some_and(|d| {
+                no(&d)
+                    && node_into(&d, "value").is_some_and(|s| {
+                        leaf(&s, "same_value")
+                            && match (into(&s, "a"), into(&s, "b")) {
+                                (Some(a), Some(b)) if a == b => waits(&a),
+                                (Some(a), Some(b)) => match (&a, &b) {
+                                    (Src::Node { id: la, .. }, Src::Node { id: lb, .. }) => waits_list(&a) && waits_list(&b) && items(la) == items(lb),
+                                    _ => false,
+                                },
+                                _ => false,
+                            }
+                    })
+            })
+    };
+    let respond = nodes.iter().find(|n| n.is_template("respond")).ok_or("it has no answer")?;
+    let before = nodes.iter().find(|n| leaf(&n.id, "await") || leaf(&n.id, "approval")).ok_or("it has no wait")?.id.clone();
+    // The answers, the outermost first: each its test, its value and the step giving it there.
+    let mut rows: Vec<(Src, Option<Src>, Option<String>)> = Vec::new();
+    let mut chain: Vec<String> = Vec::new();
+    let mut at = into(&respond.id, "body").ok_or("its answer has no value")?;
+    loop {
+        let Src::Node { id: c, .. } = at.clone() else { return Err("its answer isn't one the text writes".into()) };
+        if waited(&c) {
+            break;
+        }
+        let not_of = |id: &str| -> Option<Src> { (leaf(id, "not") && once(id)).then(|| into(id, "v")).flatten() };
+        if leaf(&c, "coalesce") && once(&c) {
+            let (Some(g1), Some(g2)) = (node_into(&c, "a"), node_into(&c, "b")) else { return Err("its answer isn't one the text writes".into()) };
+            let (Some(t), Some(v)) = (into(&g1, "cond"), into(&g1, "value")) else { return Err("its answer isn't one the text writes".into()) };
+            let n2 = node_into(&g2, "cond");
+            let d2 = n2.as_deref().and_then(|n| (leaf(n, "not") && once(n)).then(|| node_into(n, "v")).flatten());
+            let g3 = node_into(&g2, "value");
+            let n3 = g3.as_deref().and_then(|g| node_into(g, "cond"));
+            let shaped = leaf(&g1, "guard") && once(&g1) && leaf(&g2, "guard") && once(&g2)
+                && d2.as_deref().is_some_and(|d| no(d) && once(d) && into(d, "value").as_ref() == Some(&t))
+                && g3.as_deref().is_some_and(|g| leaf(g, "guard") && once(g))
+                && n3.as_deref().is_some_and(|n| not_of(n).as_ref() == Some(&t));
+            if !shaped {
+                return Err("its answer isn't one the text writes".into());
+            }
+            let (n2, d2, g3, n3) = (n2.expect("shaped"), d2.expect("shaped"), g3.expect("shaped"), n3.expect("shaped"));
+            at = into(&g3, "value").ok_or("its answer isn't one the text writes")?;
+            rows.push((t, Some(v), Some(g1)));
+            chain.extend([c, g2, n2, d2, g3, n3]);
+            continue;
+        }
+        if leaf(&c, "guard") && once(&c)
+            && let Some(n) = node_into(&c, "cond")
+            && let Some(t) = not_of(&n)
+        {
+            at = into(&c, "value").ok_or("its answer isn't one the text writes")?;
+            rows.push((t, None, None));
+            chain.extend([c, n]);
+            continue;
+        }
+        return Err("its answer isn't one the text writes".into());
+    }
+    if rows.is_empty() {
+        return Err("its answer doesn't choose before the wait".into());
+    }
+    let tests: Vec<Src> = rows.iter().map(|(t, _, _)| t.clone()).collect();
+    let k = tests.len();
+    // An `and`'s operands, in the order written.
+    let operands = |id: &str| -> Option<Vec<Src>> { by_id[id].data.inputs.iter().map(|p| into(id, &p.name)).collect() };
+    // `!t1`, `!t2`, … over the tests in order: their steps.
+    let nots = |xs: &[Src]| -> Option<Vec<String>> {
+        xs.iter()
+            .zip(&tests)
+            .map(|(s, t)| match s {
+                Src::Node { id, .. } if leaf(id, "not") && into(id, "v").as_ref() == Some(t) => Some(id.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    // `L`, `!t1 && … && !tk`, as ts.rs joins the returns not taken: `!t1` alone, else one `and`
+    // (lower gathers a chain of `&&` into one step). Its steps.
+    let l = |s: &Src| -> Option<Vec<String>> {
+        let Src::Node { id, .. } = s else { return None };
+        if k == 1 {
+            return nots(std::slice::from_ref(s));
+        }
+        let xs = operands(id).filter(|xs| leaf(id, "and") && xs.len() == k)?;
+        let mut steps = nots(&xs)?;
+        steps.push(id.clone());
+        Some(steps)
+    };
+    let mut instead: HashMap<String, Src> = HashMap::new();
+    let mut taken: HashSet<String> = chain.iter().cloned().chain(rows.iter().filter_map(|(_, _, g)| g.clone())).collect();
+    instead.insert(chain[0].clone(), at.clone());
+    let named = |name: &str| -> Vec<String> { nodes.iter().filter(|n| leaf(&n.id, name)).map(|n| n.id.clone()).collect() };
+    // `L ? v : <before>`, a key written again: `coalesce(guard(L, v), guard(!(L ?? false), <before>))`.
+    for id in named("coalesce") {
+        if taken.contains(&id) {
+            continue;
+        }
+        let n = by_id[id.as_str()];
+        let (Some(ga), Some(gb)) = (node_into(&n.id, "a"), node_into(&n.id, "b")) else { continue };
+        let Some(la) = into(&ga, "cond").and_then(|c| l(&c)) else { continue };
+        let Some(nb) = node_into(&gb, "cond").filter(|x| leaf(x, "not")) else { continue };
+        let Some(db) = node_into(&nb, "v").filter(|d| no(d)) else { continue };
+        let Some(lb) = into(&db, "value").and_then(|c| l(&c)) else { continue };
+        if !(leaf(&ga, "guard") && leaf(&gb, "guard") && once(&ga) && once(&gb) && once(&nb) && once(&db)) {
+            continue;
+        }
+        instead.insert(n.id.clone(), into(&ga, "value").ok_or("a value written isn't one the text writes")?);
+        taken.extend([n.id.clone(), ga, gb, nb, db]);
+        taken.extend(la);
+        taken.extend(lb);
+    }
+    // `L && c`, a branch's condition past the returns: `c`. Gathered with it into one `and`
+    // (`!t1 && … && !tk && x && y`), the `and` is kept with what the branch tests alone.
+    let mut remade: Vec<(Node, Vec<BlockWire>)> = Vec::new();
+    for id in named("and") {
+        if taken.contains(&id) {
+            continue;
+        }
+        let Some(xs) = operands(&id) else { continue };
+        let (steps, rest) = match xs.first().and_then(&l) {
+            Some(steps) => (steps, xs[1..].to_vec()),
+            None if k > 1 && xs.len() > k => match nots(&xs[..k]) {
+                Some(steps) => (steps, xs[k..].to_vec()),
+                None => continue,
+            },
+            None => continue,
+        };
+        if rest.is_empty() {
+            continue;
+        }
+        taken.extend(steps);
+        if let [c] = rest.as_slice() {
+            instead.insert(id.clone(), c.clone());
+            taken.insert(id);
+            continue;
+        }
+        let mut and = by_id[id.as_str()].clone();
+        and.data.inputs.truncate(rest.len());
+        let ws = rest.into_iter().zip(&and.data.inputs).map(|(s, p)| (s, id.clone(), p.name.clone())).collect();
+        remade.push((and, ws));
+    }
+    // `when(x, L)`: `x`. The hold among them, read by nothing.
+    for id in named("guard") {
+        if taken.contains(&id) {
+            continue;
+        }
+        let Some(steps) = into(&id, "cond").and_then(|c| l(&c)) else { continue };
+        instead.insert(id.clone(), into(&id, "value").ok_or("a value isn't one the text writes")?);
+        taken.insert(id);
+        taken.extend(steps);
+    }
+    let resolve = |s: &Src| {
+        let mut s = s.clone();
+        for _ in 0..=instead.len() {
+            match &s {
+                Src::Node { id, .. } if instead.contains_key(id) => s = instead[id].clone(),
+                _ => break,
+            }
+        }
+        s
+    };
+    let mut kept: Vec<BlockWire> = wires
+        .iter()
+        .filter(|(_, to, _)| !taken.contains(to) && !remade.iter().any(|(n, _)| n.id == *to))
+        .chain(remade.iter().flat_map(|(_, ws)| ws))
+        .map(|(s, to, i)| (resolve(s), to.clone(), i.clone()))
+        .collect();
+    let mut stand_ins = Vec::new();
+    // Each stand-in's id, one no step of the flow's has.
+    let stand_in_ids: Vec<String> = (0..rows.len())
+        .map(|i| {
+            let mut id = format!("{EARLY_RETURN} {i}");
+            while ids.contains(id.as_str()) {
+                id.push('\'');
+            }
+            id
+        })
+        .collect();
+    for (i, (t, v, g)) in rows.iter().enumerate() {
+        let mut inputs = vec![WPort::new("cond", WType::Boolean)];
+        inputs.extend(v.as_ref().map(|_| WPort::new("value", WType::Any)));
+        let id = stand_in_ids[i].clone();
+        kept.push((t.clone(), id.clone(), "cond".into()));
+        if let Some(v) = v {
+            kept.push((v.clone(), id.clone(), "value".into()));
+        }
+        stand_ins.push((Node::placed(&id, Default::default(), crate::canvas::NodeData::new(EARLY_RETURN, PlacedBody::Template, inputs, vec![], vec![])), g.clone()));
+    }
+    // What fed only what was taken out goes too: a key's value before it was written again.
+    loop {
+        let gone: Vec<String> = nodes
+            .iter()
+            .filter(|n| !taken.contains(&n.id) && n.id != respond.id && !leaf(&n.id, "await") && !leaf(&n.id, "approval") && n.data.outputs.iter().all(|o| o.ty != WType::Effect))
+            .filter(|n| {
+                let read: Vec<&BlockWire> = wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id, .. } if *id == n.id)).collect();
+                !read.is_empty() && read.iter().all(|(_, to, _)| taken.contains(to)) && !kept.iter().any(|(s, _, _)| matches!(s, Src::Node { id, .. } if *id == n.id))
+            })
+            .map(|n| n.id.clone())
+            .collect();
+        if gone.is_empty() {
+            break;
+        }
+        kept.retain(|(_, to, _)| !gone.contains(to));
+        taken.extend(gone);
+    }
+    // What is taken out is read by nothing kept: anything else is a shape the text can't write. A
+    // test read again (`const big = …`, `if (big) return …`, `big` past the wait) is a value the
+    // text names, and prints so; whether what reads it is one the text writes, the action read
+    // back says ([`same_actions`]).
+    if kept.iter().any(|(s, _, _)| matches!(s, Src::Node { id, .. } if taken.contains(id))) {
+        return Err("a step it takes apart is read elsewhere".into());
+    }
+    if tests.iter().any(|t| !matches!(t, Src::Node { .. })) {
+        return Err("its test isn't a step".into());
+    }
+    // Each step taken out on the line of what read it, through what was taken out with it.
+    let mut gone = Vec::new();
+    for id in nodes.iter().map(|n| &n.id).filter(|id| taken.contains(*id)) {
+        let anchor = if let Some(i) = rows.iter().position(|(_, _, g)| g.as_ref() == Some(id)) {
+            Some(stand_in_ids[i].clone())
+        } else if chain.contains(id) {
+            Some(respond.id.clone())
+        } else {
+            let mut seen = HashSet::new();
+            let mut todo = readers(id);
+            let mut found = None;
+            while let Some(r) = todo.pop() {
+                if !seen.insert(r.clone()) {
+                    continue;
+                }
+                if !taken.contains(&r) {
+                    found = Some(r);
+                    break;
+                }
+                todo.extend(readers(&r));
+            }
+            found
+        };
+        gone.push((id.clone(), anchor));
+    }
+    let remade = remade.into_iter().map(|(n, _)| n).collect();
+    Ok(EarlyAnswers { stand_ins, remade, wires: kept, gone, before })
+}
+
+impl EarlyAnswers {
+    /// The handler's nodes without what was taken out, the stand-ins just before the first wait.
+    fn nodes<'a>(&'a self, nodes: Vec<&'a Node>) -> Vec<&'a Node> {
+        let mut kept: Vec<&Node> = nodes.into_iter().filter(|n| !self.gone.iter().any(|(id, _)| *id == n.id)).map(|n| self.remade.iter().find(|r| r.id == n.id).unwrap_or(n)).collect();
+        let at = kept.iter().position(|n| n.id == self.before).unwrap_or(kept.len());
+        for (k, (s, _)) in self.stand_ins.iter().enumerate() {
+            kept.insert(at + k, s);
+        }
+        kept
+    }
+
+    /// The row written right above the first wait, in the order written: each stand-in after what
+    /// it reads, which the order by node alone may put past the wait (a value's literal, made
+    /// after the wait's step).
+    fn above_the_wait(&self, g: &mut Group<'_>) {
+        let waits = |id: &str| g.nodes.iter().any(|n| n.id == id && n.data.body == PlacedBody::Primitive && matches!(n.data.name.as_str(), "await" | "approval"));
+        let Some(at) = g.order.iter().position(|id| waits(id)) else { return };
+        let reads = |id: &str| -> Vec<String> {
+            g.incoming
+                .iter()
+                .filter(|((to, _), _)| to == id)
+                .filter_map(|(_, s)| match s {
+                    Src::Node { id, .. } => Some(id.clone()),
+                    Src::In(_) => None,
+                })
+                .collect()
+        };
+        let mut order: Vec<String> = g.order[..at].to_vec();
+        let mut placed: HashSet<String> = order.iter().cloned().collect();
+        for (s, _) in &self.stand_ins {
+            let mut need: HashSet<String> = HashSet::new();
+            let mut todo = vec![s.id.clone()];
+            while let Some(id) = todo.pop() {
+                if !placed.contains(&id) && need.insert(id.clone()) {
+                    todo.extend(reads(&id));
+                }
+            }
+            for id in &g.order[at..] {
+                if need.contains(id) && placed.insert(id.clone()) {
+                    order.push(id.clone());
+                }
+            }
+        }
+        order.extend(g.order[at..].iter().filter(|id| !placed.contains(*id)).cloned());
+        g.order = order;
+    }
+
+    /// Each step taken out put on the statement of the step it goes with, so it has that line.
+    fn place(&self, body: &mut [Stmt]) {
+        place_beside(body, &self.gone);
+        fn drop_stand_ins(body: &mut [Stmt], ids: &[&str]) {
+            for s in body.iter_mut() {
+                s.nodes.retain(|n| !ids.contains(&n.as_str()));
+                drop_stand_ins(&mut s.kids, ids);
+            }
+        }
+        let ids: Vec<&str> = self.stand_ins.iter().map(|(s, _)| s.id.as_str()).collect();
+        drop_stand_ins(body, &ids);
+    }
 }
 
 /// The first input TypeScript can't write as wired: one a node needs and nothing feeds (the
@@ -564,6 +1049,8 @@ pub struct Printer<'s> {
     avoid: HashSet<String>,
     /// `"holon"`'s words the first pass found the text uses.
     vocab_used: Option<BTreeSet<String>>,
+    /// The actions written with a row of returns above their first wait: each one's label and name.
+    early: Vec<(String, String)>,
 }
 
 /// A flow document as canonical TypeScript. `known` names composites the document doesn't;
@@ -578,6 +1065,18 @@ pub fn print(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolver, kn
 /// where it starts (a `switch`'s case values, the case's). What view mode shows beside a selected
 /// node.
 pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolver, known: &Names, bindings: &BTreeMap<String, String>) -> Result<(String, BTreeMap<String, u32>), String> {
+    let (text, lines, early) = written(name, doc, store, known, bindings)?;
+    same_actions(doc, known, &text, &early)?;
+    Ok((text, lines))
+}
+
+/// What [`written`] gives: the text, each step's line, and each action written with a row of
+/// returns above its first wait (its label and name).
+type Written = (String, BTreeMap<String, u32>, Vec<(String, String)>);
+
+/// What [`print_lines`] writes, before the actions with a row of returns above their first wait
+/// (the third part) are read back ([`same_actions`]).
+fn written(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolver, known: &Names, bindings: &BTreeMap<String, String>) -> Result<Written, String> {
     let names = restore(doc, store, known);
     let mut p = Printer {
         store,
@@ -613,6 +1112,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         action_local: HashMap::new(),
         avoid: HashSet::new(),
         vocab_used: None,
+        early: Vec::new(),
     };
     p.collect_collections(&doc.nodes)?;
     // A mail a handler reads is imported as one it sends through is.
@@ -665,7 +1165,31 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     let raw = raw.join("\n") + "\n";
     let text = crate::lang::format::format_keeping_bodies(&raw).map_err(|e| format!("the TypeScript written for this flow doesn't read back ({e}), which is the printer's mistake:\n{raw}"))?;
     let lines = lines_of(&text, &defs, &items);
-    Ok((text, lines))
+    Ok((text, lines, std::mem::take(&mut p.early)))
+}
+
+/// Each action written with a row of returns above its first wait (`early`, its label and name)
+/// read back from `text` as the very action `doc` holds. The row's shapes are taken apart by
+/// pattern ([`early_answers`]); a canvas edit the row can't say (a test read again by a step past
+/// the wait that the text would hold to the returns not taken) could otherwise print as another
+/// flow. A text that doesn't read back, or an action `doc` can't make, isn't judged here: the
+/// reader's error, or the action's own, is what is shown.
+fn same_actions(doc: &FlowDocument, known: &Names, text: &str, early: &[(String, String)]) -> Result<(), String> {
+    if early.is_empty() {
+        return Ok(());
+    }
+    let Ok(back) = crate::lang::compile(text) else { return Ok(()) };
+    let actions = |doc: &FlowDocument, known: &Names| -> HashMap<String, String> {
+        let mut store = MapResolver::new();
+        restore(doc, &mut store, known);
+        let port = doc.server.as_ref().map(|s| s.port.clone()).unwrap_or_default();
+        crate::flow::derive_server(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings()).actions.into_iter().map(|a| (a.name, a.hash)).collect()
+    };
+    let (was, is) = (actions(doc, known), actions(&back.doc, &Names::new()));
+    match early.iter().find(|(_, name)| was.get(name).is_some_and(|h| is.get(name) != Some(h))) {
+        Some((label, _)) => Err(format!("{label} answers before its first wait in a shape the text can't write (its text reads back as another action): the text writes it as if (test) return value, right above the wait")),
+        None => Ok(()),
+    }
 }
 
 /// Each node's line in `text`, as `items` (after the imports, `flow(…)` and `defs`) wrote them:
@@ -1357,8 +1881,22 @@ impl<'s> Printer<'s> {
     fn handler_function(&mut self, doc: &FlowDocument, node_ids: &[String], trigger: &Node, kind: Kind, fallback: &str, label: &str) -> Result<(String, Vec<Stmt>), String> {
         let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         let nodes: Vec<&Node> = node_ids.iter().map(|id| by_id[id.as_str()]).collect();
-        let ws = doc.edges.iter().map(|w| (Src::Node { id: w.source.clone(), output: w.output().to_string() }, w.target.clone(), w.input().to_string())).collect();
-        let group = Group::new(nodes, ws, vec![]);
+        let ws: Vec<BlockWire> = doc.edges.iter().map(|w| (Src::Node { id: w.source.clone(), output: w.output().to_string() }, w.target.clone(), w.input().to_string())).collect();
+        let early = match kind == Kind::Action && returns_before_a_wait(&nodes, &ws) {
+            true => Some(early_answers(&nodes, &ws).map_err(|why| format!("{label} answers before its first wait in a shape the text can't write ({why}): the text writes it as if (test) return value, right above the wait"))?),
+            false => None,
+        };
+        if early.is_some() && !self.early.iter().any(|(l, _)| l == label) {
+            self.early.push((label.to_string(), trigger.param("name").to_string()));
+        }
+        let (nodes, ws) = match &early {
+            Some(e) => (e.nodes(nodes), e.wires.clone()),
+            None => (nodes, ws),
+        };
+        let mut group = Group::new(nodes, ws, vec![]);
+        if let Some(e) = &early {
+            e.above_the_wait(&mut group);
+        }
         if let Some(why) = unwritable(&group.nodes, &group.incoming, Some(&trigger.id)) {
             return Err(format!("{label}: {why}"));
         }
@@ -1368,8 +1906,12 @@ impl<'s> Printer<'s> {
         if kind == Kind::Every {
             block.tick = Some(trigger.id.clone());
         }
-        let body = block.body()?;
+        let mut body = block.body()?;
         let (read, awaits) = (block.param_read, block.awaits);
+        place_beside(&mut body, &group.beside);
+        if let Some(e) = &early {
+            e.place(&mut body);
+        }
         let params = if kind == Kind::Every || (!read && param == fallback) { "()".to_string() } else { format!("({param})") };
         let asy = if awaits { "async " } else { "" };
         // A route or action that only answers is its answer; an object alone, in parentheses.
@@ -1778,9 +2320,39 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     }
 
     /// Whether `node`'s trigger is fed by something other than its block's trigger: it goes in
-    /// `if (x !== undefined)`.
+    /// `if (x !== undefined)`. One fed by what a wait gave isn't: it is written after the wait, in
+    /// plain order, as TypeScript writes what follows an `await` ([`Self::waits_for`]).
     fn tied_elsewhere(&self, node: &Node) -> bool {
-        self.g.incoming.contains_key(&(node.id.clone(), TRIGGER.to_string()))
+        self.g.incoming.get(&(node.id.clone(), TRIGGER.to_string())).is_some_and(|src| !self.waits_for(src))
+    }
+
+    /// The `guard` that holds an action's answer when its body waits (ts.rs `finish`):
+    /// `when(value, has_value(x))`, `x` what its last wait gave (past several the list of what
+    /// each gave, read off the last by `without_block_ties`), with the leaves that test `x`.
+    /// Written as the value alone: in TypeScript a return after an `await` answers once it is
+    /// reached, and reading it back holds it so again.
+    fn waited_answer(&self, respond: &Node) -> Option<[&'g Node; 3]> {
+        let guard = self.part(respond, "body", "guard", 1)?;
+        let [held, same] = self.held_to_a_wait(guard)?;
+        Some([guard, held, same])
+    }
+
+    /// The test of `guard`, when it holds its value to what a wait gave: `when(value, has_value(x))`,
+    /// `x` an `await`'s or an `approval`'s output, `has_value(x)` written `same_value(x, x) ??
+    /// false`, its fallback frozen in a `default`. The answer of an action that waits is held so
+    /// (ts.rs `finish`), and a value bound past a wait with a call in one of its branches (lower.rs
+    /// `stmt`). Past the wait, the text writes either as the value alone.
+    fn held_to_a_wait(&self, guard: &Node) -> Option<[&'g Node; 2]> {
+        let held = self.part(guard, "cond", "default", 1).filter(|d| d.param("type") == "Boolean" && d.param("value") == "false")?;
+        let same = self.part(held, "value", "same_value", 1)?;
+        let (a, b) = (self.g.incoming.get(&(same.id.clone(), "a".to_string()))?, self.g.incoming.get(&(same.id.clone(), "b".to_string()))?);
+        (a == b && self.waits_for(a)).then_some([held, same])
+    }
+
+    /// Whether `src` is what a wait gave: an `await`'s or an `approval`'s output, which every write
+    /// and call written after it in an action's body is tied to (ts.rs `Reader::waited`).
+    fn waits_for(&self, src: &Src) -> bool {
+        matches!(src, Src::Node { id, .. } if self.g.nodes.iter().any(|n| n.id == *id && n.data.body == PlacedBody::Primitive && matches!(n.data.name.as_str(), "await" | "approval")))
     }
 
     /// Whether a trigger waits for `node`: it is a statement of its own, before what waits.
@@ -2300,6 +2872,19 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             if self.is_request(id) || self.is_tick(id) || self.pass_through(node).is_some() {
                 continue;
             }
+            // An answer before the wait ([`early_answers`]): `if (test) return value`.
+            if node.is_template(EARLY_RETURN) {
+                self.begin();
+                let test = self.required(node, "cond", 0)?;
+                let text = match self.arg(node, "value")? {
+                    Some((value, _)) => format!("if ({test}) return {value}"),
+                    None => format!("if ({test}) return"),
+                };
+                let mut s = self.statement(text);
+                s.nodes.push(node.id.clone());
+                stmts.push(s);
+                continue;
+            }
             if node.is_template("respond") {
                 if !matches!(self.kind, Kind::Route | Kind::Action) {
                     return Err("an answer outside a route or an action: a clock and a file handler answer nobody".into());
@@ -2636,7 +3221,15 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         if let Some(top) = self.switch_answer.clone() {
             return self.switch_returns(node, &top, &status, &missing);
         }
-        let body = self.arg(node, "body")?;
+        let body = match self.waited_answer(node) {
+            Some(held) if self.kind == Kind::Action => {
+                for n in held {
+                    self.touch(n);
+                }
+                self.arg(held[0], "value")?
+            }
+            _ => self.arg(node, "body")?,
+        };
         let headers = if node.param("headers") == "true" { self.arg(node, "headers")? } else { None };
         let wired = if node.param("status_input") == "true" { self.arg(node, "status")? } else { None };
         // The body of a streamed call: the reply forwards it, with the call's status.
@@ -2780,7 +3373,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
 /// Whether `name` is one ts.rs makes for a value the text doesn't name (`cond_1`, `subject_2`,
 /// `parts_3`): the value is written where it was, and the name made again.
 fn hidden(name: &str) -> bool {
-    ["cond_", "subject_", "parts_"].iter().any(|p| name.strip_prefix(p).is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
+    ["cond_", "subject_", "parts_", "waited_"].iter().any(|p| name.strip_prefix(p).is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())))
 }
 
 /// `name` without the `_2` a new value of it was given: `r_4` is `r`.
@@ -3129,6 +3722,12 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let a = self.coalesce_left(node, "a")?;
                 let b = self.required(node, "b", BITOR)?;
                 Ok((format!("{a} ?? {b}"), COALESCE))
+            }
+            "guard" if self.kind == Kind::Action && self.held_to_a_wait(node).is_some() => {
+                for n in self.held_to_a_wait(node).expect("just found") {
+                    self.touch(n);
+                }
+                self.arg(node, "value")?.ok_or_else(|| "guard: its value isn't wired".to_string())
             }
             "guard" => {
                 let c = self.condition(node, "cond", COALESCE)?;
@@ -5154,9 +5753,157 @@ export const t = action((input) => {
             // An answer the text leaves out has no line: a route of calls alone answering 204
             // (`answer`'s `nothing && calls_alone`, the fan-out sample's).
             let left_out = |n: &Node| n.data.name == "respond" && n.param("status") == "204" && !first.doc.edges.iter().any(|w| w.target == n.id && w.target_handle.as_deref() == Some("body"));
-            wrong.extend(first.doc.nodes.iter().filter(|n| !lines.contains_key(&n.id) && !left_out(n)).map(|n| format!("{name}: {} ({})", n.id, n.data.name)));
+            // A wait's hold, which the text writes by order alone, is on no line, and must not
+            // be: on the wait's line it would stand for what the wait gave (`wait_holds`).
+            let holds = crate::lang::lower::wait_holds(&first.doc, &first.names);
+            wrong.extend(first.doc.nodes.iter().filter(|n| !lines.contains_key(&n.id) && !left_out(n) && !holds.contains(n.id.as_str())).map(|n| format!("{name}: {} ({})", n.id, n.data.name)));
+            wrong.extend(holds.iter().filter(|id| lines.contains_key(**id)).map(|id| format!("{name}: {id}, of a wait's hold, is on line {}", lines[*id])));
         }
         assert!(wrong.is_empty(), "{} steps on no line:\n{}", wrong.len(), wrong.join("\n"));
+    }
+
+    /// **Guards:** an action that answers before its first wait prints back as written: a row of
+    /// `if (test) return value` (or `return` alone) right above the wait, after what is written
+    /// above the row, and past the wait what it sends, writes, tests and waits for again. The
+    /// steps the returns add to the graph (the answer's choice, the hold, and what follows the wait
+    /// kept to the returns not taken) print as the row, each on a line but the hold's. A
+    /// `{ return v }` block is the same flow and prints in the plain form; the canvas alone (no
+    /// names) prints the same flow back; a shape the row can't say is refused, naming the form.
+    /// **Why:** the canvas, the step view, explain and both editors show a flow by its printed
+    /// text. The printer had no return above a wait and refused such an action, so a flow the
+    /// language takes had no text to show (R7, owner 2026-11-20: the plain form, shown as written).
+    /// **If it fails:** a shape ts.rs gives the returns changed (`early_answers` names it), or the
+    /// printer moved the row away from the wait.
+    #[test]
+    fn an_action_answering_before_its_wait_prints_back_as_written() {
+        let text = |body: &str| {
+            let state = if body.contains("state.") { "import state from \"state\"\n" } else { "" };
+            let updates = if body.contains("updates.") { "import updates from \"channel:updates\"\n" } else { "" };
+            format!("import {{ action, event, flow, route }} from \"holon\"\n{state}{updates}\nflow(\"f\", {{ port: 8200 }})\n\nroute.post(\"/start\", (req) => job(req.json).waiting)\n\nroute.post(\"/go/:token\", () => \"ok\", {{ resumes: \"go\" }})\n\nroute.post(\"/again/:token\", () => \"ok\", {{ resumes: \"again\" }})\n\nexport const job = action(async (order) => {{\n{body}}})\n")
+        };
+        let wait = "  const go = await event(\"go\", { expires: \"1d\" })\n";
+        let rows = [
+            ("a sure test", "  if (order.skip ?? false) return \"skipped\"\n"),
+            ("an unsure test", "  if (order.amount > 100) return \"big\"\n"),
+            ("two returns", "  if (order.skip ?? false) return \"skipped\"\n  if (order.amount > 100) return \"big\"\n"),
+            ("a return alone", "  if (order.skip ?? false) return\n"),
+            ("a record", "  if (order.skip ?? false) return { id: order.id, skipped: true }\n"),
+            ("three, one alone", "  if (order.skip ?? false) return\n  if (order.amount > 100) return \"big\"\n  if (order.amount < 0) return { id: order.id, refused: true }\n"),
+            ("a named test", "  const big = order.amount > 100\n  if (big) return \"big\"\n"),
+        ];
+        // How each comes back: as written, as the printer's form of it, or as the same flow.
+        #[derive(Clone, Copy)]
+        enum Back {
+            Written,
+            As(&'static str),
+            Same,
+        }
+        let afters = [
+            ("a send", "  updates.send({ sent: order.id })\n  return go.method\n", Back::Written),
+            ("a write", "  state.last = order.id\n  return go.method\n", Back::Written),
+            ("a branch", "  const guard = go.method === \"POST\" ? go : undefined\n  if (guard !== undefined) updates.send({ posted: order.id })\n  return go.method\n", Back::Written),
+            ("a branch on two tests", "  const guard = go.method === \"POST\" && order.amount > 1 ? go : undefined\n  if (guard !== undefined) updates.send({ posted: order.id })\n  return go.method\n", Back::Written),
+            // A branch past a wait prints as what its value waits for (`const guard = …`); with
+            // returns above the wait it is the same flow all the same (ts.rs `trigger`).
+            (
+                "a plain branch",
+                "  if (order.loud ?? false) {\n    updates.send({ loud: order.id })\n  }\n  return go.method\n",
+                Back::As("  const guard = (order.loud ?? false) ? go : undefined\n  if (guard !== undefined) updates.send({ loud: order.id })\n  return go.method\n"),
+            ),
+            ("a write in a branch", "  if (order.loud ?? false) {\n    state.loud = order.id\n  }\n  return go.method\n", Back::Same),
+            ("a second wait", "  const again = await event(\"again\", { expires: \"1d\" })\n  updates.send({ sent: order.id })\n  return again.method\n", Back::Written),
+            ("the answer alone", "  return go.method\n", Back::Written),
+        ];
+        let aboves = [("nothing above", ""), ("a send above", "  updates.send({ got: order.id })\n"), ("a write above", "  state.first = order.id\n")];
+        // Each case, its failures gathered, so one run names them all.
+        let check = |case: &str, src: &str, back: Option<&str>| -> Result<(), String> {
+            let l = compile(src).map_err(|e| format!("{case}: doesn't compile: {e}"))?;
+            let resolve = |doc: &FlowDocument, names: &BTreeMap<String, String>| print(Some("f"), doc, &mut MapResolver::new(), &Names::new(), names);
+            // Refused, with what it would have written: a text that reads back as another action.
+            let unchecked = |names: &BTreeMap<String, String>| written(Some("f"), &l.doc, &mut MapResolver::new(), &Names::new(), names).map_or_else(|e| e, |(t, ..)| t);
+            let printed = resolve(&l.doc, &l.names).map_err(|e| format!("{case}: doesn't print: {e}\n{}", unchecked(&l.names)))?;
+            // `back`: the text it prints as (the source, or the printer's form of it), or none
+            // where any text that reads back as this very flow will do.
+            match back {
+                Some(back) if printed != back => return Err(format!("{case}: printed as it isn't written:\n{printed}")),
+                Some(_) => {}
+                None => {
+                    let again = compile(&printed).map_err(|e| format!("{case}: prints what doesn't compile: {e}\n{printed}"))?;
+                    if hash_of(&again.doc) != hash_of(&l.doc) {
+                        return Err(format!("{case}: prints another flow:\n{printed}"));
+                    }
+                }
+            }
+            // Each step on a line of the text, but a wait's hold (`wait_holds`), on none.
+            let (_, lines) = print_lines(Some("f"), &l.doc, &mut MapResolver::new(), &Names::new(), &l.names).map_err(|e| format!("{case}: {e}"))?;
+            let holds = crate::lang::lower::wait_holds(&l.doc, &l.names);
+            let off: Vec<String> = l.doc.nodes.iter().filter(|n| lines.contains_key(&n.id) == holds.contains(n.id.as_str())).map(|n| format!("{} ({})", n.id, n.data.name)).collect();
+            if !off.is_empty() {
+                return Err(format!("{case}: steps off their line, or a hold on one: {off:?}"));
+            }
+            // The canvas alone, its names gone, prints the same flow.
+            let bare = resolve(&l.doc, &BTreeMap::new()).map_err(|e| format!("{case}: without its names, doesn't print: {e}\n{}", unchecked(&BTreeMap::new())))?;
+            let back = compile(&bare).map_err(|e| format!("{case}: without its names, prints what doesn't compile: {e}\n{bare}"))?;
+            if hash_of(&back.doc) != hash_of(&l.doc) {
+                return Err(format!("{case}: without its names, prints another flow:\n{bare}"));
+            }
+            Ok(())
+        };
+        let mut wrong = Vec::new();
+        for (above_case, above) in aboves {
+            for (after_case, after, back) in afters {
+                for (row_case, row) in std::iter::once(("without a return", "")).chain(rows) {
+                    let src = text(&format!("{above}{row}{wait}{after}"));
+                    let back = match back {
+                        Back::Written => Some(src.clone()),
+                        Back::As(form) => Some(text(&format!("{above}{row}{wait}{form}"))),
+                        Back::Same => None,
+                    };
+                    wrong.extend(check(&format!("{row_case}, {above_case}, then {after_case}"), &src, back.as_deref()).err());
+                }
+            }
+        }
+        // A test the text names and reads again, and one written out twice: each as written.
+        let own = [
+            ("a named test read again past the wait", format!("  const big = order.amount > 100\n  if (big) return \"needs review\"\n{wait}  return {{ big, method: go.method }}\n"), true),
+            ("a named test read in a branch past the wait", format!("  const big = order.amount > 100\n  if (big) return \"needs review\"\n{wait}  if (big) {{\n    updates.send({{ big: order.id }})\n  }}\n  return go.method\n"), false),
+            ("a named test read above the row too", format!("  const big = order.amount > 100\n  updates.send({{ big }})\n  if (big) return \"big\"\n{wait}  return go.method\n"), true),
+            ("the same test written twice", format!("  if (order.amount > 100) return \"big\"\n{wait}  return {{ big: order.amount > 100, method: go.method }}\n"), true),
+        ];
+        for (case, body, as_written) in &own {
+            let src = text(body);
+            wrong.extend(check(case, &src, as_written.then_some(src.as_str())).err());
+        }
+        assert!(wrong.is_empty(), "{} of {} cases:\n{}", wrong.len(), aboves.len() * afters.len() * (rows.len() + 1) + own.len(), wrong.join("\n\n"));
+        // `{ return v }` is the same flow, written in the plain form.
+        let plain = text(&format!("  if (order.skip ?? false) return \"skipped\"\n{wait}  return go.method\n"));
+        let block = text(&format!("  if (order.skip ?? false) {{\n    return \"skipped\"\n  }}\n{wait}  return go.method\n"));
+        let (p, b) = (compile(&plain).unwrap(), compile(&block).unwrap_or_else(|e| panic!("the block: {e}")));
+        assert_eq!(hash_of(&b.doc), hash_of(&p.doc), "a block holding the return alone is the same flow");
+        assert_eq!(printed(Some("f"), &b.doc, &b.names), plain, "and prints in the plain form");
+        // Mutants: the answer's choice turned round, and a test read again past the wait, are
+        // shapes the row can't say: refused, naming the form the text writes.
+        let src = text(&format!("  if (order.skip ?? false) return \"skipped\"\n{wait}  updates.send({{ sent: order.id }})\n  return go.method\n"));
+        let l = compile(&src).unwrap();
+        let respond = l.doc.nodes.iter().find(|n| n.is_template("respond") && l.doc.edges.iter().any(|w| w.target == n.id && l.doc.nodes.iter().any(|a| a.id == w.source && a.is_template("action")))).expect("the action's answer");
+        let into = |doc: &FlowDocument, to: &str, input: &str| doc.edges.iter().find(|w| w.target == to && w.input() == input).map(|w| w.source.clone()).expect("wired");
+        let choice = into(&l.doc, &respond.id, "body");
+        let mut turned = l.doc.clone();
+        for w in turned.edges.iter_mut().filter(|w| w.target == choice) {
+            w.target_handle = Some(if w.input() == "a" { "b".into() } else { "a".into() });
+        }
+        let test = into(&l.doc, &into(&l.doc, &choice, "a"), "cond");
+        let send = l.doc.nodes.iter().find(|n| n.data.name == "channel_send").expect("the send");
+        let mut read_again = l.doc.clone();
+        let trigger = into(&l.doc, &send.id, "trigger");
+        for w in read_again.edges.iter_mut().filter(|w| w.target == trigger && w.input() == "cond") {
+            w.source = test.clone();
+            w.source_handle = Some("out".into());
+        }
+        for (case, doc) in [("turned round", turned), ("its test read again", read_again)] {
+            let why = print(Some("f"), &doc, &mut MapResolver::new(), &Names::new(), &l.names).expect_err(case);
+            assert!(why.starts_with("action job answers before its first wait in a shape the text can't write") && why.ends_with("the text writes it as if (test) return value, right above the wait"), "{case}: {why}");
+        }
     }
 
     #[test]

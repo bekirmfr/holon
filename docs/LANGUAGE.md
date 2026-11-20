@@ -460,9 +460,46 @@ starts the action `payment` with the order (`flow_start{flow: approval, action: 
 answered once that run parks, with the token for each point it waits at, so the route answers the
 link at once. `await event("paid", { expires: "1d" })` is `await{name: paid, expires: 86400}`. When
 the link is opened, the third route delivers the event (`{ resumes: "paid" }` is the request
-template's `resume` param), and the order's run finishes: the state write happens then. Statement
-order carries no meaning beyond names being defined before use. `{ ...order, paid_via: … }` is
-`with_field` over an existing record (§5.5).
+template's `resume` param), and the order's run finishes: the state write happens then. Elsewhere
+statement order carries no meaning beyond names being defined before use; past a wait it does. In
+an action, what is written after a wait comes after it, as in JavaScript: a write, a send, a
+request, a call or a start of another action is asked for only once the wait is answered, never
+before, even one that uses nothing of it. What it reads there is the state as the run found it
+when it began, until each part of a run is saved as it parks. The answer comes after the waits
+too. For now, a wait that runs out gives `{ expired: true }` in its place, so what follows it is made then
+too: a step that uses nothing of the wait is made whether it was answered or ran out, and
+`if (paid.expired ?? false) return …` before it keeps it to an answer. Each such step takes its
+trigger from what the wait gave, `paid` (past two waits the list of what each gave, `[a, b]`); one
+hold for the action, read by nothing,
+`when(<the action's input>, has_value(paid))` (past two waits `has_value([a, b])`, so the run
+reaches both at once), keeps a step that uses nothing of what was sent in the action. The text
+writes both by order alone, and the canvas prints them back so. A
+wait stands on a line of its own at the top of
+the action's body, `const paid = await event(…)`. A `return` before the first wait may answer
+without it (`if (order.skip ?? false) return "skipped"`): where it does, the wait isn't asked for,
+as the hold too reads the wait only where no such return was taken (`when(<the hold>, c)`, `c`
+the returns not taken), and the answer is held to the waits only past the first. Such returns
+are a row right above the wait, one to a line: `if (test) return value`, or `return` alone
+(`{ return value }` is the same), their tests and values over what the run already has; anything
+may be written above the row. A test may be a name made above the row (`const big = …`, `if
+(big) return …`) and read again past the wait: the printer writes it with its `const`, and shows
+an action with such a row only where its text reads back as that very action. A test with no
+value (a field not sent, with no `??`) ends the run there, answering nothing and waiting for
+nothing: every step past the wait, a write's too, is held to the returns not taken. That is the
+one shape the canvas, the step view and both editors write them back in, so it is the one taken.
+An `else`, an `if` inside another, a block holding more than the return, a `switch` or a `try`
+there, a statement between the row and the wait, or a test or value that calls a function of
+the flow's, makes a request, sends, starts an action or reads state, a collection or a database
+(make that above the row and name it) is refused, naming the row. So is a `throw` there: answer
+the failure in the row instead (`if (order.bad ?? false) return { error: "a bad order" }`), or
+throw in what starts the action. So is a state key written above the row and again after the
+wait: a run that returned keeps the first value, which the text can't show, so write it once. A wait in an `if`, a `try`, after
+a `return` between two waits, or inside another expression is refused, as is an `if (x !== undefined)` after a wait
+whose `x` is there before the wait is answered (a read, `now`, `random`, what was sent). Two waits
+in a row still park together: the run waits at both from the start, asks for them in the order
+written (the order it lists them in), and what follows the second waits for both, whichever is
+answered first. A state key written before a wait and after it is written once, after it, with the
+last value. `{ ...order, paid_via: … }` is `with_field` over an existing record (§5.5).
 
 `await approval("payout", { expires: "1d", people: 2 })` waits the same way, as
 `approval{name: payout, expires: 86400, steps: "person*2"}`, for people rather than a request: no

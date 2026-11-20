@@ -38,6 +38,32 @@ describe("flows as text", () => {
     expect(server.endpoints.map((e) => `${e.method} ${e.path}`)).toEqual(["GET /hello/:name"]);
   });
 
+  it("prints an action that answers before its first wait with its return right above the wait", () => {
+    // The text pane after a canvas change, view mode's deployed text and a restore's comparison
+    // print the flow from its graph (print.rs `early_answers`): the row comes back as written.
+    const ev = new Evaluator();
+    const early = `import { action, event, flow, route } from "holon"
+
+flow("early", { port: 8997 })
+
+route.post("/start", (req) => job(req.json).waiting)
+
+route.post("/go/:token", () => "ok", { resumes: "go" })
+
+export const job = action(async (order) => {
+  if (order.skip ?? false) return "skipped"
+  const go = await event("go", { expires: "1d" })
+  return go.method
+})
+`;
+    const { name, doc } = compileHolon(early, ev);
+    const printed = printHolon(name, doc, ev);
+    // Printed from the graph alone, without the text's names: the action's value is `input`.
+    expect(printed).toMatch(/\n {2}if \(\w+\.skip \?\? false\) return "skipped"\n {2}const \w+ = await event\("go"/);
+    const back = compileHolon(printed, ev);
+    expect(unitOf(back.doc, ev)).toBe(unitOf(doc, ev));
+  });
+
   it("carries a handler's log level to its draft, whatever the handler does", () => {
     const ev = new Evaluator();
     const board = `import { flow, route } from "holon"

@@ -2730,16 +2730,19 @@
   [0, 6] ·
   [0, 7] ·
   [0, 8] ·
-  [0, 9] ·
+  [0, 9] Boolean(false)
   [0, 10] ·
-  [0, 11] Record({})
+  [0, 11] ·
   [0, 12] ·
   [0, 13] ·
-  [0, 14] Text("paid")
+  [0, 14] Record({})
   [0, 15] ·
   [0, 16] ·
-  [0, 17] ·
+  [0, 17] Text("paid")
   [0, 18] ·
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] ·
   [0] · | · | ·
   => · | · | ·
 == approval · action payment · input 1
@@ -2752,16 +2755,19 @@
   [0, 6] ·
   [0, 7] ·
   [0, 8] ·
-  [0, 9] ·
+  [0, 9] Boolean(false)
   [0, 10] ·
-  [0, 11] Record({})
+  [0, 11] ·
   [0, 12] ·
   [0, 13] ·
-  [0, 14] Text("paid")
+  [0, 14] Record({})
   [0, 15] ·
   [0, 16] ·
-  [0, 17] ·
+  [0, 17] Text("paid")
   [0, 18] ·
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] ·
   [0] · | · | ·
   => · | · | ·
 == approval · action payment · input 2
@@ -2774,18 +2780,228 @@
   [0, 6] ·
   [0, 7] ·
   [0, 8] ·
-  [0, 9] ·
+  [0, 9] Boolean(false)
   [0, 10] ·
-  [0, 11] Record({})
+  [0, 11] ·
   [0, 12] ·
   [0, 13] ·
-  [0, 14] Text("paid")
+  [0, 14] Record({})
   [0, 15] ·
   [0, 16] ·
-  [0, 17] ·
+  [0, 17] Text("paid")
   [0, 18] ·
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] ·
   [0] · | · | ·
   => · | · | ·
+== refund-review · POST /refunds · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/refunds"),… #ca6c4a784fcb6ab0 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Record({})
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4] Text("/review/")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10, 0] Record({})
+  [0, 10, 1] Number(200.0)
+  [0, 10, 2] Record({"status": Number(200.0)})
+  [0, 10, 3] ·
+  [0, 10, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 10] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== refund-review · POST /refunds · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #dd60ae3294b1c565 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4] Text("/review/")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10, 0] Record({})
+  [0, 10, 1] Number(200.0)
+  [0, 10, 2] Record({"status": Number(200.0)})
+  [0, 10, 3] ·
+  [0, 10, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 10] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== refund-review · POST /refunds · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #5650494c2f786a94 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4] Text("/review/")
+  [0, 5] ·
+  [0, 6] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10, 0] Record({})
+  [0, 10, 1] Number(200.0)
+  [0, 10, 2] Record({"status": Number(200.0)})
+  [0, 10, 3] ·
+  [0, 10, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 10] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== refund-review · GET /review/:token · input 0
+  [0, 0, 0] Record({"token": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"token": Text("tea")}), "path"… #e778dc5a0ad9d29b | Record({"token": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("thanks, the refund goes ahead")
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+  [0, 2, 4] Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+  [0, 2] Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+  [0] Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+  => Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+== refund-review · GET /review/:token · input 1
+  [0, 0, 0] Record({"token": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #23a076155c34a80a | Record({"token": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("thanks, the refund goes ahead")
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+  [0, 2, 4] Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+  [0, 2] Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+  [0] Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+  => Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+== refund-review · GET /review/:token · input 2
+  [0, 0, 0] Record({"token": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #b6aec51de616a0f7 | Record({"token": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("thanks, the refund goes ahead")
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+  [0, 2, 4] Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+  [0, 2] Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+  [0] Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+  => Record({"body": Text("thanks, the refund goes ahead"), "status": Number(200.0)})
+== refund-review · action refund · input 0
+  [0, 0] Record({})
+  [0, 1] ·
+  [0, 2] Text("")
+  [0, 3] Text("")
+  [0, 4] Boolean(true)
+  [0, 13] Boolean(false)
+  [0, 15] Boolean(false)
+  [0, 16] ·
+  [0, 19] Boolean(false)
+  [0, 21] Boolean(false)
+  [0, 22] ·
+  [0, 24] Boolean(false)
+  [0, 26] Boolean(false)
+  [0, 27] ·
+  [0, 23] ·
+  [0, 28] Record({})
+  [0, 29] Text("it names no order")
+  [0, 30] Record({"refused": Text("it names no order")})
+  [0, 31] Record({"refused": Text("it names no order")})
+  [0, 57] Record({"refused": Text("it names no order")})
+  [0, 58, 0] Record({})
+  [0, 58, 1] Number(200.0)
+  [0, 58, 2] Record({"status": Number(200.0)})
+  [0, 58, 3] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 58, 4] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 58] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)}) | ·
+  => Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)}) | ·
+== refund-review · action refund · input 1
+  [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] ·
+  [0, 2] Text("")
+  [0, 3] Text("")
+  [0, 4] Boolean(true)
+  [0, 13] Boolean(false)
+  [0, 15] Boolean(false)
+  [0, 16] ·
+  [0, 19] Boolean(false)
+  [0, 21] Boolean(false)
+  [0, 22] ·
+  [0, 24] Boolean(false)
+  [0, 26] Boolean(false)
+  [0, 27] ·
+  [0, 23] ·
+  [0, 28] Record({})
+  [0, 29] Text("it names no order")
+  [0, 30] Record({"refused": Text("it names no order")})
+  [0, 31] Record({"refused": Text("it names no order")})
+  [0, 57] Record({"refused": Text("it names no order")})
+  [0, 58, 0] Record({})
+  [0, 58, 1] Number(200.0)
+  [0, 58, 2] Record({"status": Number(200.0)})
+  [0, 58, 3] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 58, 4] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 58] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)}) | ·
+  => Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)}) | ·
+== refund-review · action refund · input 2
+  [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] ·
+  [0, 2] Text("")
+  [0, 3] Text("")
+  [0, 4] Boolean(true)
+  [0, 13] Boolean(false)
+  [0, 15] Boolean(false)
+  [0, 16] ·
+  [0, 19] Boolean(false)
+  [0, 21] Boolean(false)
+  [0, 22] ·
+  [0, 24] Boolean(false)
+  [0, 26] Boolean(false)
+  [0, 27] ·
+  [0, 23] ·
+  [0, 28] Record({})
+  [0, 29] Text("it names no order")
+  [0, 30] Record({"refused": Text("it names no order")})
+  [0, 31] Record({"refused": Text("it names no order")})
+  [0, 57] Record({"refused": Text("it names no order")})
+  [0, 58, 0] Record({})
+  [0, 58, 1] Number(200.0)
+  [0, 58, 2] Record({"status": Number(200.0)})
+  [0, 58, 3] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 58, 4] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 58] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)}) | ·
+  => Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)}) | ·
 == fetch-json · GET /slideshow · input 0
   [0, 1] Text("/json")
   [0, 0, 0] Record({})
@@ -9276,21 +9492,12 @@
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == approved-payout · action payout · input 0
-  [0, 16] Text("/anything/payouts")
-  [0, 17] Record({})
-  [0, 18] Text("application/json")
-  [0, 19] Record({"content-type": Text("application/json")})
-  [0, 20] Record({})
+  [0, 5] Record({})
   [0, 1] List([])
   [0, 0] Record({})
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
-  [0, 21] ·
-  [0, 22] ·
-  [0, 23] ·
-  [0, 24] ·
-  [0, 5] Record({})
   [0, 6] ·
   [0, 7] ·
   [0, 8] ·
@@ -9298,66 +9505,65 @@
   [0, 10] ·
   [0, 11] ·
   [0, 12] ·
+  [0, 13] ·
+  [0, 14] Boolean(false)
+  [0, 15] ·
+  [0, 19] Text("/anything/payouts")
+  [0, 20] Record({})
+  [0, 21] Text("application/json")
+  [0, 22] Record({"content-type": Text("application/json")})
+  [0, 23] Record({})
+  [0, 24] ·
   [0, 25] ·
   [0, 26] ·
   [0, 27] ·
-  [0, 28] Number(0.0)
+  [0, 28] ·
   [0, 29] ·
   [0, 30] ·
-  [0, 31] ·
+  [0, 31] Number(0.0)
   [0, 32] ·
-  [0, 13] ·
-  [0, 14] ·
-  [0, 15] ·
-  [0, 35] ·
-  [0, 36] ·
   [0, 33] ·
+  [0, 34] ·
+  [0, 35] ·
+  [0, 16] ·
+  [0, 17] ·
+  [0, 18] ·
   [0, 37] ·
   [0, 38] ·
+  [0, 36] ·
   [0, 39] ·
   [0, 40] ·
   [0, 41] ·
-  [0, 44] ·
-  [0, 45] ·
   [0, 42] ·
+  [0, 43] ·
+  [0, 45] ·
   [0, 46] ·
+  [0, 44] ·
   [0, 47] ·
   [0, 48] ·
   [0, 49] ·
+  [0, 50] ·
   [0, 52] ·
   [0, 53] ·
-  [0, 50] ·
-  [0, 58] ·
-  [0, 59] Boolean(false)
-  [0, 60] Boolean(true)
-  [0, 66] ·
-  [0, 67] ·
-  [0, 68] ·
-  [0, 69] ·
-  [0, 70, 0] Record({})
-  [0, 70, 1] Number(200.0)
-  [0, 70, 2] Record({"status": Number(200.0)})
-  [0, 70, 3] ·
-  [0, 70, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 70] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 51] ·
+  [0, 70] ·
+  [0, 71] Boolean(false)
+  [0, 72] ·
+  [0, 73, 0] Record({})
+  [0, 73, 1] Number(200.0)
+  [0, 73, 2] Record({"status": Number(200.0)})
+  [0, 73, 3] ·
+  [0, 73, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 73] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
 == approved-payout · action payout · input 1
-  [0, 16] Text("/anything/payouts")
-  [0, 17] Record({})
-  [0, 18] Text("application/json")
-  [0, 19] Record({"content-type": Text("application/json")})
-  [0, 20] Record({})
+  [0, 5] Record({})
   [0, 1] List([])
   [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
-  [0, 21] ·
-  [0, 22] ·
-  [0, 23] Number(5.0)
-  [0, 24] ·
-  [0, 5] Record({})
   [0, 6] ·
   [0, 7] ·
   [0, 8] Number(5.0)
@@ -9365,66 +9571,65 @@
   [0, 10] ·
   [0, 11] ·
   [0, 12] ·
+  [0, 13] ·
+  [0, 14] Boolean(false)
+  [0, 15] ·
+  [0, 19] Text("/anything/payouts")
+  [0, 20] Record({})
+  [0, 21] Text("application/json")
+  [0, 22] Record({"content-type": Text("application/json")})
+  [0, 23] Record({})
+  [0, 24] ·
   [0, 25] ·
-  [0, 26] ·
+  [0, 26] Number(5.0)
   [0, 27] ·
-  [0, 28] Number(0.0)
+  [0, 28] ·
   [0, 29] ·
   [0, 30] ·
-  [0, 31] ·
+  [0, 31] Number(0.0)
   [0, 32] ·
-  [0, 13] ·
-  [0, 14] ·
-  [0, 15] ·
-  [0, 35] ·
-  [0, 36] ·
   [0, 33] ·
+  [0, 34] ·
+  [0, 35] ·
+  [0, 16] ·
+  [0, 17] ·
+  [0, 18] ·
   [0, 37] ·
-  [0, 38] Number(5.0)
+  [0, 38] ·
+  [0, 36] ·
   [0, 39] ·
-  [0, 40] ·
+  [0, 40] Number(5.0)
   [0, 41] ·
-  [0, 44] ·
-  [0, 45] ·
   [0, 42] ·
+  [0, 43] ·
+  [0, 45] ·
   [0, 46] ·
-  [0, 47] Number(5.0)
-  [0, 48] ·
+  [0, 44] ·
+  [0, 47] ·
+  [0, 48] Number(5.0)
   [0, 49] ·
+  [0, 50] ·
   [0, 52] ·
   [0, 53] ·
-  [0, 50] ·
-  [0, 58] ·
-  [0, 59] Boolean(false)
-  [0, 60] Boolean(true)
-  [0, 66] ·
-  [0, 67] ·
-  [0, 68] ·
-  [0, 69] ·
-  [0, 70, 0] Record({})
-  [0, 70, 1] Number(200.0)
-  [0, 70, 2] Record({"status": Number(200.0)})
-  [0, 70, 3] ·
-  [0, 70, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 70] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 51] ·
+  [0, 70] ·
+  [0, 71] Boolean(false)
+  [0, 72] ·
+  [0, 73, 0] Record({})
+  [0, 73, 1] Number(200.0)
+  [0, 73, 2] Record({"status": Number(200.0)})
+  [0, 73, 3] ·
+  [0, 73, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 73] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
 == approved-payout · action payout · input 2
-  [0, 16] Text("/anything/payouts")
-  [0, 17] Record({})
-  [0, 18] Text("application/json")
-  [0, 19] Record({"content-type": Text("application/json")})
-  [0, 20] Record({})
+  [0, 5] Record({})
   [0, 1] List([])
   [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
-  [0, 21] ·
-  [0, 22] ·
-  [0, 23] ·
-  [0, 24] ·
-  [0, 5] Record({})
   [0, 6] ·
   [0, 7] ·
   [0, 8] ·
@@ -9432,147 +9637,152 @@
   [0, 10] ·
   [0, 11] ·
   [0, 12] ·
+  [0, 13] ·
+  [0, 14] Boolean(false)
+  [0, 15] ·
+  [0, 19] Text("/anything/payouts")
+  [0, 20] Record({})
+  [0, 21] Text("application/json")
+  [0, 22] Record({"content-type": Text("application/json")})
+  [0, 23] Record({})
+  [0, 24] ·
   [0, 25] ·
   [0, 26] ·
   [0, 27] ·
-  [0, 28] Number(0.0)
+  [0, 28] ·
   [0, 29] ·
   [0, 30] ·
-  [0, 31] ·
+  [0, 31] Number(0.0)
   [0, 32] ·
-  [0, 13] ·
-  [0, 14] ·
-  [0, 15] ·
-  [0, 35] ·
-  [0, 36] ·
   [0, 33] ·
+  [0, 34] ·
+  [0, 35] ·
+  [0, 16] ·
+  [0, 17] ·
+  [0, 18] ·
   [0, 37] ·
   [0, 38] ·
+  [0, 36] ·
   [0, 39] ·
   [0, 40] ·
   [0, 41] ·
-  [0, 44] ·
-  [0, 45] ·
   [0, 42] ·
+  [0, 43] ·
+  [0, 45] ·
   [0, 46] ·
+  [0, 44] ·
   [0, 47] ·
   [0, 48] ·
   [0, 49] ·
+  [0, 50] ·
   [0, 52] ·
   [0, 53] ·
-  [0, 50] ·
-  [0, 58] ·
-  [0, 59] Boolean(false)
-  [0, 60] Boolean(true)
-  [0, 66] ·
-  [0, 67] ·
-  [0, 68] ·
-  [0, 69] ·
-  [0, 70, 0] Record({})
-  [0, 70, 1] Number(200.0)
-  [0, 70, 2] Record({"status": Number(200.0)})
-  [0, 70, 3] ·
-  [0, 70, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 70] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 51] ·
+  [0, 70] ·
+  [0, 71] Boolean(false)
+  [0, 72] ·
+  [0, 73, 0] Record({})
+  [0, 73, 1] Number(200.0)
+  [0, 73, 2] Record({"status": Number(200.0)})
+  [0, 73, 3] ·
+  [0, 73, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 73] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
 == reviewed-draft · action draft · input 0
-  [0, 0] Record({})
-  [0, 10] ·
-  [0, 11] ·
-  [0, 12] Text(".md")
-  [0, 13] ·
   [0, 1] Record({})
+  [0, 0] Record({})
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
   [0, 6] ·
   [0, 7] ·
-  [0, 8] ·
+  [0, 8] Boolean(false)
   [0, 9] ·
-  [0, 19] ·
-  [0, 20] ·
-  [0, 21] ·
-  [0, 26] ·
-  [0, 27] Boolean(false)
-  [0, 28] Boolean(true)
-  [0, 37] ·
-  [0, 38] ·
-  [0, 39] ·
-  [0, 40] ·
-  [0, 41, 0] Record({})
-  [0, 41, 1] Number(200.0)
-  [0, 41, 2] Record({"status": Number(200.0)})
-  [0, 41, 3] ·
-  [0, 41, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 41] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 13] ·
+  [0, 14] ·
+  [0, 15] Text(".md")
+  [0, 16] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 22] ·
+  [0, 23] ·
+  [0, 24] ·
+  [0, 44] ·
+  [0, 45] Boolean(false)
+  [0, 46] ·
+  [0, 47, 0] Record({})
+  [0, 47, 1] Number(200.0)
+  [0, 47, 2] Record({"status": Number(200.0)})
+  [0, 47, 3] ·
+  [0, 47, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 47] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
 == reviewed-draft · action draft · input 1
-  [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
-  [0, 10] Text("Hello World")
-  [0, 11] Text("Hello World")
-  [0, 12] Text(".md")
-  [0, 13] Text("Hello World.md")
   [0, 1] Record({})
+  [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 2] Text("Hello World")
   [0, 3] Record({"title": Text("Hello World")})
   [0, 4] ·
   [0, 5] ·
   [0, 6] ·
   [0, 7] ·
-  [0, 8] ·
+  [0, 8] Boolean(false)
   [0, 9] ·
-  [0, 19] ·
-  [0, 20] ·
-  [0, 21] ·
-  [0, 26] ·
-  [0, 27] Boolean(false)
-  [0, 28] Boolean(true)
-  [0, 37] ·
-  [0, 38] ·
-  [0, 39] ·
-  [0, 40] ·
-  [0, 41, 0] Record({})
-  [0, 41, 1] Number(200.0)
-  [0, 41, 2] Record({"status": Number(200.0)})
-  [0, 41, 3] ·
-  [0, 41, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 41] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 13] Text("Hello World")
+  [0, 14] Text("Hello World")
+  [0, 15] Text(".md")
+  [0, 16] Text("Hello World.md")
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 22] ·
+  [0, 23] ·
+  [0, 24] ·
+  [0, 44] ·
+  [0, 45] Boolean(false)
+  [0, 46] ·
+  [0, 47, 0] Record({})
+  [0, 47, 1] Number(200.0)
+  [0, 47, 2] Record({"status": Number(200.0)})
+  [0, 47, 3] ·
+  [0, 47, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 47] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
 == reviewed-draft · action draft · input 2
-  [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
-  [0, 10] ·
-  [0, 11] ·
-  [0, 12] Text(".md")
-  [0, 13] ·
   [0, 1] Record({})
+  [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
   [0, 6] ·
   [0, 7] ·
-  [0, 8] ·
+  [0, 8] Boolean(false)
   [0, 9] ·
-  [0, 19] ·
-  [0, 20] ·
-  [0, 21] ·
-  [0, 26] ·
-  [0, 27] Boolean(false)
-  [0, 28] Boolean(true)
-  [0, 37] ·
-  [0, 38] ·
-  [0, 39] ·
-  [0, 40] ·
-  [0, 41, 0] Record({})
-  [0, 41, 1] Number(200.0)
-  [0, 41, 2] Record({"status": Number(200.0)})
-  [0, 41, 3] ·
-  [0, 41, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 41] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 13] ·
+  [0, 14] ·
+  [0, 15] Text(".md")
+  [0, 16] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 22] ·
+  [0, 23] ·
+  [0, 24] ·
+  [0, 44] ·
+  [0, 45] Boolean(false)
+  [0, 46] ·
+  [0, 47, 0] Record({})
+  [0, 47, 1] Number(200.0)
+  [0, 47, 2] Record({"status": Number(200.0)})
+  [0, 47, 3] ·
+  [0, 47, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 47] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
 == atlas-notes · POST /notes/:owner · input 0
@@ -11924,135 +12134,147 @@
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == approval-mail · action payout · input 0
-  [0, 0] Record({})
-  [0, 4] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] Boolean(false)
-  [0, 9] Boolean(true)
-  [0, 5] ·
-  [0, 6] ·
+  [0, 4] ·
+  [0, 0] Record({})
   [0, 7] ·
+  [0, 5] ·
+  [0, 6] Boolean(false)
+  [0, 12] Boolean(true)
   [0, 8] ·
+  [0, 9] ·
   [0, 10] ·
   [0, 11] ·
-  [0, 12] Record({})
   [0, 13] ·
   [0, 14] ·
-  [0, 15] Text("Payout ")
+  [0, 15] Record({})
   [0, 16] ·
   [0, 17] ·
-  [0, 18] Text(" approved")
+  [0, 18] Text("Payout ")
   [0, 19] ·
   [0, 20] ·
-  [0, 21] Text("Your payout of ")
+  [0, 21] Text(" approved")
   [0, 22] ·
   [0, 23] ·
-  [0, 24] Text(" to ")
+  [0, 24] Text("Your payout of ")
   [0, 25] ·
   [0, 26] ·
-  [0, 27] Text(" was approved, and is recorded.\n")
+  [0, 27] Text(" to ")
   [0, 28] ·
   [0, 29] ·
-  [0, 32] Boolean(true)
-  [0, 31] Boolean(true)
-  [0, 33] Boolean(true)
-  [0, 30] ·
-  [0, 37] ·
-  [0, 38, 0] Record({})
-  [0, 38, 1] Number(200.0)
-  [0, 38, 2] Record({"status": Number(200.0)})
-  [0, 38, 3] ·
-  [0, 38, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 38] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 30] Text(" was approved, and is recorded.\n")
+  [0, 31] ·
+  [0, 32] ·
+  [0, 34] Boolean(true)
+  [0, 35] ·
+  [0, 33] ·
+  [0, 40] ·
+  [0, 41] Boolean(false)
+  [0, 42] ·
+  [0, 43, 0] Record({})
+  [0, 43, 1] Number(200.0)
+  [0, 43, 2] Record({"status": Number(200.0)})
+  [0, 43, 3] ·
+  [0, 43, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 43] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
 == approval-mail · action payout · input 1
-  [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
-  [0, 4] Text("x")
   [0, 1] ·
   [0, 2] ·
   [0, 3] Boolean(false)
-  [0, 9] Boolean(true)
+  [0, 4] ·
+  [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 7] Text("x")
   [0, 5] ·
-  [0, 6] ·
-  [0, 7] ·
+  [0, 6] Boolean(false)
+  [0, 12] Boolean(true)
   [0, 8] ·
+  [0, 9] ·
   [0, 10] ·
   [0, 11] ·
-  [0, 12] Record({})
-  [0, 13] Text("ops")
-  [0, 14] Record({"to": Text("ops")})
-  [0, 15] Text("Payout ")
-  [0, 16] Text("x")
-  [0, 17] Text("x")
-  [0, 18] Text(" approved")
-  [0, 19] Text("Payout x approved")
-  [0, 20] Record({"subject": Text("Payout x approved"), "to": Text("ops")})
-  [0, 21] Text("Your payout of ")
-  [0, 22] Number(5.0)
-  [0, 23] Text("5")
-  [0, 24] Text(" to ")
-  [0, 25] ·
-  [0, 26] ·
-  [0, 27] Text(" was approved, and is recorded.\n")
+  [0, 13] ·
+  [0, 14] ·
+  [0, 15] Record({})
+  [0, 16] Text("ops")
+  [0, 17] Record({"to": Text("ops")})
+  [0, 18] Text("Payout ")
+  [0, 19] Text("x")
+  [0, 20] Text("x")
+  [0, 21] Text(" approved")
+  [0, 22] Text("Payout x approved")
+  [0, 23] Record({"subject": Text("Payout x approved"), "to": Text("ops")})
+  [0, 24] Text("Your payout of ")
+  [0, 25] Number(5.0)
+  [0, 26] Text("5")
+  [0, 27] Text(" to ")
   [0, 28] ·
   [0, 29] ·
-  [0, 32] Boolean(true)
-  [0, 31] Boolean(true)
-  [0, 33] Boolean(true)
-  [0, 30] ·
-  [0, 37] ·
-  [0, 38, 0] Record({})
-  [0, 38, 1] Number(200.0)
-  [0, 38, 2] Record({"status": Number(200.0)})
-  [0, 38, 3] ·
-  [0, 38, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 38] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 30] Text(" was approved, and is recorded.\n")
+  [0, 31] ·
+  [0, 32] ·
+  [0, 34] Boolean(true)
+  [0, 35] ·
+  [0, 33] ·
+  [0, 40] ·
+  [0, 41] Boolean(false)
+  [0, 42] ·
+  [0, 43, 0] Record({})
+  [0, 43, 1] Number(200.0)
+  [0, 43, 2] Record({"status": Number(200.0)})
+  [0, 43, 3] ·
+  [0, 43, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 43] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
 == approval-mail · action payout · input 2
-  [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
-  [0, 4] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] Boolean(false)
-  [0, 9] Boolean(true)
-  [0, 5] ·
-  [0, 6] ·
+  [0, 4] ·
+  [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 7] ·
+  [0, 5] ·
+  [0, 6] Boolean(false)
+  [0, 12] Boolean(true)
   [0, 8] ·
+  [0, 9] ·
   [0, 10] ·
   [0, 11] ·
-  [0, 12] Record({})
   [0, 13] ·
   [0, 14] ·
-  [0, 15] Text("Payout ")
+  [0, 15] Record({})
   [0, 16] ·
   [0, 17] ·
-  [0, 18] Text(" approved")
+  [0, 18] Text("Payout ")
   [0, 19] ·
   [0, 20] ·
-  [0, 21] Text("Your payout of ")
+  [0, 21] Text(" approved")
   [0, 22] ·
   [0, 23] ·
-  [0, 24] Text(" to ")
+  [0, 24] Text("Your payout of ")
   [0, 25] ·
   [0, 26] ·
-  [0, 27] Text(" was approved, and is recorded.\n")
+  [0, 27] Text(" to ")
   [0, 28] ·
   [0, 29] ·
-  [0, 32] Boolean(true)
-  [0, 31] Boolean(true)
-  [0, 33] Boolean(true)
-  [0, 30] ·
-  [0, 37] ·
-  [0, 38, 0] Record({})
-  [0, 38, 1] Number(200.0)
-  [0, 38, 2] Record({"status": Number(200.0)})
-  [0, 38, 3] ·
-  [0, 38, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 38] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 30] Text(" was approved, and is recorded.\n")
+  [0, 31] ·
+  [0, 32] ·
+  [0, 34] Boolean(true)
+  [0, 35] ·
+  [0, 33] ·
+  [0, 40] ·
+  [0, 41] Boolean(false)
+  [0, 42] ·
+  [0, 43, 0] Record({})
+  [0, 43, 1] Number(200.0)
+  [0, 43, 2] Record({"status": Number(200.0)})
+  [0, 43, 3] ·
+  [0, 43, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 43] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
 == remittance-mail · POST /invoices · input 0
@@ -12815,90 +13037,69 @@
   [0] Record({"body": Text("approved"), "status": Number(200.0)})
   => Record({"body": Text("approved"), "status": Number(200.0)})
 == trading-bot · action approval · input 0
-  [0, 0] Record({})
-  [0, 4] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] Boolean(false)
+  [0, 4] ·
+  [0, 0] Record({})
   [0, 7] ·
   [0, 5] ·
-  [0, 11] ·
-  [0, 12] Boolean(false)
-  [0, 13] Boolean(true)
-  [0, 20] Boolean(true)
-  [0, 14] ·
-  [0, 15] ·
-  [0, 16] ·
-  [0, 17] Text("someone")
-  [0, 18] Record({"approved_by": Text("someone")})
-  [0, 19] ·
-  [0, 21] ·
-  [0, 22] ·
-  [0, 23] ·
-  [0, 24, 0] Record({})
-  [0, 24, 1] Number(200.0)
-  [0, 24, 2] Record({"status": Number(200.0)})
-  [0, 24, 3] ·
-  [0, 24, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 24] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 6] Boolean(false)
+  [0, 9] ·
+  [0, 8] ·
+  [0, 26] ·
+  [0, 27] Boolean(false)
+  [0, 28] ·
+  [0, 29, 0] Record({})
+  [0, 29, 1] Number(200.0)
+  [0, 29, 2] Record({"status": Number(200.0)})
+  [0, 29, 3] ·
+  [0, 29, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 29] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
 == trading-bot · action approval · input 1
-  [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
-  [0, 4] Text("x")
   [0, 1] ·
   [0, 2] ·
   [0, 3] Boolean(false)
-  [0, 7] ·
+  [0, 4] ·
+  [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 7] Text("x")
   [0, 5] ·
-  [0, 11] ·
-  [0, 12] Boolean(false)
-  [0, 13] Boolean(true)
-  [0, 20] Boolean(true)
-  [0, 14] ·
-  [0, 15] ·
-  [0, 16] ·
-  [0, 17] Text("someone")
-  [0, 18] Record({"a": Number(6.0), "amount": Number(5.0), "approved_by": Text("someone"), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0… #0a83b120b9d96798
-  [0, 19] ·
-  [0, 21] ·
-  [0, 22] ·
-  [0, 23] ·
-  [0, 24, 0] Record({})
-  [0, 24, 1] Number(200.0)
-  [0, 24, 2] Record({"status": Number(200.0)})
-  [0, 24, 3] ·
-  [0, 24, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 24] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 6] Boolean(false)
+  [0, 9] ·
+  [0, 8] ·
+  [0, 26] ·
+  [0, 27] Boolean(false)
+  [0, 28] ·
+  [0, 29, 0] Record({})
+  [0, 29, 1] Number(200.0)
+  [0, 29, 2] Record({"status": Number(200.0)})
+  [0, 29, 3] ·
+  [0, 29, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 29] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
 == trading-bot · action approval · input 2
-  [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
-  [0, 4] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] Boolean(false)
+  [0, 4] ·
+  [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 7] ·
   [0, 5] ·
-  [0, 11] ·
-  [0, 12] Boolean(false)
-  [0, 13] Boolean(true)
-  [0, 20] Boolean(true)
-  [0, 14] ·
-  [0, 15] ·
-  [0, 16] ·
-  [0, 17] Text("someone")
-  [0, 18] Record({"approved_by": Text("someone"), "items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), … #5776d4da159ca169
-  [0, 19] ·
-  [0, 21] ·
-  [0, 22] ·
-  [0, 23] ·
-  [0, 24, 0] Record({})
-  [0, 24, 1] Number(200.0)
-  [0, 24, 2] Record({"status": Number(200.0)})
-  [0, 24, 3] ·
-  [0, 24, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
-  [0, 24] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 6] Boolean(false)
+  [0, 9] ·
+  [0, 8] ·
+  [0, 26] ·
+  [0, 27] Boolean(false)
+  [0, 28] ·
+  [0, 29, 0] Record({})
+  [0, 29, 1] Number(200.0)
+  [0, 29, 2] Record({"status": Number(200.0)})
+  [0, 29, 3] ·
+  [0, 29, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 29] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
 == trading-bot · action place · input 0

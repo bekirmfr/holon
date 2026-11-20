@@ -359,6 +359,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/approval.holon.ts"),
     },
     Sample {
+        name: "refund-review",
+        title: "Refund review (answer before the wait)",
+        description: "A refund waits for a reviewer only when it needs one. Its run answers at once when the refund names no order or is small, with a row of if (test) return value right above the wait, and parks for a review otherwise; the refund is written once the reviewer opens the link. The canvas, the step view and both editors show the returns as written.",
+        shows: &["start", "await", "return before a wait", "resume routes", "durable runs"],
+        port: Some("8137"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -X POST -H "Content-Type: application/json" -d '{"order":"o-1","amount":5}' http://127.0.0.1:8137/refunds answers {"by":"rule","refunded":"o-1"} at once, and nothing waits. With "amount":500 it answers /review/<token>; open that path and the refund goes ahead, written to state "last_refund""#,
+        text: include_str!("../samples/refund-review.holon.ts"),
+    },
+    Sample {
         name: "fetch-json",
         title: "Fetch and reshape",
         description: "Call another API, parse its JSON and answer with the one field you need.",
