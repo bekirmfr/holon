@@ -884,16 +884,20 @@ export function whyNotRun(nodes: ReplayNode[], by: string | null): string {
 export type VerdictRun = { kind: string; route: string | null; outputs: (WValue | null)[]; parked?: string[] | null };
 
 /**
- * Whether a replay reproduces the run: true, false, or null when nothing tells.
+ * Whether a replay reproduces the run: true, false, or null when nothing tells. One rule for every
+ * kind of run, read from what its record holds, never from its kind: a list of kinds left a mail's,
+ * a feed's, a queue's, a WebSocket block's and a resumed part's runs never judged (R159).
  *
- * - A request, or an action with a `respond`, that answered: the replay's respond gives the same
- *   answer.
- * - A run parked at a waiting point (an `await`, an approval) hasn't answered: each node it ran
- *   gives what its log says. The replay goes on past the waiting point, which nobody has decided
- *   and so gives nothing, down to a respond the run never reached, which falls back to its
- *   `missing` answer (404 "not found"); held to the answer, every waiting run read as different.
- * - A clock's tick, a file handler's run, an action that only writes: each node gives what the log
- *   says, as a waiting run.
+ * - A run that answered, not waiting, where the replay reaches a `respond` (a request's, an
+ *   action's with one): the respond gives the same answer.
+ * - Any other run: each node it ran gives what its log says. A run parked at a waiting point (an
+ *   `await`, an approval) hasn't answered: the replay goes on past the waiting point, which nobody
+ *   has decided and so gives nothing, down to a respond the run never reached, which falls back to
+ *   its `missing` answer (404 "not found"); held to the answer, every waiting run read as
+ *   different. So with a clock's tick, a file's, a mail's, a feed's or a queue's run, an action
+ *   that only writes.
+ * - Null when neither tells: no answer to hold the replay to, and no node of the run's record that
+ *   the replay ran.
  *
  * And it differs whenever it ran other nodes than the run did (`ranSame`, from `sameNodesRan`).
  */
@@ -903,17 +907,21 @@ export function replayVerdict(entry: VerdictRun, run: Pick<Replay, "order" | "tr
     const n = nodes.find((x) => x.id === id);
     return n?.data.name === "respond" && n.data.body.kind === "Template";
   });
-  // An action's run is answered as a request is: by its respond.
-  const action = entry.kind === "trigger" && !!entry.route;
   const waiting = (entry.parked?.length ?? 0) > 0;
-  if (!waiting && (entry.kind === "request" || action) && respond && entry.outputs.length > 0) {
+  if (!waiting && respond && entry.outputs.length > 0) {
     return JSON.stringify(run.traces.get(respond)?.outputs[0] ?? null) === JSON.stringify(entry.outputs[0]);
   }
-  if (waiting || ((entry.kind === "tick" || entry.kind === "file" || (action && !respond)) && entry.route)) {
-    const ran = [...recorded].filter(([id]) => run.traces.has(id));
-    if (ran.length > 0) return ran.every(([id, outputs]) => stable(run.traces.get(id)!.outputs) === stable(outputs));
-  }
-  return null;
+  const ran = [...recorded].filter(([id]) => run.traces.has(id));
+  return ran.length > 0 ? ran.every(([id, outputs]) => stable(run.traces.get(id)!.outputs) === stable(outputs)) : null;
+}
+
+/** What the Record tab says of a replay's verdict. Without one, which of its two reasons it is:
+ *  the run is on a version whose canvas isn't shown (its replay would be another flow's), or its
+ *  record holds nothing to hold the replay to (no answer, no step the replay ran). */
+export function verdictSays(verdict: boolean | null, otherVersion: boolean): string {
+  if (otherVersion) return "not checked: its version's canvas isn't shown";
+  if (verdict === null) return "not checked: its record holds nothing to compare the replay with";
+  return verdict ? "✓ gives what it recorded" : "✗ gives something else than it recorded";
 }
 
 export function sameNodesRan(group: string[], run: Replay, timings: Map<string, unknown>, waited: boolean): boolean | null {

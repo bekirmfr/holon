@@ -38,7 +38,10 @@
   noted. `holon explain` and `holon runs --run N` say each under the line that would have made it,
   read from the note. A run that went on from a wait, or that a mail, a feed or a queue started, is
   now shown over its own steps: explain said "this run recorded no steps" for it, and the editor's
-  run view showed no values. explain no longer takes a step whose value was too large
+  run view showed no values. Picked in the editor's view mode, such a run, or a WebSocket
+  message's, is now judged by its replay as a clock's or a file's run is, by what each of its nodes
+  gave; the editor said nothing of whether its replay reproduced it. explain no longer takes a step
+  whose value was too large
   to record for one that gave nothing: a write fed a large answer and a state read for the first
   time named the request as what gave nothing. `holon verify` works the notes out again and says a
   run differs where they don't match. A run recorded before this release has no notes, so verify

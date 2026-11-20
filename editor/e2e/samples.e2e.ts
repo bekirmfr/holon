@@ -1641,6 +1641,19 @@ test("price-feed runs on each event its feed sends, and opens the feed again fro
   await expect.poll(() => opened().slice(before), { timeout: WAITS.arrival }).toEqual([`${symbol}-1`]);
   dropWhole(feed, `${symbol}-2.json`, JSON.stringify({ symbol, price: 11 }));
   await expect.poll(async () => (await prices())[symbol]?.price, { timeout: WAITS.arrival }).toBe(11);
+  // A feed's run, picked in view mode (the newest is a request for /prices), is replayed and judged
+  // by what each of its nodes gave, as a clock's or a file's is: a feed's run was never judged
+  // (R159).
+  await viewNewestRun(page);
+  await page.locator(".hl-view__bottom").getByText("(on feed prices)").first().click();
+  const picked = page.locator(".hl-view__said");
+  await expect(picked).toContainText("(on feed prices)");
+  await expect(picked).toContainText("replay reproduces the run");
+  // And the Inspector's Record tab, which said "its version's canvas isn't shown" of a run its
+  // replay couldn't judge, on the version shown.
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await inspector.getByRole("button", { name: "Record", exact: true }).click();
+  await expect(inspector).toContainText("✓ gives what it recorded");
 
   // The admin's resources show the feed without its query; permissions, that price-feed listens.
   await page.goto("/");
