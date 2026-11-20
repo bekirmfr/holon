@@ -225,15 +225,15 @@ export type NodeTiming = {
   reason?: string;
 };
 
-/** Which of the deployed flow's traces places a run's steps, and how deep they sit: a request's
- *  route, or a clock's, file handler's, websocket block's or action's label (`every 2s`, `on file
- *  inbox`, `WebSocket /room/:name message`, `action reset`), one level down, inside its handler
- *  unit; else the whole flow's (`"*"`), at the top. A run that went on from a wait (`resume`) is
- *  placed as its first part is, by its handler's label (holon-author's agent.rs `run_trace`). */
-export function placedBy(entry: { kind: string; route: string | null }): { key: string; depth: 1 | 2 } {
-  const handler =
-    entry.kind === "request" || ((entry.kind === "tick" || entry.kind === "file" || entry.kind === "trigger" || entry.kind === "websocket" || entry.kind === "resume") && !!entry.route);
-  return handler ? { key: entry.route ?? "", depth: 2 } : { key: "*", depth: 1 };
+/** Which of the deployed flow's traces places a run's steps, and how deep they sit: its route,
+ *  where the trace has one of that name (a request's route, or the label of the handler that
+ *  started it: `every 2s`, `on file inbox`, `on mail remit`, `WebSocket /room/:name message`,
+ *  `action reset`…; a run that went on from a wait keeps its first part's), one level down,
+ *  inside its handler unit; else the whole flow's (`"*"`), at the top. One rule, with no list of
+ *  kinds (R151), as holon-author's agent.rs `run_trace`: `placed.fixture.json`, from the server's
+ *  test of a run of every kind, holds the two together. */
+export function placedBy(entry: { route: string | null }, trace: Record<string, string[]> | undefined): { key: string; depth: 1 | 2 } {
+  return entry.route && trace && Object.hasOwn(trace, entry.route) ? { key: entry.route, depth: 2 } : { key: "*", depth: 1 };
 }
 
 /** The canvas node a recorded step path belongs to: its own, or, for a step inside one (a
@@ -242,7 +242,7 @@ function nodeHolding(
   entry: { kind: string; route: string | null },
   trace: Record<string, string[]> | undefined,
 ): (path: number[]) => string | undefined {
-  const { key, depth } = placedBy(entry);
+  const { key, depth } = placedBy(entry, trace);
   const map = trace?.[key];
   return (path) => {
     if (!map || path.length < depth || (depth === 2 && path[0] !== 0)) return undefined;
@@ -370,7 +370,7 @@ export function heldEffects(
   nodes: ReplayNode[],
 ): Held[] {
   const at = nodeHolding(entry, trace);
-  const { depth } = placedBy(entry);
+  const { depth } = placedBy(entry, trace);
   return (entry.skipped ?? []).map((note) => {
     const fromId = note.from?.length ? at(note.from) : undefined;
     const from = fromId ? nodes.find((n) => n.id === fromId) : undefined;
@@ -390,7 +390,7 @@ function nodeAtPath(
   entry: { kind: string; route: string | null },
   trace: Record<string, string[]> | undefined,
 ): (path: number[]) => string | undefined {
-  const { key, depth } = placedBy(entry);
+  const { key, depth } = placedBy(entry, trace);
   const map = trace?.[key];
   return (path) => {
     if (!map || path.length !== depth || (depth === 2 && path[0] !== 0)) return undefined;
@@ -412,7 +412,7 @@ export function innerSteps(
   trace: Record<string, string[]> | undefined,
   nodeId: string,
 ): InnerStep[] {
-  const { key, depth } = placedBy(entry);
+  const { key, depth } = placedBy(entry, trace);
   const map = trace?.[key];
   const k = map ? map.indexOf(nodeId) : -1;
   if (k < 0) return [];

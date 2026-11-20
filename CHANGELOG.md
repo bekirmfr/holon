@@ -28,8 +28,9 @@
   refused is noted with its rule, and one that may carry what is computed from a secret is noted
   as withheld, naming nothing. The flow's own choice (an `if` not taken, an early return) isn't
   noted. `holon explain` and `holon runs --run N` say each under the line that would have made it,
-  read from the note, and a run that went on from a wait is explained over its own steps (it
-  said "this run recorded no steps"). explain no longer takes a step whose value was too large
+  read from the note. A run that went on from a wait, or that a mail, a feed or a queue started, is
+  now shown over its own steps: explain said "this run recorded no steps" for it, and the editor's
+  run view showed no values. explain no longer takes a step whose value was too large
   to record for one that gave nothing: a write fed a large answer and a state read for the first
   time named the request as what gave nothing. `holon verify` works the notes out again and says a
   run differs where they don't match. A run recorded before this release has no notes, so verify

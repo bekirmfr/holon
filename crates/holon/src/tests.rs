@@ -16,6 +16,8 @@ mod approval_shows;
 mod deploy_review;
 /// No page of another site may frame the control plane.
 mod frames;
+/// A run of every kind shows its steps, in explain and the editor alike (R151).
+mod run_kinds;
 /// Reading a run's steps and values takes run.steps (R55).
 mod run_steps;
 /// An expired waiting run slow to go on holds no other deadline (R34).

@@ -275,17 +275,20 @@ struct Recorded {
 }
 
 /// The document's trace for this run's part: the node id at each step index, and how deep in a
-/// step's path that index sits. A request's route, or a clock's, file handler's or action's label
-/// (`every 2s`, `on file inbox`, `action reset`), places it one level down, inside its handler
-/// unit (`[0, k]`); else the whole flow's (`"*"`), at the top. As the editor's `placedBy` does.
-/// A run that went on from a wait (`resume`) keeps the label of the run it continues.
+/// step's path that index sits. A run is placed by its route where the document has a trace of
+/// that name: a request's route, or the label of the handler that started it (`every 2s`, `on
+/// file inbox`, `on mail remit`, `WebSocket /room/:name message`, `action reset`…), one level
+/// down, inside its handler unit (`[0, k]`); a run that went on from a wait (`resume`) keeps the
+/// label of the run it continues. Else by the whole flow's (`"*"`), at the top. One rule, with no
+/// list of kinds: a list left mail, feed and queue runs out, and they showed no steps
+/// (R151). As the editor's `placedBy` does (`placed.fixture.json`, from the server's test of a
+/// run of every kind).
 fn run_trace(document: &Value, entry: &Value) -> (Vec<String>, usize) {
-    let kind = entry.get("kind").and_then(Value::as_str).unwrap_or("");
-    let route = entry.get("route").and_then(Value::as_str).filter(|r| !r.is_empty());
-    let handler = kind == "request" || (matches!(kind, "tick" | "file" | "trigger" | "websocket" | "resume") && route.is_some());
-    let (key, depth) = if handler { (route.unwrap_or(""), 2) } else { ("*", 1) };
-    let map: Vec<String> = document.pointer(&format!("/trace/{}", key.replace('~', "~0").replace('/', "~1"))).and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
-    (map, depth)
+    let trace = |key: &str| -> Option<Vec<String>> { serde_json::from_value(document.get("trace")?.get(key)?.clone()).ok() };
+    match entry.get("route").and_then(Value::as_str).and_then(trace) {
+        Some(map) => (map, 2),
+        None => (trace("*").unwrap_or_default(), 1),
+    }
 }
 
 /// The node a recorded step path (`[0, k]`) belongs to.

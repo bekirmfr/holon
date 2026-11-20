@@ -6,6 +6,7 @@ import { buildSample, samples } from "./samples";
 import { tabFromDocument } from "./tabs";
 import { bodyPosition, collectionsAtStep, diagnose, executionOrder, heldEffects, placedBy, fileLabel, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, replayVerdict, runGroup, failureWire, fellBack, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type NodeTrace, type Replay, type ReplayNode, type VerdictRun, type Issue, type NodeTiming, type SkippedNote } from "./replay";
 import { graphRun } from "./runRows";
+import placedFixture from "./placed.fixture.json";
 import skippedFixture from "./skipped.fixture.json";
 import { asksHostPrimitives, choiceNext, primitiveCatalog, type WParam, type WValue } from "./holon";
 
@@ -805,12 +806,24 @@ describe("what a run held and didn't make (the server's notes, skipped)", () => 
   });
 
   it("places a run that went on from a wait by its handler, as its first part (explain's run_trace)", () => {
-    expect(placedBy({ kind: "resume", route: "action card" })).toEqual({ key: "action card", depth: 2 });
-    expect(placedBy({ kind: "resume", route: null })).toEqual({ key: "*", depth: 1 });
+    expect(placedBy({ route: "action card" }, trace)).toEqual({ key: "action card", depth: 2 });
+    expect(placedBy({ route: null }, trace)).toEqual({ key: "*", depth: 1 });
+    // A route the flow has no trace of is placed by the whole flow's, whatever kind of run it is.
+    expect(placedBy({ route: "on mail gone" }, trace)).toEqual({ key: "*", depth: 1 });
     expect(heldEffects({ kind: "resume", route: "action card", reads, skipped: [notes[0]] }, trace, nodes).map((h) => h.id)).toEqual(["w"]);
     // Its steps too: what the resumed part's write computed is read off its node.
     const timeline = [{ path: [0, 1], start_us: 0, end_us: 1, outputs: [num(3)] }];
     expect(nodeOutputs({ kind: "resume", route: "action card", timeline }, trace).get("w")).toEqual([num(3)]);
+  });
+
+  it("places a run of every kind on the nodes explain places it on (placed.fixture.json, written by the server's test of a run of every kind)", () => {
+    const shared = placedFixture.trace as Record<string, string[]>;
+    expect(placedFixture.runs.length).toBeGreaterThan(0);
+    for (const run of placedFixture.runs) {
+      const timeline = run.paths.map((path) => ({ path, start_us: 0, end_us: 0, outputs: [] }));
+      const placed = [...nodeOutputs({ kind: run.kind, route: run.route, timeline }, shared).keys()].sort();
+      expect({ kind: run.kind, placed }).toEqual({ kind: run.kind, placed: run.nodes });
+    }
   });
 
   it("reads a failed step's reason as explain does: its own, else one of a step inside it, from the last round", () => {

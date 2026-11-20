@@ -1,0 +1,450 @@
+{
+  "runs": [
+    {
+      "kind": "request",
+      "nodes": [
+        "add-4",
+        "as_text-7",
+        "concat-8",
+        "const-3",
+        "const-6",
+        "default-2",
+        "request-0",
+        "respond-9",
+        "store_read-1",
+        "store_write-5"
+      ],
+      "paths": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          0,
+          3
+        ],
+        [
+          0,
+          4
+        ],
+        [
+          0,
+          5
+        ],
+        [
+          0,
+          6
+        ],
+        [
+          0,
+          7
+        ],
+        [
+          0,
+          8
+        ],
+        [
+          0,
+          9
+        ]
+      ],
+      "route": "GET /hit"
+    },
+    {
+      "kind": "trigger",
+      "nodes": [
+        "action-18",
+        "add-22",
+        "const-21",
+        "default-20",
+        "respond-24",
+        "store_read-19",
+        "store_write-23"
+      ],
+      "paths": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          0,
+          3
+        ],
+        [
+          0,
+          4
+        ],
+        [
+          0,
+          5
+        ],
+        [
+          0,
+          6
+        ]
+      ],
+      "route": "action bump"
+    },
+    {
+      "kind": "resume",
+      "nodes": [
+        "action-25",
+        "await-26",
+        "field-27",
+        "store_write-28"
+      ],
+      "paths": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          0,
+          3
+        ]
+      ],
+      "route": "action later"
+    },
+    {
+      "kind": "tick",
+      "nodes": [
+        "add-33",
+        "const-32",
+        "default-31",
+        "every-29",
+        "store_read-30",
+        "store_write-34"
+      ],
+      "paths": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          0,
+          3
+        ],
+        [
+          0,
+          4
+        ],
+        [
+          0,
+          5
+        ]
+      ],
+      "route": "every 1s"
+    },
+    {
+      "kind": "file",
+      "nodes": [
+        "add-39",
+        "const-38",
+        "default-37",
+        "on_file-35",
+        "store_read-36",
+        "store_write-40"
+      ],
+      "paths": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          0,
+          3
+        ],
+        [
+          0,
+          4
+        ],
+        [
+          0,
+          5
+        ]
+      ],
+      "route": "on file inbox"
+    },
+    {
+      "kind": "mail",
+      "nodes": [
+        "add-45",
+        "const-44",
+        "default-43",
+        "on_mail-41",
+        "store_read-42",
+        "store_write-46"
+      ],
+      "paths": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          0,
+          3
+        ],
+        [
+          0,
+          4
+        ],
+        [
+          0,
+          5
+        ]
+      ],
+      "route": "on mail remit"
+    },
+    {
+      "kind": "feed",
+      "nodes": [
+        "add-51",
+        "const-50",
+        "default-49",
+        "on_feed-47",
+        "store_read-48",
+        "store_write-52"
+      ],
+      "paths": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          0,
+          3
+        ],
+        [
+          0,
+          4
+        ],
+        [
+          0,
+          5
+        ]
+      ],
+      "route": "on feed prices"
+    },
+    {
+      "kind": "queue",
+      "nodes": [
+        "add-57",
+        "const-56",
+        "default-55",
+        "on_queue-53",
+        "store_read-54",
+        "store_write-58"
+      ],
+      "paths": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          0,
+          3
+        ],
+        [
+          0,
+          4
+        ],
+        [
+          0,
+          5
+        ]
+      ],
+      "route": "on queue events"
+    },
+    {
+      "kind": "websocket",
+      "nodes": [
+        "add-14",
+        "const-13",
+        "default-12",
+        "field-16",
+        "respond-17",
+        "store_read-11",
+        "store_write-15",
+        "websocket-10"
+      ],
+      "paths": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          0,
+          3
+        ],
+        [
+          0,
+          4
+        ],
+        [
+          0,
+          5
+        ],
+        [
+          0,
+          6
+        ],
+        [
+          0,
+          7
+        ]
+      ],
+      "route": "WebSocket /ws message"
+    }
+  ],
+  "trace": {
+    "GET /hit": [
+      "request-0",
+      "respond-9",
+      "store_write-5",
+      "default-2",
+      "const-3",
+      "as_text-7",
+      "add-4",
+      "const-6",
+      "concat-8",
+      "store_read-1"
+    ],
+    "WebSocket /ws message": [
+      "respond-17",
+      "default-12",
+      "const-13",
+      "store_write-15",
+      "add-14",
+      "field-16",
+      "store_read-11",
+      "websocket-10"
+    ],
+    "action bump": [
+      "respond-24",
+      "store_read-19",
+      "default-20",
+      "store_write-23",
+      "const-21",
+      "add-22",
+      "action-18"
+    ],
+    "action later": [
+      "field-27",
+      "store_write-28",
+      "await-26",
+      "action-25"
+    ],
+    "every 1s": [
+      "store_write-34",
+      "every-29",
+      "default-31",
+      "const-32",
+      "add-33",
+      "store_read-30"
+    ],
+    "on feed prices": [
+      "store_write-52",
+      "on_feed-47",
+      "default-49",
+      "store_read-48",
+      "const-50",
+      "add-51"
+    ],
+    "on file inbox": [
+      "store_read-36",
+      "default-37",
+      "const-38",
+      "store_write-40",
+      "on_file-35",
+      "add-39"
+    ],
+    "on mail remit": [
+      "on_mail-41",
+      "store_read-42",
+      "default-43",
+      "const-44",
+      "add-45",
+      "store_write-46"
+    ],
+    "on queue events": [
+      "store_read-54",
+      "store_write-58",
+      "default-55",
+      "const-56",
+      "on_queue-53",
+      "add-57"
+    ]
+  }
+}
