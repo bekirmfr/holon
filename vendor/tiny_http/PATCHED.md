@@ -145,6 +145,22 @@ or, while the history keeps it, against the commit that added the copy unchanged
    says why in words (as JSON), with `Connection: close`, and the connection ends (change 7's
    `end`), its client reading the answer before the close; upstream said 400 and 417 with no
    words and closed at once, a reset with bytes unread.
+10. **A request's head, bounded** (`src/limits.rs`, `Limits::request_line`, `head`,
+   `header_lines`; `src/client.rs`, `read_next_line`, `head_line`, `read`). Upstream read a line
+   of a request's head for as long as its bytes came, into memory, and took as many header lines
+   as came: only the request deadline (change 6) ended it, and at a network's speed that is
+   gigabytes (90 MB of one request line on rc.36 held to 64 MB, a deployed flow told 503 until
+   the connection closed). Now a request line is read no further than `limits::REQUEST_LINE`
+   (16 KiB; 414 past it), a head no further than `HEAD` (64 KiB; 431), so the heads of every
+   connection open at once hold 64 MiB at most, and no more than `HEADER_LINES` header lines
+   (100, as hyper takes on the flows' ports; 431). A header line has no bound of its own besides
+   what is left of the head: a browser sends every cookie of a host in one `Cookie` line, and on
+   127.0.0.1 or localhost, where the editor is opened, that is every local program's (cookies go
+   by host, not by port), so a bound of 16 KiB would lock that person out of the editor. Past a
+   bound, the request is told why in words, and the connection ends (`refuse`, change 9). Who
+   notices: a request line over 16 KiB (a long query string) is told 414; a head over 64 KiB, or
+   past 100 header lines, 431. A chunk's size line, which the chunk decoder read likewise, is out
+   of a request's path since change 9.
 
 `Server::from_listener_limited` takes other limits; every other constructor (rouille's
 included) uses `Limits::default()`.

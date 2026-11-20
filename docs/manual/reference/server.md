@@ -488,7 +488,8 @@ of "payout": each step of an approval is someone else's`).
   that streams one without it (a `Transfer-Encoding`, as `curl -T -` sends standard input) is
   told 411, and one whose length isn't digits, with two lengths, or with a header line folded
   onto the one before or holding a CR, LF or NUL, 400; each with why, and its connection is
-  closed.
+  closed. A request line is read up to 16 KiB (past it, 414), and a request's head up to 64 KiB
+  and 100 header lines (past them, 431).
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
 - The server never lets the last enabled person holding admin be removed, disabled, given
   another role or unbound, bound to them or to a group of theirs. The run file's admin (below)

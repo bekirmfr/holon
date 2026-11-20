@@ -615,6 +615,82 @@ fn a_request_that_can_be_read_two_ways_is_refused_and_nothing_after_it_read() {
     server.unblock();
 }
 
+/// A request's head is read no further than its bounds: a request line no longer than
+/// `Limits::request_line`, a head no larger than `Limits::head`, no more header lines than
+/// `Limits::header_lines`. A header line has no bound of its own besides what is left of the head.
+/// Past a bound, the request is told 414 (its request line) or 431 (its headers), why in words,
+/// and the connection ends, nothing after it read; at each bound it is answered, and so is the
+/// request after it, `/think?ms=0`, with an answer of its own. Upstream read a line, and header
+/// lines, for as long as their bytes came, into memory (90 MB of one request line, on rc.36).
+#[test]
+fn a_requests_head_is_read_no_further_than_its_bounds() {
+    let (server, at) = serve(Limits { request_line: 100, head: 400, header_lines: 5, ..Limits::default() });
+    let request = |line: String, headers: String| format!("{}\r\n{}\r\n", line, headers);
+    // a request line of n bytes
+    let line_of = |n: usize| format!("GET /{} HTTP/1.1", "a".repeat(n - "GET / HTTP/1.1".len()));
+    // header lines of n bytes each, their CRLFs aside
+    let headers_of = |count: usize, n: usize| (0..count).map(|i| format!("X-{}: {}\r\n", i, "b".repeat(n - 5))).collect::<String>();
+    let plain = || "GET / HTTP/1.1".to_string();
+    // the head counts its request line and each header line with their CRLFs: 16 + 4 * 96 = 400
+    let rows: Vec<(&str, String, u16)> = vec![
+        ("a request line at the bound", request(line_of(100), String::new()), 200),
+        ("a request line past it", request(line_of(101), String::new()), 414),
+        ("a header line longer than a request line may be", request(plain(), headers_of(1, 300)), 200),
+        ("a header line past the head", request(plain(), headers_of(1, 400)), 431),
+        ("as many header lines as the bound", request(plain(), headers_of(5, 10)), 200),
+        ("one header line more", request(plain(), headers_of(6, 10)), 431),
+        ("a head at the bound", request(plain(), headers_of(4, 94)), 200),
+        ("a head past it", request(plain(), format!("{}X-4: {}\r\n", headers_of(3, 94), "b".repeat(90))), 431),
+    ];
+    for (what, request, status) in rows {
+        let mut s = connect(at);
+        s.write_all(format!("{}GET /think?ms=0 HTTP/1.1\r\nHost: test\r\n\r\n", request).as_bytes()).unwrap();
+        let (told, _, body) = answer(&mut s).unwrap_or_else(|e| panic!("{}: an answer: {}", what, e));
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert_eq!(told, status, "{}: told {} ({})", what, status, body);
+        if status == 200 {
+            let next = answer(&mut s).map(|(status, _, body)| (status, String::from_utf8_lossy(&body).into_owned()));
+            assert_eq!(next, Ok((200, "thought 0".to_string())), "{}: the request after it", what);
+        } else {
+            assert!(body.starts_with("{\"error\":"), "{}: told why: {}", what, body);
+            closed_within(&mut s).unwrap_or_else(|e| panic!("{}: then the end of the stream, nothing after it read: {}", what, e));
+        }
+    }
+
+    // A line that never ends is read no further than the bound: its connection ends and gives its
+    // place back while its client still sends (64 MB, sent in 64 KiB writes), and the server
+    // answers on.
+    for (what, start) in [("a request line", "GET /"), ("a header line", "GET / HTTP/1.1\r\nX-Long: ")] {
+        let mut s = connect(at);
+        let block = [b'a'; 64 * 1024];
+        let mut sent = 0;
+        let _ = s.write_all(start.as_bytes());
+        while sent < 64 * 1024 * 1024 {
+            if s.write_all(&block).is_err() {
+                break;
+            }
+            sent += block.len();
+        }
+        drop(s);
+        assert!(sent < 64 * 1024 * 1024, "{}: its connection ended while its bytes still came", what);
+        assert!(until(|| server.open.count() == 0), "{}: its place given back", what);
+        let mut again = connect(at);
+        again.write_all(plain().as_bytes()).unwrap();
+        again.write_all(b"\r\nHost: test\r\n\r\n").unwrap();
+        assert_eq!(answer(&mut again).map(|a| a.0), Ok(200), "{}: the server answers on", what);
+    }
+    server.unblock();
+
+    // At the default bounds, a Cookie line of 40 KiB is answered: a browser sends every cookie of
+    // the editor's host (127.0.0.1, localhost) in one line, whichever local program set them
+    let (server, at) = serve(Limits::default());
+    let mut s = connect(at);
+    s.write_all(format!("GET /think?ms=0 HTTP/1.1\r\nHost: test\r\nCookie: {}\r\n\r\n", "c=1; ".repeat(8 * 1024)).as_bytes()).unwrap();
+    let told = answer(&mut s).map(|(status, _, body)| (status, String::from_utf8_lossy(&body).into_owned()));
+    assert_eq!(told, Ok((200, "thought 0".to_string())), "a Cookie line of 40 KiB, at the default bounds");
+    server.unblock();
+}
+
 /// What is left of a body that trickles in after its answer, each byte well within the idle
 /// limit, is read off no longer than the request limit from when it begins: the connection ends
 /// while its bytes still come and gives its place back. And when the answer closed the

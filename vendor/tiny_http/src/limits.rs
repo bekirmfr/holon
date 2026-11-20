@@ -20,6 +20,10 @@
 //!   connection before the next request, and thrown away: with a small buffer, never one its
 //!   sender sizes, at most `leftover` bytes and by the request limit from then (`Leftover`). Past
 //!   either, or for a body whose end can't be found, the connection ends once its answer is out.
+//! - **A request's head** is read no further than its bounds: its request line
+//!   (`request_line`), the head in all (`head`), its header lines (`header_lines`). Past one, the
+//!   client is told 414 (its request line) or 431 (its headers), and the connection ends. A
+//!   header line is held by the head's bound alone: a browser sends every cookie of a host in one.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -44,6 +48,14 @@ pub struct Limits {
     /// The most of a body the application didn't read that its connection reads off to go on
     /// (`LEFTOVER`); past it, the connection ends once its answer is out.
     pub leftover: usize,
+    /// The longest request line, its CRLF aside (`REQUEST_LINE`); past it, the request is told
+    /// 414.
+    pub request_line: usize,
+    /// The most of a request's head in all, its lines with their CRLFs (`HEAD`); past it, 431. It
+    /// alone holds a header line.
+    pub head: usize,
+    /// The most header lines in a request (`HEADER_LINES`); past it, 431.
+    pub header_lines: usize,
     /// Connections open at once, from everyone.
     pub connections: usize,
     /// Connections open at once from one address (all of a Unix socket's count as one).
@@ -66,6 +78,21 @@ pub const REQUEST: Duration = Duration::from_secs(30);
 /// off by the request limit from when it begins, with a buffer of 4 KiB.
 pub const LEFTOVER: usize = 8 * 1024 * 1024;
 
+/// The longest request line: 16 KiB, which Node's HTTP server takes for a whole head by default.
+/// Upstream read a line for as long as its bytes came, into memory (90 MB of one request line, on
+/// rc.36).
+pub const REQUEST_LINE: usize = 16 * 1024;
+
+/// The most of a request's head in all: 64 KiB, so the heads of every connection open at once
+/// (`CONNECTIONS`) hold 64 MiB at most. A header line has no bound of its own besides what is left
+/// of it: a browser sends every cookie of a host in one `Cookie` line, and on 127.0.0.1 or
+/// localhost, where the editor is opened, that is every local program's (cookies go by host, not
+/// by port). Node's 16 KiB for a whole head is known for 431s on developers' machines for that.
+pub const HEAD: usize = 64 * 1024;
+
+/// The most header lines in a request: 100, as hyper takes on the flows' ports.
+pub const HEADER_LINES: usize = 100;
+
 /// Connections open at once: twice the requests Holon answers at once (`MAX_IN_FLIGHT`, 512),
 /// room for the kept-alive ones between requests beside them.
 pub const CONNECTIONS: usize = 1024;
@@ -84,6 +111,9 @@ impl Default for Limits {
             request: Some(REQUEST),
             linger: LINGER,
             leftover: LEFTOVER,
+            request_line: REQUEST_LINE,
+            head: HEAD,
+            header_lines: HEADER_LINES,
             connections: CONNECTIONS,
             from_one: FROM_ONE,
         }

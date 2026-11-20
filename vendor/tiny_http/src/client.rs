@@ -49,6 +49,12 @@ pub struct ClientConnection {
     leftover: Arc<crate::limits::Leftover>,
     leftover_most: usize,
 
+    // Holon (PATCHED.md): the most of a request's head read: its request line, the head in all,
+    // its header lines (`Limits::request_line`, `Limits::head`, `Limits::header_lines`)
+    request_line_most: usize,
+    head_most: usize,
+    lines_most: usize,
+
     // Holon (PATCHED.md): the last request asked to upgrade: its stream is the application's
     upgraded: bool,
 }
@@ -103,6 +109,18 @@ impl std::fmt::Display for Idle {
 }
 
 impl std::error::Error for Idle {}
+
+/// Holon (PATCHED.md): a line of a request's head past the most read, not read on.
+#[derive(Debug)]
+struct TooLong;
+
+impl std::fmt::Display for TooLong {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a line of the request's head past the most read")
+    }
+}
+
+impl std::error::Error for TooLong {}
 
 /// Error that can happen when reading a request.
 #[derive(Debug)]
@@ -160,6 +178,9 @@ impl ClientConnection {
             deadline,
             leftover: Arc::new(crate::limits::Leftover::default()),
             leftover_most: limits.leftover,
+            request_line_most: limits.request_line,
+            head_most: limits.head,
+            lines_most: limits.header_lines,
             upgraded: false,
         }
     }
@@ -178,8 +199,9 @@ impl ClientConnection {
     ///  before any of it comes, the error is `Idle` if the connection is idle (`Closer::idle`);
     ///  while it is owed an answer, or its last ended less than the limit ago, it reads on (so it
     ///  is closed between one and two limits after its last answer). A request line's first byte
-    ///  starts the request's deadline (`limits::Deadline`).
-    fn read_next_line(&mut self, first: bool) -> IoResult<AsciiString> {
+    ///  starts the request's deadline (`limits::Deadline`). A line past `most` bytes (its CR
+    ///  aside) is not read on: the error is `TooLong`.
+    fn read_next_line(&mut self, first: bool, most: usize) -> IoResult<AsciiString> {
         let mut buf = Vec::new();
         let mut prev_byte_was_cr = false;
 
@@ -210,7 +232,22 @@ impl ClientConnection {
             prev_byte_was_cr = byte == b'\r';
 
             buf.push(byte);
+            if buf.len() > most + 1 {
+                return Err(IoError::new(ErrorKind::InvalidData, TooLong));
+            }
         }
+    }
+
+    /// Holon (PATCHED.md): a line of a request's head, no longer than `most`; past it, refused
+    /// with `status` and `why`. Upstream read a line for as long as its bytes came.
+    fn head_line(&mut self, first: bool, most: usize, status: u16, why: &'static str) -> Result<AsciiString, ReadError> {
+        self.read_next_line(first, most).map_err(|e| {
+            if e.get_ref().is_some_and(|e| e.is::<TooLong>()) {
+                ReadError::Refused(status, why)
+            } else {
+                ReadError::ReadIoError(e)
+            }
+        })
     }
 
     /// Holon (PATCHED.md): what is left of the body of the request before (`limits::Leftover`),
@@ -286,10 +323,13 @@ impl ClientConnection {
         // starts as the request is handed on), and doesn't come at all after a connection's last
         self.deadline.end();
 
+        // Holon (PATCHED.md): the head read so far, its lines with their CRLFs (`Limits::head`)
+        let mut head = 0;
         let (method, path, version, headers) = {
             // reading the request line
             let (method, path, version) = {
-                let line = self.read_next_line(true).map_err(ReadError::ReadIoError)?;
+                let line = self.head_line(true, self.request_line_most, 414, "a request line longer than this server reads")?;
+                head += line.len() + 2;
                 if unclear(&line) {
                     return Err(ReadError::Refused(400, "a CR, LF or NUL inside the request line"));
                 }
@@ -303,11 +343,21 @@ impl ClientConnection {
             let headers = {
                 let mut headers = Vec::new();
                 loop {
-                    let line = self.read_next_line(false).map_err(ReadError::ReadIoError)?;
+                    // Holon (PATCHED.md): a header line is held by what is left of the head
+                    // (`Limits::head`), with no bound of its own: a browser sends every cookie of
+                    // a host in one. Upstream read one for as long as its bytes came
+                    let left = self.head_most.saturating_sub(head + 2);
+                    let line = self.head_line(false, left, 431, "a head larger than this server reads")?;
 
                     if line.is_empty() {
                         break;
                     };
+                    head += line.len() + 2;
+                    // Holon (PATCHED.md): no more header lines than `Limits::header_lines`;
+                    // upstream took as many as came
+                    if headers.len() == self.lines_most {
+                        return Err(ReadError::Refused(431, "more header lines than this server reads"));
+                    }
                     // Holon (PATCHED.md): a line folded onto the one before (obs-fold), or one
                     // with a CR, LF or NUL inside, is refused (RFC 9112 5.2, RFC 9110 5.5): a
                     // proxy in front that reads it otherwise finds other headers (a

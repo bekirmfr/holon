@@ -28,6 +28,15 @@
   streams a body to the control port's API without a length (`curl -T -`, which sends standard
   input chunked) is now told 411, and sends the body with its length instead (`curl
   --data-binary @-`). Holon's command, editor and VS Code extension always send one.
+- **A request's head sent to the control port is bounded.** The server read a request's line and
+  headers for as long as their bytes came, into memory: one connection could take as much of the
+  server's memory as it sent, and its deployed flows were told the server was busy until that
+  connection closed. A request line is now read up to 16 KiB, and a request's head up to 64 KiB
+  and 100 header lines; past one the sender is told 414 (its request line) or 431 (its headers),
+  with why, and the connection is closed. A header line has no bound of its own besides the
+  head's, so a browser's `Cookie` line for the editor, which carries the cookies every local
+  program set on 127.0.0.1 or localhost, is taken up to 64 KiB. Who notices: a request whose line
+  is over 16 KiB (a long query string), or whose head is over 64 KiB.
 - **A new server asks its first admin where the runs its logs let go of go.** Each flow's log
   keeps its newest runs and lets older ones go, past its `keep` or its age, and a server without a
   `backup` folder deleted those for good without asking anyone. Setting up the first admin in the
