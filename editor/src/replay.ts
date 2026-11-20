@@ -915,6 +915,15 @@ export function replayVerdict(entry: VerdictRun, run: Pick<Replay, "order" | "tr
   return ran.length > 0 ? ran.every(([id, outputs]) => stable(run.traces.get(id)!.outputs) === stable(outputs)) : null;
 }
 
+/** What the Record tab says of a replay's verdict. Without one, which of its two reasons it is:
+ *  the run is on a version whose canvas isn't shown (its replay would be another flow's), or its
+ *  record holds nothing to hold the replay to (no answer, no step the replay ran). */
+export function verdictSays(verdict: boolean | null, otherVersion: boolean): string {
+  if (otherVersion) return "not checked: its version's canvas isn't shown";
+  if (verdict === null) return "not checked: its record holds nothing to compare the replay with";
+  return verdict ? "✓ gives what it recorded" : "✗ gives something else than it recorded";
+}
+
 export function sameNodesRan(group: string[], run: Replay, timings: Map<string, unknown>, waited: boolean): boolean | null {
   if (timings.size === 0 || waited) return null;
   if (run.notRun.size > 0 && group.every((id) => timings.has(id))) return null;

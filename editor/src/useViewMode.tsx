@@ -330,6 +330,8 @@ export function useViewMode(input: ViewModeInput) {
     replayed,
     /** Not comparable with the run while its version's canvas isn't shown. */
     verdict: onOtherVersion ? null : (replayed?.verdict ?? null),
+    /** The run is on a version whose canvas isn't shown: why there's no verdict, then. */
+    otherVersion: onOtherVersion,
     note,
     /** Why the deployment isn't answering on its port, when it isn't. */
     listenError: viewed?.listen_error,
@@ -377,6 +379,7 @@ export function inspectorRun(view: ViewMode, flow: FlowMeta): InspectorRun | nul
     inside: view.inside,
     openRun: view.openRun,
     verdict: view.verdict,
+    otherVersion: view.otherVersion,
   };
 }
 

@@ -4,7 +4,7 @@ import { beforeAll, describe, it, expect } from "vitest";
 import { Evaluator, initSync } from "../wasm/holon_wasm.js";
 import { buildSample, samples } from "./samples";
 import { tabFromDocument } from "./tabs";
-import { bodyPosition, collectionsAtStep, diagnose, executionOrder, heldEffects, placedBy, fileLabel, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, replayVerdict, runGroup, failureWire, fellBack, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type NodeTrace, type Replay, type ReplayNode, type VerdictRun, type Issue, type NodeTiming, type SkippedNote } from "./replay";
+import { bodyPosition, collectionsAtStep, diagnose, executionOrder, heldEffects, placedBy, fileLabel, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, replayVerdict, verdictSays, runGroup, failureWire, fellBack, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type NodeTrace, type Replay, type ReplayNode, type VerdictRun, type Issue, type NodeTiming, type SkippedNote } from "./replay";
 import { graphRun } from "./runRows";
 import placedFixture from "./placed.fixture.json";
 import skippedFixture from "./skipped.fixture.json";
@@ -430,6 +430,14 @@ describe("a replay's verdict", () => {
     expect(replayVerdict(entry, replayed(1, null), nodes, logged, null)).toBe(true);
     expect(replayVerdict(entry, replayed(2, null), nodes, logged, null)).toBe(false);
     expect(replayVerdict(entry, replayed(1, null), nodes, new Map(), null)).toBe(null);
+  });
+  // The Record tab, without a verdict, says which of its two reasons it is: it said "its version's
+  // canvas isn't shown" for a run whose record held nothing to compare, on the canvas shown.
+  it("says, when there is none, why: another version's canvas, or nothing to compare", () => {
+    expect(verdictSays(null, true)).toBe("not checked: its version's canvas isn't shown");
+    expect(verdictSays(null, false)).toBe("not checked: its record holds nothing to compare the replay with");
+    expect(verdictSays(true, false)).toBe("✓ gives what it recorded");
+    expect(verdictSays(false, false)).toBe("✗ gives something else than it recorded");
   });
 });
 

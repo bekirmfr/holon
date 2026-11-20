@@ -1649,6 +1649,11 @@ test("price-feed runs on each event its feed sends, and opens the feed again fro
   const picked = page.locator(".hl-view__said");
   await expect(picked).toContainText("(on feed prices)");
   await expect(picked).toContainText("replay reproduces the run");
+  // And the Inspector's Record tab, which said "its version's canvas isn't shown" of a run its
+  // replay couldn't judge, on the version shown.
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await inspector.getByRole("button", { name: "Record", exact: true }).click();
+  await expect(inspector).toContainText("✓ gives what it recorded");
 
   // The admin's resources show the feed without its query; permissions, that price-feed listens.
   await page.goto("/");

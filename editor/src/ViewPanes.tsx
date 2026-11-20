@@ -22,7 +22,7 @@ import { buildTimeline, targetOf, type CodeText, type TimelineItem } from "./tim
 import { formatValue, detectRenderer, availableRenderers, inertHtml, type RendererKind } from "./diagnostics";
 import { typeLabel } from "./theme";
 import type { WParam, WPort, WValue } from "./holon";
-import { isCollectionCell, itemChanged, type CollectionAtStep, type Diagnosis, type Issue, type NodeExchange, type NodeTrace } from "./replay";
+import { isCollectionCell, itemChanged, verdictSays, type CollectionAtStep, type Diagnosis, type Issue, type NodeExchange, type NodeTrace } from "./replay";
 import { FAIL } from "./PrimitiveNode";
 import { stepOf } from "./keymap";
 import { useKeys } from "./ui/Keys";
@@ -1224,6 +1224,8 @@ export type InspectorRun = {
   openRun?: (seq: number) => void;
   /** Whether replaying the run reproduced what it recorded; null when not checkable. */
   verdict?: boolean | null;
+  /** The run is on a version whose canvas isn't shown, so it isn't checked. */
+  otherVersion?: boolean;
 };
 
 type InspectorTab = "node" | "state" | "record";
@@ -1305,7 +1307,7 @@ export function Inspector({
         {tab === "state" && run ? (
           <StateTab slug={run.slug} run={run.run} step={run.step} order={run.order} after={run.stateAfter} changed={run.changed} collections={run.collections} onOpenRun={run.openRun} />
         ) : tab === "record" && run ? (
-          <RecordTab slug={run.slug} run={run.run} verdict={run.verdict ?? null} />
+          <RecordTab slug={run.slug} run={run.run} verdict={run.verdict ?? null} otherVersion={run.otherVersion ?? false} />
         ) : statements ? (
           // In View runs, the node picked below what the cursor is on: what it computed.
           <>
@@ -1326,7 +1328,7 @@ export function Inspector({
 
 /** View mode's Record tab (gaps-web.md G24): the run as the log keeps it, chained to the one
  *  before it, and whether replaying it gave what it recorded. Its page checks it offline. */
-function RecordTab({ slug, run, verdict }: { slug: string; run: LogEntry | null; verdict: boolean | null }) {
+function RecordTab({ slug, run, verdict, otherVersion }: { slug: string; run: LogEntry | null; verdict: boolean | null; otherVersion: boolean }) {
   if (!run) return <div>select a run</div>;
   const secrets = Object.entries(run.secrets ?? {});
   return (
@@ -1343,7 +1345,7 @@ function RecordTab({ slug, run, verdict }: { slug: string; run: LogEntry | null;
       </Section>
       <Section title="replayed">
         <div style={{ color: verdict === null ? dim : verdict ? "var(--ok)" : FAIL }}>
-          {verdict === null ? "not checked: its version's canvas isn't shown" : verdict ? "✓ gives what it recorded" : "✗ gives something else than it recorded"}
+          {verdictSays(verdict, otherVersion)}
         </div>
       </Section>
       <Section title="claims">
