@@ -161,6 +161,14 @@ or, while the history keeps it, against the commit that added the copy unchanged
    notices: a request line over 16 KiB (a long query string) is told 414; a head over 64 KiB, or
    past 100 header lines, 431. A chunk's size line, which the chunk decoder read likewise, is out
    of a request's path since change 9.
+11. **A header that can't be one line** (`src/response.rs`, `writable`). Upstream wrote a
+   response's headers as they were, and `Header::from_bytes` (which rouille builds each with)
+   takes any ASCII: a value with a CR or LF in it ended its line early, adding headers of whoever
+   chose the value, or ended the head ("response splitting": CVE-2026-66753, whose request half
+   is change 9, and rouille's CVE-2026-66746). Now a header whose name isn't a token, or whose
+   value has a CR, LF or NUL in it, is left out, and the rest of the response goes as it is.
+   Who notices: no one with Holon's answers; the control port puts in a header only an
+   `Origin` it allows, a deployed flow's name and fixed words.
 
 `Server::from_listener_limited` takes other limits; every other constructor (rouille's
 included) uses `Limits::default()`.

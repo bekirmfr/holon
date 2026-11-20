@@ -53,6 +53,13 @@
   head's, so a browser's `Cookie` line for the editor, which carries the cookies every local
   program set on 127.0.0.1 or localhost, is taken up to 64 KiB. Who notices: a request whose line
   is over 16 KiB (a long query string), or whose head is over 64 KiB.
+- **An answer from the control port can't carry a header split in two.** The server wrote a
+  response's headers as they were given: a value holding a CR or LF would have ended its line
+  early and added headers, or ended the head (response splitting, CVE-2026-66753 and rouille's
+  CVE-2026-66746). A header whose name isn't a token, or whose value holds a CR, LF or NUL, is
+  now left out, and the rest of the answer goes as it is. Who notices: no one with Holon's own
+  answers, which put in a header only an `Origin` the server allows, a deployed flow's name and
+  fixed words.
 - **A new server asks its first admin where the runs its logs let go of go.** Each flow's log
   keeps its newest runs and lets older ones go, past its `keep` or its age, and a server without a
   `backup` folder deleted those for good without asking anyone. Setting up the first admin in the

@@ -691,6 +691,37 @@ fn a_requests_head_is_read_no_further_than_its_bounds() {
     server.unblock();
 }
 
+/// A header that can't be written as one line is left out of a response, and the rest is written
+/// as it is: a name that isn't a token, a value with a CR, LF or NUL in it. Written as it was, it
+/// ended its line early, adding headers of whoever chose its value (here a `Set-Cookie`), or
+/// ended the head (CVE-2026-66753, "response splitting"). Each is built as rouille builds every
+/// header, with `Header::from_bytes`, which takes any ASCII.
+#[test]
+fn a_header_that_cant_be_one_line_is_left_out_of_a_response() {
+    let rows = [
+        ("X-Note", "a\r\nSet-Cookie: taken=1"),
+        ("X-Note", "a\nSet-Cookie: taken=1"),
+        ("X-Note", "a\rSet-Cookie: taken=1"),
+        ("X-Note", "a\0b"),
+        ("X-Note: a\r\nSet-Cookie", "taken=1"),
+        ("X-Note: a", "b"),
+        ("X Note", "a"),
+    ];
+    for (name, value) in rows {
+        let mut out = Vec::new();
+        Response::from_string("body")
+            .with_header(Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap())
+            .with_header(Header::from_bytes(&b"X-Kept"[..], &b"yes\tand \x7e"[..]).unwrap())
+            .raw_print(&mut out, crate::HTTPVersion(1, 1), &[], false, None)
+            .unwrap();
+        let text = String::from_utf8_lossy(&out);
+        let (head, body) = text.split_once("\r\n\r\n").unwrap();
+        assert!(!head.contains("Note") && !head.contains("taken"), "{:?}: {:?}: left out: {:?}", name, value, head);
+        assert!(head.contains("\r\nX-Kept: yes\tand ~\r\n"), "{:?}: {:?}: the rest written: {:?}", name, value, head);
+        assert_eq!(body, "body", "{:?}: {:?}: the body", name, value);
+    }
+}
+
 /// What is left of a body that trickles in after its answer, each byte well within the idle
 /// limit, is read off no longer than the request limit from when it begins: the connection ends
 /// while its bytes still come and gives its place back. And when the answer closed the
