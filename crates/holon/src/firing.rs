@@ -934,13 +934,16 @@ fn run_attempt(
         }
         // A file too: another deployment that reads it logs its text, redacted only of its own
         // secrets, and a part of it read is kept as it is.
-        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) | Capability::ChannelSend(key) | Capability::MailSend(key) | Capability::QueueSend(key) | Capability::FileWrite(key) = cap {
+        // The kinds `holon check` says the host refuses a secret to (core's `refuses_a_secret`):
+        // one list, so the approval and the host can't say two things.
+        if holon_core::taint::refuses_a_secret(cap) {
+            let key = cap;
             if let Some(name) = secrets::secret_in(payload, secrets) {
                 eprintln!("holon: refused to store or send secret {name:?} in {key:?}");
                 refuse(skipped::SECRET_VALUE);
                 return false;
             }
-            if secret_fed.derives_effect(cap) {
+            if taint::refuses(&secret_fed, cap, None) {
                 eprintln!("holon: refused to store or send in {key:?} what is computed from a secret");
                 refuse(skipped::DERIVED);
                 return false;

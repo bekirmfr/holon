@@ -112,8 +112,11 @@ impl Caller<'_> {
         if depth > self.permit.durable.max_call_depth {
             return failure("too_deep", format!("a chain of calls may be {} long (max_call_depth)", self.permit.durable.max_call_depth));
         }
-        if secrets::secret_in(input, self.vault).is_some() || self.fed.input(path, 0) != taint::Taint::Clean {
-            return failure("refused", "a secret, or what is computed from one, can't be sent to another flow");
+        // What it sends, and whether it is made at all: a start in a `try` block a secret can
+        // fail, made only when it doesn't, says which way it went in the other flow's log.
+        // By the rule check says it by (`taint::refuses`).
+        if secrets::secret_in(input, self.vault).is_some() || taint::refuses(self.fed, &Capability::RunsAction(format!("{flow}/{action}")), Some(path)) {
+            return failure("refused", "a secret, or what is computed from one, can't be sent to another flow, nor decide whether one is run");
         }
         // A value this flow never keeps, under its key, isn't handed to another flow, whose log
         // and writes would keep it (never_keep.rs). Its own action's run is its own, redacted so.

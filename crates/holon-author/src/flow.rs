@@ -568,7 +568,8 @@ pub fn secret_lines(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, por
             let fed = holon_core::taint::SecretFed::of_secret_within(handler, &*store, &name, &visits);
             for (path, sink) in fed.sinks() {
                 if let Some(&child) = path.first() {
-                    mark(label, trace, child, crate::describe::describe_secret_sink(&name, sink));
+                    let reach = fed.reach(path).unwrap_or(holon_core::taint::Reach::Given);
+                    mark(label, trace, child, crate::describe::describe_secret_sink(&name, sink, reach));
                 }
             }
             // What is answered to it: the token a token exchange answers, an API's echo.

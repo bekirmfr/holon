@@ -123,8 +123,13 @@ caller with it, where what a call answered to it goes and where a hash or a sign
 goes (`answers its caller with a hash or signature made with the secret "signing_key"`), and a
 write or a call the host will refuse when the run tries it (`would keep the
 secret "k" (write its state "kept"): the host refuses it`, `would hand the secret "k" to another
-flow (…): the host refuses it`). These are the lines the editor marks the canvas's nodes with, and
-an agent's `check` tool prints them too, so a refused write is known before the flow runs. They
+flow (…): the host refuses it`), and one the secret only decides, which the host refuses too
+(`would run the action touch of the flow worker as the secret "k" decides: the host refuses it`,
+for a start in a `try` block that fails when the secret doesn't parse). The host refuses by the
+same rule these lines are said by: a write, a send to a channel or a queue, a mail, a call or a
+start the secret reaches, by what it is given or only by whether it runs. These are the lines
+the editor marks the canvas's nodes with, and an agent's `check` tool prints them too, so a
+refused write is known before the flow runs. They
 are cautious: a value that may hold the secret is marked, so the exit code stays 0. Each mistake goes to stderr as `file:line:col: message`, with the line and a caret
 under the place, and the exit code is 1.
 

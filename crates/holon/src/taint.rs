@@ -6,6 +6,21 @@
 
 pub(crate) use holon_core::taint::{SecretFed, Taint};
 
+/// Whether the host refuses the effect `cap` for a secret that reaches it, by the walk `fed`: one
+/// of the kinds it never makes with a secret or what is computed from one (core's
+/// `refuses_a_secret`, the list `holon check` says "the host refuses it" by), reached on any of
+/// its inputs, its trigger too. A call or a start is made at its node, `at`, and is refused by
+/// what reaches that node, as check marks it (`SecretFed::reach`); an effect performed after the
+/// run carries no node, and is refused when any node that makes it is reached
+/// (`SecretFed::derives_effect`).
+pub(crate) fn refuses(fed: &SecretFed, cap: &holon_core::Capability, at: Option<&[u32]>) -> bool {
+    holon_core::taint::refuses_a_secret(cap)
+        && match at {
+            Some(path) => fed.reach(path).is_some(),
+            None => fed.derives_effect(cap),
+        }
+}
+
 /// What the log shows in place of something computed from a secret.
 pub(crate) const WITHHELD: &str = "‹withheld: computed from a secret›";
 
