@@ -16,6 +16,11 @@ use common::{answering, free_port, raw_http, status, EVENTUALLY};
 /// Which lines of a source file are a test module's (R78): the server's tests ask it too.
 #[path = "../src/tests/source.rs"]
 mod source;
+/// Whether an answer names a place on the server's disk (R127): the server's tests ask it too,
+/// and use what this one doesn't.
+#[path = "../src/tests/places.rs"]
+#[allow(dead_code)]
+mod places;
 
 /// A kind of file the test means to look at: what it is, and how its path (with `/`) is known.
 type Kind = (&'static str, fn(&str) -> bool);
@@ -744,7 +749,7 @@ route.post("/bump", () => {{
     for (name, (went, said)) in commands(&second) {
         assert!(!went, "{name} ends with a code that isn't 0: {said}");
         assert!(said.contains("answered 500: \"kept\"'s run log can't all be read now: the server's warnings say why"), "{name} says the server's fixed words: {said}");
-        assert!(!said.contains(&base.display().to_string()) && !said.contains("kept.sealed"), "{name} names no place on the server's disk: {said}");
+        places::names_no_place(name, &said, &[], &[&base.display().to_string(), "kept.sealed"]);
     }
     assert!(!exported.exists(), "an export that fails writes no file");
     let host = second.holon(&["host"]);

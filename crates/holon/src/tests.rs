@@ -45,6 +45,10 @@ mod secret_rounds;
 /// Which lines of a source file are a test module's, for the sweeps of the source (R78).
 mod source;
 use source::{in_test_modules, inert, test_files, test_modules};
+/// Whether an answer names a place on the server's disk, looked for so it can fail on Windows
+/// too (R127).
+mod places;
+use places::{names_no_place, temp_folder};
 
 pub(crate) fn test_state() -> AppState {
     test_state_with(SharedStore::new(Box::new(MemStore::new())))
@@ -1884,7 +1888,7 @@ fn a_sweep_that_cant_read_what_names_its_values_removes_none() {
         crate::at_rest::testing::line_of_missing_key(Some((1_000, "a".repeat(64).as_str())))
     }
 
-    let temp = std::env::temp_dir().display().to_string();
+    let temp = temp_folder();
     // Each row: what is made unreadable, how, what the sweep says, and how it is made readable.
     type Row = (&'static str, &'static str, fn(&Kept), fn(&Kept));
     let rows: [Row; 8] = [
@@ -1953,7 +1957,7 @@ fn a_sweep_that_cant_read_what_names_its_values_removes_none() {
         assert!(said.contains(says), "{what}: {said}");
         // It may answer an admin's request: where the data folder is, is stderr's and the
         // warnings' (a pack's), never the answer's.
-        assert!(!said.contains(temp.trim_end_matches(['/', '\\'])), "{what}: it names no place on the server's disk: {said}");
+        names_no_place(what, &said, &[], &[&temp]);
         heal_it(&k);
         assert_eq!(held(&k.state), before, "{what}: nothing removed");
         let swept = sweep::sweep(&k.state.store, &k.state.deployments, k.later, sweep::SPARES_MS, false, true).unwrap_or_else(|e| panic!("{what}, readable again: {e}")).unwrap();
@@ -1995,7 +1999,7 @@ fn a_sweep_that_cant_read_what_names_its_values_removes_none() {
         let before = files();
         let said = sweep::sweep(&store, &k.state.deployments, k.later, sweep::SPARES_MS, false, true).expect_err(what);
         assert!(said.contains("the store's packed values ("), "{what}: {said}");
-        assert!(!said.contains(temp.trim_end_matches(['/', '\\'])), "{what}: it names no place on the server's disk: {said}");
+        names_no_place(what, &said, &[], &[&temp]);
         assert_eq!(files(), before, "{what}: nothing removed");
         assert!(storage::warnings(&test_state_with(store)).iter().any(|w| w.key.starts_with("pack:")), "{what}: the admin is warned of it");
         let _ = std::fs::remove_dir_all(&at);
@@ -2030,7 +2034,7 @@ fn a_sweep_that_cant_read_what_names_its_values_removes_none() {
     spoil(&file);
     let said = folders::sweep(&state.folders, &state.deployments, in_window, 0).expect_err("its log's file");
     assert!(said.contains(&format!("{slug:?}'s run log can't be read")), "{said}");
-    assert!(!said.contains(temp.trim_end_matches(['/', '\\'])), "it names no place on the server's disk: {said}");
+    names_no_place("the folders' sweep", &said, &[], &[&temp]);
     assert_eq!(state.folders.blobs.held(), texts, "no text removed");
     heal(&file);
     let swept = folders::sweep(&state.folders, &state.deployments, in_window, 0).unwrap();
@@ -10535,6 +10539,15 @@ fn no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep() {
     let _ = std::fs::remove_dir_all(&dir);
 
     // Every crate's tests.
+    let (crates, files) = crates_sources();
+    let found = held_times(&crates, &files);
+    assert!(found.is_empty(), "tests that hold how long something took, not what happened (hold an order of events: Gate, Waiters, soon; wait EVENTUALLY):\n{}", found.join("\n"));
+    assert!(files.len() > 150, "the sweep read the source: {}", files.len());
+}
+
+/// Every Rust file of every crate (not a target's, nor a node_modules'), and the crates' folder
+/// they are under: what the sweeps of the tests read.
+fn crates_sources() -> (std::path::PathBuf, Vec<std::path::PathBuf>) {
     fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let path = entry.path();
@@ -10545,11 +10558,192 @@ fn no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep() {
             }
         }
     }
-    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
     let mut files = Vec::new();
-    sources(crates, &mut files);
-    let found = held_times(crates, &files);
-    assert!(found.is_empty(), "tests that hold how long something took, not what happened (hold an order of events: Gate, Waiters, soon; wait EVENTUALLY):\n{}", found.join("\n"));
+    sources(&crates, &mut files);
+    (crates, files)
+}
+
+/// What makes a place on disk into text in a test: a path shown, or the temporary folder as
+/// tests/places.rs gives it. Not what makes a path (`temp_dir`, `join`): a path isn't looked for
+/// in a text, and what is made from one (a list of paths) is no text either.
+const PLACE_MAKERS: [&str; 4] = ["display", "to_string_lossy", "to_str", "temp_folder"];
+
+/// The words of `code` (made [`inert`], its strings' quotes kept) outside its strings, each with
+/// whether a `.` is just before it: a field's or a method's name, not a name a test binds.
+fn code_words(code: &str) -> Vec<(&str, bool)> {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = Vec::new();
+    for part in code.split('"').step_by(2) {
+        let mut start = None;
+        for (i, c) in part.char_indices().chain([(part.len(), ' ')]) {
+            match (word(c), start) {
+                (true, None) => start = Some(i),
+                (false, Some(s)) => {
+                    out.push((&part[s..i], part[..s].ends_with('.')));
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// Whether `words` ([`code_words`]) make a place on disk into text: one of [`PLACE_MAKERS`], or
+/// one of `names` that isn't a field's or a method's.
+fn makes_a_place(words: &[(&str, bool)], names: &BTreeSet<String>) -> bool {
+    words.iter().any(|&(w, after_dot)| PLACE_MAKERS.contains(&w) || (!after_dot && names.contains(w)))
+}
+
+/// The names `code` (made [`inert`]) binds, by `let` or `for`, to a place on disk made text: to
+/// what makes one ([`makes_a_place`]), with the names bound so before it.
+fn place_names(code: &str) -> BTreeSet<String> {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut names = BTreeSet::new();
+    loop {
+        let known = names.len();
+        for keyword in ["let ", "for "] {
+            for (at, _) in code.match_indices(keyword) {
+                if code[..at].chars().next_back().is_some_and(word) {
+                    continue;
+                }
+                let rest = code[at + keyword.len()..].trim_start();
+                let rest = rest.strip_prefix("mut ").map_or(rest, str::trim_start);
+                let name: String = rest.chars().take_while(|&c| word(c)).collect();
+                // What it is bound to: a let's, after its `=` to the end of its statement; a for's,
+                // after its `in` to its body.
+                let bound = if keyword == "let " { rest.split(';').next().and_then(|s| s.split_once('=')).map(|(_, v)| v) } else { rest.split('{').next().and_then(|s| s.split_once(" in ")).map(|(_, v)| v) };
+                let Some(bound) = bound else { continue };
+                if !name.is_empty() && makes_a_place(&code_words(bound), &names) {
+                    names.insert(name);
+                }
+            }
+        }
+        if names.len() == known {
+            return names;
+        }
+    }
+}
+
+/// Each check in `code` (a file's test code, made [`inert`]) that a place on disk isn't in a
+/// text, written `!text.contains(place)`: its line. A place is what one of [`PLACE_MAKERS`]
+/// makes, there or in a name the function it is in binds to one before it ([`place_names`]). A
+/// list written out (`![..].contains(x)`) is no text.
+fn places_looked_for_in_text(code: &str) -> Vec<usize> {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut found = Vec::new();
+    for (at, _) in code.match_indices(".contains(") {
+        // What it is asked of, back to its start: a `!` before it negates it.
+        let (mut depth, mut start) = (0i32, at);
+        for (i, c) in code[..at].char_indices().rev() {
+            match c {
+                ')' | ']' => depth += 1,
+                '(' | '[' if depth > 0 => depth -= 1,
+                _ if depth > 0 => {}
+                c if word(c) || matches!(c, '.' | ':' | '*') => {}
+                _ => break,
+            }
+            start = i;
+        }
+        if !code[..start].trim_end().ends_with('!') || code[start..].starts_with('[') {
+            continue;
+        }
+        // What it looks for, to its closing bracket.
+        let from = at + ".contains(".len();
+        let (mut depth, mut end) = (1i32, code.len());
+        for (j, c) in code[from..].char_indices() {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = from + j;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let words = code_words(&code[from..end]);
+        let place = makes_a_place(&words, &BTreeSet::new()) || {
+            // The function it is in, from its `fn` on (the text's start if none is before it).
+            let mut before = at;
+            let fn_at = loop {
+                match code[..before].rfind("fn ") {
+                    Some(i) if code[..i].chars().next_back().is_some_and(word) => before = i,
+                    Some(i) => break i,
+                    None => break 0,
+                }
+            };
+            makes_a_place(&words, &place_names(&code[fn_at..at]))
+        };
+        if place {
+            found.push(code[..at].matches('\n').count() + 1);
+        }
+    }
+    found
+}
+
+/// Guards: no test holds that a text names no place on disk by looking for the place in the text
+/// as sent (`!said.contains(&dir.display().to_string())`), in any crate's tests: each goes through
+/// tests/places.rs (`names_no_place`, `places_told`).
+/// Why: in a JSON answer a Windows path's backslashes are escaped, so a path looked for in the text
+/// as sent is never there, whatever the answer says: two checks of the unread readers' test could
+/// never fail on Windows (R127), and the removal's class test passed there proving nothing, then
+/// failed on Linux (#130).
+/// If it fails: a test looks for a place in a text itself: hold it with `names_no_place` (or
+/// `places_told`), which reads the strings out of a JSON answer and looks for the place both as
+/// `{}` and as `{:?}` write it.
+#[test]
+fn no_test_looks_for_a_place_in_an_answers_text() {
+    // The sweep's own eyes, on code it must and must not see.
+    let flagged = |code: &str| places_looked_for_in_text(&inert(code));
+    for (vacuous, line) in [
+        ("let temp = std::env::temp_dir().display().to_string();\nassert!(!body.contains(&temp), \"x\");", 2),
+        ("assert!(!said.contains(&base.display().to_string()) && !said.contains(\"kept.sealed\"), \"x\");", 1),
+        ("let at = dir.display().to_string();\nfor part in [at.clone(), at.replace('a', \"b\")] {\n    assert!(!text.contains(&part));\n}", 3),
+        ("assert!(ok && !warnings[0].1.contains(&*dir.to_string_lossy()));", 1),
+        ("let temp = super::places::temp_folder();\nlet temp = &temp;\nassert!(status == 500 && !body.contains(temp));", 3),
+    ] {
+        assert_eq!(flagged(vacuous), [line], "a place looked for in a text, unseen: {vacuous}");
+    }
+    for fine in [
+        "assert!(said.contains(&dir.display().to_string()), \"the admin is told where\");",
+        "let path = dir.display().to_string();\nfn other() {\n    assert!(!tests.contains(path));\n}",
+        "names_no_place(\"x\", &said, &[], &[&temp]);",
+        "assert!(!said.contains(\"C:/tmp/display\"));",
+        "let said = \"!body.contains(temp.display())\";",
+        "assert!(!said.contains(says), \"{what}\");",
+        "let backup = PathBuf::from(unique_temp_path(\"b\"));\nlet theirs = [backup.join(\"a\")];\nfor p in &theirs {}\nassert!(!theirs.contains(&backup));",
+        "let name = path.file_name().unwrap().to_string_lossy().to_string();\nassert!(![\"target\", \".git\"].contains(&name.as_str()));",
+        "let deployments = dir.display().to_string();\nlet seq = state.deployments.len();\nassert!(!seqs.contains(&seq));",
+    ] {
+        assert!(flagged(fine).is_empty(), "not a place looked for in a text: {fine}");
+    }
+
+    // What the sweep stands on: a Windows path in a JSON answer isn't in its text as sent, and
+    // places_told finds it, written as `{}` writes it or as `{:?}` does.
+    let place = r"C:\Users\ada\AppData\Local\Temp\holon-1";
+    let said = serde_json::json!({ "error": format!("can't read {place}\\kept.jsonl") }).to_string();
+    assert!(!said.contains(place), "as sent, the path isn't in the text: {said}");
+    assert_eq!(places::places_told(&said, &[], &[place]), [place], "read out of the answer, it is: {said}");
+    let debug = serde_json::json!({ "error": format!("can't read {place:?}") }).to_string();
+    assert_eq!(places::places_told(&debug, &[], &[place]), [place], "as {{:?}} writes it: {debug}");
+    assert_eq!(places::places_told(&format!("can't read {place}"), &[], &[place]), [place], "in a text that isn't JSON");
+    assert!(places::places_told(&serde_json::json!({ "error": "fixed words", "records": place }).to_string(), &["records"], &[place]).is_empty(), "what is left out isn't read");
+
+    // Every crate's tests.
+    let (crates, files) = crates_sources();
+    let tests = test_files(&files);
+    let mut found = Vec::new();
+    for path in &files {
+        let shown = path.strip_prefix(&crates).unwrap().display().to_string().replace('\\', "/");
+        let whole = inert(&std::fs::read_to_string(path).unwrap());
+        let code = if tests.contains(path) { whole } else { test_code(&shown, &whole) };
+        found.extend(places_looked_for_in_text(&code).into_iter().map(|line| format!("{shown}:{line}")));
+    }
+    assert!(found.is_empty(), "tests that look for a place in a text as sent (hold it with tests/places.rs's names_no_place):\n{}", found.join("\n"));
     assert!(files.len() > 150, "the sweep read the source: {}", files.len());
 }
 

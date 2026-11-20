@@ -187,15 +187,14 @@ fn every_get() -> Vec<String> {
         .collect()
 }
 
-/// Every GET route sent as `token`'s holder, none of whose answers holds any of `canaries`: how
-/// many it was answered.
+/// Every GET route sent as `token`'s holder, none of whose answers holds any of `canaries` (looked
+/// for as tests/places.rs looks for a place): how many it was answered.
 fn swept(state: &AppState, token: &str, who: &str, canaries: &[&str]) -> Vec<String> {
     let mut answered = Vec::new();
     for path in every_get() {
         let (code, said) = ask(state, Some(token), "GET", &path, vec![]);
-        for canary in canaries {
-            assert!(!said.contains(canary), "{who}: GET {path} ({code}) says {canary}: {said}");
-        }
+        let told = super::places::places_told(&said, &[], canaries);
+        assert!(told.is_empty(), "{who}: GET {path} ({code}) says {told:?}: {said}");
         if code == 200 {
             answered.push(path);
         }
@@ -282,7 +281,7 @@ fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_hos
     state.folders.queues.set_live("w", "inq", |l| l.error = Some(format!("{inq_at} wasn't reached")));
     assert_eq!(get(&s.ada, "/deployments/w/feeds")["feeds"][0]["error"], json!(format!("{feed_at} answered 404")), "the admin is told it as it is");
     let data = s.dir.display().to_string();
-    let paths = [data.clone(), data.replace('\\', "\\\\"), env.clone(), env.replace('\\', "\\\\")];
+    let paths = [data, env];
     let canaries: Vec<&str> = [WHERE, SOURCE, DATA].into_iter().chain(places.iter().chain(&authorities).chain(&paths).map(String::as_str)).collect();
 
     // rv views every flow and every resource, and binds none.
@@ -304,9 +303,8 @@ fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_hos
     assert_eq!((&policy["storage"]["backup"], &policy["text_withheld"], policy.get("text")), (&json!("a folder"), &json!(crate::deploy::POLICY_TEXT_WITHHELD), None), "{policy}");
     let (code, said) = ask(state, Some(&s.rv), "POST", "/permissions/reload", vec![]);
     assert_eq!(code, 200, "{said}");
-    for canary in &canaries {
-        assert!(!said.contains(canary), "rv's reload says {canary}: {said}");
-    }
+    let told = super::places::places_told(&said, &[], &canaries);
+    assert!(told.is_empty(), "rv's reload says {told:?}: {said}");
     assert_eq!(serde_json::from_str::<Value>(&said).unwrap()["storage"]["backup"], json!("a folder"), "{said}");
     let mails = get(&s.rv, "/admin/mails");
     assert_eq!((mails[0]["to"].clone(), mails[0]["mailbox"]["folder"].clone()), (json!(["*@acme.example"]), json!("INBOX")), "what it does is shown: {mails}");
