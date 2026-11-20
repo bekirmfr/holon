@@ -109,17 +109,17 @@ enum ReadError {
 impl ClientConnection {
     /// Creates a new `ClientConnection` that takes ownership of the `TcpStream`.
     ///
-    /// Holon (PATCHED.md): `idle`, the limit each read of it waits (`limits::Limits::idle`), and
-    /// `request`, the one each request arrives whole by (`limits::Limits::request`).
+    /// Holon (PATCHED.md): held to `limits`: the idle limit each read of it waits, the deadline
+    /// each request arrives whole by, the linger of a 408.
     pub fn new(
         write_socket: RefinedTcpStream,
         mut read_socket: RefinedTcpStream,
-        idle: Option<Duration>,
-        request: Option<Duration>,
+        limits: &crate::limits::Limits,
     ) -> ClientConnection {
         let remote_addr = read_socket.peer_addr();
         let secure = read_socket.secure();
-        let deadline = crate::limits::Deadline::new(idle, request);
+        let idle = limits.idle;
+        let deadline = crate::limits::Deadline::new(limits);
         read_socket.held_to(deadline.clone(), idle);
 
         let mut source = SequentialReaderBuilder::new(BufReader::with_capacity(1024, read_socket));
@@ -196,6 +196,12 @@ impl ClientConnection {
     /// Reads a request from the stream.
     /// Blocks until the header has been read.
     fn read(&mut self) -> Result<Request, ReadError> {
+        // Holon (PATCHED.md): none due until its first byte, whatever came before. The end once a
+        // request is read whole (below) is what holds the application's reads of its body to the
+        // idle limit: this one may come after they have begun (the read of the next request
+        // starts as the request is handed on), and doesn't come at all after a connection's last
+        self.deadline.end();
+
         let (method, path, version, headers) = {
             // reading the request line
             let (method, path, version) = {
@@ -315,7 +321,7 @@ impl Iterator for ClientConnection {
                     // request timeout
                     // Holon (PATCHED.md): said in words, as the 503 of a connection past a bound
                     // is, and read before the close: what the client still sends is read off and
-                    // thrown away until it closes, or for `limits::LINGER`. Closed with bytes
+                    // thrown away until it closes, or for the linger (`Limits::linger`). Closed with bytes
                     // unread, the connection is reset, and a reset can reach the client before
                     // the 408 (a client cut off is still sending, as a rule).
                     let body = format!("{{\"error\":\"{}\"}}", self.deadline.why());
@@ -330,7 +336,7 @@ impl Iterator for ClientConnection {
                         .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
                         .ok();
                     self.closer.close();
-                    self.deadline.linger(crate::limits::LINGER);
+                    self.deadline.linger();
                     let (mut buf, mut read) = ([0u8; 4096], 0);
                     while read < crate::limits::LINGER_READS_MOST {
                         match self.next_header_source.read(&mut buf) {

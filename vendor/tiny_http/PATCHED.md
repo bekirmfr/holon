@@ -83,8 +83,9 @@ or, while the history keeps it, against the commit that added the copy unchanged
    set again only when it changes); past it the client is told 408 and the connection closed, as
    for a read inside a head that waits out the idle limit. Either 408 now says why in words (as
    JSON, as the 503 past a bound does) with `Connection: close`, and is read before the close:
-   what the client still sends is read off and thrown away until it closes, or for 2 s (64 KiB
-   at most), since closed with bytes unread the connection is reset, and a reset can reach the
+   what the client still sends is read off and thrown away until it closes, or for the linger
+   (`Limits::linger`, 2 s, which a connection refused past a bound is kept for too: change 3; 64
+   KiB at most), since closed with bytes unread the connection is reset, and a reset can reach the
    client before the 408 (on Windows it throws away a 408 not yet read). The deadline starts at the request
    line's first byte, so a kept-alive connection waits for its next request by the idle limit
    alone, and it ends once tiny_http has read the request whole, so a larger body, which the

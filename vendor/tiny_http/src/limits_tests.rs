@@ -227,7 +227,7 @@ fn a_response_with_connection_close_ends_its_connection() {
 #[test]
 fn connections_past_a_bound_are_refused_at_once_and_those_inside_are_answered() {
     for &(connections, from_one, told) in &[(100, 4, TOO_MANY_FROM_ONE), (4, 100, TOO_MANY)] {
-        let (server, at) = serve(Limits { idle: None, request: None, connections, from_one });
+        let (server, at) = serve(Limits { idle: None, request: None, connections, from_one, ..Limits::default() });
         let mut inside: Vec<TcpStream> = (0..4).map(|_| connect(at)).collect();
         for s in inside.iter_mut() {
             s.write_all(get("/").as_bytes()).unwrap();
@@ -258,7 +258,7 @@ fn connections_past_a_bound_are_refused_at_once_and_those_inside_are_answered() 
 #[test]
 fn sockets_past_the_bound_hold_no_threads() {
     let bound = 16;
-    let (server, at) = serve(Limits { idle: None, request: None, connections: bound, from_one: bound });
+    let (server, at) = serve(Limits { idle: None, request: None, connections: bound, from_one: bound, ..Limits::default() });
     let mut sockets: Vec<TcpStream> = (0..3 * bound).map(|_| connect(at)).collect();
     // Each past the bound is told, and only then is everything accepted.
     let mut refused = 0;
@@ -328,13 +328,14 @@ fn a_connection_owed_an_answer_is_not_idle_whatever_its_request() {
 /// deadline and closed while its bytes are still coming, whether what trickles is its head or a
 /// body tiny_http reads itself (1 KiB or less); another connection is answered meanwhile.
 /// Without the deadline, each byte would keep it for as long as its client liked: here until it
-/// ran out of bytes, 6 s in. The client sends its next byte only once it has waited 100 ms with
-/// no answer, so it sends nothing the server stops reading, which would reset the connection on
-/// its close, a reset that can reach the client before it reads the 408.
+/// ran out of bytes, 20 s in at the soonest. The client sends its next byte only once it has
+/// waited 100 ms with no answer, so it sends nothing the server stops reading, which would reset
+/// the connection on its close, a reset that can reach the client before it reads the 408. The
+/// idle limit is the default's (60 s): no wait here comes near it, so only the deadline cuts.
 #[test]
 fn a_request_that_trickles_is_told_408_at_its_deadline_while_another_is_answered() {
-    let (idle, deadline) = (Duration::from_millis(600), Duration::from_millis(1500));
-    let (server, at) = serve(Limits { idle: Some(idle), request: Some(deadline), ..Limits::default() });
+    let deadline = Duration::from_millis(1500);
+    let (server, at) = serve(Limits { request: Some(deadline), ..Limits::default() });
     let shapes = [
         ("its head", "GET / HTTP/1.1\r\nHost: test\r\nX-Slow: "),
         ("a body of 200 bytes", "POST /body HTTP/1.1\r\nHost: test\r\nContent-Length: 200\r\n\r\n"),
@@ -346,7 +347,7 @@ fn a_request_that_trickles_is_told_408_at_its_deadline_while_another_is_answered
         s.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
         let mut sent = 0;
         let mut byte = [0u8; 1];
-        while sent < 60 {
+        while sent < 200 {
             match s.peek(&mut byte) {
                 Ok(_) => break,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {}
@@ -365,7 +366,7 @@ fn a_request_that_trickles_is_told_408_at_its_deadline_while_another_is_answered
         let took = started.elapsed();
         let why = r#"{"error":"the request didn't arrive whole within 1.5 seconds of its first byte"}"#;
         assert_eq!(told, Ok((408, why.to_string())), "{}: told 408, and why", shape);
-        assert!(sent < 60, "{}: told at {:?}, once its bytes had stopped, not at its deadline", shape, took);
+        assert!(sent < 200, "{}: told at {:?}, once its bytes had stopped, not at its deadline", shape, took);
         assert!(took >= deadline - Duration::from_millis(50), "{}: told at {:?}, before its deadline", shape, took);
         closed_within(&mut s).unwrap_or_else(|e| panic!("{}: closed after the 408: {}", shape, e));
     }
@@ -375,13 +376,15 @@ fn a_request_that_trickles_is_told_408_at_its_deadline_while_another_is_answered
 /// A client whose request is cut off while it is still sending, as one cut off is as a rule,
 /// reads the 408 whole, its words too: the server reads off what it sends meanwhile, until it
 /// closes or for `LINGER` (2 s). Closed with those bytes unread, the connection would be reset,
-/// and on Windows a reset throws away a 408 the client hasn't read yet (where Linux keeps it
-/// readable, so it is there the client's reading late could lose it). The client here sends a
-/// byte every 50 ms throughout and reads only 1 s after its deadline, 1 s before the linger ends.
+/// and on Windows a reset throws away a 408 the client hasn't read yet (Linux keeps it readable,
+/// so there this holds whether or not the server lingers). The client here sends a byte every 50
+/// ms throughout and reads only 1 s after its deadline: the linger is 30 s here, so the client's
+/// read comes well inside it however the machine is loaded (29 s to spare), while without one
+/// the reset comes within 50 ms of the 408. The idle limit is the default's (60 s).
 #[test]
 fn a_client_still_sending_when_its_request_is_cut_off_reads_the_408() {
     let deadline = Duration::from_millis(1200);
-    let (server, at) = serve(Limits { idle: Some(Duration::from_millis(600)), request: Some(deadline), ..Limits::default() });
+    let (server, at) = serve(Limits { request: Some(deadline), linger: Duration::from_secs(30), ..Limits::default() });
     let mut s = connect(at);
     s.write_all(b"GET / HTTP/1.1\r\nHost: test\r\nX-Slow: ").unwrap();
     let mut sending = s.try_clone().unwrap();
@@ -405,27 +408,25 @@ fn a_client_still_sending_when_its_request_is_cut_off_reads_the_408() {
 }
 
 /// The deadline is each request's, from its first byte: a kept-alive connection is answered
-/// request after request, the next sent after a pause longer than the deadline (within the idle
-/// limit); a head that arrives in pieces within the deadline is answered; and a body the
+/// request after request, the next sent after a pause longer than the deadline; a body the
 /// application reads (past 1 KiB) is held to the idle limit alone, however long it takes in all,
-/// and so is the next request after it.
+/// and so is the next request after it, and so is one on its connection's last request (where no
+/// read of a next request begins, which would clear the deadline too); and a head that arrives in
+/// pieces, each read of it
+/// waiting what is left of its deadline, is answered. The waits that must pass the deadline are
+/// at least that long however the machine is loaded; the idle limit is the default's (60 s), and
+/// the head in pieces has a deadline of 60 s, so no wait here comes near a limit it isn't about.
 #[test]
 fn the_deadline_is_each_requests_and_not_on_a_body_the_application_reads() {
-    let (idle, deadline) = (Duration::from_millis(1500), Duration::from_millis(800));
-    let (server, at) = serve(Limits { idle: Some(idle), request: Some(deadline), ..Limits::default() });
+    let deadline = Duration::from_millis(800);
+    let (server, at) = serve(Limits { request: Some(deadline), ..Limits::default() });
     let mut s = connect(at);
     for i in 0..3 {
         s.write_all(get("/").as_bytes()).unwrap();
         assert_eq!(answer(&mut s).map(|a| a.0), Ok(200), "request {} on one connection", i);
-        // 1 s: past the deadline, within the idle limit
+        // past the deadline
         thread::sleep(deadline + Duration::from_millis(200));
     }
-
-    for piece in ["GET / HT", "TP/1.1\r\nHost: te", "st\r\n\r\n"] {
-        s.write_all(piece.as_bytes()).unwrap();
-        thread::sleep(Duration::from_millis(150));
-    }
-    assert_eq!(answer(&mut s).map(|a| a.0), Ok(200), "a head in pieces, within the deadline");
 
     // 2,000 bytes, 200 every 200 ms: 2 s, past the deadline.
     s.write_all(b"POST /body HTTP/1.1\r\nHost: test\r\nContent-Length: 2000\r\n\r\n").unwrap();
@@ -438,6 +439,24 @@ fn the_deadline_is_each_requests_and_not_on_a_body_the_application_reads() {
 
     s.write_all(get("/").as_bytes()).unwrap();
     assert_eq!(answer(&mut s).map(|a| a.0), Ok(200), "the next request after it");
+
+    let mut last = connect(at);
+    last.write_all(b"POST /body HTTP/1.1\r\nHost: test\r\nConnection: close\r\nContent-Length: 2000\r\n\r\n").unwrap();
+    for _ in 0..10 {
+        thread::sleep(Duration::from_millis(200));
+        last.write_all(&[b'x'; 200]).unwrap();
+    }
+    let (status, _, body) = answer(&mut last).unwrap();
+    assert_eq!((status, String::from_utf8_lossy(&body).into_owned()), (200, "2000".to_string()), "a body on its connection's last request is read whole");
+    server.unblock();
+
+    let (server, at) = serve(Limits { request: Some(Duration::from_secs(60)), ..Limits::default() });
+    let mut s = connect(at);
+    for piece in ["GET / HT", "TP/1.1\r\nHost: te", "st\r\n\r\n"] {
+        s.write_all(piece.as_bytes()).unwrap();
+        thread::sleep(Duration::from_millis(150));
+    }
+    assert_eq!(answer(&mut s).map(|a| a.0), Ok(200), "a head in pieces, within its deadline");
     server.unblock();
 }
 
@@ -464,7 +483,7 @@ fn one_address_is_let_in_every_request_holon_answers_at_once() {
 /// closes, where a close with bytes unread would be a reset, cutting its sending and its reading.
 #[test]
 fn a_refused_client_that_sent_its_request_first_reads_the_503() {
-    let (server, at) = serve(Limits { idle: None, request: None, connections: 100, from_one: 2 });
+    let (server, at) = serve(Limits { idle: None, request: None, connections: 100, from_one: 2, ..Limits::default() });
     let mut inside: Vec<TcpStream> = (0..2).map(|_| connect(at)).collect();
     for s in inside.iter_mut() {
         s.write_all(get("/").as_bytes()).unwrap();

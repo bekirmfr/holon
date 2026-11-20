@@ -33,6 +33,10 @@ pub struct Limits {
     /// The longest a request takes to arrive whole, from its first byte: its head, and its body
     /// when tiny_http reads it (`Deadline`); `None` waits while its bytes keep coming (upstream).
     pub request: Option<Duration>,
+    /// How long a connection answered and closed by tiny_http itself (a 408, or a 503 past a
+    /// bound) is read off first, what its client still sends thrown away, so that the client
+    /// reads the answer rather than a reset (`LINGER`).
+    pub linger: Duration,
     /// Connections open at once, from everyone.
     pub connections: usize,
     /// Connections open at once from one address (all of a Unix socket's count as one).
@@ -66,56 +70,69 @@ impl Default for Limits {
         Limits {
             idle: Some(IDLE),
             request: Some(REQUEST),
+            linger: LINGER,
             connections: CONNECTIONS,
             from_one: FROM_ONE,
         }
     }
 }
 
-/// Holon (PATCHED.md): when a connection's request has to have arrived by. Set at the request's
-/// first byte (`ClientConnection::read_next_line`) and cleared once tiny_http has read it whole
-/// (`ClientConnection::read`), so what the application reads after (a larger body) and the wait
-/// for the next request are held to the idle limit alone. Each read of the connection
-/// (`RefinedTcpStream`) waits what `wait` gives it.
+/// Holon (PATCHED.md): when a connection's request has to have arrived by. None until the
+/// request's first byte (`ClientConnection::read_next_line`), and none again once tiny_http has
+/// read it whole (`ClientConnection::read`), so what the application reads after (a larger body)
+/// and the wait for the next request are held to the idle limit alone. Each read of the
+/// connection (`RefinedTcpStream`) waits what `wait` gives it.
 pub(crate) struct Deadline {
     idle: Option<Duration>,
     request: Option<Duration>,
-    by: Mutex<Option<Instant>>,
+    linger: Duration,
+    due: Mutex<Due>,
+}
+
+struct Due {
+    by: Option<Instant>,
+    /// The last wait given was what was left to `by`, not the idle limit: a read that fails
+    /// waiting it out was cut by the deadline (or the system ended it a hair early).
+    deadlines: bool,
 }
 
 impl Deadline {
-    pub(crate) fn new(idle: Option<Duration>, request: Option<Duration>) -> Arc<Deadline> {
+    pub(crate) fn new(limits: &Limits) -> Arc<Deadline> {
         Arc::new(Deadline {
-            idle,
-            request,
-            by: Mutex::new(None),
+            idle: limits.idle,
+            request: limits.request,
+            linger: limits.linger,
+            due: Mutex::new(Due {
+                by: None,
+                deadlines: false,
+            }),
         })
     }
 
     /// A request's first byte has come: the rest of it is due by the request limit.
     pub(crate) fn start(&self) {
         if let Some(request) = self.request {
-            *self.by.lock().unwrap() = Some(Instant::now() + request);
+            self.due.lock().unwrap().by = Some(Instant::now() + request);
         }
     }
 
-    /// The request has come whole.
+    /// No request is due: none has begun, or one has come whole.
     pub(crate) fn end(&self) {
-        *self.by.lock().unwrap() = None;
+        self.due.lock().unwrap().by = None;
     }
 
-    /// The connection is told 408 and ends: what its client still sends is read until `linger`
+    /// The connection is told 408 and ends: what its client still sends is read for the linger
     /// from now (`ClientConnection::next`).
-    pub(crate) fn linger(&self, linger: Duration) {
-        *self.by.lock().unwrap() = Some(Instant::now() + linger);
+    pub(crate) fn linger(&self) {
+        self.due.lock().unwrap().by = Some(Instant::now() + self.linger);
     }
 
-    /// What a client is told when its request is cut off: by the deadline, once it has passed
-    /// (the read that waited out what was left of it fails as any read that waits too long does);
-    /// otherwise by the idle limit, a read inside the request that waited the limit out.
+    /// What a client is told when its request is cut off: by the deadline, if the read that
+    /// failed waited what was left of it (a read that waits too long fails the same way, whoever
+    /// set the wait); otherwise by the idle limit, a read inside the request that waited it out.
     pub(crate) fn why(&self) -> String {
-        let past = matches!(*self.by.lock().unwrap(), Some(by) if Instant::now() >= by);
-        match (past, self.request, self.idle) {
+        let deadlines = self.due.lock().unwrap().deadlines;
+        match (deadlines, self.request, self.idle) {
             (true, Some(request), _) => format!(
                 "the request didn't arrive whole within {} seconds of its first byte",
                 request.as_secs_f64()
@@ -131,9 +148,13 @@ impl Deadline {
     /// How long the next read may wait: the idle limit, or what is left to the deadline if that
     /// is less. Once the deadline has passed, a time-out, which `client.rs` answers 408.
     pub(crate) fn wait(&self) -> std::io::Result<Option<Duration>> {
-        let by = *self.by.lock().unwrap();
-        let Some(by) = by else { return Ok(self.idle) };
+        let mut due = self.due.lock().unwrap();
+        let Some(by) = due.by else {
+            due.deadlines = false;
+            return Ok(self.idle);
+        };
         let left = by.saturating_duration_since(Instant::now());
+        due.deadlines = self.idle.map_or(true, |idle| left < idle);
         if left.is_zero() {
             return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, PastDeadline));
         }
@@ -251,8 +272,8 @@ pub(crate) fn refuse(mut sock: Connection, why: &str) -> Connection {
 }
 
 /// How long a refused connection is kept for its client to read its 503 and close, from its
-/// refusal.
-pub(crate) const LINGER: Duration = Duration::from_secs(2);
+/// refusal, and a connection told 408 likewise (`Limits::linger`).
+pub const LINGER: Duration = Duration::from_secs(2);
 /// Refused connections kept at once, all told; past them, the oldest is closed when the next is
 /// refused.
 pub(crate) const LINGERING: usize = 256;
