@@ -75,8 +75,9 @@ export type PrimitiveData = {
     outputs: (WValue | null)[];
     /** `skipped`: in the run's group, but a choice didn't need it, so the run didn't run it. */
     state: "active" | "done" | "pending" | "outside" | "skipped";
-    /** Its part in a failed run (replay.ts's diagnose): where the failure started, or starved. */
-    issue?: { role: "origin" | "starved"; reason: string };
+    /** Its part in the run (replay.ts's diagnose): where a failure started, starved, or an
+     *  effect it held and didn't make (the record's note says why). */
+    issue?: { role: "origin" | "starved" | "held"; reason: string };
     /** Whether its output values show as chips (the view toolbar's "values" toggle). */
     showValues?: boolean;
   };
@@ -443,6 +444,8 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
         ...(error ? { borderColor: TYPE_COLOR.Effect, boxShadow: `0 0 0 1px ${TYPE_COLOR.Effect}` } : {}),
         ...(trace?.issue?.role === "starved" ? (quiet ? { opacity: 0.4, borderStyle: "dotted" } : { borderColor: "var(--bad)", borderStyle: "dashed" }) : {}),
         ...(trace?.issue?.role === "origin" ? { borderColor: FAIL, boxShadow: `0 0 0 2px ${FAIL}, 0 0 18px color-mix(in srgb, ${FAIL} 40%, transparent)` } : {}),
+        // An effect the run held and didn't make (the server's note): amber, dashed.
+        ...(trace?.issue?.role === "held" ? { borderColor: "var(--warn)", borderStyle: "dashed" } : {}),
         ...(trace?.state === "active" ? { borderColor: "var(--accent)", boxShadow: "0 0 0 2px var(--accent)" } : {}),
         ...(trace?.state === "pending" ? { opacity: 0.55 } : {}),
         ...(trace?.state === "outside" ? { opacity: 0.3 } : {}),
@@ -502,13 +505,13 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
             lineHeight: "16px",
             padding: "0 7px",
             borderRadius: 8,
-            color: trace.issue.role === "origin" ? "var(--bad-bg)" : quiet ? "var(--faint)" : "var(--bad-ink)",
-            background: trace.issue.role === "origin" ? FAIL : quiet ? "var(--surface-2)" : "var(--bad-bg)",
-            border: `1px solid ${trace.issue.role === "origin" ? FAIL : quiet ? "var(--border)" : "var(--bad)"}`,
+            color: trace.issue.role === "origin" ? "var(--bad-bg)" : trace.issue.role === "held" ? "var(--warn-ink)" : quiet ? "var(--faint)" : "var(--bad-ink)",
+            background: trace.issue.role === "origin" ? FAIL : trace.issue.role === "held" ? "var(--warn-bg)" : quiet ? "var(--surface-2)" : "var(--bad-bg)",
+            border: `1px solid ${trace.issue.role === "origin" ? FAIL : trace.issue.role === "held" ? "var(--warn)" : quiet ? "var(--border)" : "var(--bad)"}`,
             opacity: quiet ? 0.8 : undefined,
           }}
         >
-          {trace.issue.role === "origin" ? "✗ " : quiet ? "" : "↯ "}
+          {trace.issue.role === "origin" ? "✗ " : trace.issue.role === "held" ? "⊘ " : quiet ? "" : "↯ "}
           {trace.issue.reason}
         </div>
       )}

@@ -139,6 +139,8 @@ pub(crate) struct FiredRun {
     pub(crate) performed: Vec<(Capability, Value)>,
     /// The lines it wrote to its log, each its level and its value (logs.rs).
     pub(crate) lines: Vec<(String, Value)>,
+    /// The effects it held and didn't make, with why (skipped.rs), and those the host refused.
+    pub(crate) skipped: Vec<recorder::Skipped>,
     pub(crate) timeline: Vec<recorder::NodeTiming>,
     /// The outbound requests it made, round by round.
     pub(crate) rounds: Vec<Round>,
@@ -899,27 +901,35 @@ fn run_attempt(
     // handle is only a record: one can be made up).
     let reads_folders = permit.folders_handed();
     let mails_granted = if host.performed.iter().any(|(c, _)| matches!(c, Capability::MailSend(_))) { permit.mails_sent() } else { Default::default() };
+    // Each one refused is said in the run's record too, by the rule that refused it, in fixed
+    // words and with no value (skipped.rs).
+    let mut refused: Vec<(Capability, &'static str)> = Vec::new();
     host.performed.retain(|(cap, payload)| {
+        let mut refuse = |rule: &'static str| refused.push((cap.clone(), rule));
         // A mail's recipients are in its payload: each one the grant names, or a `*` for any.
         if let Capability::MailSend(mail) = cap {
             if let Some(why) = mails::ungranted(mail, payload, &mails_granted) {
                 eprintln!("holon: refused a mail through {mail:?}: {why}");
+                refuse("a recipient its grant doesn't name");
                 return false;
             }
         } else if !permit.allows(cap) {
             eprintln!("holon: refused {cap:?}: not granted to this deployment");
+            refuse("not granted");
             return false;
         }
         if let Some(from) = folders::copied_from(payload).filter(|f| !reads_folders.contains(*f))
             && matches!(cap, Capability::FileWrite(_))
         {
             eprintln!("holon: refused {cap:?}: a copy from the folder {from:?}, which this deployment doesn't read");
+            refuse("a copy from a folder it doesn't read");
             return false;
         }
         // A value its flow never keeps, under its key (never_keep.rs), beside a secret's: read off
         // the payload as the run made it, before anything of it is marked.
         if let Some(why) = never_keep::refused(cap, payload, &permit.never_keep) {
             eprintln!("holon: {why}");
+            refuse(skipped::NEVER_KEPT);
             return false;
         }
         // A file too: another deployment that reads it logs its text, redacted only of its own
@@ -927,18 +937,24 @@ fn run_attempt(
         if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) | Capability::ChannelSend(key) | Capability::MailSend(key) | Capability::QueueSend(key) | Capability::FileWrite(key) = cap {
             if let Some(name) = secrets::secret_in(payload, secrets) {
                 eprintln!("holon: refused to store or send secret {name:?} in {key:?}");
+                refuse(skipped::SECRET_VALUE);
                 return false;
             }
             if secret_fed.derives_effect(cap) {
                 eprintln!("holon: refused to store or send in {key:?} what is computed from a secret");
+                refuse(skipped::DERIVED);
                 return false;
             }
+            // Said too, as every refusal is: whether the reply sent the secret back is read off
+            // the reply, and the write landing or not already shows it in the state.
             if echoed.fed.feeds_effect(cap) {
                 eprintln!("holon: refused to store or send in {key:?} what was read from a reply that sent a secret back: store a number, a true or false, or a text shorter than six characters");
+                refuse(skipped::ECHOED);
                 return false;
             }
             if let Some(name) = holds_answered(payload) {
                 eprintln!("holon: refused to store or send in {key:?} the credential a call answered ({name})");
+                refuse("it holds a credential a call answered");
                 return false;
             }
         }
@@ -1000,6 +1016,31 @@ fn run_attempt(
         _ => BTreeSet::new(),
     };
     let reads = std::mem::take(&mut waits.reads);
+    // A line that holds a value its flow never keeps, under its key, isn't written.
+    let lines: Vec<_> = host
+        .logs
+        .into_iter()
+        .filter(|(level, line)| match never_keep::refused(&Capability::Log(level.clone()), line, &permit.never_keep) {
+            Some(why) => {
+                eprintln!("holon: {why}");
+                refused.push((Capability::Log(level.clone()), skipped::NEVER_KEPT));
+                false
+            }
+            None => true,
+        })
+        .collect();
+    // The effects it held and didn't make, with why, and those refused: for a run that settled
+    // (one that waits makes nothing yet). Its steps are walked where an absence began in it, and
+    // in every run of a flow that reads a secret, since whether one began can turn on the secret.
+    // Before its steps are withheld of what a secret reaches: the walk reads whether a step gave
+    // anything, and never one that may be computed from one. `holon verify` works them out again
+    // (`verify::rerun`), by the same walk and the refusals it can tell.
+    let not_made = if outcome.waiting.is_empty() && outcome.error.is_none() {
+        let read = |path: &[u32]| reads.iter().position(|r| r.path == path);
+        skipped::of(root_unit, resolver, &timer.timeline, &secret_fed, &read, &refused, timer.began_absent || !secret_fed.is_empty())
+    } else {
+        Vec::new()
+    };
     let timeline = without_kept_files(timer.timeline, &reads, &host.performed);
     let mut born = secrets::born(&timeline, &secret_fed, born_key.as_ref().map(|k| k.as_slice()), &run_hex, !waits.unrecorded, &permit.never_keep);
     // The parts are marked as what it computed is. Not known to the start (`data::start_marks`):
@@ -1014,18 +1055,8 @@ fn run_attempt(
     let run = FiredRun {
         outputs: outcome.outputs,
         performed: host.performed,
-        // A line that holds a value its flow never keeps, under its key, isn't written.
-        lines: host
-            .logs
-            .into_iter()
-            .filter(|(level, line)| match never_keep::refused(&Capability::Log(level.clone()), line, &permit.never_keep) {
-                Some(why) => {
-                    eprintln!("holon: {why}");
-                    false
-                }
-                None => true,
-            })
-            .collect(),
+        lines,
+        skipped: not_made,
         timeline,
         rounds: outcome.rounds,
         error: failed_read
@@ -1722,6 +1753,9 @@ fn entry_with(
         commit: run.commit.clone(),
         outputs: logged_outputs(run, folders::loggable_output),
         performed: logged_performed(run, folders::loggable),
+        // A run that failed made nothing for a reason of its own, and one that waits makes
+        // nothing yet: neither says what it didn't make.
+        skipped: if run.error.is_some() || !run.waiting.is_empty() { Vec::new() } else { run.skipped.clone() },
         response_body: None,
         error: run.error.clone(),
         timeline: without_secret_derived(without_kept_files(timeline, &run.reads, &run.performed), &run.secret_fed, run.born.whole),
@@ -1843,6 +1877,7 @@ impl FiredRun {
             outputs: vec![],
             performed: vec![],
             lines: vec![],
+            skipped: vec![],
             timeline: vec![],
             rounds: vec![],
             error: None,

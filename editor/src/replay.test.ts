@@ -4,7 +4,10 @@ import { beforeAll, describe, it, expect } from "vitest";
 import { Evaluator, initSync } from "../wasm/holon_wasm.js";
 import { buildSample, samples } from "./samples";
 import { tabFromDocument } from "./tabs";
-import { collectionsAtStep, diagnose, executionOrder, fileLabel, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, replayVerdict, runGroup, failureWire, fellBack, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type NodeTrace, type Replay, type ReplayNode, type VerdictRun } from "./replay";
+import { bodyPosition, collectionsAtStep, diagnose, executionOrder, heldEffects, placedBy, fileLabel, hasPlaceholder, innerSteps, isCollectionCell, itemChanged, linesOf, nodeExchanges, nodeOutputs, nodeTimings, periodText, recordedReads, recordedResponses, replay, replayVerdict, runGroup, failureWire, fellBack, sameNodesRan, stateAtStep, whyNotRun, wireKey, type ReplayInput, type NodeTrace, type Replay, type ReplayNode, type VerdictRun, type Issue, type NodeTiming, type SkippedNote } from "./replay";
+import { graphRun } from "./runRows";
+import placedFixture from "./placed.fixture.json";
+import skippedFixture from "./skipped.fixture.json";
 import { asksHostPrimitives, choiceNext, primitiveCatalog, type WParam, type WValue } from "./holon";
 
 // A run's route group is found by holon-author (the wasm package, loaded from disk).
@@ -745,5 +748,124 @@ describe("durable runs in a replay", () => {
     expect(resumed.traces.get("t")?.outputs).toEqual([{ type: "Text", value: "‹token:paid›" }]);
     // not delivered yet
     expect(replay(nodes, [], base, evalNode).traces.get("w")?.outputs).toEqual([null]);
+  });
+});
+
+describe("what a run held and didn't make (the server's notes, skipped)", () => {
+  const txt = (value: string): WValue => ({ type: "Text", value });
+  const rec = (...fields: [string, WValue][]): WValue => ({ type: "Record", value: fields });
+
+  it("says each note in explain's words, a failure's reason read from the run's steps (skipped.fixture.json, written by holon-author's test)", () => {
+    expect(skippedFixture.cases.length).toBeGreaterThan(10);
+    expect(skippedFixture.cases.filter((c) => c.timeline).length).toBeGreaterThan(3);
+    for (const c of skippedFixture.cases) {
+      // The run as the editor reads it: a request's, its steps placed by the route's trace, whose
+      // second and third steps are the note's `from` (none when the case has no node).
+      const nodes = [n("a", "request", [], ["out"])];
+      if (c.from) nodes.push(n("from", c.from.name, [], ["out"], c.from.params as unknown as WParam[]));
+      const entry = {
+        kind: "request",
+        route: "POST /r",
+        reads: skippedFixture.reads as unknown as { request: WValue }[],
+        skipped: [c.note as unknown as SkippedNote],
+        timeline: (c.timeline ?? undefined) as unknown as NodeTiming[] | undefined,
+      };
+      expect(heldEffects(entry, skippedFixture.trace, nodes)[0]?.reason, c.what).toBe(c.says);
+    }
+  });
+
+  it("says an engine's position as the body's, and only the message's first line, as explain does", () => {
+    expect(bodyPosition("SyntaxError: unexpected token at line 2, col 5 (native)\n  more")).toBe("SyntaxError: unexpected token (the body's line 2, col 5)");
+    expect(bodyPosition("Error: no (unknown at :3:11)")).toBe("Error: no (the body's line 3, col 11)");
+    expect(bodyPosition("TypeError: not a function")).toBe("TypeError: not a function");
+  });
+
+  // A route's handler: a read, a write fed by it, and a function holding a write of its own.
+  const nodes = [
+    n("got", "collection_get", ["key"], ["out"], [frozen("collection", "tasks")]),
+    n("w", "store_write", ["value"], ["out"], [frozen("key", "g")]),
+    n("keep", "keep", ["v"], ["out"], [], "Composite"),
+  ];
+  const trace = { "POST /a": ["got", "w", "keep"], "action card": ["got", "w", "keep"] };
+  const reads = [{ request: rec(["collection", txt("tasks")], ["get", txt("t1")]) }];
+  const notes: SkippedNote[] = [
+    { effect: 'StateWrite("g")', level: "read", at: [0, 1], from: [0, 0], leaf: "collection_get", read: 0 },
+    { effect: 'CollectionWrite("kept")', level: "missing", at: [0, 2, 3], from: [0, 2, 1], leaf: "field" },
+    { effect: 'DbWrite("shop/orders")', level: "refused", rule: "a value read from a reply that sent a secret back isn't written" },
+  ];
+
+  it("places a note on the node that would have made it, a step inside a node on that node, and one with no step at none", () => {
+    expect(heldEffects({ kind: "request", route: "POST /a", reads, skipped: notes }, trace, nodes)).toEqual([
+      // Named by its node, as the canvas shows it; one with no node by the record's name, as explain says it.
+      { id: "w", effect: 'store_write "g"', reason: 'collection_get "tasks" found nothing at tasks[t1]' },
+      { id: "keep", effect: "keep", reason: "keep gave nothing: what it read lacked it" },
+      { id: null, effect: 'DbWrite("shop/orders")', reason: "refused: a value read from a reply that sent a secret back isn't written" },
+    ]);
+    // A run from before the notes, or one that held nothing, has none.
+    expect(heldEffects({ kind: "request", route: "POST /a" }, trace, nodes)).toEqual([]);
+  });
+
+  it("places a run that went on from a wait by its handler, as its first part (explain's run_trace)", () => {
+    expect(placedBy({ route: "action card" }, trace)).toEqual({ key: "action card", depth: 2 });
+    expect(placedBy({ route: null }, trace)).toEqual({ key: "*", depth: 1 });
+    // A route the flow has no trace of is placed by the whole flow's, whatever kind of run it is.
+    expect(placedBy({ route: "on mail gone" }, trace)).toEqual({ key: "*", depth: 1 });
+    expect(heldEffects({ kind: "resume", route: "action card", reads, skipped: [notes[0]] }, trace, nodes).map((h) => h.id)).toEqual(["w"]);
+    // Its steps too: what the resumed part's write computed is read off its node.
+    const timeline = [{ path: [0, 1], start_us: 0, end_us: 1, outputs: [num(3)] }];
+    expect(nodeOutputs({ kind: "resume", route: "action card", timeline }, trace).get("w")).toEqual([num(3)]);
+  });
+
+  it("places a run of every kind on the nodes explain places it on (placed.fixture.json, written by the server's test of a run of every kind)", () => {
+    const shared = placedFixture.trace as Record<string, string[]>;
+    expect(placedFixture.runs.length).toBeGreaterThan(0);
+    for (const run of placedFixture.runs) {
+      const timeline = run.paths.map((path) => ({ path, start_us: 0, end_us: 0, outputs: [] }));
+      const placed = [...nodeOutputs({ kind: run.kind, route: run.route, timeline }, shared).keys()].sort();
+      expect({ kind: run.kind, placed }).toEqual({ kind: run.kind, placed: run.nodes });
+    }
+  });
+
+  it("reads a failed step's reason as explain does: its own, else one of a step inside it, from the last round", () => {
+    const js = [n("j", "js", ["x"], ["out"]), nodes[1]];
+    const at = { "POST /a": ["j", "w"] };
+    const failed: SkippedNote = { effect: 'StateWrite("g")', level: "failed", at: [0, 1], from: [0, 0], leaf: "js" };
+    const said = (timeline: NodeTiming[]) => heldEffects({ kind: "request", route: "POST /a", skipped: [failed], timeline }, at, js)[0].reason;
+    expect(said([{ path: [0, 0], start_us: 0, end_us: 1, reason: "out of fuel" } as NodeTiming])).toBe("js failed: out of fuel");
+    expect(said([{ path: [0, 0, 2], start_us: 0, end_us: 1, outputs: [rec(["error", txt("TypeError: x is undefined")])] }])).toBe("js failed: TypeError: x is undefined");
+    expect(said([{ path: [0, 0], start_us: 0, end_us: 1, round: 0, reason: "an earlier round's" } as NodeTiming, { path: [0, 0], start_us: 2, end_us: 3, round: 1 }])).toBe("js failed");
+  });
+
+  it("diagnoses a run that answered and held an effect: the note on its node, the run not failed", () => {
+    const run = replay(nodes, [wire("got", "out", "w", "value")], { kind: "request", route: "POST /a", request: null, sourced: [], state_before: {} }, evalNode);
+    const held = heldEffects({ kind: "request", route: "POST /a", reads, skipped: notes }, trace, nodes);
+    const d = diagnose(nodes, [wire("got", "out", "w", "value")], { status: 200, error: null }, run, held)!;
+    expect(d.failed).toBe(false);
+    expect(d.summary).toBe("answered 200; 3 effects not made");
+    expect(d.origins).toEqual([]);
+    expect(d.issues.get("w")).toEqual({ role: "held", reason: 'not made: collection_get "tasks" found nothing at tasks[t1]' });
+    expect(d.held.filter((h) => h.id === null).map((h) => h.effect)).toEqual(['DbWrite("shop/orders")']);
+    // An action's run has no answer to say (`holon runs` prints none): only what it held.
+    expect(diagnose(nodes, [wire("got", "out", "w", "value")], { status: null, error: null }, run, held.slice(0, 1))!.summary).toBe("an effect not made");
+    // Without notes, a run that answered has nothing to say, as before.
+    expect(diagnose(nodes, [wire("got", "out", "w", "value")], { status: 200, error: null }, run)).toBeNull();
+  });
+
+  it("says a failed run's held effect by its note, not as starved", () => {
+    const edges = [wire("got", "out", "w", "value")];
+    const run = replay(nodes, edges, { kind: "request", route: "POST /a", request: null, sourced: [], state_before: {} }, evalNode);
+    const d = diagnose(nodes, edges, { status: 500, error: "a test" }, run, heldEffects({ kind: "request", route: "POST /a", reads, skipped: [notes[0]] }, trace, nodes))!;
+    expect(d.failed).toBe(true);
+    expect(d.issues.get("w")?.role).toBe("held");
+  });
+
+  it("marks a held effect's row not made on the statement graph, apart from a failed one", () => {
+    const issues = new Map<string, Issue>([
+      ["w", { role: "held", reason: "not made: why" }],
+      ["got", { role: "origin", reason: "no field" }],
+    ]);
+    const drawn = graphRun(new Map([["0:1", ["w"]], ["0:0", ["got"]]]), { order: ["got"], traces: new Map(), step: null, issues, values: false });
+    expect(drawn.notMade).toEqual(new Map([["0:1", "not made: why"]]));
+    expect(drawn.failed).toEqual(new Map([["0:0", "no field"]]));
   });
 });

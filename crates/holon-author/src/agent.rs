@@ -275,16 +275,20 @@ struct Recorded {
 }
 
 /// The document's trace for this run's part: the node id at each step index, and how deep in a
-/// step's path that index sits. A request's route, or a clock's, file handler's or action's label
-/// (`every 2s`, `on file inbox`, `action reset`), places it one level down, inside its handler
-/// unit (`[0, k]`); else the whole flow's (`"*"`), at the top. As the editor's `placedBy` does.
+/// step's path that index sits. A run is placed by its route where the document has a trace of
+/// that name: a request's route, or the label of the handler that started it (`every 2s`, `on
+/// file inbox`, `on mail remit`, `WebSocket /room/:name message`, `action reset`…), one level
+/// down, inside its handler unit (`[0, k]`); a run that went on from a wait (`resume`) keeps the
+/// label of the run it continues. Else by the whole flow's (`"*"`), at the top. One rule, with no
+/// list of kinds: a list left mail, feed and queue runs out, and they showed no steps
+/// (R151). As the editor's `placedBy` does (`placed.fixture.json`, from the server's test of a
+/// run of every kind).
 fn run_trace(document: &Value, entry: &Value) -> (Vec<String>, usize) {
-    let kind = entry.get("kind").and_then(Value::as_str).unwrap_or("");
-    let route = entry.get("route").and_then(Value::as_str).filter(|r| !r.is_empty());
-    let handler = kind == "request" || (matches!(kind, "tick" | "file" | "trigger") && route.is_some());
-    let (key, depth) = if handler { (route.unwrap_or(""), 2) } else { ("*", 1) };
-    let map: Vec<String> = document.pointer(&format!("/trace/{}", key.replace('~', "~0").replace('/', "~1"))).and_then(|m| serde_json::from_value(m.clone()).ok()).unwrap_or_default();
-    (map, depth)
+    let trace = |key: &str| -> Option<Vec<String>> { serde_json::from_value(document.get("trace")?.get(key)?.clone()).ok() };
+    match entry.get("route").and_then(Value::as_str).and_then(trace) {
+        Some(map) => (map, 2),
+        None => (trace("*").unwrap_or_default(), 1),
+    }
 }
 
 /// The node a recorded step path (`[0, k]`) belongs to.
@@ -299,9 +303,6 @@ fn node_of_path(map: &[String], depth: usize, path: &[u64]) -> Option<String> {
 /// the read it protects; the ones no read of the text explains (a listing) under line 0.
 fn claim_notes(document: &Value, entry: &Value, lines: &BTreeMap<String, u32>) -> BTreeMap<u32, Vec<String>> {
     let (map, depth) = run_trace(document, entry);
-    let text_field = |record: &Value, name: &str| -> Option<String> {
-        record.get("value")?.as_array()?.iter().find(|kv| kv.get(0).and_then(Value::as_str) == Some(name))?.get(1)?.get("value")?.as_str().map(str::to_string)
-    };
     // Each read's key (`seen[k2]`, or `seen[*]` for a listing) and the line of its node.
     let reads: Vec<(String, Option<u32>)> = entry
         .get("reads")
@@ -309,12 +310,7 @@ fn claim_notes(document: &Value, entry: &Value, lines: &BTreeMap<String, u32>) -
         .into_iter()
         .flatten()
         .filter_map(|r| {
-            let request = r.get("request")?;
-            let collection = text_field(request, "collection")?;
-            let key = match text_field(request, "get") {
-                Some(k) => format!("{collection}[{k}]"),
-                None => format!("{collection}[*]"),
-            };
+            let key = read_key(r.get("request")?)?;
             let path: Vec<u64> = r.get("path").and_then(Value::as_array).map(|p| p.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
             let line = node_of_path(&map, depth, &path).and_then(|id| lines.get(&id).copied());
             Some((key, line))
@@ -343,6 +339,44 @@ fn claim_notes(document: &Value, entry: &Value, lines: &BTreeMap<String, u32>) -
         notes.entry(line).or_default().push(note);
     }
     notes
+}
+
+/// A read's key as its record keeps what it asked: `seen[k2]`, or `seen[*]` for a listing.
+fn read_key(request: &Value) -> Option<String> {
+    let text_field = |name: &str| -> Option<String> {
+        request.get("value")?.as_array()?.iter().find(|kv| kv.get(0).and_then(Value::as_str) == Some(name))?.get(1)?.get("value")?.as_str().map(str::to_string)
+    };
+    let collection = text_field("collection")?;
+    Some(match text_field("get") {
+        Some(k) => format!("{collection}[{k}]"),
+        None => format!("{collection}[*]"),
+    })
+}
+
+/// Why an effect wasn't made, in words, from the server's note of it (`skipped`): the step
+/// where its absence began (`from`, the node of the text it stands in), and what a read asked.
+/// Read, never worked out again: the server's walk saw each step, and the record may not keep
+/// one (a value too large to record), which a walk here would take for one that gave nothing.
+fn skipped_why(note: &Value, from: Option<&crate::canvas::Node>, entry: &Value, reasons: &HashMap<String, String>) -> String {
+    let name = from.map(node_name).unwrap_or_else(|| note.get("leaf").and_then(Value::as_str).unwrap_or("a step").to_string());
+    let seen = if note.get("unseen").and_then(Value::as_bool) == Some(true) { ", as far as the record sees" } else { "" };
+    match note.get("level").and_then(Value::as_str).unwrap_or("") {
+        "read" => {
+            let asked = note.get("read").and_then(Value::as_u64).and_then(|i| read_key(entry.get("reads")?.get(i as usize)?.get("request")?));
+            match asked {
+                Some(key) => format!("{name} found nothing at {key}{seen}"),
+                None => format!("{name} found nothing{seen}"),
+            }
+        }
+        "missing" => format!("{name} gave nothing: what it read lacked it{seen}"),
+        "failed" => match from.and_then(|n| reasons.get(n.id.as_str())) {
+            Some(why) => format!("{name} failed: {why}{seen}"),
+            None => format!("{name} failed{seen}"),
+        },
+        "withheld" => "withheld: where it stopped may be computed from a secret".into(),
+        "refused" => format!("refused: {}", note.get("rule").and_then(Value::as_str).unwrap_or("?")),
+        other => other.to_string(),
+    }
 }
 
 fn recorded(document: &Value, entry: &Value) -> Recorded {
@@ -514,6 +548,24 @@ pub fn run_view(name: &str, document: &Value, entry: &Value) -> Result<RunView, 
         on_line.entry(*line).or_default().push(id.as_str());
     }
     let mut claims = claim_notes(document, entry, &lines);
+    // Each effect the run held and didn't make, as the server noted it (`skipped`, R99): its
+    // reason is read from the note, never worked out again here. By the node of the text that
+    // would have made it; one with no step to stand under (refused, withheld) is said after it.
+    let (map, depth) = run_trace(document, entry);
+    let mut held: HashMap<String, Vec<String>> = HashMap::new();
+    let mut unplaced: Vec<String> = Vec::new();
+    for note in entry.get("skipped").and_then(Value::as_array).into_iter().flatten() {
+        let path = |k: &str| -> Vec<u64> { note.get(k).and_then(Value::as_array).map(|p| p.iter().filter_map(Value::as_u64).collect()).unwrap_or_default() };
+        let from = node_of_path(&map, depth, &path("from")).and_then(|id| by_id.get(id.as_str()).copied());
+        let why = skipped_why(note, from, entry, &reasons);
+        match node_of_path(&map, depth, &path("at")).filter(|id| part.contains(id)) {
+            Some(id) => held.entry(id).or_default().push(why),
+            None => unplaced.push(format!("not made: {}: {why}", note.get("effect").and_then(Value::as_str).unwrap_or("?"))),
+        }
+    }
+    // A node that ran and whose outputs the record didn't keep (too large to record) had a value:
+    // never the one taken to have given nothing.
+    let known = |id: &str| has(id) || (ran.contains(id) && !values.contains_key(id));
     // Why a node has no value: the first node upstream that gave nothing though everything
     // feeding it had a value.
     let origin = |id: &str| -> String {
@@ -521,14 +573,14 @@ pub fn run_view(name: &str, document: &Value, entry: &Value) -> Result<RunView, 
         let mut seen = HashSet::new();
         let mut found = None;
         while let Some(n) = stack.pop() {
-            if !seen.insert(n) || has(n) {
+            if !seen.insert(n) || known(n) {
                 continue;
             }
             let from = feeds.get(n).cloned().unwrap_or_default();
-            if from.iter().all(|f| has(f)) {
+            if from.iter().all(|f| known(f)) {
                 found = Some(n);
             }
-            stack.extend(from.iter().filter(|f| !has(f)));
+            stack.extend(from.iter().filter(|f| !known(f)));
         }
         match found.and_then(|n| by_id.get(n)) {
             Some(n) if ran.contains(&n.id) => match reasons.get(n.id.as_str()) {
@@ -576,10 +628,17 @@ pub fn run_view(name: &str, document: &Value, entry: &Value) -> Result<RunView, 
         roots.sort_by_key(|id| doc.nodes.iter().position(|n| n.id == *id));
         let here = notes.entry(n).or_default();
         for id in &roots {
+            // An effect the server noted as held says why by its note, below.
+            if held.contains_key(*id) && !has(id) {
+                continue;
+            }
             let note = annotate(id);
             if !note.is_empty() {
                 here.push(format!("⇒ {note}"));
             }
+        }
+        for why in ids.iter().filter_map(|id| held.get(*id)).flatten() {
+            here.push(format!("⇒ not made: {why}"));
         }
         // A node inlined into the statement (a js call inside `respond { … }`) that gave nothing
         // for a recorded reason: said too, since the root's own value hides it.
@@ -604,6 +663,7 @@ pub fn run_view(name: &str, document: &Value, entry: &Value) -> Result<RunView, 
     for p in entry.get("performed").and_then(Value::as_array).into_iter().flatten() {
         out.push(format!("performed {}: {}", p.get("capability").and_then(Value::as_str).unwrap_or("?"), p.get("payload").map(show).unwrap_or_default()));
     }
+    out.extend(unplaced);
     for x in entry.get("rounds").and_then(Value::as_array).into_iter().flatten().filter_map(|r| r.get("exchanges").and_then(Value::as_array)).flatten() {
         out.push(format!("called out: {} → {}", x.get("request").map(show).unwrap_or_default(), x.get("response").map(show).unwrap_or_default()));
     }
@@ -1213,5 +1273,102 @@ mod tests {
         let example: String = GUIDE.split("An example, end to end:").nth(1).unwrap().lines().map(|l| l.strip_prefix("  ").unwrap_or(l)).collect::<Vec<_>>().join("\n");
         let p = plan(example.trim_start()).unwrap();
         assert_eq!(p.routes, ["POST /posts/:id/like"]);
+    }
+
+    /// **Guards:** the editor says a run's notes (`skipped`) in explain's words:
+    /// `editor/src/skipped.fixture.json` is [`skipped_why`] over a table of notes (each level; a
+    /// read by its key, of a listing, with no request kept, of state; as far as the record sees; a
+    /// step with no node), and the editor's `heldEffects` is held to it (replay.test.ts). A
+    /// failure's reason is read out of the run's recorded steps on both sides, as explain reads it
+    /// ([`recorded`]): an engine's own reason, a body's syntax error and a frame's exception (the
+    /// engine's `{ error }` answer, its position said as the body's, its first line only), an
+    /// earlier round's, an answer that isn't the engine's, and none.
+    /// **Why:** explain and the editor say one note in two places: written twice, they drift. They
+    /// did: the editor showed an engine's error whole, Boa's position and further lines in, where
+    /// explain says "the body's line L, col C" (the coordinator's reading of R99 stage 5).
+    #[test]
+    fn the_editor_says_a_runs_notes_in_explains_words() {
+        let step = |name: &str, params: Value| -> crate::canvas::Node {
+            serde_json::from_value(json!({ "id": "from", "data": { "name": name, "body": { "kind": "Primitive" }, "params": params } })).unwrap()
+        };
+        let frozen = |name: &str, value: &str| json!({ "kind": "Frozen", "name": name, "value": value });
+        let text = |v: &str| json!({ "type": "Text", "value": v });
+        let entry = json!({ "reads": [
+            { "request": { "type": "Record", "value": [["collection", text("tasks")], ["get", text("t1")]] } },
+            { "request": { "type": "Record", "value": [["collection", text("tasks")]] } },
+        ] });
+        let (tasks, state, field, js) = (
+            step("collection_get", json!([frozen("collection", "tasks")])),
+            step("store_read", json!([frozen("key", "none")])),
+            step("field", json!([frozen("name", "id")])),
+            step("js", json!([])),
+        );
+        let write = "StateWrite(\"g\")";
+        // The js node's own step (`[0, 2]`) and its engine's step inside it (`[0, 2, 1]`), in a
+        // round, with what they recorded.
+        let own = |round: u64| json!({ "path": [0, 2], "start_us": 0, "end_us": 1, "round": round, "outputs": [null] });
+        let engine = |round: u64, recorded: Value| {
+            let mut step = json!({ "path": [0, 2, 1], "start_us": 0, "end_us": 1, "round": round });
+            step.as_object_mut().unwrap().extend(recorded.as_object().unwrap().clone());
+            step
+        };
+        let answered = |fields: Value| json!({ "outputs": [{ "type": "Record", "value": fields }] });
+        let failed = json!({ "effect": write, "level": "failed", "at": [0, 3], "from": [0, 2], "leaf": "js" });
+        let cases: [(&str, Value, Option<&crate::canvas::Node>, Option<Value>); 16] = [
+            ("a read, by its key", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 1], "leaf": "collection_get", "read": 0 }), Some(&tasks), None),
+            ("a read of a listing", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 1], "leaf": "collection_get", "read": 1 }), Some(&tasks), None),
+            ("a read whose request the record doesn't keep", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 1], "leaf": "collection_get", "read": 7 }), Some(&tasks), None),
+            ("a state read (not one of the entry's reads)", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 2], "leaf": "store_read" }), Some(&state), None),
+            ("a value lacking a field", json!({ "effect": write, "level": "missing", "at": [0, 3], "from": [0, 2], "leaf": "field" }), Some(&field), None),
+            ("as far as the record sees", json!({ "effect": write, "level": "missing", "at": [0, 3], "from": [0, 2, 1], "leaf": "field", "unseen": true }), Some(&field), None),
+            ("a failure, the engine's own reason", failed.clone(), Some(&js), Some(json!([own(0), engine(0, json!({ "reason": "out of fuel" }))]))),
+            (
+                "a failure, a body's syntax error: its position as the body's, its first line",
+                failed.clone(),
+                Some(&js),
+                Some(json!([own(0), engine(0, answered(json!([["error", text("SyntaxError: formal parameter `at` declared in lexically declared names at line 1, col 2 (native)\n    and a line the engine went on with")]])))])),
+            ),
+            (
+                "a failure, a body's exception in a frame, in the run's last round",
+                failed.clone(),
+                Some(&js),
+                Some(json!([engine(0, json!({ "reason": "an earlier round's" })), own(1), engine(1, answered(json!([["error", text("Error: not more than 0 (unknown at :3:11)")], ["value", null]])))])),
+            ),
+            ("a failure, an answer that isn't the engine's", failed.clone(), Some(&js), Some(json!([own(0), engine(0, answered(json!([["error", text("refused")], ["status", { "type": "Number", "value": 0 }]])))]))),
+            ("a failure, the engine's answer with a value and no error", failed.clone(), Some(&js), Some(json!([own(0), engine(0, answered(json!([["value", text("ok")]])))]))),
+            ("a failure, no reason recorded", failed.clone(), Some(&js), None),
+            ("withheld", json!({ "effect": write, "level": "withheld", "at": [0, 3] }), None, None),
+            ("refused", json!({ "effect": "DbWrite(\"shop/orders\")", "level": "refused", "rule": "a value read from a reply that sent a secret back isn't written" }), None, None),
+            ("a step with no node of the text", json!({ "effect": write, "level": "read", "at": [0, 3], "from": [0, 9], "leaf": "collection_get", "read": 0 }), None, None),
+            ("a step with no node and no leaf", json!({ "effect": write, "level": "missing", "at": [0, 3] }), None, None),
+        ];
+        // The run as explain reads it: a request's, placed by its route's trace, whose second and
+        // third steps are the note's `from` (the notes stand at `[0, 1]` and `[0, 2]`).
+        let document = json!({ "trace": { "POST /r": ["a", "from", "from"] } });
+        let fixture: Vec<Value> = cases
+            .iter()
+            .map(|(what, note, from, timeline)| {
+                let mut run = entry.clone();
+                run["kind"] = json!("request");
+                run["route"] = json!("POST /r");
+                run["timeline"] = timeline.clone().unwrap_or(json!([]));
+                let reasons = recorded(&document, &run).reasons;
+                json!({
+                    "what": what,
+                    "note": note,
+                    "from": from.map(|n| json!({ "name": n.data.name, "params": n.data.params })),
+                    "timeline": timeline,
+                    "says": skipped_why(note, *from, &run, &reasons),
+                })
+            })
+            .collect();
+        let text = serde_json::to_string_pretty(&json!({ "reads": entry["reads"], "trace": document["trace"], "cases": fixture })).unwrap() + "\n";
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../editor/src/skipped.fixture.json");
+        let kept = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
+        if kept != text && std::env::var_os("HOLON_BLESS").is_some() {
+            std::fs::write(&path, &text).unwrap();
+            return;
+        }
+        assert!(kept == text, "{} is out of date: HOLON_BLESS=1 cargo test -p holon-author the_editor_says_a_runs_notes_in_explains_words writes it again", path.display());
     }
 }

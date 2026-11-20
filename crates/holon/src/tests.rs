@@ -16,6 +16,8 @@ mod approval_shows;
 mod deploy_review;
 /// No page of another site may frame the control plane.
 mod frames;
+/// A run of every kind shows its steps, in explain and the editor alike (R151).
+mod run_kinds;
 /// Reading a run's steps and values takes run.steps (R55).
 mod run_steps;
 /// An expired waiting run slow to go on holds no other deadline (R34).
@@ -44,6 +46,8 @@ mod backup_choice;
 mod secret_rounds;
 /// Which lines of a source file are a test module's, for the sweeps of the source (R78).
 mod source;
+/// What a run's record says of an effect it held and didn't make (R99).
+mod skipped;
 use source::{in_test_modules, inert, test_files, test_modules};
 
 pub(crate) fn test_state() -> AppState {
@@ -12776,10 +12780,14 @@ export const pay = action(async (order) => {
         if slug == sized {
             assert!(export.lines.iter().all(|l| !l.contains("\"withheld\":true")), "{slug}: a line withholds");
         }
-        // The echoing flow's writes: the balance's line has one, the slice's has none.
+        // The echoing flow's writes: the balance's line performs one, the slice's none, its write
+        // noted refused instead (R99: a line that names the write it didn't make isn't one that made it).
         if slug == echoed {
-            let wrote = |l: &&String| l.contains("CollectionWrite");
-            assert_eq!(export.lines.iter().filter(wrote).count(), 2, "{slug}: the balance written twice, the slice never");
+            let lines: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+            let writes = |l: &serde_json::Value, of: &str| l[of].as_array().is_some_and(|xs| xs.iter().any(|x| x[if of == "performed" { "capability" } else { "effect" }].as_str().is_some_and(|c| c.starts_with("CollectionWrite"))));
+            assert_eq!(lines.iter().filter(|l| writes(l, "performed")).count(), 2, "{slug}: the balance written twice, the slice never");
+            let refused = lines.iter().filter(|l| writes(l, "skipped") && l["skipped"].as_array().unwrap().iter().any(|n| n["level"] == "refused")).count();
+            assert_eq!(refused, 2, "{slug}: each slice's write noted refused");
             assert!(export.lines.iter().any(|l| l.contains("derived #")), "{slug}: a part of its secret is marked");
         }
         if slug == large {

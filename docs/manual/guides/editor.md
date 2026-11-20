@@ -287,6 +287,13 @@ which input never arrived; an answer that fell back to its `missing` status is m
 **show** in the banner picks the failing node. A request no route matched ran none of the flow:
 every node is dimmed.
 
+**A run that held an effect** (a write, a send, a call) and didn't make it says so, even when it
+answered 200. The run's panel gains a **Not made** tab, headed **answered 200; an effect not
+made** (an action's run, which answers nothing, just **an effect not made**), that lists each
+effect and why, in the words `holon runs <slug> --run N` uses ([What a run didn't
+make](checking-runs.md#what-a-run-didnt-make)); its **show** picks the node that would have made
+it. That node is marked **not made** on the canvas, and the inspector says why.
+
 **Flow state** (a tab of the inspector, in view mode) shows each state key and collection before
 and after the run, or after the step you are on.
 

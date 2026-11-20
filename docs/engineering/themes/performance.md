@@ -797,6 +797,49 @@ marked header. Not yet cut, and over the 3% asked of it: one pass for every valu
 multi-pattern search), or the record reusing what the start wrote of the request, would take it;
 the long-value prefilter didn't (its row), and the code is as the row before it measured.
 
+### What a run held and didn't make (R99, 2026-11-19)
+
+A run's record says each effect its run held and didn't make (`skipped`): the server walks back
+from each such effect to where its absence began (core's `absence::origin`, through
+`skipped::of`) and writes a note. It walks only in a run where an absence began (the evaluator
+says so, `Observer::began_absent`, and the `Timer` hears it) or whose flow reads a secret; a run
+that only took the other side of an `if` is told nothing. Measured by a test kept out of the tree
+(`r99_cost`): four routes in two flows, through `serve_data`, each sent a 1 KiB body:
+
+- `/plain`: no secret, nothing absent, so no walk;
+- `/absent`: a write of a field the body lacks, so the walk and one note (`missing`);
+- `/secret-local`: a flow that reads a secret writes an HMAC of it to a collection, so the walk
+  runs on every run and finds nothing held;
+- `/secret-call`: the same flow sends the secret as a bearer token to a host on the same
+  machine, then writes.
+
+Main (`fb25d263`) against R99's stage 2 (`a9933996`, where the server's walk and notes landed).
+Each was built in release in a worktree of its own and its test binary copied out, then run once
+untimed. Then six rounds, run directly, alone in the build queue (every other build waited), the
+order turned each round. Each route got 1,000 calls one at a time after 50 to warm. 2026-11-19
+10:20–10:21 UTC. Each round's last `/absent` entry was read back: the tip's had its note, main's
+none.
+
+| | `main` | tip | change | tip ÷ `main` − 1, round by round |
+|---|---:|---:|---:|---|
+| `/plain` | 108 (129) | 108.5 (132.5) | +0.5% | +5.8, +0.9, +6.5, −9.4, +4.6, −2.7% |
+| `/absent` | 103 (121) | 110.5 (127.5) | +7.3% | +5.8, +5.8, +5.7, +7.8, +11.9, +3.8% |
+| `/secret-local` | 158 (220) | 157 (223.5) | −0.6% | −5.0, +1.3, −2.4, +2.0, −1.3, +1.9% |
+| `/secret-call` | 1,113.5 (1,586) | 1,118.5 (1,467.5) | +0.4% | +1.4, +0.9, +2.5, +5.1, −7.2, −3.2% |
+
+Median of the round medians, µs (the median p90). The cost falls only where an effect was held
+and not made: about 7.5 µs on `/absent`, in every round (the tip 109–113 µs, main 101–106). A
+flow that reads a secret walks on every run, and with every effect made that costs nothing these
+rounds can see. `/absent` is over the 3% asked of a change, and accepted as it stands
+(2026-11-19), with its cost written here: only a run that dropped an effect pays it, and that
+run's record now says why.
+
+- **Not measured:** how the 7.5 µs splits between the walk back to where the absence began and
+  writing the note into the record. They weren't timed apart, and no profile was taken.
+- What landed after stage 2 (holon verify working the notes out again, the note of a write
+  refused for what a reply sent back) adds nothing to a request's path but one note pushed where
+  a write is refused.
+
 ### Profiled again at rc.35 (2026-11-12)
 
 [Measuring](measuring.md#2-instructions)'s method on `490d03e` (after #48) and `main` at `d289e43`

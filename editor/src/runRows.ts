@@ -1,8 +1,9 @@
 // A run drawn on the statement graph (web-console-L4.md §4, §5.5). View runs replays the run on
 // the canvas of the version it ran on, node by node; each row of the graph stands for some of
 // those nodes (its parts, canvasLevel.ts), so what the run did lands on rows: a row ran if any of
-// its nodes did, it shows the value its last node made, the step's node marks its row, and the
-// node a failure began at marks its row failed.
+// its nodes did, it shows the value its last node made, the step's node marks its row, the node a
+// failure began at marks its row failed, and an effect the run held and didn't make (the server's
+// note) marks its row not made.
 
 import type { WValue } from "./holon";
 import { valueChip } from "./diagnostics";
@@ -42,7 +43,7 @@ export type RunOnCanvas = {
   traces: Map<string, { outputs: (WValue | null)[] }>;
   /** The step shown (an index into `order`), or none: the whole run. */
   step: number | null;
-  /** Where a failed run went wrong, by node (replay.ts's diagnose). */
+  /** Where a failed run went wrong, and the effects a run held, by node (replay.ts's diagnose). */
   issues?: Map<string, Issue>;
   /** Whether rows show values (the `v` pane toggle). */
   values: boolean;
@@ -59,17 +60,21 @@ export function rowValue(v: WValue | null): string {
 }
 
 /** The run over the graph: the rows it ran, the step's row, each row's value (the first output of
- *  its last node that made one) and the rows it failed at, with why. */
+ *  its last node that made one), the rows it failed at, with why, and the rows whose effect it
+ *  held and didn't make, with why. */
 export function graphRun(rows: Map<string, string[]>, run: RunOnCanvas): GraphRun {
   const at = new Map(run.order.map((id, i) => [id, i]));
   const ran = new Set<string>();
   const values = new Map<string, string>();
   const failed = new Map<string, string>();
+  const notMade = new Map<string, string>();
   for (const [key, ids] of rows) {
     const done = ids.filter((id) => at.has(id)).sort((a, b) => at.get(a)! - at.get(b)!);
     if (done.length > 0) ran.add(key);
     const origin = ids.find((id) => run.issues?.get(id)?.role === "origin");
     if (origin) failed.set(key, run.issues!.get(origin)!.reason);
+    const held = ids.filter((id) => run.issues?.get(id)?.role === "held");
+    if (held.length > 0) notMade.set(key, held.map((id) => run.issues!.get(id)!.reason).join("\n"));
     if (!run.values) continue;
     const last = [...done].reverse().find((id) => (run.traces.get(id)?.outputs.length ?? 0) > 0);
     const outputs = last ? run.traces.get(last)!.outputs : [];
@@ -78,7 +83,7 @@ export function graphRun(rows: Map<string, string[]>, run: RunOnCanvas): GraphRu
   }
   const node = run.step === null ? undefined : run.order[run.step];
   const current = node === undefined ? null : (rowOfNode(rows).get(node) ?? null);
-  return { ran, current, values, failed };
+  return { ran, current, values, failed, notMade };
 }
 
 /** The node a row picked or opened shows in the Inspector: of its nodes, the last the run ran (an

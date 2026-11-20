@@ -30,6 +30,36 @@
   as the policy is read, so a server whose policy has one doesn't start. It says the file's path,
   then `storage.backup: say where: a folder's whole path (/mnt/archive), or "none" to delete them`
   (`D:\archive` on Windows), until the line names a folder or `none`.
+- **A run's record says what it held and didn't make, and why** (`skipped`). Each write, row, log
+  line, call or action start whose value never arrived is noted with where it stopped: a read that
+  found nothing (and what it asked), a field a value lacked, a step that failed. One the server
+  refused is noted with its rule, and one that may carry what is computed from a secret is noted
+  as withheld, naming nothing. The flow's own choice (an `if` not taken, an early return) isn't
+  noted. `holon explain` and `holon runs --run N` say each under the line that would have made it,
+  read from the note. A run that went on from a wait, or that a mail, a feed or a queue started, is
+  now shown over its own steps: explain said "this run recorded no steps" for it, and the editor's
+  run view showed no values. explain no longer takes a step whose value was too large
+  to record for one that gave nothing: a write fed a large answer and a state read for the first
+  time named the request as what gave nothing. `holon verify` works the notes out again and says a
+  run differs where they don't match. A run recorded before this release has no notes, so verify
+  says DIFFERS for one of those runs that held an effect. A run where nothing was held pays
+  nothing for it; one that dropped an effect pays about 7.5 µs (performance.md). The editor's run
+  view marks the node that would have made the effect and says why in explain's words, a js
+  body's error at the body's line as explain says it. The sample `loyalty` shows it, and the
+  manual's [Checking runs](docs/manual/guides/checking-runs.md#what-a-run-didnt-make) says what
+  each note means and which refusals `holon verify` can't work out again (those of a grant).
+- **explain no longer refuses a flow that starts an action, or calls one of its own functions,
+  inside `if (x !== undefined)`.** Such a flow compiled and deployed, but printing it back refused
+  that statement, so `holon explain`, `holon runs <slug> --run N` and the MCP explain tool refused
+  every run of it. It now prints inside its `if` and reads back as the same flow.
+- **explain no longer shows a field's value as what a line gave.** In a record written after a
+  spread (`{ ...found, state: "done", via }`), the first field after the spread was on no line of
+  the printed text, so explain took its value for the line's result (`⇒ "done"` under a write
+  that made nothing), and the editor, which links text and canvas by the same lines, had no line
+  for it. Every field is now on its line; 132 steps across the samples were on none.
+- **A run that answers nothing is headed "answered" in the editor**, not "answered null": an
+  action's run, a clock's, or a part that went on from its wait, in View runs' inspector, its
+  compare rows and the run's page, as `holon runs` prints no status for it.
 - **Where the server backs up its runs goes only to whoever may view the host.** Anyone who may
   read the policy (a viewer, an editor, an agent) was sent the policy file's text and the backup
   folder's whole path. Now someone who may not view the host is told `a folder`, and in place of

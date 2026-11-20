@@ -36,9 +36,10 @@ export function rowAtLine(graph: FlowGraph, line: number): { band: number; index
   return at(false) ?? at(true);
 }
 
-/** A run over the graph (View runs): what it ran, the step it is at, the value each row made, and
- *  the rows a failure began at, with why, by rowKey (runRows.ts). */
-export type GraphRun = { ran: Set<string>; current?: string | null; values?: Map<string, string>; failed?: Map<string, string> };
+/** A run over the graph (View runs): what it ran, the step it is at, the value each row made, the
+ *  rows a failure began at, with why, and the rows whose effect it held and didn't make, with
+ *  why (the server's notes), by rowKey (runRows.ts). */
+export type GraphRun = { ran: Set<string>; current?: string | null; values?: Map<string, string>; failed?: Map<string, string>; notMade?: Map<string, string> };
 
 /** What a row is, to tell it in another version: its text and what its nodes are and are set to
  *  (not their names, which shift as other rows come and go). */
@@ -168,6 +169,7 @@ export function StatementGraph({
                   const key = rowKey(b, i);
                   const value = run?.values?.get(key);
                   const failed = run?.failed?.get(key);
+                  const notMade = run?.notMade?.get(key);
                   const cls = [
                     "hl-sg__row",
                     `hl-sg--${r.kind}`,
@@ -176,6 +178,7 @@ export function StatementGraph({
                     run && !run.ran.has(key) && "hl-sg__row--idle",
                     run?.current === key && "hl-sg__row--current",
                     failed !== undefined && "hl-sg__row--failed",
+                    failed === undefined && notMade !== undefined && "hl-sg__row--held",
                   ]
                     .filter(Boolean)
                     .join(" ");
@@ -187,7 +190,10 @@ export function StatementGraph({
                         aria-current={key === selected ? "true" : undefined}
                         data-new={fresh.has(key) ? "true" : undefined}
                         data-run={run ? (failed !== undefined ? "failed" : run.current === key ? "current" : run.ran.has(key) ? "ran" : "idle") : undefined}
-                        title={[r.text, r.does && `is ${r.does}`, r.outside.length > 0 && `takes ${r.outside.join(", ")} from outside`, value !== undefined && `= ${value}`, failed !== undefined && `failed here: ${failed}`].filter(Boolean).join("\n")}
+                        data-held={notMade !== undefined ? "true" : undefined}
+                        title={[r.text, r.does && `is ${r.does}`, r.outside.length > 0 && `takes ${r.outside.join(", ")} from outside`, value !== undefined && `= ${value}`, failed !== undefined && `failed here: ${failed}`, notMade]
+                          .filter(Boolean)
+                          .join("\n")}
                         onClick={() => onPick?.(r, b, i)}
                         onDoubleClick={onOpen && (() => onOpen(r, b, i))}
                         onKeyDown={
@@ -205,6 +211,7 @@ export function StatementGraph({
                           <span className="hl-sg__line">line {r.line}</span>
                           {fresh.has(key) && <span className="hl-sg__new">new</span>}
                           {failed !== undefined && <span className="hl-sg__failed">failed here</span>}
+                          {notMade !== undefined && <span className="hl-sg__held">not made</span>}
                           {r.outside.length > 0 && <span className="hl-sg__outside">← {r.outside.join(", ")}</span>}
                         </span>
                         <span className="hl-sg__name">

@@ -15,6 +15,7 @@ import { valueChip } from "./diagnostics";
 import {
   collectionsAtStep,
   diagnose,
+  heldEffects,
   executionOrder,
   innerSteps,
   nodeExchanges,
@@ -160,7 +161,8 @@ export function useViewMode(input: ViewModeInput) {
         }
       },
     );
-    const diagnosis = diagnose(ns, es, selectedRun, run);
+    // Why it failed, and the effects it held and didn't make, as the server noted each.
+    const diagnosis = diagnose(ns, es, selectedRun, run, heldEffects(selectedRun, viewTrace, ns));
     // It ran the nodes the run ran (a branch the run took, the replay took), where the timeline
     // can tell.
     const ranSame = sameNodesRan(runGroup(ns, es, selectedRun), run, nodeTimings(selectedRun, viewTrace), (selectedRun.parked?.length ?? 0) > 0);

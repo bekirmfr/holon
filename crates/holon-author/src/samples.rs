@@ -1143,6 +1143,18 @@ static SAMPLES: &[Sample] = &[
         try_it: r#"curl -X POST -d '{"id":"p-1","amount":250}' http://127.0.0.1:8147/payout, then curl -X POST -d '{"id":"p-2","amount":5000}' http://127.0.0.1:8147/payout (refused 409), then holon logs traced-payout shows each line with its run and its level, holon logs traced-payout --level warn only the warning"#,
         text: include_str!("../samples/traced-payout.holon.ts"),
     },
+    Sample {
+        name: "loyalty",
+        title: "Loyalty points (what a run held and didn't make)",
+        description: "A purchase adds points to its member and answers \"recorded\" whatever became of the write. A purchase for a member nobody added, one without an amount, or one whose amount the points function refuses makes no write, and its run says so: each write it held and didn't make, and where that began (a read that found nothing, a field the request lacked, a step that failed), under the line that would have made it, in holon runs --run N and the editor's run view.",
+        shows: &["what a run didn't make", "holon runs --run N", "a function that throws", "collections", "a spread"],
+        port: Some("8203"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -X POST -d '{"name":"Ada"}' http://127.0.0.1:8203/members/ada, then curl -X POST -d '{"member":"ada","amount":120}' http://127.0.0.1:8203/purchases ("recorded"; GET /members/ada has 12 points), then -d '{"member":"bob","amount":50}' ("recorded", and nothing written): holon runs loyalty --run 3 says, under the write, "not made: collection_get "members" found nothing at members[bob]""#,
+        text: include_str!("../samples/loyalty.holon.ts"),
+    },
 ];
 
 #[cfg(test)]
