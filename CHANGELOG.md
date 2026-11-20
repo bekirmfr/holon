@@ -16,10 +16,26 @@
   line and headers, and a body of 1 KiB or less, now arrive within 30 seconds of its first byte;
   past that the sender is told 408 (request timeout) and the connection is closed. A larger body
   keeps its own 30 seconds, from when the server starts to read it.
+- **A request whose body the server doesn't read can no longer stop the server or hold its
+  connection.** When the server answered a request to the control port without reading all of
+  its body, it read the rest before the next request on that connection: into memory as large as
+  the request said its body was, and for as long as its bytes kept coming. A request could so
+  make the server ask for more memory than the machine has and stop, or keep its connection for
+  as long as its sender liked. Now the rest is read off without being kept, and only when it is
+  no larger than the largest body the server takes and arrives within the request's time;
+  otherwise the connection is closed once its answer is out. Who notices: a client that sends a
+  body larger than that, which the server doesn't read, then another request on the same
+  connection, finds that connection closed and sends again on a new one, as HTTP clients do.
+- **A request in a newer HTTP than the control port speaks is refused at once.** The server took
+  such a request and left its connection waiting with its answer never written: enough of them
+  kept the address they came from, and then everyone, from being answered. Now the sender is told
+  505 (version not supported) and the connection is closed. Who notices: a client that speaks a
+  newer HTTP to the control port without asking first, now told so at once; one that asks first
+  is answered as before.
 - **A request to the control port that a proxy could read another way is refused.** The server
   took a body's end from a `Transfer-Encoding` of any kind, over a `Content-Length` beside it;
-  read a `Content-Length` it couldn't parse (`five`) as no body, its bytes then taken as the next
-  request; and took a header line folded onto the one before, or holding a lone CR, LF or NUL. A
+  read a `Content-Length` it couldn't parse as no body, its bytes then taken as the next request;
+  and took a header line folded onto the one before, or holding a lone CR, LF or NUL. A
   proxy in front of the server that read such a request another way could pass a second request
   on hidden in the first (request smuggling, CVE-2026-66752 and CVE-2026-66753). A body is now
   taken only with one `Content-Length` of digits. A request with a `Transfer-Encoding` is told
