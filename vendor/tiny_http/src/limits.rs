@@ -8,7 +8,14 @@
 //!   without an answer, as a server closes a kept-alive connection it no longer wants. The same
 //!   limit bounds every wait for a request's bytes, its body's included: one that stops for
 //!   longer is cut off (408 when tiny_http reads it, an error to the handler that reads it).
-//!   Bytes still coming, however slowly, keep it; a response, however long, isn't a read.
+//!   Bytes still coming, however slowly, keep it (a request's own up to its deadline, below); a
+//!   response, however long, isn't a read.
+//! - **A request** arrives whole by a deadline from its first byte: its line, its headers and a
+//!   body tiny_http reads itself (1 KiB or less, before the application sees the request). Past
+//!   it the client is told 408 and the connection closed, however steadily its bytes come, so a
+//!   request trickled a byte at a time doesn't hold its connection for as long as each byte comes
+//!   within the idle limit. A larger body is the application's to read, by its own deadline
+//!   (Holon's `http::BODY_DEADLINE`).
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -23,6 +30,9 @@ use crate::connection::Connection;
 pub struct Limits {
     /// The longest a socket read waits for a client's bytes; `None` waits for ever (upstream).
     pub idle: Option<Duration>,
+    /// The longest a request takes to arrive whole, from its first byte: its head, and its body
+    /// when tiny_http reads it (`Deadline`); `None` waits while its bytes keep coming (upstream).
+    pub request: Option<Duration>,
     /// Connections open at once, from everyone.
     pub connections: usize,
     /// Connections open at once from one address (all of a Unix socket's count as one).
@@ -33,6 +43,12 @@ pub struct Limits {
 /// request's body (`http::BODY_DEADLINE`, 30 s), so a body is cut off by that deadline and its
 /// 408 first, never by this.
 pub const IDLE: Duration = Duration::from_secs(60);
+
+/// The longest a request takes to arrive whole, from its first byte: its line, its headers and a
+/// body of 1 KiB or less. Holon's deadline for a larger body, which Holon reads
+/// (`http::BODY_DEADLINE`), is the same 30 s, as is the data plane's `body_timeout`; main.rs
+/// asserts the first.
+pub const REQUEST: Duration = Duration::from_secs(30);
 
 /// Connections open at once: twice the requests Holon answers at once (`MAX_IN_FLIGHT`, 512),
 /// room for the kept-alive ones between requests beside them.
@@ -49,11 +65,96 @@ impl Default for Limits {
     fn default() -> Limits {
         Limits {
             idle: Some(IDLE),
+            request: Some(REQUEST),
             connections: CONNECTIONS,
             from_one: FROM_ONE,
         }
     }
 }
+
+/// Holon (PATCHED.md): when a connection's request has to have arrived by. Set at the request's
+/// first byte (`ClientConnection::read_next_line`) and cleared once tiny_http has read it whole
+/// (`ClientConnection::read`), so what the application reads after (a larger body) and the wait
+/// for the next request are held to the idle limit alone. Each read of the connection
+/// (`RefinedTcpStream`) waits what `wait` gives it.
+pub(crate) struct Deadline {
+    idle: Option<Duration>,
+    request: Option<Duration>,
+    by: Mutex<Option<Instant>>,
+}
+
+impl Deadline {
+    pub(crate) fn new(idle: Option<Duration>, request: Option<Duration>) -> Arc<Deadline> {
+        Arc::new(Deadline {
+            idle,
+            request,
+            by: Mutex::new(None),
+        })
+    }
+
+    /// A request's first byte has come: the rest of it is due by the request limit.
+    pub(crate) fn start(&self) {
+        if let Some(request) = self.request {
+            *self.by.lock().unwrap() = Some(Instant::now() + request);
+        }
+    }
+
+    /// The request has come whole.
+    pub(crate) fn end(&self) {
+        *self.by.lock().unwrap() = None;
+    }
+
+    /// The connection is told 408 and ends: what its client still sends is read until `linger`
+    /// from now (`ClientConnection::next`).
+    pub(crate) fn linger(&self, linger: Duration) {
+        *self.by.lock().unwrap() = Some(Instant::now() + linger);
+    }
+
+    /// What a client is told when its request is cut off: by the deadline, once it has passed
+    /// (the read that waited out what was left of it fails as any read that waits too long does);
+    /// otherwise by the idle limit, a read inside the request that waited the limit out.
+    pub(crate) fn why(&self) -> String {
+        let past = matches!(*self.by.lock().unwrap(), Some(by) if Instant::now() >= by);
+        match (past, self.request, self.idle) {
+            (true, Some(request), _) => format!(
+                "the request didn't arrive whole within {} seconds of its first byte",
+                request.as_secs_f64()
+            ),
+            (_, _, Some(idle)) => format!(
+                "nothing more of the request arrived for {} seconds",
+                idle.as_secs_f64()
+            ),
+            _ => "the request didn't arrive in time".to_string(),
+        }
+    }
+
+    /// How long the next read may wait: the idle limit, or what is left to the deadline if that
+    /// is less. Once the deadline has passed, a time-out, which `client.rs` answers 408.
+    pub(crate) fn wait(&self) -> std::io::Result<Option<Duration>> {
+        let by = *self.by.lock().unwrap();
+        let Some(by) = by else { return Ok(self.idle) };
+        let left = by.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, PastDeadline));
+        }
+        Ok(Some(self.idle.map_or(left, |idle| idle.min(left))))
+    }
+}
+
+/// Holon (PATCHED.md): a read once a request's deadline (or a 408's linger) has passed.
+#[derive(Debug)]
+pub(crate) struct PastDeadline;
+
+impl std::fmt::Display for PastDeadline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the request didn't arrive whole by its deadline")
+    }
+}
+
+impl std::error::Error for PastDeadline {}
+
+/// The most read off a connection told 408 while it lingers: one that sends more is closed then.
+pub(crate) const LINGER_READS_MOST: usize = 64 * 1024;
 
 /// What a connection past a bound is told before it is closed.
 pub const TOO_MANY: &str =

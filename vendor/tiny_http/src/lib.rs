@@ -357,7 +357,7 @@ impl Server {
                         read_closable.held = Some(held.clone());
                         write_closable.held = Some(held);
 
-                        Ok(ClientConnection::new(write_closable, read_closable, open.limits().idle))
+                        Ok(ClientConnection::new(write_closable, read_closable, open.limits().idle, open.limits().request))
                     }
                     Err(e) => Err(e),
                 };

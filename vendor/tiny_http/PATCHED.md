@@ -35,7 +35,8 @@ or, while the history keeps it, against the commit that added the copy unchanged
    whether or not its request had a body. A read inside a request's head that waits past the
    limit is told 408 (upstream's answer, which it gave only where a timeout was set); one inside
    a body is an error to whoever reads the body. Bytes that keep coming, however slowly, are
-   never cut, and a response is never cut. The limit is past Holon's deadline for a body
+   not cut by it (a request's head and small body are, at their deadline: change 6), and a
+   response is never cut. The limit is past Holon's deadline for a body
    (`http::BODY_DEADLINE`), so a body that stops is told 408 by Holon first; main.rs asserts it.
 3. **A bound on open connections** (`src/limits.rs`, `src/lib.rs`), in all (1,024) and from one
    address (512). Upstream accepted every socket and gave each a thread for as long as it was
@@ -71,6 +72,23 @@ or, while the history keeps it, against the commit that added the copy unchanged
    minute of the last line is counted instead, and said with the next line, so a client that
    holds the server near its limit, runs ending and starting as handles come and go, gets a
    line or two a minute, not two a run. The error is no longer queued.
+6. **A deadline for a whole request** (`src/limits.rs`, `Deadline`; `src/client.rs`;
+   `src/util/refined_tcp_stream.rs`). The idle limit bounds each wait for a byte, not a request:
+   a client that sent its request a byte at a time, each within the limit, held its connection
+   for as long as it liked, and a body of 1 KiB or less, which tiny_http reads before the
+   application sees the request, was out of reach of Holon's own deadline for a body. Now a
+   request's line, its headers and such a body arrive whole within `limits::REQUEST` (30 s,
+   Holon's deadline for a body; main.rs asserts it) of its first byte. Each read waits no longer
+   than what is left of it (the socket's read timeout is the lesser of that and the idle limit,
+   set again only when it changes); past it the client is told 408 and the connection closed, as
+   for a read inside a head that waits out the idle limit. Either 408 now says why in words (as
+   JSON, as the 503 past a bound does) with `Connection: close`, and is read before the close:
+   what the client still sends is read off and thrown away until it closes, or for 2 s (64 KiB
+   at most), since closed with bytes unread the connection is reset, and a reset can reach the
+   client before the 408 (on Windows it throws away a 408 not yet read). The deadline starts at the request
+   line's first byte, so a kept-alive connection waits for its next request by the idle limit
+   alone, and it ends once tiny_http has read the request whole, so a larger body, which the
+   application reads, is held to the idle limit and the application's own deadline.
 
 `Server::from_listener_limited` takes other limits; every other constructor (rouille's
 included) uses `Limits::default()`.
@@ -98,5 +116,5 @@ included) uses `Limits::default()`.
 - **`cargo audit` doesn't watch this copy.** It checks the crates `Cargo.lock` takes from a
   registry, and this one is a path. An advisory for tiny_http (RustSec, GitHub's) has to be
   checked by hand, and a fix carried over here.
-- Taking a new upstream release means copying it over this folder and putting the four changes
-  back (the diff above), with their tests.
+- Taking a new upstream release means copying it over this folder and putting the changes
+  above back (the diff above), with their tests.

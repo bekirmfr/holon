@@ -52,6 +52,16 @@ impl Stream {
             Stream::Https(ssl_stream) => ssl_stream.shutdown(how),
         }
     }
+
+    // Holon (PATCHED.md): how long a read waits (`limits::Deadline`)
+    fn set_read_timeout(&self, wait: Option<std::time::Duration>) -> IoResult<()> {
+        match self {
+            Stream::Http(tcp_stream) => tcp_stream.set_read_timeout(wait),
+            // TLS isn't built (PATCHED.md): the control port is plain HTTP
+            #[cfg(any(feature = "ssl-openssl", feature = "ssl-rustls"))]
+            Stream::Https(_) => Ok(()),
+        }
+    }
 }
 
 impl Read for Stream {
@@ -89,6 +99,10 @@ pub struct RefinedTcpStream {
     // Holon (PATCHED.md): the connection's place among those open, given back once both halves
     // are gone
     pub(crate) held: Option<std::sync::Arc<crate::limits::Held>>,
+    // Holon (PATCHED.md): the reading half's: when its request is due, and what its socket's
+    // reads wait now
+    deadline: Option<std::sync::Arc<crate::limits::Deadline>>,
+    waits: Option<std::time::Duration>,
 }
 
 impl RefinedTcpStream {
@@ -105,6 +119,8 @@ impl RefinedTcpStream {
             close_read: true,
             close_write: false,
             held: None,
+            deadline: None,
+            waits: None,
         };
 
         let write = RefinedTcpStream {
@@ -112,6 +128,8 @@ impl RefinedTcpStream {
             close_read: false,
             close_write: true,
             held: None,
+            deadline: None,
+            waits: None,
         };
 
         (read, write)
@@ -125,6 +143,13 @@ impl RefinedTcpStream {
 
     pub(crate) fn peer_addr(&mut self) -> IoResult<Option<SocketAddr>> {
         self.stream.peer_addr()
+    }
+
+    /// Holon (PATCHED.md): each read waits what `deadline` gives it; the socket's reads wait
+    /// `waits` now (what the accept set).
+    pub(crate) fn held_to(&mut self, deadline: std::sync::Arc<crate::limits::Deadline>, waits: Option<std::time::Duration>) {
+        self.deadline = Some(deadline);
+        self.waits = waits;
     }
 
     /// Holon (PATCHED.md): no more is sent on this connection; the client reads to its end.
@@ -147,6 +172,14 @@ impl Drop for RefinedTcpStream {
 
 impl Read for RefinedTcpStream {
     fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
+        // Holon (PATCHED.md): no longer than the request's deadline lets it, if it has one
+        if let Some(deadline) = &self.deadline {
+            let wait = deadline.wait()?;
+            if wait != self.waits {
+                self.stream.set_read_timeout(wait)?;
+                self.waits = wait;
+            }
+        }
         self.stream.read(buf)
     }
 }

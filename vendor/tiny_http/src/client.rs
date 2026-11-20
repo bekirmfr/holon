@@ -40,6 +40,9 @@ pub struct ClientConnection {
 
     // Holon (PATCHED.md): how a response that says `Connection: close` ends the connection
     closer: Arc<Closer>,
+
+    // Holon (PATCHED.md): when the request being read is due (`limits::Deadline`)
+    deadline: Arc<crate::limits::Deadline>,
 }
 
 /// Holon (PATCHED.md): what a connection's requests tell it. A response sent with `Connection:
@@ -106,14 +109,18 @@ enum ReadError {
 impl ClientConnection {
     /// Creates a new `ClientConnection` that takes ownership of the `TcpStream`.
     ///
-    /// Holon (PATCHED.md): `idle`, the limit each read of it waits (`limits::Limits::idle`).
+    /// Holon (PATCHED.md): `idle`, the limit each read of it waits (`limits::Limits::idle`), and
+    /// `request`, the one each request arrives whole by (`limits::Limits::request`).
     pub fn new(
         write_socket: RefinedTcpStream,
         mut read_socket: RefinedTcpStream,
         idle: Option<Duration>,
+        request: Option<Duration>,
     ) -> ClientConnection {
         let remote_addr = read_socket.peer_addr();
         let secure = read_socket.secure();
+        let deadline = crate::limits::Deadline::new(idle, request);
+        read_socket.held_to(deadline.clone(), idle);
 
         let mut source = SequentialReaderBuilder::new(BufReader::with_capacity(1024, read_socket));
         let first_header = source.next().unwrap();
@@ -133,6 +140,7 @@ impl ClientConnection {
             next_header_source: first_header,
             no_more_requests: false,
             secure,
+            deadline,
         }
     }
 
@@ -149,7 +157,8 @@ impl ClientConnection {
     /// Holon (PATCHED.md): when `first` (a request line) and a read waits past the idle limit
     ///  before any of it comes, the error is `Idle` if the connection is idle (`Closer::idle`);
     ///  while it is owed an answer, or its last ended less than the limit ago, it reads on (so it
-    ///  is closed between one and two limits after its last answer).
+    ///  is closed between one and two limits after its last answer). A request line's first byte
+    ///  starts the request's deadline (`limits::Deadline`).
     fn read_next_line(&mut self, first: bool) -> IoResult<AsciiString> {
         let mut buf = Vec::new();
         let mut prev_byte_was_cr = false;
@@ -167,6 +176,10 @@ impl ClientConnection {
                 Some(b) => b?,
                 None => return Err(IoError::new(ErrorKind::ConnectionAborted, "Unexpected EOF")),
             };
+
+            if first && buf.is_empty() {
+                self.deadline.start();
+            }
 
             if byte == b'\n' && prev_byte_was_cr {
                 buf.pop(); // removing the '\r'
@@ -243,6 +256,10 @@ impl ClientConnection {
             }
         })?;
 
+        // Holon (PATCHED.md): read whole, by its deadline; what the application reads after is
+        // held to the idle limit alone
+        self.deadline.end();
+
         // Holon (PATCHED.md): its response can end the connection
         let mut request = request;
         request.closer = Some(self.closer.clone());
@@ -296,11 +313,31 @@ impl Iterator for ClientConnection {
 
                 Err(ReadError::ReadIoError(ref err)) if crate::limits::timed_out(err) => {
                     // request timeout
+                    // Holon (PATCHED.md): said in words, as the 503 of a connection past a bound
+                    // is, and read before the close: what the client still sends is read off and
+                    // thrown away until it closes, or for `limits::LINGER`. Closed with bytes
+                    // unread, the connection is reset, and a reset can reach the client before
+                    // the 408 (a client cut off is still sending, as a rule).
+                    let body = format!("{{\"error\":\"{}\"}}", self.deadline.why());
+                    let json = crate::Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap();
+                    let close = crate::Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap();
+                    let response = Response::from_data(body)
+                        .with_status_code(StatusCode(408))
+                        .with_header(json)
+                        .with_header(close);
                     let writer = self.sink.next().unwrap();
-                    let response = Response::new_empty(StatusCode(408));
                     response
                         .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
                         .ok();
+                    self.closer.close();
+                    self.deadline.linger(crate::limits::LINGER);
+                    let (mut buf, mut read) = ([0u8; 4096], 0);
+                    while read < crate::limits::LINGER_READS_MOST {
+                        match self.next_header_source.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => read += n,
+                        }
+                    }
                     return None; // closing the connection
                 }
 
