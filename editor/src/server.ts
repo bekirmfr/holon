@@ -1151,10 +1151,15 @@ export type HostPolicy = {
    *  nothing more deploy without a person (off: each waits for one, whatever a flow says). */
   agents_deploy_at_once?: boolean;
   /** `[storage]`: how often the server sweeps (`"10m"`, `"off"`); where the runs a log lets go of
-   *  go (a folder's whole path, `"none"`, or null while no one has chosen). */
+   *  go (a folder's whole path, `"none"`, or null while no one has chosen; `"a folder"` to someone
+   *  who doesn't view the host). */
   storage?: { sweep_every: string; warn_at?: string; backup?: string | null };
-  /** The policy file's text as it was read (null: there is none, and the defaults hold). */
+  /** The policy file's text as it was read (null: there is none, and the defaults hold). Sent only
+   *  to someone who views the host; anyone else is told why in `text_withheld` (R74). */
   text?: string | null;
+  /** In place of `text`, for someone who doesn't view the host: the server's words for why the
+   *  file isn't shown. */
+  text_withheld?: string;
 };
 
 export async function getPermissions(): Promise<HostPolicy> {

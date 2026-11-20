@@ -5,8 +5,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { DialogProvider } from "./Dialog";
-import { ResourcesPage } from "./HostPages";
-import { listDatabases, type DatabaseEntry } from "./server";
+import { PolicyPage, ResourcesPage } from "./HostPages";
+import { getPermissions, listDatabases, type DatabaseEntry } from "./server";
 
 // Every read but the databases' waits for ever: the page shows what it has.
 vi.mock("./server", async (original) => {
@@ -52,5 +52,26 @@ describe("Resources", () => {
     await show("databases");
     expect(container.textContent).not.toContain("no databases bound");
     expect(container.textContent).toContain("database shop");
+  });
+});
+
+describe("Policy", () => {
+  it("tells someone who doesn't view the host why its file isn't shown, and shows no line of it (R74)", async () => {
+    const why = "the policy file itself is read only by those who may view the host";
+    vi.mocked(listDatabases).mockResolvedValue([]);
+    vi.mocked(getPermissions).mockResolvedValue({ defaults: {}, ceilings: {}, auto: [], allow_plain_http: true, allow_private_addresses: false, text_withheld: why });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () =>
+      root!.render(
+        <DialogProvider>
+          <PolicyPage deployments={[]} onOpenDeployment={() => {}} />
+        </DialogProvider>,
+      ),
+    );
+    expect(container.textContent).toContain(why);
+    expect(container.querySelector(".hl-policy-text")).toBeNull();
+    expect(container.textContent).not.toContain("no holon.toml");
   });
 });

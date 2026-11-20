@@ -623,8 +623,9 @@ route.get("/", () => "listening")
 /// Each route the sweeps leave unsent (`UNSENT`), sent the data folder's sweep with a body, in an
 /// order that leaves each something to do and the caller's own sign-out last. Not the CORS
 /// preflight (headers, no body), nor the folder dialog (it opens on the server's screen and
-/// touches no file of the data folder). `bound` is a folder outside the data folder, a person's.
-fn sent_to_the_host(bound: &std::path::Path, invite: &str) -> Vec<(&'static str, String, Value)> {
+/// touches no file of the data folder). `bound` is a folder outside the data folder, a person's;
+/// `removed`, a removed deployment's slug, the test's own, whose keys the forget forgets.
+fn sent_to_the_host(bound: &std::path::Path, invite: &str, removed: &str) -> Vec<(&'static str, String, Value)> {
     let folder = bound.join("inbox");
     let _ = std::fs::create_dir_all(&folder);
     vec![
@@ -634,7 +635,7 @@ fn sent_to_the_host(bound: &std::path::Path, invite: &str) -> Vec<(&'static str,
         ("POST", "/admin/storage".into(), json!({ "warn_at": "90%" })),
         ("POST", "/admin/store/sweep".into(), json!({})),
         ("POST", "/admin/keys/rotate".into(), json!({ "scope": "server" })),
-        ("POST", "/admin/keys/forget".into(), json!({ "slug": "kept" })),
+        ("POST", "/admin/keys/forget".into(), json!({ "slug": removed })),
         ("POST", "/admin/databases".into(), json!({ "name": "shop", "path": bound.join("shop.db").display().to_string(), "schema": "create table t (k text not null)" })),
         ("DELETE", "/admin/databases/shop".into(), Value::Null),
         ("POST", "/admin/mails".into(), json!({ "name": "ops", "smtp": "env:HOLON_SECRET_OPS_SMTP", "from": "Ops <ops@acme.com>", "to": "*@acme.com" })),
@@ -759,6 +760,16 @@ fn no_answer_says_where_or_why_the_data_folder_failed() {
     }
     deploy(&state, &ada, "kept", KEPT);
     deploy(&state, &ada, "listens", LISTENS);
+    // A removed deployment for the host's forget to forget the keys of: a slug of its own, as the
+    // keyring it forgets on is every test's (at_rest::own_slug). Sent "kept", still deployed by
+    // then, the forget was refused before it reached the keyring; this one reaches it, and the
+    // keyring's write, refused under the failing folder, is what it answers.
+    let removed = crate::at_rest::own_slug("removed");
+    deploy(&state, &ada, &removed, &format!("import {{ action, flow }} from \"holon\"\nimport state from \"state\"\n\nflow(\"{removed}\")\n\nexport const bump = action(() => {{\n  state.n = (state.n ?? 0) + 1\n}})\n"));
+    for (method, path) in [("POST", format!("/deployments/{removed}/stop")), ("DELETE", format!("/deployments/{removed}"))] {
+        let (code, said) = send(&state, &ada, method, &path, Value::Null);
+        assert_eq!(code, 200, "{method} {path}: {said}");
+    }
     let note = json!({ "method": "POST", "url": "/note", "headers": [["content-type", "application/json"]], "body": json!({ "note": "a note" }).to_string() });
     assert_eq!(send(&state, &ada, "POST", "/deployments/kept/request", note.clone()).0, 200);
     // A folder outside the data folder, whose texts a run reads are kept in it; a flow that reads
@@ -808,7 +819,7 @@ fn no_answer_says_where_or_why_the_data_folder_failed() {
     gets.dedup();
     let callers = [("ada", ada.as_str()), ("hal", hal.as_str())];
     // The host's and people's routes the sweeps leave unsent: each sent here, but two.
-    let to_the_host = sent_to_the_host(&bound, &invite);
+    let to_the_host = sent_to_the_host(&bound, &invite, &removed);
     let left: Vec<String> = UNSENT
         .iter()
         .filter(|(method, path, _)| (*method, *path) != ("OPTIONS", "*") && (*method, *path) != ("POST", "/admin/folders/pick"))
@@ -974,8 +985,8 @@ fn no_answer_says_where_or_why_the_data_folder_failed() {
         ("blobs.rs: Blobs::sweep#1", "POST /admin/folders/sweep", Box::new(|| send(&state, &ada, "POST", "/admin/folders/sweep", json!({})))),
         ("blobs.rs: Blobs::sweep#2", "POST /admin/folders/sweep", Box::new(|| send(&state, &ada, "POST", "/admin/folders/sweep", json!({})))),
         ("blobs.rs: Blobs::sweep#3", "POST /admin/folders/sweep", Box::new(|| send(&state, &ada, "POST", "/admin/folders/sweep", json!({})))),
-        ("at_rest.rs: LineSeal::try_read_lines", forgot, Box::new(|| (200, crate::keys::forget(&state, &private, "gone-events", "ada", now + 2 * crate::sweep::SPARES_MS).to_string()))),
-        ("sweep.rs: pack", forgot, Box::new(|| (200, crate::keys::forget(&state, &private, "gone", "ada", now + 2 * crate::sweep::SPARES_MS).to_string()))),
+        ("at_rest.rs: LineSeal::try_read_lines", forgot, Box::new(|| (200, crate::keys::forget(&state, &private, "gone-events", "ada", now + 2 * crate::sweep::SPARES_MS).unwrap().to_string()))),
+        ("sweep.rs: pack", forgot, Box::new(|| (200, crate::keys::forget(&state, &private, "gone", "ada", now + 2 * crate::sweep::SPARES_MS).unwrap().to_string()))),
     ];
     let (mut rounds, mut missed) = (BTreeSet::new(), Vec::new());
     for (site, what, ask) in &alone {

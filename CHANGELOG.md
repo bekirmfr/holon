@@ -12,6 +12,12 @@
   `holon policy --backup none`, or on that page. Choosing none on purpose ends the warning as a
   folder does; "later" leaves it on. Where `holon host` and `holon policy` said "none" for both,
   they now say "not chosen" or "none, chosen".
+- **A flow deployed again under a name being removed, or whose keys are being forgotten, keeps
+  its first runs' records.** An admin forgetting a removed flow's keys (`holon remove … --forget`,
+  `holon key forget`), or removing a flow, at the very moment someone deployed that name again,
+  could leave the new deployment's first stored runs unreadable or deleted, with nothing saying
+  so. A deploy of that name now waits until the forget or the removal is done, then starts with
+  keys and files of its own.
 - **A `backup` line written empty is refused.** `backup = ""` was read as none. It is now refused
   as the policy is read, so a server whose policy has one doesn't start. It says the file's path,
   then `storage.backup: say where: a folder's whole path (/mnt/archive), or "none" to delete them`
@@ -45,13 +51,35 @@
 - **A run that answers nothing is headed "answered" in the editor**, not "answered null": an
   action's run, a clock's, or a part that went on from its wait, in View runs' inspector, its
   compare rows and the run's page, as `holon runs` prints no status for it.
+- **Where the server backs up its runs goes only to whoever may view the host.** Anyone who may
+  read the policy (a viewer, an editor, an agent) was sent the policy file's text and the backup
+  folder's whole path. Now someone who may not view the host is told `a folder`, and in place of
+  the file's text a sentence saying it is read only by those who may view the host: on the
+  editor's Policy page, in the terminal editor, in `holon policy` and in what reading the policy
+  again answers. Admins and anyone else who may view the host see both as before.
+- **A run that runs again makes no call out, and starts no action, twice.** A run that reads a
+  row, calls out or starts an action with what it read, and finds at its commit that the row
+  changed meanwhile runs again; it used to make its call or its start again with the new value: a
+  far side asked with a price of 5, then 7, and a request whose started action changed the row it
+  read starting that action five times, then failing after 110 s. Now a try
+  after the first makes no call or start from a step an earlier try made one from unless the
+  run's record answers it: the run fails instead, writes nothing, and its error names the step,
+  never what it would have sent. A step that calls out for each item of a list is one step, so a
+  list that changed between the tries fails the run too, even one that only grew at its end. A
+  run whose calls and starts carry none of what changed goes on as before, answered from its
+  record; `holon verify` runs a failed one again to the same end. A database held for whole runs
+  (`--lock run`) has such runs wait their turn instead. A run that waits still makes again, with
+  the new value, a call or a start it made before its wait when the row changed while it waited;
+  when it changed after, the run fails, and such a call may still go out again first, where the
+  run makes it before the one that fails.
 - **Changing a secret while a run waits no longer sends its earlier requests again** where the
   request holds the secret as it is: in a header, a URL or a JSON body. When the run goes on, such
   a request is recognised as sent and answered from its record; the same holds for a run tried
-  again after a secret changed between its tries. Still sent again, with the new value: a request
-  holding a value computed from the secret in the flow (a signature, a Basic credential, another
-  encoding); change such a secret when `holon runs <slug> --waiting` lists none. `holon verify`
-  and replays read the record the same way.
+  again after a secret changed between its tries. Still sent again, with the new value, by a run
+  that goes on after its wait: a request holding a value computed from the secret in the flow (a
+  signature, a Basic credential, another encoding); a run tried again holds such a request back
+  and fails instead (above). Change such a secret when `holon runs <slug> --waiting` lists none.
+  `holon verify` and replays read the record the same way.
 - **A provider's sign-in signed out of is refused however its token is spelled.** The server
   remembered a signed-out ID token by its exact text. A token signed with an elliptic-curve key
   (ES256 or ES384) has a second spelling of its signature that is as valid, which anyone holding

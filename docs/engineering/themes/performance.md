@@ -505,6 +505,50 @@ Live, on a release build, the default limits: the scan of 100,000 ids is refused
 100,000 in 0.04 s, as before. The scan of 100,000 with `max_steps` at its ceiling (200 million) and
 `run_budget_ms: "1s"` stops at 1.0 s, `the run took longer than 1s`.
 
+**What the count cost, and what was taken back (2026-11-19).** `crunch` rose from 25.09 M
+instructions a run at rc.35 to 35.31 M on `main` (`32b7f29c`). Measured at nine of the merges
+between, then inside the one that held the jump (callgrind, `profile_one_route`, a run at 50 and
+100): 26.09 M at `6ea3028d`, 35.70 M at `cbc76f5c`, this change, +9.6 M (+37%); the rest +1.0 M in
+merges #83–#86 (not bisected) and moves of ±0.5 M that are the build's layout. Function by function,
+7.8 M of it was the count itself: every `+`, `*` and `-` of a fold over numbers gathered its inputs
+twice, read how its leaf reads, walked each input and counted a set-up, to find nothing to charge.
+The rest is what made values are charged (a list `map` makes, a record of three fields: real
+steps), and `with_field` building a record again key by key where it had cloned it.
+
+Taken back, the charge the same:
+
+- **Numbers and booleans alone are nothing to read** for every leaf but the 25 that charge for one
+  (`charges_a_scalar`: those that write a number as text or add it as a decimal, and those with a
+  set-up or a count of their own): `reading` answers no step for them without counting, from the
+  same pass that gathers its inputs, and notes there whether the leaf builds on one given to it.
+  The count is `counting`, as it was; `a_leaf_handed_only_numbers_and_booleans_reads_as_its_whole_count_says`
+  holds the two to the same answer for every `Op`, handed none to eight inputs drawn from zero,
+  minus zero, fractions, NaN, the infinities, counts within and past what `business_day_add` and
+  the decimals step through, and both booleans, given and lent. Taking `to_text`, `gzip`,
+  `business_day_add`, `decimal_sum` or `join` off the list fails it, as does never noting a leaf
+  builds on what it was given.
+- **The inputs gathered once:** `counted` reads them as `reading` holds them, where it gathered them
+  again.
+- **A record without the field `with_field` sets is cloned whole** (`records::without`), as before
+  `cbc76f5c`, rather than built again key by key; with the field, the rest are still copied
+  without it, so a large value replaced is still not copied.
+  `a_record_without_a_field_is_the_record_less_that_field` holds it to the filter.
+
+Callgrind, a run: `crunch` 35.31 → 31.05 M (−12.1%: the count 3.1 M, the record 1.1 M); `hello`
+126.2 → 124.8 K (−1.1%). Live, `holon load` through release `holon` binaries, 16 connections,
+five rounds in turn, medians (no errors):
+
+| route | `main` | after | ×req/s | ×CPU less |
+|---|---:|---:|---:|---:|
+| `crunch`, 100 / 1,000 / 5,000 | 6,316 / 941 / 212 | 6,979 / 1,059 / 237 | 1.10 / 1.13 / 1.12 | 1.14 / 1.14 / 1.13 |
+| `filter`, 1,000 / 5,000 | 2,462 / 617 | 2,718 / 672 | 1.10 / 1.09 | 1.07 / 1.08 |
+| `hello`, `calc` | 43,061, 35,487 | 43,400, 35,917 | 1.01, 1.01 | 1.02, 1.02 |
+
+Every pure leaf is still held to the step's bound (`no_step_of_a_pure_leaf_takes_more_than_a_few_nodes_work`),
+and every host test passes. What is left above rc.35, about 6 M a `crunch`: the inputs still
+gathered and looked at for each leaf (about 1.3 M), what made values are charged (1.5 M, the
+limit's own work), and the count for leaves handed a list or a record.
+
 ### Nothing computes on a data-plane worker (2026-11-13)
 
 Every run goes to the blocking pool, however short. The shortcut of 12.1, a short route answered
@@ -796,6 +840,179 @@ run's record now says why.
   refused for what a reply sent back) adds nothing to a request's path but one note pushed where
   a write is refused.
 
+### Profiled again at rc.35 (2026-11-12)
+
+[Measuring](measuring.md#2-instructions)'s method on `490d03e` (after #48) and `main` at `d289e43`
+(rc.35): `profile_one_route`, the same in both, at two counts (1,000 and 2,000 runs; `crunch`,
+1,000 items, at 100 and 200), the difference over the difference in runs. `490d03e` gives what the
+sections above counted (88.5 K, 348.8 K, 23.39 M), so the method holds. Instructions a run:
+
+| Route | `490d03e` | rc.35 | change |
+|---|---:|---:|---:|
+| `hello` (unrecorded) | 88,902 | 94,815 | +6.7% |
+| `notes` (the lazy listing) | 352,925 | 495,473 | +40.4% |
+| `crunch`, 1,000 items | 23.78 M | 25.12 M | +5.6% |
+
+- **A recorded run makes its line twice.** A run's random source is 32 bytes since `a781416`
+  (`pgp_encrypt` reads it), kept in every entry's `sourced`, so every line holds
+  `{"type":"Bytes",…}`. `Made::may_hold_a_mark` says yes to any line holding bytes, since base64
+  could hide a `‹` (`40cfc0a`), so `redacted_line`'s shortcut (make the line, look at it, done)
+  never holds: each recorded run makes its line, walks the redactor over its entry and makes the
+  line again. `notes` calls `Made::of` twice a run; `format_escaped_str`, `serialize_entry`, each
+  value's and each node timing's serializing all doubled. About 100 K of `notes`' 142 K.
+- **A run's values are scanned for tainted keys** (`1c094ab`): `tainted` walks every value and text
+  of the entry for `ALWAYS_TAINTED`'s keys and the flow's own, on every recorded run, about 14 K for
+  `notes`. Security's, and kept.
+- **`hello`'s 5.9 K** is new steps a run spread thin: `run_attempt` (rc.35's run record that holds
+  through a crash) 1.1 K, `source` 1.2 K, the 32 random bytes made 0.3 K, `request_record` and
+  `serve_flow` a little more.
+- **`crunch`'s 1.34 M is the evaluator's walk, two commits.** Bisected under callgrind
+  (`profile_one_route`, 50 and 100 runs a step): `bbbf6a3` (an edge to a far port costs a unit's
+  shape nothing) 23.91 → 24.24 M, its reads of a port through the edge table (`source`:
+  `starts`, `ports`, `far`); and `e35b108` (`&&` and `||` stop at the operand that decides) 24.16
+  → 25.09 M, the rest. `crunch` has no `&&` or `||`: `e35b108` added an arm for them to
+  `eval_as`, the evaluator's hottest function, and the leaf arm's existing collect of its present
+  inputs (`SmallVec<[&Value; 4]>`, `eval.rs`'s `eval_as`) stopped being inlined: `from_iter`
+  +0.75 M and `push` +0.39 M a run, `builds` folded away (−0.27 M). No new work; the same code
+  compiled worse.
+
+Where a run's instructions go at rc.35: for `notes`, writing its line (`format_escaped_str` 19%,
+`serialize_entry` 6%, a float's text 2.5%) and allocation (`malloc`, `free` and their insides
+about 15%); for `hello`, allocation (about 25%), then the request's own steps.
+
+Live, the race of the last section with `490d03e` against rc.35, adding the `stress-test`
+sample's three routes; three rounds, 16 connections, 5 s a workload, `490d03e`'s client, no
+errors. A slower container again, so only the ratios compare. Medians, requests a second:
+
+| Workload | `490d03e` | rc.35 | ratio | CPU a request |
+|---|---:|---:|---:|---|
+| `hello` | 55,761 | 52,666 | 0.94 | 49 → 53 µs |
+| `calc` | 46,369 | 42,734 | 0.92 | 62 → 67 µs |
+| `crunch`, 100 / 1,000 / 5,000 | 11,732 / 1,642 / 354 | 11,351 / 1,524 / 339 | 0.97 / 0.93 / 0.96 | 2.38 → 2.54 ms at 1,000 |
+| a filter by fold, 1,000 / 5,000 | 3,821 / 871 | 3,812 / 809 | 1.00 / 0.93 | 4.52 → 4.80 ms at 5,000 |
+| `stress-test` strict | 8,243 | 7,684 | 0.93 | 230 → 263 µs |
+| `stress-test` lazy | 18,667 | 15,935 | 0.85 | 149 → 176 µs |
+| `stress-test` unrecorded | 54,746 | 54,908 | 1.00 | 50 → 50 µs |
+
+`calc`, `crunch` at 1,000 and the filter at 5,000 lost with the rounds' ranges apart; `hello`,
+strict and lazy by medians with ranges touching. The recorded routes lost most, as the profile
+says: lazy pays the second line in CPU, strict pays it beside its sync. An unrecorded route that
+makes no line held even.
+
+#### Grounded in the code, and the fixes audited (2026-11-12)
+
+**The second line.** Every request's run is sourced with `Random` (`listeners.rs`; `websockets.rs`
+and `/trigger` in `deploy.rs` alike), and the entry keeps it whether the flow reads it or not: on
+a live rc.35 server, every line of a flow that reads no randomness held it. `redacted_line`
+(`firing.rs`) takes its shortcut only when `!made.may_hold_a_mark()`, and `may_hold_a_mark`
+(`recorder.rs`) says yes to any line holding `{"type":"Bytes"`. With nothing to mark (the
+redactor empty: no secret, token or tainted value found), what redacting can change is exactly
+this: a text holding a `‹` is escaped (`Redactor::logged` returns nothing for a text without one),
+and a Bytes value's valid UTF-8 runs are walked as texts (`bytes_texts_mut`), so a Bytes value
+changes only if it holds `‹`, which in UTF-8 is always the three bytes `E2 80 B9`; `E2` is never a
+continuation byte, so each occurrence of the three decodes as `‹`. Records come in key order from
+`SValue::from_core`, the shortcut's standing assumption.
+
+**Fix 1, made: the shortcut's test made exact.** Refuse the shortcut for a line holding a `‹`
+(as now) or for an entry holding a Bytes value with `E2 80 B9` in it, read from the entry's
+values, not parsed from the line (`Made::may_hold_a_mark(entry)`, `LogEntry::bytes_hold_a_mark`,
+the same `values_mut` walk `Redactor::entry` makes; list, record, effect and sum payloads alike).
+
+- *Regression:* the line it writes is the redacted line byte for byte, so the log's format, its
+  hash chain, `holon verify`, exports and the golden records don't change. `redacted_line`'s
+  `debug_assertions` block already compares the shortcut's line and entry with the walked ones on
+  every run of every test; `a_line_with_nothing_to_redact_is_the_redacted_line` gained Bytes cases
+  (a run's random bytes, `0xFF`s, none, the three bytes alone, beside invalid UTF-8, `E2 80` cut
+  short, an encoded `‹token:paid›` and `‹‹secret:x›`, bytes holding a token; each body by each
+  with an empty redactor and one that has something to mark), and
+  `a_run_whose_bytes_hold_no_mark_makes_its_line_once` asks the test itself, nested values
+  included. A mutation that never sees the three bytes fails both.
+- *Security:* it acts only where the redactor is empty, after the taint scan, as the shortcut does
+  now; a run with anything to mark is walked as before. The test reads values, never the line, so
+  nothing a caller sent is parsed by it.
+- *Resilience:* nothing on the crash path (`run_attempt`) or in group commit changes; a doubt
+  falls back to the walk, which costs time and is never wrong.
+
+**Fix 2, not advised now: the random bytes out of the line** (by hash, or only when read). It
+changes the entry `holon verify` runs again from, and a run that read randomness (`pgp_encrypt`)
+must still replay exactly; old exports and the goldens would change. More risk for the same gain.
+
+**Fix 3, tried and not kept: the `and`/`or` arm out of `eval_as`'s line,** into an
+`#[inline(never)]` function, as `eval_as`'s other rare arms are already (`eval.rs`). Every core
+test held, but callgrind found `crunch` at 25.02 M a run against 25.07 M: `eval_as` itself 60 K
+less, the leaf arm's collect still out of line at the same cost (`SmallVec::from_iter` 0.75 M,
+`push` 0.39 M). The arm was not what pushed it out; `e35b108` also gave `choose` (generic, inlined
+wherever a choice is read, `eval_as`'s other arms included) a loop and a length, the feature
+itself. Getting the collect back would mean steering LLVM's inlining in the evaluator by hand,
+for about 3.6% of one route: not worth the fragility, so the code stays as it was.
+
+**Measured, fix 1 alone against rc.35 (2026-11-12).** Callgrind, per run as in §2 of
+[measuring](../measuring.md) (`profile_one_route` at two counts):
+
+| route | rc.35 | fix 1 | |
+|---|---|---|---|
+| `hello` | 94.5 K | 94.2 K | −0.3% |
+| `notes` | 493.1 K | 380.5 K | **−22.8%** |
+| `crunch` | 25.07 M | 25.02 M | −0.2% (fix 3 then; the same code without it) |
+
+Live, `holon load`, 3 alternating rounds, 5 s a route, 16 connections, release builds on this
+4-core container; median req/s and server CPU per request:
+
+| route | rc.35 | fix 1 | ×req/s | ×CPU less | rounds |
+|---|---|---|---|---|---|
+| strict | 7,460 | 8,291 | 1.11 | 1.11 | 1.01, 1.16, 1.03 |
+| lazy | 17,360 | 17,715 | 1.02 | 1.04 | 0.97, 1.12, 0.98 |
+| unrecorded | 55,767 | 56,217 | 1.01 | 0.99 | 1.01, 1.12, 0.98 |
+| `hello` | 54,450 | 55,815 | 1.03 | 1.02 | 0.99, 1.05, 1.02 |
+| `calc` | 45,805 | 48,174 | 1.05 | 1.05 | 0.95, 1.04, 1.05 |
+| `crunch` 1000 | 1,671 | 1,590 | 0.95 | 0.95 | 0.95, 1.01, 0.92 |
+| `filter` 5000 | 832 | 879 | 1.06 | 1.05 | 1.01, 1.06, 1.18 |
+
+`crunch` runs the same evaluator in both builds and still moved 5%: on this machine a live race
+is ±5% a round, and callgrind is the measure; fix 1's instructions saved are per recorded run,
+the same whatever the flow computes, so they show most where a run is small.
+
+**Again on `main` after rc.36 (`32b7f29c`, 2026-11-19).** The branch rebased onto it, fix 1 kept
+beside rc.36's `cut_answer`. Its ground checked again first: rc.36's redactor has two more parts,
+both inert when it is empty (`is_empty` asks `pairs` and `places`; `whole` is made from the same
+values as `pairs`, so `respelled` finds nothing; no pairs, no tainted numbers; `logged` still
+returns nothing for a text without `‹`, and bytes are still walked by their UTF-8 runs). Every
+host test passes; the bytes check turned off fails both its tests again. Callgrind, per run:
+
+| route | `main` | fix 1 | |
+|---|---|---|---|
+| `notes` (lazy, recorded) | 659.5 K | 540.6 K | **−18.0%** |
+| `hello` (unrecorded) | 126.2 K | 126.8 K | +0.4% |
+| `crunch` | 35.31 M | 36.23 M | +2.6%: the profiling binary's codegen, not the change (below) |
+
+`notes`' saving is the second line, halved function by function: `format_escaped_str` 93.4 →
+46.7 K, `serialize_entry` 29.1 → 14.6 K, the numbers' writing 12.5 → 6.3 K, and the redactor's walk
+(`whole_first`, `logged`, `texts_mut`) about 13 K → 3 K. `crunch` computes nothing fix 1 touches:
+in the fixed profiling binary `primitives::reading` (B5's step charge, generic and instantiated in
+the host crate) calls `SmallVec::extend` out of line where `main`'s inlined it (`reading` −1.02 M,
+`extend` +1.98 M). That binary holds the branch's 144 lines of tests as well, and its codegen moved
+with them: 79 out-of-line `extend` instances and 28 of `reading` against `main`'s 35 and 4. The
+shipped `holon` binaries hold 32 and 3 each, and the live race below finds `crunch`'s CPU a request
+the same.
+
+Live, `holon load` through release `holon` binaries, 5 rounds in turn, 5 s a route, medians:
+
+| route | 8 connections | ×CPU less | 16 connections | ×CPU less |
+|---|---|---|---|---|
+| lazy | 13,766 → 14,096 (×1.02) | 1.03 | 14,508 → 15,437 (×1.06) | 1.09 |
+| strict | 6,137 → 6,092 (×0.99) | 1.01 | 7,469 → 7,659 (×1.03) | 1.02 |
+| unrecorded | 32,821 → 32,049 (×0.98) | 0.98 | 38,655 → 38,900 (×1.01) | 1.01 |
+| `hello` | 32,909 → 33,680 (×1.02) | 1.03 | 40,410 → 41,345 (×1.02) | 1.04 |
+| `crunch` 1000 | 872 → 888 (×1.02) | 1.00 | 842 → 852 (×1.01) | 1.00 |
+
+Two rounds at 8 connections fell to ×0.64 and ×0.65 for one build (strict, unrecorded): the
+container's, not a build's. Lazy, the route whose lock the line's making holds up, gains most at 16
+connections; the others hold even.
+
+**Kept as they are:** the taint scan (`1c094ab`, `ALWAYS_TAINTED`'s keys on every recorded run,
+about 14 K: security's); `run_attempt` and the random bytes' making (rc.35's run record that holds
+through a crash, 1.1 K for `hello`, and `pgp_encrypt`'s randomness, 0.3 K).
+
 ### Limits
 
 - **Strict is the disk's pace.** About 60% of a strict request is the fsync; any service keeping
@@ -818,11 +1035,35 @@ run's record now says why.
   WSL2's sync passes through Hyper-V to a `.vhdx` on NTFS and, on ext4, likely commits the new
   size through the journal as well: about twice Windows'. A drive with power-loss protection
   (most server SSDs) answers a flush in microseconds, on any system.
+
+  The same test on the same machine on 2026-11-08, with a build after #48 (kept children, values
+  handed as they are, a run's state shared), one run of each route:
+
+  | | strict | lazy | unrecorded |
+  |---|---|---|---|
+  | rc.33, 2026-11-05 | 1,649, p50 4.64 ms | 22,388, p50 0.29 ms | 65,467, p50 0.12 ms |
+  | after #48, 2026-11-08 | 1,688, p50 4.38 ms | 30,790, p50 0.23 ms | 79,999, p50 0.09 ms |
+  | change | +2% | +38% | +22% |
+
+  Strict didn't move: 16,883 runs in 4,220 syncs, 4.0 a sync, about 2.4 ms each, the drive's
+  flush as before. The routes that don't wait for it gained what the host no longer does a
+  request; the race through a server on Linux showed `hello` within noise at 16 connections
+  ([above](#through-a-server-again-after-the-kept-children-and-small-values-490d03e-2026-11-07)),
+  so this machine shows the request's own costs more. One run, not alternating rounds. Lazy's
+  last second fell to 17,678 requests, its slowest 493 ms (59.7 ms on 2026-11-05), once its log
+  held about 300,000 runs: the log's cut and seal, or the antivirus reading a growing file, not
+  told apart; its p99 stayed 0.49 ms.
 - **Writes sync three times** (value, snapshot, head) under the cell's lock. A group commit across
   writes (C4, Q4) is not done; the store's global lock is still taken on a miss and every put.
 - **`crunch` is 2.8% above where it was before #43** in instructions, after small values are
   copied ([above](#small-values-are-copied-2026-11-07)), and ×1.06 to ×1.09 ahead of it in time
   through a server; folds that build a list gained ×5 to ×21.
+- **A recorded run made its line twice in rc.35**: every line holds the run's random bytes,
+  so redaction's shortcut never held; lazy ×0.85 and `notes` +40% in instructions against
+  `490d03e` ([above](#profiled-again-at-rc35-2026-11-12)); fixed after rc.35, `notes` −22.8%
+  ([above](#grounded-in-the-code-and-the-fixes-audited-2026-11-12)). The evaluator's leaf arm
+  compiles worse since `e35b108`, `crunch` +0.9 M; the and/or arm moved out didn't recover it,
+  and nothing short of steering the inliner by hand would.
 - **A ternary costs three nodes more since `befee65`** (a guard on each side, as JavaScript
   chooses): a filter by fold ×0.85 through a server against `78f8f81`, still ×18 the filter before
   #43 ([above](#through-a-server-again-after-the-kept-children-and-small-values-490d03e-2026-11-07)).

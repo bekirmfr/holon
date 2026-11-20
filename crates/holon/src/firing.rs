@@ -273,8 +273,8 @@ fn fire_run(
     if let Some(slug) = &waits.slug {
         crate::listeners::panic_for_tests::check(&format!("a run of {slug}"));
     }
-    let attempt = |start: Option<State>, nonce: &[u8; 16], prior: Vec<Round>, waits: &mut RunWaits, claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>, bool)>| {
-        run_attempt(root_unit, inputs, resolver, store, start, extra_sourced, permit, clock, secrets, waits, nonce, prior, claim)
+    let attempt = |start: Option<State>, nonce: &[u8; 16], prior: Vec<Round>, tried: &[Round], waits: &mut RunWaits, claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>, bool)>| {
+        run_attempt(root_unit, inputs, resolver, store, start, extra_sourced, permit, clock, secrets, waits, nonce, prior, tried, claim)
     };
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
     // The resources an admin set to `run` it holds from before it starts until it returns (it
@@ -293,7 +293,7 @@ fn fire_run(
         None => (None, Vec::new()),
     };
     let Some(cell) = state else {
-        return attempt(None, &nonce, base, waits, None).run;
+        return attempt(None, &nonce, base, &[], waits, None).run;
     };
     // Optimistic: run on a copy, no lock held, so runs of one deployment proceed side by side;
     // then commit only if everything it could have read is still as it found it. Otherwise run
@@ -301,7 +301,9 @@ fn fire_run(
     // reads): the requests it already made are answered from its own record (`sent`), not sent
     // again, and nothing it did is kept but its answer. A run about to call out first claims the
     // keys it read and may write (claims.rs): one that finds them changed as it claims them runs
-    // again having sent nothing, and its commit never lands under another run's claim.
+    // again having sent nothing, and its commit never lands under another run's claim. A call its
+    // record doesn't answer, from a node an earlier try called out from (`sent`), isn't sent a
+    // second time with other contents: the run fails, keeping nothing (R115, `run_rounds`).
     let mut sent: Vec<Round> = Vec::new();
     let mut records = Vec::new();
     let prior = |sent: &[Round]| base.iter().chain(sent).cloned().collect::<Vec<Round>>();
@@ -320,7 +322,7 @@ fn fire_run(
                 (live.clone(), Some(cell.commits()))
             }
         };
-        let mut a = attempt(Some(start), &nonce, prior(&sent), waits, Some((cell, records, pinned.is_none())));
+        let mut a = attempt(Some(start), &nonce, prior(&sent), &sent, waits, Some((cell, records, pinned.is_none())));
         a.run.commit = Some(recorder::Commit { cell: cell.id.clone(), after, n: None });
         sent.append(&mut a.run.rounds);
         a.run.rounds = sent.clone();
@@ -424,7 +426,7 @@ fn fire_run(
     let is_pinned = pinned.is_some();
     let after = (!is_pinned).then(|| cell.commits());
     let start = pinned.unwrap_or_else(|| live.clone());
-    let mut a = attempt(Some(start), &nonce, prior(&sent), waits, None);
+    let mut a = attempt(Some(start), &nonce, prior(&sent), &sent, waits, None);
     a.run.commit = Some(recorder::Commit { cell: cell.id.clone(), after, n: None });
     sent.append(&mut a.run.rounds);
     a.run.rounds = sent;
@@ -729,6 +731,7 @@ fn run_attempt(
     waits: &mut RunWaits,
     nonce: &[u8; 16],
     prior: Vec<Round>,
+    tried: &[Round],
     claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>, bool)>,
 ) -> Attempt {
     // What its record is known to mark before it takes a step: what its id hashes each started
@@ -861,7 +864,7 @@ fn run_attempt(
         calls: Some(&caller),
         secret_sends,
     };
-    let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &sender, limits, &mut timer, waits, &prior, &keys);
+    let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &sender, limits, &mut timer, waits, &prior, tried, &keys);
     let overtaken = outcome.error == Some(holon_host::RunError::Overtaken);
     // A read that failed (a file too big, or not text; a folder not bound) fails the run: it
     // performs nothing. Why names what it asked for (a file's name, a key, a parameter): where a
@@ -1570,7 +1573,7 @@ fn keep_body_by_hash(entry: &mut LogEntry, redactor: &Redactor, blobs: &crate::b
 fn redacted_line(redactor: &Redactor, entry: &mut LogEntry) -> recorder::Made {
     if redactor.is_empty() {
         let made = recorder::Made::of(entry);
-        if !made.may_hold_a_mark() {
+        if !made.may_hold_a_mark(entry) {
             // In a debug build (every test), checked against redacting first: the line and the
             // entry the same, or what the shortcut assumes stopped holding (D3).
             #[cfg(debug_assertions)]
@@ -2003,24 +2006,60 @@ mod commit_checks {
                 ("body".to_string(), text(body)),
             ]))
         };
-        let entry = |body: &str| {
-            let mut e = run_entry("request", (0, std::time::Instant::now()), &[(Capability::Clock, Value::Number(1.0))], &FiredRun::nothing());
+        let entry_with = |body: &str, random: &[u8]| {
+            let sourced = [(Capability::Clock, Value::Number(1.0)), (Capability::Random, Value::Bytes(random.to_vec()))];
+            let mut e = run_entry("request", (0, std::time::Instant::now()), &sourced, &FiredRun::nothing());
             e.request = Some(SValue::from_core(&request(body)));
             e.response_body = Some(body.to_string());
             e.duration_ms = 0.0;
             e
         };
         let tokens = |pairs: &[(&str, &str)]| Redactor::tokens(&pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+        // A run's random bytes as every run has them (none of `‹`), then bytes that hold a `‹`
+        // where redaction would escape it: alone, as a mark, beside bytes that aren't UTF-8, and
+        // `E2 80` cut short of one; and bytes holding a token, which only a filled redactor masks.
+        let mut randoms: Vec<Vec<u8>> = vec![(0..32).collect(), vec![0xFF; 32], vec![], "tok-1".into()];
+        randoms.extend(["‹", "‹token:paid›", "‹‹secret:x›"].map(|s| s.as_bytes().to_vec()));
+        randoms.extend([vec![0xFF, 0xE2, 0x80, 0xB9, 0xC3], vec![0xE2, 0x80, 0xE2, 0x80, 0xB9], vec![0xE2, 0x80, 0xBA, 0xE2, 0x80]]);
         for body in ["plain", "with ‹ in it", "‹token:paid›", "‹‹secret:x›", "a {\"‹k\": 1}", ""] {
-            for redactor in [tokens(&[]), tokens(&[("paid", "tok-1")])] {
-                let (mut fast, mut walked) = (entry(body), entry(body));
-                let line = redacted_line(&redactor, &mut fast);
-                redactor.entry(&mut walked);
-                let line_walked = recorder::Made::of(&walked);
-                assert_eq!(line.line(1, ""), line_walked.line(1, ""), "body {body:?}");
-                // The entry the log keeps in memory too: as redaction leaves it.
-                assert_eq!(serde_json::to_value(&fast).unwrap(), serde_json::to_value(&walked).unwrap(), "body {body:?}");
+            for random in &randoms {
+                for redactor in [tokens(&[]), tokens(&[("paid", "tok-1")])] {
+                    let (mut fast, mut walked) = (entry_with(body, random), entry_with(body, random));
+                    let line = redacted_line(&redactor, &mut fast);
+                    redactor.entry(&mut walked);
+                    let line_walked = recorder::Made::of(&walked);
+                    assert_eq!(line.line(1, ""), line_walked.line(1, ""), "body {body:?}, bytes {random:?}");
+                    // The entry the log keeps in memory too: as redaction leaves it.
+                    assert_eq!(serde_json::to_value(&fast).unwrap(), serde_json::to_value(&walked).unwrap(), "body {body:?}, bytes {random:?}");
+                }
             }
+        }
+    }
+
+    #[test]
+    fn a_run_whose_bytes_hold_no_mark_makes_its_line_once() {
+        // Every run's entry holds its random bytes; with nothing to mark, those alone don't make
+        // the line twice: the shortcut takes it when no byte run holds `‹`, and only then.
+        let entry = |random: &[u8], payload: Option<SValue>| {
+            let sourced = [(Capability::Random, Value::Bytes(random.to_vec()))];
+            let mut e = run_entry("request", (0, std::time::Instant::now()), &sourced, &FiredRun::nothing());
+            e.request = payload;
+            e
+        };
+        let nested = |b: &[u8]| SValue::List(vec![SValue::Record(vec![("k".into(), SValue::Bytes(b.to_vec()))])]);
+        for (random, payload, holds) in [
+            (&[1u8, 2, 3][..], None, false),
+            (&[0xE2, 0x80][..], None, false),
+            (&[0xE2, 0x80, 0xBA][..], None, false),
+            ("‹".as_bytes(), None, true),
+            (&[0xFF, 0xE2, 0x80, 0xB9][..], None, true),
+            (&[1u8][..], Some(nested(b"plain")), false),
+            (&[1u8][..], Some(nested("a‹b".as_bytes())), true),
+        ] {
+            let mut e = entry(random, payload);
+            let made = recorder::Made::of(&e);
+            assert_eq!(e.bytes_hold_a_mark(), holds, "{random:?}");
+            assert_eq!(made.may_hold_a_mark(&mut e), holds, "{random:?}");
         }
     }
 

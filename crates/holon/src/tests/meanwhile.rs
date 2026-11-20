@@ -67,11 +67,11 @@ fn needs(state: &AppState, token: &str, staged: &Staged) -> Value {
 fn held(state: &AppState, token: &str, staged: &Staged, acknowledge: &Value, meanwhile: impl FnOnce()) -> (u16, Value) {
     let (there, arrived) = mpsc::channel();
     let (go, waits) = mpsc::channel();
-    crate::deploy::HELD.lock().unwrap().insert(SLUG.into(), (there, waits));
+    crate::deploy::HELD.lock().unwrap().insert(("deploy", SLUG.into()), (there, waits));
     std::thread::scope(|s| {
         let deploying = s.spawn(|| deploy(state, token, staged, acknowledge));
         let reached = arrived.recv_timeout(EVENTUALLY);
-        crate::deploy::HELD.lock().unwrap().remove(SLUG);
+        crate::deploy::HELD.lock().unwrap().remove(&("deploy", SLUG.to_string()));
         reached.expect("the deploy is worked out, and held before it is put in");
         meanwhile();
         go.send(()).unwrap();

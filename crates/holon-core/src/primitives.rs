@@ -561,10 +561,10 @@ fn builds_on(op: Op, port: usize) -> bool {
 /// division's step. `gzip` and `zip` set up a compressor's tables (20 µs), `gunzip` and `unzip` a
 /// decompressor's; public-key cryptography does its arithmetic (50 µs and more); `number_format`
 /// and the decimals write a number's digits in full (up to 10 µs).
-fn counted(op: Op, inputs: &[&Value]) -> u64 {
+fn counted(op: Op, inputs: &[(&Value, bool)]) -> u64 {
     // A count past what the leaf takes it refuses before stepping through any: nothing to charge.
     let number = |i: usize, most: f64| match inputs.get(i) {
-        Some(Value::Number(n)) if n.abs() <= most => n.abs() as u64,
+        Some((Value::Number(n), _)) if n.abs() <= most => n.abs() as u64,
         _ => 0,
     };
     let set_up = match op {
@@ -596,11 +596,73 @@ fn counted(op: Op, inputs: &[&Value]) -> u64 {
 /// in a count of steps: a step limit that counts nodes bounds nothing a request can make it
 /// compute. Charged so, a step is of the order of a node of a few small values, and a round's
 /// `max_steps` bounds its work. `holon-core/tests/audit_leaves.rs` holds every pure leaf to it.
-pub(crate) fn reading<'v>(op: Op, inputs: impl IntoIterator<Item = (&'v Value, bool)>) -> (u64, bool) {
-    let inputs: smallvec::SmallVec<[(&Value, bool); 4]> = inputs.into_iter().collect();
+pub(crate) fn reading<'v>(op: Op, handed: impl IntoIterator<Item = (&'v Value, bool)>) -> (u64, bool) {
+    // Gathered once, noting as they come whether all are numbers or booleans and whether the leaf
+    // builds on one given to it.
+    let mut inputs: smallvec::SmallVec<[(&Value, bool); 4]> = smallvec::SmallVec::new();
+    let (mut scalars, mut grew) = (true, false);
+    for (port, (v, given)) in handed.into_iter().enumerate() {
+        scalars &= matches!(v, Value::Number(_) | Value::Boolean(_));
+        grew |= given && builds_on(op, port);
+        inputs.push((v, given));
+    }
+    // Numbers and booleans alone are nothing to read, for every leaf but those that charge for one
+    // ([`charges_a_scalar`]): none of them has an outer level, a walk, a copy or a level below,
+    // so the count below comes to nothing. Known here without making it: every `+`, `*` and `<`
+    // of a fold over numbers asked it, about a quarter of such a route's work for no step.
+    // `a_leaf_handed_only_numbers_and_booleans_reads_as_its_whole_count_says` holds it to the
+    // count for every leaf.
+    if scalars && !charges_a_scalar(op) {
+        return (0, grew);
+    }
+    counting(op, &inputs)
+}
+
+/// Whether leaf `op` builds on one of `inputs` given to it ([`builds_on`]): what it makes grows
+/// from that one, so is not made anew ([`making`]).
+fn grows(op: Op, inputs: &[(&Value, bool)]) -> bool {
+    inputs.iter().enumerate().any(|(port, (_, given))| *given && builds_on(op, port))
+}
+
+/// The leaves whose count of plain numbers and booleans can be more than nothing: those that write
+/// a number as text or add it as a decimal ([`walking`]), and those with a set-up or a count of
+/// their own ([`counted`]). [`reading`] counts their work whatever they are handed.
+fn charges_a_scalar(op: Op) -> bool {
+    matches!(
+        op,
+        Op::ToText
+            | Op::AsText
+            | Op::JsonStringify
+            | Op::CsvFormat
+            | Op::XmlFormat
+            | Op::ToNumber
+            | Op::NumberTest
+            | Op::Join
+            | Op::DecimalSum
+            | Op::Gzip
+            | Op::Zip
+            | Op::Gunzip
+            | Op::Unzip
+            | Op::JwtVerify
+            | Op::PgpEncrypt
+            | Op::PgpVerify
+            | Op::PgpKey
+            | Op::NumberFormat
+            | Op::DecimalAdd
+            | Op::DecimalSub
+            | Op::DecimalMul
+            | Op::DecimalDiv
+            | Op::DecimalRound
+            | Op::DecimalCompare
+            | Op::BusinessDayAdd
+    )
+}
+
+/// [`reading`] counted in full, for any inputs.
+fn counting(op: Op, inputs: &[(&Value, bool)]) -> (u64, bool) {
     let how = reads(op, inputs.first().map(|(v, _)| *v));
-    let grows = inputs.iter().enumerate().any(|(port, (_, given))| *given && builds_on(op, port));
-    let mut units = counted(op, &inputs.iter().map(|(v, _)| *v).collect::<smallvec::SmallVec<[&Value; 4]>>());
+    let grows = grows(op, inputs);
+    let mut units = counted(op, inputs);
     let down = down(op);
     for (port, (v, given)) in inputs.iter().enumerate() {
         let read = if *given && builds_on(op, port) {
@@ -2583,6 +2645,64 @@ mod tests {
     fn boo(x: bool) -> Value { Value::Boolean(x) }
     fn list(xs: Vec<Value>) -> Value { Value::List(xs) }
     fn p(name: &str, value: &str) -> Param { Param::frozen(name, value) }
+
+    /// `reading`'s shortcut for plain numbers and booleans answers what the whole count does, for
+    /// every leaf: a table of every `Op` by up to eight inputs (a variadic leaf, `list`, takes any
+    /// number) drawn from numbers at the edges a
+    /// count reads (zero, minus zero, fractions, NaN, the infinities, counts past and within what
+    /// `business_day_add` and the decimals step through) and both booleans, each given or lent.
+    /// - Guards: the step limit (audit R14, performance.md "A step is a unit of work"): a leaf is
+    ///   charged for its work whatever path its count takes.
+    /// - Why: the shortcut answers "nothing to read" from a list of the leaves that charge for a
+    ///   number; a charge added to `walking` or `counted` for another leaf would leave it out.
+    /// - If it fails: such a leaf, handed numbers, runs uncharged past the steps it should have
+    ///   been refused at.
+    #[test]
+    fn a_leaf_handed_only_numbers_and_booleans_reads_as_its_whole_count_says() {
+        let pool = [
+            num(0.0),
+            num(-0.0),
+            num(1.5),
+            num(-3.0),
+            num(7.0),
+            num(f64::NAN),
+            num(f64::INFINITY),
+            num(f64::NEG_INFINITY),
+            num(64.0),
+            num(1_000.0),
+            num(100_000.0),
+            num(1e9),
+            num(1e300),
+            boo(true),
+            boo(false),
+        ];
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut draw = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let mut taken = 0;
+        for (name, op) in Op::ALL {
+            let mut cases: Vec<Vec<(usize, bool)>> = vec![vec![]];
+            // Each value alone, given and lent; then drawn tuples of two to eight.
+            for i in 0..pool.len() {
+                cases.extend([vec![(i, false)], vec![(i, true)]]);
+            }
+            for _ in 0..300 {
+                let arity = 2 + draw(7);
+                cases.push((0..arity).map(|_| (draw(pool.len()), draw(2) == 1)).collect());
+            }
+            for case in cases {
+                let inputs: Vec<(&Value, bool)> = case.iter().map(|&(i, given)| (&pool[i], given)).collect();
+                let short = reading(*op, inputs.iter().copied());
+                assert_eq!(short, counting(*op, &inputs), "{name} on {inputs:?}");
+                taken += usize::from(!charges_a_scalar(*op));
+            }
+        }
+        assert!(taken > 0, "the shortcut was taken");
+    }
 
     /// Guards: every leaf whose inputs don't bound how long what it makes is makes it up to the
     /// most a value may be and gives nothing past it, for each kind: a text joined of others (`+`,

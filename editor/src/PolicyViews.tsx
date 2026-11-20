@@ -10,8 +10,10 @@ import { format } from "./routes";
 import { quiet } from "./hostStyles";
 
 /** The policy file's text as read, a line number beside each line; a comment quiet, a section's
- *  heading strong. Null: there is no file, and the defaults hold. */
-export function PolicyText({ text }: { text: string | null | undefined }) {
+ *  heading strong. Null: there is no file, and the defaults hold. Withheld (to someone who doesn't
+ *  view the host, R74): the server's words for why it isn't shown, and no line of it. */
+export function PolicyText({ text, withheld }: { text: string | null | undefined; withheld?: string }) {
+  if (text === undefined && withheld !== undefined) return <div style={quiet}>{withheld}</div>;
   if (text === undefined) return null;
   if (text === null) return <div style={quiet}>no holon.toml: this host runs on the defaults above</div>;
   const lines = text.replace(/\r\n/g, "\n").replace(/\n$/, "").split("\n");

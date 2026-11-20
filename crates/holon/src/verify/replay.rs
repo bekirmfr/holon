@@ -352,7 +352,7 @@ fn replay_one(entry: &LogEntry, earlier: &[&LogEntry], texts: &Texts, unit: Hash
     };
     let mut host = RecordingHost::new();
     let mut observer = Fed::new(marks, resolver, limits);
-    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &performer, limits, &mut observer, &mut waits, &[], marks);
+    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &performer, limits, &mut observer, &mut waits, &[], &[], marks);
 
     if let Some(missed) = performer.missed.lock().unwrap().first().cloned() {
         return Replay::CantTell(format!("it sends {missed}, which the run didn't: what it would be answered can't be told offline"));

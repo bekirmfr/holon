@@ -1013,6 +1013,8 @@ impl Keyring {
         if !scope.starts_with("d:") {
             return Err(format!("only a deployment's keys are forgotten, not {scope:?}'s"));
         }
+        #[cfg(test)]
+        self.forgets_only_a_tests_own(scope);
         let mut inner = self.inner.write().unwrap();
         let Some(kept) = inner.file.scopes.get(scope) else { return Ok(false) };
         let through = kept.versions.keys().max().copied().unwrap_or(0);
@@ -1023,6 +1025,24 @@ impl Keyring {
         inner.file = file;
         inner.open.remove(scope);
         Ok(true)
+    }
+
+    /// Under test, the keyring every test shares ([`keys`]: every deployment seals under it)
+    /// forgets keys only of a slug one test alone uses ([`own_slug`]); any other keyring, any
+    /// slug. Tests run at once in one process: a forget of a slug another test deploys too leaves
+    /// that test's lines sealed before it unopenable, and a read of its log leaves them out
+    /// (`recorder::Lines::each`), so it finds fewer runs than it made, now and then. That bit the
+    /// removed-deployment test, on "gone", forgotten by the forget-sweep test meanwhile. A forget
+    /// of nothing held forgets nothing, and is let be.
+    #[cfg(test)]
+    fn forgets_only_a_tests_own(&self, scope: &str) {
+        let shared = std::ptr::eq(self, keys().as_ref());
+        let held = self.inner.read().unwrap().file.scopes.contains_key(scope);
+        let own = scope.strip_prefix("d:").is_some_and(|slug| OWN_SLUGS.lock().unwrap().contains(slug));
+        assert!(
+            !shared || !held || own,
+            "a test forgot {scope:?} on the keyring every test shares: forget only a slug of its own (at_rest::own_slug), or on a keyring of its own"
+        );
     }
 
     /// Every data key wrapped under a new root, kept in `to` (in place when none): the old root
@@ -1390,6 +1410,20 @@ pub(crate) const BACKUP_KEYS: &str = "holon-archive-keys.json";
 /// The server's keyring.
 pub(crate) fn keys() -> &'static std::sync::Arc<Keyring> {
     KEYS.get_or_init(|| std::sync::Arc::new(Keyring::memory()))
+}
+
+/// The slugs [`own_slug`] made: those the shared keyring forgets keys of, under test.
+#[cfg(test)]
+static OWN_SLUGS: std::sync::LazyLock<crate::sync::Mutex<std::collections::BTreeSet<String>>> = std::sync::LazyLock::new(Default::default);
+
+/// A slug no other test uses, `base` with a number after it: one whose keys a test may forget on
+/// the keyring every test shares ([`Keyring::forget`]).
+#[cfg(test)]
+pub(crate) fn own_slug(base: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let slug = format!("{base}-own{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    OWN_SLUGS.lock().unwrap().insert(slug.clone());
+    slug
 }
 
 /// The data folder `dir` locked (`keys.lock`, an OS lock, let go when the process ends): a server
@@ -2243,6 +2277,29 @@ mod tests {
         assert_eq!(status["scopes"].as_array().unwrap().iter().find(|s| s["scope"] == SERVER).unwrap()["current"], 2);
         assert!(!status.to_string().contains("wrapped"), "no key, wrapped or not, in what status shows");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guards: the keyring every test shares forgets keys only of a slug one test alone uses
+    /// (`own_slug`): a slug any test may deploy is refused, loudly, its keys left as they were; a
+    /// slug of its own is forgotten; one with nothing sealed forgets nothing, whoever's. Any other
+    /// keyring forgets any slug.
+    /// Why: a test forgetting on the shared keyring a slug another test deploys meanwhile leaves
+    /// that test's first lines unopenable, and it finds fewer runs than it made, by chance.
+    #[test]
+    fn the_shared_keyring_forgets_keys_only_of_a_slug_its_test_alone_uses() {
+        let shared = keys();
+        let anyones = deployment("shared-keyring-probe");
+        let line = shared.seal_line(&anyones, role::LOG, b"a run").unwrap();
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| shared.forget(&anyones)));
+        assert!(refused.is_err(), "a slug any test may use isn't forgotten on the shared keyring");
+        assert_eq!(shared.open_line(&anyones, role::LOG, &line).unwrap().as_slice(), b"a run", "its keys stay");
+        let own = deployment(&own_slug("probe"));
+        shared.seal_line(&own, role::LOG, b"a run").unwrap();
+        assert_eq!(shared.forget(&own), Ok(true));
+        assert_eq!(shared.forget(&deployment("never-sealed-probe")), Ok(false));
+        let private = Keyring::memory();
+        private.seal_line(&anyones, role::LOG, b"a run").unwrap();
+        assert_eq!(private.forget(&anyones), Ok(true));
     }
 
     /// Guards: a forgotten deployment's records don't open, and say they were forgotten (not

@@ -22,8 +22,11 @@ mod run_steps;
 mod expiring;
 /// A deploy puts its version in only while the deployment is what it was worked out from (R25).
 mod meanwhile;
+/// A removed slug's keys forgotten, or its files deleted, and a deploy of it again don't interleave.
+mod slug_meanwhile;
 mod scopes;
 mod never_keep;
+mod tried_again;
 mod tags;
 /// A flow's answers are sent nosniff, built in one place (R51).
 mod sniffing;
@@ -899,32 +902,34 @@ allow_private_addresses = true
         }
         holon_author::agent::plan(&text).unwrap().unit
     };
-    let gone_unit = deploy("gone", "only the forgotten one holds this");
+    // A slug of its own: the keyring it forgets on is every test's (at_rest::own_slug).
+    let slug = crate::at_rest::own_slug("gone");
+    let gone_unit = deploy(&slug, "only the forgotten one holds this");
     deploy("stays", "only the one that stays holds this");
     let states = |slug: &str| -> Vec<String> {
         let log = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])));
         log["entries"].as_array().unwrap().iter().map(|e| e["state_after"].as_str().unwrap().to_string()).collect()
     };
-    let (gone, stays) = (states("gone"), states("stays"));
+    let (gone, stays) = (states(&slug), states("stays"));
     assert_eq!((gone.len(), stays.len()), (3, 3));
-    assert_eq!(route(&state, &req("POST", "/deployments/gone/stop", vec![])).status_code, 200);
-    assert_eq!(route(&state, &req("DELETE", "/deployments/gone", vec![])).status_code, 200);
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
+    assert_eq!(route(&state, &req("DELETE", &format!("/deployments/{slug}"), vec![])).status_code, 200);
     let files = || std::fs::read_dir(&values).unwrap().count();
     let before = files();
 
     // Forgotten now: everything is new, so the sweep spares it, and says so.
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-    let said = crate::keys::forget(&state, crate::at_rest::keys(), "gone", "ada", now);
+    let said = crate::keys::forget(&state, crate::at_rest::keys(), &slug, "ada", now).unwrap();
     assert_eq!(said["forgotten"], true, "{said}");
     assert!(said["store"]["spared"].as_u64().unwrap() > 0 && said["store"]["swept"] == 0, "{said}");
     assert_eq!(files(), before);
     // Forgotten again an hour and more later (the slug deployed and removed again in between, as
     // a second forget needs keys to forget): what only it named is gone.
     let later = now + 2 * sweep::SPARES_MS;
-    deploy("gone", "only the forgotten one holds this");
-    assert_eq!(route(&state, &req("POST", "/deployments/gone/stop", vec![])).status_code, 200);
-    assert_eq!(route(&state, &req("DELETE", "/deployments/gone", vec![])).status_code, 200);
-    let said = crate::keys::forget(&state, crate::at_rest::keys(), "gone", "ada", later);
+    deploy(&slug, "only the forgotten one holds this");
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
+    assert_eq!(route(&state, &req("DELETE", &format!("/deployments/{slug}"), vec![])).status_code, 200);
+    let said = crate::keys::forget(&state, crate::at_rest::keys(), &slug, "ada", later).unwrap();
     assert!(said["store"]["swept"].as_u64().unwrap() >= 3, "at least its three states: {said}");
     assert!(files() < before, "{said}");
     for snapshot in &gone {
@@ -2308,7 +2313,7 @@ fn storage_settings_set_at_once_are_each_kept() {
         for (key, value) in &set {
             assert_eq!(doc["storage"][*key].as_str(), Some(value.as_str()), "round {round}: {key} kept\n{written}");
         }
-        assert_eq!(permissions_view(&state.policy())["storage"], permissions_view(&in_file)["storage"], "round {round}: what is in force is what the file says");
+        assert_eq!(permissions_view(&state.policy(), true)["storage"], permissions_view(&in_file, true)["storage"], "round {round}: what is in force is what the file says");
     }
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_dir_all(&backups);
@@ -5714,7 +5719,8 @@ fn no_deployments_callers_hold_more_of_the_data_plane_than_its_share() {
 /// If it fails: on the third answered at once, the accept loop doesn't take a place in
 /// `DataLimits::connections` (dataplane.rs), or the WebSocket doesn't keep its places
 /// (`Places::keep` in websockets.rs `open`); on it never answered, `serve` doesn't let them go as
-/// the connection ends.
+/// the connection ends; on the kept connection let go, it idled past `header_timeout`, which also
+/// bounds how long a kept-alive connection waits for its next request.
 #[test]
 fn no_server_holds_more_connections_open_than_its_total() {
     use std::io::{Read, Write};
@@ -5723,6 +5729,10 @@ fn no_server_holds_more_connections_open_than_its_total() {
     state.listeners = Some(Mutex::new(BTreeMap::new()));
     state.data_limits.max_connections_total = 2;
     state.data_limits.connections = Arc::new(tokio::sync::Semaphore::new(2));
+    // The kept connection idles from its answer to the WebSocket's close: an allowance well past
+    // every wait here, however slow the machine. At the default ten seconds a slow run let it go,
+    // and the place it gave back answered the third (main, 2026-11-19).
+    state.data_limits.header_timeout = Duration::from_secs(600);
     let (one, other) = (free_port(), free_port());
     for (name, port) in [("one", one), ("other", other)] {
         let text = format!("import {{ flow, route }} from \"holon\"\n\nflow(\"{name}\", {{ port: {port} }})\n\nroute.get(\"/hi\", () => \"hi\")\n\nroute.websocket(\"/ws\", {{ message: (m) => `echo ${{m.text}}` }})\n");
@@ -5765,6 +5775,10 @@ fn no_server_holds_more_connections_open_than_its_total() {
     third.set_read_timeout(Some(Duration::from_millis(700))).unwrap();
     third.write_all(b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").unwrap();
     let early = answered(&mut third);
+    // The kept connection still open, so still holding its place: were it let go, the third had
+    // its place, and that is what fails here.
+    let again = kept.write_all(b"GET /hi HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").map(|()| answered(&mut kept));
+    assert!(matches!(&again, Ok(a) if a.starts_with("HTTP/1.1 200")), "the kept connection was let go while the third waited, and the third had its place: {again:?}");
     assert_eq!(early, "", "answered past the server's two connections, a WebSocket's among them");
     // The WebSocket closed: its places go back, and the third is answered.
     ws.close(None).unwrap();
@@ -17764,6 +17778,85 @@ allow_private_addresses = true").unwrap());
     assert_eq!(again, both);
 }
 
+/// A run's sends are held to the grant and the secrets on every path that sends them: a table of
+/// each path (a run that finishes sends what it performed, checked as it commits; a run that
+/// parks sends what it settled before it waits, `progress`, by a second copy of the rule in
+/// `firing.rs`) by each pack (one the grant covers carrying nothing of a secret, the secret
+/// itself, a value computed from it, a send to a channel the grant has lost under the running
+/// deployment). On each path only the first goes out; the rest aren't sent, kept, or logged as
+/// sent, and the secret's value is nowhere in the log.
+/// - Guards: security.md §2.4 (the grant is the boundary at run time) and §2.6 (a secret or what
+///   is computed from it is never stored or sent); the test-suite review's classes 2 and 4b.
+/// - Why: the rule is written twice, and the parking copy had no test sending it anything it
+///   must refuse.
+/// - If it fails: a credential goes out to a channel's subscribers, or a send the grant no longer
+///   allows goes out, as a run parks.
+///
+/// Mutations it was checked against: the parking copy without its secret checks, without its
+/// grant check; the finishing path without its literal-secret check.
+#[test]
+fn a_runs_sends_are_held_to_the_grant_and_the_secrets_whether_it_finishes_or_parks() {
+    let rows = ["clean", "raw", "derived", "narrowed"];
+    let sends = r#"clean.send({ item: order.item })
+  raw.send({ key: api_key })
+  derived.send({ t: base64(api_key) })
+  narrowed.send({ item: order.item })"#;
+    let head = |name: &str, port: u16| {
+        format!(
+            "import {{ action, base64, event, flow, route }} from \"holon\"\nimport api_key from \"secret:api_key\"\n{}\n\nflow(\"{name}\", {{ port: {port} }})\n",
+            rows.map(|r| format!("import {r} from \"channel:{r}\"")).join("\n")
+        )
+    };
+    let paths = [
+        ("finishes", format!("{}\nroute.post(\"/go\", (req) => {{\n  const order = req.json\n  {sends}\n  return \"sent\"\n}})\n", head("finishes", 18190))),
+        (
+            "parks",
+            format!(
+                "{}\nroute.post(\"/go\", (req) => {{\n  const started = payment(req.json)\n  return `/paid/${{started.waiting.paid}}`\n}})\n\nexport const payment = action(async (order) => {{\n  {sends}\n  const paid = await event(\"paid\", {{ expires: \"1d\" }})\n  clean.send({{ item: order.item, via: paid.method }})\n}})\n\nroute.get(\"/paid/:token\", () => \"thanks\", {{ resumes: \"paid\" }})\n",
+                head("parks", 18191)
+            ),
+        ),
+    ];
+    let value = "sk_live_sends_secret_value";
+    for (path, text) in &paths {
+        let state = claims_state("");
+        let slug = deploy_text(&state, text, "x");
+        let set = req("POST", &format!("/deployments/{slug}/secrets/api_key"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+        {
+            // The grant loses one channel under the running deployment, as a change of grant would.
+            let mut table = state.deployments.lock().unwrap();
+            let dep = table.get_mut(&slug).unwrap();
+            let mut narrowed = dep.grant.clone();
+            assert!(narrowed.items.remove("ChannelSend(\"narrowed\")"), "{path}: {:?}", narrowed.items);
+            dep.permit = Arc::new(Permit::new(dep.unit, &narrowed, &state.policy()));
+        }
+        let (status, body, _) = data_call(&state, &slug, "POST", "/go", r#"{"item":"book"}"#);
+        assert_eq!(status, 200, "{path}: {body}");
+        assert!(body.contains(if *path == "parks" { "/paid/" } else { "sent" }), "{path}: {body}");
+
+        let kept: Vec<(&str, Vec<String>)> = {
+            let table = state.deployments.lock().unwrap();
+            rows.iter().map(|r| (*r, table[&slug].channels.kept(r, true).iter().map(|p| p.json.clone()).collect())).collect()
+        };
+        for (row, packs) in &kept {
+            let expected: &[&str] = if *row == "clean" { &[r#"{"item":"book"}"#] } else { &[] };
+            assert_eq!(packs, expected, "{path}, {row}");
+        }
+        // What every entry says was sent, as it finished or as it parked: the clean pack, once.
+        let entries = log_entries(&state, &slug);
+        let sent: Vec<String> = entries
+            .iter()
+            .flat_map(|e| ["performed", "progress"].map(|f| e[f].as_array().cloned().unwrap_or_default()))
+            .flatten()
+            .map(|p| p["capability"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(sent, [r#"ChannelSend("clean")"#], "{path}: {entries:?}");
+        let log = String::from_utf8(body_bytes(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])))).unwrap();
+        assert!(!log.contains(value) && !log.contains("c2tfbGl2ZV9zZW5kc19zZWNyZXRfdmFsdWU"), "{path}: the secret, or its base64, in the log: {log}");
+    }
+}
+
 /// A streamed reply through a real socket (`docs/L4s/channels-L4.md` §4): the caller gets the
 /// upstream's first piece while the upstream is still answering (it sends the second only once
 /// the caller has the first), with its content type; the flow still gets the whole answer, which
@@ -18303,6 +18396,71 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
     assert!((1..=32).contains(&syncs), "{syncs} syncs for 32 runs");
     assert!(synced());
     eprintln!("32 strict runs at once: {syncs} syncs");
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
+}
+
+/// A run whose record a failed sync left off the disk is never answered as done, and what it sent
+/// waits for its record: a table of each way a run is answered (a request, an action) by each
+/// level (strict, lazy), every sync of the log failing. A strict run is answered 500 ("… ran,
+/// but …") and its pack is held; a lazy one is answered 200 without asking for a sync, and its
+/// pack waits for the syncer. Syncs working again, the syncer puts every entry on disk and every
+/// pack goes out, once each.
+/// - Guards: resilience.md G1 (an answered strict run is on disk) for the answer a caller gets,
+///   where the log's model holds only what the log's cell is told; channels.md (no pack goes out
+///   before its record is on disk).
+/// - Why: the cell's verdict becomes an answer in two places (`listeners.rs`, `deploy.rs`), and
+///   neither had a test of the failing case.
+/// - If it fails: a caller is told a request or an action is done whose record a power loss can
+///   take, or a subscriber gets a pack the log may never hold.
+///
+/// Mutations it was checked against: either answer ignoring a failed keep; packs released
+/// whatever the sync said.
+#[test]
+fn a_run_whose_record_isnt_on_disk_is_never_answered_as_done_and_its_sends_wait() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("failed-sync").into();
+    let slug = deploy_plain_text(
+        &state,
+        "import { action, flow, route } from \"holon\"\nimport news from \"channel:news\"\n\nflow(\"board\", { port: 8172 })\n\nroute.post(\"/strict\", () => {\n  news.send({ by: \"a strict request\" })\n  return \"sent\"\n})\n\nroute.post(\"/lazy\", () => {\n  news.send({ by: \"a lazy request\" })\n  return \"sent\"\n}, { log: \"lazy\" })\n\nexport const strictly = action(() => {\n  news.send({ by: \"a strict action\" })\n  return \"sent\"\n})\n\nexport const lazily = action(() => {\n  news.send({ by: \"a lazy action\" })\n  return \"sent\"\n}, { log: \"lazy\" })\n",
+    );
+    let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
+    let out = || -> Vec<String> { state.deployments.lock().unwrap()[&slug].channels.kept("news", true).iter().map(|p| p.json.clone()).collect() };
+    let request = |path: &str| {
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("POST", path, vec![]));
+        (r.status, String::from_utf8(r.body).unwrap())
+    };
+    let action = |name: &str| {
+        let r = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(Value::Record(BTreeMap::new())), None, None, None, &[]);
+        (r.status, r.reply.to_string())
+    };
+    // Each way a run is answered, by each level: what the caller is told, and what was said.
+    type Row<'a> = (&'a str, Box<dyn Fn() -> (u16, String) + 'a>, u16, &'a str);
+    let rows: Vec<Row> = vec![
+        ("a strict request", Box::new(|| request("/strict")), 500, "the request ran, but its record couldn't be synced to disk"),
+        ("a strict action", Box::new(|| action("strictly")), 500, "the action ran, but its record couldn't be synced to disk"),
+        ("a lazy request", Box::new(|| request("/lazy")), 200, "sent"),
+        ("a lazy action", Box::new(|| action("lazily")), 200, "sent"),
+    ];
+    log.with(|l| l.fail_syncs = true);
+    for (row, run, status, says) in &rows {
+        let (got, body) = run();
+        assert_eq!(got, *status, "{row}: {body}");
+        assert!(body.contains(says), "{row}: {body}");
+        assert!(out().is_empty(), "{row}: a pack went out before its record was on disk: {:?}", out());
+    }
+    assert!(recorder::sync_logs(&state.deployments).is_err(), "the syncer is told too");
+    assert!(out().is_empty(), "and holds the packs: {:?}", out());
+
+    // Syncs working again: the syncer puts every entry on disk, and every pack goes out once.
+    log.with(|l| l.fail_syncs = false);
+    assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
+    let mut sent = out();
+    sent.sort();
+    let mut expected: Vec<String> = rows.iter().map(|(row, ..)| format!("{{\"by\":\"{row}\"}}")).collect();
+    expected.sort();
+    assert_eq!(sent, expected);
+    assert_eq!(log.next_seq(), rows.len() as u64, "every run is in the log");
     let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
     let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }

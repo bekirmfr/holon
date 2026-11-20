@@ -1532,7 +1532,9 @@ fn set_storage(state: &AppState, set: &[(&str, &str)], by: &str) -> Response {
     if let Err(e) = holon_host::write_atomically(policy_path, text.as_bytes()) {
         return err(500, crate::failing::Failed::new("the policy file couldn't be written", format!("{policy_path:?}: {e}")).said());
     }
-    let reloaded = crate::grants::reload_policy(state, &file);
+    // Its answer read only for its status: as one who doesn't view the host is told it, so nothing
+    // more than that reaches whoever set it, by any path this takes (R74).
+    let reloaded = crate::grants::reload_policy(state, &file, false);
     drop(file);
     if reloaded.status_code != 200 {
         return reloaded;
