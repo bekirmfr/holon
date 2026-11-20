@@ -113,6 +113,12 @@ or, while the history keeps it, against the commit that added the copy unchanged
    its client reads its answer; upstream ended the connection's thread at once and left the
    socket to close when the request was dropped. An upgraded connection is the application's,
    as before.
+8. **A version past 1.1** (`src/client.rs`, `next`). Upstream answered a request line saying
+   `HTTP/2.0` (or 3.0) with 505 through a new writer, which waits for the request's own to be
+   dropped, while it held the request: the write and the connection's thread waited for ever,
+   and the connection's place was held after its client had gone (512 such requests from one
+   address kept it out until a restart). Now the 505 is written through the request's own
+   writer, and the connection ends (change 7's `end`).
 
 `Server::from_listener_limited` takes other limits; every other constructor (rouille's
 included) uses `Limits::default()`.

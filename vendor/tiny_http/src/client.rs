@@ -419,8 +419,12 @@ impl Iterator for ClientConnection {
             };
 
             // checking HTTP version
+            // Holon (PATCHED.md): the 505 is written through the request's own writer, and the
+            // connection ends. Upstream wrote it through a new writer, which waits for the
+            // request's to be dropped, while the request was held right here: the write, and the
+            // connection's thread, waited for ever, its place held after its client had gone.
             if *rq.http_version() > (1, 1) {
-                let writer = self.sink.next().unwrap();
+                let writer = rq.into_writer();
                 let response = Response::from_string(
                     "This server only supports HTTP versions 1.0 and 1.1".to_owned(),
                 )
@@ -428,7 +432,8 @@ impl Iterator for ClientConnection {
                 response
                     .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
                     .ok();
-                continue;
+                self.end();
+                return None;
             }
 
             // updating the status of the connection

@@ -542,6 +542,24 @@ fn a_connections_last_request_is_answered_whole_before_it_ends() {
     server.unblock();
 }
 
+/// A request whose line says a version past 1.1 is told 505, and its connection ends and gives
+/// its place back. Upstream wrote the 505 through a writer that waits for the request's own, while
+/// it held the request: the connection waited for ever, its place held after its client had gone
+/// (512 such requests from one address locked it out until a restart).
+#[test]
+fn a_version_past_1_1_is_told_505_and_its_connection_ends() {
+    let (server, at) = serve(Limits::default());
+    for version in ["HTTP/2.0", "HTTP/3.0"] {
+        let mut s = connect(at);
+        s.write_all(format!("GET / {}\r\nHost: test\r\n\r\n", version).as_bytes()).unwrap();
+        assert_eq!(answer(&mut s).map(|a| a.0), Ok(505), "{}: told 505", version);
+        closed_within(&mut s).unwrap_or_else(|e| panic!("{}: then the end of the stream: {}", version, e));
+        drop(s);
+        assert!(until(|| server.open.count() == 0), "{}: its place given back", version);
+    }
+    server.unblock();
+}
+
 /// What is left of a body that trickles in after its answer, each byte well within the idle
 /// limit, is read off no longer than the request limit from when it begins: the connection ends
 /// while its bytes still come and gives its place back. And when the answer closed the
