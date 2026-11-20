@@ -10,11 +10,12 @@
   read instead of showing it as empty. `holon action` printing such a value, `holon replay` on such
   a flow, an agent's save of a flow and the admin lists (`holon database`, `feed`, `folder`,
   `mail`, `queue`, `store`) read the same way.
-- **A request sent to the control port a byte at a time is cut off after 30 seconds.** The server
-  waited for as long as each byte came within a minute of the last, so a request sent slowly
-  enough held its connection for as long as its sender liked. A request's headers, and a body of
-  1 KiB or less, now arrive within 30 seconds of its first byte, as a larger body already had to;
-  past that the sender is told 408 (request timeout) and the connection is closed.
+- **A request's headers sent to the control port a byte at a time are cut off after 30
+  seconds.** The server waited for as long as each byte came within a minute of the last, so
+  headers sent slowly enough held their connection for as long as their sender liked. A request's
+  line and headers, and a body of 1 KiB or less, now arrive within 30 seconds of its first byte;
+  past that the sender is told 408 (request timeout) and the connection is closed. A larger body
+  keeps its own 30 seconds, from when the server starts to read it.
 - **A new server asks its first admin where the runs its logs let go of go.** Each flow's log
   keeps its newest runs and lets older ones go, past its `keep` or its age, and a server without a
   `backup` folder deleted those for good without asking anyone. Setting up the first admin in the
