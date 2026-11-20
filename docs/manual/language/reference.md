@@ -1064,8 +1064,12 @@ misled, the compiler refuses instead.
   return on `paid.expired ?? false` before a step only an answer should make. What it reads there is the state as the run found it when it began, until each part
   of a run is saved as it parks. A wait stands on a line of its own at the top of the action's
   body, `const paid = await event(…)`. A `return` before the first wait may answer without it
-  (`if (order.skip ?? false) return "skipped"`), and then nothing waits; the canvas can't write
-  such an action as text yet, so change it in its text. In an `if`, a `try`, after a `return`
+  (`if (order.skip ?? false) return "skipped"`), and then nothing waits. Such returns are a row
+  right above the wait, one `if (test) return value` (or `return` alone) to a line, tested on
+  what the run already has; anything may come above the row. Another shape there (an `else`, an
+  `if` inside another, a `switch`, a `try`, a `throw`, a statement between the row and the wait,
+  or a test that calls a function, makes a request or reads state or a collection) is refused,
+  and so is a state key written above the row and again after the wait. In an `if`, a `try`, after a `return`
   between two waits or inside another expression a wait is refused. Two waits in a row still park together: the run waits
   at both from the start, lists them in the order written, and what follows the second waits for
   both, whichever is answered first.

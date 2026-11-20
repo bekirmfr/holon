@@ -19,8 +19,12 @@
   step is made then too: return on `paid.expired ?? false` before a step only an answer should
   make. What a step reads after a wait is still the state as the run found it when it began. A
   wait now stands on a line of its own at the top of the action's body (`const paid = await
-  event(…)`). A `return` before the first wait still answers without it, and then nothing waits;
-  the canvas can't write such an action as text yet, and says so. A wait in an `if`, a `try`, after
+  event(…)`). A `return` before the first wait still answers without it, and then nothing waits.
+  Such returns are a row of `if (test) return value` right above the wait, which the canvas, the
+  step view and both editors show as written; another shape there (an `else`, an `if` inside
+  another, a `switch`, a `try`, a `throw`, a statement between the row and the wait, a test that
+  calls a function or reads state) is refused, saying so, and so is a state key written above
+  the row and again after the wait. A wait in an `if`, a `try`, after
   a `return` between two waits, or inside another expression is refused, saying so. Two waits in a row still wait together from
   the start, listed in the order written; what follows the second waits for both, whichever is
   answered first. A flow that waits

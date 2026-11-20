@@ -478,8 +478,16 @@ wait stands on a line of its own at the top of
 the action's body, `const paid = await event(…)`. A `return` before the first wait may answer
 without it (`if (order.skip ?? false) return "skipped"`): where it does, the wait isn't asked for,
 as the hold too reads the wait only where no such return was taken (`when(<the hold>, c)`, `c`
-the returns not taken), and the answer is held to the waits only past the first. The canvas
-can't write such an action as text yet: change it in its text. A wait in an `if`, a `try`, after
+the returns not taken), and the answer is held to the waits only past the first. Such returns
+are a row right above the wait, one to a line: `if (test) return value`, or `return` alone
+(`{ return value }` is the same), their tests and values over what the run already has; anything
+may be written above the row. That is the one shape the canvas, the step view and both editors
+write them back in, so it is the one taken. An `else`, an `if` inside another, a block holding
+more than the return, a `switch`, a `try` or a `throw` there, a statement between the row and
+the wait, or a test or value that calls a function of the flow's, makes a request, sends, starts
+an action or reads state, a collection or a database (make that above the row and name it) is
+refused, naming the row. So is a state key written above the row and again after the wait: a
+run that returned keeps the first value, which the text can't show, so write it once. A wait in an `if`, a `try`, after
 a `return` between two waits, or inside another expression is refused, as is an `if (x !== undefined)` after a wait
 whose `x` is there before the wait is answered (a read, `now`, `random`, what was sent). Two waits
 in a row still park together: the run waits at both from the start, asks for them in the order

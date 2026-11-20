@@ -228,6 +228,23 @@ struct Frame {
     /// What the handler's run received, by the name the tree reads it: an action's input, which
     /// each wait's hold takes ([`Reader::waited_on`]).
     received: String,
+    /// An action's body before its first wait: the returns read so far ([`Early`]).
+    early: Early,
+}
+
+/// What an action's body answers before its first wait, as read so far. The text writes those
+/// returns one way alone, a row of `if (test) return value` (or `return`) right above the wait
+/// (print.rs `early_answers`), so that the step view, explain and both editors show them as
+/// written: any other shape is refused at the wait, naming that form ([`EARLY_ROW`]).
+#[derive(Default)]
+struct Early {
+    /// The plain returns read so far, in a row.
+    row: usize,
+    /// The first statement there in a shape the text can't write, and why.
+    broken: Option<(Span, &'static str)>,
+    /// The state keys written above the first return: written again past the wait, refused, as
+    /// the text can't show the value a run that returned keeps.
+    written: Option<BTreeSet<String>>,
 }
 
 /// The latest wait of an action's body, past it.
@@ -1408,12 +1425,19 @@ impl<'s, 't> Reader<'s, 't> {
             if matches!(ret, Ret::Always) {
                 return fail(self.span(s.span()), "nothing after a return runs: remove it");
             }
+            // Before an action's first wait, what may answer there is read as a row ([`Early`]).
+            let early = matches!(block, Block::Action) && self.frame.depth == 0 && self.frame.trying.is_empty() && self.frame.waited.is_none();
+            let exits = self.frame.exits.len();
             let r = match s {
                 js::Statement::BlockStatement(b) => {
                     self.scopes.push(HashMap::new());
                     let r = self.run(&b.body, block, stmts, start);
                     self.scopes.pop();
-                    r?
+                    let r = r?;
+                    if early && (!matches!(r, Ret::Never) || self.frame.exits.len() > exits) {
+                        self.early_shape(self.span(s.span()), EARLY_FORM);
+                    }
+                    r
                 }
                 _ => {
                     // A statement's `++` and `--` are its own: a block's head (an `if`'s
@@ -1422,11 +1446,20 @@ impl<'s, 't> Reader<'s, 't> {
                     let mark = stmts.len();
                     let made: Option<BTreeSet<String>> = self.frame.trying.last().map(|t| t.made.iter().map(|(n, _)| n.clone()).collect());
                     let waits = self.waits_here(s, block);
+                    if waits.is_some()
+                        && early
+                        && let Some((at, why)) = self.frame.early.broken
+                    {
+                        return fail(at, format!("{why}. {EARLY_ROW}"));
+                    }
                     self.frame.wait_here = waits.is_some();
                     let r = self.statement(s, block, stmts, start).and_then(|r| self.flush_updates(stmts, mark, start).map(|()| r));
                     self.frame.wait_here = false;
                     self.frame.updates = outer;
                     let r = r?;
+                    if early && waits.is_none() {
+                        self.early_row(s, &r, &stmts[mark..], exits);
+                    }
                     if let Some(ts) = waits {
                         self.waited_on(&ts, stmts, self.span(s.span()));
                     }
@@ -1463,6 +1496,71 @@ impl<'s, 't> Reader<'s, 't> {
         let returns_before = self.frame.guards.iter().all(|g| matches!(g, Guard::Live(_))) && self.frame.waited.as_ref().is_none_or(|w| w.guards == self.frame.guards.len());
         let top = matches!(block, Block::Action) && v.kind == js::VariableDeclarationKind::Const && self.frame.depth == 0 && self.frame.trying.is_empty() && returns_before;
         (waits && top).then(|| id.name.to_string())
+    }
+
+    /// `s`, read at the top of an action's body before its first wait, as it stands to the row
+    /// of returns there ([`Early`]): a plain `if (test) return value` whose test and value use
+    /// only what the run has adds to the row; a statement that may return in any other shape, or
+    /// one that doesn't return past the row, is a shape the text can't write, refused at the wait.
+    /// `made` is what `s` bound, `exits` the returns before it.
+    fn early_row(&mut self, s: &js::Statement, r: &Ret, made: &[Stmt], exits: usize) {
+        let returned = !matches!(r, Ret::Never) || self.frame.exits.len() > exits;
+        if returned && self.frame.early.written.is_none() {
+            self.frame.early.written = Some(self.frame.writes.iter().map(|(k, ..)| k.clone()).chain(self.frame.tied.iter().cloned()).collect());
+        }
+        let why = if !returned {
+            (self.frame.early.row > 0).then_some(EARLY_BETWEEN)
+        } else if !matches!(r, Ret::When(_)) || !plain_return(s) {
+            Some(EARLY_FORM)
+        } else if self.asks(made, &self.frame.exits[exits..]) {
+            Some(EARLY_ASKS)
+        } else {
+            self.frame.early.row += 1;
+            None
+        };
+        if let Some(why) = why {
+            self.early_shape(self.span(s.span()), why);
+        }
+    }
+
+    /// The first shape before the wait the text can't write, refused there.
+    fn early_shape(&mut self, at: Span, why: &'static str) {
+        self.frame.early.broken.get_or_insert((at, why));
+    }
+
+    /// Whether what a statement bound (`made`) or answers (`exits`) asks something of the host or
+    /// of the flow: a function of the flow's called, a request, a send, a write, a start, a log
+    /// line, or a read of state, a collection, a folder or a database.
+    fn asks(&self, made: &[Stmt], exits: &[Exit]) -> bool {
+        let mut found = false;
+        let mut look = |x: &mut Expr| {
+            found |= match &x.kind {
+                ExprKind::State(_) => true,
+                ExprKind::Call { callee, .. } => callee.text == "start" || matches!(self.defs.get(&callee.text), Some(Def::Holon { .. })),
+                ExprKind::Method { receiver, .. } => {
+                    receiver.text == "http"
+                        || receiver.text == "@log"
+                        || self.imports.values().any(|n| match n {
+                            Noun::Declared(_, name) | Noun::Host(name) => *name == receiver.text,
+                            Noun::Action { flow, .. } => super::lower::call_noun(flow) == receiver.text,
+                            _ => false,
+                        })
+                }
+                _ => false,
+            };
+            true
+        };
+        each_expr(&mut made.to_vec(), &mut look);
+        for e in exits {
+            let mut xs: Vec<Expr> = e.cond.iter().cloned().collect();
+            if let ExitKind::One(Answer::Value { value, .. }) = &e.kind {
+                xs.push(value.clone());
+            }
+            for x in &mut xs {
+                walk(x, &mut look);
+            }
+        }
+        found
     }
 
     /// `ts`, just bound to what a wait gave (the statement at `at`): what follows waits for it.
@@ -2309,6 +2407,11 @@ impl<'s, 't> Reader<'s, 't> {
     /// otherwise, written once, where its value is last settled (§5).
     fn state_write(&mut self, key: String, value: Expr, at: Span, key_span: Span, stmts: &mut Vec<Stmt>, start: usize) -> R<()> {
         self.state_keys.insert(key.clone());
+        // Above the returns before the first wait, and again past the wait: a run that returned
+        // keeps the first value, which the text, writing the key's value once, can't show.
+        if self.frame.waited.is_some() && self.frame.early.written.as_ref().is_some_and(|ks| ks.contains(&key)) {
+            return fail(at, format!("state.{key} is written above the returns before the action's first wait and again after the wait, so a run that returned there keeps the first value: the text can't show that as written. Write it once, above the returns or after the wait"));
+        }
         let value = self.tried(value, stmts);
         let twice = || fail(at, format!("state.{key} is written twice, in an if (… !== undefined) and elsewhere: a run writes a key once"));
         if let Some(after) = self.after_guard() {
@@ -2334,7 +2437,14 @@ impl<'s, 't> Reader<'s, 't> {
         let i = self.frame.writes.iter().position(|(k, ..)| *k == key);
         let old = i.map(|i| self.frame.writes[i].1.clone());
         let value = match conj(self.frame.guards[start..].iter().filter_map(|g| if let Guard::Live(c) = g { Some(c.clone()) } else { None })) {
-            Some(live) => choose(&Choice::If(live), vec![Some(value)], old.clone(), old, at).expect("a value"),
+            Some(live) => {
+                // Written before under the same returns not taken, `when(v1, live)`: where they
+                // hold, `v`, and elsewhere absent as before, `when(v, live)`. The text writes a
+                // key's value once (print.rs `early_answers`), so two writes past the returns
+                // before a wait are the same flow as the last alone.
+                let old = old.filter(|o| !matches!(&o.kind, ExprKind::Binary { op: BinOp::When, rhs, .. } if same(rhs, &live)));
+                choose(&Choice::If(live), vec![Some(value)], old.clone(), old, at).expect("a value")
+            }
             None => value,
         };
         if nests_past(&value, WRITTEN_DEPTH) {
@@ -5519,7 +5629,17 @@ const FUNCTION_WAITS: &str = "a function computes and never waits: await event(�
 /// Why a wait is refused where it is written, in an action's body: everything after a wait waits
 /// for it, so a run waits at one point after another, every run at the same ones
 /// (the wait-and-resume design note, §2, stage 1).
-const WAIT_ALONE: &str = "an action waits on a line of its own, at the top of its body: const paid = await event(\"paid\", { expires: \"1d\" }), and what follows waits for it. A return before the first wait may answer without it. In an if, a ?:, a try, after a return between two waits, or inside another expression, a wait comes in a later slice: test before the first wait and return there, or after the last";
+const WAIT_ALONE: &str = "an action waits on a line of its own, at the top of its body: const paid = await event(\"paid\", { expires: \"1d\" }), and what follows waits for it. A return before the first wait may answer without it, written right above it as if (test) return value. In an if, a ?:, a try, after a return between two waits, or inside another expression, a wait comes in a later slice: test before the first wait and return there, or after the last";
+
+/// The one form an action's answer before its first wait takes ([`Early`]), so that it is shown
+/// as written.
+const EARLY_ROW: &str = "An action answers before its first wait with a row of if (test) return value (or return alone) right above the wait, one return to a line: if (order.skip ?? false) return \"skipped\"";
+/// A return before the first wait in another shape.
+const EARLY_FORM: &str = "this may answer before the action's first wait in a shape its text can't show as written: an else, an if inside another, a block holding more than the return, a switch, a try or a throw";
+/// A statement between the row and the wait.
+const EARLY_BETWEEN: &str = "this comes between the returns before the action's first wait and the wait: move it above the returns, or after the wait";
+/// A return's test or value that asks something.
+const EARLY_ASKS: &str = "a return before the action's first wait tests and answers with values the run already has, not a call, a request, a send, a start or a read of state, a collection or a database: make it above the returns, give it a name, and use the name";
 
 /// A method given a function (`map`, `filter`, `sort`, a reviver…) is handed what it returns: an
 /// `async` one would hand it promises, which `Promise.all` gathers, and that comes with the L4's
@@ -6197,6 +6317,13 @@ fn statements_of<'a, 'b>(s: &'a js::Statement<'b>) -> &'a [js::Statement<'b>] {
         js::Statement::BlockStatement(b) => &b.body[..],
         s => std::slice::from_ref(s),
     }
+}
+
+/// Whether `s` is `if (test) return value`, or `return` alone, with no else: the one shape a
+/// return before an action's first wait takes ([`Early`]). `{ return value }` is the same.
+fn plain_return(s: &js::Statement) -> bool {
+    let js::Statement::IfStatement(f) = s else { return false };
+    f.alternate.is_none() && matches!(statements_of(&f.consequent), [js::Statement::ReturnStatement(_)])
 }
 
 /// A case's statements without the `break` that ends it, and whether one did.
@@ -7307,6 +7434,67 @@ route.post("/n", (req) => {
         ] {
             parse(&format!("{head}{body}")).unwrap_or_else(|e| panic!("{body}\n  => {e}"));
         }
+    }
+
+    /// **Guards:** an action's answer before its first wait is a row of `if (test) return value`
+    /// (or `return` alone; `{ return value }` the same) right above the wait, its tests and values
+    /// over what the run has; anything may be written above the row. Every other shape there is
+    /// refused at check, naming the row, and so is a state key written above the row and again
+    /// past the wait. Two writes of one key past the row are the flow of the last alone, as
+    /// without the row.
+    /// **Why:** the step view, explain and both editors show a flow by its printed text, and the
+    /// printer writes those returns in that one form (print.rs `early_answers`): a flow taken in
+    /// another shape would have no text to be shown by (R7, owner 2026-11-20).
+    /// **If it fails:** a refused shape now reads (refuse it again, or first teach the printer to
+    /// write it back as written), or a refusal's words changed.
+    #[test]
+    fn an_answer_before_the_first_wait_is_a_row_right_above_it() {
+        let head = "import { flow, action, event } from \"holon\"\nimport state from \"state\"\nimport orders from \"collection:orders\"\nimport updates from \"channel:updates\"\nimport hooks from \"host:hooks.example\"\nflow(\"f\", { port: 8000 })\nfunction big(o) {\n  return o.amount > 100\n}\n";
+        let action = |above: &str, after: &str| format!("{head}export const pay = action(async (order) => {{\n{above}  const paid = await event(\"paid\", {{ expires: \"1h\" }})\n{after}}})\n");
+        let answer = "  return paid.method\n";
+        let again = "state.m is written above the returns before the action's first wait and again after the wait";
+        let refused = [
+            ("an else", action("  if (order.skip) return 1\n  else updates.send({ id: order.id })\n", answer), EARLY_FORM),
+            ("an else in blocks", action("  if (order.skip) {\n    return 1\n  } else {\n    updates.send({ id: order.id })\n  }\n", answer), EARLY_FORM),
+            ("an if inside another", action("  if (order.skip) {\n    if (order.now) return 1\n  }\n", answer), EARLY_FORM),
+            ("a block holding more than the return", action("  if (order.skip) {\n    updates.send({ id: order.id })\n    return 1\n  }\n", answer), EARLY_FORM),
+            ("a switch", action("  switch (order.kind) {\n    case \"a\":\n      return 1\n    default:\n      break\n  }\n", answer), EARLY_FORM),
+            ("a try", action("  try {\n    if (order.skip) return 1\n  } catch {\n    updates.send({ id: order.id })\n  }\n", answer), EARLY_FORM),
+            ("a throw", action("  if (order.bad) throw new Error(\"bad order\")\n", answer), EARLY_FORM),
+            ("a block around the row", action("  {\n    if (order.skip) return 1\n  }\n", answer), EARLY_FORM),
+            ("a send between", action("  if (order.skip) return 1\n  updates.send({ id: order.id })\n", answer), EARLY_BETWEEN),
+            ("a binding between", action("  if (order.skip) return 1\n  const n = order.amount + 1\n", answer), EARLY_BETWEEN),
+            ("a function in the test", action("  if (big(order)) return 1\n", answer), EARLY_ASKS),
+            ("state in the test", action("  if (state.closed ?? false) return 1\n", answer), EARLY_ASKS),
+            ("a collection in the value", action("  if (order.skip) return orders.get(order.id)\n", answer), EARLY_ASKS),
+            ("a request in the test", action("  if (hooks.get(\"/open\").status !== 200) return 1\n", answer), EARLY_ASKS),
+            ("a key written above and after", action("  state.m = \"asked\"\n  if (order.skip) return 1\n", "  state.m = paid.method\n  return paid.method\n"), again),
+        ];
+        let mut wrong = Vec::new();
+        for (case, ts, why) in &refused {
+            match parse(ts) {
+                Ok(_) => wrong.push(format!("{case}: taken")),
+                Err(e) if !e.message.contains(why) || (*why != again && !e.message.contains(EARLY_ROW)) => wrong.push(format!("{case}: {e}")),
+                Err(_) => {}
+            }
+        }
+        let taken = [
+            ("a sure test", action("  if (order.skip ?? false) return \"skipped\"\n", answer)),
+            ("a record", action("  if (order.amount > 100) return { id: order.id, held: true }\n", answer)),
+            ("a return alone", action("  if (order.skip) return\n", "  state.m = paid.method\n")),
+            ("a block holding the return", action("  if (order.skip) {\n    return 1\n  }\n", answer)),
+            ("three in a row", action("  if (order.skip) return\n  if (order.amount > 100) return \"big\"\n  if (order.amount < 0) return { refused: order.id }\n", answer)),
+            ("what asks, above", action("  const known = orders.get(order.id)\n  const open = hooks.get(\"/open\")\n  const huge = big(order)\n  updates.send({ id: order.id })\n  state.asked = order.id\n  if (known.closed ?? false) return known\n  if (open.status !== 200 || huge) return 1\n", answer)),
+            ("a key above, another after", action("  state.first = order.id\n  if (order.skip) return 1\n", "  state.m = paid.method\n  return paid.method\n")),
+        ];
+        for (case, ts) in &taken {
+            if let Err(e) = parse(ts) {
+                wrong.push(format!("{case}: refused: {e}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        // A key written twice past the row: the last write, as without the row.
+        same_unit("a key written twice past the row", &action("  if (order.skip) return 1\n", "  state.m = order.id\n  state.m = paid.method\n  return paid.method\n"), &action("  if (order.skip) return 1\n", "  state.m = paid.method\n  return paid.method\n"));
     }
 
     fn holon_of(ts: &str) -> HolonDef {
