@@ -479,8 +479,8 @@ fn held(l: &holon_author::lang::Lowered, id: &str, reach: &BTreeSet<&str>) -> bo
 /// Guards: in an action's body, what is written after `await event(…)` or `await approval(…)` is
 /// asked for once the wait is answered, as in JavaScript, and the text says so with nothing
 /// added. Each text that waits builds as a deploy builds it, and printed from its graph, prints
-/// back as it is and builds so too (one that answers before its first wait is left to its text:
-/// the printer can't write that `return` yet, and says so; `a_return_before_the_first_wait_…`
+/// back as it is and builds so too (one that answers before its first wait among them, its row
+/// of `if (test) return value` printed right above the wait; `a_return_before_the_first_wait_…`
 /// runs it); and in that graph
 /// every write, send, request, call and start a statement after a wait places (up to the next
 /// wait, as two waits in a row still park together), and the action's answer, is reached from
@@ -496,7 +496,7 @@ fn what_an_action_asks_for_after_a_wait_waits_for_it_and_prints_back_as_written(
     let texts = waiting_texts();
     assert!(texts.iter().filter(|(at, _)| at.starts_with("sample ")).count() >= 5 && texts.len() >= 8, "too few texts that wait: {:?}", texts.iter().map(|(at, _)| at).collect::<Vec<_>>());
     let mut wrong = vec![];
-    let (mut checked, mut left) = (0, 0);
+    let (mut checked, mut early) = (0, 0);
     for (at, src) in &texts {
         // Its units hash, as `holon check` and a deploy build them: the holds of two waits read by
         // nothing would be the same steps twice (EncodeError::UnusedTwins).
@@ -504,16 +504,10 @@ fn what_an_action_asks_for_after_a_wait_waits_for_it_and_prints_back_as_written(
             wrong.push(format!("{at}: doesn't build as a deploy would: {e}"));
             continue;
         }
-        let text = match printed_from_graph(src) {
-            Ok((_, text)) => text,
-            // An action that answers before its first wait is left to its text (print.rs
-            // `returns_before_a_wait`), which says it with a `return` the printer can't write.
-            Err(e) if e.contains(" answers before its first wait") => {
-                left += 1;
-                continue;
-            }
-            Err(e) => panic!("{at}: {e}"),
-        };
+        let text = printed_from_graph(src).unwrap_or_else(|e| panic!("{at}: {e}")).1;
+        if text.lines().any(|line| line.trim_start().starts_with("if (") && line.contains(") return")) && text.contains("await ") {
+            early += 1;
+        }
         // The printed text builds as a deploy would, as its source does: one that only compiled
         // and printed back the same could still be refused at the deploy.
         if let Err(e) = holon_author::agent::plan(&text) {
@@ -537,7 +531,7 @@ fn what_an_action_asks_for_after_a_wait_waits_for_it_and_prints_back_as_written(
         }
     }
     assert!(checked >= 20, "only {checked} steps after a wait checked: is the scan finding them?");
-    assert!(left >= 1, "no text that answers before its wait was left to its text: is {} still among them?", "A_RETURN_BEFORE_THE_WAIT");
+    assert!(early >= 1, "no text that answers before its wait printed so: is {} still among them?", "A_RETURN_BEFORE_THE_WAIT");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
