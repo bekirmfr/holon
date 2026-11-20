@@ -96,7 +96,8 @@ where
     )?;
 
     // writing headers
-    for header in headers.iter() {
+    // Holon (PATCHED.md): but for one that can't be written as one line (`writable`)
+    for header in headers.iter().filter(|h| writable(h)) {
         writer.write_all(header.field.as_str().as_ref())?;
         write!(&mut writer, ": ")?;
         writer.write_all(header.value.as_str().as_ref())?;
@@ -107,6 +108,20 @@ where
     write!(&mut writer, "\r\n")?;
 
     Ok(())
+}
+
+/// Holon (PATCHED.md): a header that can be written as one line of a response's head: a name of
+/// token characters, a value with no CR, LF or NUL in it (RFC 9110 5.1, 5.5). Written as it was,
+/// one that isn't ended its line early, adding headers of whoever chose its value (a
+/// `Set-Cookie`), or ended the head and began the body ("response splitting", CVE-2026-66753;
+/// rouille's CVE-2026-66746).
+/// Upstream wrote any ASCII; `Header::from_bytes`, which rouille builds each header with, takes
+/// any. One left out is the response's only change: the rest goes as it is.
+fn writable(header: &Header) -> bool {
+    let name = header.field.as_str().as_bytes();
+    !name.is_empty()
+        && name.iter().all(|&b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+        && !header.value.as_bytes().iter().any(|&b| b == b'\r' || b == b'\n' || b == 0)
 }
 
 fn choose_transfer_encoding(

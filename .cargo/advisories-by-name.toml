@@ -1,0 +1,50 @@
+# Advisories `cargo audit` can't see, for the crates Holon carries a copy of or builds its control
+# port on: vendor/tiny_http (a path, which cargo audit doesn't check) and rouille above it. Each
+# was found by a search of NVD by the names below (.github/advisories-by-name.py, a step before
+# each tag: README.md's "Releasing"), and says what was done: fixed here (vendor/tiny_http/
+# PATCHED.md names the change), or why it doesn't apply. The search stops on one not listed.
+names = ["tiny_http", "tiny-http", "rouille"]
+
+# The six of 2026-07-28, filed with NVD and left unreviewed on GitHub with no package named.
+
+[[advisory]]
+id = "CVE-2026-66752"
+crate = "tiny_http 0.12.0"
+done = "fixed here: PATCHED.md change 9 (a request with a Transfer-Encoding is refused 411)"
+
+[[advisory]]
+id = "CVE-2026-66753"
+crate = "tiny_http 0.12.0"
+done = "fixed here: PATCHED.md change 9 (a request's header line with a CR, LF or NUL inside is refused) and change 11 (a response header that can't be one line is left out)"
+
+[[advisory]]
+id = "CVE-2026-66746"
+crate = "rouille 3.6.2"
+done = "fixed here: PATCHED.md change 11 (a response header with a CR, LF or NUL is left out as it is written, whoever set it) and change 9 (a request's header line with one inside is refused); the control port puts in a response header only an Origin it allows, a deployed flow's name and fixed words"
+
+[[advisory]]
+id = "CVE-2026-66754"
+crate = "rouille 3.6.2"
+done = "doesn't apply: Holon calls Request::remove_prefix only with the empty prefix (crates/holon/src/http.rs, read_body, to copy a request), which every URL starts with, raw or decoded, so its assertion holds"
+
+[[advisory]]
+id = "CVE-2026-67181"
+crate = "rouille 3.6.2"
+done = "doesn't apply: it is in rouille's proxy module (rouille::proxy), which Holon doesn't use"
+
+[[advisory]]
+id = "CVE-2026-67182"
+crate = "rouille 3.6.2"
+done = "doesn't apply: it is in rouille's proxy module (rouille::proxy), which Holon doesn't use; change 9 refuses a request's header line with a lone LF besides"
+
+# Older, found by the same search.
+
+[[advisory]]
+id = "CVE-2020-35884"
+crate = "tiny_http before 0.8.0 (RUSTSEC-2020-0031)"
+done = "doesn't apply: fixed upstream in 0.8.0, and the copy is 0.12.0 (change 9 refuses any Transfer-Encoding besides)"
+
+[[advisory]]
+id = "CVE-2017-16097"
+crate = "tiny-http, an npm package"
+done = "doesn't apply: another project, of the same name"

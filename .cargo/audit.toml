@@ -1,6 +1,7 @@
 # What `cargo audit` (ci.yml's `audit` job) is told not to fail on, each with why. An advisory
 # is listed here only when it can't reach Holon as it uses the crate, or while its fix is on its
-# way under a name: take a line out when its reason stops holding.
+# way under a name: take a line out when its reason stops holding. The advisories `cargo audit`
+# can't see (vendor/tiny_http, a path; one filed with NVD alone) are in advisories-by-name.toml.
 [advisories]
 ignore = [
     # rsa, the Marvin attack: timing of operations with a private key. holon-core uses rsa only to

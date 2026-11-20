@@ -60,7 +60,9 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   (a test says so), reads on a thread of its own and answers 408 at the deadline, so a body that
   trickles or stops gives its place back. Rouille hides the socket, so the reader is left to the
   connection and stops at its next read. tiny_http reads a body of 1 KiB or less before the
-  request is handed on, holding a thread but no place; slow headers likewise.
+  request is handed on, holding a thread but no place; slow headers likewise. Both arrive by
+  tiny_http's own deadline for a whole request (`limits::REQUEST`, the same 30 s, from the
+  request's first byte), past which the client is told 408 and the connection closed.
 - **Tokens** are a prefix and 32 random bytes: sessions `hs_` (`SESSION_SECONDS`, 7 days), invite
   and reset links `hi_` (`INVITE_SECONDS`, 7 days, once), an agent's or a service's tokens `ht_`
   (`credentials`, made by its owner or an admin, shown once), and the local token `hl_`. Only their BLAKE3 hashes are kept (`hash_of`),

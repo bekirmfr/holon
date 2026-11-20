@@ -1482,12 +1482,19 @@ const MAX_FROM_ONE: usize = MAX_IN_FLIGHT / 8;
 // are at least as many in all, and from one address too, since behind a proxy it trusts every
 // request comes from the proxy's (each client it forwarded for counted as itself). A connection
 // waits for its client no longer than the idle limit, which is past a body's deadline, so a body
-// that stops is told 408 by the deadline, not cut by the limit.
+// that stops is told 408 by the deadline, not cut by the limit. A request's head, and a body of
+// 1 KiB or less (read by tiny_http, before the request reaches Holon), arrive by tiny_http's own
+// deadline, the same as a larger body's: one time for a request to arrive, whoever reads it.
 const _: () = assert!(
     tiny_http::limits::CONNECTIONS >= MAX_IN_FLIGHT && tiny_http::limits::FROM_ONE >= MAX_IN_FLIGHT,
     "the connections let in hold every request let in"
 );
 const _: () = assert!(tiny_http::limits::IDLE.as_secs() > http::BODY_DEADLINE.as_secs(), "a body is cut off by its deadline, not by the idle limit");
+const _: () = assert!(tiny_http::limits::REQUEST.as_secs() == http::BODY_DEADLINE.as_secs(), "a request arrives by one deadline, whoever reads it");
+// What is left of a body Holon didn't read (a request refused before its body, or one past the
+// cap) is read off by its connection before the next request, at most as much as a body may be;
+// past it, the connection ends once its answer is out (tiny_http's `limits::Leftover`).
+const _: () = assert!(tiny_http::limits::LEFTOVER as u64 == http::MAX_BODY_BYTES, "what is left of a body is read off up to the cap on a body");
 
 /// A control-plane request, answered if it is admitted. Each has a thread of its own (rouille's):
 /// past what `slots` admit at once, in all or from its client, one more is told to try again

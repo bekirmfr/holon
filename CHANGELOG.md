@@ -10,6 +10,56 @@
   read instead of showing it as empty. `holon action` printing such a value, `holon replay` on such
   a flow, an agent's save of a flow and the admin lists (`holon database`, `feed`, `folder`,
   `mail`, `queue`, `store`) read the same way.
+- **A request's headers sent to the control port a byte at a time are cut off after 30
+  seconds.** The server waited for as long as each byte came within a minute of the last, so
+  headers sent slowly enough held their connection for as long as their sender liked. A request's
+  line and headers, and a body of 1 KiB or less, now arrive within 30 seconds of its first byte;
+  past that the sender is told 408 (request timeout) and the connection is closed. A larger body
+  keeps its own 30 seconds, from when the server starts to read it.
+- **A request whose body the server doesn't read can no longer stop the server or hold its
+  connection.** When the server answered a request to the control port without reading all of
+  its body, it read the rest before the next request on that connection: into memory as large as
+  the request said its body was, and for as long as its bytes kept coming. A request could so
+  make the server ask for more memory than the machine has and stop, or keep its connection for
+  as long as its sender liked. Now the rest is read off without being kept, and only when it is
+  no larger than the largest body the server takes and arrives within the request's time;
+  otherwise the connection is closed once its answer is out. Who notices: a client that sends a
+  body larger than that, which the server doesn't read, then another request on the same
+  connection, finds that connection closed and sends again on a new one, as HTTP clients do.
+- **A request in a newer HTTP than the control port speaks is refused at once.** The server took
+  such a request and left its connection waiting with its answer never written: enough of them
+  kept the address they came from, and then everyone, from being answered. Now the sender is told
+  505 (version not supported) and the connection is closed. Who notices: a client that speaks a
+  newer HTTP to the control port without asking first, now told so at once; one that asks first
+  is answered as before.
+- **A request to the control port that a proxy could read another way is refused.** The server
+  took a body's end from a `Transfer-Encoding` of any kind, over a `Content-Length` beside it;
+  read a `Content-Length` it couldn't parse as no body, its bytes then taken as the next request;
+  and took a header line folded onto the one before, or holding a lone CR, LF or NUL. A
+  proxy in front of the server that read such a request another way could pass a second request
+  on hidden in the first (request smuggling, CVE-2026-66752 and CVE-2026-66753). A body is now
+  taken only with one `Content-Length` of digits. A request with a `Transfer-Encoding` is told
+  411 (length required); one whose length isn't digits, with two lengths, or with such a header
+  line is told 400; each says why, and its connection is closed. Who notices: a script that
+  streams a body to the control port's API without a length (`curl -T -`, which sends standard
+  input chunked) is now told 411, and sends the body with its length instead (`curl
+  --data-binary @-`). Holon's command, editor and VS Code extension always send one.
+- **A request's head sent to the control port is bounded.** The server read a request's line and
+  headers for as long as their bytes came, into memory: one connection could take as much of the
+  server's memory as it sent, and its deployed flows were told the server was busy until that
+  connection closed. A request line is now read up to 16 KiB, and a request's head up to 64 KiB
+  and 100 header lines; past one the sender is told 414 (its request line) or 431 (its headers),
+  with why, and the connection is closed. A header line has no bound of its own besides the
+  head's, so a browser's `Cookie` line for the editor, which carries the cookies every local
+  program set on 127.0.0.1 or localhost, is taken up to 64 KiB. Who notices: a request whose line
+  is over 16 KiB (a long query string), or whose head is over 64 KiB.
+- **An answer from the control port can't carry a header split in two.** The server wrote a
+  response's headers as they were given: a value holding a CR or LF would have ended its line
+  early and added headers, or ended the head (response splitting, CVE-2026-66753 and rouille's
+  CVE-2026-66746). A header whose name isn't a token, or whose value holds a CR, LF or NUL, is
+  now left out, and the rest of the answer goes as it is. Who notices: no one with Holon's own
+  answers, which put in a header only an `Origin` the server allows, a deployed flow's name and
+  fixed words.
 - **A new server asks its first admin where the runs its logs let go of go.** Each flow's log
   keeps its newest runs and lets older ones go, past its `keep` or its age, and a server without a
   `backup` folder deleted those for good without asking anyone. Setting up the first admin in the

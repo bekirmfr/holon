@@ -51,7 +51,7 @@ fn a_writer_that_fails_is_a_warning_and_health_says_not_ok_until_it_writes_again
     assert!(crate::sync_to_disk(&state.deployments, &state.deployments_path).is_err());
     let (status, says) = health(&state);
     assert_eq!((status, says.as_str()), (503, "not ok: the deployments file can't be written; the run logs can't be synced to disk"), "both said");
-    assert!(!says.contains(&*dir.to_string_lossy()), "no path to anyone who asks: {says}");
+    super::places::names_no_place("no path to anyone who asks", &says, &[], &[&*dir.to_string_lossy()]);
     let keys: Vec<String> = warned(&state).into_iter().map(|(k, _)| k).collect();
     assert_eq!(keys, ["write:deployments", "write:logs"]);
     assert!(warned(&state)[1].1.contains("a sync a test failed"), "why, to the admin");
@@ -71,9 +71,9 @@ fn a_writer_that_fails_is_a_warning_and_health_says_not_ok_until_it_writes_again
 }
 
 /// What an answer to whoever asked may not hold when a read or a write of the server's own files
-/// fails (audit R71): any part of the folder they are in, `dir` (its path as written, or escaped
-/// as JSON escapes it, its name, the temporary folder it is in), the name of a file under it, and
-/// the error's own text: `whys`, and any OS error's "(os error N)". Those are an admin's alone
+/// fails (audit R71): any part of the folder they are in, `dir` (its path, its name, the temporary
+/// folder it is in), the name of a file under it, each looked for as places.rs looks for a place,
+/// and the error's own text: `whys`, and any OS error's "(os error N)". Those are an admin's alone
 /// (the warnings, stderr: `failing::Failed`).
 pub(super) fn neither_where_nor_why(what: &str, text: &str, dir: &std::path::Path, whys: &[&str]) {
     let found = where_or_why(text, dir, whys);
@@ -83,9 +83,7 @@ pub(super) fn neither_where_nor_why(what: &str, text: &str, dir: &std::path::Pat
 /// Each part of where on the server's disk `dir` is, or of why a file there failed, that `text`
 /// holds ([`neither_where_nor_why`]): none, if it says neither.
 pub(super) fn where_or_why(text: &str, dir: &std::path::Path, whys: &[&str]) -> Vec<String> {
-    let path = dir.display().to_string();
-    let temp = std::env::temp_dir().display().to_string().trim_end_matches(['\\', '/']).to_string();
-    let mut parts = vec![path.clone(), path.replace('\\', "\\\\"), dir.file_name().unwrap().to_string_lossy().to_string(), temp.clone(), temp.replace('\\', "\\\\")];
+    let mut parts = vec![dir.display().to_string(), dir.file_name().unwrap().to_string_lossy().to_string(), super::places::temp_folder()];
     let mut under = vec![dir.to_path_buf()];
     while let Some(d) = under.pop() {
         for entry in std::fs::read_dir(&d).into_iter().flatten().flatten() {
@@ -100,7 +98,7 @@ pub(super) fn where_or_why(text: &str, dir: &std::path::Path, whys: &[&str]) -> 
             }
         }
     }
-    let mut found: Vec<String> = parts.into_iter().filter(|p| !p.is_empty() && text.contains(p.as_str())).collect();
+    let mut found = super::places::places_told(text, &[], &parts.iter().map(String::as_str).collect::<Vec<_>>());
     found.extend(whys.iter().copied().chain(["os error"]).filter(|why| text.contains(why)).map(String::from));
     found.dedup();
     found
@@ -327,14 +325,10 @@ fn a_run_whose_file_fails_names_it_only_as_the_flow_does() {
         &state,
         "import { action, flow, route } from \"holon\"\nimport state from \"state\"\nimport inbox from \"folder:inbox\"\nimport reports from \"folder:reports\"\n\nflow(\"leaky\", { port: 8372 })\n\nroute.get(\"/read\", () => inbox[\"big.txt\"])\n\nroute.get(\"/list\", () => reports.list())\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n",
     );
-    // Where neither may be: the bound folders' place, as written or as JSON escapes it.
+    // Where neither may be: the bound folders' place.
     let nowhere = |what: &str, text: &str| {
-        for at in [&bound, &bound.join("inbox"), &bound.join("reports")] {
-            let at = at.display().to_string();
-            for part in [at.clone(), at.replace('\\', "\\\\")] {
-                assert!(!text.contains(&part), "{what}: where a bound folder is ({part:?}), in the run's record: {text}");
-            }
-        }
+        let at = [&bound, &bound.join("inbox"), &bound.join("reports")].map(|at| at.display().to_string());
+        super::places::names_no_place(&format!("{what}: where a bound folder is, in the run's record"), text, &[], &at.each_ref().map(String::as_str));
     };
     let last = || {
         let entry = log_entries(&state, &slug).last().cloned().unwrap();
@@ -367,7 +361,7 @@ fn a_run_whose_file_fails_names_it_only_as_the_flow_does() {
     let (error, entry) = last();
     assert!(status == 500 && error.starts_with(crate::folders::READ_FAILED) && error.contains("\"reports\" can't be listed"), "the listing's row ran ({status}): {error}");
     nowhere("a folder listed", &entry);
-    assert!(!entry.contains(&data.display().to_string().replace('\\', "\\\\")), "a folder listed: the data folder, in the run's record: {entry}");
+    super::places::names_no_place("a folder listed: the data folder, in the run's record", &entry, &[], &[&data.display().to_string()]);
 
     // A capped folder whose size can't be read: what a write to it is told.
     let said = crate::folders::usage("reports", &bound.join("reports")).unwrap_err();
@@ -417,12 +411,11 @@ fn a_run_whose_database_fails_names_it_only_as_the_flow_does() {
     ]
     .iter()
     .map(|s| s.to_string())
-    .chain([gone_at.clone(), gone_at.replace('\\', "\\\\")])
+    .chain([gone_at])
     .collect();
     let held = |what: &str, text: &str| {
-        for b in &banned {
-            assert!(!text.contains(b.as_str()), "{what}: {b:?} in what a run is told: {text}");
-        }
+        let told = super::places::places_told(text, &[], &banned.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(told.is_empty(), "{what}: {told:?} in what a run is told: {text}");
     };
 
     // First use: each engine, through a run.

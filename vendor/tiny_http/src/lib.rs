@@ -317,7 +317,7 @@ impl Server {
             // a tasks pool is used to dispatch the connections into threads
             let tasks_pool = inside_pool;
             let open = inside_open;
-            let refusals = limits::Refusals::start();
+            let refusals = limits::Refusals::lingering(open.limits().linger);
 
             log::debug!("Running accept thread");
             while !inside_close_trigger.load(Relaxed) {
@@ -357,7 +357,7 @@ impl Server {
                         read_closable.held = Some(held.clone());
                         write_closable.held = Some(held);
 
-                        Ok(ClientConnection::new(write_closable, read_closable, open.limits().idle))
+                        Ok(ClientConnection::new(write_closable, read_closable, open.limits()))
                     }
                     Err(e) => Err(e),
                 };

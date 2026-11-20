@@ -130,6 +130,28 @@ impl<R: Read + Send> Read for SequentialReader<R> {
     }
 }
 
+impl<R: Read + Send> SequentialReader<R> {
+    /// Holon (PATCHED.md): waits until the reader before this one is dropped, and the stream is
+    /// this one's, reading nothing (`ClientConnection::next`, which reads off what the request
+    /// before left of its body).
+    pub fn wait_turn(&mut self) {
+        if let SequentialReaderInner::Waiting(ref mut recv) = self.inner {
+            let reader = recv.recv().unwrap();
+            self.inner = SequentialReaderInner::MyTurn(reader);
+        }
+    }
+}
+
+impl<W: Write + Send> SequentialWriter<W> {
+    /// Holon (PATCHED.md): waits until the writer before this one is dropped, its response
+    /// written, writing nothing (`ClientConnection::end`).
+    pub fn wait_turn(&mut self) {
+        if let Some(v) = self.trigger.take() {
+            let _ = v.recv();
+        }
+    }
+}
+
 impl<W: Write + Send> Write for SequentialWriter<W> {
     fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
         if let Some(v) = self.trigger.as_mut() {

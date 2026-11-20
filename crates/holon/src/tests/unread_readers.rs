@@ -159,32 +159,6 @@ fn answer(response: Response) -> (u16, String) {
     (status, body)
 }
 
-/// Every string an answer holds, its keys too, read out of its JSON, with `leave` taken off its
-/// top first; the text itself if it isn't JSON. What is looked for in them is looked for as it
-/// is told: in the text as sent, a Windows path's backslashes are each written twice.
-fn strings_of(said: &str, leave: &[&str]) -> Vec<String> {
-    fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
-        match v {
-            serde_json::Value::String(s) => out.push(s.clone()),
-            serde_json::Value::Array(items) => items.iter().for_each(|x| walk(x, out)),
-            serde_json::Value::Object(fields) => fields.iter().for_each(|(k, x)| {
-                out.push(k.clone());
-                walk(x, out)
-            }),
-            _ => {}
-        }
-    }
-    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(said) else { return vec![said.to_string()] };
-    if let Some(fields) = v.as_object_mut() {
-        for key in leave {
-            fields.remove(*key);
-        }
-    }
-    let mut out = Vec::new();
-    walk(&v, &mut out);
-    out
-}
-
 fn get(k: &Kept, url: &str) -> (u16, String) {
     answer(route(&k.state, &req("GET", url, vec![])))
 }
@@ -254,8 +228,7 @@ struct Row {
 /// `FileStore::not_there`), or answers it in words of its own, or fails without a warning.
 #[test]
 fn what_is_there_and_cant_be_read_is_an_error_at_every_reader() {
-    let temp = std::env::temp_dir().display().to_string();
-    let temp = temp.trim_end_matches(['/', '\\']).to_string();
+    let temp = super::places::temp_folder();
     // One more row is added on Windows alone (below): elsewhere nothing changes the list, and the
     // compiler's unused-`mut` warning is an error in the Linux check.
     #[cfg_attr(not(windows), allow(unused_mut))]
@@ -407,7 +380,7 @@ fn check(row: Row, temp: &str) {
         let (status, body) = read(&k);
         if row.fails.contains(name) {
             assert_eq!(status, 500, "{what}: {name} is an error, never fewer runs or none: {body}");
-            assert!(!body.contains(temp), "{what}: {name} names no place on the server's disk: {body}");
+            super::places::names_no_place(&format!("{what}: {name}"), &body, &[], &[temp]);
             let error = serde_json::from_str::<serde_json::Value>(&body).ok().and_then(|b| b["error"].as_str().map(str::to_string)).unwrap_or_default();
             let fixed = error == crate::recorder::runs_unread("kept") || error.contains(crate::failing::STORE_FAILED);
             assert!(fixed, "{what}: {name} answers in fixed words: {body}");
@@ -424,7 +397,8 @@ fn check(row: Row, temp: &str) {
         assert_eq!(route(&k.state, &req("POST", "/deployments/kept/stop", vec![])).status_code, 200);
         crate::failing::note_file(&k.state.deployments_path, RUNS_UNREAD, &place, Ok(()));
         let (status, body) = answer(route(&k.state, &req("DELETE", "/deployments/kept", vec![])));
-        assert!(status == 500 && body.contains("nothing was removed") && !body.contains(temp), "{what}: a removal: {status} {body}");
+        assert!(status == 500 && body.contains("nothing was removed"), "{what}: a removal: {status} {body}");
+        super::places::names_no_place(&format!("{what}: a removal"), &body, &[], &[temp]);
         assert!(k.state.deployments.lock().unwrap().contains_key("kept"), "{what}: still deployed");
         assert!(warned(&k, row.warned), "{what}: a removal: the admin's warnings say why: {:?}", warnings(&k));
         assert_eq!(route(&k.state, &req("POST", "/deployments/kept/run", vec![])).status_code, 200);
@@ -562,16 +536,13 @@ fn give_up_row(damage: Damage, ask: Ask, status: u16) {
     let (code, said) = answer(route(&k.state, &req("DELETE", &url, vec![])));
     assert_eq!(code, status, "{row}: {said}");
     // No place and no system's words, in what is told: a refusal whole, and a removal's answer but
-    // its `records`, which is the admin's (held below). Read out of the JSON: as sent, a Windows
-    // path's backslashes are doubled, and the data folder looked for in the text was never found
-    // there, whatever the answer held. Its two forms: as `{}` writes it, and as `{:?}` does, which
-    // doubles them in the words themselves (the same on Linux).
+    // its `records`, which is the admin's (held below).
     let data = k.logs.parent().unwrap().display().to_string();
-    let places = [data.clone(), data.replace('\\', "\\\\")];
-    let told = strings_of(&said, if code == 200 { &["records"] } else { &[] });
+    let leave: &[&str] = if code == 200 { &["records"] } else { &[] };
+    let told = super::places::strings_of(&said, leave);
     assert!(told.iter().any(|s| !s.is_empty()), "{row}: read out of the answer: {said}");
-    let a_place = |s: &String| places.iter().any(|p| s.contains(p.as_str()));
-    assert!(told.iter().all(|s| !a_place(s) &&!s.contains("os error") && !s.contains(".jsonl")), "{row}: no place and no system's words: {said}");
+    super::places::names_no_place(&row.to_string(), &said, leave, &[&data]);
+    assert!(told.iter().all(|s| !s.contains("os error") && !s.contains(".jsonl")), "{row}: no system's words: {said}");
     let deleted = k.state.activity.newest(50, |e| e.action == "deleted");
     if code != 200 {
         assert!(k.state.deployments.lock().unwrap().contains_key("kept"), "{row}: nothing removed");

@@ -3,13 +3,11 @@ use std::io::{self, Cursor, ErrorKind, Read, Write};
 
 use std::fmt;
 use std::net::SocketAddr;
-use std::str::FromStr;
 
 use std::sync::mpsc::Sender;
 
 use crate::util::{EqualReader, FusedReader};
 use crate::{HTTPVersion, Header, Method, Response, StatusCode};
-use chunked_transfer::Decoder;
 
 /// Represents an HTTP request made by a client.
 ///
@@ -77,6 +75,10 @@ pub struct Request {
 
     // Holon (PATCHED.md): how a response with `Connection: close` ends its connection
     pub(crate) closer: Option<std::sync::Arc<crate::client::Closer>>,
+
+    // Holon (PATCHED.md): for a body its client waits to be told to send (`Expect:
+    // 100-continue`): told, if it never was, that the body's end can't be found
+    unsent: Option<std::sync::Arc<crate::limits::Leftover>>,
 }
 
 struct NotifyOnDrop<R> {
@@ -109,6 +111,10 @@ pub enum RequestCreationError {
     /// The client sent an `Expect` header that was not recognized by tiny-http.
     ExpectationFailed,
 
+    /// Holon (PATCHED.md): how long the body is can't be read from one `Content-Length`
+    /// (`body_length`): refused with this status, and why.
+    Unclear(u16, &'static str),
+
     /// Error while reading data from the socket during the creation of the `Request`.
     CreationIoError(IoError),
 }
@@ -128,6 +134,9 @@ impl From<IoError> for RequestCreationError {
 /// It is the responsibility of the `Request` to read only the data of the request and not further.
 ///
 /// The `Write` object will be used by the `Request` to write the response.
+///
+/// Holon (PATCHED.md): what is left of the body when the request is dropped is told to
+/// `leftover`, which the connection reads off before its next request.
 #[allow(clippy::too_many_arguments)]
 pub fn new_request<R, W>(
     secure: bool,
@@ -138,28 +147,15 @@ pub fn new_request<R, W>(
     remote_addr: Option<SocketAddr>,
     mut source_data: R,
     writer: W,
+    leftover: std::sync::Arc<crate::limits::Leftover>,
 ) -> Result<Request, RequestCreationError>
 where
     R: Read + Send + 'static,
     W: Write + Send + 'static,
 {
-    // finding the transfer-encoding header
-    let transfer_encoding = headers
-        .iter()
-        .find(|h: &&Header| h.field.equiv("Transfer-Encoding"))
-        .map(|h| h.value.clone());
-
-    // finding the content-length header
-    let content_length = if transfer_encoding.is_some() {
-        // if transfer-encoding is specified, the Content-Length
-        // header must be ignored (RFC2616 #4.4)
-        None
-    } else {
-        headers
-            .iter()
-            .find(|h: &&Header| h.field.equiv("Content-Length"))
-            .and_then(|h| FromStr::from_str(h.value.as_str()).ok())
-    };
+    // Holon (PATCHED.md): how long the body is, by its one `Content-Length`, or the request is
+    // refused (`body_length`)
+    let content_length = body_length(&headers)?;
 
     // true if the client sent a `Expect: 100-continue` header
     let expects_continue = {
@@ -216,12 +212,9 @@ where
             Box::new(Cursor::new(buffer)) as Box<dyn Read + Send + 'static>
         } else {
             let (data_reader, _) = EqualReader::new(source_data, content_length); // TODO:
+            let data_reader = data_reader.telling(leftover.clone());
             Box::new(FusedReader::new(data_reader)) as Box<dyn Read + Send + 'static>
         }
-    } else if transfer_encoding.is_some() {
-        // if a transfer-encoding was specified, then "chunked" is ALWAYS applied
-        // over the message (RFC2616 #3.6)
-        Box::new(FusedReader::new(Decoder::new(source_data))) as Box<dyn Read + Send + 'static>
     } else {
         // if we have neither a Content-Length nor a Transfer-Encoding,
         // assuming that we have no data
@@ -242,7 +235,42 @@ where
         must_send_continue: expects_continue,
         notify_when_responded: None,
         closer: None,
+        unsent: (expects_continue && !connection_upgrade && content_length.unwrap_or(0) > 0).then_some(leftover),
     })
+}
+
+/// Holon (PATCHED.md): how long a request's body is, from its headers, or why the request is
+/// refused. A server, and a proxy in front of it, that find a body's end in different places read
+/// what follows it differently: a request the proxy passed on inside a body is then one of the
+/// server's own ("request smuggling", CVE-2026-66752). So a body is taken only by its length: one
+/// `Content-Length` of digits (RFC 9112 6.3), or there is none. A request with a
+/// `Transfer-Encoding` is refused 411, whatever it says (RFC 9110 8.6 lets a server ask for a
+/// length): no client of Holon's sends one to the control port, and chunk decoding is out of a
+/// request's path. Upstream decoded any `Transfer-Encoding` as chunked (`gzip`, `identity`, an
+/// empty one), over a `Content-Length` beside it and in HTTP 1.0 too, with a decoder (the
+/// `chunked_transfer` crate's) that took a chunk size with a sign or spaces, and read a size
+/// line, and what follows a `;` in it, for as long as its bytes came, the line into memory. And
+/// it took the first `Content-Length` as Rust reads a number (`+5` as 5), and one it couldn't
+/// read (`five`, `5, 5`) as no body at all, its bytes then read as the next request.
+fn body_length(headers: &[Header]) -> Result<Option<usize>, RequestCreationError> {
+    let refused = |status, why| Err(RequestCreationError::Unclear(status, why));
+    if headers.iter().any(|h| h.field.equiv("Transfer-Encoding")) {
+        return refused(411, "a body is taken only with a Content-Length, not a Transfer-Encoding");
+    }
+    let lengths: Vec<&str> = headers
+        .iter()
+        .filter(|h| h.field.equiv("Content-Length"))
+        .map(|h| h.value.as_str())
+        .collect();
+    match lengths.as_slice() {
+        [] => Ok(None),
+        [one] if !one.is_empty() && one.bytes().all(|b| b.is_ascii_digit()) => one
+            .parse()
+            .map(Some)
+            .or_else(|_| refused(400, "a Content-Length too long to read")),
+        [_] => refused(400, "a Content-Length that isn't digits"),
+        _ => refused(400, "more than one Content-Length"),
+    }
 }
 
 impl Request {
@@ -500,6 +528,12 @@ impl fmt::Debug for Request {
 
 impl Drop for Request {
     fn drop(&mut self) {
+        // Holon (PATCHED.md): a body its client was never told to send, it may send or not
+        if self.must_send_continue {
+            if let Some(left) = &self.unsent {
+                left.unknown();
+            }
+        }
         if self.response_writer.is_some() {
             let response = Response::empty(500);
             let _ = self.respond_impl(response); // ignoring any potential error
