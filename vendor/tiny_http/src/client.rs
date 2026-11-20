@@ -108,10 +108,19 @@ impl std::error::Error for Idle {}
 #[derive(Debug)]
 enum ReadError {
     WrongRequestLine,
-    WrongHeader(HTTPVersion),
-    /// the client sent an unrecognized `Expect` header
-    ExpectationFailed(HTTPVersion),
+    /// Holon (PATCHED.md): refused with this status, and why: a header line that can't be read,
+    /// or can be read more than one way (`read`); a body whose length can be, or that has a
+    /// `Transfer-Encoding` (`request::body_length`); an `Expect` other than `100-continue`. Upstream's
+    /// `WrongHeader` and `ExpectationFailed` are among them.
+    Refused(u16, &'static str),
     ReadIoError(IoError),
+}
+
+/// Holon (PATCHED.md): a CR, LF or NUL inside a line of a request's head (its lines end at CRLF):
+/// a proxy that ends a line at a lone LF, or reads the rest otherwise, finds other headers than
+/// this server does (RFC 9110 5.5).
+fn unclear(line: &AsciiString) -> bool {
+    line.as_bytes().iter().any(|&b| b == b'\r' || b == b'\n' || b == 0)
 }
 
 impl ClientConnection {
@@ -227,6 +236,26 @@ impl ClientConnection {
         left == 0
     }
 
+    /// Holon (PATCHED.md): a request refused before the application sees it, and the
+    /// connection's end: `status`, and why in words (as JSON, as the 503 of a connection past a
+    /// bound says it), with `Connection: close`, written through `writer` (the next in turn, or
+    /// the refused request's own), then `end`, so that its client reads it rather than a reset.
+    /// Every refusal ends its connection: where the refused request ends, and so where a next
+    /// one would begin, is not known, or not to be trusted. Upstream said 400 and 417 with no
+    /// words and closed at once, unread bytes and all.
+    fn refuse(&mut self, writer: impl Write, status: u16, why: &str) {
+        use crate::{Header, Response, StatusCode};
+        let json = Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap();
+        let close = Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap();
+        Response::from_data(format!("{{\"error\":\"{}\"}}", why))
+            .with_status_code(StatusCode(status))
+            .with_header(json)
+            .with_header(close)
+            .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
+            .ok();
+        self.end();
+    }
+
     /// Holon (PATCHED.md): the connection ends. The end of the stream is sent once its last
     /// answer is written (a request lets go of the stream when its body is read, or at once when
     /// it has none, before it is answered), and what its client still sends is read off and
@@ -261,6 +290,9 @@ impl ClientConnection {
             // reading the request line
             let (method, path, version) = {
                 let line = self.read_next_line(true).map_err(ReadError::ReadIoError)?;
+                if unclear(&line) {
+                    return Err(ReadError::Refused(400, "a CR, LF or NUL inside the request line"));
+                }
 
                 parse_request_line(
                     line.as_str().trim(), // TODO: remove this conversion
@@ -276,10 +308,21 @@ impl ClientConnection {
                     if line.is_empty() {
                         break;
                     };
+                    // Holon (PATCHED.md): a line folded onto the one before (obs-fold), or one
+                    // with a CR, LF or NUL inside, is refused (RFC 9112 5.2, RFC 9110 5.5): a
+                    // proxy in front that reads it otherwise finds other headers (a
+                    // `Content-Length` this server doesn't see, or one only it sees).
+                    // Upstream took a folded line, trimmed, as a header of its own.
+                    if line.as_bytes().first().map_or(false, |&b| b == b' ' || b == b'\t') {
+                        return Err(ReadError::Refused(400, "a header line folded onto the one before"));
+                    }
+                    if unclear(&line) {
+                        return Err(ReadError::Refused(400, "a CR, LF or NUL inside a header line"));
+                    }
                     headers.push(match FromStr::from_str(line.as_str().trim()) {
                         // TODO: remove this conversion
                         Ok(h) => h,
-                        _ => return Err(ReadError::WrongHeader(version)),
+                        _ => return Err(ReadError::Refused(400, "a header line that can't be read")),
                     });
                 }
 
@@ -313,8 +356,9 @@ impl ClientConnection {
             match e {
                 request::RequestCreationError::CreationIoError(e) => ReadError::ReadIoError(e),
                 request::RequestCreationError::ExpectationFailed => {
-                    ReadError::ExpectationFailed(version)
+                    ReadError::Refused(417, "an Expect other than 100-continue")
                 }
+                request::RequestCreationError::Unclear(status, why) => ReadError::Refused(status, why),
             }
         })?;
 
@@ -337,8 +381,6 @@ impl Iterator for ClientConnection {
     /// Blocks until the next Request is available.
     /// Returns None when no new Requests will come from the client.
     fn next(&mut self) -> Option<Request> {
-        use crate::{Response, StatusCode};
-
         // Holon (PATCHED.md): an upgraded stream is the application's from its request on
         if self.upgraded {
             return None;
@@ -360,18 +402,14 @@ impl Iterator for ClientConnection {
             let rq = match self.read() {
                 Err(ReadError::WrongRequestLine) => {
                     let writer = self.sink.next().unwrap();
-                    let response = Response::new_empty(StatusCode(400));
-                    response
-                        .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
-                        .ok();
+                    self.refuse(writer, 400, "a request line that can't be read");
                     return None; // we don't know where the next request would start,
                                  // se we have to close
                 }
 
-                Err(ReadError::WrongHeader(ver)) => {
+                Err(ReadError::Refused(status, why)) => {
                     let writer = self.sink.next().unwrap();
-                    let response = Response::new_empty(StatusCode(400));
-                    response.raw_print(writer, ver, &[], false, None).ok();
+                    self.refuse(writer, status, why);
                     return None; // we don't know where the next request would start,
                                  // se we have to close
                 }
@@ -391,26 +429,10 @@ impl Iterator for ClientConnection {
                     // thrown away until it closes, or for the linger (`Limits::linger`). Closed with bytes
                     // unread, the connection is reset, and a reset can reach the client before
                     // the 408 (a client cut off is still sending, as a rule).
-                    let body = format!("{{\"error\":\"{}\"}}", self.deadline.why());
-                    let json = crate::Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap();
-                    let close = crate::Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap();
-                    let response = Response::from_data(body)
-                        .with_status_code(StatusCode(408))
-                        .with_header(json)
-                        .with_header(close);
+                    let why = self.deadline.why();
                     let writer = self.sink.next().unwrap();
-                    response
-                        .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
-                        .ok();
-                    self.end();
+                    self.refuse(writer, 408, &why);
                     return None; // closing the connection
-                }
-
-                Err(ReadError::ExpectationFailed(ver)) => {
-                    let writer = self.sink.next().unwrap();
-                    let response = Response::new_empty(StatusCode(417));
-                    response.raw_print(writer, ver, &[], true, None).ok();
-                    return None; // TODO: should be recoverable, but needs handling in case of body
                 }
 
                 Err(ReadError::ReadIoError(_)) => return None,
@@ -424,15 +446,7 @@ impl Iterator for ClientConnection {
             // request's to be dropped, while the request was held right here: the write, and the
             // connection's thread, waited for ever, its place held after its client had gone.
             if *rq.http_version() > (1, 1) {
-                let writer = rq.into_writer();
-                let response = Response::from_string(
-                    "This server only supports HTTP versions 1.0 and 1.1".to_owned(),
-                )
-                .with_status_code(StatusCode(505));
-                response
-                    .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
-                    .ok();
-                self.end();
+                self.refuse(rq.into_writer(), 505, "this server only supports HTTP versions 1.0 and 1.1");
                 return None;
             }
 

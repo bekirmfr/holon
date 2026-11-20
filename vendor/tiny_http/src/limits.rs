@@ -91,8 +91,8 @@ impl Default for Limits {
 }
 
 /// Holon (PATCHED.md): what is left of the body of a connection's request, told by the request's
-/// reader as it is dropped (`EqualReader`, a chunked body's `request::ToItsEnd`, `Request` for a
-/// body its client was never told to send), and taken by the connection before it reads the next
+/// reader as it is dropped (`EqualReader`, `Request` for a body its client was never told to
+/// send), and taken by the connection before it reads the next
 /// request (`ClientConnection::read_off`). Upstream's reader read the rest off itself as it was
 /// dropped, into a buffer as long as what was left, which the request's `Content-Length` sizes
 /// (a length of 100 TB was an allocation that failed and ended the process), and for as long as
@@ -108,9 +108,8 @@ pub(crate) enum Left {
     Nothing,
     /// This many bytes of a declared length.
     Bytes(usize),
-    /// A body whose end can't be found: a chunked one not read to its end, or one its client was
-    /// never told to send (`Expect: 100-continue`, the application never reading it), which the
-    /// client may send or not.
+    /// A body whose end can't be found: one its client was never told to send (`Expect:
+    /// 100-continue`, the application never reading it), which the client may send or not.
     Unknown,
 }
 

@@ -122,18 +122,8 @@ mod prompt_pipelining {
         });
     }
 
-    #[test]
-    fn chunked() {
-        let body = &[65u8; 10000];
-        assert_requests_parsed_promptly(5, body, Duration::from_millis(200), move |wr| {
-            for _ in 0..5 {
-                write!(wr, "GET / HTTP/1.1\r\n").unwrap();
-                write!(wr, "Connection: keep-alive\r\n").unwrap();
-                write!(wr, "Transfer-Encoding: chunked\r\n\r\n").unwrap();
-                encode_chunked(&mut &body[..], wr);
-            }
-        });
-    }
+    // Holon (PATCHED.md, change 9): upstream's `chunked`, five pipelined requests with chunked
+    // bodies, is taken out: a request with a `Transfer-Encoding` is refused (411).
 }
 
 mod prompt_responses {

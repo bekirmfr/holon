@@ -16,6 +16,18 @@
   line and headers, and a body of 1 KiB or less, now arrive within 30 seconds of its first byte;
   past that the sender is told 408 (request timeout) and the connection is closed. A larger body
   keeps its own 30 seconds, from when the server starts to read it.
+- **A request to the control port that a proxy could read another way is refused.** The server
+  took a body's end from a `Transfer-Encoding` of any kind, over a `Content-Length` beside it;
+  read a `Content-Length` it couldn't parse (`five`) as no body, its bytes then taken as the next
+  request; and took a header line folded onto the one before, or holding a lone CR, LF or NUL. A
+  proxy in front of the server that read such a request another way could pass a second request
+  on hidden in the first (request smuggling, CVE-2026-66752 and CVE-2026-66753). A body is now
+  taken only with one `Content-Length` of digits. A request with a `Transfer-Encoding` is told
+  411 (length required); one whose length isn't digits, with two lengths, or with such a header
+  line is told 400; each says why, and its connection is closed. Who notices: a script that
+  streams a body to the control port's API without a length (`curl -T -`, which sends standard
+  input chunked) is now told 411, and sends the body with its length instead (`curl
+  --data-binary @-`). Holon's command, editor and VS Code extension always send one.
 - **A new server asks its first admin where the runs its logs let go of go.** Each flow's log
   keeps its newest runs and lets older ones go, past its `keep` or its age, and a server without a
   `backup` folder deleted those for good without asking anyone. Setting up the first admin in the

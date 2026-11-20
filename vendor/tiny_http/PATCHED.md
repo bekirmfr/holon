@@ -105,9 +105,9 @@ or, while the history keeps it, against the commit that added the copy unchanged
    main.rs asserts it) and by the request limit from when it begins (`Deadline`, 30 s). Read off
    whole, the connection goes on, as before. Otherwise it ends once its last answer is written
    (`end`, the linger of change 6 after it): when more is left than the bound, when the rest
-   comes too slowly, when a body's end can't be found (a chunked body not read to its end, which
-   upstream then read as the next request; a body its client was waiting to be told to send,
-   `Expect: 100-continue`, never told), and when the answer said `Connection: close` (none of
+   comes too slowly, when a body's end can't be found (a body its client was waiting to be told
+   to send, `Expect: 100-continue`, never told; a chunked body was one, until change 9 refused
+   them), and when the answer said `Connection: close` (none of
    the rest is read then: Holon's 408 for a body too slow says it). A connection's last request
    (`Connection: close`, or HTTP 1.0) has its rest read off the same way before the end, so that
    its client reads its answer; upstream ended the connection's thread at once and left the
@@ -119,6 +119,32 @@ or, while the history keeps it, against the commit that added the copy unchanged
    and the connection's place was held after its client had gone (512 such requests from one
    address kept it out until a restart). Now the 505 is written through the request's own
    writer, and the connection ends (change 7's `end`).
+9. **A request that can be read two ways** (`src/request.rs`, `body_length`; `src/client.rs`,
+   `read` and `refuse`). A server, and a proxy in front of it, that find a request's end in
+   different places read what follows it differently: a request the proxy passed on inside a
+   body is then one of the server's own ("request smuggling", CVE-2026-66752). Upstream decoded
+   any `Transfer-Encoding` as chunked (`gzip`, `identity`, an empty one), over a
+   `Content-Length` beside it and in HTTP 1.0 too, with a decoder (the `chunked_transfer`
+   crate's) that took a chunk size with a sign or spaces and read a size line, and what follows a
+   `;` in it, for as long as its bytes came, the line into memory. It took the first
+   `Content-Length` as Rust reads a number (`+5` as 5), and one it couldn't read (`five`, `5, 5`)
+   as no body, its bytes read as the next request. And it took a header line folded onto the one
+   before, or with a lone CR or LF or a NUL inside (CVE-2026-66753's request half), as other
+   headers than a proxy may find. Now a body is taken only by its length: one `Content-Length` of
+   digits, or there is none (RFC 9112 6.3). A request with a `Transfer-Encoding` is refused 411,
+   whatever it says (RFC 9110 8.6): none of Holon's clients sends one to the control port (the
+   command and its MCP server send with ureq's `send_bytes` and `send_string`; the editor, the
+   VS Code extension and the end-to-end tests send strings), so the chunk decoder is out of a
+   request's path. Who notices: a script that streams a body to the control port's API without
+   a length (`curl -T -`, which sends standard input chunked) is told 411, and sends the body
+   with its length instead (`curl --data-binary @-`). The rest are refused 400, and so are those header lines (RFC 9112 5.2, RFC
+   9110 5.5). Upstream's `prompt_requests::chunked` (`tests/promptness.rs`), which sent chunked
+   bodies, is taken out; `prompt_responses::chunked` passes as it is, the 411 being its prompt
+   answer. Every refusal goes one way (`refuse`): these, upstream's 400 for a line it can't read
+   and 417 for an `Expect` it doesn't know, the 408s of change 6 and the 505 of change 8. It
+   says why in words (as JSON), with `Connection: close`, and the connection ends (change 7's
+   `end`), its client reading the answer before the close; upstream said 400 and 417 with no
+   words and closed at once, a reset with bytes unread.
 
 `Server::from_listener_limited` takes other limits; every other constructor (rouille's
 included) uses `Limits::default()`.

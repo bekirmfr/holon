@@ -484,7 +484,11 @@ of "payout": each step of an approval is someone else's`).
   30 seconds: past that its place goes back, and it is told 408 when its connection next reads, a
   minute after its last byte at most. A body of 1 KiB or less is read before the request takes a
   place, by its connection, which waits a minute at most for each next byte: one that stops is
-  told 408 then, and closed.
+  told 408 then, and closed. A body is taken only with its length (`Content-Length`): a request
+  that streams one without it (a `Transfer-Encoding`, as `curl -T -` sends standard input) is
+  told 411, and one whose length isn't digits, with two lengths, or with a header line folded
+  onto the one before or holding a CR, LF or NUL, 400; each with why, and its connection is
+  closed.
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
 - The server never lets the last enabled person holding admin be removed, disabled, given
   another role or unbound, bound to them or to a group of theirs. The run file's admin (below)

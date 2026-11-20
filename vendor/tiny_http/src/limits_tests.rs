@@ -284,7 +284,7 @@ fn sockets_past_the_bound_hold_no_threads() {
 }
 
 /// A connection owed an answer is not idle, whatever shape its request has (no body, a body
-/// tiny_http reads itself, one the handler reads, a chunked one): a handler that thinks for twice
+/// tiny_http reads itself, one the handler reads): a handler that thinks for twice
 /// the limit is answered whole, the next request sent at once on the same connection is
 /// answered, and the connection, left alone after that, is closed no sooner than the limit after
 /// its last answer.
@@ -299,7 +299,6 @@ fn a_connection_owed_an_answer_is_not_idle_whatever_its_request() {
         ("no body", get(&think), 0),
         ("a body of 100 bytes", format!("POST {} HTTP/1.1\r\nHost: test\r\nContent-Length: 100\r\n\r\n{}", think, small), 100),
         ("a body of 2,000 bytes", format!("POST {} HTTP/1.1\r\nHost: test\r\nContent-Length: 2000\r\n\r\n{}", think, large), 2000),
-        ("a chunked body", format!("POST {} HTTP/1.1\r\nHost: test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", think), 5),
     ];
     let runs: Vec<_> = shapes
         .into_iter()
@@ -487,7 +486,6 @@ fn what_is_left_of_a_body_nobody_read_is_read_off_within_bounds_or_its_connectio
         ("a length of 100 TB, none of it sent", "GET /ignore HTTP/1.1\r\nHost: test\r\nContent-Length: 100000000000000\r\n\r\n".to_string(), false),
         ("1,500 bytes, within the bound", format!("POST /ignore HTTP/1.1\r\nHost: test\r\nContent-Length: 1500\r\n\r\n{}", body(1500)), true),
         ("3,000 bytes, past the bound", format!("POST /ignore HTTP/1.1\r\nHost: test\r\nContent-Length: 3000\r\n\r\n{}", body(3000)), false),
-        ("a chunked body not read to its end", format!("POST /ignore HTTP/1.1\r\nHost: test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n{}", inner), false),
         // within the bound, so only its end being unknown ends its connection
         ("a body its client was never told to send", "POST /ignore HTTP/1.1\r\nHost: test\r\nExpect: 100-continue\r\nContent-Length: 1500\r\n\r\n".to_string(), false),
     ];
@@ -559,6 +557,60 @@ fn a_version_past_1_1_is_told_505_and_its_connection_ends() {
         closed_within(&mut s).unwrap_or_else(|e| panic!("{}: then the end of the stream: {}", version, e));
         drop(s);
         assert!(until(|| server.open.count() == 0), "{}: its place given back", version);
+    }
+    server.unblock();
+}
+
+/// A request whose head, or whose body's length, can be read more than one way is refused, and
+/// its connection ends, nothing after it read as a request: a proxy in front that read it the
+/// other way would pass on, inside what it took for a body, a request this server then answers as
+/// its own ("request smuggling"; RFC 9112 6.3, 5.2, RFC 9110 5.5, 8.6). A body is taken only by
+/// one `Content-Length` of digits, and any `Transfer-Encoding` is told 411. Each request here is
+/// followed on its connection by `/inner`: after one refused, its status, why in words, and the
+/// end of the stream; after one taken, its body read whole and `/inner` answered as the next
+/// request.
+#[test]
+fn a_request_that_can_be_read_two_ways_is_refused_and_nothing_after_it_read() {
+    let (server, at) = serve(Limits::default());
+    let chunks = "5\r\nhello\r\n0\r\n\r\n";
+    let post = |headers: &str, body: &str| format!("POST /think?ms=0 HTTP/1.1\r\nHost: test\r\n{}\r\n{}", headers, body);
+    // what it is, the request, the status it is told, and its answer when taken
+    let rows: Vec<(&str, String, u16, &str)> = vec![
+        ("a length", post("Content-Length: 5\r\n", "hello"), 200, "thought 5"),
+        ("a length with leading zeros", post("Content-Length: 005\r\n", "hello"), 200, "thought 5"),
+        ("chunked", post("Transfer-Encoding: chunked\r\n", chunks), 411, ""),
+        ("chunked, in capitals", post("TRANSFER-ENCODING: CHUNKED\r\n", chunks), 411, ""),
+        ("a coding other than chunked", post("Transfer-Encoding: gzip\r\n", chunks), 411, ""),
+        ("an empty Transfer-Encoding", post("Transfer-Encoding: \r\n", chunks), 411, ""),
+        ("chunked and a length", post("Transfer-Encoding: chunked\r\nContent-Length: 5\r\n", chunks), 411, ""),
+        ("a length and chunked", post("Content-Length: 5\r\nTransfer-Encoding: chunked\r\n", chunks), 411, ""),
+        ("chunked in HTTP 1.0", format!("POST /think?ms=0 HTTP/1.0\r\nHost: test\r\nConnection: keep-alive\r\nTransfer-Encoding: chunked\r\n\r\n{}", chunks), 411, ""),
+        ("a length with a sign", post("Content-Length: +5\r\n", "hello"), 400, ""),
+        ("a length in words", post("Content-Length: five\r\n", "hello"), 400, ""),
+        ("a length past any number", post("Content-Length: 99999999999999999999999\r\n", "hello"), 400, ""),
+        ("two lengths in one field", post("Content-Length: 5, 5\r\n", "hello"), 400, ""),
+        ("two lengths in two fields", post("Content-Length: 5\r\nContent-Length: 5\r\n", "hello"), 400, ""),
+        ("a space before the colon", post("Content-Length : 5\r\n", "hello"), 400, ""),
+        ("a header folded onto the line before", post("X-Note: a\r\n Content-Length: 5\r\n", "hello"), 400, ""),
+        ("a lone LF inside a header line", post("X-Note: a\nContent-Length: 5\r\n", "hello"), 400, ""),
+        ("a lone CR inside a header line", post("X-Note: a\rContent-Length: 5\r\n", "hello"), 400, ""),
+        ("a NUL inside a header line", post("X-Note: a\0b\r\nContent-Length: 5\r\n", "hello"), 400, ""),
+        ("an Expect other than 100-continue", post("Expect: 100 continue\r\nContent-Length: 5\r\n", "hello"), 417, ""),
+    ];
+    for (what, request, status, said) in rows {
+        let mut s = connect(at);
+        s.write_all(format!("{}{}", request, get("/inner")).as_bytes()).unwrap();
+        let (told, _, body) = answer(&mut s).unwrap_or_else(|e| panic!("{}: an answer: {}", what, e));
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert_eq!(told, status, "{}: told {} ({})", what, status, body);
+        if status == 200 {
+            assert_eq!(body, said, "{}: its body read whole", what);
+            let next = answer(&mut s).map(|(status, _, body)| (status, String::from_utf8_lossy(&body).into_owned()));
+            assert_eq!(next, Ok((200, "ok".to_string())), "{}: what follows it, read as the next request", what);
+        } else {
+            assert!(body.starts_with("{\"error\":"), "{}: told why: {}", what, body);
+            closed_within(&mut s).unwrap_or_else(|e| panic!("{}: then the end of the stream, nothing after it read: {}", what, e));
+        }
     }
     server.unblock();
 }
