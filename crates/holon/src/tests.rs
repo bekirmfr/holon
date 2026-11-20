@@ -6373,7 +6373,7 @@ on.file.created(inbox, (f) => {{
         let ticking = scheduler::start_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, SystemTime::now() + Duration::from_secs(3 * 3600), &scheduler::Ticking::default());
         let out = gate.out_at_once(2);
         let since = std::time::Instant::now();
-        while ticking.iter().filter(|t| !t.is_finished()).count() > 1 && since.elapsed() < Duration::from_secs(30) {
+        while ticking.iter().filter(|t| !t.is_finished()).count() > 1 && since.elapsed() < EVENTUALLY {
             std::thread::sleep(Duration::from_millis(10));
         }
         // What the stopping server waits on (stopping::drain); other tests' runs may hold it too.
