@@ -897,32 +897,34 @@ allow_private_addresses = true
         }
         holon_author::agent::plan(&text).unwrap().unit
     };
-    let gone_unit = deploy("gone", "only the forgotten one holds this");
+    // A slug of its own: the keyring it forgets on is every test's (at_rest::own_slug).
+    let slug = crate::at_rest::own_slug("gone");
+    let gone_unit = deploy(&slug, "only the forgotten one holds this");
     deploy("stays", "only the one that stays holds this");
     let states = |slug: &str| -> Vec<String> {
         let log = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])));
         log["entries"].as_array().unwrap().iter().map(|e| e["state_after"].as_str().unwrap().to_string()).collect()
     };
-    let (gone, stays) = (states("gone"), states("stays"));
+    let (gone, stays) = (states(&slug), states("stays"));
     assert_eq!((gone.len(), stays.len()), (3, 3));
-    assert_eq!(route(&state, &req("POST", "/deployments/gone/stop", vec![])).status_code, 200);
-    assert_eq!(route(&state, &req("DELETE", "/deployments/gone", vec![])).status_code, 200);
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
+    assert_eq!(route(&state, &req("DELETE", &format!("/deployments/{slug}"), vec![])).status_code, 200);
     let files = || std::fs::read_dir(&values).unwrap().count();
     let before = files();
 
     // Forgotten now: everything is new, so the sweep spares it, and says so.
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-    let said = crate::keys::forget(&state, crate::at_rest::keys(), "gone", "ada", now);
+    let said = crate::keys::forget(&state, crate::at_rest::keys(), &slug, "ada", now);
     assert_eq!(said["forgotten"], true, "{said}");
     assert!(said["store"]["spared"].as_u64().unwrap() > 0 && said["store"]["swept"] == 0, "{said}");
     assert_eq!(files(), before);
     // Forgotten again an hour and more later (the slug deployed and removed again in between, as
     // a second forget needs keys to forget): what only it named is gone.
     let later = now + 2 * sweep::SPARES_MS;
-    deploy("gone", "only the forgotten one holds this");
-    assert_eq!(route(&state, &req("POST", "/deployments/gone/stop", vec![])).status_code, 200);
-    assert_eq!(route(&state, &req("DELETE", "/deployments/gone", vec![])).status_code, 200);
-    let said = crate::keys::forget(&state, crate::at_rest::keys(), "gone", "ada", later);
+    deploy(&slug, "only the forgotten one holds this");
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
+    assert_eq!(route(&state, &req("DELETE", &format!("/deployments/{slug}"), vec![])).status_code, 200);
+    let said = crate::keys::forget(&state, crate::at_rest::keys(), &slug, "ada", later);
     assert!(said["store"]["swept"].as_u64().unwrap() >= 3, "at least its three states: {said}");
     assert!(files() < before, "{said}");
     for snapshot in &gone {
