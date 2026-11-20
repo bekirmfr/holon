@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A flow whose runs held a deeply nested value showed no runs in the terminal editor.** Its
+  Runs tab said 0 and "No runs yet" while its own Status card counted them, and `holon runs` and
+  the web editor listed them. The terminal read a server's answer with a reader that gives up past
+  about 40 levels of records inside records, and took what it couldn't read for nothing. The
+  command's clients now read an answer as deep as a value may nest, and say when an answer can't be
+  read instead of showing it as empty. `holon action` printing such a value, `holon replay` on such
+  a flow, an agent's save of a flow and the admin lists (`holon database`, `feed`, `folder`,
+  `mail`, `queue`, `store`) read the same way.
 - **A new server asks its first admin where the runs its logs let go of go.** Each flow's log
   keeps its newest runs and lets older ones go, past its `keep` or its age, and a server without a
   `backup` folder deleted those for good without asking anyone. Setting up the first admin in the
