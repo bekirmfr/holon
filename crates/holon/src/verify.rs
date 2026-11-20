@@ -1866,7 +1866,9 @@ fn rerun(
     let given_one = entry.secrets.keys().any(|name| caps.iter().any(|c| matches!(c, Capability::SecretRead(s) if s == *name)));
     let fed = if given_one { taint::SecretFed::of(root, resolver) } else { taint::SecretFed::default() };
     let mut observer = Asserting::from_timeline(&entry.timeline, marks, entry.escaped, fed.clone());
-    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &network, &limits, &mut observer, &mut waits, &prior, marks);
+    // Its earlier tries hold back a call they don't answer from a node they called out from, as
+    // the server's did (R115): a run that failed so fails so again.
+    let outcome = run_rounds(root, &inputs, &sourced, resolver, &mut host, &network, &limits, &mut observer, &mut waits, &prior, tried, marks);
     // A node computed on its placeholders gives what the run gave, written with them; the log
     // recording other for it is a record that isn't the run's.
     if observer.belied {

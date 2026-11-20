@@ -673,8 +673,9 @@ Rules:
 - **A route answers and is done.** It doesn't wait: `await event(…)` in a route is refused. What
   waits is an action the route starts, `const started = payment(req.json)`, and the route answers
   with its link, `` return `/paid/${started.waiting.paid}` ``. A start goes out and is kept as a
-  call is, so a retry never starts the run again; a start of the flow's own action is allowed, as
-  the route doesn't wait for it.
+  call is, so a retry never starts the run again: one whose start would carry something else
+  fails instead ([Databases](../guides/databases.md#calling-out-between-a-read-and-a-write)); a
+  start of the flow's own action is allowed, as the route doesn't wait for it.
 - **The method forms** (`notes.put(k, v)`, `notes.delete(k)`) are the same writes as values: for a
   function that names its writes as outputs, or to pass a write on.
 
