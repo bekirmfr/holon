@@ -2229,6 +2229,54 @@ fn nothing_read_to_tell_what_is_kept_takes_an_error_as_none() {
     assert_eq!(code.matches(".ok()").count(), 1, "{code}");
 }
 
+/// How a client takes a server's answer, read with serde_json's own reader or `read_json` and its
+/// failure turned into nothing: what [`crate::wire::answer`] is for.
+const READS_AN_ANSWER: &[&str] = &["serde_json::from_str(&answer)", "serde_json::from_slice(&bytes)", "read_json(&bytes)", "read_json(answer.as_bytes())"];
+
+/// Guards: every client's reading of a server's answer (the terminal's, the command line's, the
+/// agents' tools') goes through `wire::answer`, as deep as a value may nest, and says when it can't
+/// read one: no line reads an answer itself and takes its failure as none.
+/// Why: the terminal read answers with serde_json's own reader, which stops at 128 levels, and took
+/// what it couldn't read for null: a flow whose runs held a value about 40 records deep showed "No
+/// runs yet" on its Runs page, while `holon runs` and the web listed them (2026-11-19, the owner's
+/// hq flow). The behaviour is held by `workbench::tests::a_run_holding_a_deep_value_is_listed`.
+/// If it fails: read the answer with `crate::wire::answer`, and say its error where it is read.
+#[test]
+fn a_servers_answer_is_read_as_deep_as_a_value_and_never_taken_for_none() {
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&src, &mut files);
+    let mut found = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).unwrap();
+        let code = inert(&text);
+        let test = in_test_modules(&text);
+        for (i, line) in code.lines().enumerate() {
+            if !test[i] && READS_AN_ANSWER.iter().any(|r| line.contains(r)) && SWALLOWS.iter().any(|s| line.contains(s)) {
+                found.push(format!("{}:{}: {}", file.strip_prefix(&src).unwrap().display(), i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(files.len() > 100, "the sweep read the source: {}", files.len());
+    assert!(found.is_empty(), "a server's answer read without wire::answer, its failure taken for none:\n{}", found.join("\n"));
+    // The reader itself: JSON past serde_json's 128 levels, an empty answer, and one that isn't JSON.
+    let deep = "[".repeat(200) + &"]".repeat(200);
+    assert!(crate::wire::answer(deep.as_bytes()).is_ok(), "an answer 200 levels deep reads");
+    assert_eq!(crate::wire::answer(b" \n").unwrap(), serde_json::Value::Null);
+    let said = crate::wire::answer(b"<html>").unwrap_err();
+    assert!(said.contains("can't be read"), "{said}");
+}
+
 /// An admin sets how often the server sweeps (`POST /admin/storage`): written into `holon.toml`'s
 /// `[storage]`, the rest of the file as it was, comments too, and in force at once; a setting that
 /// isn't one changes nothing.

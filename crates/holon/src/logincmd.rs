@@ -67,10 +67,10 @@ pub(crate) struct SignedIn {
 pub(crate) fn sign_in(api: &dyn Api, name: &str, password: &str) -> Result<SignedIn, String> {
     let server = api.server();
     let (status, bytes) = api.send("POST", "/auth/sign-in", Some(Body::Json(json!({ "name": name, "password": password }))))?;
-    let answer: Value = crate::wire::read_json(&bytes).unwrap_or(Value::Null);
     if status != 200 {
-        return Err(format!("{server} didn't sign you in ({status}): {}", why(&answer, &bytes)));
+        return Err(format!("{server} didn't sign you in ({status}): {}", why(&crate::wire::answer(&bytes).unwrap_or(Value::Null), &bytes)));
     }
+    let answer = crate::wire::answer(&bytes).map_err(|e| format!("{server} answered, but {e}"))?;
     let token = answer["token"].as_str().filter(|t| !t.is_empty()).ok_or_else(|| format!("{server} began no session"))?;
     Ok(SignedIn {
         token: token.to_string(),
@@ -94,7 +94,7 @@ pub(crate) fn sign_out(api: &dyn Api) -> Result<bool, String> {
     match status {
         200..=299 => Ok(true),
         401 => Ok(false),
-        _ => Err(format!("{} answered {status}: {}", api.server(), why(&crate::wire::read_json(&bytes).unwrap_or(Value::Null), &bytes))),
+        _ => Err(format!("{} answered {status}: {}", api.server(), why(&crate::wire::answer(&bytes).unwrap_or(Value::Null), &bytes))),
     }
 }
 

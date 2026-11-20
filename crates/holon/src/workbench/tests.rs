@@ -1587,6 +1587,38 @@ fn a_flows_unrecorded_handlers_show_counted_beside_its_runs() {
     assert!(shown.contains("Runs, newest first (1, +3 unrecorded)"), "{shown}");
 }
 
+/// A run holding a value 50 records deep, past the 128 levels serde_json's own reader takes once it
+/// is written as JSON (each record three), is listed on its flow's Runs page and its state shows:
+/// the terminal reads the server's answers as deep as a value may nest (`wire::answer`). Before, it
+/// took the page of runs for none and said "No runs yet", while `holon runs` listed them.
+#[test]
+fn a_run_holding_a_deep_value_is_listed() {
+    let (mut app, _) = app();
+    let deep = "{ inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { inner: { leaf: 1 } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } } }";
+    let text = format!("import {{ action, flow }} from \"holon\"
+import state from \"state\"
+
+flow(\"deep\")
+
+export const nest = action((input) => {{
+  state.deep = {deep}
+  return \"nested\"
+}})
+");
+    tab_with(&mut app, &text);
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Char('t'));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.note.as_ref().is_some_and(|n| !n.error), "{:?}", app.note.as_ref().map(|n| &n.text));
+    assert!(!app.client.as_ref().unwrap().action("deep", "nest", "{}").unwrap().1, "the action ran");
+    app.client.as_mut().unwrap().refresh().unwrap();
+    app.open_flow("deep");
+    app.flow_section(Section::Runs);
+    let shown = screen(&mut app, 140, 44);
+    assert!(shown.contains("Runs, newest first (1)") && !shown.contains("No runs yet"), "{shown}");
+    assert_eq!(app.flow.cells.iter().filter(|c| c.name == "deep").count(), 1, "its state shows too");
+}
+
 /// A flow's data and its calls outside have a colour each, wherever they show: a statement is
 /// what its nodes are (a call outside first, then its data, then its answer).
 #[test]

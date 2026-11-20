@@ -356,10 +356,11 @@ impl Api for Person {
 pub(crate) fn call(api: &dyn Api, method: &str, path: &str, body: Option<Body>) -> Result<Value, String> {
     let server = api.server();
     let (status, bytes) = api.send(method, path, body)?;
-    let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     if (200..300).contains(&status) {
-        return Ok(value);
+        return crate::wire::answer(&bytes).map_err(|e| format!("{server} answered, but {e}"));
     }
+    // An error's own words, when it says them as JSON; else its text as it is.
+    let value = crate::wire::answer(&bytes).unwrap_or(Value::Null);
     let why = value.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| String::from_utf8_lossy(&bytes).trim().to_string());
     Err(match status {
         401 => format!("{server} wants a sign-in ({why}): {}", api.sign_in_hint()),

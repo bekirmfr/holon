@@ -447,7 +447,7 @@ pub(crate) fn who(api: &dyn Api) -> Result<Option<Me>, String> {
     };
     match status {
         200 => {
-            let me: Value = crate::wire::read_json(&bytes).unwrap_or(Value::Null);
+            let me = crate::wire::answer(&bytes).map_err(|e| format!("{} answered, but {e}", api.server()))?;
             let field = |k: &str| me.get(k).and_then(Value::as_str).unwrap_or("?").to_string();
             Ok(Some(Me::Is { name: field("name"), kind: field("kind"), role: field("role") }))
         }

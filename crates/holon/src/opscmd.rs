@@ -406,7 +406,8 @@ pub(crate) fn action(args: &[String]) -> i32 {
 
 /// What an action's answer says: lines (`true` for stderr's) and the exit code.
 pub(crate) fn action_lines(status: u16, body: &str) -> (Vec<(bool, String)>, i32) {
-    let v: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    // As deep as its answer nests; one that can't be read is shown as it came, below.
+    let v = crate::wire::answer(body.as_bytes()).unwrap_or(Value::Null);
     let seq = v["seq"].as_u64().map(|s| format!("run #{s}")).unwrap_or_else(|| "the run".into());
     if let Some(why) = v["error"].as_str() {
         return (vec![(true, format!("answered {status}: {why}"))], 1);

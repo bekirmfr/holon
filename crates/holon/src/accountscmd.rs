@@ -95,7 +95,13 @@ fn ask(who: &str, args: &cmdline::Args, method: &str, path: &str, body: Option<&
     let empty = json!({});
     let body = body.or((method == "POST").then_some(&empty));
     let (server, answer) = local::admin_call(who, args.server(), method, path, body)?;
-    Ok((server, serde_json::from_str(&answer).unwrap_or(Value::Null)))
+    match crate::wire::answer(answer.as_bytes()) {
+        Ok(value) => Ok((server, value)),
+        Err(e) => {
+            eprintln!("{who}: {server} answered, but {e}");
+            Err(1)
+        }
+    }
 }
 
 pub(crate) fn people(args: &[String]) -> i32 {
