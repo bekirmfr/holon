@@ -422,6 +422,15 @@ describe("a replay's verdict", () => {
   it("differs whenever it ran other nodes than the run did, whatever it answered", () => {
     for (const [, entry, run] of cases) expect(replayVerdict(entry, run, nodes, logged, false)).toBe(false);
   });
+  // Every kind of run the server logs (placed.fixture.json, from its test of a run of each), one
+  // that only writes: judged by what each node gave, never "nothing tells" for its kind; nothing
+  // tells only when the record holds no node the replay ran (R159).
+  it.each(placedFixture.runs.map((r) => [r.kind, r.route] as const))("a %s run that only writes is judged by its nodes", (kind, route) => {
+    const entry: VerdictRun = { kind, route, outputs: [] };
+    expect(replayVerdict(entry, replayed(1, null), nodes, logged, null)).toBe(true);
+    expect(replayVerdict(entry, replayed(2, null), nodes, logged, null)).toBe(false);
+    expect(replayVerdict(entry, replayed(1, null), nodes, new Map(), null)).toBe(null);
+  });
 });
 
 describe("what a run asked the host, in a replay", () => {
