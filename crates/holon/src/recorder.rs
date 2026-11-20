@@ -336,6 +336,101 @@ impl From<&LogEntry> for RunHead {
     }
 }
 
+/// How much of a value a brief keeps (`GET …/log?brief=1`, [`brief`]): a text's first characters,
+/// a list's first items, a record's first fields, and so deep.
+pub const BRIEF_TEXT: usize = 160;
+pub const BRIEF_ITEMS: usize = 8;
+pub const BRIEF_DEPTH: usize = 6;
+
+/// A run's whole entry made brief, for a page listing many (the web console's runs): every value
+/// in it cut to its first part (one rule: [`BRIEF_TEXT`] characters of a text or bytes, the first
+/// [`BRIEF_ITEMS`] items of a list or fields of a record, [`BRIEF_DEPTH`] levels deep), its
+/// answer's body, error and URL cut the same, and its timeline (each step's values) left out. The
+/// rest is as whole: what it read, sent and did, by count and kind. `brief: true` says so, and a
+/// page shows a run's values from the whole entry, asked for by its seq (`?after=&through=`).
+/// Run.steps', as the whole entry is: a preview of a value is still the value's.
+/// Why: a run of a flow that builds a page holds each step's value, 170 KB a run in the owner's
+/// hq flow (2026-11-20); the console read 200 of them whole, 33 MB, on each page and tab, and
+/// froze the browser. The cut keeps what a list shows (a label, an outcome, what went out, the
+/// files written) and drops what only one run's page shows.
+pub fn brief(entry: &LogEntry) -> serde_json::Value {
+    let mut v = serde_json::to_value(entry).unwrap_or_default();
+    if let serde_json::Value::Object(fields) = &mut v {
+        fields.remove("timeline");
+        for key in ["response_body", "error", "url"] {
+            if let Some(serde_json::Value::String(s)) = fields.get_mut(key) {
+                cut_text(s);
+            }
+        }
+        for (_, field) in fields.iter_mut() {
+            cut_values(field);
+        }
+        fields.insert("brief".into(), serde_json::Value::Bool(true));
+    }
+    v
+}
+
+/// The types an [`SValue`](holon_core::SValue) says it is, as its JSON names them.
+const VALUE_TYPES: &[&str] = &["Number", "Boolean", "Text", "List", "Effect", "Sum", "Record", "Bytes"];
+
+fn is_value(v: &serde_json::Value) -> bool {
+    v.as_object().is_some_and(|o| o.len() == 2 && o.contains_key("value") && o.get("type").and_then(|t| t.as_str()).is_some_and(|t| VALUE_TYPES.contains(&t)))
+}
+
+/// Every value in `v`, wherever it sits in an entry, cut by [`brief`]'s rule.
+fn cut_values(v: &mut serde_json::Value) {
+    if is_value(v) {
+        cut_value(v, 0);
+        return;
+    }
+    match v {
+        serde_json::Value::Array(items) => items.iter_mut().for_each(cut_values),
+        serde_json::Value::Object(fields) => fields.values_mut().for_each(cut_values),
+        _ => {}
+    }
+}
+
+fn cut_value(v: &mut serde_json::Value, depth: usize) {
+    if depth >= BRIEF_DEPTH {
+        *v = serde_json::json!({ "type": "Text", "value": "…" });
+        return;
+    }
+    let ty = v["type"].as_str().unwrap_or_default().to_string();
+    let inner = &mut v["value"];
+    match (ty.as_str(), inner) {
+        ("Text", serde_json::Value::String(s)) => cut_text(s),
+        // Base64, cut at a whole group (BRIEF_TEXT is a multiple of 4), so it still reads as bytes:
+        // the first of them.
+        ("Bytes", serde_json::Value::String(s)) => s.truncate(BRIEF_TEXT.min(s.len())),
+        ("List", serde_json::Value::Array(items)) => {
+            items.truncate(BRIEF_ITEMS);
+            items.iter_mut().for_each(|i| cut_value(i, depth + 1));
+        }
+        // A record's fields, as `[key, value]` pairs.
+        ("Record", serde_json::Value::Array(fields)) => {
+            fields.truncate(BRIEF_ITEMS);
+            for f in fields.iter_mut() {
+                if let Some(value) = f.get_mut(1) {
+                    cut_value(value, depth + 1);
+                }
+            }
+        }
+        ("Effect" | "Sum", serde_json::Value::Object(o)) => {
+            if let Some(payload) = o.get_mut("payload") {
+                cut_value(payload, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn cut_text(s: &mut String) {
+    if let Some((at, _)) = s.char_indices().nth(BRIEF_TEXT) {
+        s.truncate(at);
+        s.push('…');
+    }
+}
+
 /// Where a run stands among the commits to its deployment's state (firing.rs). Each run of a
 /// stateful deployment commits under the state's lock, a run that only read too, and each commit
 /// is counted there; its line is numbered after, outside that lock, so two runs committing close
@@ -3079,10 +3174,18 @@ impl Log {
     /// run the file holds, so the newest `limit` taken from the file, and the runs after one the
     /// file holds (a view asking for what is new), are whole without them.
     pub fn plan(&self, after: Option<u64>, limit: usize) -> Wanted {
-        let newer = self.kept.iter().filter(|(seq, ..)| after.is_none_or(|a| *seq > a));
+        self.plan_through(after, None, limit)
+    }
+
+    /// [`plan`](Self::plan) for the runs after `after` up to `through` (that one included): the
+    /// newest `limit` of those. A page asking for one run by its seq (and the runs beside it) reads
+    /// those alone, however many came after it.
+    pub fn plan_through(&self, after: Option<u64>, through: Option<u64>, limit: usize) -> Wanted {
+        let wanted = |seq: u64| after.is_none_or(|a| seq > a) && through.is_none_or(|t| seq <= t);
+        let newer = self.kept.iter().filter(|(seq, ..)| wanted(*seq));
         let n = newer.clone().count();
         let from = newer.clone().nth(n.saturating_sub(limit)).map_or(u64::MAX, |(seq, ..)| *seq);
-        let memory: Vec<LogEntry> = self.entries.iter().filter(|e| e.seq >= from && after.is_none_or(|a| e.seq > a)).cloned().collect();
+        let memory: Vec<LogEntry> = self.entries.iter().filter(|e| e.seq >= from && wanted(e.seq)).cloned().collect();
         let in_memory_from = self.entries.front().map_or(u64::MAX, |e| e.seq);
         let mut older: Vec<u64> = newer.map(|(seq, ..)| *seq).filter(|seq| *seq >= from && *seq < in_memory_from).collect();
         // Those sealed, by segment: each its place in it.
@@ -4092,6 +4195,14 @@ not a sealed line
         std::fs::rename(folder.with_extension("aside"), &folder).unwrap();
         let log = Log::open_keeping(Some(path.clone()), 200);
         assert_eq!(seqs(log.plan(None, usize::MAX).read()).unwrap().len(), 120, "listed again, as it opens");
+        // One run by its seq, however many came after it, from a sealed segment, the file and
+        // memory alike; and the runs beside one (what a run's page asks for).
+        let through = |after, through| seqs(log.plan_through(Some(after), Some(through), 200).read()).unwrap();
+        assert_eq!(through(4, 5), [5], "a run in a sealed segment, alone");
+        assert_eq!(through(100, 101), [101], "a run in the file, alone");
+        assert_eq!(through(118, 119), [119], "the newest, alone");
+        assert_eq!(through(9, 12), [10, 11, 12], "a run and those beside it");
+        assert_eq!(seqs(log.plan_through(Some(9), Some(80), 3).read()).unwrap(), [78, 79, 80], "the newest of those, up to it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -2109,8 +2109,11 @@ pub(crate) fn run_action(
 /// handlers, by label (`{runs, failed, total_ms, last_at_ms, last_failure}`): the log holds none of
 /// their runs, failed or not. `syncs` is how many times its file was synced to disk since the
 /// server started (one sync covers every run written before it: group commit). `limit=0` asks for
-/// the counts alone, without looking at the runs it keeps. Each run whole, its steps and values:
-/// run.steps' (can.rs; the audit register's R55).
+/// the counts alone, without looking at the runs it keeps. `through=<seq>` stops at that run
+/// (`after=N-1&through=N` is run N alone, however many came after it). `brief=1` makes each run
+/// brief ([`crate::recorder::brief`]): its values cut to their first part, its timeline left out,
+/// for a page listing many. Each run whole, its steps and values: run.steps' (can.rs; the audit
+/// register's R55).
 pub(crate) fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
     log_page(deployments, slug, request, true)
 }
@@ -2125,7 +2128,9 @@ pub(crate) fn handle_get_log_heads(deployments: &Mutex<BTreeMap<String, Deployme
 /// A page of `slug`'s log: its runs `whole`, or as the list of runs says them.
 fn log_page(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request, whole: bool) -> Response {
     let after = request.get_param("after").and_then(|a| a.parse::<u64>().ok());
+    let through = request.get_param("through").and_then(|t| t.parse::<u64>().ok());
     let limit = request.get_param("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(200);
+    let brief = request.get_param("brief").is_some_and(|b| b == "1" || b == "true");
     // The table only to find the log (and the counts of its unrecorded handlers' runs, which
     // the log doesn't hold), so a page reading it never holds up another deployment.
     let Some((log, tallies)) = deployments.lock().unwrap().get(slug).map(|dep| (Arc::clone(&dep.log), dep.tallies.clone())) else {
@@ -2134,12 +2139,14 @@ fn log_page(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, reque
     // Planned under one lock, so the entries, the head and the breaks agree; the older runs read
     // from its file with the lock released (R8).
     let (wanted, next, head, breaks) =
-        log.with(|log| ((limit > 0).then(|| log.plan(after, limit)), log.next_seq(), log.head().to_string(), log.breaks().to_vec()));
+        log.with(|log| ((limit > 0).then(|| log.plan_through(after, through, limit)), log.next_seq(), log.head().to_string(), log.breaks().to_vec()));
     let entries = match wanted.map(|w| w.read()).transpose() {
         Ok(entries) => entries.unwrap_or_default(),
         Err(_) => return err(500, crate::recorder::runs_unread(slug)),
     };
-    let (entries, tallies) = if whole {
+    let (entries, tallies) = if whole && brief {
+        (serde_json::Value::Array(entries.iter().map(crate::recorder::brief).collect()), tallies)
+    } else if whole {
         (serde_json::to_value(entries).unwrap_or_default(), tallies)
     } else {
         let heads: Vec<crate::recorder::RunHead> = entries.iter().map(Into::into).collect();
