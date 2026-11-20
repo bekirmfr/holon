@@ -5766,7 +5766,8 @@ fn no_deployments_callers_hold_more_of_the_data_plane_than_its_share() {
 /// `DataLimits::connections` (dataplane.rs), or the WebSocket doesn't keep its places
 /// (`Places::keep` in websockets.rs `open`); on it never answered, `serve` doesn't let them go as
 /// the connection ends; on the kept connection let go, it idled past `header_timeout`, which also
-/// bounds how long a kept-alive connection waits for its next request.
+/// bounds how long a kept-alive connection waits for its next request; on never both listeners
+/// holding their place, a listener didn't start, or its loop takes no place before it accepts.
 #[test]
 fn no_server_holds_more_connections_open_than_its_total() {
     use std::io::{Read, Write};
@@ -5792,6 +5793,12 @@ fn no_server_holds_more_connections_open_than_its_total() {
         assert_eq!(r.status_code, 200);
     }
     sync_listeners(&state);
+    // Each listener's loop takes its place in the total before it accepts, so idle, the two hold
+    // both. sync_listeners returns once the loops are spawned, not once they hold their places:
+    // were "other"'s not yet there when the kept connection came, "one"'s loop took the second
+    // place for its next accept, and "other" accepted no one, its WebSocket's handshake left
+    // unread (a slow runner, R161).
+    eventually("both listeners hold their place", || state.data_limits.connections.available_permits() == 0);
     let answered = |stream: &mut std::net::TcpStream| {
         let mut got = Vec::new();
         let mut piece = [0u8; 1024];
