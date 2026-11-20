@@ -159,11 +159,17 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Instant;
 
+    /// What a test here waits for, it waits this long for: a guard against a hang, not a measure
+    /// (as Holon's own tests, `EVENTUALLY` in crates/holon/src/tests.rs, whose timing sweep reads
+    /// this module). Without the fix, a task told to a busy thread never starts here: no hold ends
+    /// while the test waits.
+    const EVENTUALLY: Duration = Duration::from_secs(60);
+
     fn until(what: &str, done: impl Fn() -> bool) -> bool {
         let start = Instant::now();
         while !done() {
-            if start.elapsed() > Duration::from_secs(10) {
-                eprintln!("not within 10 s: {}", what);
+            if start.elapsed() > EVENTUALLY {
+                eprintln!("not within {:?}: {}", EVENTUALLY, what);
                 return false;
             }
             thread::sleep(Duration::from_millis(1));

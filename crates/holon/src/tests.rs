@@ -10445,7 +10445,9 @@ fn short_deadlines(code: &str, whole: &str, text: &str) -> Vec<(usize, String)> 
 /// `waited_ms < 250`), nor waits under a minute for what is to come (`recv_timeout(5 s)`, a read
 /// timeout of 10 s, a loop `until` ten seconds from now): a deadline that fails a test is a bound
 /// from above whatever call it hides in. And none orders two threads with a sleep between their
-/// spawns. In any crate's tests.
+/// spawns. In any crate's tests, and in Holon's own in the vendored tiny_http (its src's test
+/// modules: limits_tests.rs, task_pool.rs's; upstream's there wait on nothing, and its tests
+/// folder is upstream's as published, PATCHED.md).
 /// Why: on a loaded machine (a sweep on every core beside the suite) anything takes longer, and a
 /// second thread started 60 ms after the first may come after the first is done: 102 tests failed
 /// with 408 under a short body deadline in one run, and races "ordered" by a sleep raced the other
@@ -10538,9 +10540,15 @@ fn no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep() {
     assert_eq!(flagged, ["t.rs:2", "t/u.rs:2"], "a test module's own file, and the one it declares; not p.rs");
     let _ = std::fs::remove_dir_all(&dir);
 
-    // Every crate's tests.
+    // Every crate's tests, and Holon's in the vendored tiny_http (R152), read whole: limits_tests.rs
+    // is a test module of its own.
     let (crates, files) = crates_sources();
-    let found = held_times(&crates, &files);
+    let mut found = held_times(&crates, &files);
+    let workspace = crates.parent().unwrap();
+    let tiny_http = rust_files(&workspace.join("vendor").join("tiny_http").join("src"));
+    let whole = test_files(&tiny_http);
+    assert!(whole.iter().any(|f| f.ends_with("limits_tests.rs")) && tiny_http.iter().any(|f| f.ends_with("task_pool.rs")), "the sweep read tiny_http's tests: {whole:?}");
+    found.extend(held_times(workspace, &tiny_http));
     assert!(found.is_empty(), "tests that hold how long something took, not what happened (hold an order of events: Gate, Waiters, soon; wait EVENTUALLY):\n{}", found.join("\n"));
     assert!(files.len() > 150, "the sweep read the source: {}", files.len());
 }
@@ -10548,20 +10556,26 @@ fn no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep() {
 /// Every Rust file of every crate (not a target's, nor a node_modules'), and the crates' folder
 /// they are under: what the sweeps of the tests read.
 fn crates_sources() -> (std::path::PathBuf, Vec<std::path::PathBuf>) {
-    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+    let files = rust_files(&crates);
+    (crates, files)
+}
+
+/// Every Rust file under `dir`, not a target's nor a node_modules'.
+fn rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let path = entry.path();
             if path.is_dir() && !path.ends_with("target") && !path.ends_with("node_modules") {
-                sources(&path, out);
+                walk(&path, out);
             } else if path.extension().is_some_and(|e| e == "rs") {
                 out.push(path);
             }
         }
     }
-    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
-    let mut files = Vec::new();
-    sources(&crates, &mut files);
-    (crates, files)
+    let mut out = Vec::new();
+    walk(dir, &mut out);
+    out
 }
 
 /// What makes a place on disk into text in a test: a path shown, or the temporary folder as

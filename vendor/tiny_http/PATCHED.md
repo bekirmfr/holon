@@ -5,7 +5,9 @@ published on crates.io (git `212b1c45`), the HTTP server under rouille, which se
 control port (the API the editor and the commands use). The workspace's `Cargo.toml` points
 every use of `tiny_http` at it (`[patch.crates-io]`), and it is a workspace member: `cargo test
 --workspace` runs upstream's tests (`tests/`, as published) and Holon's (`src/util/task_pool.rs`,
-`src/limits_tests.rs`).
+`src/limits_tests.rs`). Holon's are read by the timing sweep of Holon's own tests
+(`no_test_holds_a_time_from_above_or_orders_spawns_by_a_sleep` in `crates/holon/src/tests.rs`):
+none holds how long something took from above, and what is to come is waited for a minute.
 
 Every change is marked `Holon (PATCHED.md)` in the code. To see them all against upstream:
 

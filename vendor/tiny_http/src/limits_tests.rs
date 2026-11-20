@@ -10,8 +10,10 @@ use std::time::{Duration, Instant};
 use crate::limits::{Limits, TOO_MANY, TOO_MANY_FROM_ONE};
 use crate::{Header, Response, Server};
 
-/// Longer than anything here should take, on a loaded machine too.
-const PATIENCE: Duration = Duration::from_secs(10);
+/// What a test here waits for, it waits this long for: a guard against a hang, not a measure, so
+/// a loaded machine (a suite on every core) takes what it takes within it. Holon's own tests wait
+/// as long (`EVENTUALLY` in crates/holon/src/tests.rs, whose timing sweep reads this file).
+const EVENTUALLY: Duration = Duration::from_secs(60);
 
 /// A server held to `limits` that answers `/think?ms=N` after reading its body and waiting N ms,
 /// `/slow` with a body that streams for 1.6 s, `/close`
@@ -75,7 +77,7 @@ impl Read for Slow {
 
 fn connect(at: SocketAddr) -> TcpStream {
     let s = TcpStream::connect(at).unwrap();
-    s.set_read_timeout(Some(PATIENCE)).unwrap();
+    s.set_read_timeout(Some(EVENTUALLY)).unwrap();
     s
 }
 
@@ -135,7 +137,7 @@ fn closed_within(s: &mut TcpStream) -> Result<Duration, String> {
 fn until(done: impl Fn() -> bool) -> bool {
     let start = Instant::now();
     while !done() {
-        if start.elapsed() > PATIENCE {
+        if start.elapsed() > EVENTUALLY {
             return false;
         }
         thread::sleep(Duration::from_millis(5));
@@ -216,8 +218,9 @@ fn a_response_with_connection_close_ends_its_connection() {
     let (status, head, body) = answer(&mut s).unwrap();
     assert_eq!((status, body.as_slice()), (200, &b"bye"[..]));
     assert!(head.to_ascii_lowercase().contains("connection: close"), "the response says it: {}", head);
-    let took = closed_within(&mut s).expect("the connection ends after it");
-    assert!(took < Duration::from_secs(5), "ended at {:?}", took);
+    // Before the read gives up (EVENTUALLY): nothing else would end it, with no idle limit here
+    // and no request begun on it.
+    closed_within(&mut s).expect("the connection ends after it");
     server.unblock();
 }
 
@@ -233,12 +236,12 @@ fn connections_past_a_bound_are_refused_at_once_and_those_inside_are_answered() 
             s.write_all(get("/").as_bytes()).unwrap();
             assert_eq!(answer(s).unwrap().0, 200);
         }
+        // Told while the four inside still hold their places (no idle limit, none closed): at
+        // once, not once a place is free.
         let mut past = connect(at);
-        let started = Instant::now();
         let (status, _, body) = answer(&mut past).expect("one past the bound is told");
         assert_eq!(status, 503);
         assert!(String::from_utf8_lossy(&body).contains(told), "{}", String::from_utf8_lossy(&body));
-        assert!(started.elapsed() < Duration::from_secs(5), "told at once, not at {:?}", started.elapsed());
         closed_within(&mut past).expect("and closed");
 
         inside[0].write_all(get("/").as_bytes()).unwrap();
@@ -344,6 +347,7 @@ fn a_request_that_trickles_is_told_408_at_its_deadline_while_another_is_answered
         let mut s = connect(at);
         let started = Instant::now();
         s.write_all(first.as_bytes()).unwrap();
+        // not a bound: the client's tick, after which it sends a byte and looks again
         s.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
         let mut sent = 0;
         let mut byte = [0u8; 1];
@@ -361,7 +365,7 @@ fn a_request_that_trickles_is_told_408_at_its_deadline_while_another_is_answered
             s.write_all(b"x").unwrap();
             sent += 1;
         }
-        s.set_read_timeout(Some(PATIENCE)).unwrap();
+        s.set_read_timeout(Some(EVENTUALLY)).unwrap();
         let told = answer(&mut s).map(|(status, _, body)| (status, String::from_utf8_lossy(&body).into_owned()));
         let took = started.elapsed();
         let why = r#"{"error":"the request didn't arrive whole within 1.5 seconds of its first byte"}"#;
@@ -374,13 +378,15 @@ fn a_request_that_trickles_is_told_408_at_its_deadline_while_another_is_answered
 }
 
 /// A client whose request is cut off while it is still sending, as one cut off is as a rule,
-/// reads the 408 whole, its words too: the server reads off what it sends meanwhile, until it
-/// closes or for `LINGER` (2 s). Closed with those bytes unread, the connection would be reset,
-/// and on Windows a reset throws away a 408 the client hasn't read yet (Linux keeps it readable,
-/// so there this holds whether or not the server lingers). The client here sends a byte every 50
-/// ms throughout and reads only 1 s after its deadline: the linger is 30 s here, so the client's
-/// read comes well inside it however the machine is loaded (29 s to spare), while without one
-/// the reset comes within 50 ms of the 408. The idle limit is the default's (60 s).
+/// reads the 408 whole, its words too, and can go on sending until it has: the server reads off
+/// what it sends meanwhile, until it closes or for `LINGER` (2 s). Closed with those bytes
+/// unread, the connection would be reset: on Windows a reset throws away a 408 the client hasn't
+/// read yet; Linux keeps it readable, but there the closed socket answers the client's next byte
+/// with a reset, and its write after that fails (a broken pipe). The client here sends a byte
+/// every 50 ms throughout and reads only 1 s after its deadline: the linger is 30 s here, so the
+/// client's read and its last byte come well inside it however the machine is loaded (29 s to
+/// spare), while without one the reset comes within 50 ms of the 408. The idle limit is the
+/// default's (60 s).
 #[test]
 fn a_client_still_sending_when_its_request_is_cut_off_reads_the_408() {
     let deadline = Duration::from_millis(1200);
@@ -390,20 +396,20 @@ fn a_client_still_sending_when_its_request_is_cut_off_reads_the_408() {
     let mut sending = s.try_clone().unwrap();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stopped = stop.clone();
-    let sender = thread::spawn(move || {
+    let sender = thread::spawn(move || -> Result<(), String> {
         while !stopped.load(std::sync::atomic::Ordering::SeqCst) {
-            if sending.write_all(b"x").is_err() {
-                return;
-            }
+            sending.write_all(b"x").map_err(|e| format!("a byte sent failed: {}", e))?;
             thread::sleep(Duration::from_millis(50));
         }
+        Ok(())
     });
     thread::sleep(deadline + Duration::from_millis(1000));
     let told = answer(&mut s).map(|(status, _, body)| (status, String::from_utf8_lossy(&body).into_owned()));
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
-    sender.join().unwrap();
+    let sent = sender.join().unwrap();
     let why = r#"{"error":"the request didn't arrive whole within 1.2 seconds of its first byte"}"#;
     assert_eq!(told, Ok((408, why.to_string())), "read whole, though the client was still sending");
+    assert_eq!(sent, Ok(()), "the client could send until it had read the 408");
     server.unblock();
 }
 
@@ -520,6 +526,7 @@ fn a_refused_client_that_sent_its_request_first_reads_the_503() {
 /// and reads, again, until a reset or `within`.
 fn closed_by_the_server(c: &mut TcpStream, within: Duration) -> bool {
     let start = Instant::now();
+    // not a bound: a tick of the loop below, which sends a byte and reads again until `within`
     c.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
     let mut buf = [0u8; 512];
     while start.elapsed() < within {
@@ -573,13 +580,15 @@ fn refused_sockets_held_never_pass_the_bound_and_the_oldest_are_closed_first() {
             Ok((503, _, _)) => {}
             other => panic!("refused client {}: {:?}", i, other),
         }
-        assert!(closed_by_the_server(c, PATIENCE), "refused client {}, past the bound, still kept", i);
+        assert!(closed_by_the_server(c, EVENTUALLY), "refused client {}, past the bound, still kept", i);
     }
     for (i, c) in clients.iter_mut().enumerate().skip(LINGERING + extra - 10) {
         match answer(c) {
             Ok((503, _, _)) => {}
             other => panic!("refused client {}: {:?}", i, other),
         }
+        // not a bound: nothing is to close them (they are kept an hour); a loaded machine only
+        // looks less
         assert!(
             !closed_by_the_server(c, Duration::from_millis(300)),
             "refused client {}, inside the bound, closed",
