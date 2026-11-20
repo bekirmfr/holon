@@ -43,6 +43,14 @@ pub struct ClientConnection {
 
     // Holon (PATCHED.md): when the request being read is due (`limits::Deadline`)
     deadline: Arc<crate::limits::Deadline>,
+
+    // Holon (PATCHED.md): what the request before left of its body (`limits::Leftover`), and
+    // the most of it read off for the connection to go on (`Limits::leftover`)
+    leftover: Arc<crate::limits::Leftover>,
+    leftover_most: usize,
+
+    // Holon (PATCHED.md): the last request asked to upgrade: its stream is the application's
+    upgraded: bool,
 }
 
 /// Holon (PATCHED.md): what a connection's requests tell it. A response sent with `Connection:
@@ -141,6 +149,9 @@ impl ClientConnection {
             no_more_requests: false,
             secure,
             deadline,
+            leftover: Arc::new(crate::limits::Leftover::default()),
+            leftover_most: limits.leftover,
+            upgraded: false,
         }
     }
 
@@ -190,6 +201,50 @@ impl ClientConnection {
             prev_byte_was_cr = byte == b'\r';
 
             buf.push(byte);
+        }
+    }
+
+    /// Holon (PATCHED.md): what is left of the body of the request before (`limits::Leftover`),
+    /// read off and thrown away with a buffer of 4 KiB: whether all of it was, so that the
+    /// connection can go on. Not past `Limits::leftover` bytes, nor past the request limit from
+    /// now (`Deadline`); not at all if its end can't be found.
+    fn read_off(&mut self) -> bool {
+        let mut left = match self.leftover.take() {
+            crate::limits::Left::Nothing => return true,
+            crate::limits::Left::Bytes(n) if n <= self.leftover_most => n,
+            crate::limits::Left::Bytes(_) | crate::limits::Left::Unknown => return false,
+        };
+        self.deadline.start();
+        let mut buf = [0u8; 4096];
+        while left > 0 {
+            let most = left.min(buf.len());
+            match self.next_header_source.read(&mut buf[..most]) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => left -= n,
+            }
+        }
+        self.deadline.end();
+        left == 0
+    }
+
+    /// Holon (PATCHED.md): the connection ends. The end of the stream is sent once its last
+    /// answer is written (a request lets go of the stream when its body is read, or at once when
+    /// it has none, before it is answered), and what its client still sends is read off and
+    /// thrown away for the linger (`Limits::linger`, 64 KiB at most), so that the client reads
+    /// its answer: a close with bytes unread is a reset, and a reset can reach the client before
+    /// the answer (on Windows, it throws away what the client hasn't read yet).
+    fn end(&mut self) {
+        if let Some(mut after) = self.sink.next() {
+            after.wait_turn();
+        }
+        self.closer.close();
+        self.deadline.linger();
+        let (mut buf, mut read) = ([0u8; 4096], 0);
+        while read < crate::limits::LINGER_READS_MOST {
+            match self.next_header_source.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => read += n,
+            }
         }
     }
 
@@ -251,6 +306,7 @@ impl ClientConnection {
             *self.remote_addr.as_ref().unwrap(),
             data_source,
             writer,
+            self.leftover.clone(),
         )
         .map_err(|e| {
             use crate::request;
@@ -283,9 +339,20 @@ impl Iterator for ClientConnection {
     fn next(&mut self) -> Option<Request> {
         use crate::{Response, StatusCode};
 
-        // the client sent a "connection: close" header in this previous request
-        //  or is using HTTP 1.0, meaning that no new request will come
-        if self.no_more_requests || self.closer.stop.load(Ordering::Acquire) {
+        // Holon (PATCHED.md): an upgraded stream is the application's from its request on
+        if self.upgraded {
+            return None;
+        }
+        // Holon (PATCHED.md): once the request before has let go of the stream, what is left of
+        // its body is read off (`read_off`), unless a response closed the connection. The
+        // connection ends, its client reading its answer first (`end`), when a response closed
+        // it, when the rest of a body can't be read off within its bounds, or when the request
+        // before was its last: it said `Connection: close`, or is HTTP 1.0 without keep-alive.
+        // Upstream ended at once on the last, and read the rest of a body off as the request was
+        // dropped (`util::EqualReader`).
+        self.next_header_source.wait_turn();
+        if self.closer.stop.load(Ordering::Acquire) || !self.read_off() || self.no_more_requests {
+            self.end();
             return None;
         }
 
@@ -335,15 +402,7 @@ impl Iterator for ClientConnection {
                     response
                         .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
                         .ok();
-                    self.closer.close();
-                    self.deadline.linger();
-                    let (mut buf, mut read) = ([0u8; 4096], 0);
-                    while read < crate::limits::LINGER_READS_MOST {
-                        match self.next_header_source.read(&mut buf) {
-                            Ok(0) | Err(_) => break,
-                            Ok(n) => read += n,
-                        }
-                    }
+                    self.end();
                     return None; // closing the connection
                 }
 
@@ -383,7 +442,10 @@ impl Iterator for ClientConnection {
 
             match lowercase {
                 Some(ref val) if val.contains("close") => self.no_more_requests = true,
-                Some(ref val) if val.contains("upgrade") => self.no_more_requests = true,
+                Some(ref val) if val.contains("upgrade") => {
+                    self.no_more_requests = true;
+                    self.upgraded = true;
+                }
                 Some(ref val)
                     if !val.contains("keep-alive") && *rq.http_version() == HTTPVersion(1, 0) =>
                 {

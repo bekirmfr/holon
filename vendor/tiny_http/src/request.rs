@@ -77,6 +77,37 @@ pub struct Request {
 
     // Holon (PATCHED.md): how a response with `Connection: close` ends its connection
     pub(crate) closer: Option<std::sync::Arc<crate::client::Closer>>,
+
+    // Holon (PATCHED.md): for a body its client waits to be told to send (`Expect:
+    // 100-continue`): told, if it never was, that the body's end can't be found
+    unsent: Option<std::sync::Arc<crate::limits::Leftover>>,
+}
+
+/// Holon (PATCHED.md): a chunked body that tells its connection, if it is dropped before its
+/// end, that the rest can't be found (`limits::Left::Unknown`): the connection ends then, where
+/// upstream's read the rest as its next request.
+struct ToItsEnd<R> {
+    inner: R,
+    ended: bool,
+    left: std::sync::Arc<crate::limits::Leftover>,
+}
+
+impl<R: Read> Read for ToItsEnd<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n == 0 && !buf.is_empty() {
+            self.ended = true;
+        }
+        Ok(n)
+    }
+}
+
+impl<R> Drop for ToItsEnd<R> {
+    fn drop(&mut self) {
+        if !self.ended {
+            self.left.unknown();
+        }
+    }
 }
 
 struct NotifyOnDrop<R> {
@@ -128,6 +159,9 @@ impl From<IoError> for RequestCreationError {
 /// It is the responsibility of the `Request` to read only the data of the request and not further.
 ///
 /// The `Write` object will be used by the `Request` to write the response.
+///
+/// Holon (PATCHED.md): what is left of the body when the request is dropped is told to
+/// `leftover`, which the connection reads off before its next request.
 #[allow(clippy::too_many_arguments)]
 pub fn new_request<R, W>(
     secure: bool,
@@ -138,6 +172,7 @@ pub fn new_request<R, W>(
     remote_addr: Option<SocketAddr>,
     mut source_data: R,
     writer: W,
+    leftover: std::sync::Arc<crate::limits::Leftover>,
 ) -> Result<Request, RequestCreationError>
 where
     R: Read + Send + 'static,
@@ -216,12 +251,18 @@ where
             Box::new(Cursor::new(buffer)) as Box<dyn Read + Send + 'static>
         } else {
             let (data_reader, _) = EqualReader::new(source_data, content_length); // TODO:
+            let data_reader = data_reader.telling(leftover.clone());
             Box::new(FusedReader::new(data_reader)) as Box<dyn Read + Send + 'static>
         }
     } else if transfer_encoding.is_some() {
         // if a transfer-encoding was specified, then "chunked" is ALWAYS applied
         // over the message (RFC2616 #3.6)
-        Box::new(FusedReader::new(Decoder::new(source_data))) as Box<dyn Read + Send + 'static>
+        let decoder = ToItsEnd {
+            inner: Decoder::new(source_data),
+            ended: false,
+            left: leftover.clone(),
+        };
+        Box::new(FusedReader::new(decoder)) as Box<dyn Read + Send + 'static>
     } else {
         // if we have neither a Content-Length nor a Transfer-Encoding,
         // assuming that we have no data
@@ -242,6 +283,7 @@ where
         must_send_continue: expects_continue,
         notify_when_responded: None,
         closer: None,
+        unsent: (expects_continue && !connection_upgrade && (transfer_encoding.is_some() || content_length.unwrap_or(0) > 0)).then_some(leftover),
     })
 }
 
@@ -500,6 +542,12 @@ impl fmt::Debug for Request {
 
 impl Drop for Request {
     fn drop(&mut self) {
+        // Holon (PATCHED.md): a body its client was never told to send, it may send or not
+        if self.must_send_continue {
+            if let Some(left) = &self.unsent {
+                left.unknown();
+            }
+        }
         if self.response_writer.is_some() {
             let response = Response::empty(500);
             let _ = self.respond_impl(response); // ignoring any potential error

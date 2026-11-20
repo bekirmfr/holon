@@ -16,6 +16,10 @@
 //!   request trickled a byte at a time doesn't hold its connection for as long as each byte comes
 //!   within the idle limit. A larger body is the application's to read, by its own deadline
 //!   (Holon's `http::BODY_DEADLINE`).
+//! - **What is left of a body** the application didn't read to its end is read off by its
+//!   connection before the next request, and thrown away: with a small buffer, never one its
+//!   sender sizes, at most `leftover` bytes and by the request limit from then (`Leftover`). Past
+//!   either, or for a body whose end can't be found, the connection ends once its answer is out.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -37,6 +41,9 @@ pub struct Limits {
     /// bound) is read off first, what its client still sends thrown away, so that the client
     /// reads the answer rather than a reset (`LINGER`).
     pub linger: Duration,
+    /// The most of a body the application didn't read that its connection reads off to go on
+    /// (`LEFTOVER`); past it, the connection ends once its answer is out.
+    pub leftover: usize,
     /// Connections open at once, from everyone.
     pub connections: usize,
     /// Connections open at once from one address (all of a Unix socket's count as one).
@@ -53,6 +60,11 @@ pub const IDLE: Duration = Duration::from_secs(60);
 /// (`http::BODY_DEADLINE`), is the same 30 s, as is the data plane's `body_timeout`; main.rs
 /// asserts the first.
 pub const REQUEST: Duration = Duration::from_secs(30);
+
+/// The most of a body the application didn't read that its connection reads off to go on: as
+/// much as a body Holon reads may be (`http::MAX_BODY_BYTES`, 8 MiB; main.rs asserts it). Read
+/// off by the request limit from when it begins, with a buffer of 4 KiB.
+pub const LEFTOVER: usize = 8 * 1024 * 1024;
 
 /// Connections open at once: twice the requests Holon answers at once (`MAX_IN_FLIGHT`, 512),
 /// room for the kept-alive ones between requests beside them.
@@ -71,9 +83,54 @@ impl Default for Limits {
             idle: Some(IDLE),
             request: Some(REQUEST),
             linger: LINGER,
+            leftover: LEFTOVER,
             connections: CONNECTIONS,
             from_one: FROM_ONE,
         }
+    }
+}
+
+/// Holon (PATCHED.md): what is left of the body of a connection's request, told by the request's
+/// reader as it is dropped (`EqualReader`, a chunked body's `request::ToItsEnd`, `Request` for a
+/// body its client was never told to send), and taken by the connection before it reads the next
+/// request (`ClientConnection::read_off`). Upstream's reader read the rest off itself as it was
+/// dropped, into a buffer as long as what was left, which the request's `Content-Length` sizes
+/// (a length of 100 TB was an allocation that failed and ended the process), and for as long as
+/// each byte came within the idle limit.
+#[derive(Default)]
+pub(crate) struct Leftover(Mutex<Left>);
+
+/// What is left of a body.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Left {
+    /// Nothing: all of it was read, or it had none.
+    #[default]
+    Nothing,
+    /// This many bytes of a declared length.
+    Bytes(usize),
+    /// A body whose end can't be found: a chunked one not read to its end, or one its client was
+    /// never told to send (`Expect: 100-continue`, the application never reading it), which the
+    /// client may send or not.
+    Unknown,
+}
+
+impl Leftover {
+    /// This many bytes of a declared length are left (unless its end is already unknown).
+    pub(crate) fn bytes(&self, left: usize) {
+        let mut l = self.0.lock().unwrap();
+        if left > 0 && *l != Left::Unknown {
+            *l = Left::Bytes(left);
+        }
+    }
+
+    /// The body's end can't be found.
+    pub(crate) fn unknown(&self) {
+        *self.0.lock().unwrap() = Left::Unknown;
+    }
+
+    /// What is left, and nothing after.
+    pub(crate) fn take(&self) -> Left {
+        std::mem::take(&mut *self.0.lock().unwrap())
     }
 }
 
@@ -109,7 +166,8 @@ impl Deadline {
         })
     }
 
-    /// A request's first byte has come: the rest of it is due by the request limit.
+    /// A request's first byte has come, or what is left of a body begins to be read off: the
+    /// rest of it is due by the request limit.
     pub(crate) fn start(&self) {
         if let Some(request) = self.request {
             self.due.lock().unwrap().by = Some(Instant::now() + request);
@@ -121,8 +179,8 @@ impl Deadline {
         self.due.lock().unwrap().by = None;
     }
 
-    /// The connection is told 408 and ends: what its client still sends is read for the linger
-    /// from now (`ClientConnection::next`).
+    /// The connection ends (after a 408, its last answer, or a body it can't read off): what its
+    /// client still sends is read for the linger from now (`ClientConnection::end`).
     pub(crate) fn linger(&self) {
         self.due.lock().unwrap().by = Some(Instant::now() + self.linger);
     }

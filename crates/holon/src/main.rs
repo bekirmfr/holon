@@ -1490,6 +1490,10 @@ const _: () = assert!(
 );
 const _: () = assert!(tiny_http::limits::IDLE.as_secs() > http::BODY_DEADLINE.as_secs(), "a body is cut off by its deadline, not by the idle limit");
 const _: () = assert!(tiny_http::limits::REQUEST.as_secs() == http::BODY_DEADLINE.as_secs(), "a request arrives by one deadline, whoever reads it");
+// What is left of a body Holon didn't read (a request refused before its body, or one past the
+// cap) is read off by its connection before the next request, at most as much as a body may be;
+// past it, the connection ends once its answer is out (tiny_http's `limits::Leftover`).
+const _: () = assert!(tiny_http::limits::LEFTOVER as u64 == http::MAX_BODY_BYTES, "what is left of a body is read off up to the cap on a body");
 
 /// A control-plane request, answered if it is admitted. Each has a thread of its own (rouille's):
 /// past what `slots` admit at once, in all or from its client, one more is told to try again

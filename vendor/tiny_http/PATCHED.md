@@ -92,6 +92,27 @@ or, while the history keeps it, against the commit that added the copy unchanged
    line's first byte, so a kept-alive connection waits for its next request by the idle limit
    alone, and it ends once tiny_http has read the request whole, so a larger body, which the
    application reads, is held to the idle limit and the application's own deadline.
+7. **What is left of a body nobody read** (`src/limits.rs`, `Leftover`; `src/client.rs`,
+   `read_off` and `end`; `src/util/equal_reader.rs`; `src/request.rs`; `src/util/sequential.rs`,
+   `wait_turn`). A body the application didn't read to its end (a request refused before its
+   body is read, or one past Holon's cap) has to be read off before the connection's next
+   request. Upstream's reader did it as the request was dropped, on the handler's thread, into a
+   buffer as long as what was left, which the request's `Content-Length` sizes: a GET declaring
+   100 TB, sending none, was answered and then ended the process, its allocation failing. And it
+   read for as long as each byte came within the idle limit. Now the reader only tells its
+   connection how much is left, and the connection, before it reads the next request, reads it
+   off with a buffer of 4 KiB, at most `Limits::leftover` bytes (8 MiB, Holon's cap on a body;
+   main.rs asserts it) and by the request limit from when it begins (`Deadline`, 30 s). Read off
+   whole, the connection goes on, as before. Otherwise it ends once its last answer is written
+   (`end`, the linger of change 6 after it): when more is left than the bound, when the rest
+   comes too slowly, when a body's end can't be found (a chunked body not read to its end, which
+   upstream then read as the next request; a body its client was waiting to be told to send,
+   `Expect: 100-continue`, never told), and when the answer said `Connection: close` (none of
+   the rest is read then: Holon's 408 for a body too slow says it). A connection's last request
+   (`Connection: close`, or HTTP 1.0) has its rest read off the same way before the end, so that
+   its client reads its answer; upstream ended the connection's thread at once and left the
+   socket to close when the request was dropped. An upgraded connection is the application's,
+   as before.
 
 `Server::from_listener_limited` takes other limits; every other constructor (rouille's
 included) uses `Limits::default()`.

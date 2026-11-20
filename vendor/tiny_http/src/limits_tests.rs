@@ -17,8 +17,9 @@ const EVENTUALLY: Duration = Duration::from_secs(60);
 
 /// A server held to `limits` that answers `/think?ms=N` after reading its body and waiting N ms,
 /// `/slow` with a body that streams for 1.6 s, `/close`
-/// with `Connection: close`, a request with a body with its length, and anything else `ok`;
-/// each request on a thread of its own, as rouille answers them.
+/// with `Connection: close`, `/ignore` with `ignored` (reading none of its body, as a route that
+/// refuses a request before its body does), a request with a body with its length, and anything
+/// else `ok`; each request on a thread of its own, as rouille answers them.
 fn serve(limits: Limits) -> (Arc<Server>, SocketAddr) {
     serve_on(TcpListener::bind("127.0.0.1:0").unwrap(), limits)
 }
@@ -43,6 +44,8 @@ fn serve_on(listener: TcpListener, limits: Limits) -> (Arc<Server>, SocketAddr) 
                 } else if rq.url() == "/close" {
                     let close = Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap();
                     let _ = rq.respond(Response::from_string("bye").with_header(close));
+                } else if rq.url() == "/ignore" {
+                    let _ = rq.respond(Response::from_string("ignored"));
                 } else if rq.body_length().unwrap_or(0) > 0 {
                     let mut body = Vec::new();
                     let read = rq.as_reader().read_to_end(&mut body);
@@ -464,6 +467,112 @@ fn the_deadline_is_each_requests_and_not_on_a_body_the_application_reads() {
     }
     assert_eq!(answer(&mut s).map(|a| a.0), Ok(200), "a head in pieces, within its deadline");
     server.unblock();
+}
+
+/// What is left of a body nobody read is read off by its connection before its next request,
+/// with a small buffer, at most `leftover` bytes and by the request limit from then; past either,
+/// or with no end to find, the connection ends once its answer is out, nothing more said on it,
+/// and the server answers on. Upstream read the rest off into a buffer the request's
+/// `Content-Length` sized: a length of 100 TB was an allocation that failed and ended the
+/// process. A request inside a body is never read as one (`/inner` would be answered `ok`). The
+/// request and idle limits are an hour here, so a rest read off or waited for wrongly fails the
+/// test by its client's wait (`EVENTUALLY`), not by a limit.
+#[test]
+fn what_is_left_of_a_body_nobody_read_is_read_off_within_bounds_or_its_connection_ends() {
+    let hour = Some(Duration::from_secs(3600));
+    let (server, at) = serve(Limits { idle: hour, request: hour, leftover: 2000, ..Limits::default() });
+    let inner = get("/inner");
+    let body = |n: usize| format!("{}{}", inner, "x".repeat(n - inner.len()));
+    let shapes: Vec<(&str, String, bool)> = vec![
+        ("a length of 100 TB, none of it sent", "GET /ignore HTTP/1.1\r\nHost: test\r\nContent-Length: 100000000000000\r\n\r\n".to_string(), false),
+        ("1,500 bytes, within the bound", format!("POST /ignore HTTP/1.1\r\nHost: test\r\nContent-Length: 1500\r\n\r\n{}", body(1500)), true),
+        ("3,000 bytes, past the bound", format!("POST /ignore HTTP/1.1\r\nHost: test\r\nContent-Length: 3000\r\n\r\n{}", body(3000)), false),
+        ("a chunked body not read to its end", format!("POST /ignore HTTP/1.1\r\nHost: test\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n{}", inner), false),
+        // within the bound, so only its end being unknown ends its connection
+        ("a body its client was never told to send", "POST /ignore HTTP/1.1\r\nHost: test\r\nExpect: 100-continue\r\nContent-Length: 1500\r\n\r\n".to_string(), false),
+    ];
+    for (shape, request, goes_on) in shapes {
+        let mut s = connect(at);
+        s.write_all(request.as_bytes()).unwrap();
+        let told = answer(&mut s).map(|(status, _, body)| (status, String::from_utf8_lossy(&body).into_owned()));
+        assert_eq!(told, Ok((200, "ignored".to_string())), "{}: answered", shape);
+        if goes_on {
+            s.write_all(get("/").as_bytes()).unwrap();
+            assert_eq!(answer(&mut s).map(|a| a.0), Ok(200), "{}: the next request on it", shape);
+        } else {
+            closed_within(&mut s).unwrap_or_else(|e| panic!("{}: the connection ends after its answer: {}", shape, e));
+        }
+        let mut again = connect(at);
+        again.write_all(get("/").as_bytes()).unwrap();
+        assert_eq!(answer(&mut again).map(|a| a.0), Ok(200), "{}: the server answers on", shape);
+    }
+
+    // The rest arriving after the answer, within the bound: read off as it comes, and the
+    // connection goes on.
+    let mut s = connect(at);
+    s.write_all(b"POST /ignore HTTP/1.1\r\nHost: test\r\nContent-Length: 1500\r\n\r\nx").unwrap();
+    assert_eq!(answer(&mut s).map(|a| a.0), Ok(200), "answered before the rest of its body");
+    s.write_all(&[b'x'; 1499]).unwrap();
+    s.write_all(get("/").as_bytes()).unwrap();
+    assert_eq!(answer(&mut s).map(|a| a.0), Ok(200), "the next request, after the rest");
+    server.unblock();
+}
+
+/// A connection's last request is answered whole before the connection ends, whatever its shape:
+/// last by `Connection: close` or by HTTP 1.0, with no body (which lets go of the stream at once,
+/// before it is answered), a body read, a body not read, or a body past the bound; its answer
+/// taking a while (a handler that thinks 300 ms first). Then the end of the stream.
+#[test]
+fn a_connections_last_request_is_answered_whole_before_it_ends() {
+    let (server, at) = serve(Limits { leftover: 2000, ..Limits::default() });
+    let shapes: Vec<(&str, String, &str)> = vec![
+        ("Connection: close, no body", "GET /think?ms=300 HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n".to_string(), "thought 0"),
+        ("HTTP 1.0, no body", "GET /think?ms=300 HTTP/1.0\r\nHost: test\r\n\r\n".to_string(), "thought 0"),
+        ("Connection: close, a body read", format!("POST /think?ms=300 HTTP/1.1\r\nHost: test\r\nConnection: close\r\nContent-Length: 1500\r\n\r\n{}", "x".repeat(1500)), "thought 1500"),
+        ("Connection: close, a body not read", format!("POST /ignore HTTP/1.1\r\nHost: test\r\nConnection: close\r\nContent-Length: 1500\r\n\r\n{}", "x".repeat(1500)), "ignored"),
+        ("Connection: close, a body past the bound", format!("POST /ignore HTTP/1.1\r\nHost: test\r\nConnection: close\r\nContent-Length: 3000\r\n\r\n{}", "x".repeat(3000)), "ignored"),
+    ];
+    for (shape, request, said) in shapes {
+        let mut s = connect(at);
+        s.write_all(request.as_bytes()).unwrap();
+        let told = answer(&mut s).map(|(status, _, body)| (status, String::from_utf8_lossy(&body).into_owned()));
+        assert_eq!(told, Ok((200, said.to_string())), "{}: answered whole", shape);
+        closed_within(&mut s).unwrap_or_else(|e| panic!("{}: then the end of the stream: {}", shape, e));
+    }
+    server.unblock();
+}
+
+/// What is left of a body that trickles in after its answer, each byte well within the idle
+/// limit, is read off no longer than the request limit from when it begins: the connection ends
+/// while its bytes still come and gives its place back. And when the answer closed the
+/// connection (`Connection: close`, as Holon's 408 for a body too slow does), none of it is read
+/// off: the connection ends at once, after the linger (`LINGER`, 2 s). Upstream read on for as
+/// long as each byte came within the idle limit. The client sends a byte every 100 ms, 200 at
+/// most (20 s, where the bound and the linger take 3.5 s here); the second case's request limit
+/// is an hour, so only a connection that ends at once ends in time.
+#[test]
+fn what_is_left_of_a_body_that_trickles_is_cut_off_and_its_place_given_back() {
+    let cases = [
+        ("/ignore", Limits { request: Some(Duration::from_millis(1500)), ..Limits::default() }),
+        ("/close", Limits { request: Some(Duration::from_secs(3600)), ..Limits::default() }),
+    ];
+    for (path, limits) in cases {
+        let (server, at) = serve(limits);
+        let mut s = connect(at);
+        s.write_all(format!("POST {} HTTP/1.1\r\nHost: test\r\nContent-Length: 5000\r\n\r\nx", path).as_bytes()).unwrap();
+        assert_eq!(answer(&mut s).map(|a| a.0), Ok(200), "{}: answered", path);
+        let mut sent = 0;
+        while sent < 200 && server.open.count() > 0 {
+            if s.write_all(b"x").is_err() {
+                break;
+            }
+            sent += 1;
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert!(until(|| server.open.count() == 0), "{}: its place is given back", path);
+        assert!(sent < 200, "{}: its place given back while its bytes still came, not once they stopped", path);
+        server.unblock();
+    }
 }
 
 /// Behind a proxy, every client's request comes from the proxy's one address, each on a
