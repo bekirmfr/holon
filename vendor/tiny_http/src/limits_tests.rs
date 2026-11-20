@@ -497,8 +497,10 @@ fn what_is_left_of_a_body_nobody_read_is_read_off_within_bounds_or_its_connectio
         let told = answer(&mut s).map(|(status, _, body)| (status, String::from_utf8_lossy(&body).into_owned()));
         assert_eq!(told, Ok((200, "ignored".to_string())), "{}: answered", shape);
         if goes_on {
-            s.write_all(get("/").as_bytes()).unwrap();
-            assert_eq!(answer(&mut s).map(|a| a.0), Ok(200), "{}: the next request on it", shape);
+            // an answer of its own (`/inner`, hidden in the body, would be answered `ok`)
+            s.write_all(get("/think?ms=0").as_bytes()).unwrap();
+            let next = answer(&mut s).map(|(status, _, body)| (status, String::from_utf8_lossy(&body).into_owned()));
+            assert_eq!(next, Ok((200, "thought 0".to_string())), "{}: the next request on it", shape);
         } else {
             closed_within(&mut s).unwrap_or_else(|e| panic!("{}: the connection ends after its answer: {}", shape, e));
         }
@@ -513,8 +515,9 @@ fn what_is_left_of_a_body_nobody_read_is_read_off_within_bounds_or_its_connectio
     s.write_all(b"POST /ignore HTTP/1.1\r\nHost: test\r\nContent-Length: 1500\r\n\r\nx").unwrap();
     assert_eq!(answer(&mut s).map(|a| a.0), Ok(200), "answered before the rest of its body");
     s.write_all(&[b'x'; 1499]).unwrap();
-    s.write_all(get("/").as_bytes()).unwrap();
-    assert_eq!(answer(&mut s).map(|a| a.0), Ok(200), "the next request, after the rest");
+    s.write_all(get("/think?ms=0").as_bytes()).unwrap();
+    let next = answer(&mut s).map(|(status, _, body)| (status, String::from_utf8_lossy(&body).into_owned()));
+    assert_eq!(next, Ok((200, "thought 0".to_string())), "the next request, after the rest");
     server.unblock();
 }
 
