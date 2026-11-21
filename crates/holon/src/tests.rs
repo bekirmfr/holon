@@ -252,12 +252,8 @@ fn test_store_read(key: &str) -> Unit {
 
 /// `store_write(key)` — writes this deployment's own state at `key`.
 fn test_store_write(key: &str) -> Unit {
-    Unit {
-        body: UnitBody::Primitive { name: "store_write".into() },
-        params: vec![Param::frozen("key", key)],
-        inputs: vec![Port { name: "value".into(), ty: Type::Any }],
-        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
-    }
+    // Its trigger is left open: the run's.
+    Unit { params: vec![Param::frozen("key", key)], ..holon_core::interface_of("store_write").unwrap() }
 }
 
 /// A flow whose one action, `put`, writes what it is sent at `key`: the state most tests here
@@ -18488,9 +18484,12 @@ fn the_deepest_route_a_server_runs_fits_a_runtimes_thread() {
         let levels = if maps { (crate::units::MAX_CLOSURE_DEPTH - 3) / 2 } else { crate::units::MAX_CLOSURE_DEPTH - 3 };
         for _ in 0..levels {
             below = if maps {
-                let one = stage(&state, &Unit { inputs: vec![any("a")], ..holon_core::interface_of("list").unwrap() });
+                // `[x]`, as the language makes it: x appended to an empty list.
+                let empty = stage(&state, &Unit { params: vec![Param::frozen("value", "[]"), Param::frozen("type", "Json")], outputs: vec![any("out")], ..holon_core::interface_of("const").unwrap() });
+                let one = stage(&state, &Unit { params: vec![], ..holon_core::interface_of("append").unwrap() });
                 let map = stage(&state, &Unit { params: vec![Param::frozen("fn", to_hex(&below))], ..holon_core::interface_of("map").unwrap() });
-                stage(&state, &Unit { body: UnitBody::Composite { children: vec![one, map], edges: vec![e(BOUNDARY, 0, 0, 0), e(0, 0, 1, 0), e(1, 0, BOUNDARY, 0)] }, params: vec![], inputs: vec![any("x")], outputs: vec![any("out")] })
+                let edges = vec![e(BOUNDARY, 0, 1, 1), e(0, 0, 1, 0), e(1, 0, 2, 0), e(2, 0, BOUNDARY, 0)];
+                stage(&state, &Unit { body: UnitBody::Composite { children: vec![empty, one, map], edges }, params: vec![], inputs: vec![any("x")], outputs: vec![any("out")] })
             } else {
                 stage(&state, &Unit { body: UnitBody::Composite { children: vec![below], edges: vec![e(BOUNDARY, 0, 0, 0), e(0, 0, BOUNDARY, 0)] }, params: vec![], inputs: vec![any("x")], outputs: vec![any("out")] })
             };
@@ -18671,6 +18670,157 @@ fn a_staged_unit_loads_or_is_refused_whatever_its_wiring() {
     // A leaf alone, its closure loaded from the store, and again from memory.
     closure(&state.store, leaves[0]).unwrap();
     closure(&state.store, leaves[0]).unwrap();
+}
+
+/// `plan`'s units with `change` made to each leaf named `leaf`, and every unit above one hashed
+/// again (its children, and a function it names): the units, children first, and where each hash
+/// moved to (hex), the root's among them.
+fn with_leaf_changed(plan: &holon_author::agent::Plan, leaf: &str, change: &dyn Fn(&mut Unit)) -> (Vec<Vec<u8>>, BTreeMap<String, String>) {
+    let mut moved: BTreeMap<Hash, Hash> = BTreeMap::new();
+    let mut units = Vec::new();
+    for bytes in &plan.units {
+        let mut unit = holon_core::decode_preimage(bytes).unwrap();
+        let was = holon_core::hash_unit(&unit).unwrap();
+        if let UnitBody::Composite { children, .. } = &mut unit.body {
+            for child in children.iter_mut() {
+                *child = moved.get(child).copied().unwrap_or(*child);
+            }
+        }
+        for param in unit.params.iter_mut() {
+            if let Param::Frozen { name, value } = param
+                && name == "fn"
+                && let Some(moved) = parse_hash(value).and_then(|h| moved.get(&h))
+            {
+                *value = to_hex(moved);
+            }
+        }
+        if matches!(&unit.body, UnitBody::Primitive { name } if name == leaf) {
+            change(&mut unit);
+        }
+        moved.insert(was, holon_core::hash_unit(&unit).unwrap());
+        units.push(holon_core::encode_preimage(&unit).unwrap());
+    }
+    (units, moved.iter().map(|(a, b)| (to_hex(a), to_hex(b))).collect())
+}
+
+/// **Guards:** a flow with a leaf whose ports aren't its catalog entry's is refused wherever the
+/// server takes a unit: previewed, deployed, replayed, restored as a version deployed before, and
+/// checked again from a run file (`holon verify`). A server whose deployments file holds one (as
+/// one deployed before the rule would) starts, that deployment paused, saying why, serving
+/// nothing, until a person deploys it again, and then it runs on with its versions and runs.
+///
+/// **Why:** the host reads a leaf's ports (what an approval shows, what is refused, how a value
+/// is wired) and computes the leaf by its name, and a unit's bytes are whoever sent them. One
+/// place that took such a leaf would check it as one leaf and run it as another.
+///
+/// **If it fails:** a taker loads a closure without core's `validate`, or `validate` lets a
+/// leaf's ports differ from its catalog entry's (validate.rs `a_leafs_ports_are_its_catalog_entrys`
+/// says which, leaf by leaf).
+///
+/// The counter, its leaves changed four ways (an input renamed, an input retyped, a sink's trigger
+/// renamed, an output retyped), each still wired as it was, every unit above them hashed again.
+#[test]
+fn a_leaf_with_ports_of_its_own_is_refused_wherever_a_unit_is_taken() {
+    let mut state = test_state();
+    let path = unique_temp_path("leaf-ports");
+    state.deployments_path = path.clone().into();
+    let policy = unique_temp_path("leaf-ports-policy");
+    std::fs::write(&policy, "").unwrap();
+    state.policy_path = policy.clone().into();
+    let honest = stage_text(&state, COUNTER);
+    let acknowledge = serde_json::json!(["Action(\"bump\")", "StateRead(\"count\")", "StateWrite(\"count\")"]);
+    assert_eq!(deploy_json(&state, "c", honest, serde_json::json!({ "acknowledge": acknowledge })).status_code, 200);
+    assert_eq!(run_action_named(&state, "c", "bump", serde_json::json!({})).status_code, 200);
+    let plan = holon_author::agent::plan(COUNTER).unwrap();
+    type Change<'a> = (&'a str, &'a str, &'a dyn Fn(&mut Unit));
+    let changes: [Change<'_>; 4] = [
+        ("an input renamed", "add", &|u| u.inputs[1].name = "k".into()),
+        // Retyped as the value wired to it is, so the wiring still fits: only its ports are wrong.
+        ("an input retyped", "add", &|u| u.inputs[0].ty = Type::Number),
+        // Renamed, so it is still wired: the host finds a sink's trigger by its name.
+        ("a sink's trigger renamed", "store_write", &|u| u.inputs.last_mut().unwrap().name = "go".into()),
+        ("an output retyped", "add", &|u| u.outputs[0].ty = Type::Number),
+    ];
+    for (round, (what, leaf, change)) in changes.into_iter().enumerate() {
+        let (units, moved) = with_leaf_changed(&plan, leaf, change);
+        let root = moved[&plan.unit].clone();
+        assert_ne!(root, plan.unit, "{what}: the counter has {leaf}");
+        for unit in &units {
+            assert_eq!(route(&state, &req("POST", "/unit", unit.clone())).status_code, 200, "{what}: staged, as any bytes are");
+        }
+        let said = |why: &str| why.contains("doesn't validate") && why.contains(&format!("{leaf} "));
+        let refused = |response: Response, taker: &str| {
+            let status = response.status_code;
+            let why = String::from_utf8_lossy(&body_bytes(response)).to_string();
+            assert!(status == 400 && why.contains("can't run") && said(&why), "{what}, {taker}: {status} {why}");
+        };
+        let json = |v: serde_json::Value| serde_json::to_vec(&v).unwrap();
+        refused(route(&state, &req("POST", "/deploy/preview", json(serde_json::json!({ "slug": "c2", "unit": root })))), "previewed");
+        refused(deploy_json(&state, "c2", parse_hash(&root).unwrap(), serde_json::json!({ "acknowledge": acknowledge })), "deployed");
+        refused(deploy_json(&state, "c", parse_hash(&root).unwrap(), serde_json::json!({ "acknowledge": acknowledge })), "deployed over the counter");
+        refused(route(&state, &req("GET", &format!("/deployments/c/replay?unit={root}"), vec![])), "replayed");
+
+        // A version deployed before the rule, restored.
+        let number = 100 + round as u32;
+        {
+            let mut table = state.deployments.lock().unwrap();
+            let versions = &mut table.get_mut("c").unwrap().versions;
+            let before = crate::wire::Version { number, unit: root.clone(), ..versions[0].clone() };
+            versions.insert(0, before);
+        }
+        refused(route(&state, &req("POST", "/deployments/c/restore", json(serde_json::json!({ "version": number, "code": true, "acknowledge": acknowledge })))), "restored");
+        state.deployments.lock().unwrap().get_mut("c").unwrap().versions.remove(0);
+
+        // A run file whose run ran it: checked again, it differs, for the server doesn't run it.
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/c/export", vec![])))).unwrap();
+        let mut lines: Vec<String> = Vec::new();
+        for line in &export.lines {
+            let mut v: serde_json::Value = serde_json::from_str(line).unwrap();
+            if let Some(to) = v["unit"].as_str().and_then(|u| moved.get(u)) {
+                v["unit"] = to.clone().into();
+            }
+            if let Some(before) = lines.last() {
+                v["prev"] = recorder::line_hash(before).into();
+            }
+            lines.push(serde_json::to_string(&v).unwrap());
+        }
+        let mut file_units = export.units.clone();
+        for unit in &units {
+            let hash = to_hex(&holon_core::hash_unit(&holon_core::decode_preimage(unit).unwrap()).unwrap());
+            file_units.insert(hash, unit.iter().map(|b| format!("{b:02x}")).collect());
+        }
+        let changed = verify::Export { head: recorder::line_hash(lines.last().unwrap()), lines, units: file_units, ..export };
+        let report = verify::check(&changed, None, &BTreeMap::new());
+        let reran: Vec<_> = report.reruns.iter().filter(|(_, r)| matches!(r, verify::Rerun::Differs(why) if said(why) && why.contains("the server doesn't run it"))).collect();
+        assert!(!reran.is_empty() && reran.len() == report.reruns.len(), "{what}, a run file: {}", verify::describe(&report, None));
+
+        // A deployments file that holds it, as one deployed before the rule would: the server
+        // starts, and that deployment is paused, saying why, with no handler; its record, runs
+        // and state are kept, a policy reload leaves it so, and deployed again it runs on.
+        let mut file: serde_json::Value = serde_json::from_str(&crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS)).unwrap();
+        file[0]["unit"] = root.clone().into();
+        let held = format!("{path}-{round}");
+        crate::at_rest::write_table(Path::new(&held), crate::at_rest::role::DEPLOYMENTS, &serde_json::to_vec(&file).unwrap()).unwrap();
+        let loaded = load_deployments(&Place::parse(&held), &state.store, &state.policy()).unwrap_or_else(|e| panic!("{what}: a server holding it doesn't start: {e}"));
+        let _ = std::fs::remove_file(&held);
+        let c = &loaded["c"];
+        assert!(c.life.status == Status::Paused && c.server.is_none() && c.triggers.is_empty(), "{what}, at start: {:?} {:?}", c.life.status, c.triggers);
+        assert!(c.attention.as_deref().is_some_and(|a| said(a) && a.contains("deploy it again")), "{what}, at start: {:?}", c.attention);
+        let (versions, runs) = (c.versions.len(), c.log.next_seq());
+        *state.deployments.lock().unwrap() = loaded;
+        let bumped = run_action_named(&state, "c", "bump", serde_json::json!({}));
+        assert_eq!(bumped.status_code, 409, "{what}: a paused deployment runs nothing");
+        assert_eq!(route(&state, &req("POST", "/deployments/c/run", vec![])).status_code, 409, "{what}: nor is it run again by hand");
+        assert_eq!(route(&state, &req("POST", "/permissions/reload", b"{}".to_vec())).status_code, 200, "{what}: a reload goes past it");
+        assert!(state.deployments.lock().unwrap()["c"].attention.as_deref().is_some_and(said), "{what}: and leaves it paused, saying why");
+        assert_eq!(deploy_json(&state, "c", honest, serde_json::json!({ "acknowledge": acknowledge })).status_code, 200, "{what}: deployed again");
+        assert_eq!(run_action_named(&state, "c", "bump", serde_json::json!({})).status_code, 200, "{what}: it runs on");
+        let table = state.deployments.lock().unwrap();
+        assert_eq!(table["c"].versions.len(), versions + 1, "{what}: its versions go on");
+        assert_eq!(table["c"].log.next_seq(), runs + 1, "{what}: and so do its runs");
+    }
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&policy);
 }
 
 /// An action's answer names its own run's entry, however many runs of its deployment log at once

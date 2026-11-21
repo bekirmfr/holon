@@ -66,6 +66,9 @@ export function validationErrorNodeIndices(err: WValidationError, wedges: WEdge[
     case "Cycle":
     case "Module":
     case "FamilyParam":
+    // A leaf's own ports or name: the leaf validated alone, no child of a composite.
+    case "UnknownLeaf":
+    case "LeafPorts":
       return [];
   }
   const exhaustive: never = err;

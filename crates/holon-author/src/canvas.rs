@@ -122,15 +122,6 @@ impl Wire {
     }
 }
 
-/// The input a variadic node gains next (its "+", the text format's wires): the next letter
-/// while they are single letters (a, b → c), else `in<n>`.
-pub fn next_port_name(existing: &[&str]) -> String {
-    let single = !existing.is_empty() && existing.iter().all(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_lowercase());
-    if single {
-        let max = existing.iter().map(|n| n.as_bytes()[0]).max().unwrap_or(b'a');
-        if max < b'z' {
-            return ((max + 1) as char).to_string();
-        }
-    }
-    format!("in{}", existing.len() + 1)
-}
+/// The input a variadic node gains next (its "+", the text format's wires): core's, which holds a
+/// leaf grown any other way to be refused.
+pub use holon_core::next_port_name;

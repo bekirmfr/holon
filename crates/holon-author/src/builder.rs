@@ -201,12 +201,10 @@ pub fn call_port(taken: impl Fn(&str) -> bool) -> String {
     name
 }
 
-/// A literal's wire type, as the editor sets it when a const's or default's type changes.
+/// A literal's wire type, as the editor sets it when a const's or default's type changes: core's
+/// (`literal_type`), the one its ports are held to.
 fn literal_type(ty: &str) -> Result<WType, String> {
-    if ty == "Json" {
-        return Ok(WType::Any);
-    }
-    serde_json::from_value(Value::String(ty.into())).map_err(|_| format!("\"{ty}\" is not a type"))
+    holon_core::literal_type(ty).map(|t| WType::from_core(&t)).ok_or_else(|| format!("\"{ty}\" is not a literal's type: Number, Boolean, Text or Json"))
 }
 
 struct Frame {

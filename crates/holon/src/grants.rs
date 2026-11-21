@@ -163,7 +163,9 @@ pub(crate) fn reload_policy(state: &AppState, _file: &crate::policy_file::Held<'
         Ok(p) => Arc::new(p),
         Err(e) => return err(400, format!("the policy wasn't reloaded: {}", e.said())),
     };
-    let units: Vec<(String, Hash)> = state.deployments.lock().unwrap().iter().map(|(s, d)| (s.clone(), d.unit)).collect();
+    // One whose unit this server doesn't run (loaded paused, persist.rs) has nothing to hold to
+    // the policy until it is deployed again, and stays paused, saying why.
+    let units: Vec<(String, Hash)> = state.deployments.lock().unwrap().iter().filter(|(_, d)| d.server.is_some()).map(|(s, d)| (s.clone(), d.unit)).collect();
     let mut derived = BTreeMap::new();
     for (slug, unit) in units {
         match derived_capabilities(&state.store, unit) {
