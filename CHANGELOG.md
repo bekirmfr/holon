@@ -13,6 +13,14 @@
   caller gets a waiting link, not "skipped". That link works once, says "ok", and sends nothing.
   To avoid it, make the early check in the route, before it starts the action. Actions with no
   `return` above a wait are not affected, and neither are runs that don't take the early return.
+- **Known limit of this release: an `if` around a call to one of the flow's own functions.** When a
+  function of the flow starts an action, and a handler calls it under an `if` and binds a result
+  nobody reads, the `if` is not applied: the function runs, and starts the action, whether the `if`
+  is true or not. For example: `function ask(x) { if (x) { ping(x) } return 1 }`, then in a route
+  `if (req.json.go) { const asked = ask(req.json.a) }`. Sent `go: false`, the route still starts
+  `ping`. To avoid it, write the start directly under the `if` in the handler
+  (`if (req.json.go) { ping(req.json.a) }`). Starts, sends and writes written directly under an
+  `if` are not affected.
 - **A version's canvas is the text it was deployed with, and the server checks that the text
   builds its code.** Every deploy that sends a text has it checked, its `browsers` line too, so
   what a person reads is what runs; a restore deploys a version's code with the text that version
