@@ -1,5 +1,7 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 // Minimal config. The wasm package (built into ./wasm via `wasm-pack build --target web`) is
 // imported by relative path and loads itself via `init()` + fetch — no wasm plugin needed for dev.
@@ -18,7 +20,14 @@ import react from "@vitejs/plugin-react";
 //
 // `setupFiles`: before every test file, src/vitest.setup.ts makes the worker's event loop turn
 // after every test, so a file of plain tests can't hold the runner's answers past their limit.
+//
+// `__HOLON_RELEASE__`: the release this editor is built with (the holon crate's version, the one
+// the server embedding it says at `/version`). A deploy names it beside the unit its wasm built,
+// so a server of another release says which two differ when the document builds otherwise.
+const release = /^version\s*=\s*"([^"]+)"/m.exec(readFileSync(fileURLToPath(new URL("../crates/holon/Cargo.toml", import.meta.url)), "utf8"))?.[1] ?? "unknown";
+
 export default defineConfig({
+  define: { __HOLON_RELEASE__: JSON.stringify(release) },
   plugins: [react()],
   test: {
     environment: "jsdom",

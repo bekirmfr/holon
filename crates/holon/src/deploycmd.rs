@@ -328,6 +328,9 @@ pub(crate) fn commit(api: &dyn Api, plan: &agent::Plan, staged: Staged, document
     }
     body["acknowledge"] = json!(acknowledge);
     body["document"] = document;
+    // The release whose compiler built the unit, so a server that builds the document otherwise
+    // says which two differ.
+    body["made_with"] = json!(env!("CARGO_PKG_VERSION"));
     post_json(api, "/deploy", &body).map(|answer| answer.get("proposal").cloned())
 }
 

@@ -866,6 +866,9 @@ export async function deployUnit(
       unit: unitHash,
       acknowledge,
       ...(document !== undefined ? { document } : {}),
+      // The release whose wasm built the unit from the document: a server of another one says so
+      // when the document builds otherwise there.
+      ...(document !== undefined ? { made_with: __HOLON_RELEASE__ } : {}),
       ...(requirements !== undefined ? { requirements } : {}),
       // What it places, beside the document (holonUsage.ts): who uses a holon, from listings.
       ...(document !== undefined ? { uses: usesIn(document) } : {}),
@@ -1622,8 +1625,11 @@ export type VersionEntry = {
   current: boolean;
   /** What its deploy asked is kept, so its code can be restored (rc.30 on). */
   restorable: boolean;
-  /** Its canvas is kept. */
+  /** Its canvas is kept: the one it was deployed with, never another version's. */
   canvas: boolean;
+  /** Its canvas was checked to build its unit when it was deployed (false for one deployed
+   *  before the server checked every deploy's, whose canvas may show other code than it runs). */
+  canvas_checked?: boolean;
   /** The state it left is kept, so it can be put back. */
   state_kept: boolean;
   /** The log's seq at its deploy: its first run's (absent from before rc.30). */
@@ -1769,7 +1775,14 @@ export type FileSince = {
 
 /** A restore's dry run: the deploy's preview when it deploys code (`code`: the version), and the
  *  state change when it puts state back. */
-export type RestorePreview = Partial<DeployPreview> & { code: number | null; state?: StateChange };
+export type RestorePreview = Partial<DeployPreview> & {
+  code: number | null;
+  state?: StateChange;
+  /** Whether the version its code comes from keeps a canvas, and whether that canvas was checked
+   *  to build its code when it was deployed (absent when no code is restored). */
+  canvas?: boolean;
+  canvas_checked?: boolean;
+};
 
 /** What a restore did: the version it deployed (as `version`, restoring `code`), and the session
  *  the state put back started. */

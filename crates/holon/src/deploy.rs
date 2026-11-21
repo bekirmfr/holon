@@ -508,9 +508,11 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     // doesn't approve its deploys wrote what they deploy: what asks for more waits for someone
     // who does, the rest deploys.
     let proposed = !approves && (!missing.is_empty() || waits_for_a_person(who, policy, &previous));
-    // What a person reviews is the document: a proposal's must be what it deploys, and so must a
-    // program's, which the next review is read against.
-    if (proposed || matches!(who.kind, Some(crate::accounts::Kind::Agent | crate::accounts::Kind::Service)))
+    // What a person reads of a version is its document: whoever deploys one sends the one its unit
+    // is built from, a person, a program or a proposal alike, so the canvas a version shows is the
+    // code it runs. A restore deploys a version's pair as it was deployed, not built again by
+    // today's compiler: it was checked then, or the version says it wasn't.
+    if restored_from.is_none()
         && let Err(refused) = document_is_the_unit(&body, unit_hash)
     {
         return refused;
@@ -622,9 +624,9 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
             }
             None => Lifecycle::deployed(now_secs),
         };
-        let (log, old_document, mut versions, mut events) = match deployments.get_mut(&body.slug) {
+        let (log, mut versions, mut events) = match deployments.get_mut(&body.slug) {
             // The log goes on across versions: a run of the old version still in flight logs to it.
-            Some(old) => (Arc::clone(&old.log), old.document.take(), std::mem::take(&mut old.versions), std::mem::take(&mut old.events)),
+            Some(old) => (Arc::clone(&old.log), std::mem::take(&mut old.versions), std::mem::take(&mut old.events)),
             None => {
                 // Its keys made before it goes live: left to its first seal, a root that couldn't be
                 // read then left it live with nothing it ran sealable, lazy runs answering 200 with
@@ -652,14 +654,16 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
                 // may let them go without): or a flow running past its `keep` in its first seconds
                 // lets its oldest go unbacked.
                 log.set_backup(policy.storage.backup.dir().cloned().map(|dir| (dir.into(), false)));
-                (Arc::new(LogCell::new(log)), None, Vec::new(), events)
+                (Arc::new(LogCell::new(log)), Vec::new(), events)
             }
         };
         log.with(|log| log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms()));
         // Every deploy is a version, kept for good with what it asked, so it can be deployed
-        // again; one deployed without a canvas keeps the canvas it had.
+        // again. One deployed without a canvas has none: it never shows another version's.
         version = versions.last().map_or(1, |v| v.number + 1);
-        let document_ref = document_ref.or_else(|| versions.last().and_then(|v| v.document_ref.clone()));
+        // Its canvas was checked above to build its unit; a restore's, when the version it
+        // restores was.
+        let canvas_checked = document_ref.is_some() && restored_from.is_none_or(|n| versions.iter().any(|v| v.number == n && v.canvas_checked));
         let carried = deployments.get(&body.slug).and_then(|old| old.state.clone());
         // And the state it carries, as a snapshot: the state the version before it left.
         let state_at_deploy = carried.as_ref().and_then(|arc| {
@@ -679,6 +683,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
                 browsers: body.browsers.clone(),
             }),
             document_ref,
+            canvas_checked,
             state_at_deploy,
             first_seq: Some(log.next_seq()),
             document: None,
@@ -688,7 +693,7 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
             None => format!("deployed version {version}"),
         };
         events.push("deploy", what, by, log.next_seq(), crate::events::Detail { version: Some(version), note: note.clone(), ..Default::default() });
-        let document = body.document.clone().or(old_document);
+        let document = body.document.clone();
         // Its subscribers stay subscribed across a redeploy, and its kept packs stay kept.
         let channels = deployments.get(&body.slug).map(|old| Arc::clone(&old.channels)).unwrap_or_default();
         // So do its WebSocket connections, but those on a path this version has no websocket on.
@@ -815,17 +820,23 @@ pub(crate) fn borrowed(deployments: &Mutex<BTreeMap<String, Deployment>>, items:
 }
 
 /// Whether `body`'s document, if it sends one, is what it deploys: its canvas builds the unit sent,
-/// and its `browsers` line is the sites sent. A person reviews a proposal's document (the text
-/// printed from it, its canvas), and the deployed one is what the next review is read against, so
-/// one that said something else than the unit would have them approve code they never read.
+/// and its `browsers` line is the sites sent. A person reads a version by its document (the text
+/// printed from it, its canvas, a proposal's review, the history), and the deployed one is what
+/// the next review is read against, so one that said something else than the unit would show code
+/// that never runs, and have them approve code they never read.
 fn document_is_the_unit(body: &DeployRequestBody, unit: Hash) -> Result<(), Response> {
     let Some(document) = &body.document else { return Ok(()) };
-    let (built, browsers) = holon_author::agent::deploys_as(document).map_err(|e| err(400, format!("{e}: a person reads the document sent, so it must be the flow deployed")))?;
+    let releases = other_release(body.made_with.as_deref());
+    let (built, browsers) = holon_author::agent::deploys_as(document).map_err(|e| err(400, format!("{e}: a person reads the document sent, so it must be the flow deployed{releases}")))?;
     let sent = to_hex(&unit);
     if built != sent {
         return Err(err(
             400,
-            format!("the document sent deploys as {}, not as the unit sent ({}): a person reads the document, so send the one the unit was built from", &built[..12], &sent[..12]),
+            format!(
+                "the document sent deploys as {}, not as the unit sent ({}): a person reads the document, so send the one the unit was built from{releases}",
+                &built[..12],
+                &sent[..12]
+            ),
         ));
     }
     let (said, asked): (BTreeSet<&String>, BTreeSet<&String>) = (browsers.iter().collect(), body.browsers.iter().collect());
@@ -834,6 +845,20 @@ fn document_is_the_unit(body: &DeployRequestBody, unit: Hash) -> Result<(), Resp
         return Err(err(400, format!("the document's browsers line ({}) isn't the browsers sent ({}): a person reads the document", line(&said), line(&asked))));
     }
     Ok(())
+}
+
+/// What a refused document says of releases, when the client that built its unit is another
+/// release of Holon than this server (`made_with`): both, and what to do. Nothing when it is this
+/// one, or the client didn't say.
+fn other_release(made_with: Option<&str>) -> String {
+    let ours = env!("CARGO_PKG_VERSION");
+    match made_with {
+        Some(theirs) if theirs != ours => format!(
+            ". It was built by Holon {theirs}, and this server is Holon {ours}, whose compiler may build it otherwise: \
+             update whichever is older (`holon update` for the command line or the server; reload the editor's page) and deploy again"
+        ),
+        _ => String::new(),
+    }
 }
 
 /// Its code beside the version deployed now, handler by handler, as dry-run rows in the group
@@ -2203,20 +2228,37 @@ pub(crate) fn complete_versions(kept: Vec<Version>, current: Version, store: &Sh
 }
 
 /// `GET /deployments/<slug>/document` — the flow document it was deployed from, for view mode;
-/// with `?unit=<hex>`, the document of that version (the current one, or an earlier one), for a
-/// run logged on it.
+/// with `?unit=<hex>`, the document of that code (the current one, or an earlier one), for a run
+/// logged on it: of the versions deployed with it, the newest whose document was checked to build
+/// it, else the newest that has one; with `?version=<n>`, that version's own, none if it was
+/// deployed without one.
 pub(crate) fn handle_get_document(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
     let deployments = deployments.lock().unwrap();
     let Some(dep) = deployments.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
-    let wanted = request.get_param("unit").filter(|u| *u != to_hex(&dep.unit));
+    if let Some(n) = request.get_param("version") {
+        let Some(v) = n.parse::<u32>().ok().and_then(|n| dep.versions.iter().find(|v| v.number == n)) else {
+            return err(404, format!("{slug:?} has no version {n}"));
+        };
+        return match version_document(store, v) {
+            Some(doc) => Response::json(&doc),
+            None => err(404, format!("version {n} of {slug:?} was deployed without its canvas: none is kept")),
+        };
+    }
+    // By code, not by version: any document checked to build that unit is its text, the current
+    // version's included, so a run is shown on its code's canvas even when the version it ran on
+    // was deployed without one.
+    let wanted = request.get_param("unit");
     let doc = match &wanted {
         None => dep.document.clone(),
-        Some(unit) => dep.versions.iter().rev().find(|v| &v.unit == unit).and_then(|v| version_document(store, v)),
+        Some(unit) => {
+            let kept: Vec<&Version> = dep.versions.iter().rev().filter(|v| &v.unit == unit && v.document_ref.is_some()).collect();
+            kept.iter().find(|v| v.canvas_checked).or(kept.first()).and_then(|v| version_document(store, v))
+        }
     };
     match (doc, wanted) {
         (Some(doc), _) => Response::json(&doc),
-        (None, None) => err(404, format!("{slug:?} was deployed without its canvas; deploy it again from the editor")),
-        (None, Some(unit)) => err(404, format!("{slug:?} keeps no canvas of version {}", &unit[..unit.len().min(12)])),
+        (None, None) => err(404, format!("{slug:?} was deployed without its canvas: none is kept; deploy it again from its text to have one")),
+        (None, Some(unit)) => err(404, format!("{slug:?} keeps no canvas of the code {}", &unit[..unit.len().min(12)])),
     }
 }
 
@@ -2242,6 +2284,9 @@ pub(crate) fn handle_get_versions(deployments: &Mutex<BTreeMap<String, Deploymen
                 "current": Some(v.number) == current,
                 "restorable": v.request.is_some(),
                 "canvas": v.document_ref.is_some(),
+                // Its canvas was checked to build its code when it was deployed: one that wasn't
+                // may show other code than it runs.
+                "canvas_checked": v.canvas_checked,
                 // The state it left is kept: the one the next version carried.
                 "state_kept": dep.versions.get(i + 1).is_some_and(|next| next.state_at_deploy.is_some()),
                 // Where it starts in the log: the seq its first run got (absent from before rc.30).
@@ -2318,6 +2363,12 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
             None => serde_json::json!({}),
         };
         answer["code"] = serde_json::json!(code.as_ref().map(|(n, _)| n));
+        // Whether the version keeps a canvas to show its code, and whether it was checked to be it.
+        if let Some((n, body)) = &code {
+            let checked = state.deployments.lock().unwrap().get(slug).and_then(|d| d.versions.iter().find(|v| v.number == *n).map(|v| v.canvas_checked));
+            answer["canvas"] = serde_json::json!(body.document.is_some());
+            answer["canvas_checked"] = serde_json::json!(checked.unwrap_or(false));
+        }
         if code.is_none() {
             // Its code stays: what it touches is what it touches now.
             let (items, optional, deployed, tagged) = {
@@ -2516,6 +2567,7 @@ fn restore_plan(state: &AppState, slug: &str, point: Point, code: bool, with_sta
                 browsers: asked.browsers,
                 why: None,
                 note: None,
+                made_with: None,
             };
             Some((v.number, body))
         }

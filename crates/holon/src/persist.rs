@@ -339,6 +339,7 @@ pub(crate) fn load_deployments(
             restored_from: None,
             request: None,
             document_ref: None,
+            canvas_checked: false,
             state_at_deploy: None,
             first_seq: None,
             document: record.document.clone(),

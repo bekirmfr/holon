@@ -108,6 +108,25 @@ describe("a restore's words", () => {
     expect(plain.approvals).toEqual([]);
   });
 
+  it("says when the version's canvas may not be its code, and when it has none", () => {
+    const code = (preview: { canvas?: boolean; canvas_checked?: boolean }) =>
+      restoreReport("prices", { label: "version 1" }, [{ point: { version: 1 }, what: { code: true, state: false }, preview: { code: 1, needs_approval: [], ...preview } }]).sections.find((x) => x.heading === "code")?.lines ?? [];
+    expect(code({ canvas: true, canvas_checked: true })).toEqual(['Version 1\'s code is deployed again, as a new version, checked against the grant "prices" has now.']);
+    expect(code({ canvas: true, canvas_checked: false })[1]).toBe("Version 1's canvas wasn't checked against its code when it was deployed: it may show other code than it runs.");
+    expect(code({ canvas: false, canvas_checked: false })[1]).toBe("Version 1 was deployed without a canvas: none is kept to show its code.");
+    expect(code({}), "a server that doesn't say adds nothing").toHaveLength(1);
+  });
+
+  it("says of a version's canvas whether it is kept, and checked against its code", async () => {
+    const { itemDetails } = await import("./HistoryPane");
+    const target = { label: "version 1", code: null, state: null, why: { code: "it is the version deployed now", state: null } } as unknown as Parameters<typeof itemDetails>[1];
+    const canvas = (v: VersionEntry) => new Map(itemDetails({ kind: "version", key: "v1", at_ms: 0, version: v }, target)).get("canvas");
+    expect(canvas(version(1, { canvas: true, canvas_checked: true }))).toBe("kept");
+    expect(canvas(version(1, { canvas: true, canvas_checked: false }))).toBe("kept, not checked against its code when deployed: it may show other code than it runs");
+    expect(canvas(version(1, { canvas: true }))).toMatch(/^kept, not checked/);
+    expect(canvas(version(1, { canvas: false }))).toBe("none kept");
+  });
+
   it("says what it changes, a line each: the code, the grant, the state", () => {
     const state = { from: "version 1", changed: ["total"], added: ["cart"], removed: ["seen", "last"], runs_since: 2, effects_since: {} };
     const preview = { code: 1, needs_approval: ["Clock"], missing_secrets: [], items: ["Clock", "NetworkIngress"], granted_now: ["NetworkIngress", 'StateWrite("x")'], state };

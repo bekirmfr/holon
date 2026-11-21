@@ -217,6 +217,9 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             } else {
                 println!("version {n}'s code needs approving what today's grant doesn't cover: {}", needs.join(", "));
             }
+            if let Some(said) = canvas_said(&preview, n) {
+                println!("{said}");
+            }
             match crate::mcp::code_diff(&Local { who: WHO, server: server.as_deref() }, &slug, n) {
                 Ok(diff) => println!("{diff}"),
                 Err(e) => eprintln!("{WHO}: its text can't be shown: {e}"),
@@ -395,6 +398,19 @@ fn list(slug: &str, server: Option<&str>, as_json: bool) -> i32 {
     0
 }
 
+/// What a restore's dry run (`preview`, deploying version `n`'s code) says of the text it shows: none
+/// when it was checked to build that code, as every deploy's is since; else that it may not be the
+/// code, or that none is kept.
+pub(crate) fn canvas_said(preview: &serde_json::Value, n: u64) -> Option<String> {
+    if preview["canvas"] == false {
+        Some(format!("version {n} was deployed without its text: none is kept to show its code"))
+    } else if preview["canvas"] == true && preview["canvas_checked"] != true {
+        Some(format!("version {n}'s text wasn't checked against its code when it was deployed: it may show other code than it runs"))
+    } else {
+        None
+    }
+}
+
 /// One version, as the list shows it: `v3  3f2a9c1e04b7  2026-10-29T20:56:39  by maria  restores v1  (now)`.
 fn version_line(v: &serde_json::Value) -> String {
     let unit = v["unit"].as_str().unwrap_or_default();
@@ -410,6 +426,13 @@ fn version_line(v: &serde_json::Value) -> String {
     }
     if v["state_kept"] == true {
         line.push_str("  state kept");
+    }
+    // Its text: none kept, or kept but never checked to build its code (deployed before every
+    // deploy was), so it may show other code than it runs.
+    if v["canvas"] == false {
+        line.push_str("  no text kept");
+    } else if v["canvas"] == true && v["canvas_checked"] != true {
+        line.push_str("  text not checked against its code");
     }
     if v["current"] == true {
         line.push_str("  (now)");
@@ -439,5 +462,10 @@ mod tests {
         assert_eq!(version_line(&kept), "v2    aa  state kept");
         let old = serde_json::json!({ "number": 1, "unit": "00ff", "current": false, "restorable": false });
         assert_eq!(version_line(&old), "v1    00ff  (from before rc.30: opens, doesn't restore)");
+        // Its text: checked, kept but never checked, or none.
+        let text = |canvas: bool, checked: bool| version_line(&serde_json::json!({ "number": 4, "unit": "bb", "restorable": true, "canvas": canvas, "canvas_checked": checked }));
+        assert_eq!(text(true, true), "v4    bb");
+        assert_eq!(text(true, false), "v4    bb  text not checked against its code");
+        assert_eq!(text(false, false), "v4    bb  no text kept");
     }
 }

@@ -534,6 +534,9 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>, asked: Asked) -> Result
     };
     // Its text goes with it, comments and all, so the person who opens it reads what was written.
     body["document"] = saved_document(&plan, text);
+    // The release whose compiler built the unit: a server that builds the document otherwise says
+    // which two differ.
+    body["made_with"] = json!(env!("CARGO_PKG_VERSION"));
     if let Some(w) = asked.why {
         body["why"] = json!(w);
     }
@@ -1151,6 +1154,7 @@ fn restore(api: &dyn Api, args: &Value) -> Result<String, String> {
             } else {
                 format!("Its code, version {n}'s, would deploy again once a person approves what today's grant doesn't cover:\n{}", listed(&needs))
             });
+            out.extend(crate::restore::canvas_said(&preview, n));
             out.push(code_diff(api, slug, n).unwrap_or_else(|e| format!("Its text can't be compared: {e}")));
         }
     }
@@ -1224,17 +1228,9 @@ pub(crate) fn code_diff(api: &dyn Api, slug: &str, number: u64) -> Result<String
 /// they had to be printed without their names.
 pub(crate) fn code_texts(api: &dyn Api, slug: &str, number: u64) -> Result<(String, String, &'static str), String> {
     let path = format!("/deployments/{}", seg(slug));
-    let versions = json_of(api, "GET", &format!("{path}/versions"), None)?;
-    let unit = versions["versions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|v| v["number"].as_u64() == Some(number))
-        .and_then(|v| v["unit"].as_str())
-        .ok_or_else(|| format!("version {number} isn't listed"))?
-        .to_string();
     let now = json_of(api, "GET", &format!("{path}/document"), None)?;
-    let then = json_of(api, "GET", &format!("{path}/document?unit={unit}"), None)?;
+    // That version's own text, never another's: none if it was deployed without one.
+    let then = json_of(api, "GET", &format!("{path}/document?version={number}"), None)?;
     let named = |d: &Value| d.get("source").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty()) || d.get("bindings").and_then(Value::as_object).is_some_and(|b| !b.is_empty());
     let plain = |d: &Value| {
         let mut d = d.clone();

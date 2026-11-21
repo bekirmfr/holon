@@ -269,6 +269,8 @@ export function restoreReport(
       if (preview.code === null) sections.push({ heading: "code", lines: [`${pointLabel(point)} ran on the code deployed now: only its state is restored.`] });
       else {
         const lines = [`Version ${preview.code}'s code is deployed again, as a new version, checked against the grant "${slug}" has now.`];
+        if (preview.canvas === false) lines.push(`Version ${preview.code} was deployed without a canvas: none is kept to show its code.`);
+        else if (preview.canvas_checked === false) lines.push(`Version ${preview.code}'s canvas wasn't checked against its code when it was deployed: it may show other code than it runs.`);
         sections.push({ heading: "code", lines });
         approvals.push(...(preview.needs_approval ?? []).map(describe));
       }

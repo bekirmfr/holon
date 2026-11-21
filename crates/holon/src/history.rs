@@ -196,6 +196,15 @@ struct Version {
     unit: String,
     /// Its first run's seq: the log's next one when it was deployed (absent before rc.30).
     first_seq: Option<u64>,
+    /// What its text is: none kept, kept but never checked to build its code, or checked.
+    text: Text,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Text {
+    Checked,
+    Unchecked,
+    None,
 }
 
 impl Versions {
@@ -207,9 +216,25 @@ impl Versions {
                 .into_iter()
                 .flatten()
                 .rev()
-                .filter_map(|v| Some(Version { number: v["number"].as_u64()?, unit: v["unit"].as_str()?.to_string(), first_seq: v["first_seq"].as_u64() }))
+                .filter_map(|v| {
+                    let text = match (v["canvas"].as_bool(), v["canvas_checked"] == true) {
+                        (Some(false), _) => Text::None,
+                        (Some(true), false) => Text::Unchecked,
+                        _ => Text::Checked,
+                    };
+                    Some(Version { number: v["number"].as_u64()?, unit: v["unit"].as_str()?.to_string(), first_seq: v["first_seq"].as_u64(), text })
+                })
                 .collect(),
         )
+    }
+
+    /// What a deploy of version `n` says of its text, when it isn't one checked to build its code.
+    fn text_of(&self, n: u64) -> &'static str {
+        match self.0.iter().find(|v| v.number == n).map(|v| v.text) {
+            Some(Text::None) => "  (no text kept)",
+            Some(Text::Unchecked) => "  (its text not checked against its code)",
+            _ => "",
+        }
     }
 
     /// The version run `seq` ran on, its code `unit`: of the versions with that code, the last one
@@ -228,7 +253,7 @@ pub(crate) fn timeline(runs: &[serde_json::Value], events: &[serde_json::Value],
     let mut items: Vec<(u64, u8, String)> = events
         .iter()
         .filter(|e| e["run_seq"].as_u64().is_some_and(|s| s >= from))
-        .map(|e| (e["run_seq"].as_u64().unwrap_or_default(), 0, event_line(e)))
+        .map(|e| (e["run_seq"].as_u64().unwrap_or_default(), 0, event_line(e, versions)))
         .collect();
     items.extend(runs.iter().map(|r| (r["seq"].as_u64().unwrap_or_default(), 1, run_line(r, versions))));
     // Stable: events keep their order among themselves, before the run they name.
@@ -302,15 +327,40 @@ fn run_line(r: &serde_json::Value, versions: &Versions) -> String {
 }
 
 /// `       grant      2026-10-30T09:12:05  revoked StateWrite("a")  by maria`
-fn event_line(e: &serde_json::Value) -> String {
+fn event_line(e: &serde_json::Value, versions: &Versions) -> String {
     let by = e["by"].as_str().map_or_else(|| "  by the host".to_string(), |b| format!("  by {b}"));
-    format!("{:<6} {:<10} {}  {}{by}", "", e["kind"].as_str().unwrap_or_default(), when(e["at_ms"].as_u64()), e["what"].as_str().unwrap_or_default())
+    // A version deployed: whether its text is the code it runs.
+    let text = match (e["kind"].as_str(), e["version"].as_u64()) {
+        (Some("deploy"), Some(n)) => versions.text_of(n),
+        _ => "",
+    };
+    format!("{:<6} {:<10} {}  {}{by}{text}", "", e["kind"].as_str().unwrap_or_default(), when(e["at_ms"].as_u64()), e["what"].as_str().unwrap_or_default())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A version's deploy says when its text isn't one checked to build its code: kept from before
+    /// every deploy was checked, or none kept.
+    #[test]
+    fn a_deploy_says_when_its_text_isnt_checked_or_kept() {
+        let versions = Versions::of(&json!({ "versions": [
+            { "number": 3, "unit": "cc", "canvas": true, "canvas_checked": true },
+            { "number": 2, "unit": "bb", "canvas": false },
+            { "number": 1, "unit": "aa", "canvas": true },
+        ] }));
+        let deploy = |n: u32| json!({ "run_seq": 0, "at_ms": 0, "kind": "deploy", "what": format!("deployed version {n}"), "by": "maria", "version": n });
+        assert_eq!(
+            timeline(&[], &[deploy(1), deploy(2), deploy(3)], &versions, true),
+            [
+                "       deploy     1970-01-01T00:00:00  deployed version 1  by maria  (its text not checked against its code)",
+                "       deploy     1970-01-01T00:00:00  deployed version 2  by maria  (no text kept)",
+                "       deploy     1970-01-01T00:00:00  deployed version 3  by maria",
+            ]
+        );
+    }
 
     #[test]
     fn events_go_before_the_run_they_name() {

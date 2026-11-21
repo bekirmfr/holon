@@ -274,6 +274,11 @@ pub(crate) struct DeployRequestBody {
     /// event and in the activity (events.rs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) note: Option<String>,
+    /// The release of Holon whose compiler built the unit from the document (the editor, the
+    /// command line, the MCP server send theirs): a document this server builds otherwise is
+    /// refused naming both, when they differ.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) made_with: Option<String>,
 }
 
 /// The on-disk, persisted shape of one deployment. `triggers` is still not persisted — it's
@@ -522,6 +527,12 @@ pub(crate) struct Version {
     /// store, so the deployments file stays small however many versions it keeps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) document_ref: Option<String>,
+    /// Whether its document was checked to build its unit when it was deployed (deploy.rs
+    /// `document_is_the_unit`), or, for a restore, when the version it restores was. A version
+    /// deployed before every deploy was checked never was: its canvas may show other code than it
+    /// runs, and the history says so.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) canvas_checked: bool,
     /// The state it carried when deployed, as a snapshot's hash (`restore::save_snapshot`): the
     /// state the version before it left, which restoring that one's state puts back. Absent for a
     /// deployment without state, and for versions deployed before rc.30.

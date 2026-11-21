@@ -290,10 +290,11 @@ pub(crate) fn keep_document(unit: &str, document: &serde_json::Value) {
     DOCUMENTS.lock().unwrap().insert(unit.to_string(), document.clone());
 }
 
-/// The document of `unit`, staged: what a proposal of it sends (deploy.rs checks that a
-/// proposal's document builds its unit). An empty one for a unit no test staged.
+/// The document of `unit`, staged: what a deploy of it sends (deploy.rs checks that a document
+/// builds the unit deployed). Null for a unit no test staged from text: it is deployed without
+/// one, as a unit deployed by hash is.
 pub(crate) fn document_of(unit: &str) -> serde_json::Value {
-    DOCUMENTS.lock().unwrap().get(unit).cloned().unwrap_or_else(|| serde_json::json!({}))
+    DOCUMENTS.lock().unwrap().get(unit).cloned().unwrap_or(serde_json::Value::Null)
 }
 
 /// [`writer_text`] staged: its unit.
@@ -3835,7 +3836,7 @@ fn whoever_started_a_run_started_each_run_it_leads_to() {
             assert_eq!(route(&state, &req_as(&ada, "POST", "/unit", u.clone())).status_code, 200);
         }
         let asked = ask(&ada, "POST", "/deploy/preview", json!({ "slug": plan.name, "unit": plan.unit })).1["needs_approval"].clone();
-        let (code, said) = ask(&ada, "POST", "/deploy", json!({ "slug": plan.name, "unit": plan.unit, "document": {}, "acknowledge": asked }));
+        let (code, said) = ask(&ada, "POST", "/deploy", json!({ "slug": plan.name, "unit": plan.unit, "document": plan.document, "acknowledge": asked }));
         assert_eq!(code, 200, "{said}");
     };
     deploy(
@@ -3932,22 +3933,22 @@ fn an_approval_s_steps_are_what_its_deploy_asks_for() {
         let (code, said) = access_table::ask(&state, Some(token), "POST", path, serde_json::to_vec(&body).unwrap());
         (code, serde_json::from_str::<Value>(&said).unwrap_or(Value::Null))
     };
-    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": two, "document": {}, "acknowledge": ["Action(\"pay\")", "Approval(\"payout/person*2\")"] }));
+    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": two, "document": document_of(&two), "acknowledge": ["Action(\"pay\")", "Approval(\"payout/person*2\")"] }));
     assert_eq!(code, 200, "{said}");
     // One person in place of two is a new item: an agent's version is a proposal needing it, and
     // a person's deploys once it is acknowledged.
     let (code, said) = send(&scout, "/deploy", json!({ "slug": "payouts", "unit": one, "document": document_of(&one), "why": "one is enough" }));
     assert_eq!((code, &said["proposal"]["needs"]), (202, &json!(["Approval(\"payout/person\")"])), "{said}");
-    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": one, "document": {} }));
+    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": one, "document": document_of(&one) }));
     assert!(code == 400 && said["error"].as_str().unwrap().contains("Approval(\"payout/person\")"), "{said}");
-    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": one, "document": {}, "acknowledge": ["Approval(\"payout/person\")"] }));
+    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": one, "document": document_of(&one), "acknowledge": ["Approval(\"payout/person\")"] }));
     assert_eq!(code, 200, "{said}");
     // In steps, the same: a new item, which deploys once acknowledged.
     let (code, said) = send(&ada, "/deploy/preview", json!({ "slug": "payouts", "unit": steps }));
     assert_eq!((code, &said["refused"]), (200, &Value::Null), "{said}");
-    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": steps, "document": {} }));
+    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": steps, "document": document_of(&steps) }));
     assert!(code == 400 && said["error"].as_str().unwrap().contains("Approval(\"payout/agent:classifier>person:approver\")"), "{said}");
-    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": steps, "document": {}, "acknowledge": ["Approval(\"payout/agent:classifier>person:approver\")"] }));
+    let (code, said) = send(&ada, "/deploy", json!({ "slug": "payouts", "unit": steps, "document": document_of(&steps), "acknowledge": ["Approval(\"payout/agent:classifier>person:approver\")"] }));
     assert_eq!(code, 200, "{said}");
 }
 
@@ -3997,7 +3998,7 @@ export const pay = action(async (order) => {
         (code, serde_json::from_str::<Value>(&said).unwrap_or(Value::Null))
     };
     let steps = "agent:classifier>person:reviewer+person:approver";
-    let (code, said) = ask(&ada, "POST", "/deploy", json!({ "slug": "payouts", "unit": unit, "document": {}, "acknowledge": ["Action(\"pay\")", format!("Approval(\"payout/{steps}\")"), "StateWrite(\"decided\")"] }));
+    let (code, said) = ask(&ada, "POST", "/deploy", json!({ "slug": "payouts", "unit": unit, "document": document_of(&unit), "acknowledge": ["Action(\"pay\")", format!("Approval(\"payout/{steps}\")"), "StateWrite(\"decided\")"] }));
     assert_eq!(code, 200, "{said}");
 
     // ada starts the run: it waits at the classifier's step.
@@ -4103,7 +4104,7 @@ export const pay = action(async (order) => {
         let (code, said) = access_table::ask(&state, Some(token), method, path, if body.is_null() { vec![] } else { serde_json::to_vec(&body).unwrap() });
         (code, serde_json::from_str::<Value>(&said).unwrap_or(Value::Null))
     };
-    let deploy = json!({ "slug": "payouts", "unit": unit, "document": {}, "acknowledge": ["Action(\"pay\")", "Approval(\"payout/agent:classifier+person:reviewer\")"] });
+    let deploy = json!({ "slug": "payouts", "unit": unit, "document": document_of(&unit), "acknowledge": ["Action(\"pay\")", "Approval(\"payout/agent:classifier+person:reviewer\")"] });
     let (code, said) = ask(&ada, "POST", "/deploy", deploy.clone());
     assert_eq!(code, 200, "{said}");
     // eve starts the run, on the version ada deployed: ada holds reviewer, scout classifier.
@@ -4251,7 +4252,7 @@ export const pay = action(async (order) => {{
     // The run file deploys both: as ada.
     for (slug, unit, said) in &units {
         let acknowledge = json!(["Action(\"pay\")", format!("Approval(\"payout/{said}\")"), "StateWrite(\"decided\")"]);
-        let (code, deployed) = ask(&local, "POST", "/deploy", json!({ "slug": slug, "unit": unit, "document": {}, "acknowledge": acknowledge }));
+        let (code, deployed) = ask(&local, "POST", "/deploy", json!({ "slug": slug, "unit": unit, "document": document_of(unit), "acknowledge": acknowledge }));
         assert_eq!(code, 200, "{deployed}");
     }
     let deployers: Vec<Value> = ["steps", "pair"].iter().map(|slug| ask(&ada, "GET", &format!("/deployments/{slug}/versions"), Value::Null).1["versions"][0]["by"].clone()).collect();
@@ -6699,7 +6700,8 @@ fn a_bulk_route_extends_the_stored_list_with_an_array() {
 }
 
 /// The flow log records every run with what it read and produced, enough to run it again
-/// exactly; and a deployment keeps the canvas it was deployed from.
+/// exactly. (Its unit is built by hand, so it is deployed without a document: what a version's
+/// canvas is, `a_versions_canvas_is_the_code_it_runs` holds.)
 #[test]
 fn the_flow_log_records_each_run_well_enough_to_replay_it() {
     let state = test_state();
@@ -6708,7 +6710,6 @@ fn the_flow_log_records_each_run_well_enough_to_replay_it() {
         "slug": "todo",
         "unit": to_hex(&api),
         "acknowledge": ["NetworkIngress", "StateRead(\"todos\")", "StateWrite(\"todos\")"],
-        "document": { "nodes": [], "edges": [], "viewport": { "x": 0, "y": 0, "zoom": 1 } },
     }))
     .unwrap();
     assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 200);
@@ -6774,9 +6775,7 @@ fn the_flow_log_records_each_run_well_enough_to_replay_it() {
         second["outputs"].as_array().unwrap().iter().map(|o| (!o.is_null()).then(|| sv(o))).collect();
     assert_eq!(replayed, recorded, "replaying the entry gives exactly what was recorded");
 
-    // The canvas it was deployed from, and a redeploy keeps the log.
-    let doc = route(&state, &req("GET", "/deployments/todo/document", vec![]));
-    assert_eq!((doc.status_code, body_json(doc)["viewport"]["zoom"].as_u64()), (200, Some(1)));
+    // A redeploy keeps the log.
     let again = serde_json::to_vec(&serde_json::json!({
         "slug": "todo", "unit": to_hex(&api),
         "acknowledge": ["NetworkIngress", "StateRead(\"todos\")", "StateWrite(\"todos\")"],
@@ -6784,7 +6783,6 @@ fn the_flow_log_records_each_run_well_enough_to_replay_it() {
     .unwrap();
     assert_eq!(route(&state, &req("POST", "/deploy", again)).status_code, 200);
     assert_eq!(body_json(route(&state, &req("GET", "/deployments/todo/log", vec![])))["next"], 2);
-    assert_eq!(route(&state, &req("GET", "/deployments/todo/document", vec![])).status_code, 200, "kept");
 }
 
 /// A paused or stopped deployment takes no run, and a run waiting in it goes on by none of the ways
@@ -7513,14 +7511,16 @@ fn each_run_names_its_version_and_each_version_keeps_its_canvas() {
     let state = test_state();
     let v1 = stage_writer(&state, "a");
     let v2 = stage_writer(&state, "b");
-    let deploy = |unit: Hash, key: &str, rev: u32| {
+    let (d1, d2) = (document_of(&to_hex(&v1)), document_of(&to_hex(&v2)));
+    assert_ne!(d1, d2);
+    let deploy = |unit: Hash, key: &str| {
         let ack = serde_json::json!(["Action(\"put\")", format!("StateWrite(\"{key}\")")]);
-        deploy_json(&state, "v", unit, serde_json::json!({ "acknowledge": ack, "document": { "rev": rev } })).status_code
+        deploy_json(&state, "v", unit, serde_json::json!({ "acknowledge": ack, "document": document_of(&to_hex(&unit)) })).status_code
     };
     let fire = || put(&state, "v", "hello").status_code;
-    assert_eq!(deploy(v1, "a", 1), 200);
+    assert_eq!(deploy(v1, "a"), 200);
     assert_eq!(fire(), 200);
-    assert_eq!(deploy(v2, "b", 2), 200);
+    assert_eq!(deploy(v2, "b"), 200);
     assert_eq!(fire(), 200);
 
     let log = body_json(route(&state, &req("GET", "/deployments/v/log", vec![])));
@@ -7528,9 +7528,9 @@ fn each_run_names_its_version_and_each_version_keeps_its_canvas() {
     assert_eq!(units, [to_hex(&v1), to_hex(&v2)], "each run names the version it ran");
 
     let doc = |query: &str| route(&state, &req("GET", &format!("/deployments/v/document{query}"), vec![]));
-    assert_eq!(body_json(doc(""))["rev"], 2);
-    assert_eq!(body_json(doc(&format!("?unit={}", to_hex(&v1))))["rev"], 1, "the earlier version's canvas");
-    assert_eq!(body_json(doc(&format!("?unit={}", to_hex(&v2))))["rev"], 2);
+    assert_eq!(body_json(doc("")), d2);
+    assert_eq!(body_json(doc(&format!("?unit={}", to_hex(&v1)))), d1, "the earlier version's canvas");
+    assert_eq!(body_json(doc(&format!("?unit={}", to_hex(&v2)))), d2);
     let gone = doc("?unit=00ff");
     assert_eq!(gone.status_code, 404);
     assert!(String::from_utf8(body_bytes(gone)).unwrap().contains("keeps no canvas"));
@@ -7543,12 +7543,12 @@ fn every_deploy_is_a_version_and_restoring_one_is_a_new_one() {
     let state = test_state();
     let v1 = stage_writer(&state, "a");
     let v2 = stage_writer(&state, "b");
-    let deploy = |unit: Hash, key: &str, rev: u32| {
+    let deploy = |unit: Hash, key: &str| {
         let ack = serde_json::json!(["Action(\"put\")", format!("StateWrite(\"{key}\")")]);
-        body_json(deploy_json(&state, "r", unit, serde_json::json!({ "acknowledge": ack, "document": { "rev": rev } })))
+        body_json(deploy_json(&state, "r", unit, serde_json::json!({ "acknowledge": ack, "document": document_of(&to_hex(&unit)) })))
     };
-    assert_eq!(deploy(v1, "a", 1)["version"], 1);
-    assert_eq!(deploy(v2, "b", 2)["version"], 2);
+    assert_eq!(deploy(v1, "a")["version"], 1);
+    assert_eq!(deploy(v2, "b")["version"], 2);
     assert_eq!(put(&state, "r", "hello").status_code, 200);
     let versions = || body_json(route(&state, &req("GET", "/deployments/r/versions", vec![])))["versions"].clone();
     let listed = versions();
@@ -7573,7 +7573,8 @@ fn every_deploy_is_a_version_and_restoring_one_is_a_new_one() {
     assert_eq!((done["version"].clone(), done["unit"].clone()), (3.into(), to_hex(&v1).into()));
     let listed = versions();
     assert_eq!((listed[0]["number"].clone(), listed[0]["restored_from"].clone(), listed[0]["current"].clone()), (3.into(), 1.into(), true.into()));
-    assert_eq!(body_json(route(&state, &req("GET", "/deployments/r/document", vec![])))["rev"], 1, "its canvas came back with it");
+    assert_eq!(body_json(route(&state, &req("GET", "/deployments/r/document", vec![]))), document_of(&to_hex(&v1)), "its canvas came back with it");
+    assert_eq!(listed[0]["canvas_checked"], true, "checked when version 1 was deployed");
     let st = body_json(route(&state, &req("GET", "/deployments/r/state", vec![])));
     assert!(st.to_string().contains("\"b\""), "the state is as v2 left it: {st}");
     assert_eq!(put(&state, "r", "again").status_code, 200, "it runs as v1 again");
@@ -7808,6 +7809,7 @@ fn versions_from_before_are_numbered_and_open_but_dont_restore() {
     let versions = crate::deploy::complete_versions(vec![legacy("u1", serde_json::json!(1)), legacy("u2", serde_json::json!(2))], current(), &state.store).unwrap();
     assert_eq!(versions.iter().map(|v| (v.number, v.unit.as_str())).collect::<Vec<_>>(), [(1, "u1"), (2, "u2"), (3, "u3")]);
     assert!(versions.iter().all(|v| v.document.is_none() && v.document_ref.is_some() && v.request.is_none()));
+    assert!(versions.iter().all(|v| !v.canvas_checked), "no deploy checked their canvases: they say so");
     // Written again and read back: nothing added twice.
     let again = crate::deploy::complete_versions(versions.clone(), current(), &state.store).unwrap();
     assert_eq!(again, versions);
@@ -7821,7 +7823,7 @@ fn versions_survive_a_restart() {
     let path = unique_temp_path("kept-versions");
     state.deployments_path = path.clone().into();
     let writer = stage_writer(&state, "k");
-    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"], "document": { "rev": 1 } });
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"], "document": document_of(&to_hex(&writer)) });
     assert_eq!(deploy_json(&state, "kept", writer, ack.clone()).status_code, 200);
     assert_eq!(deploy_json(&state, "kept", writer, ack).status_code, 200);
     let text = crate::at_rest::opened(&path, crate::at_rest::role::DEPLOYMENTS);
@@ -7834,7 +7836,7 @@ fn versions_survive_a_restart() {
     let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     let versions = &reloaded["kept"].versions;
     assert_eq!(versions.iter().map(|v| v.number).collect::<Vec<_>>(), [1, 2]);
-    assert!(versions.iter().all(|v| v.request.is_some() && v.document_ref.is_some()));
+    assert!(versions.iter().all(|v| v.request.is_some() && v.document_ref.is_some() && v.canvas_checked));
     route(&state, &req("POST", "/deployments/kept/stop", vec![]));
     assert_eq!(route(&state, &req("DELETE", "/deployments/kept", vec![])).status_code, 200);
     let _ = std::fs::remove_file(&path);
@@ -20615,7 +20617,10 @@ fn the_server_records_what_its_golden_record_holds() {
             skipped.push(sample.name);
             continue;
         }
-        let r = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": asked, "document": plan.document }));
+        // Its `browsers` line goes with it, as `holon deploy` sends it: the server holds a document's
+        // line to the browsers sent.
+        let browsers: Vec<&str> = plan.browsers.as_deref().map(|b| b.split_whitespace().collect()).unwrap_or_default();
+        let r = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": asked, "document": plan.document, "browsers": browsers }));
         if r.status_code != 200 {
             skipped.push(sample.name);
             continue;
