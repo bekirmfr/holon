@@ -336,11 +336,19 @@ Any change to a flow is a new version. **update** deploys it in place:
 - it asks only for what the deployment's grant doesn't already cover;
 - state, collections and sessions are kept;
 - runs parked at an `await` finish on the version they started on;
-- each run records its version, and view mode shows a run on the canvas it ran on.
+- each run records its version, and view mode shows a run on the canvas its code was deployed
+  with.
 
 Every deploy is a version, numbered from 1 and kept for good: its unit, its canvas, when and by
 whom, what its deploy asked, and the state it was deployed with. `GET /deployments/<slug>/versions`
 lists them. Every run keeps the state it left, too: its line in the log names it.
+
+A version's canvas is the text it was deployed with, and the server checks that the text builds
+the unit deployed, so what a person reads is what runs. A unit deployed by its hash alone, with no
+text, keeps none: its versions list, its history and the review of the next version say so,
+rather than showing another version's text. A text that doesn't build the unit sent is refused;
+when the editor or the command line that sent it is of another release than the server, the
+refusal names both, and updating whichever is older and deploying again cures it.
 
 ### Replayed on recent runs
 
@@ -392,7 +400,8 @@ two run is answered 503, to try again in a moment.
 
 Nothing is rewritten: what a restore replaces stays restorable in turn.
 
-- **Code** is deployed again as a new version that names the one it restores. It is checked against
+- **Code** is deployed again as a new version that names the one it restores, with the canvas
+  that version was deployed with (none, if it kept none). It is checked against
   **today's grant**, not the one it had: a secret revoked since stays revoked, and what it needs
   that isn't granted now is listed. `--approve` approves exactly that list; without it nothing
   changes.
@@ -498,7 +507,9 @@ right after it: the version deployed then, and the state then, which is what the
 left, or what the restore before it put back (a restore names the point it put back, `from` in
 its event). Picked:
 
-- **canvas** (a version) shows the canvas it was deployed with;
+- **canvas** (a version) shows the canvas it was deployed with: `none kept` for one deployed
+  without its text, and, for one deployed before the server checked every deploy's text, that it
+  may show other code than it runs;
 - **code**, **state** or **both** restore it, as `holon restore` does: a dry run first, its
   result in a dry-run window (nothing has changed yet) that says what it would change, part by
   part (the code; what it touches, row by row, as `holon restore --dry-run` says it; the keys,

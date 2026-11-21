@@ -213,6 +213,9 @@ holon deploy <file> [--server PORT|URL] [--slug NAME] [--approve]
 ```
 
 Compiles the flow and deploys it, as the editor's deploy does: under its own name, or `--slug`.
+It sends the flow's text beside the unit, and the server checks that the text builds that unit:
+a server of another release whose compiler builds it otherwise refuses it, naming both releases
+(update whichever is older, `holon update`, and deploy again).
 From the server you run on this machine, signed in as you; with several running, `--server PORT`
 picks one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), signed in as you with [`holon login`](#holon-login-logout), or as an agent or a service with its token in `HOLON_TOKEN`. A
 password or a token goes over https, or plain http only to this machine: a host given bare is
@@ -985,7 +988,9 @@ holon history <slug> [--last N] [--events] [--server PORT|URL]
 A deployment's timeline, oldest first: its runs, and its events, what was done to it and by whom
 (deploys, restores, grant changes, secrets, bindings for it, pausing and running). `--last N`: the
 newest N runs, 20 by default, with the events among them. `--events`: every event, without the
-runs. See [The timeline](../guides/deploying.md#the-timeline).
+runs. A deploy that kept no text (a unit deployed by its hash alone) says `(no text kept)`, and
+one deployed before the server checked every deploy's text `(its text not checked against its
+code)`. See [The timeline](../guides/deploying.md#the-timeline).
 
 ## `holon restore`
 
@@ -996,7 +1001,9 @@ holon restore <slug> --to-run SEQ [--code] [--state] [--dry-run] [--approve] [--
 ```
 
 Without a point, lists a deployment's versions, newest first: every deploy is one, kept for good;
-`state kept` marks those whose state can be put back.
+`state kept` marks those whose state can be put back, `no text kept` those deployed without their
+text, and `text not checked against its code` those deployed before the server checked every
+deploy's text.
 
 | Option | |
 |---|---|

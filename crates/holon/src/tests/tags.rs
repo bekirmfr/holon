@@ -153,7 +153,7 @@ fn an_agents_new_tag_is_a_proposal() {
     assert!(accounts.tagged("payments").is_empty());
     let approving = "an agent doesn't approve what a flow may do: deploy without \"acknowledge\"; what needs approval waits for a person, as a proposal";
     for unit in [tagged.clone(), "0".repeat(64)] {
-        let asked = json!({ "slug": "e", "unit": unit, "document": {}, "acknowledge": ["Tag(\"payments\")"] });
+        let asked = json!({ "slug": "e", "unit": unit, "document": document_of(&unit), "acknowledge": ["Tag(\"payments\")"] });
         assert_eq!(refusal(send(&state, &scout, "POST", "/deploy", asked)), (403, approving.to_string()), "{unit}");
     }
 }

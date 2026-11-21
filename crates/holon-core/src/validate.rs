@@ -8,7 +8,8 @@
 //! 3. **type compatibility** — `dst == any ∨ src == any ∨ src == dst` (§5).
 //!
 //! Errors are **collected** so an editor can surface all problems at once. A primitive has no
-//! wiring: what is checked of one is that each family parameter it has is one of its values
+//! wiring: what is checked of one is that its ports are its catalog entry's, as the compiler and
+//! the editor make them, and that each family parameter it has is one of its values
 //! ([`crate::FAMILIES`]).
 //!
 //! ## The composite boundary
@@ -52,6 +53,10 @@ pub enum ValidationError {
     /// A family leaf's parameter isn't one of its values ([`crate::FAMILIES`]): what it holds,
     /// none when it has no such parameter.
     FamilyParam { leaf: String, param: String, value: Option<String> },
+    /// A primitive names no leaf of the catalog.
+    UnknownLeaf { leaf: String },
+    /// A leaf's ports aren't its catalog entry's ([`leaf_port_mistakes`]): which, and how.
+    LeafPorts { leaf: String, why: String },
 }
 
 impl std::fmt::Display for ValidationError {
@@ -92,6 +97,8 @@ impl std::fmt::Display for ValidationError {
                     None => write!(f, "{leaf}'s {param} is one of {values}, and it has none"),
                 }
             }
+            ValidationError::UnknownLeaf { leaf } => write!(f, "no leaf is named {leaf:?}"),
+            ValidationError::LeafPorts { leaf, why } => write!(f, "{leaf} {why}"),
         }
     }
 }
@@ -123,6 +130,32 @@ fn mentions_effect(ty: &Type) -> bool {
     }
 }
 
+/// The type a `const`'s or `default`'s ports take for the literal type `ty` it is frozen with,
+/// when it is one a literal is read as (primitives.rs `parse_literal`): Json holds any value.
+pub fn literal_type(ty: &str) -> Option<Type> {
+    match ty {
+        "Number" => Some(Type::Number),
+        "Boolean" => Some(Type::Boolean),
+        "Text" => Some(Type::Text),
+        "Json" => Some(Type::Any),
+        _ => None,
+    }
+}
+
+/// The input a variadic leaf ([`crate::VARIADIC`]) takes after `existing`: the next letter while
+/// they are single letters (a, b → c), else `in<n>`. The editor's "+" and the language's wires
+/// name them so.
+pub fn next_port_name(existing: &[&str]) -> String {
+    let single = !existing.is_empty() && existing.iter().all(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_lowercase());
+    if single {
+        let max = existing.iter().map(|n| n.as_bytes()[0]).max().unwrap_or(b'a');
+        if max < b'z' {
+            return ((max + 1) as char).to_string();
+        }
+    }
+    format!("in{}", existing.len() + 1)
+}
+
 /// What a family leaf's frozen parameters hold that isn't one of their values ([`crate::FAMILIES`]).
 /// An open one is a hole, checked once its template is instantiated.
 fn family_mistakes(name: &str, params: &[crate::Param]) -> Vec<ValidationError> {
@@ -139,13 +172,60 @@ fn family_mistakes(name: &str, params: &[crate::Param]) -> Vec<ValidationError> 
         .collect()
 }
 
-/// Validate a unit's graph. A primitive passes when each family parameter it has is one of its
-/// values. A composite is checked for well-formedness, acyclicity, and type compatibility —
-/// including its boundary edges.
+/// How a leaf's ports differ from its catalog entry's ([`crate::interface_of`]), but for what the
+/// compiler and the editor make of one:
+/// - a `const`'s or `default`'s port typed as the literal its frozen `type` names
+///   ([`literal_type`]);
+/// - a variadic leaf's ([`crate::VARIADIC`]) inputs after its entry's, each named as the "+" names
+///   the next ([`next_port_name`]) and typed as one of the entry's inputs, or as `Any` for a leaf
+///   that hands its extras on ([`crate::PASSES_EXTRA`]).
+///
+/// The host computes a leaf by its name and reads what it does from its ports, so the two are one.
+fn leaf_port_mistakes(name: &str, unit: &Unit) -> Vec<ValidationError> {
+    let Some(entry) = crate::interface_of(name) else {
+        return vec![ValidationError::UnknownLeaf { leaf: name.to_string() }];
+    };
+    let mistake = |why: String| ValidationError::LeafPorts { leaf: name.to_string(), why };
+    let literal = match name {
+        "const" | "default" => unit.params.iter().find(|p| p.name() == "type").and_then(|p| p.value()).and_then(literal_type),
+        _ => None,
+    };
+    let fits = |ty: &Type, catalog: &Type| ty == catalog || literal.as_ref() == Some(ty);
+    let mut errors = Vec::new();
+    for (which, have, want) in [("input", &unit.inputs, &entry.inputs), ("output", &unit.outputs, &entry.outputs)] {
+        let grows = which == "input" && crate::VARIADIC.contains(&name);
+        if have.len() < want.len() || (have.len() > want.len() && !grows) {
+            errors.push(mistake(format!("has {} {which}s, where the catalog gives it {}", have.len(), want.len())));
+        }
+        for (i, (p, w)) in have.iter().zip(want.iter()).enumerate() {
+            if p.name != w.name || !fits(&p.ty, &w.ty) {
+                errors.push(mistake(format!("has {which} {i} {:?}: {:?}, where the catalog has {:?}: {:?}", p.name, p.ty, w.name, w.ty)));
+            }
+        }
+        if !grows {
+            continue;
+        }
+        let passes = crate::PASSES_EXTRA.contains(&name);
+        for i in want.len()..have.len() {
+            let names: Vec<&str> = have[..i].iter().map(|p| p.name.as_str()).collect();
+            let (next, p) = (next_port_name(&names), &have[i]);
+            if p.name != next || !(want.iter().any(|w| w.ty == p.ty) || (passes && p.ty == Type::Any)) {
+                let typed = if passes { "typed as one of its inputs or Any" } else { "typed as one of its inputs" };
+                errors.push(mistake(format!("has {which} {i} {:?}: {:?}, where one more is {next:?}, {typed}", p.name, p.ty)));
+            }
+        }
+    }
+    errors
+}
+
+/// Validate a unit's graph. A primitive passes when its ports are its catalog entry's
+/// ([`leaf_port_mistakes`]) and each family parameter it has is one of its values. A composite is
+/// checked for well-formedness, acyclicity, and type compatibility — including its boundary edges.
 pub fn validate(unit: &Unit, resolver: &impl Resolver) -> Result<(), Vec<ValidationError>> {
     let (children, edges) = match &unit.body {
         UnitBody::Primitive { name } => {
-            let errors = family_mistakes(name, &unit.params);
+            let mut errors = leaf_port_mistakes(name, unit);
+            errors.extend(family_mistakes(name, &unit.params));
             return if errors.is_empty() { Ok(()) } else { Err(errors) };
         }
         UnitBody::Composite { children, edges } => (children, edges),
@@ -380,9 +460,12 @@ mod tests {
     }
 
     #[test]
-    fn primitive_always_valid() {
+    fn primitive_valid_with_its_catalog_ports() {
         let r = MapResolver::new();
-        assert_eq!(validate(&num_binop("add"), &r), Ok(()));
+        assert_eq!(validate(&num_binop("multiply"), &r), Ok(()));
+        // `add` is the catalog's Any + Any: typed as numbers it isn't its entry.
+        let errors = validate(&num_binop("add"), &r).unwrap_err();
+        assert_eq!(errors[0].to_string(), "add has input 0 \"a\": Number, where the catalog has \"a\": Any");
     }
 
     /// A family leaf's parameter is one of its values, or the unit is refused: `compare`'s `op`
@@ -408,6 +491,115 @@ mod tests {
             assert!(default.is_some_and(|d| values.contains(&d)), "{leaf}'s {param} defaults to {default:?}");
             assert_eq!(validate(&unit, &r), Ok(()), "{leaf}");
         }
+    }
+
+    /// **Guards:** a leaf's ports are its catalog entry's (`interface_of`): its inputs (how many,
+    /// their names and types, a sink's trigger last) and its output, but for what the compiler
+    /// and the editor make of one: a `const`'s or `default`'s ports typed as its literal, and a
+    /// variadic leaf's extra inputs, named as its "+" names them and typed as one of its own.
+    ///
+    /// **Why:** a leaf is computed by its name, and the host reads its ports: what an approval
+    /// shows, what is refused and how a value is wired are said of them. A unit's bytes are
+    /// whoever sent them (`POST /unit`), so ports of its own would have the host check one leaf
+    /// and run another.
+    ///
+    /// **If it fails:** a leaf with ports of its own deploys, and the host's checks read the
+    /// ports it was given rather than the ones its computation has.
+    ///
+    /// Every catalog leaf: each port renamed and retyped, one more and one fewer, each refused; as
+    /// the catalog has it, and as the compiler grows or retypes it, taken. The names a variadic
+    /// leaf grows are said here again (a, b → c; else in3), apart from the code that names them.
+    #[test]
+    fn a_leafs_ports_are_its_catalog_entrys() {
+        use crate::{interface_of, Param, Port, GENESIS, PASSES_EXTRA, VARIADIC};
+        let r = MapResolver::new();
+        let mut counts = [0usize; 2];
+        let mut check = |unit: &Unit, taken: bool, what: String| {
+            let got = validate(unit, &r);
+            assert_eq!(got.is_ok(), taken, "{what}: {got:?}\n{unit:?}");
+            counts[taken as usize] += 1;
+        };
+        let port = |name: &str, ty: &Type| Port { name: name.into(), ty: ty.clone() };
+        // A type none of `tys` is (never Any).
+        let unlike = |tys: &[&Type]| [Type::Bytes, Type::Record, Type::Effect, Type::Text].into_iter().find(|t| !tys.contains(&t)).expect("one of four");
+        let next_name = |ports: &[Port]| {
+            let letters = !ports.is_empty() && ports.iter().all(|p| p.name.len() == 1 && p.name.as_bytes()[0].is_ascii_lowercase());
+            match ports.iter().map(|p| p.name.as_bytes()[0]).max() {
+                Some(max) if letters && max < b'z' => ((max + 1) as char).to_string(),
+                _ => format!("in{}", ports.len() + 1),
+            }
+        };
+        fn side(unit: &mut Unit, input: bool) -> &mut Vec<Port> {
+            if input { &mut unit.inputs } else { &mut unit.outputs }
+        }
+        let mut seen = 0;
+        for name in GENESIS {
+            let honest = interface_of(name).expect("a genesis leaf");
+            let with = |change: &dyn Fn(&mut Unit)| {
+                let mut unit = honest.clone();
+                change(&mut unit);
+                unit
+            };
+            check(&honest, true, format!("{name} as the catalog has it"));
+            for input in [true, false] {
+                let was: Vec<Type> = side(&mut honest.clone(), input).iter().map(|p| p.ty.clone()).collect();
+                let which = if input { "input" } else { "output" };
+                for (i, ty) in was.iter().enumerate() {
+                    let to = unlike(&[ty]);
+                    check(&with(&|u| side(u, input)[i].name.push('2')), false, format!("{name}'s {which} {i} renamed"));
+                    check(&with(&|u| side(u, input)[i].ty = to.clone()), false, format!("{name}'s {which} {i} retyped {to:?}"));
+                }
+                if !was.is_empty() {
+                    check(&with(&|u| drop(side(u, input).pop())), false, format!("{name} with one {which} fewer"));
+                }
+            }
+            let out = honest.outputs[0].ty.clone();
+            check(&with(&|u| u.outputs.push(port("out2", &out))), false, format!("{name} with one output more"));
+            // One input more: taken where the leaf is variadic and it is named and typed as the
+            // compiler's or the editor's "+" makes it, refused anywhere else.
+            let next = next_name(&honest.inputs);
+            let own: Vec<&Type> = honest.inputs.iter().map(|p| &p.ty).collect();
+            let variadic = VARIADIC.contains(name);
+            let first = own.first().copied().cloned().unwrap_or(Type::Any);
+            let last = own.last().copied().cloned().unwrap_or(Type::Any);
+            for ty in [first, last] {
+                check(&with(&|u| u.inputs.push(port(&next, &ty))), variadic, format!("{name} with one more input, {next}: {ty:?}"));
+            }
+            check(&with(&|u| u.inputs.push(port(&next, &Type::Any))), variadic && (PASSES_EXTRA.contains(name) || own.contains(&&Type::Any)), format!("{name} with one more input, {next}: Any"));
+            check(&with(&|u| u.inputs.push(port("zz", &own.first().copied().cloned().unwrap_or(Type::Any)))), false, format!("{name} with one more input, misnamed"));
+            check(&with(&|u| u.inputs.push(port(&next, &unlike(&own)))), false, format!("{name} with one more input, of a type it has none of"));
+            if variadic {
+                seen += 1;
+                // Three more, as the "+" names them, each as the first is typed.
+                let grown = with(&|u| {
+                    for _ in 0..3 {
+                        let n = next_name(&u.inputs);
+                        let ty = u.inputs[0].ty.clone();
+                        u.inputs.push(port(&n, &ty));
+                    }
+                });
+                check(&grown, true, format!("{name} grown by three"));
+            }
+        }
+        assert_eq!(seen, VARIADIC.len(), "every variadic leaf is a genesis leaf");
+        // A `const` or `default` typed as its literal, its ports with it; not as another.
+        for name in ["const", "default"] {
+            let honest = interface_of(name).unwrap();
+            for (ty, port_ty) in [("Number", Type::Number), ("Boolean", Type::Boolean), ("Text", Type::Text), ("Json", Type::Any)] {
+                let literal = |port_ty: &Type| Unit {
+                    params: vec![Param::frozen("value", "1"), Param::frozen("type", ty)],
+                    inputs: honest.inputs.iter().map(|p| port(&p.name, port_ty)).collect(),
+                    outputs: honest.outputs.iter().map(|p| port(&p.name, port_ty)).collect(),
+                    ..honest.clone()
+                };
+                check(&literal(&port_ty), true, format!("{name} typed {ty}"));
+                let not = if port_ty == Type::Text { Type::Boolean } else { Type::Text };
+                check(&literal(&not), false, format!("{name} typed {ty}, its ports {not:?}"));
+            }
+        }
+        check(&Unit { body: UnitBody::Primitive { name: "nope".into() }, params: vec![], inputs: vec![], outputs: vec![] }, false, "a leaf the catalog hasn't".into());
+        let [refused, taken] = counts;
+        assert!(refused > 1_500 && taken > 200, "{refused} refused, {taken} taken");
     }
 
     #[test]

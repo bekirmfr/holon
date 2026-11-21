@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **A version's canvas is the text it was deployed with, and the server checks that the text
+  builds its code.** Every deploy that sends a text has it checked, its `browsers` line too, so
+  what a person reads is what runs; a restore deploys a version's code with the text that version
+  was deployed with. A unit deployed by its hash alone keeps no text, and says so where versions
+  are read, rather than showing another version's: the versions list, `holon history` (`no text
+  kept`), `holon restore`'s list and dry run, view mode, and the review of the next version, which
+  shows all of the new text. A version deployed before every deploy's text was checked says its
+  text wasn't checked against its code. When a text doesn't build the code sent and the editor or
+  the command line that sent it is of another release than the server, the refusal names both and
+  says to update whichever is older. Who notices: a script or an agent that deploys by hash; and
+  someone whose command line or editor is of another release than their server, who is now told
+  which.
+- **The server checks each step of a flow's code against its kind of step.** A step's inputs and
+  outputs are held to its leaf's entry in the catalog: their names and types, a constant's type,
+  and the further inputs of a step that takes any number of them; a leaf the catalog doesn't have
+  is named as such. Wherever the server takes code (a deploy and its preview, a replay, a restore,
+  `holon verify` of a run file), code that differs is refused, naming the step and the port. A
+  deployment on disk that no longer passes is held paused when the server starts, with a note
+  saying which step, until it is deployed again from its text; the other flows start as before.
+  Who notices: no one deploying from a flow's text (the editor, `holon deploy`, an agent's
+  `deploy`): the compiler builds no such step, and every sample passes.
 - **A call or a start of another action that a secret decides is now refused, as `holon check`
   said it would be.** Such a step: one in a `try` block the secret can fail (a `JSON.parse` of
   it), or one a test of the secret picks (`if (test) start(x)`, `test ? start(x) : undefined`).

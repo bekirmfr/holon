@@ -43,7 +43,7 @@ fn deploy(state: &AppState, ada: &str, text: &str) -> String {
     let slug = plan.name.clone();
     let (code, preview) = send(state, ada, "POST", "/deploy/preview", json!({ "slug": slug, "unit": plan.unit }));
     assert_eq!(code, 200, "{preview}");
-    let (code, said) = send(state, ada, "POST", "/deploy", json!({ "slug": slug, "unit": plan.unit, "document": {}, "acknowledge": preview["needs_approval"] }));
+    let (code, said) = send(state, ada, "POST", "/deploy", json!({ "slug": slug, "unit": plan.unit, "document": plan.document, "acknowledge": preview["needs_approval"] }));
     assert_eq!(code, 200, "{said}");
     slug
 }
@@ -139,8 +139,16 @@ export const pay = action(async (order) => {
     // Looked for outside the sealed fields: in their ciphertext a short word turns up by chance
     // (`outside_sealed`, R135).
     let on_disk = crate::at_rest::opened(format!("{dir}/deployments.json"), crate::at_rest::role::DEPLOYMENTS);
-    let clear = outside_sealed(&on_disk);
-    assert!(!clear.contains("acme") && !clear.contains("checked"), "the deployments file holds what a run shows: {on_disk}");
+    // Each deployment's document is its code, kept as deployed (flow two's text names `checked`):
+    // what a run shows is looked for outside the documents too, and apart from each version's
+    // `canvas_checked`, which holds the word.
+    let mut records: Value = serde_json::from_str(&on_disk).unwrap();
+    for record in records.as_array_mut().unwrap() {
+        record.as_object_mut().unwrap().remove("document");
+    }
+    let clear = outside_sealed(&records.to_string());
+    let shown_checked = clear.matches("checked").count() - clear.matches("canvas_checked").count();
+    assert!(!clear.contains("acme") && shown_checked == 0, "the deployments file holds what a run shows: {on_disk}");
     assert!(on_disk.contains("\"sealed\""), "the runs are sealed: {on_disk}");
     let mut reloaded = load_deployments(&state.deployments_path, &state.store, &state.policy()).unwrap();
     for (slug, dep) in reloaded.iter_mut() {

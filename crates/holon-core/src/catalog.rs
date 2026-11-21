@@ -141,14 +141,13 @@ pub const GENESIS: &[&str] = &[
 /// extra…)`, `fn(acc, item, extra…)`), the same on every application. That is how a lambda's
 /// captures reach it as inputs (eval's `eval_map`).
 ///
-/// The 4th catalog fact, alongside `compute` / `capabilities_of` / `interface_of`. Purely an
-/// editor concern: growing a *placed* node's port count past the catalog's declared default (2,
-/// same as every other leaf below) — core neither needs nor enforces this list to evaluate
-/// correctly. A `Unit`'s declared `inputs` is free-form data; nothing in `validate`/`hash_unit`
-/// checks it against some external "canonical" shape, and these leaves' `compute` (eval, for `map`
-/// and `fold`) already handles whatever count of values it's actually given. This constant exists so the editor
-/// derives "which leaves may grow" from core, the same way it derives everything else, instead of
-/// hand-listing names in TypeScript that could silently drift from what `compute` actually does.
+/// The 4th catalog fact, alongside `compute` / `capabilities_of` / `interface_of`: which leaves
+/// may take more inputs than their entry declares. These leaves' `compute` (eval, for `map` and
+/// `fold`) handles whatever count of values it's given; `validate` holds every other leaf's inputs
+/// to its entry, and these leaves' extras to the names the editor's "+" gives them
+/// (`next_port_name`), typed as one of their own inputs (or as `Any`, for [`PASSES_EXTRA`]).
+/// The editor derives "which leaves may grow" from here, the same way it derives everything else,
+/// instead of hand-listing names in TypeScript that could silently drift from core.
 pub const VARIADIC: &[&str] = &[
     "add", "multiply", "max", "min", "and", "or", "concat", "list", "map", "fold", "any", "all", "filter", "find", "find_index", "find_last",
     "find_last_index", "sort_by", "merge", "group_by", "json_parse", "json_stringify", "date_utc", "date_set", "from_codes", "bytes_concat",

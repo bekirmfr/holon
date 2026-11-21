@@ -258,31 +258,37 @@ pub(crate) fn load_deployments(
         let Some(unit_hash) = parse_hash(&record.unit) else {
             return Err(format!("deployment {slug:?} in {file:?}: {:?} is not a valid hash", record.unit));
         };
-        let resolver = closure(store, unit_hash)
-            .map_err(|e| format!("deployment {slug:?} in {file:?}: store error: {e:?}"))?;
-        let Some(root_unit) = resolver.resolve(&unit_hash) else {
-            return Err(format!(
-                "deployment {slug:?} in {file:?}: unit {} is not in the store. Start with the --store it \
-                 was deployed into, run with --deployments :memory:, or move {file:?} aside",
-                record.unit
-            ));
-        };
-        // A deployment from before every flow was a server (one run by an interval or by hand,
-        // with no handler) isn't loaded: nothing would start it now (Holon is in development,
-        // so it isn't carried forward).
-        let server = match read_server(root_unit, &resolver) {
-            Ok(s) => s,
-            Err(holon_core::DeclError::NotAServer | holon_core::DeclError::NoHandlers) => {
-                eprintln!("holon: deployment {slug:?} isn't loaded: it has no route, clock, file handler or action, so nothing would start a run. Deploy it again with one.");
-                continue;
+        // A unit this server doesn't run (core's `validate` refuses it: deployed before a rule it
+        // breaks) isn't served: it is loaded paused, saying why, with no handler, its record, runs
+        // and state kept as they are, until a person deploys it again (`unrunnable`).
+        let (server, caps, file_triggers, unrunnable) = match closure(store, unit_hash) {
+            Err(crate::units::Closure::Invalid(why)) => (None, holon_core::Capabilities::default(), Vec::new(), Some(why)),
+            Err(e) => return Err(format!("deployment {slug:?} in {file:?}: store error: {e:?}")),
+            Ok(resolver) => {
+                let Some(root_unit) = resolver.resolve(&unit_hash) else {
+                    return Err(format!(
+                        "deployment {slug:?} in {file:?}: unit {} is not in the store. Start with the --store it \
+                         was deployed into, run with --deployments :memory:, or move {file:?} aside",
+                        record.unit
+                    ));
+                };
+                // A deployment from before every flow was a server (one run by an interval or by
+                // hand, with no handler) isn't loaded: nothing would start it now (Holon is in
+                // development, so it isn't carried forward).
+                let server = match read_server(root_unit, &resolver) {
+                    Ok(s) => s,
+                    Err(holon_core::DeclError::NotAServer | holon_core::DeclError::NoHandlers) => {
+                        eprintln!("holon: deployment {slug:?} isn't loaded: it has no route, clock, file handler or action, so nothing would start a run. Deploy it again with one.");
+                        continue;
+                    }
+                    Err(e) => return Err(format!("deployment {slug:?} in {file:?}: not a valid server declaration: {e:?}")),
+                };
+                (Some(server), holon_core::deployed_capabilities(root_unit, &resolver), holon_core::file_triggers(root_unit, &resolver), None)
             }
-            Err(e) => return Err(format!("deployment {slug:?} in {file:?}: not a valid server declaration: {e:?}")),
         };
-        let caps = holon_core::deployed_capabilities(root_unit, &resolver);
-        let arrivals = Arc::new(arrivals::Watch::open(path, slug, &caps, holon_core::file_triggers(root_unit, &resolver)));
-        let triggers = trigger_labels(&server);
-        let clock_due = vec![SystemTime::now(); server.clocks.len()];
-        let server = Some(server);
+        let arrivals = Arc::new(arrivals::Watch::open(path, slug, &caps, file_triggers));
+        let triggers = server.as_ref().map(trigger_labels).unwrap_or_default();
+        let clock_due = vec![SystemTime::now(); server.as_ref().map_or(0, |s| s.clocks.len())];
 
         // The grant, re-checked against what the unit needs now and the policy in force. A record
         // from before grants is granted what it was acknowledged for at its deploy.
@@ -290,7 +296,10 @@ pub(crate) fn load_deployments(
             Some(grant) => grant,
             None => Grant::for_manifest(&Manifest::new(caps.iter(), Requirements::default()), epoch_now(), "migrated"),
         };
-        let mut attention = grant.attention(&grant.manifest_of(caps.iter()), policy);
+        let mut attention = match &unrunnable {
+            Some(why) => Some(format!("this server doesn't run its unit ({why}): deploy it again from its text, and it runs on with its runs and state")),
+            None => grant.attention(&grant.manifest_of(caps.iter()), policy),
+        };
         if let Some(why) = &attention {
             eprintln!("holon: deployment {slug:?} is paused: {why}");
         }
@@ -330,6 +339,7 @@ pub(crate) fn load_deployments(
             restored_from: None,
             request: None,
             document_ref: None,
+            canvas_checked: false,
             state_at_deploy: None,
             first_seq: None,
             document: record.document.clone(),

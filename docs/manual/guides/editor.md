@@ -278,8 +278,9 @@ why it didn't run. **◀** and **▶** step through the run one node at a time. 
 the same: what didn't run is dimmed, and values sit beside expressions.
 
 The header of the run pane says **✓ replay reproduces the run** when the editor, running the flow
-again from the log, got the same answer. A run on an earlier version is shown on the canvas it
-ran on.
+again from the log, got the same answer. A run on an earlier version is shown on the canvas its
+code was deployed with. A version deployed without its text keeps none: its run is shown on the
+text another version of the same code was deployed with, or the pane says no canvas is kept.
 
 **A failed run** opens on the node where it failed, outlined in red, with the reason, and its
 wires out in red. Nodes that didn't run because of it are dimmed, with a dotted border, saying

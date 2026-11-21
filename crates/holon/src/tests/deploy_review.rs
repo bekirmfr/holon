@@ -135,7 +135,7 @@ fn a_flow_call_runs_only_what_whoever_deploys_it_may_run() {
     let (needs, lines, _) = review(&state, &scout, "promo", &promo);
     assert_eq!(needs, json!(["RunsAction(\"payments/payout\")"]));
     assert!(lines.contains(&"  ! flow payments: run payout — asked again: approved by confirming; scout may not run it: it waits for someone who may, as a proposal".to_string()), "{lines:#?}");
-    let approve = json!({ "slug": "promo", "unit": promo, "document": {}, "acknowledge": ["RunsAction(\"payments/payout\")"] });
+    let approve = json!({ "slug": "promo", "unit": promo, "document": document_of(&promo), "acknowledge": ["RunsAction(\"payments/payout\")"] });
     let (code, answer) = send(&state, &bob, "POST", "/deploy", approve.clone());
     assert_eq!((code, answer["error"].as_str().unwrap_or_default()), (403, bobs), "bob doesn't approve it");
     assert_eq!(send(&state, &pat, "POST", "/deploy", approve).0, 200, "pat does");
@@ -433,6 +433,115 @@ fn a_review_shows_all_a_version_changes_and_what_it_shows_deploys() {
     let (code, answer) = again(document_of(&next));
     assert_eq!(code, 400, "{answer}");
     assert_eq!(again(document_of(&base)).0, 200);
+}
+
+/// R180: a version's canvas is the code it runs. Whoever deploys a version sends the document its
+/// unit is built from, or none: a person, an agent, a script by hash alike (a proposal's is held to
+/// it in the test above). One that builds other code is refused, naming both releases when the
+/// client that built it is another; one deployed without a document has no canvas and says so,
+/// never showing another version's. A restore deploys a version's pair as it was deployed, not
+/// built again by today's compiler: checked then, or saying it wasn't.
+#[test]
+fn a_versions_canvas_is_the_code_it_runs() {
+    let (state, book, ada) = server();
+    let scout = agent(&book, "scout");
+    let text = |says: &str| format!("import {{ flow, route }} from \"holon\"\n\nflow(\"canvas\", {{ port: 18471 }})\n\nroute.get(\"/\", () => \"{says}\")\n");
+    let (a, b) = (stage(&state, &ada, &text("a")), stage(&state, &ada, &text("b")));
+    let other = stage(&state, &ada, "import { flow, route } from \"holon\"\n\nflow(\"other\", { port: 18472 })\n\nroute.get(\"/\", () => \"other\")\n");
+    let ours = env!("CARGO_PKG_VERSION");
+    let deploy = |token: &str, unit: &str, document: &Value, made_with: Option<&str>| {
+        let mut body = json!({ "slug": "canvas", "unit": unit, "document": document });
+        if token == ada {
+            body["acknowledge"] = send(&state, token, "POST", "/deploy/preview", json!({ "slug": "canvas", "unit": unit })).1["needs_approval"].clone();
+        }
+        if let Some(release) = made_with {
+            body["made_with"] = json!(release);
+        }
+        send(&state, token, "POST", "/deploy", body)
+    };
+    let versions = || send(&state, &ada, "GET", "/deployments/canvas/versions", Value::Null).1["versions"].as_array().unwrap().clone();
+    let entry = |n: u64| versions().into_iter().find(|v| v["number"] == n).unwrap_or_else(|| panic!("no version {n}"));
+    let document = |query: &str| send(&state, &ada, "GET", &format!("/deployments/canvas/document{query}"), Value::Null);
+    // Version `n`'s canvas is `want` (none when null), checked or not, as its own and as the
+    // current one's.
+    let shows = |what: &str, n: u64, want: &Value, checked: bool| {
+        let (listed, own, now) = (entry(n), document(&format!("?version={n}")), document(""));
+        assert_eq!((&listed["canvas"], &listed["canvas_checked"]), (&json!(!want.is_null()), &json!(checked)), "{what}: {listed}");
+        if want.is_null() {
+            assert!(own.0 == 404 && own.1["error"].as_str().unwrap().contains("deployed without its canvas: none is kept"), "{what}: {own:?}");
+            assert!(now.0 == 404 && now.1["error"].as_str().unwrap().contains("none is kept"), "{what}: {now:?}");
+        } else {
+            assert_eq!((own.0, &own.1), (200, want), "{what}");
+            assert_eq!((now.0, &now.1), (200, want), "{what}");
+        }
+    };
+
+    let (code, said) = deploy(&ada, &a, &document_of(&a), None);
+    assert_eq!((code, &said["version"]), (200, &json!(1)), "{said}");
+    shows("a person, with its own document", 1, &document_of(&a), true);
+    at_once(&state, &ada, "canvas");
+    // Each deploy in turn: who, which unit, the document it sends, the release its client says
+    // built it, and what comes of it: the version it makes, or what its refusal says.
+    let other_release = format!("It was built by Holon 0.1.0-rc.1, and this server is Holon {ours}, whose compiler may build it otherwise");
+    type Row<'a> = (&'a str, &'a str, &'a str, Value, Option<&'a str>, Result<u64, &'a str>);
+    let rows: [Row<'_>; 6] = [
+        ("a person, with another flow's document", &ada, &b, document_of(&other), None, Err("the document sent deploys as ")),
+        ("a person whose client is another release", &ada, &b, document_of(&a), Some("0.1.0-rc.1"), Err(other_release.as_str())),
+        ("a script by hash, without a document", &ada, &b, Value::Null, None, Ok(2)),
+        ("an agent at once, with its own document", &scout, &a, document_of(&a), None, Ok(3)),
+        ("an agent, with another version's document", &scout, &b, document_of(&a), Some(ours), Err("the document sent deploys as ")),
+        ("a person, with its own document again", &ada, &b, document_of(&b), Some(ours), Ok(4)),
+    ];
+    for (what, token, unit, sent, made_with, then) in rows {
+        let before = versions().len();
+        let (code, said) = deploy(token, unit, &sent, made_with);
+        match then {
+            Ok(n) => {
+                assert_eq!((code, &said["version"]), (200, &json!(n)), "{what}: {said}");
+                shows(what, n, &sent, !sent.is_null());
+            }
+            Err(refused) => {
+                let error = said["error"].as_str().unwrap_or_default();
+                assert!(code == 400 && error.contains(refused), "{what}: {said}");
+                // Releases are named only when the client's is another: what to do, then, too.
+                let skewed = made_with.is_some_and(|r| r != ours);
+                assert_eq!(error.contains("built by Holon"), skewed, "{what}: {error}");
+                assert_eq!(error.contains("update whichever is older"), skewed, "{what}: {error}");
+                assert_eq!(versions().len(), before, "{what}: nothing deployed");
+            }
+        }
+    }
+
+    // A restore deploys the version's pair as it was deployed: its dry run says which it is.
+    let restore = |n: u64, dry_run: bool| send(&state, &ada, "POST", "/deployments/canvas/restore", json!({ "version": n, "code": true, "dry_run": dry_run }));
+    let says = |n: u64| {
+        let (code, preview) = restore(n, true);
+        assert_eq!(code, 200, "{preview}");
+        (preview["canvas"].clone(), preview["canvas_checked"].clone())
+    };
+    assert_eq!(says(2), (json!(false), json!(false)), "version 2 keeps no canvas");
+    assert_eq!(restore(2, false).1["version"], 5);
+    shows("version 2 restored", 5, &Value::Null, false);
+    assert_eq!(says(1), (json!(true), json!(true)));
+    assert_eq!(restore(1, false).1["version"], 6);
+    shows("version 1 restored", 6, &document_of(&a), true);
+    // Version 3 as one deployed before this rule reads: never checked, and its document, say,
+    // another version's. Restored, it is deployed as it was, not refused nor built again, and says
+    // it wasn't checked.
+    {
+        let mut table = state.deployments.lock().unwrap();
+        let kept = &mut table.get_mut("canvas").unwrap().versions;
+        let bs = kept.iter().find(|v| v.number == 4).unwrap().document_ref.clone();
+        let three = kept.iter_mut().find(|v| v.number == 3).unwrap();
+        (three.document_ref, three.canvas_checked) = (bs, false);
+    }
+    assert_eq!(says(3), (json!(true), json!(false)));
+    let (code, said) = restore(3, false);
+    assert_eq!((code, &said["version"], &said["unit"]), (200, &json!(7), &json!(a)), "{said}");
+    shows("version 3 restored", 7, &document_of(&b), false);
+    // By code, a run's canvas is one checked to build it, before one that wasn't.
+    assert_eq!(document(&format!("?unit={a}")).1, document_of(&a));
+    assert_eq!(document(&format!("?unit={b}")).1, document_of(&b));
 }
 
 /// R22: a flow whose canvas has two approvals named alike, asking for other steps (the language

@@ -33,6 +33,7 @@ import {
   getProposal,
   getVersions,
   previewDeploy,
+  ServerError,
   type DeployPreview,
   type DeploymentEntry,
   type FlowDocument,
@@ -125,7 +126,9 @@ export function ReviewPage({
         proposal?.document !== undefined
           ? { name: slug, document: proposal.document, saved_at_epoch_seconds: proposal.saved_at ?? Math.floor(proposal.at_ms / 1000), saved_by: proposal.by }
           : await getFlow(slug);
-      const deployedDoc = entry ? await getDeployedDocument(slug) : null;
+      // The version deployed now keeps no text when it was deployed without one (by hash): this
+      // one is read whole, beside nothing.
+      const deployedDoc = entry ? await getDeployedDocument(slug).catch((e: unknown) => (e instanceof ServerError && e.status === 404 ? null : Promise.reject(e))) : null;
       const versions = entry ? await getVersions(slug) : [];
       const { hash, document } = await prepare(slug, saved.document);
       // What it shows is its document; what approving deploys is the unit that builds. The server
@@ -344,7 +347,13 @@ export function ReviewPage({
               </div>
             </div>
             {view === "changes" ? (
-              <Review hunks={[codeHunk(data.deployedText, data.text), ...touchHunks(touchLines(data.preview.touches, data.preview.settings))]} label="changes" />
+              <Review
+                hunks={[
+                  codeHunk(data.deployedText, data.text, data.current && !data.current.canvas ? `code (version ${data.current.number} keeps no text: all of this one is shown)` : "code"),
+                  ...touchHunks(touchLines(data.preview.touches, data.preview.settings)),
+                ]}
+                label="changes"
+              />
             ) : view === "whole" ? (
               <Whole lines={lines} line={line} />
             ) : (

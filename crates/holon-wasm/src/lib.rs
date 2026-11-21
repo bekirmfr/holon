@@ -507,6 +507,10 @@ pub enum WValidationError {
     Module { message: String },
     /// A family leaf's parameter outside its values: the leaf, the parameter, what it holds.
     FamilyParam { leaf: String, param: String, value: Option<String>, message: String },
+    /// A leaf the catalog hasn't.
+    UnknownLeaf { leaf: String, message: String },
+    /// A leaf whose ports aren't its catalog entry's: the message says which, and how.
+    LeafPorts { leaf: String, message: String },
 }
 
 impl WValidationError {
@@ -539,6 +543,8 @@ impl WValidationError {
             ValidationError::FamilyParam { leaf, param, value } => {
                 WValidationError::FamilyParam { leaf: leaf.clone(), param: param.clone(), value: value.clone(), message }
             }
+            ValidationError::UnknownLeaf { leaf } => WValidationError::UnknownLeaf { leaf: leaf.clone(), message },
+            ValidationError::LeafPorts { leaf, .. } => WValidationError::LeafPorts { leaf: leaf.clone(), message },
             ValidationError::TypeMismatch { edge, src, dst } => WValidationError::TypeMismatch {
                 edge: *edge,
                 src: WType::from_core(src),

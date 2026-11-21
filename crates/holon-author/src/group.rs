@@ -51,7 +51,14 @@ fn validation_children(err: &ValidationError, edges: &[holon_core::Edge]) -> Vec
         ValidationError::TypeMismatch { edge, .. } => {
             edges.get(*edge).map(|e| [e.from_child, e.to_child].into_iter().filter(|&c| c != BOUNDARY).collect()).unwrap_or_default()
         }
-        ValidationError::BoundaryInputOutOfRange { .. } | ValidationError::BoundaryOutputOutOfRange { .. } | ValidationError::Cycle | ValidationError::Module(_) | ValidationError::FamilyParam { .. } => vec![],
+        // A leaf's own mistakes (a parameter, its ports, its name) are the leaf's, not a child's.
+        ValidationError::BoundaryInputOutOfRange { .. }
+        | ValidationError::BoundaryOutputOutOfRange { .. }
+        | ValidationError::Cycle
+        | ValidationError::Module(_)
+        | ValidationError::FamilyParam { .. }
+        | ValidationError::UnknownLeaf { .. }
+        | ValidationError::LeafPorts { .. } => vec![],
     }
 }
 
