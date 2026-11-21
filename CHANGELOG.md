@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.1.0-rc.37
+
+- **Known limit of this release: an early answer above a wait.** An action that answers early,
+  with a `return` above its wait, can fail to give that answer. This happens when a later step
+  uses what the wait gave, in a send, a request, the start of another action, a call of one of the
+  flow's own functions, or as a collection's key. The caller then gets the wait's link instead of
+  the answer, and nothing more. For example: `if (order.skip) return "skipped"`, then
+  `const go = await event("go")`, then a send that uses `go`. Started with `skip: true`, the
+  caller gets a waiting link, not "skipped". That link works once, says "ok", and sends nothing.
+  To avoid it, make the early check in the route, before it starts the action. Actions with no
+  `return` above a wait are not affected, and neither are runs that don't take the early return.
 - **A version's canvas is the text it was deployed with, and the server checks that the text
   builds its code.** Every deploy that sends a text has it checked, its `browsers` line too, so
   what a person reads is what runs; a restore deploys a version's code with the text that version
