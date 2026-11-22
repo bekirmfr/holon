@@ -37,7 +37,10 @@
 //! of `EFFECTS` (and its mark where the log is read, `flow_does`), a new condition a line of
 //! `CONDITIONS`, a new request a line of `REQUESTS`. None needs its answer written.
 
-use super::reached::{Debt, AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, A_FINALLY_FORGETS_THE_RETURN_ABOVE, A_LINE_AFTER_A_FAILURE_RUNS};
+use super::reached::{
+    Debt, AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, A_CHOICE_IN_A_FUNCTION_STARTS, A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, A_FINALLY_FORGETS_THE_RETURN_ABOVE,
+    A_FUNCTIONS_OWN_CONDITION, A_LINE_AFTER_A_FAILURE_RUNS, A_LISTS_FUNCTION_LOSES_ITS_WRITE, A_LISTS_FUNCTION_STARTS_PAST_A_RETURN,
+};
 use super::*;
 
 /// The kinds of thing a handler does: the mark each leaves, the statement that does it, and the
@@ -45,7 +48,12 @@ use super::*;
 /// calls out, `ping` an action of the flow's. A function places functions, so each is also reached
 /// through others that return none of what it does (`rec2`, `rec3`, `ask2`) or only a part of it
 /// (`part`, which returns `both`'s put and not its write): what a function does, the one placing
-/// it does.
+/// it does. `news` is a channel, `gone` a collection a key is deleted from. `bump` writes and is
+/// bound to a name; `go` starts `ping`, `maybe` starts it in an arm of `?:` of its own; `askif`
+/// calls out under a condition of its own; `held` has a try block of its own that writes and puts
+/// and then reads its text as JSON, and sends in its catch (given what isn't JSON, `ft`, its block
+/// fails; given JSON, `fu`, it doesn't); `fin` returns early when given "a", and else enters a try
+/// whose finally writes. A list's `.map` places a function that writes (`lf`) or starts (`ls`).
 const EFFECTS: &[(&str, &str, &str)] = &[
     ("w", "++state.w", ""),
     ("ws", "state.w = \"v\"", ""),
@@ -59,6 +67,17 @@ const EFFECTS: &[(&str, &str, &str)] = &[
     ("f3", "rec3(\"a\")", "rec3(\"a\")"),
     ("fp", "part(\"a\")", "part(\"a\").did"),
     ("g2", "const asked = await ask2(\"a\")", "await ask2(\"a\")"),
+    ("c", "news.send({ n: 1 })", ""),
+    ("d", "delete gone[\"k\"]", ""),
+    ("fb", "const n = bump(\"a\")", "bump(\"a\")"),
+    ("fs", "go(\"a\")", "go(\"a\")"),
+    ("fr", "maybe(\"a\")", "maybe(\"a\")"),
+    ("gi", "const asked = await askif(\"a\")", "await askif(\"a\")"),
+    ("ft", "held(\"a\")", "held(\"a\")"),
+    ("fu", "held(\"{}\")", "held(\"{}\")"),
+    ("fy", "fin(req.json.k ?? \"none\")", "fin(req.json.k ?? \"none\")"),
+    ("lf", "const each = [req.body].map((x) => rec(x))", "[req.body].map((x) => rec(x))"),
+    ("ls", "const each = [req.body].map((x) => ping(x))", "[req.body].map((x) => ping(x))"),
 ];
 
 /// The forms a condition takes, over fields a request may lack: as written, as a flow reads it
@@ -289,11 +308,18 @@ fn branch_end(s: &str, at: usize) -> usize {
 /// A flow of `handlers`, each a route `POST /r<i>`: only what they use is imported and defined.
 fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)]) -> String {
     let uses = |what: &str| handlers.iter().any(|(_, c)| c.body.contains(what));
-    let mut text = format!("import {{ {}flow, route{} }} from \"holon\"\nimport state from \"state\"\n", if uses("ping(") { "action, " } else { "" }, if uses("status(") { ", status" } else { "" });
-    if uses("marks.") || uses("part(") {
+    let starts = uses("ping(") || uses("go(\"") || uses("maybe(");
+    let mut text = format!("import {{ {}flow, route{} }} from \"holon\"\nimport state from \"state\"\n", if starts { "action, " } else { "" }, if uses("status(") { ", status" } else { "" });
+    if uses("marks.") || uses("part(") || uses("held(") {
         text.push_str("import marks from \"collection:marks\"\n");
     }
-    if uses("api.") || uses("ask(") || uses("ask2(") {
+    if uses("gone[") {
+        text.push_str("import gone from \"collection:gone\"\n");
+    }
+    if uses("news.") || uses("held(") {
+        text.push_str("import news from \"channel:news\"\n");
+    }
+    if uses("api.") || uses("ask(") || uses("ask2(") || uses("askif(") {
         text.push_str(&format!("import api from \"host:{host}\"\n"));
     }
     text.push_str(&format!("\nflow(\"{name}\", {{ port: {port} }})\n"));
@@ -316,7 +342,25 @@ fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)]) -> 
     if uses("ask2(") {
         text.push_str("\nasync function ask2(x) {\n  const got = await ask(x)\n  return got ?? 0\n}\n");
     }
-    if uses("ping(") {
+    if uses("askif(") {
+        text.push_str("\nasync function askif(x) {\n  if (x) {\n    const sent = await api.post(\"/in\", { body: x })\n  }\n  return 1\n}\n");
+    }
+    if uses("bump(") {
+        text.push_str("\nfunction bump(x) {\n  ++state.f\n  return x\n}\n");
+    }
+    if uses("go(\"") {
+        text.push_str("\nfunction go(x) {\n  ping({})\n  return `went ${x}`\n}\n");
+    }
+    if uses("maybe(") {
+        text.push_str("\nfunction maybe(x) {\n  return x ? ping(x) : 0\n}\n");
+    }
+    if uses("fin(") {
+        text.push_str("\nfunction fin(x) {\n  if (x === \"a\") return \"skipped\"\n  try {\n    const parsed = JSON.parse(x)\n  } catch {\n    return \"kept\"\n  } finally {\n    ++state.f\n  }\n  return \"parsed\"\n}\n");
+    }
+    if uses("held(") {
+        text.push_str("\nfunction held(x) {\n  try {\n    ++state.f\n    marks.put(\"k\", x)\n    const parsed = JSON.parse(x)\n    return \"parsed\"\n  } catch {\n    news.send({ n: x })\n    return \"kept\"\n  }\n}\n");
+    }
+    if starts {
         text.push_str("\nexport const ping = action(() => ++state.pinged)\n");
     }
     for (i, case) in handlers {
@@ -338,7 +382,7 @@ struct Did {
 /// reads it. The names a handler uses are stand-ins that leave their mark; `await` is dropped,
 /// since they answer at once.
 fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
-    let names = "state, marks, console, ping, rec, rec2, rec3, part, ask, ask2, api, status, mark, undo";
+    let names = "state, marks, console, ping, rec, rec2, rec3, part, ask, ask2, api, status, mark, undo, news, gone, bump, go, maybe, askif, held, fin";
     let made: Vec<String> = handlers
         .iter()
         .map(|c| {
@@ -352,7 +396,7 @@ fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
   const handlers = [
 {}
   ];
-  const run = (make, req) => {{
+  const run = (make, req, promise) => {{
     const fx = [];
     const state = {{}};
     const env = {{
@@ -368,6 +412,29 @@ fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
       ask2: () => {{ fx.push("g"); return 200 }},
       api: {{ post: () => {{ fx.push("r"); return {{ status: 200, body: "fast" }} }} }},
       status: (n) => ({{ status: n }}),
+      news: {{ send: () => {{ fx.push("c") }} }},
+      gone: new Proxy({{}}, {{ deleteProperty: () => {{ fx.push("d"); return true }} }}),
+      bump: (x) => {{ fx.push("f"); return x }},
+      go: (x) => {{ fx.push("s"); return "went " + x }},
+      maybe: (x) => {{ if (x) fx.push("s"); return x ? {{ run: "r" }} : 0 }},
+      askif: (x) => {{ if (x) fx.push("g"); return 1 }},
+      // Its block writes and puts before it fails: JavaScript keeps both, the try's promise
+      // neither.
+      held: (x) => {{
+        let ok = true;
+        try {{ JSON.parse(x) }} catch (e) {{ ok = false }}
+        if (ok || !promise) fx.push("f", "p");
+        if (!ok) fx.push("c");
+        return ok ? "parsed" : "kept";
+      }},
+      // Its finally runs where its try was entered: not past the return before it.
+      fin: (x) => {{
+        if (x === "a") return "skipped";
+        fx.push("f");
+        let ok = true;
+        try {{ JSON.parse(x) }} catch (e) {{ ok = false }}
+        return ok ? "parsed" : "kept";
+      }},
       // The try's promise (§6.5): what a failed block made is undone, but for its requests.
       mark: () => [fx.length, Object.assign({{}}, state)],
       undo: ([n, kept]) => {{
@@ -381,7 +448,7 @@ fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
     for (const k of Object.keys(state)) fx.push(k);
     return {{ marks: fx.sort().join(""), threw }};
   }};
-  return handlers.map(([written, read]) => requests.map((req) => [run(written, req), run(read, req)]));
+  return handlers.map(([written, read]) => requests.map((req) => [run(written, req, false), run(read, req, true)]));
 }}"#,
         made.join(",\n")
     );
@@ -433,6 +500,8 @@ fn flow_does(state: &AppState, slug: &str, i: usize, body: &str, seen: &mut Opti
                 "StateWrite(\"o\")" => marks.push("o"),
                 "StateWrite(\"f\")" => marks.push("f"),
                 "CollectionWrite(\"marks\")" => marks.push("p"),
+                "CollectionWrite(\"gone\")" => marks.push("d"),
+                "ChannelSend(\"news\")" => marks.push("c"),
                 other => panic!("an effect the grid doesn't know: {other}"),
             }
         }
@@ -455,8 +524,7 @@ fn flow_does(state: &AppState, slug: &str, i: usize, body: &str, seen: &mut Opti
 
 /// Where a flow doesn't yet do what it reads as, and why: debts, each to be paid by a change to
 /// the language and then struck from here. A difference outside these fails the test, and so does
-/// one of these that no longer differs anywhere.
-/// The debts are reached's (`reached.rs`, one smallest flow each), and the started half, carried
+/// one of these that no longer differs anywhere. The debts are reached's (`reached.rs`, one smallest flow each), and the started half, carried
 /// from the try's own work.
 const DEBTS: &[&Debt] = &[
     &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE,
@@ -464,6 +532,11 @@ const DEBTS: &[&Debt] = &[
     &A_FINALLY_FORGETS_THE_RETURN_ABOVE,
     &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &A_LINE_AFTER_A_FAILURE_RUNS,
+    &A_FUNCTIONS_OWN_CONDITION,
+    &A_LISTS_FUNCTION_STARTS_PAST_A_RETURN,
+    &A_LISTS_FUNCTION_LOSES_ITS_WRITE,
+    &A_CHOICE_IN_A_FUNCTION_STARTS,
+    &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
 ];
 
 /// The started half: a start in a try block that then fails is made, as JavaScript makes it,
@@ -471,34 +544,74 @@ const DEBTS: &[&Debt] = &[
 /// own design, open).
 const THE_STARTED_HALF: Debt = Debt {
     name: "the started half",
-    says: "an action a try block starts, bound to a name, is started though the block then fails",
+    says: "an action a try block starts, bound to a name or through a function, is started though the block then fails",
 };
 
 /// The shapes whose try block fails on some request, the statement in it reached before.
 const FAILING_TRIES: &[&str] = &["before a failure in a try", "bound before a failure in a try", "returned after a failure in a try", "before a throw in a try"];
 
+/// Where the compiler refuses a handler with a fault of its own (a graph that can't run), known and
+/// owned elsewhere: by shape and effect, and why. Each is left out as a refusal is, and one that
+/// compiles again fails the test, to be struck from here.
+const KNOWN_FAULTS: &[(&str, &str, &str)] = &[(
+    "tied to a value there",
+    "ls",
+    "a list's function that starts an action, bound under a condition (`if (v) got = [\"a\"].map((x) => ping(x))`): \"`after` ties a write or a call to what it names: this statement makes none\" (R174)",
+)];
+
 /// Handlers the reader takes and `lang::compile` refuses, as their steps written back as text read
 /// as other steps: each debt, and the cases owed under it. Paid when the printer writes the form
 /// as the same steps; then the debt fails the test until it is struck.
 type Owes = fn(&Case) -> bool;
-const ROUND_TRIP_DEBTS: &[(&str, Owes)] = &[("the printer writes && / || around an awaited function as other steps", |c| {
-    matches!(c.shape, "after &&" | "after ||") && c.mark == "g" && c.condition == "req.json.c"
-})];
+const ROUND_TRIP_DEBTS: &[(&str, Owes)] = &[
+    ("the printer writes && / || around an awaited function as other steps", |c| matches!(c.shape, "after &&" | "after ||") && c.mark == "g" && c.condition == "req.json.c"),
+    // Found by the grid's new columns (2026-11-22): the same shape, a function with a try block
+    // of its own.
+    ("the printer writes && / || around a function with a try of its own as other steps", |c| {
+        matches!(c.shape, "after &&" | "after ||") && matches!(c.mark, "ft" | "fu" | "fy") && c.condition == "req.json.c"
+    }),
+    // Reached's debts whose smallest flow the round trip refuses (reached.rs, `Today::Refused`).
+    (A_FUNCTIONS_OWN_CONDITION.name, |c| c.mark == "fs"),
+    (A_LISTS_FUNCTION_LOSES_ITS_WRITE.name, |c| c.mark == "lf"),
+    (A_LISTS_FUNCTION_STARTS_PAST_A_RETURN.name, |c| c.mark == "ls"),
+    (A_CHOICE_IN_A_FUNCTION_STARTS.name, |c| c.mark == "fr"),
+];
 
 /// The debt a run that differs is owed under, by its case and request and the difference, mark by
 /// mark: what the flow made that it reads as not making (`made`), and what it didn't make that it
 /// reads as making (`missed`). Each debt names one difference; any other fails.
-fn debt(case: &Case, request: &str, made: &str, missed: &str) -> Option<&'static Debt> {
-    let only = |s: &str, of: &str| !s.is_empty() && s.chars().all(|c| of.contains(c));
-    let function = matches!(case.mark, "f" | "f2" | "f3" | "fp");
-    match case.shape {
-        "after a failure, no try" if request == "not json" && missed.is_empty() && !made.is_empty() => Some(&A_LINE_AFTER_A_FAILURE_RUNS),
-        shape if FAILING_TRIES.contains(&shape) && missed.is_empty() && function && only(made, "fp") => Some(&A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE),
-        shape if FAILING_TRIES.contains(&shape) && missed.is_empty() && case.mark == "s" && made == "s" => Some(&THE_STARTED_HALF),
-        "in a finally, a return above" | "in a try without a catch, a return above" if missed.is_empty() && only(made, "wo") => Some(&A_FINALLY_FORGETS_THE_RETURN_ABOVE),
-        "a branch of ?:, read only in a branch" if made.is_empty() && matches!(case.mark, "s" | "r") && missed == case.mark => Some(&AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE),
-        _ => None,
-    }
+fn debt(case: &Case, request: &str, made: &str, missed: &str) -> Option<Vec<&'static Debt>> {
+    let (mut made, mut missed) = (made.to_string(), missed.to_string());
+    let mut owed: Vec<&'static Debt> = Vec::new();
+    // Each debt that applies to the cell explains the marks of its kinds the flow made or missed.
+    let mut explain = |applies: bool, debt: &'static Debt, made_kinds: &str, missed_kinds: &str| {
+        if !applies {
+            return;
+        }
+        let (m, x) = (made.len(), missed.len());
+        made.retain(|c| !made_kinds.contains(c));
+        missed.retain(|c| !missed_kinds.contains(c));
+        if (made.len(), missed.len()) != (m, x) {
+            owed.push(debt);
+        }
+    };
+    let (shape, mark) = (case.shape, case.mark);
+    let failing_try = FAILING_TRIES.contains(&shape);
+    // `fin` returns early on "a": its finally's write there is W's; elsewhere, in a try that fails,
+    // it is a write the failed try keeps.
+    let early = request.contains("\"k\":\"a\"");
+    explain(shape == "after a failure, no try" && request == "not json", &A_LINE_AFTER_A_FAILURE_RUNS, "wofpcdgrsl", "");
+    explain(matches!(shape, "in a finally, a return above" | "in a try without a catch, a return above"), &A_FINALLY_FORGETS_THE_RETURN_ABOVE, "wo", "");
+    explain(mark == "fy" && (early || !failing_try), &A_FINALLY_FORGETS_THE_RETURN_ABOVE, "f", "");
+    explain(failing_try && matches!(mark, "f" | "f2" | "f3" | "fp" | "fu" | "ft" | "fy"), &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, "fp", "");
+    explain(failing_try && matches!(mark, "s" | "fs" | "fr"), &THE_STARTED_HALF, "s", "");
+    explain(shape == "a branch of ?:, read only in a branch" && matches!(mark, "s" | "r"), &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "", "sr");
+    explain(matches!(shape, "bound, and read in a branch" | "a branch of ?:, read only in a branch") && matches!(mark, "ls" | "fr"), &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "", "s");
+    explain(matches!(mark, "ft" | "fu" | "gi"), &A_FUNCTIONS_OWN_CONDITION, "cpg", "");
+    explain(mark == "ls", &A_LISTS_FUNCTION_STARTS_PAST_A_RETURN, "s", "");
+    explain(mark == "lf", &A_LISTS_FUNCTION_LOSES_ITS_WRITE, "", "f");
+    explain(mark == "fr", &A_CHOICE_IN_A_FUNCTION_STARTS, "s", "");
+    (made.is_empty() && missed.is_empty() && !owed.is_empty()).then_some(owed)
 }
 
 /// What `did` has that `reads` hasn't, and what it lacks, letter by letter.
@@ -554,25 +667,30 @@ fn a_handler_does_what_its_text_says() {
             .collect();
         checking.into_iter().flat_map(|c| c.join().unwrap()).collect::<Vec<_>>()
     });
-    let faults: Vec<String> = checked.iter().filter_map(|((_, c), r)| r.as_ref().err().filter(|e| e.contains("cycle") || e.contains("this statement makes none")).map(|e| format!("{} | {} | {} | {e}", c.shape, c.mark, c.condition))).collect();
+    let fault = |e: &String| e.contains("cycle") || e.contains("this statement makes none");
+    let known = |c: &Case| KNOWN_FAULTS.iter().any(|(shape, mark, _)| c.shape == *shape && c.mark == *mark);
+    let faults: Vec<String> = checked.iter().filter_map(|((_, c), r)| r.as_ref().err().filter(|e| fault(e) && !known(c)).map(|e| format!("{} | {} | {} | {e}", c.shape, c.mark, c.condition))).collect();
     assert!(faults.is_empty(), "{} handlers compile to a graph that can't run:\n{}", faults.len(), faults.join("\n"));
+    for (shape, mark, why) in KNOWN_FAULTS {
+        let still = checked.iter().any(|((_, c), r)| c.shape == *shape && c.mark == *mark && r.as_ref().err().is_some_and(fault));
+        assert!(still, "\"{shape}\" with {mark} compiles now: strike it from KNOWN_FAULTS ({why})");
+    }
     // A handler the reader takes and the round trip refuses (the canvas can't write it back as the
     // same steps) is no refusal of the language but a gap between its two translators: each is
-    // owed under a named debt, and a debt nothing is owed under any more fails, to be struck.
+    // owed under a named debt, and a debt nothing is owed under any more fails, to be struck. Such a
+    // handler is still run, deployed by its hash with the reader alone, so what it does is held too.
     let mut round_trip_owed: BTreeMap<&str, usize> = BTreeMap::new();
     let mut unowed = Vec::new();
+    let mut read_alone: Vec<(usize, &Case)> = Vec::new();
     for ((i, c), r) in &checked {
         let text = flow_text("probe", 19000, &host, &[(*i, c)]);
         if r.is_err() && holon_author::lang::ts::compile(&text).is_ok() && holon_author::lang::compile(&text).is_err() {
+            read_alone.push((*i, c));
             match ROUND_TRIP_DEBTS.iter().find(|(_, owes)| owes(c)) {
                 Some((debt, _)) => *round_trip_owed.entry(debt).or_default() += 1,
                 None => unowed.push(format!("{} | {} | {} | {}", c.shape, c.mark, c.condition, holon_author::lang::compile(&text).map(|_| ()).unwrap_err())),
             }
         }
-    }
-    assert!(unowed.is_empty(), "{} handlers the canvas can't write back, under no debt:\n{}", unowed.len(), unowed.join("\n"));
-    for (debt, _) in ROUND_TRIP_DEBTS {
-        assert!(round_trip_owed.contains_key(debt), "\"{debt}\": the canvas writes these back now: strike it from ROUND_TRIP_DEBTS");
     }
     let taken: Vec<(usize, &Case)> = checked.into_iter().filter(|(_, r)| r.is_ok()).map(|(c, _)| c).collect();
     // A flow of forty handlers at a time, each flow's runs one after another (the log is read by
@@ -586,7 +704,7 @@ fn a_handler_does_what_its_text_says() {
         /// Where a flow's own rule shows: by the condition that had nothing to go on.
         shows: BTreeMap<&'a str, usize>,
     }
-    let flows: Vec<(usize, &[(usize, &Case)])> = taken.chunks(40).enumerate().collect();
+    let flows: Vec<(usize, &[(usize, &Case)], bool)> = taken.chunks(40).map(|c| (c, false)).chain(read_alone.chunks(40).map(|c| (c, true))).enumerate().map(|(n, (c, alone))| (n, c, alone)).collect();
     let tallies: Vec<Tally> = thread::scope(|s| {
         let running: Vec<_> = flows
             .chunks(flows.len().div_ceil(workers))
@@ -594,9 +712,15 @@ fn a_handler_does_what_its_text_says() {
                 let (state, host) = (&state, &host);
                 s.spawn(move || {
                     let mut t = Tally::default();
-                    for (n, chunk) in part {
+                    for (n, chunk, alone) in part {
                         let text = flow_text(&format!("grid-{n}"), 19001 + *n as u16, host, chunk);
-                        let slug = if text.contains("host:") { deploy_text(state, &text, host) } else { deploy_plain_text(state, &text) };
+                        let slug = if *alone {
+                            deploy_read_alone(state, &text, host)
+                        } else if text.contains("host:") {
+                            deploy_text(state, &text, host)
+                        } else {
+                            deploy_plain_text(state, &text)
+                        };
                         let javascript = javascript_does(&chunk.iter().map(|(_, c)| *c).collect::<Vec<_>>());
                         let mut seen = None;
                         for ((i, case), said) in chunk.iter().zip(&javascript) {
@@ -614,9 +738,10 @@ fn a_handler_does_what_its_text_says() {
                                 }
                                 let (made, missed) = apart(&did, &read.marks);
                                 match debt(case, request, &made, &missed) {
-                                    Some(owing) => *t.owed.entry(owing.name).or_default() += 1,
+                                    Some(owing) => owing.iter().for_each(|d| *t.owed.entry(d.name).or_default() += 1),
                                     None => t.wrong.push(format!(
-                                        "{} | {} | {} | {request} | it reads as {:?} | the flow did {did:?} | javascript {:?}{}",
+                                        "{}{} | {} | {} | {request} | it reads as {:?} | the flow did {did:?} | javascript {:?}{}",
+                                        if *alone { "[read alone] " } else { "" },
                                         case.shape,
                                         case.mark,
                                         case.condition,
@@ -647,13 +772,20 @@ fn a_handler_does_what_its_text_says() {
     for (condition, n) in &shows {
         println!("  {n:4} runs where `{condition}` had nothing to go on");
     }
-    assert!(wrong.is_empty(), "{} runs don't do what their text says:\n{}", wrong.len(), wrong.join("\n"));
-    // The grid is no smaller than it was, and most of it is plain JavaScript.
-    assert!(taken.len() > 600 && runs > 5_000, "{} handlers taken, {runs} runs", taken.len());
-    assert!(as_javascript * 2 > runs, "{as_javascript} of {runs} runs do as JavaScript does");
+    for (debt, n) in &round_trip_owed {
+        println!("  {n:4} handlers the canvas can't write back, under \"{debt}\"");
+    }
     for (owing, n) in &owed {
         println!("  {n:4} runs owed under \"{owing}\"");
     }
+    assert!(wrong.is_empty(), "{} runs don't do what their text says:\n{}", wrong.len(), wrong.join("\n"));
+    assert!(unowed.is_empty(), "{} handlers the canvas can't write back, under no debt:\n{}", unowed.len(), unowed.join("\n"));
+    for (debt, _) in ROUND_TRIP_DEBTS {
+        assert!(round_trip_owed.contains_key(debt), "\"{debt}\": the canvas writes these back now: strike it from ROUND_TRIP_DEBTS");
+    }
+    // The grid is no smaller than it was, and most of it is plain JavaScript.
+    assert!(taken.len() > 600 && runs > 5_000, "{} handlers taken, {runs} runs", taken.len());
+    assert!(as_javascript * 2 > runs, "{as_javascript} of {runs} runs do as JavaScript does");
     for d in DEBTS {
         assert!(owed.contains_key(d.name), "\"{}\" no longer differs anywhere: strike it from DEBTS ({})", d.name, d.says);
     }

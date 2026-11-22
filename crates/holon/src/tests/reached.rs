@@ -75,6 +75,11 @@ pub(super) const AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE: Debt = Debt {
     name: "a call in an arm, read only in a branch not taken, isn't made",
     says: "a call in a ?: arm that is taken, a start or a request, is not made when its value is read only in a branch that isn't",
 };
+/// New in the grid (2026-11-22): Z's laziness one call deeper. Not among the eleven cases.
+pub(super) const A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE: Debt = Debt {
+    name: "a start inside a list's function or a function's arm, read only in a branch not taken, isn't made",
+    says: "an action started by a list's function, or in a ?: arm inside a function, is not started when the value is bound and read only in a branch that isn't taken",
+};
 /// R: a read is asked where its statement isn't reached.
 pub(super) const A_READ_IS_ASKED_PAST_A_RETURN: Debt = Debt {
     name: "a read is asked where its statement isn't reached",
@@ -100,6 +105,7 @@ pub(super) const DEBTS: &[&Debt] = &[
     &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &A_READ_IS_ASKED_PAST_A_RETURN,
     &A_LINE_AFTER_A_FAILURE_RUNS,
+    &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
 ];
 
 /// How a row stands today.
@@ -252,6 +258,24 @@ fn rows() -> Vec<Row> {
                 "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-11-long\", { port: 19631 })\n\nroute.post(\"/go\", (req) => {\n  try {\n    const parsed = JSON.parse(req.json.text)\n    ++state.n\n  } catch {\n    return \"failed\"\n  }\n  return \"end\"\n})\n",
                 "answers \"failed\"",
             )),
+        },
+        Row {
+            name: "a list's function that starts something, the list read only in a branch not taken",
+            text: "import { action, flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-13\", { port: 19613 })\n\n@PING@\nroute.post(\"/go\", (req) => {\n  const got = [req.json.a].map((x) => ping(x))\n  return req.json.c ? got : \"no\"\n})\n",
+            request: r#"{"a":"x","c":false}"#,
+            answer: true,
+            javascript: "answers \"no\"; starts ping; writes pinged = 1",
+            today: Today::Refused(&A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "answers \"no\""),
+            long: None,
+        },
+        Row {
+            name: "a function whose start is in a choice, its value read only in a branch not taken",
+            text: "import { action, flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-14\", { port: 19614 })\n\n@PING@\nfunction maybe(x) {\n  return x ? ping(x) : 0\n}\n\nroute.post(\"/go\", (req) => {\n  const got = maybe(req.json.a)\n  return req.json.c ? got : \"no\"\n})\n",
+            request: r#"{"a":"x","c":false}"#,
+            answer: true,
+            javascript: "answers \"no\"; starts ping; writes pinged = 1",
+            today: Today::Refused(&A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "answers \"no\""),
+            long: None,
         },
         Row {
             name: "a key written, then written again in an if on a field that's missing",
