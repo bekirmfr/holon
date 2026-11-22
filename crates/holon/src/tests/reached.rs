@@ -427,3 +427,114 @@ fn the_debts_of_reached_each_differ_as_recorded() {
         assert!(owing.contains(debt.name), "\"{}\" has no row: strike it or give it one", debt.name);
     }
 }
+
+/// What `state.k` holds after a route that writes it, then writes it again in an `if` on each
+/// condition of the grid, for each of the grid's requests: as JavaScript leaves it, and as a flow
+/// reads it (the grid's rule for a condition that isn't there: neither branch). Per condition, per
+/// request: (JavaScript's, as a flow reads it).
+fn one_key_in_javascript() -> Vec<Vec<(String, String)>> {
+    use super::semantics::{neither, AS_A_FLOW_READS, CONDITIONS, REQUESTS};
+    let names = "state, notes, check";
+    let made: Vec<String> = CONDITIONS
+        .iter()
+        .map(|(written, read, _)| {
+            let read = neither(&format!("state.k = \"two\"\nif ({read}) {{\nstate.k = \"one\"\n}}"));
+            format!("[({{ {names} }}) => (req) => {{\nstate.k = \"two\"\nif ({written}) {{\nstate.k = \"one\"\n}}\n}}, ({{ {names} }}) => (req) => {{\nconst J = req.json ?? {{}};\nlet IFC;\n{read}\n}}]")
+        })
+        .collect();
+    let source = format!(
+        r#"(requests) => {{
+  {AS_A_FLOW_READS}
+  const handlers = [
+{}
+  ];
+  const run = (make, req) => {{
+    const state = {{}};
+    const env = {{ state, notes: new Proxy({{}}, {{ get: () => undefined }}), check: (x) => x === "a" }};
+    try {{ make(env)(req) }} catch (e) {{ return "threw" }}
+    return state.k === undefined ? "none" : JSON.stringify(state.k);
+  }};
+  return handlers.map(([written, read]) => requests.map((req) => [run(written, req), run(read, req)]));
+}}"#,
+        made.join(",\n")
+    );
+    let requests: Vec<Value> = REQUESTS
+        .iter()
+        .map(|body| {
+            let mut req = BTreeMap::from([("body".to_string(), Value::Text(body.to_string()))]);
+            if let Some(json) = holon_core::parse_json(body) {
+                req.insert("json".to_string(), json);
+            }
+            Value::Record(req)
+        })
+        .collect();
+    let limits = holon_core::ModuleLimits { fuel: 1_000_000_000, memory: 64 << 20 };
+    let outs = holon_module::shared().run(holon_module::JS_ENGINE, &limits, &[Some(Value::Text(source)), Some(Value::List(vec![Value::List(requests)]))]).unwrap();
+    let Some(Value::Record(answer)) = outs.into_iter().next().flatten() else { panic!("the engine answers a record") };
+    let Some(Value::List(per_condition)) = answer.get("value") else { panic!("JavaScript failed: {answer:?}") };
+    let text = |v: &Value| match v {
+        Value::Text(t) => t.clone(),
+        other => panic!("{other:?}"),
+    };
+    let list = |v: &Value| match v {
+        Value::List(items) => items.clone(),
+        other => panic!("{other:?}"),
+    };
+    per_condition.iter().map(|per_request| list(per_request).iter().map(|both| (text(&list(both)[0]), text(&list(both)[1]))).collect()).collect()
+}
+
+/// **Guards:** one state key written before an `if` and again inside it (`state.k = "two"`, then
+/// `state.k = "one"` in the `if`) holds what JavaScript leaves in it, or what the flow's own rule
+/// for a condition that isn't there leaves (neither branch, so "two"), for every condition form of
+/// the grid and every request of it. No debt is owed here: the reading that the `if` undoes the
+/// write above it (K) was run on 0.1.0-rc.37 and didn't hold.
+///
+/// **Why:** a state write's condition lives in its value; the two writes are one key, joined after
+/// the `if`. A join that took "not entered" for "nothing" would lose the "two".
+///
+/// **If it fails:** the line says the condition, the request, and what JavaScript, the rule and
+/// the flow left in `k`.
+#[test]
+fn one_key_written_before_an_if_and_inside_it_holds_its_value() {
+    use super::semantics::{CONDITIONS, REQUESTS};
+    let state = claims_state("");
+    let mut text = "import { flow, route } from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\n\nflow(\"one-key\", { port: 19640 })\n\nfunction check(x) {\n  return x === \"a\"\n}\n".to_string();
+    for (i, (condition, _, _)) in CONDITIONS.iter().enumerate() {
+        text.push_str(&format!("\nroute.post(\"/k{i}\", (req) => {{\n  state.k = \"two\"\n  if ({condition}) {{\n    state.k = \"one\"\n  }}\n  return \"end\"\n}})\n"));
+    }
+    let slug = deploy_plain_text(&state, &text);
+    let javascript = one_key_in_javascript();
+    let (mut as_javascript, mut by_rule, mut wrong) = (0, 0, Vec::new());
+    for (i, ((condition, _, _), said)) in CONDITIONS.iter().zip(&javascript).enumerate() {
+        for (request, (written, read)) in REQUESTS.iter().zip(said) {
+            let before = log_entries(&state, &slug).iter().filter_map(|e| e["seq"].as_u64()).max();
+            data_call(&state, &slug, "POST", &format!("/k{i}"), request);
+            let entries = log_entries(&state, &slug);
+            let ran = entries.iter().find(|e| before.is_none_or(|b| e["seq"].as_u64().is_some_and(|s| s > b))).expect("the run's entry");
+            let wrote: Vec<String> = ran["performed"].as_array().into_iter().flatten().filter(|p| p["capability"] == "StateWrite(\"k\")").map(|p| shown(&p["payload"])).collect();
+            let did = wrote.last().cloned().unwrap_or_else(|| "none".to_string());
+            if did == *written {
+                as_javascript += 1;
+            } else if did == *read {
+                by_rule += 1;
+            } else {
+                wrong.push(format!("{condition} | {request} | JavaScript {written}, as a flow reads it {read}, the flow {did}"));
+            }
+        }
+    }
+    println!("one key: {as_javascript} as JavaScript, {by_rule} by the flow's own rule");
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert!(as_javascript > by_rule, "{as_javascript} as JavaScript, {by_rule} by rule");
+}
+
+/// **Guards:** a loop is refused, in plain words, as the language says (docs/LANGUAGE.md: until
+/// the L4's slice 6 a loop is refused): the reached rule has no loop to reach into.
+#[test]
+fn a_loop_is_refused_in_plain_words() {
+    for body in ["for (const x of [1, 2]) {\n    ++state.n\n  }", "let i = 0\n  while (i < 2) {\n    i = i + 1\n  }"] {
+        let text = format!("import {{ flow, route }} from \"holon\"\nimport state from \"state\"\n\nflow(\"looping\", {{ port: 19641 }})\n\nroute.post(\"/go\", (req) => {{\n  {body}\n  return \"end\"\n}})\n");
+        let refused = holon_author::lang::ts::compile(&text).map(|_| ()).expect_err("a loop is refused").to_string();
+        println!("{refused}");
+        assert!(refused.contains("loop") || refused.contains("map"), "{refused}");
+    }
+}

@@ -85,7 +85,7 @@ const EFFECTS: &[(&str, &str, &str)] = &[
 /// The forms a condition takes, over fields a request may lack: as written, as a flow reads it
 /// (`AS_A_FLOW_READS`), and as a flow reads it where it is a value and not a condition (the left
 /// of `&&`), where `&&` and `||` take Booleans and nothing else.
-const CONDITIONS: &[(&str, &str, &str)] = &[
+pub(super) const CONDITIONS: &[(&str, &str, &str)] = &[
     ("req.json.c", "J.c", "J.c"),
     ("!req.json.c", "N(J.c)", "N(J.c)"),
     ("req.json.n > 10", "GT(J.n, 10)", "GT(J.n, 10)"),
@@ -110,7 +110,7 @@ const CONDITIONS: &[(&str, &str, &str)] = &[
 /// `ORL` with the right side run only when reached), they take Booleans: anything else is nothing.
 /// In a condition, a side is read as JavaScript reads it (`ANDC`, `ORC`, the right side run only
 /// when reached).
-const AS_A_FLOW_READS: &str = r#"
+pub(super) const AS_A_FLOW_READS: &str = r#"
     const N = (x) => x === undefined ? undefined : !x;
     const alike = (a, b) => typeof a === typeof b && (typeof a === "number" || typeof a === "string");
     const GT = (a, b) => alike(a, b) ? a > b : undefined;
@@ -132,7 +132,7 @@ const AS_A_FLOW_READS: &str = r#"
 
 /// Requests' bodies: fields that hold, that don't, that are missing, of another type, and a body
 /// that isn't JSON at all.
-const REQUESTS: &[&str] = &[
+pub(super) const REQUESTS: &[&str] = &[
     r#"{"c":true,"d":true,"n":50,"s":"x","k":"a","v":"kept"}"#,
     r#"{"c":false,"d":false,"n":5,"s":"y","k":"b"}"#,
     r#"{}"#,
@@ -248,7 +248,7 @@ fn cases() -> Vec<Case> {
 /// if one of them returns nothing after the `if` does either (docs/LANGUAGE.md §6.4), where
 /// JavaScript takes the else. Each `if (x)` is written `if ((IFC = x) === undefined) {} else if
 /// (IFC)`, with `return;` in place of `{}` where a branch returns.
-fn neither(read: &str) -> String {
+pub(super) fn neither(read: &str) -> String {
     let mut heads = Vec::new();
     let mut at = 0;
     while let Some(i) = read[at..].find("if (").map(|i| i + at) {
