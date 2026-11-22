@@ -78,6 +78,10 @@ const EFFECTS: &[(&str, &str, &str)] = &[
     ("fy", "fin(req.json.k ?? \"none\")", "fin(req.json.k ?? \"none\")"),
     ("lf", "const each = [req.body].map((x) => rec(x))", "[req.body].map((x) => rec(x))"),
     ("ls", "const each = [req.body].map((x) => ping(x))", "[req.body].map((x) => ping(x))"),
+    ("q", "jobs.send({ data: { n: 1 } })", ""),
+    ("m", "ops.send({ to: \"a@acme.com\", subject: \"s\", text: \"hi\" })", ""),
+    ("fa", "every(\"a\")", "every(\"a\")"),
+    ("fa2", "every2(\"a\")", "every2(\"a\")"),
     ("rd", "const got = notes[\"k\"]", "notes[\"k\"]"),
     ("pk", "marks[notes[req.json.k] ?? \"k\"] = \"v\"", ""),
 ];
@@ -316,8 +320,14 @@ fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)]) -> 
     let uses = |what: &str| handlers.iter().any(|(_, c)| c.body.contains(what));
     let starts = uses("ping(") || uses("go(\"") || uses("maybe(");
     let mut text = format!("import {{ {}flow, route{} }} from \"holon\"\nimport state from \"state\"\n", if starts { "action, " } else { "" }, if uses("status(") { ", status" } else { "" });
-    if uses("marks.") || uses("marks[") || uses("part(") || uses("held(") {
+    if uses("marks.") || uses("marks[") || uses("part(") || uses("held(") || uses("every") {
         text.push_str("import marks from \"collection:marks\"\n");
+    }
+    if uses("jobs.") || uses("every") {
+        text.push_str("import jobs from \"queue:jobs\"\n");
+    }
+    if uses("ops.") || uses("every") {
+        text.push_str("import ops from \"mail:ops\"\n");
     }
     if uses("notes[") {
         text.push_str("import notes from \"collection:notes\"\n");
@@ -325,7 +335,7 @@ fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)]) -> 
     if uses("gone[") {
         text.push_str("import gone from \"collection:gone\"\n");
     }
-    if uses("news.") || uses("held(") {
+    if uses("news.") || uses("held(") || uses("every") {
         text.push_str("import news from \"channel:news\"\n");
     }
     if uses("api.") || uses("ask(") || uses("ask2(") || uses("askif(") {
@@ -353,6 +363,12 @@ fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)]) -> 
     }
     if uses("askif(") {
         text.push_str("\nasync function askif(x) {\n  if (x) {\n    const sent = await api.post(\"/in\", { body: x })\n  }\n  return 1\n}\n");
+    }
+    if uses("every") {
+        text.push_str("\nfunction every(x) {\n  ++state.f\n  marks.put(\"k\", x)\n  news.send({ n: x })\n  jobs.send({ data: { n: x } })\n  ops.send({ to: \"a@acme.com\", subject: x, text: \"hi\" })\n  return `did ${x}`\n}\n");
+    }
+    if uses("every2(") {
+        text.push_str("\nfunction every2(x) {\n  const did = every(x)\n  return `${did} twice`\n}\n");
     }
     if uses("check(") {
         text.push_str("\nfunction check(x) {\n  return x === \"a\"\n}\n");
@@ -394,7 +410,7 @@ struct Did {
 /// reads it. The names a handler uses are stand-ins that leave their mark; `await` is dropped,
 /// since they answer at once.
 fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
-    let names = "state, marks, console, ping, rec, rec2, rec3, part, ask, ask2, api, status, mark, undo, news, gone, bump, go, maybe, askif, held, fin, notes, check";
+    let names = "state, marks, console, ping, rec, rec2, rec3, part, ask, ask2, api, status, mark, undo, news, gone, bump, go, maybe, askif, held, fin, notes, check, jobs, ops, every, every2";
     let made: Vec<String> = handlers
         .iter()
         .map(|c| {
@@ -429,6 +445,10 @@ fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
       api: {{ post: () => {{ fx.push("r"); return {{ status: 200, body: "fast" }} }} }},
       status: (n) => ({{ status: n }}),
       news: {{ send: () => {{ fx.push("c") }} }},
+      jobs: {{ send: () => {{ fx.push("q") }} }},
+      ops: {{ send: () => {{ fx.push("m") }} }},
+      every: (x) => {{ fx.push("f", "p", "c", "q", "m"); return "did " + x }},
+      every2: (x) => {{ fx.push("f", "p", "c", "q", "m"); return "did " + x + " twice" }},
       gone: new Proxy({{}}, {{ deleteProperty: () => {{ fx.push("d"); return true }} }}),
       bump: (x) => {{ fx.push("f"); return x }},
       go: (x) => {{ fx.push("s"); return "went " + x }},
@@ -519,6 +539,8 @@ fn flow_does(state: &AppState, slug: &str, i: usize, body: &str, seen: &mut Opti
                 "CollectionWrite(\"marks\")" => marks.push("p"),
                 "CollectionWrite(\"gone\")" => marks.push("d"),
                 "ChannelSend(\"news\")" => marks.push("c"),
+                "QueueSend(\"jobs\")" => marks.push("q"),
+                "MailSend(\"ops\")" => marks.push("m"),
                 other => panic!("an effect the grid doesn't know: {other}"),
             }
         }
@@ -603,6 +625,10 @@ const ROUND_TRIP_DEBTS: &[(&str, Owes)] = &[
     ("the printer writes && / || around a function with a try of its own as other steps", |c| {
         matches!(c.shape, "after &&" | "after ||") && matches!(c.mark, "ft" | "fu" | "fy") && c.condition == "req.json.c"
     }),
+    // Found by the `every` columns (2026-11-22): a function that writes state, puts, sends, queues
+    // and mails is refused everywhere: "state.set(f, …)'s answer is used, which TypeScript can't
+    // say".
+    ("the printer can't write back a function that writes state and then sends, queues and mails", |c| matches!(c.mark, "fa" | "fa2")),
     // Reached's debts whose smallest flow the round trip refuses (reached.rs, `Today::Refused`).
     (A_FUNCTIONS_OWN_CONDITION.name, |c| c.mark == "fs"),
     (A_LISTS_FUNCTION_LOSES_ITS_WRITE.name, |c| c.mark == "lf"),
@@ -633,10 +659,10 @@ fn debt(case: &Case, request: &str, made: &str, missed: &str) -> Option<Vec<&'st
     // `fin` returns early on "a": its finally's write there is W's; elsewhere, in a try that fails,
     // it is a write the failed try keeps.
     let early = request.contains("\"k\":\"a\"");
-    explain(shape == "after a failure, no try" && request == "not json", &A_LINE_AFTER_A_FAILURE_RUNS, "wofpcdgrsl", "");
+    explain(shape == "after a failure, no try" && request == "not json", &A_LINE_AFTER_A_FAILURE_RUNS, "wofpcdgrslqmn", "");
     explain(matches!(shape, "in a finally, a return above" | "in a try without a catch, a return above"), &A_FINALLY_FORGETS_THE_RETURN_ABOVE, "wo", "");
     explain(mark == "fy" && (early || !failing_try), &A_FINALLY_FORGETS_THE_RETURN_ABOVE, "f", "");
-    explain(failing_try && matches!(mark, "f" | "f2" | "f3" | "fp" | "fu" | "ft" | "fy"), &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, "fp", "");
+    explain(failing_try && matches!(mark, "f" | "f2" | "f3" | "fp" | "fu" | "ft" | "fy" | "fa" | "fa2"), &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, "fpcqm", "");
     explain(failing_try && matches!(mark, "s" | "fs" | "fr"), &THE_STARTED_HALF, "s", "");
     explain(shape == "a branch of ?:, read only in a branch" && matches!(mark, "s" | "r"), &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "", "sr");
     explain(matches!(shape, "bound, and read in a branch" | "a branch of ?:, read only in a branch") && matches!(mark, "ls" | "fr"), &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "", "s");
@@ -649,6 +675,30 @@ fn debt(case: &Case, request: &str, made: &str, missed: &str) -> Option<Vec<&'st
     explain(matches!(mark, "rd" | "pk"), &A_READ_IS_ASKED_PAST_A_RETURN, "n", "");
     explain(true, &AN_UNUSED_READ_IS_NOT_ASKED, "", "n");
     (made.is_empty() && missed.is_empty() && !owed.is_empty()).then_some(owed)
+}
+
+/// The grid's server: a local host may be called, and a mail (`ops`) and a queue (`jobs`) are
+/// bound, to a mail sink and a queue standing in for SQS (the review session's, as it wrote it).
+/// The folder its secrets are in, to remove.
+fn grid_state(sink: &smtp::sink::Sink, sqs: &sqs::stand_in::StandIn) -> (AppState, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("holon-grid-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_OPS_SMTP=smtp://ops:s3cret@127.0.0.1:{}\nHOLON_SECRET_JOBS_URL={}\n", sink.port, sqs.url("jobs"))).unwrap();
+    let sources = || secret_sources::Sources::new(Some(env.clone())).unwrap();
+    let mut state = claims_state("");
+    let mails = mails::Mails::memory().with_sources(sources());
+    let queues = queues::Queues::memory().with_sources(sources());
+    state.folders = Arc::new(folders::Folders::memory().with_mails(mails).with_queues(queues));
+    state.folders.mails.serve(Arc::clone(&state.deployments));
+    state.folders.queues.serve(Arc::clone(&state.deployments));
+    for (path, body) in [
+        ("/admin/mails", serde_json::json!({ "name": "ops", "smtp": "env:HOLON_SECRET_OPS_SMTP", "from": "Ops <ops@acme.com>", "to": "*@acme.com" })),
+        ("/admin/queues", serde_json::json!({ "name": "jobs", "url": "env:HOLON_SECRET_JOBS_URL" })),
+    ] {
+        assert_eq!(route(&state, &req("POST", path, serde_json::to_vec(&body).unwrap())).status_code, 200, "{path}");
+    }
+    (state, dir)
 }
 
 /// What `did` has that `reads` hasn't, and what it lacks, letter by letter.
@@ -689,7 +739,10 @@ fn apart(did: &str, reads: &str) -> (String, String) {
 /// }`, `c ? ping(x) : undefined` there).
 #[test]
 fn a_handler_does_what_its_text_says() {
-    let state = claims_state("");
+    let sink = smtp::sink::start("PLAIN LOGIN");
+    let sqs = sqs::stand_in::StandIn::start();
+    sqs.make("jobs");
+    let (state, secrets) = grid_state(&sink, &sqs);
     let (host, _hits) = counting_server();
     let all = cases();
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
@@ -815,6 +868,7 @@ fn a_handler_does_what_its_text_says() {
     for (owing, n) in &owed {
         println!("  {n:4} runs owed under \"{owing}\"");
     }
+    let _ = std::fs::remove_dir_all(&secrets);
     assert!(wrong.is_empty(), "{} runs don't do what their text says:\n{}", wrong.len(), wrong.join("\n"));
     assert!(unowed.is_empty(), "{} handlers the canvas can't write back, under no debt:\n{}", unowed.len(), unowed.join("\n"));
     for (debt, _) in ROUND_TRIP_DEBTS {
