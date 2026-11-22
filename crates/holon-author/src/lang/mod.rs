@@ -11,6 +11,7 @@
 //! only if its steps are written back as a text of the same steps ([`agree`]).
 
 mod agree;
+mod on_par;
 pub mod ast;
 pub mod format;
 pub mod layout;

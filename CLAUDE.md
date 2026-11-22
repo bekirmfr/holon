@@ -26,6 +26,18 @@ description, what it shows, how to try it) in `crates/holon-author/src/samples.r
 A change to an existing feature updates the samples that use it. The editor's flows page lists
 the samples; opening one starts an unsaved copy.
 
+## The two translators stay on par
+
+A flow is text and canvas at once, translated by hand each way: text into steps
+(`crates/holon-author/src/lang/ts.rs` and `lower.rs`), steps into text (`lang/print.rs`). Keep
+them on par. A change to how text becomes steps comes with the matching change to how steps
+become text, in the same commit. A new leaf or language form is done only when it goes both
+ways, or is on a listed exception with its reason in plain words. The tests that hold this:
+`lang/agree.rs` (every text `lang::compile` takes is written back as the same steps),
+`lang/on_par.rs` (every catalog leaf and template drawn alone goes both ways, `NOT_YET` the
+exceptions; `OWED` the texts refused today), and the grid's `ROUND_TRIP_DEBTS`
+(`crates/holon/src/tests/semantics.rs`). Their lists only shrink.
+
 ## Commits and pushes
 
 One commit per step, ending with the `Co-Authored-By` line; commit or push only when asked.
