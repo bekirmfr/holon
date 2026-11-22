@@ -1178,7 +1178,8 @@ fn same_actions(doc: &FlowDocument, known: &Names, text: &str, early: &[(String,
     if early.is_empty() {
         return Ok(());
     }
-    let Ok(back) = crate::lang::compile(text) else { return Ok(()) };
+    // The reader alone: `lang::compile` prints what it reads, which would come back here.
+    let Ok(back) = crate::lang::ts::compile(text) else { return Ok(()) };
     let actions = |doc: &FlowDocument, known: &Names| -> HashMap<String, String> {
         let mut store = MapResolver::new();
         restore(doc, &mut store, known);
@@ -1981,7 +1982,11 @@ impl<'s> Printer<'s> {
         for (_, ts) in &ins {
             block.claim(ts);
         }
-        let body = block.body()?;
+        // What a function can't do, said of the function: the innermost one says it.
+        let body = block.body().map_err(|e| match e.strip_prefix("a function computes: ") {
+            Some(rest) => format!("the function \"{hname}\" computes: {rest}"),
+            None => e,
+        })?;
         let params: Vec<String> = ins.iter().map(|(_, ts)| ts.clone()).collect();
         let text = body.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("\n");
         Ok(Item { text: format!("function {hname}({}) {{\n{text}\n}}", params.join(", ")), nodes: vec![], body: vec![], blocks: vec![] })
@@ -5382,8 +5387,10 @@ export const t = action((input) => {
         let ask2 = "async function ask2(x) {\n  const got = await ask(x)\n  return got ?? 0\n}\n";
         let reached = format!("{head}async function ask(x) {{\n  const sent = await api.post(\"/in\", {{ body: x }})\n  return x === \"a\" ? sent.status : 0\n}}\n\n{ask2}\n{route}");
         let in_branch = format!("{head}async function ask(x) {{\n  return x === \"a\" ? (await api.post(\"/in\", {{ body: x }})).status : 0\n}}\n\n{ask2}\n{route}");
+        // The lowering's ports, read by the reader alone: the printer can't write a request made
+        // in a branch of a function, so `compile` refuses `in_branch` (agree.rs).
         let outputs = |src: &str, f: &str| {
-            let l = compile(src).unwrap();
+            let l = crate::lang::ts::compile(src).unwrap();
             let mut store = MapResolver::new();
             restore(&l.doc, &mut store, &Names::new());
             let hash = l.doc.nodes.iter().find(|n| n.data.name == "ask2").and_then(|n| match &n.data.body {
@@ -5405,6 +5412,7 @@ export const t = action((input) => {
         assert_eq!(outputs(&reached, "ask2"), ["out", "called"], "and ask2 gives it on");
         assert_eq!(outputs(&in_branch, "ask"), ["out"], "made in a branch, when the branch needs it");
         assert_eq!(outputs(&in_branch, "ask2"), ["out"]);
+        assert!(compile(&in_branch).unwrap_err().message.starts_with("the function \"ask\" has a write, a request or a start"), "refused: the canvas can't write it back");
     }
 
     /// Another flow's action awaited is called, one not awaited started, the flow's own by its

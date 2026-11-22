@@ -803,10 +803,14 @@ mod tests {
         // the place the text nests deepest.
         let deepest = deepest_at(&text);
         let laid_out = format!("{}:{}: laid out as fmt writes it", deepest.line, deepest.col);
+        // And an entry that compiles may refuse it cleanly as written back too deep to be shown as
+        // text ([`WRITTEN_BACK`]), an ordinary mistake: the reader took it, the way back can't.
         for (entry, said) in compiled(&text, true) {
             let refuses = said.iter().any(|m| the_bound(m) && !m.starts_with(&laid_out));
             assert!(!refuses, "{name}, {taken} deep: {entry} refuses it: {said:?}");
         }
+        let alone = ts::compile(&text).err().map(|e| e.message);
+        assert!(!alone.as_deref().is_some_and(the_bound), "{name}, {taken} deep: the reader alone says the bound: {alone:?}");
         read_in_the_editor(&text);
         for n in [past, 40 * MAX_NESTING] {
             let text = form(n);
@@ -929,9 +933,17 @@ mod tests {
             for levels in [COUNTED, n] {
                 (entries, deep) = read_counted(&format!("{name}, {levels} deep"), &form(levels));
                 println!("{name}, {levels} deep: {deep:?}; 1 deep: {shallow:?}");
+                // A form the way back writes too deep is refused at compile, cleanly
+                // ([`WRITTEN_BACK`]): the flow's questions are then never asked, and none is
+                // asked more than for the form one level deep.
+                let written_back = entries.iter().any(|(e, said)| *e == "compile" && said.iter().any(|m| m.ends_with(crate::lang::agree::TOO_DEEP)));
                 // A question for each level (a walk with a budget of its own at each function)
                 // would visit up to all one may at each.
-                assert_eq!(deep.questions, shallow.questions, "{name}: {levels} deep asks {} questions, 1 deep {}", deep.questions, shallow.questions);
+                if written_back {
+                    assert!(deep.questions <= shallow.questions, "{name}: {levels} deep asks {} questions, 1 deep {}", deep.questions, shallow.questions);
+                } else {
+                    assert_eq!(deep.questions, shallow.questions, "{name}: {levels} deep asks {} questions, 1 deep {}", deep.questions, shallow.questions);
+                }
                 // Each question's walks visit what one may, and a few more: the remaining
                 // children of the functions they are in as the last is taken, each taken as not
                 // followed at once.
@@ -1025,5 +1037,35 @@ mod tests {
             let deepest = deepest(s.text, usize::MAX).expect("no bound");
             assert!(deepest <= MAX_NESTING / 2, "{} nests {deepest} levels deep", s.name);
         }
+    }
+
+    /// How deep the way back takes each form of [`FORMS`] that it writes deeper than the text:
+    /// the first depth `lang::compile` refuses as too deep to be shown as text, though the reader
+    /// alone takes it. Early returns and writes under an `if` the text writes in a row, which the
+    /// printer nests; a try's statements; calls and templates past fmt's layout bound
+    /// ([`format::MAX_LAYOUT_NESTING`]); sums, powers and negations with the parentheses fmt adds.
+    /// The forms not here are written back as deep as the reader takes them.
+    const WRITTEN_BACK: &[(&str, usize)] = &[("returns", 25), ("writes", 41), ("tries", 59), ("calls", 21), ("templates", 21), ("powers", 62), ("negations", 122), ("sums", 123), ("ifs", 61)];
+
+    /// Guards: the round trip's own bound is what [`WRITTEN_BACK`] says, form by form: one level
+    /// shallower is taken, and at it the text is refused cleanly (`agree::TOO_DEEP`) though the
+    /// reader alone takes it. Why: the owner took these refusals (2026-11-22) over a printer that
+    /// writes these forms flatter, for now; this states where they fall, so a printer that lifts
+    /// one, or a change that lowers one, is seen. If it fails: update the row, and the changelog
+    /// and docs/LANGUAGE.md where they give the number of early returns.
+    #[test]
+    fn the_way_back_takes_each_form_as_deep_as_it_says() {
+        let run = || {
+            for &(name, n) in WRITTEN_BACK {
+                let form = FORMS.iter().find(|(f, _)| *f == name).map(|(_, f)| *f).unwrap_or_else(|| panic!("no form {name}"));
+                if let Err(e) = crate::lang::compile(&form(n - 1)) {
+                    panic!("{name}, {} deep: refused: {e}", n - 1);
+                }
+                assert!(ts::compile(&form(n)).is_ok(), "{name}, {n} deep: the reader alone refuses it");
+                let said = crate::lang::compile(&form(n)).map(|_| ()).unwrap_err().message;
+                assert_eq!(said, crate::lang::agree::TOO_DEEP, "{name}, {n} deep");
+            }
+        };
+        std::thread::Builder::new().stack_size(super::DEEP_STACK).spawn(run).unwrap().join().unwrap_or_else(|panic| std::panic::resume_unwind(panic));
     }
 }

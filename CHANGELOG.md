@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **A text is taken only if the canvas can write it back as the same flow.** Holon reads a text
+  into steps, and writes steps back as text for the canvas and `holon fmt`. The two could
+  disagree: some texts were taken whose steps can't be written back, and some of those steps
+  didn't do what the text says. Now every reading of a text (the editor, `holon check` and
+  `deploy`, an agent's check, the text shown for a version) writes the steps back and reads them
+  again, and refuses the text when that fails or gives other steps, saying what to change. These
+  ran before and are now refused: a function of the flow that starts another flow's action; a
+  write, a request or a start inside a list method's function, so one request per item of a list
+  (`items.map((item) => api.get(...))`) is refused too; an action awaiting its own flow's action;
+  `&&` or `||` around an awaited function of the flow (`const got = req.json.c && await ask(x)`);
+  and very long or deep handlers, from about 25 early returns in a row, 41 writes each under its
+  own `if`, or calls nested 21 deep. For example, `function ask(x) { if (x) { ping(x) } return 1
+  }` is refused with `the function "ask" starts another flow's action: a function only computes,
+  so start it in the route or action that calls "ask"`, which closes the second known limit of
+  0.1.0-rc.37. A handler that is too long says `this flow is too long or too deeply nested to be
+  shown back as text: split the handler, or name parts of it with a const or a function`. Who
+  notices: a flow written in one of these ways no longer checks or deploys; deployed already, it
+  keeps running. The samples are not affected.
+
 ## 0.1.0-rc.37
 
 - **Known limit of this release: an early answer above a wait.** An action that answers early,

@@ -402,6 +402,14 @@ fn flow_does(state: &AppState, slug: &str, i: usize, body: &str, seen: &mut Opti
 /// one of these that no longer differs anywhere.
 const DEBTS: &[(&str, &str)] = &[];
 
+/// Handlers the reader takes and `lang::compile` refuses, as their steps written back as text read
+/// as other steps: each debt, and the cases owed under it. Paid when the printer writes the form
+/// as the same steps; then the debt fails the test until it is struck.
+type Owes = fn(&Case) -> bool;
+const ROUND_TRIP_DEBTS: &[(&str, Owes)] = &[("the printer writes && / || around an awaited function as other steps", |c| {
+    matches!(c.shape, "after &&" | "after ||") && c.mark == "g" && c.condition == "req.json.c"
+})];
+
 /// The debt a run that differs is owed under, by its case and request: none now.
 fn debt(_case: &Case, _request: &str) -> Option<&'static str> {
     None
@@ -446,6 +454,24 @@ fn a_handler_does_what_its_text_says() {
     });
     let faults: Vec<String> = checked.iter().filter_map(|((_, c), r)| r.as_ref().err().filter(|e| e.contains("cycle") || e.contains("this statement makes none")).map(|e| format!("{} | {} | {} | {e}", c.shape, c.mark, c.condition))).collect();
     assert!(faults.is_empty(), "{} handlers compile to a graph that can't run:\n{}", faults.len(), faults.join("\n"));
+    // A handler the reader takes and the round trip refuses (the canvas can't write it back as the
+    // same steps) is no refusal of the language but a gap between its two translators: each is
+    // owed under a named debt, and a debt nothing is owed under any more fails, to be struck.
+    let mut round_trip_owed: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut unowed = Vec::new();
+    for ((i, c), r) in &checked {
+        let text = flow_text("probe", 19000, &host, &[(*i, c)]);
+        if r.is_err() && holon_author::lang::ts::compile(&text).is_ok() && holon_author::lang::compile(&text).is_err() {
+            match ROUND_TRIP_DEBTS.iter().find(|(_, owes)| owes(c)) {
+                Some((debt, _)) => *round_trip_owed.entry(debt).or_default() += 1,
+                None => unowed.push(format!("{} | {} | {} | {}", c.shape, c.mark, c.condition, holon_author::lang::compile(&text).map(|_| ()).unwrap_err())),
+            }
+        }
+    }
+    assert!(unowed.is_empty(), "{} handlers the canvas can't write back, under no debt:\n{}", unowed.len(), unowed.join("\n"));
+    for (debt, _) in ROUND_TRIP_DEBTS {
+        assert!(round_trip_owed.contains_key(debt), "\"{debt}\": the canvas writes these back now: strike it from ROUND_TRIP_DEBTS");
+    }
     let taken: Vec<(usize, &Case)> = checked.into_iter().filter(|(_, r)| r.is_ok()).map(|(c, _)| c).collect();
     // A flow of forty handlers at a time, each flow's runs one after another (the log is read by
     // what it gained), the flows side by side.

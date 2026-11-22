@@ -50,7 +50,7 @@ fn flow_span(source: &str) -> Span {
 /// Every mistake `holon check` finds: the first one the text can't be compiled past, with its
 /// span; or, compiled, what is wrong with the flow as a whole (at its `flow(…)` call).
 pub fn mistakes(source: &str) -> Vec<Mistake> {
-    let compiled = match ts::compile(source) {
+    let compiled = match crate::lang::compile(source) {
         Ok(c) => c,
         // A mistake of the whole text (it has no `flow(…)`) has no place: it is said at the start.
         Err(e) => return vec![Mistake { span: if e.span.start.line == 0 { START } else { e.span }, message: e.message }],

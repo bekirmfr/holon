@@ -12073,20 +12073,40 @@ fn deploy_text(state: &AppState, text: &str, host: &str) -> String {
 /// The same, for a flow that calls several local hosts.
 pub(crate) fn deploy_text_to(state: &AppState, text: &str, hosts: &[&str]) -> String {
     let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
-    for u in &plan.units {
+    deploy_units(state, &plan.name, &plan.unit, &plan.units, hosts)
+}
+
+/// `text`'s units as the reader alone builds them (`lang::ts::compile`), deployed by their hash:
+/// past the check every reading of a text passes (`lang::compile`, which refuses a text the
+/// canvas can't write back), as a client that sends units and no text is. The server never reads
+/// a text, so this is a real way in; tests use it for a form the round trip refuses today, to keep
+/// guarding what its run does until the printer learns the form.
+pub(crate) fn deploy_read_alone(state: &AppState, text: &str, host: &str) -> String {
+    let l = holon_author::lang::ts::compile(text).unwrap_or_else(|e| panic!("{e}"));
+    let mut store = holon_core::MapResolver::new();
+    holon_author::text::restore(&l.doc, &mut store, &Default::default());
+    let port = l.doc.server.as_ref().map(|s| s.port.clone()).unwrap_or_default();
+    let hash = holon_author::flow::flow_unit(&l.doc.nodes, &l.doc.edges, &mut store, &port, l.doc.unit_settings()).unwrap_or_else(|e| panic!("{e}"));
+    let units: Vec<Vec<u8>> = holon_author::builder::closure_of(&[hash], &store).iter().filter_map(|h| holon_core::Resolver::resolve(&store, h).and_then(|u| holon_core::encode_preimage(u).ok())).collect();
+    deploy_units(state, l.name.as_deref().expect("a flow's name"), &holon_author::to_hex(&hash), &units, &[host])
+}
+
+/// `units` staged, and `unit` (in hex) deployed as `slug`, calling `hosts`: its name.
+fn deploy_units(state: &AppState, slug: &str, unit_hex: &str, units: &[Vec<u8>], hosts: &[&str]) -> String {
+    for u in units {
         assert_eq!(route(state, &req("POST", "/unit", u.clone())).status_code, 200);
     }
-    let unit = parse_hash(&plan.unit).unwrap();
+    let unit = parse_hash(unit_hex).unwrap();
     let requirements = serde_json::json!({ "plain_http": hosts, "private_addresses": true });
     let preview = body_json(route(
         state,
-        &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit, "requirements": requirements })).unwrap()),
+        &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": slug, "unit": unit_hex, "requirements": requirements })).unwrap()),
     ));
     let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap_or_default();
-    let r = deploy_json(state, &plan.name, unit, serde_json::json!({ "acknowledge": asked, "requirements": requirements }));
+    let r = deploy_json(state, slug, unit, serde_json::json!({ "acknowledge": asked, "requirements": requirements }));
     let status = r.status_code;
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
-    plan.name
+    slug.to_string()
 }
 
 /// A data-plane request to `slug`: its status, body and how long it took.
@@ -20261,8 +20281,14 @@ fn a_chain_of_calls_is_never_a_loop_and_is_only_so_long() {
     assert!(r.contains("\\\"e\\\"") || r.contains("\"e\""), "{r}");
     assert!(!r.contains("too_deep"), "{r}");
 
-    // It refuses itself, whatever the name.
-    deploy_text(&state, "import { action, flow } from \"holon\"\nimport { go } from \"flow:me\"\n\nflow(\"me\")\n\nexport const go = action(async (input) => {\n  const r = await go(input)\n  return r\n})\n", "127.0.0.1:9");
+    // It refuses itself, whatever the name. A text awaiting its own action is refused before it
+    // runs (the canvas can't write it back: `lang::compile`), a known refusal to lift when the
+    // printer learns the form; deployed by its units alone, as a client sending no text may, the
+    // run refuses the call.
+    let me = "import { action, flow } from \"holon\"\nimport { go } from \"flow:me\"\n\nflow(\"me\")\n\nexport const go = action(async (input) => {\n  const r = await go(input)\n  return r\n})\n";
+    let refused = holon_author::lang::compile(me).map(|_| ()).unwrap_err().message;
+    assert!(refused.contains("await go(…) would wait for this flow's own action"), "{refused}");
+    deploy_read_alone(&state, me, "127.0.0.1:9");
     let r = body_json(route(&state, &req("POST", "/trigger/me/go", b"{}".to_vec()))).to_string();
     assert!(r.contains("already in this chain"), "{r}");
 }

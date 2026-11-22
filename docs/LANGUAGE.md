@@ -3065,6 +3065,8 @@ The error catalogue the reader and the lowering produce, each with the span it p
 | an action answers with a value alone | the `status(…)` or `respond(…)` |
 | a route answers and is done, so it doesn't wait | the `await` |
 | a function computes and never waits; calling another flow's action is a handler's | the `await` |
+| a text the canvas can't write back as the same steps: a function that starts another flow's action; a write, a request or a start inside a list method's function (so one request per item of a list), or under a function's own `if` or `?:`; an action awaiting its own flow's action; `&&` or `\|\|` around an awaited function of the flow | the function's name, or the list method its function is given to; else `flow(…)` |
+| a flow too long or deeply nested to be shown back as text (from about 25 early returns in a row, 41 writes each under its own `if`, calls or templates nested 21 deep) | where the text nests deepest |
 | a method's function (`map`'s, `filter`'s…) isn't async | the function |
 | no leaf does `.m(…)`: do it in a `js()` function | the method |
 | a loop | the statement |
