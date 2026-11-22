@@ -80,6 +80,11 @@ pub(super) const A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE: Debt = Debt {
     name: "a start inside a list's function or a function's arm, read only in a branch not taken, isn't made",
     says: "an action started by a list's function, or in a ?: arm inside a function, is not started when the value is bound and read only in a branch that isn't taken",
 };
+/// New in the grid (2026-11-22): R's other side, a read left unasked where JavaScript asks it.
+pub(super) const AN_UNUSED_READ_IS_NOT_ASKED: Debt = Debt {
+    name: "a read nothing reached goes on to use isn't asked",
+    says: "a collection read whose value is read only in a branch not taken, or an if's test read where nothing in the if is made, is not asked, where JavaScript asks it",
+};
 /// R: a read is asked where its statement isn't reached.
 pub(super) const A_READ_IS_ASKED_PAST_A_RETURN: Debt = Debt {
     name: "a read is asked where its statement isn't reached",
@@ -106,6 +111,7 @@ pub(super) const DEBTS: &[&Debt] = &[
     &A_READ_IS_ASKED_PAST_A_RETURN,
     &A_LINE_AFTER_A_FAILURE_RUNS,
     &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
+    &AN_UNUSED_READ_IS_NOT_ASKED,
 ];
 
 /// How a row stands today.
@@ -275,6 +281,15 @@ fn rows() -> Vec<Row> {
             answer: true,
             javascript: "answers \"no\"; starts ping; writes pinged = 1",
             today: Today::Refused(&A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "answers \"no\""),
+            long: None,
+        },
+        Row {
+            name: "a collection read bound to a name, read only in a branch not taken",
+            text: "import { flow, route } from \"holon\"\nimport notes from \"collection:notes\"\n\nflow(\"reached-15\", { port: 19615 })\n\nroute.post(\"/go\", (req) => {\n  const got = notes[\"k\"]\n  return req.json.c ? got : \"no\"\n})\n",
+            request: r#"{"c":false}"#,
+            answer: true,
+            javascript: "answers \"no\"; reads notes",
+            today: Today::Differs(&AN_UNUSED_READ_IS_NOT_ASKED, "answers \"no\""),
             long: None,
         },
         Row {

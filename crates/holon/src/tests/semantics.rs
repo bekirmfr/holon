@@ -38,7 +38,7 @@
 //! `CONDITIONS`, a new request a line of `REQUESTS`. None needs its answer written.
 
 use super::reached::{
-    Debt, AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, A_CHOICE_IN_A_FUNCTION_STARTS, A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, A_FINALLY_FORGETS_THE_RETURN_ABOVE,
+    Debt, AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, AN_UNUSED_READ_IS_NOT_ASKED, A_CHOICES_TEST_IS_READ_PAST_A_RETURN, A_READ_IS_ASKED_PAST_A_RETURN, A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, A_CHOICE_IN_A_FUNCTION_STARTS, A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, A_FINALLY_FORGETS_THE_RETURN_ABOVE,
     A_FUNCTIONS_OWN_CONDITION, A_LINE_AFTER_A_FAILURE_RUNS, A_LISTS_FUNCTION_LOSES_ITS_WRITE, A_LISTS_FUNCTION_STARTS_PAST_A_RETURN,
 };
 use super::*;
@@ -78,6 +78,8 @@ const EFFECTS: &[(&str, &str, &str)] = &[
     ("fy", "fin(req.json.k ?? \"none\")", "fin(req.json.k ?? \"none\")"),
     ("lf", "const each = [req.body].map((x) => rec(x))", "[req.body].map((x) => rec(x))"),
     ("ls", "const each = [req.body].map((x) => ping(x))", "[req.body].map((x) => ping(x))"),
+    ("rd", "const got = notes[\"k\"]", "notes[\"k\"]"),
+    ("pk", "marks[notes[req.json.k] ?? \"k\"] = \"v\"", ""),
 ];
 
 /// The forms a condition takes, over fields a request may lack: as written, as a flow reads it
@@ -93,6 +95,10 @@ const CONDITIONS: &[(&str, &str, &str)] = &[
     ("req.json.c && req.json.d", "AND(J.c, J.d)", "ANDV(J.c, J.d)"),
     ("req.json.c || req.json.d", "OR(J.c, J.d)", "ORV(J.c, J.d)"),
     ("!(req.json.n > 10)", "N(GT(J.n, 10))", "N(GT(J.n, 10))"),
+    // A read in the test (the collection answers nothing for every key), and a flow function's
+    // call that only computes.
+    ("notes[req.json.k] === \"v\"", "EQ(notes[J.k], \"v\")", "EQ(notes[J.k], \"v\")"),
+    ("check(req.json.k)", "EQ(J.k, \"a\")", "EQ(J.k, \"a\")"),
 ];
 
 /// How a flow reads what JavaScript computes with `undefined`, as JavaScript: nothing in, nothing
@@ -310,8 +316,11 @@ fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)]) -> 
     let uses = |what: &str| handlers.iter().any(|(_, c)| c.body.contains(what));
     let starts = uses("ping(") || uses("go(\"") || uses("maybe(");
     let mut text = format!("import {{ {}flow, route{} }} from \"holon\"\nimport state from \"state\"\n", if starts { "action, " } else { "" }, if uses("status(") { ", status" } else { "" });
-    if uses("marks.") || uses("part(") || uses("held(") {
+    if uses("marks.") || uses("marks[") || uses("part(") || uses("held(") {
         text.push_str("import marks from \"collection:marks\"\n");
+    }
+    if uses("notes[") {
+        text.push_str("import notes from \"collection:notes\"\n");
     }
     if uses("gone[") {
         text.push_str("import gone from \"collection:gone\"\n");
@@ -344,6 +353,9 @@ fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)]) -> 
     }
     if uses("askif(") {
         text.push_str("\nasync function askif(x) {\n  if (x) {\n    const sent = await api.post(\"/in\", { body: x })\n  }\n  return 1\n}\n");
+    }
+    if uses("check(") {
+        text.push_str("\nfunction check(x) {\n  return x === \"a\"\n}\n");
     }
     if uses("bump(") {
         text.push_str("\nfunction bump(x) {\n  ++state.f\n  return x\n}\n");
@@ -382,7 +394,7 @@ struct Did {
 /// reads it. The names a handler uses are stand-ins that leave their mark; `await` is dropped,
 /// since they answer at once.
 fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
-    let names = "state, marks, console, ping, rec, rec2, rec3, part, ask, ask2, api, status, mark, undo, news, gone, bump, go, maybe, askif, held, fin";
+    let names = "state, marks, console, ping, rec, rec2, rec3, part, ask, ask2, api, status, mark, undo, news, gone, bump, go, maybe, askif, held, fin, notes, check";
     let made: Vec<String> = handlers
         .iter()
         .map(|c| {
@@ -401,7 +413,11 @@ fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
     const state = {{}};
     const env = {{
       state,
-      marks: {{ put: () => {{ fx.push("p") }} }},
+      marks: new Proxy({{ put: () => {{ fx.push("p") }} }}, {{ set: () => {{ fx.push("p"); return true }} }}),
+      // A read of a key (a key that isn't there is no read, as a flow's isn't): it answers
+      // nothing.
+      notes: new Proxy({{}}, {{ get: (t, k) => {{ if (typeof k === "string" && k !== "undefined") fx.push("n"); return undefined }} }}),
+      check: (x) => x === "a",
       console: {{ log: () => {{ fx.push("l") }} }},
       ping: () => {{ fx.push("s"); return {{ run: "r" }} }},
       rec: (x) => {{ fx.push("f"); return "did " + x }},
@@ -435,10 +451,11 @@ fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
         try {{ JSON.parse(x) }} catch (e) {{ ok = false }}
         return ok ? "parsed" : "kept";
       }},
-      // The try's promise (§6.5): what a failed block made is undone, but for its requests.
+      // The try's promise (§6.5): what a failed block made is undone, but for its requests and
+      // the reads it asked.
       mark: () => [fx.length, Object.assign({{}}, state)],
       undo: ([n, kept]) => {{
-        fx.push(...fx.splice(n).filter((m) => m === "r" || m === "g"));
+        fx.push(...fx.splice(n).filter((m) => m === "r" || m === "g" || m === "n"));
         for (const k of Object.keys(state)) delete state[k];
         Object.assign(state, kept);
       }},
@@ -505,6 +522,12 @@ fn flow_does(state: &AppState, slug: &str, i: usize, body: &str, seen: &mut Opti
                 other => panic!("an effect the grid doesn't know: {other}"),
             }
         }
+        // A read the run asked of `notes`, from its record.
+        for r in e["reads"].as_array().into_iter().flatten() {
+            if r["request"].to_string().contains("\"notes\"") {
+                marks.push("n");
+            }
+        }
         let sent = serde_json::to_string(&e["rounds"]).unwrap();
         if sent.contains("/hit\"") {
             marks.push("r");
@@ -537,6 +560,9 @@ const DEBTS: &[&Debt] = &[
     &A_LISTS_FUNCTION_LOSES_ITS_WRITE,
     &A_CHOICE_IN_A_FUNCTION_STARTS,
     &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
+    &A_CHOICES_TEST_IS_READ_PAST_A_RETURN,
+    &A_READ_IS_ASKED_PAST_A_RETURN,
+    &AN_UNUSED_READ_IS_NOT_ASKED,
 ];
 
 /// The started half: a start in a try block that then fails is made, as JavaScript makes it,
@@ -553,11 +579,18 @@ const FAILING_TRIES: &[&str] = &["before a failure in a try", "bound before a fa
 /// Where the compiler refuses a handler with a fault of its own (a graph that can't run), known and
 /// owned elsewhere: by shape and effect, and why. Each is left out as a refusal is, and one that
 /// compiles again fails the test, to be struck from here.
-const KNOWN_FAULTS: &[(&str, &str, &str)] = &[(
-    "tied to a value there",
-    "ls",
-    "a list's function that starts an action, bound under a condition (`if (v) got = [\"a\"].map((x) => ping(x))`): \"`after` ties a write or a call to what it names: this statement makes none\" (R174)",
-)];
+const KNOWN_FAULTS: &[(&str, &str, &str)] = &[
+    (
+        "tied to a value there",
+        "ls",
+        "a list's function that starts an action, bound under a condition (`if (v) got = [\"a\"].map((x) => ping(x))`): \"`after` ties a write or a call to what it names: this statement makes none\" (R174)",
+    ),
+    (
+        "tied to a value there",
+        "rd",
+        "a collection read bound under a condition (`if (v !== undefined) got = notes[\"k\"]`): \"`after` ties a write or a call to what it names: this statement makes none\" (found 2026-11-22 by the reads column)",
+    ),
+];
 
 /// Handlers the reader takes and `lang::compile` refuses, as their steps written back as text read
 /// as other steps: each debt, and the cases owed under it. Paid when the printer writes the form
@@ -611,6 +644,10 @@ fn debt(case: &Case, request: &str, made: &str, missed: &str) -> Option<Vec<&'st
     explain(mark == "ls", &A_LISTS_FUNCTION_STARTS_PAST_A_RETURN, "s", "");
     explain(mark == "lf", &A_LISTS_FUNCTION_LOSES_ITS_WRITE, "", "f");
     explain(mark == "fr", &A_CHOICE_IN_A_FUNCTION_STARTS, "s", "");
+    let reads_in_test = case.condition.starts_with("notes[");
+    explain(reads_in_test && shape.contains("?:"), &A_CHOICES_TEST_IS_READ_PAST_A_RETURN, "n", "");
+    explain(matches!(mark, "rd" | "pk"), &A_READ_IS_ASKED_PAST_A_RETURN, "n", "");
+    explain(true, &AN_UNUSED_READ_IS_NOT_ASKED, "", "n");
     (made.is_empty() && missed.is_empty() && !owed.is_empty()).then_some(owed)
 }
 
