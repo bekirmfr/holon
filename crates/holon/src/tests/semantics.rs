@@ -23,10 +23,21 @@
 //! rule. The flow does what the third does, always; where the third differs from the second
 //! is the whole of what a reader of JavaScript has to know, and is counted.
 //!
+//! It keeps one promise JavaScript doesn't, also on purpose: a `try` block that fails leaves
+//! nothing behind but the requests it made (docs/LANGUAGE.md §6.5), written here as JavaScript
+//! once (`mark` as the block begins, `undo` in its catch). Outside a try, a throw ends the handler
+//! as a return of nothing, and so, as in JavaScript, does a line that fails (the owner's open
+//! question: today a flow goes on, owed under its debt).
+//!
+//! Where a flow doesn't yet do what it reads as, the difference is owed under a named debt of
+//! reached (`reached.rs`, each with its smallest flow), matched mark by mark (`debt`): any other
+//! difference fails, and so does a debt owed nowhere.
+//!
 //! To add a case: a new way to reach a statement is a line of `SHAPES`, a new kind of effect a line
 //! of `EFFECTS` (and its mark where the log is read, `flow_does`), a new condition a line of
 //! `CONDITIONS`, a new request a line of `REQUESTS`. None needs its answer written.
 
+use super::reached::{Debt, AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, A_FINALLY_FORGETS_THE_RETURN_ABOVE, A_LINE_AFTER_A_FAILURE_RUNS};
 use super::*;
 
 /// The kinds of thing a handler does: the mark each leaves, the statement that does it, and the
@@ -37,6 +48,7 @@ use super::*;
 /// it does.
 const EFFECTS: &[(&str, &str, &str)] = &[
     ("w", "++state.w", ""),
+    ("ws", "state.w = \"v\"", ""),
     ("p", "marks.put(\"k\", \"v\")", ""),
     ("l", "console.log(\"line\")", ""),
     ("s", "ping({})", "ping({})"),
@@ -90,6 +102,7 @@ const AS_A_FLOW_READS: &str = r#"
     const T = (x) => x === undefined ? undefined : !!x;
     const ANDC = (a, f) => a === undefined ? undefined : !a ? false : T(f());
     const ORC = (a, f) => a === undefined ? undefined : a ? true : T(f());
+    const PARSED = (t) => { try { return JSON.parse(t) } catch (e) { return undefined } };
 "#;
 
 /// Requests' bodies: fields that hold, that don't, that are missing, of another type, and a body
@@ -140,6 +153,22 @@ const SHAPES: &[(&str, &str)] = &[
     ("returned from a case", "switch (req.json.k) {\ncase \"a\":\nreturn {V}\ndefault:\nreturn \"no\"\n}"),
     ("in a try", "try {\nconst parsed = JSON.parse(req.body)\n{E}\n} catch {\nreturn \"bad\"\n}\nreturn \"end\""),
     ("in an if in a try", "try {\nconst parsed = JSON.parse(req.body)\nif ({C}) {\n{E}\n}\n} catch {\nreturn \"bad\"\n}\nreturn \"end\""),
+    ("in a try in an if", "if ({C}) {\ntry {\nconst parsed = JSON.parse(req.body)\n{E}\n} catch {\nreturn \"bad\"\n}\n}\nreturn \"end\""),
+    ("in a catch in an if", "if ({C}) {\ntry {\nconst parsed = JSON.parse(req.body)\n} catch {\n{E}\n}\n}\nreturn \"end\""),
+    ("before a failure in a try", "try {\n{E}\nconst parsed = JSON.parse(req.body)\n} catch {\nreturn \"bad\"\n}\nreturn \"end\""),
+    ("before a throw in a try", "try {\n{E}\nif ({C}) throw new Error(\"no\")\n} catch {\nreturn \"bad\"\n}\nreturn \"end\""),
+    ("after a throw in a try", "try {\nif ({C}) throw new Error(\"no\")\n{E}\n} catch {\nreturn \"bad\"\n}\nreturn \"end\""),
+    ("bound before a failure in a try", "try {\nconst got = {V}\nconst parsed = JSON.parse(req.body)\n} catch {\nreturn \"bad\"\n}\nreturn \"end\""),
+    ("returned after a failure in a try", "try {\nconst got = {V}\nconst parsed = JSON.parse(req.body)\nreturn got\n} catch {\nreturn \"bad\"\n}"),
+    ("in a catch", "try {\nconst parsed = JSON.parse(req.body)\n} catch {\n{E}\n}\nreturn \"end\""),
+    ("in an if on a value there", "if (req.json.v !== undefined) {\n{E}\n}\nreturn \"end\""),
+    ("after a throw, no try", "if ({C}) throw new Error(\"no\")\n{E}\nreturn \"end\""),
+    ("after a failure, no try", "const parsed = JSON.parse(req.body)\n{E}\nreturn \"end\""),
+    ("in a finally", "try {\nconst parsed = JSON.parse(req.body)\n} catch {\nreturn \"bad\"\n} finally {\n{E}\n}\nreturn \"end\""),
+    ("in a finally, a return above", "if ({C}) return \"stopped\"\ntry {\nconst parsed = JSON.parse(req.body)\n} catch {\nreturn \"bad\"\n} finally {\n{E}\n}\nreturn \"end\""),
+    ("in a try without a catch, a return above", "if ({C}) return \"stopped\"\ntry {\n{E}\n} finally {\n++state.o\n}\nreturn \"end\""),
+    ("a branch of ?:, read only in a branch", "const got = {C} ? {V} : undefined\nreturn req.json.d ? got : \"no\""),
+    ("a branch of ?: past a return", "if (req.json.d) return \"stopped\"\nconst got = {C} ? {V} : undefined\nreturn \"end\""),
 ];
 
 /// A handler of the grid: where it comes from, its body, and its body as a flow reads it.
@@ -173,6 +202,16 @@ fn cases() -> Vec<Case> {
                 };
                 // A subject that isn't there takes no case, the default no more than another.
                 let read = read.replace("req.json.", "J.").replace("switch (J.k) {", "if (J.k !== undefined) switch (J.k) {");
+                // A try block that fails leaves nothing behind but the requests it made.
+                let read = read.replace("try {\n", "const TM = mark()\ntry {\n").replace("} catch {\n", "} catch {\nundo(TM)\n");
+                // Outside a try, a throw ends the handler as a return of nothing (§6.5a); a line
+                // that fails ends it too, as JavaScript's throw does (the owner's open question:
+                // a flow goes on today, owed under its debt).
+                let read = match *shape {
+                    "after a throw, no try" => read.replace("throw new Error(\"no\")", "return"),
+                    "after a failure, no try" => read.replace("const parsed = JSON.parse(req.body)\n", "const parsed = PARSED(req.body)\nif (parsed === undefined) return\n"),
+                    _ => read,
+                };
                 out.push(Case { shape, mark, condition, body: fill(condition), read: neither(&read) });
             }
         }
@@ -190,13 +229,23 @@ fn neither(read: &str) -> String {
     while let Some(i) = read[at..].find("if (").map(|i| i + at) {
         if read[..i].chars().last().is_none_or(|c| !c.is_alphanumeric() && c != '_') {
             let close = matching(read, i + 3);
-            heads.push((i, close, read[close + 1..if_end(read, i)].contains("return")));
+            let branch = &read[close + 1..if_end(read, i)];
+            // In a try block, a condition that isn't there is a value that didn't arrive: the block
+            // fails and its catch runs (§6.5, "catch catches absence").
+            let in_try = read[..i].match_indices("try {").any(|(j, _)| i < matching(read, j + 4));
+            heads.push((i, close, in_try, branch.contains("return") || branch.contains("throw")));
         }
         at = i + 4;
     }
     let mut out = read.to_string();
-    for (i, close, returns) in heads.into_iter().rev() {
-        let stop = if returns { "return;" } else { "{}" };
+    for (i, close, in_try, returns) in heads.into_iter().rev() {
+        let stop = if in_try {
+            "throw 0;"
+        } else if returns {
+            "return;"
+        } else {
+            "{}"
+        };
         out.replace_range(i..=close, &format!("if ((IFC = {}) === undefined) {stop} else if (IFC)", &read[i + 4..close]));
     }
     out
@@ -289,7 +338,7 @@ struct Did {
 /// reads it. The names a handler uses are stand-ins that leave their mark; `await` is dropped,
 /// since they answer at once.
 fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
-    let names = "state, marks, console, ping, rec, rec2, rec3, part, ask, ask2, api, status";
+    let names = "state, marks, console, ping, rec, rec2, rec3, part, ask, ask2, api, status, mark, undo";
     let made: Vec<String> = handlers
         .iter()
         .map(|c| {
@@ -319,6 +368,13 @@ fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
       ask2: () => {{ fx.push("g"); return 200 }},
       api: {{ post: () => {{ fx.push("r"); return {{ status: 200, body: "fast" }} }} }},
       status: (n) => ({{ status: n }}),
+      // The try's promise (§6.5): what a failed block made is undone, but for its requests.
+      mark: () => [fx.length, Object.assign({{}}, state)],
+      undo: ([n, kept]) => {{
+        fx.push(...fx.splice(n).filter((m) => m === "r" || m === "g"));
+        for (const k of Object.keys(state)) delete state[k];
+        Object.assign(state, kept);
+      }},
     }};
     let threw = false;
     try {{ make(env)(req) }} catch (e) {{ threw = true }}
@@ -400,7 +456,26 @@ fn flow_does(state: &AppState, slug: &str, i: usize, body: &str, seen: &mut Opti
 /// Where a flow doesn't yet do what it reads as, and why: debts, each to be paid by a change to
 /// the language and then struck from here. A difference outside these fails the test, and so does
 /// one of these that no longer differs anywhere.
-const DEBTS: &[(&str, &str)] = &[];
+/// The debts are reached's (`reached.rs`, one smallest flow each), and the started half, carried
+/// from the try's own work.
+const DEBTS: &[&Debt] = &[
+    &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE,
+    &THE_STARTED_HALF,
+    &A_FINALLY_FORGETS_THE_RETURN_ABOVE,
+    &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
+    &A_LINE_AFTER_A_FAILURE_RUNS,
+];
+
+/// The started half: a start in a try block that then fails is made, as JavaScript makes it,
+/// where the try's promise keeps nothing of a failed block but its requests (the started half's
+/// own design, open).
+const THE_STARTED_HALF: Debt = Debt {
+    name: "the started half",
+    says: "an action a try block starts, bound to a name, is started though the block then fails",
+};
+
+/// The shapes whose try block fails on some request, the statement in it reached before.
+const FAILING_TRIES: &[&str] = &["before a failure in a try", "bound before a failure in a try", "returned after a failure in a try", "before a throw in a try"];
 
 /// Handlers the reader takes and `lang::compile` refuses, as their steps written back as text read
 /// as other steps: each debt, and the cases owed under it. Paid when the printer writes the form
@@ -410,9 +485,36 @@ const ROUND_TRIP_DEBTS: &[(&str, Owes)] = &[("the printer writes && / || around 
     matches!(c.shape, "after &&" | "after ||") && c.mark == "g" && c.condition == "req.json.c"
 })];
 
-/// The debt a run that differs is owed under, by its case and request: none now.
-fn debt(_case: &Case, _request: &str) -> Option<&'static str> {
-    None
+/// The debt a run that differs is owed under, by its case and request and the difference, mark by
+/// mark: what the flow made that it reads as not making (`made`), and what it didn't make that it
+/// reads as making (`missed`). Each debt names one difference; any other fails.
+fn debt(case: &Case, request: &str, made: &str, missed: &str) -> Option<&'static Debt> {
+    let only = |s: &str, of: &str| !s.is_empty() && s.chars().all(|c| of.contains(c));
+    let function = matches!(case.mark, "f" | "f2" | "f3" | "fp");
+    match case.shape {
+        "after a failure, no try" if request == "not json" && missed.is_empty() && !made.is_empty() => Some(&A_LINE_AFTER_A_FAILURE_RUNS),
+        shape if FAILING_TRIES.contains(&shape) && missed.is_empty() && function && only(made, "fp") => Some(&A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE),
+        shape if FAILING_TRIES.contains(&shape) && missed.is_empty() && case.mark == "s" && made == "s" => Some(&THE_STARTED_HALF),
+        "in a finally, a return above" | "in a try without a catch, a return above" if missed.is_empty() && only(made, "wo") => Some(&A_FINALLY_FORGETS_THE_RETURN_ABOVE),
+        "a branch of ?:, read only in a branch" if made.is_empty() && matches!(case.mark, "s" | "r") && missed == case.mark => Some(&AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE),
+        _ => None,
+    }
+}
+
+/// What `did` has that `reads` hasn't, and what it lacks, letter by letter.
+fn apart(did: &str, reads: &str) -> (String, String) {
+    let count = |s: &str| s.chars().fold(BTreeMap::<char, i32>::new(), |mut m, c| {
+        *m.entry(c).or_default() += 1;
+        m
+    });
+    let (d, r) = (count(did), count(reads));
+    let (mut made, mut missed) = (String::new(), String::new());
+    for c in d.keys().chain(r.keys()).collect::<BTreeSet<_>>() {
+        let n = d.get(c).copied().unwrap_or(0) - r.get(c).copied().unwrap_or(0);
+        let to = if n > 0 { &mut made } else { &mut missed };
+        (0..n.abs()).for_each(|_| to.push(*c));
+    }
+    (made, missed)
 }
 
 /// **Guards:** a handler does what its text says. What it writes, sends, starts and calls is what
@@ -510,8 +612,9 @@ fn a_handler_does_what_its_text_says() {
                                 if did == read.marks {
                                     continue;
                                 }
-                                match debt(case, request) {
-                                    Some(owing) => *t.owed.entry(owing).or_default() += 1,
+                                let (made, missed) = apart(&did, &read.marks);
+                                match debt(case, request, &made, &missed) {
+                                    Some(owing) => *t.owed.entry(owing.name).or_default() += 1,
                                     None => t.wrong.push(format!(
                                         "{} | {} | {} | {request} | it reads as {:?} | the flow did {did:?} | javascript {:?}{}",
                                         case.shape,
@@ -548,7 +651,10 @@ fn a_handler_does_what_its_text_says() {
     // The grid is no smaller than it was, and most of it is plain JavaScript.
     assert!(taken.len() > 600 && runs > 5_000, "{} handlers taken, {runs} runs", taken.len());
     assert!(as_javascript * 2 > runs, "{as_javascript} of {runs} runs do as JavaScript does");
-    for (owing, why) in DEBTS {
-        assert!(owed.contains_key(owing), "\"{owing}\" no longer differs anywhere: strike it from DEBTS ({why})");
+    for (owing, n) in &owed {
+        println!("  {n:4} runs owed under \"{owing}\"");
+    }
+    for d in DEBTS {
+        assert!(owed.contains_key(d.name), "\"{}\" no longer differs anywhere: strike it from DEBTS ({})", d.name, d.says);
     }
 }

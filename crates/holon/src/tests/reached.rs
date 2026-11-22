@@ -58,7 +58,7 @@ pub(super) const A_CHOICE_IN_A_FUNCTION_STARTS: Debt = Debt {
 /// W: a finally forgets the returns above it.
 pub(super) const A_FINALLY_FORGETS_THE_RETURN_ABOVE: Debt = Debt {
     name: "a finally forgets the returns above",
-    says: "a state write in a finally is made though a return above the try answered and the try was never reached",
+    says: "a state write in a finally, or in a try without a catch, is made though a return above the try answered and the try was never reached",
 };
 /// P+R: a wait past a return that answered still waits.
 pub(super) const A_WAIT_PAST_AN_ANSWER_PARKS: Debt = Debt {
@@ -73,7 +73,7 @@ pub(super) const A_CHOICES_TEST_IS_READ_PAST_A_RETURN: Debt = Debt {
 /// Z: a call in an arm, read only in a branch not taken, isn't made.
 pub(super) const AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE: Debt = Debt {
     name: "a call in an arm, read only in a branch not taken, isn't made",
-    says: "an action started in a ?: arm that is taken is not started when its value is read only in a branch that isn't",
+    says: "a call in a ?: arm that is taken, a start or a request, is not made when its value is read only in a branch that isn't",
 };
 /// R: a read is asked where its statement isn't reached.
 pub(super) const A_READ_IS_ASKED_PAST_A_RETURN: Debt = Debt {
