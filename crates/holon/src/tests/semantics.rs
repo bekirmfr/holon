@@ -794,7 +794,9 @@ fn a_handler_does_what_its_text_says() {
         /// Where a flow's own rule shows: by the condition that had nothing to go on.
         shows: BTreeMap<&'a str, usize>,
     }
-    let flows: Vec<(usize, &[(usize, &Case)], bool)> = taken.chunks(40).map(|c| (c, false)).chain(read_alone.chunks(40).map(|c| (c, true))).enumerate().map(|(n, (c, alone))| (n, c, alone)).collect();
+    /// A flow of the grid: its number, its handlers, and whether it is deployed read alone.
+    type GridFlow<'a> = (usize, &'a [(usize, &'a Case)], bool);
+    let flows: Vec<GridFlow> = taken.chunks(40).map(|c| (c, false)).chain(read_alone.chunks(40).map(|c| (c, true))).enumerate().map(|(n, (c, alone))| (n, c, alone)).collect();
     let tallies: Vec<Tally> = thread::scope(|s| {
         let running: Vec<_> = flows
             .chunks(flows.len().div_ceil(workers))
