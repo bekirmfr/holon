@@ -7,9 +7,10 @@
 //! cases found that way the steps also don't do what the text says (an action started inside a
 //! function's `if` starts though the `if` is false; a write in a list's function is dropped).
 //! So [`lang::compile`], the one door every reading of a text passes (the editor's mistakes,
-//! `holon check` and `deploy`, an agent's plan, the server's check that a version's text is the
-//! code it runs), refuses it, in the words of the one who wrote the text, at the function the
-//! way back stopped at, else at the `flow(…)` line.
+//! `holon check` and `deploy`, an agent's plan, the text a version is shown as), refuses it, in
+//! the words of the one who wrote the text, at the function the way back stopped at, at the place
+//! the text nests deepest when what is written back nests too deep, else at the `flow(…)` line.
+//! (The server's deploy checks a document's canvas against its unit, not its text.)
 //!
 //! The round trip reads the printed text with [`ts::compile`], not [`lang::compile`]: the printer
 //! itself compiles what it wrote to check its actions ([`print`]'s `same_actions`, with
@@ -44,9 +45,12 @@ pub(crate) fn written_back(src: &str, lowered: &Lowered) -> Result<(), LowerErro
         Err(_) if !whole(&lowered.doc) => return Ok(()),
         Err(e) => return Err(refusal(src, lowered, &e)),
     };
-    let back = ts::compile(&text).map_err(|e| LowerError {
-        span: flow_span(src),
-        message: format!("written back from its steps, this text doesn't read again ({e}), so the canvas couldn't show it: write it another way (and please report it: Holon's two readings of a text should agree)"),
+    let back = ts::compile(&text).map_err(|e| match too_deep(&e.message) {
+        true => deep(src),
+        false => LowerError {
+            span: flow_span(src),
+            message: format!("written back from its steps, this text doesn't read again ({e}), so the canvas couldn't show it: write it another way (and please report it: Holon's two readings of a text should agree)"),
+        },
     })?;
     // A document whose flow doesn't build is refused where it is checked whole, with its own
     // reason; only the units of one that builds are compared.
@@ -86,6 +90,9 @@ fn unit_of(doc: &crate::builder::FlowDocument) -> Result<String, String> {
 fn refusal(src: &str, lowered: &Lowered, said: &str) -> LowerError {
     // The printer's own text not reading again: its reason, at a place in that text, not this.
     if let Some(why) = said.strip_prefix("the TypeScript written for this flow doesn't read back (").and_then(|r| r.split_once("), which is the printer's mistake")).map(|(why, _)| why) {
+        if too_deep(why) {
+            return deep(src);
+        }
         let why = why.split_once(": ").filter(|(at, _)| at.split(':').all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))).map_or(why, |(_, why)| why);
         return LowerError { span: flow_span(src), message: format!("written back as text from its steps, this flow doesn't read again: {why}") };
     }
@@ -114,6 +121,22 @@ fn refusal(src: &str, lowered: &Lowered, said: &str) -> LowerError {
         format!("{what} can't be written back as text, so the canvas couldn't show it:{rest}")
     };
     LowerError { span, message }
+}
+
+/// What the way back writes nests too deep for the reader, or for fmt's layout: each nests what
+/// the text writes in a row (early returns, writes under an `if`, a try's statements) or in each
+/// other (calls, templates, sums, powers), several levels for one of the text's.
+pub(crate) const TOO_DEEP: &str = "this flow is too long or too deeply nested to be shown back as text: split the handler, or name parts of it with a const or a function";
+
+/// Whether a reading's or a layout's mistake says it nests too deep.
+fn too_deep(message: &str) -> bool {
+    message.contains("levels deep") || message.contains("fmt can't lay this out in time")
+}
+
+/// [`TOO_DEEP`], said where `src` nests deepest.
+fn deep(src: &str) -> LowerError {
+    let at = crate::lang::nesting::deepest_at(src);
+    LowerError { span: Span { start: at, end: at }, message: TOO_DEEP.into() }
 }
 
 /// Whether `name` is one the reader made up for a function written in place (`fn_1`, and the
