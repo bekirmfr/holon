@@ -43,7 +43,28 @@ pub(super) const A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE: Debt = Debt {
 /// L: what a list's function makes is dropped.
 pub(super) const A_LISTS_FUNCTION_LOSES_ITS_WRITE: Debt = Debt {
     name: "what a list's function makes is dropped",
-    says: "a write made by a function given to a list method is lost, where JavaScript makes it once per item",
+    says: "a write made by a function given to a list method is lost, where JavaScript makes it once per item; so are its puts, sends, queued messages, mails and log lines (the list grid, 2026-11-22)",
+};
+/// G, new in the list grid (2026-11-22): a list's function goes on past an item that fails.
+pub(super) const A_LISTS_FUNCTION_GOES_PAST_A_FAILURE: Debt = Debt {
+    name: "a list's function goes on past an item that fails",
+    says: "map, filter, groupBy and the others call their function on the items after one whose function fails, and make its starts and requests there, where JavaScript stops at the item that throws",
+};
+/// New in the list grid (2026-11-22): a findLast calls its function from the first item.
+pub(super) const A_FIND_LAST_GOES_IN_ITEM_ORDER: Debt = Debt {
+    name: "a findLast starts and asks in the items' order",
+    says: "findLast and findLastIndex make their function's starts and requests from the first item on, where JavaScript goes from the last",
+};
+/// New in the list grid (2026-11-22): a reviver or replacer that gives nothing puts null there.
+pub(super) const A_REVIVERS_NOTHING_IS_NULL: Debt = Debt {
+    name: "a reviver's nothing is null",
+    says: "a JSON.parse reviver or JSON.stringify replacer whose function fails on an item puts null there and the whole succeeds, so a catch around it isn't reached and the items after it are called, where JavaScript throws",
+};
+/// New in the list grid (2026-11-22): a fold stops calling its function once the result so far
+/// is nothing.
+pub(super) const A_FOLD_STOPS_AT_NOTHING: Debt = Debt {
+    name: "a fold stops at a result that is nothing",
+    says: "a reduce whose function gives nothing for an item (text and a start's handle added) makes no start for the items after it, where JavaScript goes on (its sum is a text)",
 };
 /// R173: a list's function starts where the run doesn't go.
 pub(super) const A_LISTS_FUNCTION_STARTS_PAST_A_RETURN: Debt = Debt {
@@ -112,6 +133,10 @@ pub(super) const DEBTS: &[&Debt] = &[
     &A_LINE_AFTER_A_FAILURE_RUNS,
     &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &AN_UNUSED_READ_IS_NOT_ASKED,
+    &A_LISTS_FUNCTION_GOES_PAST_A_FAILURE,
+    &A_FIND_LAST_GOES_IN_ITEM_ORDER,
+    &A_REVIVERS_NOTHING_IS_NULL,
+    &A_FOLD_STOPS_AT_NOTHING,
 ];
 
 /// How a row stands today.
@@ -290,6 +315,44 @@ fn rows() -> Vec<Row> {
             answer: true,
             javascript: "answers \"no\"; reads notes",
             today: Today::Differs(&AN_UNUSED_READ_IS_NOT_ASKED, "answers \"no\""),
+            long: None,
+        },
+        Row {
+            name: "a list's function that starts something and then fails, on the first item",
+            text: "import { action, flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-16\", { port: 19616 })\n\n@PING@\nfunction go(x) {\n  ping(x)\n  const parsed = JSON.parse(x === \"a\" ? \"{\" : \"1\")\n  return parsed\n}\n\nroute.post(\"/go\", (req) => {\n  const got = [req.json.a, req.json.b].map((x) => go(x))\n  return \"end\"\n})\n",
+            request: r#"{"a":"a","b":"b"}"#,
+            // JavaScript throws at the first item; what the route answers is the owner's open
+            // question (B), so only what it does is compared.
+            answer: false,
+            javascript: "starts ping; writes pinged = 1",
+            today: Today::Refused(&A_LISTS_FUNCTION_GOES_PAST_A_FAILURE, "starts ping, ping; writes pinged = 1, pinged = 2"),
+            long: None,
+        },
+        Row {
+            name: "a findLast whose function starts something",
+            text: "import { action, flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-17\", { port: 19617 })\n\nexport const ping = action((x) => {\n  state.seen = (state.seen ?? \"\") + x\n  return x\n})\n\nfunction go(x) {\n  ping(x)\n  return false\n}\n\nroute.post(\"/go\", (req) => {\n  const got = [req.json.a, req.json.b].findLast((x) => go(x))\n  return \"end\"\n})\n",
+            request: r#"{"a":"a","b":"b"}"#,
+            answer: true,
+            javascript: "answers \"end\"; starts ping, ping; writes seen = \"b\", seen = \"ba\"",
+            today: Today::Refused(&A_FIND_LAST_GOES_IN_ITEM_ORDER, "answers \"end\"; starts ping, ping; writes seen = \"a\", seen = \"ab\""),
+            long: None,
+        },
+        Row {
+            name: "a reviver that fails on an item, in a try",
+            text: "import { flow, route } from \"holon\"\n\nflow(\"reached-18\", { port: 19618 })\n\nfunction check(x) {\n  const parsed = JSON.parse(x === \"a\" ? \"{\" : \"1\")\n  return parsed\n}\n\nroute.post(\"/go\", (req) => {\n  try {\n    const got = JSON.parse(req.json.text, (k, x) => Array.isArray(x) || k === \"\" ? x : check(x))\n    return got\n  } catch {\n    return \"bad\"\n  }\n})\n",
+            request: r#"{"text":"[\"a\",\"b\"]"}"#,
+            answer: true,
+            javascript: "answers \"bad\"",
+            today: Today::Differs(&A_REVIVERS_NOTHING_IS_NULL, "answers \"[null,1]\""),
+            long: None,
+        },
+        Row {
+            name: "a reduce that adds a start's handle to a text",
+            text: "import { action, flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-19\", { port: 19619 })\n\n@PING@\nroute.post(\"/go\", (req) => {\n  const got = [req.json.a, req.json.b].reduce((acc, x) => acc + ping(x), \"\")\n  return \"end\"\n})\n",
+            request: r#"{"a":"a","b":"b"}"#,
+            answer: true,
+            javascript: "answers \"end\"; starts ping, ping; writes pinged = 1, pinged = 2",
+            today: Today::Refused(&A_FOLD_STOPS_AT_NOTHING, "answers \"end\"; starts ping; writes pinged = 1"),
             long: None,
         },
         Row {

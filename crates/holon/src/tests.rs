@@ -57,6 +57,8 @@ use places::{names_no_place, temp_folder};
 mod refused_secrets;
 /// What a statement reached or not does, case by case, against JavaScript: the debts of reached.
 mod reached;
+/// What a list method's function does, item by item, against JavaScript: the list block of reached.
+mod list_grid;
 
 pub(crate) fn test_state() -> AppState {
     test_state_with(SharedStore::new(Box::new(MemStore::new())))

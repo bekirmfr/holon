@@ -430,8 +430,11 @@ fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
     const env = {{
       state,
       marks: new Proxy({{ put: () => {{ fx.push("p") }} }}, {{ set: () => {{ fx.push("p"); return true }} }}),
-      // A read of a key (a key that isn't there is no read, as a flow's isn't): it answers
-      // nothing.
+      // A read of a key: it answers nothing. A key that isn't there (`notes[req.json.k]` on a
+      // request without `k`, which JavaScript reads as the key "undefined") is no read, on both
+      // sides alike (as written and as a flow reads it): a flow asks no read with a key it hasn't
+      // got, and counting JavaScript's read of "undefined" would show a difference that is no
+      // question of reached, only of how the stand-in is keyed.
       notes: new Proxy({{}}, {{ get: (t, k) => {{ if (typeof k === "string" && k !== "undefined") fx.push("n"); return undefined }} }}),
       check: (x) => x === "a",
       console: {{ log: () => {{ fx.push("l") }} }},
@@ -590,7 +593,7 @@ const DEBTS: &[&Debt] = &[
 /// The started half: a start in a try block that then fails is made, as JavaScript makes it,
 /// where the try's promise keeps nothing of a failed block but its requests (the started half's
 /// own design, open).
-const THE_STARTED_HALF: Debt = Debt {
+pub(super) const THE_STARTED_HALF: Debt = Debt {
     name: "the started half",
     says: "an action a try block starts, bound to a name or through a function, is started though the block then fails",
 };
@@ -680,7 +683,7 @@ fn debt(case: &Case, request: &str, made: &str, missed: &str) -> Option<Vec<&'st
 /// The grid's server: a local host may be called, and a mail (`ops`) and a queue (`jobs`) are
 /// bound, to a mail sink and a queue standing in for SQS (the review session's, as it wrote it).
 /// The folder its secrets are in, to remove.
-fn grid_state(sink: &smtp::sink::Sink, sqs: &sqs::stand_in::StandIn) -> (AppState, std::path::PathBuf) {
+pub(super) fn grid_state(sink: &smtp::sink::Sink, sqs: &sqs::stand_in::StandIn) -> (AppState, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!("holon-grid-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
     let env = dir.join(".env");
@@ -789,6 +792,8 @@ fn a_handler_does_what_its_text_says() {
     struct Tally<'a> {
         runs: usize,
         as_javascript: usize,
+        /// Runs owed, each once, however many debts it is owed under.
+        owed_runs: usize,
         wrong: Vec<String>,
         owed: BTreeMap<&'static str, usize>,
         /// Where a flow's own rule shows: by the condition that had nothing to go on.
@@ -820,17 +825,25 @@ fn a_handler_does_what_its_text_says() {
                                 let did = flow_does(state, &slug, *i, request, &mut seen);
                                 t.runs += 1;
                                 assert!(!read.threw, "as a flow reads it, nothing throws: {} | {} | {request}", case.shape, case.condition);
-                                if did == written.marks && !written.threw {
-                                    t.as_javascript += 1;
-                                } else if did == read.marks {
-                                    *t.shows.entry(case.condition).or_default() += 1;
-                                }
+                                // Each run is counted under one heading: as JavaScript (the flow
+                                // does what the text and its reading both do), by a flow's own
+                                // rule (it does what the reading does, which isn't what the text
+                                // does), or owed (it does neither). A run that does as JavaScript
+                                // and not as the reading is owed: the reading is the yardstick.
                                 if did == read.marks {
+                                    if did == written.marks && !written.threw {
+                                        t.as_javascript += 1;
+                                    } else {
+                                        *t.shows.entry(case.condition).or_default() += 1;
+                                    }
                                     continue;
                                 }
                                 let (made, missed) = apart(&did, &read.marks);
                                 match debt(case, request, &made, &missed) {
-                                    Some(owing) => owing.iter().for_each(|d| *t.owed.entry(d.name).or_default() += 1),
+                                    Some(owing) => {
+                                        t.owed_runs += 1;
+                                        owing.iter().for_each(|d| *t.owed.entry(d.name).or_default() += 1);
+                                    }
                                     None => t.wrong.push(format!(
                                         "{}{} | {} | {} | {request} | it reads as {:?} | the flow did {did:?} | javascript {:?}{}",
                                         if *alone { "[read alone] " } else { "" },
@@ -851,22 +864,27 @@ fn a_handler_does_what_its_text_says() {
             .collect();
         running.into_iter().map(|r| r.join().unwrap()).collect()
     });
-    let (mut runs, mut as_javascript, mut wrong) = (0, 0, Vec::new());
+    let (mut runs, mut as_javascript, mut owed_runs, mut wrong) = (0, 0, 0, Vec::new());
     let (mut owed, mut shows): (BTreeMap<&str, usize>, BTreeMap<&str, usize>) = Default::default();
     for t in tallies {
         runs += t.runs;
         as_javascript += t.as_javascript;
+        owed_runs += t.owed_runs;
         wrong.extend(t.wrong);
         t.owed.into_iter().for_each(|(k, n)| *owed.entry(k).or_default() += n);
         t.shows.into_iter().for_each(|(k, n)| *shows.entry(k).or_default() += n);
     }
-    println!("{} handlers, {} the language takes, {runs} runs: {as_javascript} as JavaScript, {} by a flow's own rule, {} owed", all.len(), taken.len(), shows.values().sum::<usize>(), owed.values().sum::<usize>());
+    let by_rule = shows.values().sum::<usize>();
+    println!("{} handlers, {} the language takes, {runs} runs: {as_javascript} as JavaScript, {by_rule} by a flow's own rule, {owed_runs} owed, {} wrong", all.len(), taken.len(), wrong.len());
+    assert_eq!(as_javascript + by_rule + owed_runs + wrong.len(), runs, "each run is counted under one heading");
     for (condition, n) in &shows {
         println!("  {n:4} runs where `{condition}` had nothing to go on");
     }
     for (debt, n) in &round_trip_owed {
         println!("  {n:4} handlers the canvas can't write back, under \"{debt}\"");
     }
+    // A run owed under two debts (a failed try that keeps both a function's write and a start)
+    // shows under each: these add up to more than the runs owed.
     for (owing, n) in &owed {
         println!("  {n:4} runs owed under \"{owing}\"");
     }
