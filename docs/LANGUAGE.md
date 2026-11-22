@@ -3065,6 +3065,7 @@ The error catalogue the reader and the lowering produce, each with the span it p
 | an action answers with a value alone | the `status(…)` or `respond(…)` |
 | a route answers and is done, so it doesn't wait | the `await` |
 | a function computes and never waits; calling another flow's action is a handler's | the `await` |
+| a text the canvas can't write back as the same steps: a function that starts another flow's action, or that has a write, a request or a start the place calling it can't hold back (one under its own `if` or `?:`, or in a list method's function) | the function's name, or the list method its function is given to; else `flow(…)` |
 | a method's function (`map`'s, `filter`'s…) isn't async | the function |
 | no leaf does `.m(…)`: do it in a `js()` function | the method |
 | a loop | the statement |

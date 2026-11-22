@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **A text is taken only if the canvas can write it back as the same flow.** Holon reads a text
+  into steps, and writes steps back as text for the canvas and `holon fmt`. The two could
+  disagree: some texts were taken whose steps can't be written back, and those steps didn't do
+  what the text says. Now every reading of a text (the editor, `holon check` and `deploy`, an
+  agent's check, the text shown for a version) writes the steps back and reads them again, and
+  refuses the text when that fails or gives other steps, saying what to change at the function.
+  For example: `function ask(x) { if (x) { ping(x) } return 1 }`, called in a route under an
+  `if`, is refused with `the function "ask" starts another flow's action: a function only
+  computes, so start it in the route or action that calls "ask"`. This closes the second known
+  limit of 0.1.0-rc.37. Also refused now: a function with a write, a request or a start on one
+  side of a `?:`, and a list method's function that writes or starts something
+  (`xs.map((x) => keep(x))` where `keep` writes); do those in the handler. Who notices: a flow
+  written that way no longer checks or deploys. The samples are not affected.
+
 ## 0.1.0-rc.37
 
 - **Known limit of this release: an early answer above a wait.** An action that answers early,
