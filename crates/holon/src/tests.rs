@@ -55,6 +55,8 @@ mod places;
 use places::{names_no_place, temp_folder};
 /// What `holon check` says the host refuses of a secret, the host refuses, and only that (R165).
 mod refused_secrets;
+/// What a statement reached or not does, case by case, against JavaScript: the debts of reached.
+mod reached;
 
 pub(crate) fn test_state() -> AppState {
     test_state_with(SharedStore::new(Box::new(MemStore::new())))
