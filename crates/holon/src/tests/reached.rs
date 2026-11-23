@@ -84,7 +84,12 @@ pub(super) const A_FINALLY_FORGETS_THE_RETURN_ABOVE: Debt = Debt {
 /// P+R: a wait past a return that answered still waits.
 pub(super) const A_WAIT_PAST_AN_ANSWER_PARKS: Debt = Debt {
     name: "a wait past a return that answered still waits",
-    says: "an action that returned above its wait parks at the wait anyway, and its caller is answered a waiting link",
+    says: "an action that returned above its wait parks at the wait anyway, and its caller is answered a waiting link, where what stands past the wait uses what it gave and sends, mails, queues, puts, asks a host or starts an action (the waits grid, 2026-11-23); nothing past it is made",
+};
+/// New in the waits grid (2026-11-23): P+R's sibling, a test with no value in the row above.
+pub(super) const A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS: Debt = Debt {
+    name: "a wait past a test with no value still waits",
+    says: "an action whose row above the wait has a test with no value, which ends the run (§5.4), parks at the wait anyway, and its caller is answered a waiting link, where what stands past the wait uses what it gave and sends, mails, queues, puts, asks a host or starts an action; nothing past it is made",
 };
 /// A: an arm's test is read before its statement is reached.
 pub(super) const A_CHOICES_TEST_IS_READ_PAST_A_RETURN: Debt = Debt {
@@ -127,6 +132,7 @@ pub(super) const DEBTS: &[&Debt] = &[
     &A_CHOICE_IN_A_FUNCTION_STARTS,
     &A_FINALLY_FORGETS_THE_RETURN_ABOVE,
     &A_WAIT_PAST_AN_ANSWER_PARKS,
+    &A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS,
     &A_CHOICES_TEST_IS_READ_PAST_A_RETURN,
     &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &A_READ_IS_ASKED_PAST_A_RETURN,
@@ -245,6 +251,18 @@ fn rows() -> Vec<Row> {
                 "import { action, event, flow, route } from \"holon\"\nimport updates from \"channel:updates\"\n\nflow(\"reached-07-long\", { port: 19627 })\n\nexport const pay = action(async (input) => {\n  const ok = await event(\"approved\", { expires: \"1h\" })\n  updates.send({ status: \"paid\", by: ok.by })\n  return \"done\"\n})\n\nroute.post(\"/go\", (req) => {\n  if (req.json.stop) return \"stopped\"\n  const started = pay(req.json)\n  return started\n})\n",
                 "answers \"stopped\"",
             )),
+        },
+        Row {
+            name: "an action whose test above its wait has no value",
+            text: "import { action, event, flow, route } from \"holon\"\nimport updates from \"channel:updates\"\n\nflow(\"reached-20\", { port: 19620 })\n\nexport const pay = action(async (input) => {\n  if (input.stop) return \"stopped\"\n  const ok = await event(\"approved\", { expires: \"1h\" })\n  updates.send({ status: \"paid\", by: ok.by })\n  return \"done\"\n})\n\nroute.post(\"/go\", (req) => {\n  const started = pay(req.json)\n  return started\n})\n",
+            request: r#"{}"#,
+            // Holon's promise, not JavaScript's (§5.4): the test with no value ends the run, where
+            // JavaScript reads it as false and waits. What a start answers for a run that answered
+            // nothing is the starter's, so only what it does is compared.
+            answer: false,
+            javascript: "starts pay",
+            today: Today::Differs(&A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS, "starts pay; parks"),
+            long: None,
         },
         Row {
             name: "a choice whose test reads a collection, below a return that answered",

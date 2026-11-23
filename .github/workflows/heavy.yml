@@ -43,6 +43,10 @@ env:
     tests::semantics::a_handler_does_what_its_text_says
     tests::semantics::a_clocks_handler_does_what_its_text_says
     tests::semantics::a_queues_handler_does_what_its_text_says
+    tests::semantics::a_files_handler_does_what_its_text_says
+    tests::semantics::a_mails_handler_does_what_its_text_says
+    tests::semantics::a_feeds_handler_does_what_its_text_says
+    tests::semantics::a_websockets_message_does_what_its_text_says
     tests::list_grid::a_list_methods_function_makes_what_it_says_item_by_item
   RECORDS: >-
     tests::no_line_changed_and_chained_again_passes_as_checked
