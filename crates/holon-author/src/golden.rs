@@ -88,14 +88,10 @@ pub(crate) fn request(method: &str, path: &str, body: &str) -> Value {
     ]))
 }
 
-/// The bodies each handler is given: none, a record with the fields samples read, and a list.
+/// The bodies each handler is given: none, a record with the fields samples read, and a list
+/// (kept in `reached_runs`, which runs every handler on them too).
 pub(crate) fn bodies() -> Vec<String> {
-    let xs: Vec<String> = (0..60).map(|i| format!("{}.25", (i * 37) % 100)).collect();
-    vec![
-        String::new(),
-        r#"{"id":"x","name":"tea","price":4,"amount":5,"qty":2,"items":[{"name":"tea","qty":2},{"name":"cake","qty":1}],"event":"gig","count":2,"text":"Hello World","title":"Hello World","author":"Ada","op":"mul","a":6,"b":7,"by":"ops","to":5}"#.to_string(),
-        format!(r#"{{"xs":[{}],"items":[]}}"#, xs.join(",")),
-    ]
+    crate::reached_runs::bodies()
 }
 
 /// A handler to evaluate: its label, its unit's hash, and each input it is given.

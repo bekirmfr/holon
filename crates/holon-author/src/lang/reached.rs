@@ -109,13 +109,18 @@ pub fn truthy(v: &holon_core::Value) -> bool {
 
 /// The parts of `test` a run computes: what is left of it under the few forms the Reader makes
 /// tests of (`!`, `&&`, `||`, `??`, `when`, `?:`, `===`, `same_value`, literals), which
-/// [`value`] reads itself.
+/// [`value`] reads itself (a `&&` or `||` the run computed whole, read as it computed it).
 pub fn parts(test: &Expr, out: &mut Vec<Expr>) {
     use super::ast::{BinOp, ExprKind as K};
     match &test.kind {
         K::Bool(_) | K::Number { .. } | K::Text(_) => {}
         K::Paren(x) | K::Not(x) | K::Truthy(x) => parts(x, out),
-        K::Binary { op: BinOp::And | BinOp::Or | BinOp::Coalesce | BinOp::When | BinOp::Eq | BinOp::Ne, lhs, rhs } => {
+        K::Binary { op: op @ (BinOp::And | BinOp::Or | BinOp::Coalesce | BinOp::When | BinOp::Eq | BinOp::Ne), lhs, rhs } => {
+            // `&&` and `||` are also read whole where the run computed them: as a value they take
+            // Booleans (Holon's reading), which their forms alone can't tell from a condition's.
+            if matches!(op, BinOp::And | BinOp::Or) && !out.contains(test) {
+                out.push(test.clone());
+            }
             parts(lhs, out);
             parts(rhs, out);
         }
@@ -156,6 +161,7 @@ pub fn value(test: &Expr, part: &mut dyn FnMut(&Expr) -> Seen) -> Seen {
             other => other,
         },
         K::Binary { op, lhs, rhs } => match op {
+            BinOp::And | BinOp::Or if part(test) != Seen::Unknown => part(test),
             BinOp::And | BinOp::Or => match value(lhs, part) {
                 Seen::Value(v) if truthy(&v) == (*op == BinOp::Or) => boolean(truthy(&v)),
                 Seen::Value(_) => value(rhs, part),

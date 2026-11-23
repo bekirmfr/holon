@@ -3531,9 +3531,9 @@ impl<'s, 't> Reader<'s, 't> {
         Ok(Some(Response { body, status, missing: (missing != "404").then(|| number(&missing)), headers, stream: None, span }))
     }
 
-    /// `a && b`, `a || b` or `a ?? b`, its operands each read by `operand`: as values, or as
-    /// conditions where the whole is one ([`Self::cond`]).
-    fn logical(&mut self, e: &js::Expression, l: &js::LogicalExpression, span: Span, operand: fn(&mut Self, &js::Expression) -> R<Expr>) -> R<Expr> {
+    /// `a && b`, `a || b` or `a ?? b`, its operands each read by `operand`: as values (`as_value`),
+    /// or as conditions where the whole is one ([`Self::cond`]).
+    fn logical(&mut self, e: &js::Expression, l: &js::LogicalExpression, span: Span, operand: fn(&mut Self, &js::Expression) -> R<Expr>, as_value: bool) -> R<Expr> {
         if self.answers_with(e).is_some() {
             return fail(span, "status(…) and respond(…) are a route's answer: return them");
         }
@@ -3548,10 +3548,17 @@ impl<'s, 't> Reader<'s, 't> {
         };
         let lhs = operand(self, &l.left)?;
         // The right is read where the left lets it run: `&&` where the left holds, `||` where it
-        // doesn't (no value counts), `??` where it has no value.
+        // has a value and doesn't hold (a left with no value makes the whole nothing, the right
+        // not run, §6.4: Holon's reading, where JavaScript runs the right), `??` where it has no
+        // value. As a value and not a condition, `&&` and `||` take Booleans: the right runs where
+        // the left is `true` (`&&`) or `false` (`||`), and a left of another kind makes the whole
+        // nothing, where JavaScript reads it as truthy or not.
+        let boolean = |b: bool| Expr { kind: ExprKind::Binary { op: BinOp::Eq, lhs: Box::new(lhs.clone()), rhs: Box::new(Expr { kind: ExprKind::Bool(b), span: lhs.span }) }, span: lhs.span };
         let runs = match op {
+            BinOp::And if as_value => boolean(true),
+            BinOp::Or if as_value => boolean(false),
             BinOp::And => lhs.clone(),
-            BinOp::Or => otherwise(&lhs),
+            BinOp::Or => no_case(&lhs),
             _ => Expr { kind: ExprKind::Not(Box::new(has_value(lhs.clone()))), span: lhs.span },
         };
         let rhs = self.arm(runs, |me| me.unsure(MAY_NOT_RUN, |s| operand(s, &l.right)))?;
@@ -3574,7 +3581,7 @@ impl<'s, 't> Reader<'s, 't> {
         let span = self.span(e.span());
         match self.unwrap(e) {
             js::Expression::ParenthesizedExpression(p) => Ok(Expr { kind: ExprKind::Paren(Box::new(self.cond(&p.expression)?)), span }),
-            js::Expression::LogicalExpression(l) if l.operator != js::LogicalOperator::Coalesce => self.logical(e, l, span, Self::cond),
+            js::Expression::LogicalExpression(l) if l.operator != js::LogicalOperator::Coalesce => self.logical(e, l, span, Self::cond, false),
             _ => {
                 let x = self.expr(e)?;
                 Ok(if boolean_as_written(&x) { x } else { Expr { kind: ExprKind::Truthy(Box::new(x)), span } })
@@ -4062,7 +4069,7 @@ impl<'s, 't> Reader<'s, 't> {
                 let (lhs, rhs) = (self.expr(&b.left)?, self.expr(&b.right)?);
                 ok(ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) })
             }
-            js::Expression::LogicalExpression(l) => self.logical(e, l, span, Self::expr),
+            js::Expression::LogicalExpression(l) => self.logical(e, l, span, Self::expr, true),
             js::Expression::ConditionalExpression(c) => {
                 let cond = self.cond(&c.test)?;
                 let then = self.arm(cond.clone(), |me| me.unsure(MAY_NOT_RUN, |s| s.expr(&c.consequent)))?;

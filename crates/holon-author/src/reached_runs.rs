@@ -139,6 +139,9 @@ pub enum Verdict {
     MadeUnlooked,
     /// A key written at several sites, by one step: compared on its own column.
     OneKey,
+    /// Reached, in a `try` block that failed, and not made: the try's promise, that a block that
+    /// fails keeps nothing (its requests aside), not a difference.
+    NotKept,
     /// A test its path or a value it needs was never computed.
     NotKnown,
     /// It has no step of its own (a state key written in several places is one step).
@@ -160,6 +163,9 @@ impl SiteRun {
             return Verdict::OneKey;
         }
         let Some(made) = self.today else { return Verdict::NoStepOfItsOwn };
+        if !made && self.reached == Reached::Yes && self.kept == Some(false) {
+            return Verdict::NotKept;
+        }
         if made && self.past_nothing {
             return Verdict::PastNothing(PAST_NOTHING);
         }
@@ -191,9 +197,9 @@ pub enum PastNothing {
 pub const PAST_NOTHING: PastNothing = PastNothing::Owed;
 
 /// The steps that throw in JavaScript where they give nothing (each by its leaf): a text that
-/// isn't JSON, a request or another flow's action that failed, a `throw`. Outside a `try` the
-/// flow goes on past them (`lang::reached`); a run past one is labelled by [`PAST_NOTHING`].
-pub const THROWS_IN_JAVASCRIPT: &[&str] = &["json_parse", "http_request", "http_upload", "http_stream", "flow_call", "fail"];
+/// isn't JSON, a request or another flow's action that failed. (A `throw` is not among them: a
+/// flow stops there too, as a return of nothing, §6.5a.) Outside a `try` the flow goes on past them (`lang::reached`); a run past one is labelled by [`PAST_NOTHING`].
+pub const THROWS_IN_JAVASCRIPT: &[&str] = &["json_parse", "http_request", "http_upload", "http_stream", "flow_call"];
 
 /// The doing steps a site's own step is among: what makes an effect, asks a request or a read,
 /// or waits.
@@ -371,7 +377,7 @@ fn past_nothing(w: &Watched, site: &Site, ctx: &Context, run: &Run, store: &impl
             leaf.is_some_and(|l| THROWS_IN_JAVASCRIPT.contains(&l))
                 && w.lowered.spans.get(id).is_some_and(|sp| within(*sp, *stmt))
                 && run.produced.get(&at).is_some_and(|outs| outs.iter().all(|o| !matches!(o, Slot::Value(_))))
-                && (run.entered.contains(&at) || run.asked.contains(&at) || leaf == Some("fail") || leaf == Some("json_parse"))
+                && (run.entered.contains(&at) || run.asked.contains(&at) || leaf == Some("json_parse"))
         })
     })
 }
@@ -520,8 +526,9 @@ pub fn request(method: &str, path: &str, body: &str) -> Value {
     ]))
 }
 
-/// A host's answer as a test gives it: a request answered 200 with an empty body; any other ask
-/// (a read, a wait) nothing yet or nothing.
+/// A host's answer as a test gives it: a request answered 200 with an empty body, a folder's file
+/// its handle, another flow's action called a record; any other ask (a collection's or a
+/// database's read, a start, a wait) nothing.
 pub fn answer_ok(request: &Value) -> Answer {
     match request {
         Value::Record(r) if r.contains_key("url") => Answer::Value(Value::Record(BTreeMap::from([
@@ -529,9 +536,106 @@ pub fn answer_ok(request: &Value) -> Answer {
             ("headers".to_string(), Value::Record(BTreeMap::new())),
             ("body".to_string(), Value::Text(String::new())),
         ]))),
+        // A folder's file asked for by name: there, its handle.
+        Value::Record(r) if r.contains_key("handle") && r.contains_key("folder") => {
+            let name = r.get("handle").cloned().unwrap_or(Value::Text(String::new()));
+            Answer::Value(Value::Record(BTreeMap::from([
+                ("folder".to_string(), r["folder"].clone()),
+                ("name".to_string(), name),
+                ("size".to_string(), Value::Number(4.0)),
+                ("hash".to_string(), Value::Text("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08".into())),
+                ("modified".to_string(), Value::Number(1_763_856_000.0)),
+            ])))
+        }
+        // Another flow's action called (not started) answers what it returned: here, a record.
+        Value::Record(r) if r.contains_key("flow") && !r.contains_key("start") => Answer::Value(Value::Record(BTreeMap::new())),
         _ => Answer::Absent,
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+/// The bodies each handler is given, golden's three (golden.rs reads them here): none, a record
+/// with the fields samples read, and a list.
+pub fn bodies() -> Vec<String> {
+    let xs: Vec<String> = (0..60).map(|i| format!("{}.25", (i * 37) % 100)).collect();
+    vec![
+        String::new(),
+        r#"{"id":"x","name":"tea","price":4,"amount":5,"qty":2,"items":[{"name":"tea","qty":2},{"name":"cake","qty":1}],"event":"gig","count":2,"text":"Hello World","title":"Hello World","author":"Ada","op":"mul","a":6,"b":7,"by":"ops","to":5}"#.to_string(),
+        format!(r#"{{"xs":[{}],"items":[]}}"#, xs.join(",")),
+    ]
+}
+
+fn record(pairs: &[(&str, Value)]) -> Value {
+    Value::Record(pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
+}
+
+fn text(s: &str) -> Value {
+    Value::Text(s.into())
+}
+
+/// What a handler is given on each of golden's bodies ([`given_on`]).
+pub fn given(h: &Handler, unit: &Unit) -> Vec<Given> {
+    given_on(h, unit, &bodies())
+}
+
+/// What a handler of `kind` is given on each of `bodies`, the host's records in the shapes the
+/// catalog documents (holon-core docs.rs): a route its request, an action the body as a value, a
+/// websocket's message its connection's record with the body as its text (websockets.rs); a file's
+/// handler its file's handle, a mail's its message (the body as its text), a feed's its event and
+/// a queue's its message (the body as their data); every run its start time; state empty, as on a
+/// first run.
+pub fn given_on(h: &Handler, unit: &Unit, bodies: &[String]) -> Vec<Given> {
+    bodies
+        .iter()
+        .map(|b| {
+            let value = holon_core::parse_json(if b.is_empty() { "{}" } else { b }).unwrap_or(Value::Record(BTreeMap::new()));
+            let mut sourced = BTreeMap::new();
+            let input = match h.kind {
+                "route" => vec![Some(request(&h.method, &h.path, b))],
+                "websocket" => {
+                    let message = record(&[("conn", text("c1")), ("path", text(&h.path)), ("params", Value::Record(BTreeMap::new())), ("query", Value::Record(BTreeMap::new())), ("text", text(b))]);
+                    vec![Some(message); unit.inputs.len()]
+                }
+                _ => vec![Some(value.clone()); unit.inputs.len()],
+            };
+            let n = |x: f64| Value::Number(x);
+            // Every run has its start time, as the host supplies it; state is empty, as on a
+            // deployment's first run.
+            sourced.insert("clock".to_string(), n(1_763_856_000.0));
+            match h.kind {
+                "file" => {
+                    let handle = record(&[("folder", text(&h.path)), ("name", text("a.csv")), ("size", n(b.len() as f64)), ("hash", text("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")), ("modified", n(1_763_856_000.0)), ("event", text("new"))]);
+                    sourced.insert("file_arrival".to_string(), handle);
+                }
+                "mail" => {
+                    let mail = record(&[
+                        ("from", text("ada@example.com")),
+                        ("name", text("Ada")),
+                        ("to", Value::List(vec![text("ops@example.com")])),
+                        ("cc", Value::List(vec![])),
+                        ("subject", text("pay")),
+                        ("date", text("2026-11-23T10:00:00Z")),
+                        ("message_id", text("<1@example.com>")),
+                        ("text", text(b)),
+                        ("html", text("")),
+                        ("attachments", Value::Record(BTreeMap::new())),
+                        ("authenticated", Value::Boolean(true)),
+                        ("verdict", text("pass")),
+                    ]);
+                    sourced.insert("mail_arrival".to_string(), mail);
+                }
+                "feed" => {
+                    sourced.insert("feed_event".to_string(), record(&[("data", value.clone()), ("id", text("1")), ("event", text("message"))]));
+                }
+                "queue" => {
+                    let message = record(&[("data", value.clone()), ("id", text("m1")), ("attributes", Value::Record(BTreeMap::new())), ("sent", n(1_763_856_000.0)), ("count", n(1.0)), ("group", text(""))]);
+                    sourced.insert("queue_message".to_string(), message);
+                }
+                _ => {}
+            }
+            (input, sourced)
+        })
+        .collect()
+}
