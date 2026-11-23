@@ -39,7 +39,7 @@
 
 use super::reached::{
     Debt, AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, AN_UNUSED_READ_IS_NOT_ASKED, A_CHOICES_TEST_IS_READ_PAST_A_RETURN, A_READ_IS_ASKED_PAST_A_RETURN, A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, A_CHOICE_IN_A_FUNCTION_STARTS, A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, A_FINALLY_FORGETS_THE_RETURN_ABOVE,
-    A_FUNCTIONS_OWN_CONDITION, A_LINE_AFTER_NOTHING_RUNS, A_LISTS_FUNCTION_LOSES_ITS_WRITE, A_LISTS_FUNCTION_STARTS_PAST_A_RETURN,
+    A_FUNCTIONS_OWN_CONDITION, A_LINE_AFTER_A_FAILURE_RUNS, A_LISTS_FUNCTION_LOSES_ITS_WRITE, A_LISTS_FUNCTION_STARTS_PAST_A_RETURN,
 };
 use super::*;
 
@@ -278,13 +278,13 @@ fn cases() -> Vec<Case> {
                 // A try block that fails leaves nothing behind but the requests it made.
                 let read = read.replace("try {\n", "const TM = mark()\ntry {\n").replace("} catch {\n", "} catch {\nundo(TM)\n");
                 // Outside a try, a throw ends the handler as a return of nothing (§6.5a); a line
-                // that gives nothing doesn't: what follows and doesn't use it runs, Holon's own
-                // rule (`A_LINE_AFTER_NOTHING_RUNS`), where JavaScript's throw ends it.
+                // that fails ends it too, as JavaScript's throw does (the owner's open question:
+                // a flow goes on today, owed under its debt).
                 // A throw's message goes to the run's log wherever the throw is reached (`boom`).
                 let read = read.replace("throw new Error(\"boom\")", "{ boom(); throw new Error(\"boom\") }");
                 let read = match *shape {
                     "after a throw, no try" => read.replace("throw new Error(\"no\")", "return"),
-                    "after a failure, no try" => read.replace("const parsed = JSON.parse(req.body)\n", "const parsed = PARSED(req.body)\n"),
+                    "after a failure, no try" => read.replace("const parsed = JSON.parse(req.body)\n", "const parsed = PARSED(req.body)\nif (parsed === undefined) return\n"),
                     _ => read,
                 };
                 out.push(Case { shape, mark, condition, body: fill(condition), read: neither(&read) });
@@ -846,6 +846,7 @@ const DEBTS: &[&Debt] = &[
     &THE_STARTED_HALF,
     &A_FINALLY_FORGETS_THE_RETURN_ABOVE,
     &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
+    &A_LINE_AFTER_A_FAILURE_RUNS,
     &A_FUNCTIONS_OWN_CONDITION,
     &A_LISTS_FUNCTION_STARTS_PAST_A_RETURN,
     &A_LISTS_FUNCTION_LOSES_ITS_WRITE,
@@ -934,6 +935,7 @@ fn debt(case: &Case, request: &str, made: &str, missed: &str) -> Option<Vec<&'st
     // `fin` returns early on "a": its finally's write there is W's; elsewhere, in a try that fails,
     // it is a write the failed try keeps.
     let early = request.contains("\"k\":\"a\"");
+    explain(shape == "after a failure, no try" && request == "not json", &A_LINE_AFTER_A_FAILURE_RUNS, "wofpcdgrslqmnhbuktx", "");
     explain(matches!(shape, "in a finally, a return above" | "in a try without a catch, a return above"), &A_FINALLY_FORGETS_THE_RETURN_ABOVE, "wo", "");
     explain(mark == "fy" && (early || !failing_try), &A_FINALLY_FORGETS_THE_RETURN_ABOVE, "f", "");
     explain(failing_try && matches!(mark, "f" | "f2" | "f3" | "fp" | "fu" | "ft" | "fy" | "fa" | "fa2"), &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, "fpcqm", "");
@@ -1320,11 +1322,8 @@ fn grid(block: Block) {
                                     if did == written.marks && !written.threw {
                                         t.as_javascript += 1;
                                     } else {
-                                        // Past a line that gave nothing outside a try, the rule
-                                        // is that line's, not the condition's.
-                                        let rule = if case.shape == "after a failure, no try" && written.threw { A_LINE_AFTER_NOTHING_RUNS.name } else { case.condition };
-                                        *t.shows.entry(rule).or_default() += 1;
-                                        t.saw(Kind::OwnRule(rule), r, at);
+                                        *t.shows.entry(case.condition).or_default() += 1;
+                                        t.saw(Kind::OwnRule(case.condition), r, at);
                                     }
                                     continue;
                                 }
@@ -1445,7 +1444,7 @@ enum Kind {
 impl Kind {
     /// Every kind the grid can show.
     fn all() -> impl Iterator<Item = Kind> {
-        DEBTS.iter().map(|d| Kind::Debt(d.name)).chain(CONDITIONS.iter().map(|(c, _, _)| Kind::OwnRule(c))).chain([Kind::OwnRule(A_LINE_AFTER_NOTHING_RUNS.name)])
+        DEBTS.iter().map(|d| Kind::Debt(d.name)).chain(CONDITIONS.iter().map(|(c, _, _)| Kind::OwnRule(c)))
     }
 }
 
