@@ -157,6 +157,40 @@ pub(super) const REQUESTS: &[&str] = &[
     "not json",
 ];
 
+/// How much of the grid runs (CLAUDE.md, "Heavy tests"), from `HOLON_GRIDS`: the full set runs
+/// every handler on every request; the small set the route's on `SMALL_REQUESTS` alone, and a
+/// clock's and a queue's on none. Either checks every handler and writes each back, whole: only
+/// runs are left out. Unset is the full set, so a grid run by hand misses nothing.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum GridSize {
+    Full,
+    Small,
+}
+
+/// Each size by the name `HOLON_GRIDS` gives it (.github/what-changed.sh writes them, and
+/// tests/heavy.rs holds that it writes these and no other).
+pub(super) const GRID_SIZES: &[(&str, GridSize)] = &[("full", GridSize::Full), ("small", GridSize::Small)];
+
+fn grid_size() -> GridSize {
+    let Ok(name) = std::env::var("HOLON_GRIDS") else { return GridSize::Full };
+    GRID_SIZES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s).unwrap_or_else(|| panic!("HOLON_GRIDS={name}: the grids know {}", GRID_SIZES.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(" and ")))
+}
+
+/// The requests (of `REQUESTS`, from 0) the small set runs the route's grid on: none of the
+/// conditions holding, and a body that isn't JSON. Between them every kind of finding the full set
+/// shows, shows (measured 2026-11-23); the full set checks so every time it runs, on its own runs
+/// on these requests, and fails naming a kind they lose.
+const SMALL_REQUESTS: &[usize] = &[1, 7];
+
+/// The requests (of `REQUESTS`) `block`'s grid runs at `size`.
+fn grid_requests(block: Block, size: GridSize) -> Vec<usize> {
+    match (size, block) {
+        (GridSize::Full, _) => (0..REQUESTS.len()).collect(),
+        (GridSize::Small, Block::Route) => SMALL_REQUESTS.to_vec(),
+        (GridSize::Small, Block::Every | Block::Queue) => Vec::new(),
+    }
+}
+
 /// The ways a statement is reached or not: a name, and a handler's body with `{C}` a condition,
 /// `{E}` the effect as a statement and `{V}` as a value. `++state.o` is another effect, where a
 /// shape needs two.
@@ -532,10 +566,10 @@ struct Did {
     threw: bool,
 }
 
-/// What JavaScript does with each of `handlers` on each of `REQUESTS`, as written and as a flow
-/// reads it. The names a handler uses are stand-ins that leave their mark; `await` is dropped,
-/// since they answer at once.
-fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
+/// What JavaScript does with each of `handlers` on each of `requests` (of `REQUESTS`), as written
+/// and as a flow reads it. The names a handler uses are stand-ins that leave their mark; `await`
+/// is dropped, since they answer at once.
+fn javascript_does(handlers: &[&Case], requests: &[usize]) -> Vec<Vec<(Did, Did)>> {
     let names = "state, marks, console, ping, rec, rec2, rec3, part, ask, ask2, api, status, mark, undo, news, gone, bump, go, maybe, askif, held, fin, notes, check, jobs, ops, every, every2, files, shop, hail, boom";
     let made: Vec<String> = handlers
         .iter()
@@ -626,8 +660,9 @@ fn javascript_does(handlers: &[&Case]) -> Vec<Vec<(Did, Did)>> {
 }}"#,
         made.join(",\n")
     );
-    let requests: Vec<Value> = REQUESTS
+    let requests: Vec<Value> = requests
         .iter()
+        .map(|&r| REQUESTS[r])
         .map(|body| {
             let mut req = BTreeMap::from([("body".to_string(), Value::Text(body.to_string()))]);
             if let Some(json) = holon_core::parse_json(body) {
@@ -953,6 +988,8 @@ fn a_queues_handler_does_what_its_text_says() {
 
 /// The grid of `block`'s handlers: every case, checked, run on every request, and compared.
 fn grid(block: Block) {
+    let size = grid_size();
+    let requests = grid_requests(block, size);
     let sink = smtp::sink::start("PLAIN LOGIN");
     let sqs = sqs::stand_in::StandIn::start();
     sqs.make("jobs");
@@ -1024,6 +1061,15 @@ fn grid(block: Block) {
     }
     let taken: Vec<(usize, &Case)> = checked.into_iter().filter(|(_, r)| r.is_ok()).map(|(c, _)| c).collect();
     assert!(!taken.is_empty(), "{block:?}: the language takes none of the grid's handlers");
+    assert!(unowed.is_empty(), "{} handlers the canvas can't write back, under no debt:\n{}", unowed.len(), unowed.join("\n"));
+    // The grid is no smaller than it was.
+    assert!(taken.len() > 600, "{block:?}: {} handlers taken", taken.len());
+    // At a size that runs none of this block's handlers, what is held is what is said at check.
+    if requests.is_empty() {
+        println!("{block:?}: {} handlers, {} the language takes, run on no request at this size ({size:?})", all.len(), taken.len());
+        let _ = std::fs::remove_dir_all(&secrets);
+        return;
+    }
     // A flow of forty handlers at a time, each flow's runs one after another (the log is read by
     // what it gained), the flows side by side.
     #[derive(Default)]
@@ -1036,6 +1082,18 @@ fn grid(block: Block) {
         owed: BTreeMap<&'static str, usize>,
         /// Where a flow's own rule shows: by the condition that had nothing to go on.
         shows: BTreeMap<&'a str, usize>,
+        /// Each kind of finding seen, and the first run it was seen in.
+        seen: BTreeMap<Kind, String>,
+        /// The kinds seen in runs on the small set's requests.
+        seen_small: BTreeSet<Kind>,
+    }
+    impl Tally<'_> {
+        fn saw(&mut self, kind: Kind, request: usize, at: impl FnOnce() -> String) {
+            if SMALL_REQUESTS.contains(&request) {
+                self.seen_small.insert(kind);
+            }
+            self.seen.entry(kind).or_insert_with(at);
+        }
     }
     /// A flow of the grid: its number, its handlers, and whether it is deployed read alone.
     type GridFlow<'a> = (usize, &'a [(usize, &'a Case)], bool);
@@ -1045,7 +1103,7 @@ fn grid(block: Block) {
             .chunks(flows.len().div_ceil(workers))
             .enumerate()
             .map(|(w, part)| {
-                let (state, host) = (&state, &host);
+                let (state, host, requests) = (&state, &host, &requests);
                 s.spawn(move || {
                     let mut t = Tally::default();
                     for (n, chunk, alone) in part {
@@ -1062,10 +1120,12 @@ fn grid(block: Block) {
                         } else {
                             deploy_plain_text(state, &text)
                         };
-                        let javascript = javascript_does(&chunk.iter().map(|(_, c)| *c).collect::<Vec<_>>());
+                        let javascript = javascript_does(&chunk.iter().map(|(_, c)| *c).collect::<Vec<_>>(), requests);
                         let mut seen = None;
                         for (j, ((i, case), said)) in chunk.iter().zip(&javascript).enumerate() {
-                            for (request, (written, read)) in REQUESTS.iter().zip(said) {
+                            for (&r, (written, read)) in requests.iter().zip(said) {
+                                let request = REQUESTS[r];
+                                let at = || format!("{}{} | {} | {} | request {r}, {request}", if *alone { "[read alone] " } else { "" }, case.shape, case.mark, case.condition);
                                 let did = flow_does(state, &slug, block, (*i, j, w), request, &mut seen);
                                 t.runs += 1;
                                 assert!(!read.threw, "as a flow reads it, nothing throws: {} | {} | {request}", case.shape, case.condition);
@@ -1079,6 +1139,7 @@ fn grid(block: Block) {
                                         t.as_javascript += 1;
                                     } else {
                                         *t.shows.entry(case.condition).or_default() += 1;
+                                        t.saw(Kind::OwnRule(case.condition), r, at);
                                     }
                                     continue;
                                 }
@@ -1086,7 +1147,10 @@ fn grid(block: Block) {
                                 match debt(case, request, &made, &missed) {
                                     Some(owing) => {
                                         t.owed_runs += 1;
-                                        owing.iter().for_each(|d| *t.owed.entry(d.name).or_default() += 1);
+                                        for d in owing {
+                                            *t.owed.entry(d.name).or_default() += 1;
+                                            t.saw(Kind::Debt(d.name), r, at);
+                                        }
                                     }
                                     None => t.wrong.push(format!(
                                         "{}{} | {} | {} | {request} | it reads as {:?} | the flow did {did:?} | javascript {:?}{}",
@@ -1115,6 +1179,7 @@ fn grid(block: Block) {
     });
     let (mut runs, mut as_javascript, mut owed_runs, mut wrong) = (0, 0, 0, Vec::new());
     let (mut owed, mut shows): (BTreeMap<&str, usize>, BTreeMap<&str, usize>) = Default::default();
+    let (mut seen, mut seen_small) = (BTreeMap::<Kind, String>::new(), BTreeSet::<Kind>::new());
     for t in tallies {
         runs += t.runs;
         as_javascript += t.as_javascript;
@@ -1122,6 +1187,10 @@ fn grid(block: Block) {
         wrong.extend(t.wrong);
         t.owed.into_iter().for_each(|(k, n)| *owed.entry(k).or_default() += n);
         t.shows.into_iter().for_each(|(k, n)| *shows.entry(k).or_default() += n);
+        t.seen.into_iter().for_each(|(k, at)| {
+            seen.entry(k).or_insert(at);
+        });
+        seen_small.extend(t.seen_small);
     }
     let by_rule = shows.values().sum::<usize>();
     println!("{block:?}: {} handlers, {} the language takes, {runs} runs: {as_javascript} as JavaScript, {by_rule} by a flow's own rule, {owed_runs} owed, {} wrong", all.len(), taken.len(), wrong.len());
@@ -1137,11 +1206,15 @@ fn grid(block: Block) {
     for (owing, n) in &owed {
         println!("  {n:4} runs owed under \"{owing}\"");
     }
+    for (kind, at) in &seen {
+        println!("  kind: {kind} | {} | first at {at}", if seen_small.contains(kind) { "on the small set's requests" } else { "not on the small set's requests" });
+    }
     let _ = std::fs::remove_dir_all(&secrets);
-    assert!(wrong.is_empty(), "{} runs don't do what their text says:\n{}", wrong.len(), wrong.join("\n"));
-    assert!(unowed.is_empty(), "{} handlers the canvas can't write back, under no debt:\n{}", unowed.len(), unowed.join("\n"));
+    assert!(wrong.is_empty(), "{} runs don't do what their text says:
+{}", wrong.len(), wrong.join("
+"));
     // The grid is no smaller than it was, and most of it is plain JavaScript.
-    assert!(taken.len() > 600 && runs > 5_000, "{} handlers taken, {runs} runs", taken.len());
+    assert!(runs > 5_000, "{block:?}: {runs} runs");
     assert!(as_javascript * 2 > runs, "{as_javascript} of {runs} runs do as JavaScript does");
     // A debt is struck when no route owes it: a clock's or a queue's grid may owe fewer.
     if block != Block::Route {
@@ -1150,7 +1223,45 @@ fn grid(block: Block) {
     for (debt, _) in ROUND_TRIP_DEBTS {
         assert!(round_trip_owed.contains_key(debt), "\"{debt}\": the canvas writes these back now: strike it from ROUND_TRIP_DEBTS");
     }
-    for d in DEBTS {
-        assert!(owed.contains_key(d.name), "\"{}\" no longer differs anywhere: strike it from DEBTS ({})", d.name, d.says);
+    // Every kind of finding shows on the small set's requests, at either size: the full set holds,
+    // on its own runs, that the small set loses none, and says where a lost one showed. A clock's
+    // and a queue's grid can show no kind but these (`debt` answers only `DEBTS`, a flow's own rule
+    // shows under a condition of `CONDITIONS`), so the small set, which runs neither, loses none of
+    // theirs either.
+    let lost: Vec<String> = Kind::all()
+        .filter(|kind| !seen_small.contains(kind))
+        .map(|kind| match (size, seen.get(&kind), kind) {
+            (GridSize::Full, Some(at), _) => format!("{kind}: shows only on requests the small set doesn't run (SMALL_REQUESTS), first at {at}: add a request that shows it"),
+            (GridSize::Full, None, Kind::Debt(name)) => format!("{kind}: no longer differs anywhere: strike it from DEBTS ({})", DEBTS.iter().find(|d| d.name == name).map_or("", |d| d.says)),
+            (GridSize::Full, None, Kind::OwnRule(_)) => format!("{kind}: no run leaves this condition nothing to go on: REQUESTS lost the request that did"),
+            (GridSize::Small, ..) => format!("{kind}: the small set's requests don't show it: run the full set (HOLON_GRIDS=full) to see where it shows, or whether it shows at all"),
+        })
+        .collect();
+    assert!(lost.is_empty(), "{} kinds of finding the small set doesn't show:
+{}", lost.len(), lost.join("
+"));
+}
+
+/// A kind of finding of the handler grid: a debt owed, or a flow's own rule shown under a
+/// condition with nothing to go on.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Kind {
+    Debt(&'static str),
+    OwnRule(&'static str),
+}
+
+impl Kind {
+    /// Every kind the grid can show.
+    fn all() -> impl Iterator<Item = Kind> {
+        DEBTS.iter().map(|d| Kind::Debt(d.name)).chain(CONDITIONS.iter().map(|(c, _, _)| Kind::OwnRule(*c)))
+    }
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Kind::Debt(name) => write!(f, "debt \"{name}\""),
+            Kind::OwnRule(condition) => write!(f, "own rule on `{condition}`"),
+        }
     }
 }
