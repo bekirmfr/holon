@@ -114,7 +114,7 @@ pub(super) const AN_UNUSED_READ_IS_NOT_ASKED: Debt = Debt {
 /// R: a read is asked where its statement isn't reached.
 pub(super) const A_READ_IS_ASKED_PAST_A_RETURN: Debt = Debt {
     name: "a read is asked where its statement isn't reached",
-    says: "a collection read in a send's content is asked below a return that answered, though the send is held",
+    says: "a collection read in a send's content is asked below a return that answered, though the send is held; so is a folder's file read for an upload under an if that doesn't hold (C1's site runs, 2026-11-23)",
 };
 /// B: a line after a failure outside a try still runs. The owner's question, rule or debt: a debt
 /// until it is decided.
@@ -620,47 +620,168 @@ fn a_loop_is_refused_in_plain_words() {
     }
 }
 
-/// What each site of a row's text does on its request, beside where its path says it is
-/// reached: the site runs that differ, each as `<what it does> at line <n>: <verdict>`, and those
-/// a failed `try` keeps.
-fn rows_site_differences(text: &str, body: &str) -> Result<Vec<String>, String> {
-    use holon_author::reached_runs::{answer_ok, request, site_runs, Given, Handler, Verdict, Watched};
+/// The columns a difference of reached is shown on (step C1). `Reached` and `Kept` are read off a
+/// site's run: a step made where its path says it isn't reached (or where a test of its path was
+/// never looked at), missed where it is, or run past a line that gave nothing; what a failed `try`
+/// keeps. `ListOrder` (what a function a list method calls per item does, and in which order) and
+/// `Parking` (a run that waits) are their own columns, not read by site runs.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Column {
+    Reached,
+    Kept,
+    ListOrder,
+    Parking,
+}
+
+/// Each debt's column.
+const COLUMNS: &[(&str, Column)] = &[
+    (A_FUNCTIONS_OWN_CONDITION.name, Column::Reached),
+    (A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE.name, Column::Kept),
+    (A_LISTS_FUNCTION_LOSES_ITS_WRITE.name, Column::ListOrder),
+    (A_LISTS_FUNCTION_STARTS_PAST_A_RETURN.name, Column::Reached),
+    (A_CHOICE_IN_A_FUNCTION_STARTS.name, Column::Reached),
+    (A_FINALLY_FORGETS_THE_RETURN_ABOVE.name, Column::Reached),
+    (A_WAIT_PAST_AN_ANSWER_PARKS.name, Column::Parking),
+    (A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS.name, Column::Parking),
+    (A_CHOICES_TEST_IS_READ_PAST_A_RETURN.name, Column::Reached),
+    (AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE.name, Column::Reached),
+    (A_READ_IS_ASKED_PAST_A_RETURN.name, Column::Reached),
+    (A_LINE_AFTER_A_FAILURE_RUNS.name, Column::Reached),
+    (A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE.name, Column::Reached),
+    (AN_UNUSED_READ_IS_NOT_ASKED.name, Column::Reached),
+    (A_LISTS_FUNCTION_GOES_PAST_A_FAILURE.name, Column::ListOrder),
+    (A_FIND_LAST_GOES_IN_ITEM_ORDER.name, Column::ListOrder),
+    (A_REVIVERS_NOTHING_IS_NULL.name, Column::ListOrder),
+    (A_FOLD_STOPS_AT_NOTHING.name, Column::ListOrder),
+];
+
+/// The rows whose difference site runs don't read yet, by name, and why. The list only shrinks:
+/// a row on it that shows its difference fails, to be taken off.
+const NOT_READ_YET: &[(&str, &str)] = &[
+    ("a function that writes, given to a list's map", "list order: what a list's function does isn't reported by a run in process"),
+    ("a list's function that starts something, below a return that answered", "a step inside a list's function isn't reported by a run in process"),
+    ("an action that answers above its wait", "parking: a run that waits is no site"),
+    ("an action whose test above its wait has no value", "parking: a run that waits is no site"),
+    // Way (b), its own later step: a second, test-only run of a copy of the handler that also
+    // gives out the tests this run never computed, so their values are known.
+    ("a start in a choice that is taken, its value read only in a branch that isn't", "the arm's test is never computed by the run (way b)"),
+    ("a list's function that starts something, the list read only in a branch not taken", "a step inside a list's function isn't reported by a run in process"),
+    ("a function whose start is in a choice, its value read only in a branch not taken", "the call is never computed by the run, so its body isn't entered (way b)"),
+    ("a list's function that starts something and then fails, on the first item", "list order"),
+    ("a findLast whose function starts something", "list order"),
+    ("a reviver that fails on an item, in a try", "list order: a function JSON.parse calls per item"),
+    ("a reduce that adds a start's handle to a text", "list order"),
+];
+
+/// What a text's sites do on a body sent to each route (or socket message) handler, beside where
+/// their paths say they are reached: per column, each site run that differs, as `<what it does>
+/// at line <n>: <verdict>`.
+pub(super) fn site_differences(text: &str, body: &str) -> Result<(Vec<String>, Vec<String>), String> {
+    use holon_author::reached_runs::{answer_ok, given_on, site_runs, Handler, Watched};
     let w = Watched::of(text)?;
-    let given = |h: &Handler, _: &holon_core::Unit| -> Vec<Given> {
-        if h.kind == "route" { vec![(vec![Some(request(&h.method, &h.path, body))], BTreeMap::new())] } else { Vec::new() }
-    };
-    let mut out = Vec::new();
+    let given = |h: &Handler, u: &holon_core::Unit| if matches!(h.kind, "route" | "websocket") { given_on(h, u, &[body.to_string()]) } else { Vec::new() };
+    let (mut reached, mut kept) = (Vec::new(), Vec::new());
     for r in site_runs(&w, &given, answer_ok) {
         let site = &w.lowered.sites[r.site];
         let verdict = r.verdict(site);
         let at = format!("{} at line {}", site.does, site.at.start.line);
-        if matches!(verdict, Verdict::MadeUnreached | Verdict::MissedReached | Verdict::MadeUnlooked | Verdict::PastNothing(_)) {
-            out.push(format!("{at}: {verdict:?}"));
+        if is_owed(verdict) {
+            reached.push(format!("{at}: {verdict:?}"));
         }
         if r.today == Some(true) && r.kept == Some(false) {
-            out.push(format!("{at}: kept by a try that failed"));
+            kept.push(format!("{at}: kept by a try that failed"));
         }
     }
-    Ok(out)
+    Ok((reached, kept))
 }
 
-/// The census of C1 over the table: each row's site runs that differ from their paths, printed
-/// beside the row's debt (`--nocapture`). Every row's text is read and run; it asserts only that
-/// each is (the class-level test's assertions wait on the rows no site run shows, see C1's report).
+/// Whether a site run's verdict is a difference owed: made where not reached or not looked at,
+/// missed where reached, or run past a line that gave nothing while that is owed (the one switch,
+/// `PAST_NOTHING`).
+pub(super) fn is_owed(verdict: holon_author::reached_runs::Verdict) -> bool {
+    use holon_author::reached_runs::{PastNothing, Verdict};
+    matches!(verdict, Verdict::MadeUnreached | Verdict::MissedReached | Verdict::MadeUnlooked | Verdict::PastNothing(PastNothing::Owed))
+}
+
+/// **Guards:** reached (step C1) is read off every site of every sample and every row of the
+/// table, beside what the flow does today: a site that differs from its path is owed under a named
+/// debt, in that debt's column, and nowhere else.
+/// - A sample's site run that differs fails, but one past a line that gave nothing, owed under
+///   its debt while the switch says owed.
+/// - A row as JavaScript shows nothing; a debt's row shows its difference in its column, and none
+///   in another; a row whose column site runs don't read yet is listed (`NOT_READ_YET`), and
+///   fails once it shows, to be taken off.
+///
+/// **If it fails:** read the line it names. A path the Reader got wrong is fixed in `lang/ts.rs`;
+/// a graph doing other than its text is a new hole, a named row here, never a patch.
 #[test]
-fn the_rows_sites_beside_their_debts() {
-    let mut unread = Vec::new();
-    for row in rows() {
-        let text = row.text.replace("@PING@", PING);
-        let owed = match row.today {
-            Today::Differs(d, _) | Today::Refused(d, _) => d.name,
-            Today::AsJavascript => "as JavaScript",
-        };
-        match rows_site_differences(&text, row.request) {
-            Ok(shown) => println!("{} [{owed}]: {}", row.name, if shown.is_empty() { "no site run shows it".to_string() } else { shown.join("; ") }),
-            Err(e) => unread.push(format!("{}: {e}", row.name)),
+fn every_site_is_reached_as_its_row_says() {
+    use holon_author::reached_runs::{given, site_runs, answer_ok, Verdict, Watched};
+    let mut wrong = Vec::new();
+    // Every sample, on golden's bodies.
+    let mut past_nothing = 0;
+    for s in holon_author::samples::samples() {
+        let w = Watched::of(s.text).unwrap_or_else(|e| panic!("{}: {e}", s.name));
+        for r in site_runs(&w, &given, answer_ok) {
+            let site = &w.lowered.sites[r.site];
+            match r.verdict(site) {
+                Verdict::PastNothing(_) => past_nothing += 1,
+                v if is_owed(v) => wrong.push(format!("sample {} | {} | {} at line {}: {v:?}, under no row", s.name, r.handler, site.does, site.at.start.line)),
+                _ => {}
+            }
         }
     }
-    assert!(unread.is_empty(), "{}", unread.join("
-"));
+    println!("samples: {past_nothing} site runs past a line that gave nothing (\"{}\")", A_LINE_AFTER_A_FAILURE_RUNS.name);
+    // Every row of the table, on its request.
+    let names: Vec<&str> = rows().iter().map(|r| r.name).collect();
+    for (name, _) in NOT_READ_YET {
+        assert!(names.contains(name), "NOT_READ_YET names {name:?}, which is no row");
+    }
+    for (debt, _) in COLUMNS {
+        assert!(DEBTS.iter().any(|d| d.name == *debt), "COLUMNS names {debt:?}, which is no debt");
+    }
+    for debt in DEBTS {
+        assert!(COLUMNS.iter().any(|(d, _)| *d == debt.name), "{:?} has no column", debt.name);
+    }
+    for row in rows() {
+        let text = row.text.replace("@PING@", PING);
+        let (reached, kept) = match site_differences(&text, row.request) {
+            Ok(d) => d,
+            Err(e) => {
+                wrong.push(format!("{}: not read: {e}", row.name));
+                continue;
+            }
+        };
+        let shown = |c: Column| match c {
+            Column::Reached => reached.clone(),
+            Column::Kept => kept.clone(),
+            Column::ListOrder | Column::Parking => Vec::new(),
+        };
+        let all: Vec<String> = reached.iter().chain(&kept).cloned().collect();
+        let not_yet = NOT_READ_YET.iter().find(|(n, _)| *n == row.name);
+        match (&row.today, not_yet) {
+            (Today::AsJavascript, _) => {
+                if !all.is_empty() {
+                    wrong.push(format!("{} reads as JavaScript, its sites differ: {}", row.name, all.join("; ")));
+                }
+            }
+            (_, Some((_, why))) => {
+                if !all.is_empty() {
+                    wrong.push(format!("{} shows now ({}): take it off NOT_READ_YET ({why})", row.name, all.join("; ")));
+                }
+            }
+            (Today::Differs(debt, _) | Today::Refused(debt, _), None) => {
+                let column = COLUMNS.iter().find(|(d, _)| *d == debt.name).map(|(_, c)| *c).expect("a column");
+                if shown(column).is_empty() {
+                    wrong.push(format!("{} shows nothing in its column, {column:?} (\"{}\")", row.name, debt.name));
+                }
+                let elsewhere: Vec<String> = [Column::Reached, Column::Kept].into_iter().filter(|c| *c != column).flat_map(shown).collect();
+                if !elsewhere.is_empty() {
+                    wrong.push(format!("{} differs outside its column {column:?}: {}", row.name, elsewhere.join("; ")));
+                }
+                println!("{} [{}]: {}", row.name, debt.name, shown(column).join("; "));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
