@@ -10,6 +10,9 @@ name: heavy
 # A group runs on a pull request (and a push to main) when the change touches a file it guards
 # (.github/file-rules.txt, sections [grids] and [records], read by .github/what-changed.sh), on a
 # pull request labelled `heavy` (both groups), every night (both, whatever changed) and by hand.
+# The grids run small on a change decided by its files, and full every night, by hand and with
+# the label (what-changed.sh's `size`, given to the tests as HOLON_GRIDS; CLAUDE.md, "Heavy
+# tests"); a full run checks that the small set shows every kind of finding it shows.
 # Each job always starts and decides inside, ending green when there is nothing to run, so it can
 # be made a required check without a skipped check waiting for ever.
 #
@@ -72,6 +75,8 @@ jobs:
       - name: The grids
         if: steps.changed.outputs.grids == 'true'
         run: cargo test -p holon --bin holon -- --ignored --exact $GRIDS
+        env:
+          HOLON_GRIDS: ${{ steps.changed.outputs.size }}
 
   records:
     runs-on: ubuntu-latest

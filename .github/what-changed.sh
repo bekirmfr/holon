@@ -9,6 +9,8 @@
 #                       tests run
 #   grids=true|false    the heavy grids run (a file under [grids], or the `heavy` label)
 #   records=true|false  the heavy records sweep runs (a file under [records], or the label)
+#   size=small|full     how much of the grids runs (HOLON_GRIDS): small for a change decided by
+#                       its files, full when everything is turned on or for the label
 #
 # What it compares: on a pull request, the merge commit the checkout made with its first parent
 # (the base). code and rust are decided only there: on a push (to main) both are true. The heavy
@@ -61,7 +63,8 @@ if [ "$all" = 1 ]; then
   decided="code=true
 rust=true
 grids=true
-records=true"
+records=true
+size=full"
 else
   decided=$(printf '%s\n' "$list" | awk -F '\t' -v rules="$rules" '
     BEGIN {
@@ -109,6 +112,7 @@ else
     END {
       printf "code=%s\nrust=%s\n", (code ? "true" : "false"), (rust ? "true" : "false")
       printf "grids=%s\nrecords=%s\n", (grids ? "true" : "false"), (records ? "true" : "false")
+      printf "size=small\n"
     }
   ') || { echo "the file rules could not be applied" >&2; exit 1; }
 fi
@@ -119,7 +123,7 @@ if [ "$pull" = 0 ]; then
 fi
 if [ "${HEAVY_LABEL:-false}" = "true" ]; then
   echo "labelled heavy: both heavy groups run"
-  decided=$(printf '%s\n' "$decided" | sed -e 's/^grids=.*/grids=true/' -e 's/^records=.*/records=true/')
+  decided=$(printf '%s\n' "$decided" | sed -e 's/^grids=.*/grids=true/' -e 's/^records=.*/records=true/' -e 's/^size=.*/size=full/')
 fi
 
 printf '%s\n' "$decided"
