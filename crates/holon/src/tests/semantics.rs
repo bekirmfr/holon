@@ -922,6 +922,7 @@ fn apart(did: &str, reads: &str) -> (String, String) {
 /// branch of a value bound under a condition (`if (d) { const got = v ?? (await api.get(…)).body
 /// }`, `c ? ping(x) : undefined` there).
 #[test]
+#[ignore = "heavy: about 12 minutes, run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
 fn a_handler_does_what_its_text_says() {
     grid(Block::Route);
 }
@@ -934,6 +935,7 @@ fn a_handler_does_what_its_text_says() {
 /// **If it fails:** as above; a difference only a clock's handler shows is a new debt, named in
 /// `reached.rs` with its smallest flow.
 #[test]
+#[ignore = "heavy: about 8 minutes, run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
 fn a_clocks_handler_does_what_its_text_says() {
     grid(Block::Every);
 }
@@ -944,6 +946,7 @@ fn a_clocks_handler_does_what_its_text_says() {
 ///
 /// **If it fails:** as above.
 #[test]
+#[ignore = "heavy: about 8 minutes, run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
 fn a_queues_handler_does_what_its_text_says() {
     grid(Block::Queue);
 }

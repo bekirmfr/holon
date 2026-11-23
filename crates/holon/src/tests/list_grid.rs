@@ -448,6 +448,7 @@ const ROUND_TRIP_DEBTS: &[(&str, Owes)] = &[
 /// what the flow made and what JavaScript makes. A graph that can't run (a cycle, an `after` with
 /// nothing to tie) fails too; any other refusal is said at check, and is printed, not failed.
 #[test]
+#[ignore = "heavy: about 5 minutes, run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
 fn a_list_methods_function_makes_what_it_says_item_by_item() {
     let sink = smtp::sink::start("PLAIN LOGIN");
     let sqs = sqs::stand_in::StandIn::start();
