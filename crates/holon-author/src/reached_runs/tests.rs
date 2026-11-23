@@ -107,7 +107,7 @@ fn every_samples_sites_are_read_off_its_runs() {
                 let line = s.text.lines().nth(site.at.start.line as usize - 1).unwrap_or("").trim();
                 let said = format!("{} | {} | input {} | {} at line {} | {verdict:?} {:?} values {:?} | {line}", s.name, r.handler, r.input, site.does, site.at.start.line, r.reached, r.has_values);
                 let _ = writeln!(report, "  {said}");
-                if matches!(verdict, Verdict::MadeUnreached | Verdict::MissedReached) {
+                if matches!(verdict, Verdict::MadeUnreached | Verdict::MissedReached | Verdict::MadeUnlooked) {
                     differs.push(said);
                 }
             }

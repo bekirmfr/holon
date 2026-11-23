@@ -636,3 +636,49 @@ fn a_loop_is_refused_in_plain_words() {
         assert!(refused.contains("loop") || refused.contains("map"), "{refused}");
     }
 }
+
+/// What each site of a row's text does on its request, beside where its path says it is
+/// reached: the site runs that differ, each as `<what it does> at line <n>: <verdict>`, and those
+/// a failed `try` keeps.
+fn rows_site_differences(text: &str, body: &str) -> Result<Vec<String>, String> {
+    use holon_author::reached_runs::{answer_ok, request, site_runs, Given, Handler, Verdict, Watched};
+    let w = Watched::of(text)?;
+    let given = |h: &Handler, _: &holon_core::Unit| -> Vec<Given> {
+        if h.kind == "route" { vec![(vec![Some(request(&h.method, &h.path, body))], BTreeMap::new())] } else { Vec::new() }
+    };
+    let mut out = Vec::new();
+    for r in site_runs(&w, &given, answer_ok) {
+        let site = &w.lowered.sites[r.site];
+        let verdict = r.verdict(site);
+        let at = format!("{} at line {}", site.does, site.at.start.line);
+        if matches!(verdict, Verdict::MadeUnreached | Verdict::MissedReached | Verdict::MadeUnlooked | Verdict::PastNothing(_)) {
+            out.push(format!("{at}: {verdict:?}"));
+        }
+        if r.today == Some(true) && r.kept == Some(false) {
+            out.push(format!("{at}: kept by a try that failed"));
+        }
+    }
+    Ok(out)
+}
+
+/// The census of C1 over the table: each row's site runs that differ from their paths, printed
+/// beside the row's debt (`--nocapture`). Every row's text is read and run; it asserts only that
+/// each is (the class-level test's assertions wait on the rows no site run shows, see C1's report).
+#[test]
+fn the_rows_sites_beside_their_debts() {
+    let mut unread = Vec::new();
+    for row in rows() {
+        let text = row.text.replace("@PING@", PING);
+        let owed = match row.today {
+            Today::Differs(d, _) | Today::Refused(d, _) => d.name,
+            Today::OwnRule(r, _) => r.name,
+            Today::AsJavascript => "as JavaScript",
+        };
+        match rows_site_differences(&text, row.request) {
+            Ok(shown) => println!("{} [{owed}]: {}", row.name, if shown.is_empty() { "no site run shows it".to_string() } else { shown.join("; ") }),
+            Err(e) => unread.push(format!("{}: {e}", row.name)),
+        }
+    }
+    assert!(unread.is_empty(), "{}", unread.join("
+"));
+}

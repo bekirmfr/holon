@@ -118,6 +118,9 @@ pub struct SiteRun {
     /// Whether, outside a `try`, a statement before it gave nothing at a step that throws in
     /// JavaScript, which would have stopped there; the flow goes on (labelled by [`PAST_NOTHING`]).
     pub past_nothing: bool,
+    /// Whether its key is written at another site of the same body too: the graph writes a key
+    /// once per run, at one step for all of them, so which site's value it wrote is its own column.
+    pub one_key: bool,
 }
 
 /// How a site's run stands beside what today's graph did.
@@ -131,6 +134,11 @@ pub enum Verdict {
     MadeUnreached,
     /// Not made, where its path says it is reached and it has what it needs.
     MissedReached,
+    /// Made, where a test of its path was never computed by the run: the step went out without
+    /// what reaches it being looked at, where JavaScript looks at it first.
+    MadeUnlooked,
+    /// A key written at several sites, by one step: compared on its own column.
+    OneKey,
     /// A test its path or a value it needs was never computed.
     NotKnown,
     /// It has no step of its own (a state key written in several places is one step).
@@ -148,11 +156,15 @@ impl SiteRun {
         if matches!(site.does, "enters" | "throws" | "reads state") {
             return Verdict::NotCompared;
         }
+        if self.one_key {
+            return Verdict::OneKey;
+        }
         let Some(made) = self.today else { return Verdict::NoStepOfItsOwn };
         if made && self.past_nothing {
             return Verdict::PastNothing(PAST_NOTHING);
         }
         match (self.reached, self.has_values, made) {
+            (Reached::NotKnown(_), _, true) => Verdict::MadeUnlooked,
             (Reached::NotKnown(_), ..) => Verdict::NotKnown,
             (Reached::No, _, false) => Verdict::Agrees,
             (Reached::No, _, true) => Verdict::MadeUnreached,
@@ -459,7 +471,8 @@ pub fn site_runs(w: &Watched, given: &dyn Fn(&Handler, &Unit) -> Vec<Given>, ans
                     } else {
                         Some(true)
                     };
-                    out.push(SiteRun { site: n, handler: h.label.clone(), input: i, at: ctx.path.clone(), reached: path_on(w, site, ctx, &run), today, kept, has_values, past_nothing: past });
+                    let one_key = site.key.is_some() && w.lowered.sites.iter().filter(|s| s.key == site.key && s.within == site.within).count() > 1;
+                    out.push(SiteRun { site: n, handler: h.label.clone(), input: i, at: ctx.path.clone(), reached: path_on(w, site, ctx, &run), today, kept, has_values, past_nothing: past, one_key });
                 }
             }
         }
