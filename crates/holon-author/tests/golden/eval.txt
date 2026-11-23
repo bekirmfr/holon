@@ -21275,6 +21275,3072 @@
   [0, 4] Record({"body": Text("no such member"), "status": Number(200.0)})
   [0] Record({"body": Text("no such member"), "status": Number(200.0)})
   => Record({"body": Text("no such member"), "status": Number(200.0)})
+== sea-battle · GET / · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/"), "query"… #71e5cca4e8b1caa9 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Sea battle… #ded6c2f555869ffd
+  [0, 2] Record({})
+  [0, 3] Text("text/html; charset=utf-8")
+  [0, 4] Record({"content-type": Text("text/html; charset=utf-8")})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #701472477227c2fd
+  [0, 5, 4] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+  [0, 5, 5] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+  [0, 5] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+  [0] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+  => Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+== sea-battle · GET / · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #53c22645695c90e5 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Sea battle… #ded6c2f555869ffd
+  [0, 2] Record({})
+  [0, 3] Text("text/html; charset=utf-8")
+  [0, 4] Record({"content-type": Text("text/html; charset=utf-8")})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #701472477227c2fd
+  [0, 5, 4] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+  [0, 5, 5] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+  [0, 5] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+  [0] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+  => Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+== sea-battle · GET / · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #1719c1c5a6f2d8af | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Sea battle… #ded6c2f555869ffd
+  [0, 2] Record({})
+  [0, 3] Text("text/html; charset=utf-8")
+  [0, 4] Record({"content-type": Text("text/html; charset=utf-8")})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #701472477227c2fd
+  [0, 5, 4] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+  [0, 5, 5] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+  [0, 5] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+  [0] Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+  => Record({"body": Text("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<… #351dca48d346c1f3
+== sea-battle · GET /live · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/live"), "qu… #070204e689e08c9f | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0, 2, 4] Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0, 2] Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0] Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+  => Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+== sea-battle · GET /live · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #bf65d47c13a6ae25 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0, 2, 4] Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0, 2] Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0] Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+  => Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+== sea-battle · GET /live · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #592df47caef24597 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0, 2, 4] Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0, 2] Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+  [0] Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+  => Record({"body": Effect { sink: "channel_subscribe:moves", payload: Record({"channel": Text("moves"), "from": Text("new")}) }, "status": Number(200.0)})
+== sea-battle · GET /games/:id · input 0
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"id": Text("tea")}), "path": T… #623df424ddb108b8 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 3, 13] Record({})
+  [0, 3, 2] Boolean(true)
+  [0, 3, 15] ·
+  [0, 3, 18] ·
+  [0, 3, 16] ·
+  [0, 3, 0] ·
+  [0, 3, 6] ·
+  [0, 3, 17] ·
+  [0, 3, 20] ·
+  [0, 3, 4] ·
+  [0, 3, 3] ·
+  [0, 3, 21] ·
+  [0, 3, 7] ·
+  [0, 3, 8] ·
+  [0, 3, 12] ·
+  [0, 3, 19] ·
+  [0, 3, 11] ·
+  [0, 3, 1] ·
+  [0, 3, 9, 14] Record({})
+  [0, 3, 9, 3] Boolean(true)
+  [0, 3, 9, 15] ·
+  [0, 3, 9, 20] ·
+  [0, 3, 9, 9] ·
+  [0, 3, 9, 1] ·
+  [0, 3, 9, 12] ·
+  [0, 3, 9, 10] ·
+  [0, 3, 9, 11] ·
+  [0, 3, 9, 17] ·
+  [0, 3, 9, 18] ·
+  [0, 3, 9, 8] ·
+  [0, 3, 9, 16] ·
+  [0, 3, 9, 13] ·
+  [0, 3, 9, 19] ·
+  [0, 3, 9, 0] ·
+  [0, 3, 9, 7] ·
+  [0, 3, 9, 5] ·
+  [0, 3, 9, 4] ·
+  [0, 3, 9, 2] ·
+  [0, 3, 9, 6] ·
+  [0, 3, 9] ·
+  [0, 3, 22] ·
+  [0, 3, 5] ·
+  [0, 3, 10, 14] Record({})
+  [0, 3, 10, 3] Boolean(true)
+  [0, 3, 10, 15] ·
+  [0, 3, 10, 20] ·
+  [0, 3, 10, 9] ·
+  [0, 3, 10, 1] ·
+  [0, 3, 10, 12] ·
+  [0, 3, 10, 10] ·
+  [0, 3, 10, 11] ·
+  [0, 3, 10, 17] ·
+  [0, 3, 10, 18] ·
+  [0, 3, 10, 8] ·
+  [0, 3, 10, 16] ·
+  [0, 3, 10, 13] ·
+  [0, 3, 10, 19] ·
+  [0, 3, 10, 0] ·
+  [0, 3, 10, 7] ·
+  [0, 3, 10, 5] ·
+  [0, 3, 10, 4] ·
+  [0, 3, 10, 2] ·
+  [0, 3, 10, 6] ·
+  [0, 3, 10] ·
+  [0, 3, 14] ·
+  [0, 3] ·
+  [0, 4, 0] Record({})
+  [0, 4, 1] Number(200.0)
+  [0, 4, 2] Record({"status": Number(200.0)})
+  [0, 4, 3] ·
+  [0, 4, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== sea-battle · GET /games/:id · input 1
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #615ab59ef40191e9 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 3, 13] Record({})
+  [0, 3, 2] Boolean(true)
+  [0, 3, 15] ·
+  [0, 3, 18] ·
+  [0, 3, 16] ·
+  [0, 3, 0] ·
+  [0, 3, 6] ·
+  [0, 3, 17] ·
+  [0, 3, 20] ·
+  [0, 3, 4] ·
+  [0, 3, 3] ·
+  [0, 3, 21] ·
+  [0, 3, 7] ·
+  [0, 3, 8] ·
+  [0, 3, 12] ·
+  [0, 3, 19] ·
+  [0, 3, 11] ·
+  [0, 3, 1] ·
+  [0, 3, 9, 14] Record({})
+  [0, 3, 9, 3] Boolean(true)
+  [0, 3, 9, 15] ·
+  [0, 3, 9, 20] ·
+  [0, 3, 9, 9] ·
+  [0, 3, 9, 1] ·
+  [0, 3, 9, 12] ·
+  [0, 3, 9, 10] ·
+  [0, 3, 9, 11] ·
+  [0, 3, 9, 17] ·
+  [0, 3, 9, 18] ·
+  [0, 3, 9, 8] ·
+  [0, 3, 9, 16] ·
+  [0, 3, 9, 13] ·
+  [0, 3, 9, 19] ·
+  [0, 3, 9, 0] ·
+  [0, 3, 9, 7] ·
+  [0, 3, 9, 5] ·
+  [0, 3, 9, 4] ·
+  [0, 3, 9, 2] ·
+  [0, 3, 9, 6] ·
+  [0, 3, 9] ·
+  [0, 3, 22] ·
+  [0, 3, 5] ·
+  [0, 3, 10, 14] Record({})
+  [0, 3, 10, 3] Boolean(true)
+  [0, 3, 10, 15] ·
+  [0, 3, 10, 20] ·
+  [0, 3, 10, 9] ·
+  [0, 3, 10, 1] ·
+  [0, 3, 10, 12] ·
+  [0, 3, 10, 10] ·
+  [0, 3, 10, 11] ·
+  [0, 3, 10, 17] ·
+  [0, 3, 10, 18] ·
+  [0, 3, 10, 8] ·
+  [0, 3, 10, 16] ·
+  [0, 3, 10, 13] ·
+  [0, 3, 10, 19] ·
+  [0, 3, 10, 0] ·
+  [0, 3, 10, 7] ·
+  [0, 3, 10, 5] ·
+  [0, 3, 10, 4] ·
+  [0, 3, 10, 2] ·
+  [0, 3, 10, 6] ·
+  [0, 3, 10] ·
+  [0, 3, 14] ·
+  [0, 3] ·
+  [0, 4, 0] Record({})
+  [0, 4, 1] Number(200.0)
+  [0, 4, 2] Record({"status": Number(200.0)})
+  [0, 4, 3] ·
+  [0, 4, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== sea-battle · GET /games/:id · input 2
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #53c373fa1f7a5695 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 3, 13] Record({})
+  [0, 3, 2] Boolean(true)
+  [0, 3, 15] ·
+  [0, 3, 18] ·
+  [0, 3, 16] ·
+  [0, 3, 0] ·
+  [0, 3, 6] ·
+  [0, 3, 17] ·
+  [0, 3, 20] ·
+  [0, 3, 4] ·
+  [0, 3, 3] ·
+  [0, 3, 21] ·
+  [0, 3, 7] ·
+  [0, 3, 8] ·
+  [0, 3, 12] ·
+  [0, 3, 19] ·
+  [0, 3, 11] ·
+  [0, 3, 1] ·
+  [0, 3, 9, 14] Record({})
+  [0, 3, 9, 3] Boolean(true)
+  [0, 3, 9, 15] ·
+  [0, 3, 9, 20] ·
+  [0, 3, 9, 9] ·
+  [0, 3, 9, 1] ·
+  [0, 3, 9, 12] ·
+  [0, 3, 9, 10] ·
+  [0, 3, 9, 11] ·
+  [0, 3, 9, 17] ·
+  [0, 3, 9, 18] ·
+  [0, 3, 9, 8] ·
+  [0, 3, 9, 16] ·
+  [0, 3, 9, 13] ·
+  [0, 3, 9, 19] ·
+  [0, 3, 9, 0] ·
+  [0, 3, 9, 7] ·
+  [0, 3, 9, 5] ·
+  [0, 3, 9, 4] ·
+  [0, 3, 9, 2] ·
+  [0, 3, 9, 6] ·
+  [0, 3, 9] ·
+  [0, 3, 22] ·
+  [0, 3, 5] ·
+  [0, 3, 10, 14] Record({})
+  [0, 3, 10, 3] Boolean(true)
+  [0, 3, 10, 15] ·
+  [0, 3, 10, 20] ·
+  [0, 3, 10, 9] ·
+  [0, 3, 10, 1] ·
+  [0, 3, 10, 12] ·
+  [0, 3, 10, 10] ·
+  [0, 3, 10, 11] ·
+  [0, 3, 10, 17] ·
+  [0, 3, 10, 18] ·
+  [0, 3, 10, 8] ·
+  [0, 3, 10, 16] ·
+  [0, 3, 10, 13] ·
+  [0, 3, 10, 19] ·
+  [0, 3, 10, 0] ·
+  [0, 3, 10, 7] ·
+  [0, 3, 10, 5] ·
+  [0, 3, 10, 4] ·
+  [0, 3, 10, 2] ·
+  [0, 3, 10, 6] ·
+  [0, 3, 10] ·
+  [0, 3, 14] ·
+  [0, 3] ·
+  [0, 4, 0] Record({})
+  [0, 4, 1] Number(200.0)
+  [0, 4, 2] Record({"status": Number(200.0)})
+  [0, 4, 3] ·
+  [0, 4, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== sea-battle · POST /games · input 0
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] Text("|")
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 14] Number(0.0)
+  [0, 15] Number(8.0)
+  [0, 16] ·
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/games"), "… #1186047446c56edc | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] ·
+  [0, 2] Text("")
+  [0, 3] Number(0.0)
+  [0, 4] Number(64.0)
+  [0, 5] Boolean(false)
+  [0, 6] Boolean(true)
+  [0, 48] Boolean(false)
+  [0, 49] ·
+  [0, 50] ·
+  [0, 51] Record({})
+  [0, 52] Text("a seal is the sha256 of the board and a salt, in hex")
+  [0, 53] Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")})
+  [0, 54] Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")})
+  [0, 65] Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")})
+  [0, 66] Number(400.0)
+  [0, 67] Number(400.0)
+  [0, 74] Number(400.0)
+  [0, 75, 0] Record({})
+  [0, 75, 1] Record({"status": Number(400.0)})
+  [0, 75, 2] Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)})
+  [0, 75, 3] Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)})
+  [0, 75] Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)})
+  [0] Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)}) | ·
+  => Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)}) | ·
+== sea-battle · POST /games · input 1
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] Text("|")
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 14] Number(0.0)
+  [0, 15] Number(8.0)
+  [0, 16] ·
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #4fd17d4fa168f2f3 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] ·
+  [0, 2] Text("")
+  [0, 3] Number(0.0)
+  [0, 4] Number(64.0)
+  [0, 5] Boolean(false)
+  [0, 6] Boolean(true)
+  [0, 48] Boolean(false)
+  [0, 49] ·
+  [0, 50] ·
+  [0, 51] Record({})
+  [0, 52] Text("a seal is the sha256 of the board and a salt, in hex")
+  [0, 53] Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")})
+  [0, 54] Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")})
+  [0, 65] Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")})
+  [0, 66] Number(400.0)
+  [0, 67] Number(400.0)
+  [0, 74] Number(400.0)
+  [0, 75, 0] Record({})
+  [0, 75, 1] Record({"status": Number(400.0)})
+  [0, 75, 2] Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)})
+  [0, 75, 3] Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)})
+  [0, 75] Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)})
+  [0] Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)}) | ·
+  => Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)}) | ·
+== sea-battle · POST /games · input 2
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] Text("|")
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 14] Number(0.0)
+  [0, 15] Number(8.0)
+  [0, 16] ·
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #7815e66bfe4411b8 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] ·
+  [0, 2] Text("")
+  [0, 3] Number(0.0)
+  [0, 4] Number(64.0)
+  [0, 5] Boolean(false)
+  [0, 6] Boolean(true)
+  [0, 48] Boolean(false)
+  [0, 49] ·
+  [0, 50] ·
+  [0, 51] Record({})
+  [0, 52] Text("a seal is the sha256 of the board and a salt, in hex")
+  [0, 53] Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")})
+  [0, 54] Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")})
+  [0, 65] Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")})
+  [0, 66] Number(400.0)
+  [0, 67] Number(400.0)
+  [0, 74] Number(400.0)
+  [0, 75, 0] Record({})
+  [0, 75, 1] Record({"status": Number(400.0)})
+  [0, 75, 2] Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)})
+  [0, 75, 3] Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)})
+  [0, 75] Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)})
+  [0] Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)}) | ·
+  => Record({"body": Record({"error": Text("a seal is the sha256 of the board and a salt, in hex")}), "status": Number(400.0)}) | ·
+== sea-battle · POST /games/:id/join · input 0
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({"id": Text("tea")}), "path": … #c3e76f70e347df5f | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 35] ·
+  [0, 5] ·
+  [0, 6] Text("waiting")
+  [0, 7] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 36] ·
+  [0, 37] ·
+  [0, 38] ·
+  [0, 24] Text("play")
+  [0, 25] ·
+  [0, 26] ·
+  [0, 27] ·
+  [0, 28] ·
+  [0, 29] Text("Captain B")
+  [0, 30] Number(0.0)
+  [0, 31] Number(24.0)
+  [0, 32] Text("Captain B")
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 13] ·
+  [0, 14] ·
+  [0, 15] Text("|")
+  [0, 16] ·
+  [0, 17] ·
+  [0, 18] Text("|b")
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] Number(0.0)
+  [0, 22] Number(32.0)
+  [0, 23] ·
+  [0, 33, 14] Record({})
+  [0, 33, 7] Record({"name": Text("Captain B")})
+  [0, 33, 13] Record({"commit": Text(""), "name": Text("Captain B")})
+  [0, 33, 8] ·
+  [0, 33, 2] Boolean(false)
+  [0, 33, 12] ·
+  [0, 33, 11] Text("")
+  [0, 33, 16] ·
+  [0, 33, 10] Text("")
+  [0, 33, 15] ·
+  [0, 33, 1] Boolean(false)
+  [0, 33, 17] ·
+  [0, 33, 9] Text("")
+  [0, 33, 6] ·
+  [0, 33, 4] List([])
+  [0, 33, 3] ·
+  [0, 33, 0] Boolean(false)
+  [0, 33, 5] ·
+  [0, 33] ·
+  [0, 34] ·
+  [0, 39, 13] Record({})
+  [0, 39, 2] Boolean(true)
+  [0, 39, 15] ·
+  [0, 39, 18] ·
+  [0, 39, 16] ·
+  [0, 39, 0] ·
+  [0, 39, 6] ·
+  [0, 39, 17] ·
+  [0, 39, 20] ·
+  [0, 39, 4] ·
+  [0, 39, 3] ·
+  [0, 39, 21] ·
+  [0, 39, 7] ·
+  [0, 39, 8] ·
+  [0, 39, 12] ·
+  [0, 39, 19] ·
+  [0, 39, 11] ·
+  [0, 39, 1] ·
+  [0, 39, 9, 14] Record({})
+  [0, 39, 9, 3] Boolean(true)
+  [0, 39, 9, 15] ·
+  [0, 39, 9, 20] ·
+  [0, 39, 9, 9] ·
+  [0, 39, 9, 1] ·
+  [0, 39, 9, 12] ·
+  [0, 39, 9, 10] ·
+  [0, 39, 9, 11] ·
+  [0, 39, 9, 17] ·
+  [0, 39, 9, 18] ·
+  [0, 39, 9, 8] ·
+  [0, 39, 9, 16] ·
+  [0, 39, 9, 13] ·
+  [0, 39, 9, 19] ·
+  [0, 39, 9, 0] ·
+  [0, 39, 9, 7] ·
+  [0, 39, 9, 5] ·
+  [0, 39, 9, 4] ·
+  [0, 39, 9, 2] ·
+  [0, 39, 9, 6] ·
+  [0, 39, 9] ·
+  [0, 39, 22] ·
+  [0, 39, 5] ·
+  [0, 39, 10, 14] Record({})
+  [0, 39, 10, 3] Boolean(true)
+  [0, 39, 10, 15] ·
+  [0, 39, 10, 20] ·
+  [0, 39, 10, 9] ·
+  [0, 39, 10, 1] ·
+  [0, 39, 10, 12] ·
+  [0, 39, 10, 10] ·
+  [0, 39, 10, 11] ·
+  [0, 39, 10, 17] ·
+  [0, 39, 10, 18] ·
+  [0, 39, 10, 8] ·
+  [0, 39, 10, 16] ·
+  [0, 39, 10, 13] ·
+  [0, 39, 10, 19] ·
+  [0, 39, 10, 0] ·
+  [0, 39, 10, 7] ·
+  [0, 39, 10, 5] ·
+  [0, 39, 10, 4] ·
+  [0, 39, 10, 2] ·
+  [0, 39, 10, 6] ·
+  [0, 39, 10] ·
+  [0, 39, 14] ·
+  [0, 39] ·
+  [0, 42] ·
+  [0, 43] ·
+  [0, 40] ·
+  [0, 47] ·
+  [0, 48] Boolean(false)
+  [0, 49] Boolean(true)
+  [0, 56] ·
+  [0, 57] ·
+  [0, 58] ·
+  [0, 59] ·
+  [0, 61] ·
+  [0, 62] Boolean(false)
+  [0, 63] Boolean(true)
+  [0, 65] ·
+  [0, 66] ·
+  [0, 67] ·
+  [0, 68] ·
+  [0, 69, 0] Record({})
+  [0, 69, 1] ·
+  [0, 69, 2] ·
+  [0, 69, 3] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 69] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
+== sea-battle · POST /games/:id/join · input 1
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #97b04fd1692511bb | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 35] ·
+  [0, 5] ·
+  [0, 6] Text("waiting")
+  [0, 7] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 36] ·
+  [0, 37] ·
+  [0, 38] ·
+  [0, 24] Text("play")
+  [0, 25] ·
+  [0, 26] ·
+  [0, 27] ·
+  [0, 28] Text("tea")
+  [0, 29] Text("tea")
+  [0, 30] Number(0.0)
+  [0, 31] Number(24.0)
+  [0, 32] Text("tea")
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 13] ·
+  [0, 14] ·
+  [0, 15] Text("|")
+  [0, 16] ·
+  [0, 17] ·
+  [0, 18] Text("|b")
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] Number(0.0)
+  [0, 22] Number(32.0)
+  [0, 23] ·
+  [0, 33, 14] Record({})
+  [0, 33, 7] Record({"name": Text("tea")})
+  [0, 33, 13] Record({"commit": Text(""), "name": Text("tea")})
+  [0, 33, 8] ·
+  [0, 33, 2] Boolean(false)
+  [0, 33, 12] ·
+  [0, 33, 11] Text("")
+  [0, 33, 16] ·
+  [0, 33, 10] Text("")
+  [0, 33, 15] ·
+  [0, 33, 1] Boolean(false)
+  [0, 33, 17] ·
+  [0, 33, 9] Text("")
+  [0, 33, 6] ·
+  [0, 33, 4] List([])
+  [0, 33, 3] ·
+  [0, 33, 0] Boolean(false)
+  [0, 33, 5] ·
+  [0, 33] ·
+  [0, 34] ·
+  [0, 39, 13] Record({})
+  [0, 39, 2] Boolean(true)
+  [0, 39, 15] ·
+  [0, 39, 18] ·
+  [0, 39, 16] ·
+  [0, 39, 0] ·
+  [0, 39, 6] ·
+  [0, 39, 17] ·
+  [0, 39, 20] ·
+  [0, 39, 4] ·
+  [0, 39, 3] ·
+  [0, 39, 21] ·
+  [0, 39, 7] ·
+  [0, 39, 8] ·
+  [0, 39, 12] ·
+  [0, 39, 19] ·
+  [0, 39, 11] ·
+  [0, 39, 1] ·
+  [0, 39, 9, 14] Record({})
+  [0, 39, 9, 3] Boolean(true)
+  [0, 39, 9, 15] ·
+  [0, 39, 9, 20] ·
+  [0, 39, 9, 9] ·
+  [0, 39, 9, 1] ·
+  [0, 39, 9, 12] ·
+  [0, 39, 9, 10] ·
+  [0, 39, 9, 11] ·
+  [0, 39, 9, 17] ·
+  [0, 39, 9, 18] ·
+  [0, 39, 9, 8] ·
+  [0, 39, 9, 16] ·
+  [0, 39, 9, 13] ·
+  [0, 39, 9, 19] ·
+  [0, 39, 9, 0] ·
+  [0, 39, 9, 7] ·
+  [0, 39, 9, 5] ·
+  [0, 39, 9, 4] ·
+  [0, 39, 9, 2] ·
+  [0, 39, 9, 6] ·
+  [0, 39, 9] ·
+  [0, 39, 22] ·
+  [0, 39, 5] ·
+  [0, 39, 10, 14] Record({})
+  [0, 39, 10, 3] Boolean(true)
+  [0, 39, 10, 15] ·
+  [0, 39, 10, 20] ·
+  [0, 39, 10, 9] ·
+  [0, 39, 10, 1] ·
+  [0, 39, 10, 12] ·
+  [0, 39, 10, 10] ·
+  [0, 39, 10, 11] ·
+  [0, 39, 10, 17] ·
+  [0, 39, 10, 18] ·
+  [0, 39, 10, 8] ·
+  [0, 39, 10, 16] ·
+  [0, 39, 10, 13] ·
+  [0, 39, 10, 19] ·
+  [0, 39, 10, 0] ·
+  [0, 39, 10, 7] ·
+  [0, 39, 10, 5] ·
+  [0, 39, 10, 4] ·
+  [0, 39, 10, 2] ·
+  [0, 39, 10, 6] ·
+  [0, 39, 10] ·
+  [0, 39, 14] ·
+  [0, 39] ·
+  [0, 42] ·
+  [0, 43] ·
+  [0, 40] ·
+  [0, 47] ·
+  [0, 48] Boolean(false)
+  [0, 49] Boolean(true)
+  [0, 56] ·
+  [0, 57] ·
+  [0, 58] ·
+  [0, 59] ·
+  [0, 61] ·
+  [0, 62] Boolean(false)
+  [0, 63] Boolean(true)
+  [0, 65] ·
+  [0, 66] ·
+  [0, 67] ·
+  [0, 68] ·
+  [0, 69, 0] Record({})
+  [0, 69, 1] ·
+  [0, 69, 2] ·
+  [0, 69, 3] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 69] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
+== sea-battle · POST /games/:id/join · input 2
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #d770430dfd676f12 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 35] ·
+  [0, 5] ·
+  [0, 6] Text("waiting")
+  [0, 7] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 36] ·
+  [0, 37] ·
+  [0, 38] ·
+  [0, 24] Text("play")
+  [0, 25] ·
+  [0, 26] ·
+  [0, 27] ·
+  [0, 28] ·
+  [0, 29] Text("Captain B")
+  [0, 30] Number(0.0)
+  [0, 31] Number(24.0)
+  [0, 32] Text("Captain B")
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 13] ·
+  [0, 14] ·
+  [0, 15] Text("|")
+  [0, 16] ·
+  [0, 17] ·
+  [0, 18] Text("|b")
+  [0, 19] ·
+  [0, 20] ·
+  [0, 21] Number(0.0)
+  [0, 22] Number(32.0)
+  [0, 23] ·
+  [0, 33, 14] Record({})
+  [0, 33, 7] Record({"name": Text("Captain B")})
+  [0, 33, 13] Record({"commit": Text(""), "name": Text("Captain B")})
+  [0, 33, 8] ·
+  [0, 33, 2] Boolean(false)
+  [0, 33, 12] ·
+  [0, 33, 11] Text("")
+  [0, 33, 16] ·
+  [0, 33, 10] Text("")
+  [0, 33, 15] ·
+  [0, 33, 1] Boolean(false)
+  [0, 33, 17] ·
+  [0, 33, 9] Text("")
+  [0, 33, 6] ·
+  [0, 33, 4] List([])
+  [0, 33, 3] ·
+  [0, 33, 0] Boolean(false)
+  [0, 33, 5] ·
+  [0, 33] ·
+  [0, 34] ·
+  [0, 39, 13] Record({})
+  [0, 39, 2] Boolean(true)
+  [0, 39, 15] ·
+  [0, 39, 18] ·
+  [0, 39, 16] ·
+  [0, 39, 0] ·
+  [0, 39, 6] ·
+  [0, 39, 17] ·
+  [0, 39, 20] ·
+  [0, 39, 4] ·
+  [0, 39, 3] ·
+  [0, 39, 21] ·
+  [0, 39, 7] ·
+  [0, 39, 8] ·
+  [0, 39, 12] ·
+  [0, 39, 19] ·
+  [0, 39, 11] ·
+  [0, 39, 1] ·
+  [0, 39, 9, 14] Record({})
+  [0, 39, 9, 3] Boolean(true)
+  [0, 39, 9, 15] ·
+  [0, 39, 9, 20] ·
+  [0, 39, 9, 9] ·
+  [0, 39, 9, 1] ·
+  [0, 39, 9, 12] ·
+  [0, 39, 9, 10] ·
+  [0, 39, 9, 11] ·
+  [0, 39, 9, 17] ·
+  [0, 39, 9, 18] ·
+  [0, 39, 9, 8] ·
+  [0, 39, 9, 16] ·
+  [0, 39, 9, 13] ·
+  [0, 39, 9, 19] ·
+  [0, 39, 9, 0] ·
+  [0, 39, 9, 7] ·
+  [0, 39, 9, 5] ·
+  [0, 39, 9, 4] ·
+  [0, 39, 9, 2] ·
+  [0, 39, 9, 6] ·
+  [0, 39, 9] ·
+  [0, 39, 22] ·
+  [0, 39, 5] ·
+  [0, 39, 10, 14] Record({})
+  [0, 39, 10, 3] Boolean(true)
+  [0, 39, 10, 15] ·
+  [0, 39, 10, 20] ·
+  [0, 39, 10, 9] ·
+  [0, 39, 10, 1] ·
+  [0, 39, 10, 12] ·
+  [0, 39, 10, 10] ·
+  [0, 39, 10, 11] ·
+  [0, 39, 10, 17] ·
+  [0, 39, 10, 18] ·
+  [0, 39, 10, 8] ·
+  [0, 39, 10, 16] ·
+  [0, 39, 10, 13] ·
+  [0, 39, 10, 19] ·
+  [0, 39, 10, 0] ·
+  [0, 39, 10, 7] ·
+  [0, 39, 10, 5] ·
+  [0, 39, 10, 4] ·
+  [0, 39, 10, 2] ·
+  [0, 39, 10, 6] ·
+  [0, 39, 10] ·
+  [0, 39, 14] ·
+  [0, 39] ·
+  [0, 42] ·
+  [0, 43] ·
+  [0, 40] ·
+  [0, 47] ·
+  [0, 48] Boolean(false)
+  [0, 49] Boolean(true)
+  [0, 56] ·
+  [0, 57] ·
+  [0, 58] ·
+  [0, 59] ·
+  [0, 61] ·
+  [0, 62] Boolean(false)
+  [0, 63] Boolean(true)
+  [0, 65] ·
+  [0, 66] ·
+  [0, 67] ·
+  [0, 68] ·
+  [0, 69, 0] Record({})
+  [0, 69, 1] ·
+  [0, 69, 2] ·
+  [0, 69, 3] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 69] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
+== sea-battle · POST /games/:id/fire · input 0
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({"id": Text("tea")}), "path": … #383467273622fe22 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 40] ·
+  [0, 11] ·
+  [0, 12] Text("play")
+  [0, 13] ·
+  [0, 27] ·
+  [0, 28] Boolean(false)
+  [0, 29] Boolean(true)
+  [0, 41] Boolean(false)
+  [0, 42] ·
+  [0, 43] ·
+  [0, 30] ·
+  [0, 31] ·
+  [0, 32] ·
+  [0, 33] Record({})
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 5, 4] Boolean(true)
+  [0, 5, 16] Text("")
+  [0, 5, 3] Boolean(true)
+  [0, 5, 17] ·
+  [0, 5, 0] ·
+  [0, 5, 22] ·
+  [0, 5, 1] ·
+  [0, 5, 15] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 20] Boolean(true)
+  [0, 5, 5] ·
+  [0, 5, 21] ·
+  [0, 5, 2] ·
+  [0, 5, 14] ·
+  [0, 5, 9] Boolean(false)
+  [0, 5, 19] Boolean(true)
+  [0, 5, 11] Text("")
+  [0, 5, 18] Text("")
+  [0, 5, 7] Text("")
+  [0, 5, 13] Text("")
+  [0, 5, 6] Text("")
+  [0, 5] Text("")
+  [0, 34] Record({"by": Text("")})
+  [0, 6] ·
+  [0, 35] ·
+  [0, 36] Text("")
+  [0, 37] ·
+  [0, 38] ·
+  [0, 39] ·
+  [0, 44, 13] Record({})
+  [0, 44, 2] Boolean(true)
+  [0, 44, 15] ·
+  [0, 44, 18] ·
+  [0, 44, 16] ·
+  [0, 44, 0] ·
+  [0, 44, 6] ·
+  [0, 44, 17] ·
+  [0, 44, 20] ·
+  [0, 44, 4] ·
+  [0, 44, 3] ·
+  [0, 44, 21] ·
+  [0, 44, 7] ·
+  [0, 44, 8] ·
+  [0, 44, 12] ·
+  [0, 44, 19] ·
+  [0, 44, 11] ·
+  [0, 44, 1] ·
+  [0, 44, 9, 14] Record({})
+  [0, 44, 9, 3] Boolean(true)
+  [0, 44, 9, 15] ·
+  [0, 44, 9, 20] ·
+  [0, 44, 9, 9] ·
+  [0, 44, 9, 1] ·
+  [0, 44, 9, 12] ·
+  [0, 44, 9, 10] ·
+  [0, 44, 9, 11] ·
+  [0, 44, 9, 17] ·
+  [0, 44, 9, 18] ·
+  [0, 44, 9, 8] ·
+  [0, 44, 9, 16] ·
+  [0, 44, 9, 13] ·
+  [0, 44, 9, 19] ·
+  [0, 44, 9, 0] ·
+  [0, 44, 9, 7] ·
+  [0, 44, 9, 5] ·
+  [0, 44, 9, 4] ·
+  [0, 44, 9, 2] ·
+  [0, 44, 9, 6] ·
+  [0, 44, 9] ·
+  [0, 44, 22] ·
+  [0, 44, 5] ·
+  [0, 44, 10, 14] Record({})
+  [0, 44, 10, 3] Boolean(true)
+  [0, 44, 10, 15] ·
+  [0, 44, 10, 20] ·
+  [0, 44, 10, 9] ·
+  [0, 44, 10, 1] ·
+  [0, 44, 10, 12] ·
+  [0, 44, 10, 10] ·
+  [0, 44, 10, 11] ·
+  [0, 44, 10, 17] ·
+  [0, 44, 10, 18] ·
+  [0, 44, 10, 8] ·
+  [0, 44, 10, 16] ·
+  [0, 44, 10, 13] ·
+  [0, 44, 10, 19] ·
+  [0, 44, 10, 0] ·
+  [0, 44, 10, 7] ·
+  [0, 44, 10, 5] ·
+  [0, 44, 10, 4] ·
+  [0, 44, 10, 2] ·
+  [0, 44, 10, 6] ·
+  [0, 44, 10] ·
+  [0, 44, 14] ·
+  [0, 44] ·
+  [0, 47] Boolean(false)
+  [0, 48] ·
+  [0, 45] ·
+  [0, 49] Record({})
+  [0, 50] Text("not your turn, or not a square you can fire at")
+  [0, 51] Record({"error": Text("not your turn, or not a square you can fire at")})
+  [0, 52] Record({"error": Text("not your turn, or not a square you can fire at")})
+  [0, 59] Record({"error": Text("not your turn, or not a square you can fire at")})
+  [0, 60] Number(409.0)
+  [0, 61] Number(409.0)
+  [0, 68] Number(409.0)
+  [0, 69, 0] Record({})
+  [0, 69, 1] Record({"status": Number(409.0)})
+  [0, 69, 2] Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)})
+  [0, 69, 3] Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)})
+  [0, 69] Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)})
+  [0] Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)}) | · | ·
+  => Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)}) | · | ·
+== sea-battle · POST /games/:id/fire · input 1
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #570a6bfb81b4a623 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 40] ·
+  [0, 11] ·
+  [0, 12] Text("play")
+  [0, 13] ·
+  [0, 27] ·
+  [0, 28] Boolean(false)
+  [0, 29] Boolean(true)
+  [0, 41] Boolean(false)
+  [0, 42] ·
+  [0, 43] ·
+  [0, 30] ·
+  [0, 31] ·
+  [0, 32] ·
+  [0, 33] Record({})
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 5, 4] Boolean(true)
+  [0, 5, 16] Text("")
+  [0, 5, 3] Boolean(true)
+  [0, 5, 17] ·
+  [0, 5, 0] ·
+  [0, 5, 22] ·
+  [0, 5, 1] ·
+  [0, 5, 15] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 20] Boolean(true)
+  [0, 5, 5] ·
+  [0, 5, 21] ·
+  [0, 5, 2] ·
+  [0, 5, 14] ·
+  [0, 5, 9] Boolean(false)
+  [0, 5, 19] Boolean(true)
+  [0, 5, 11] Text("")
+  [0, 5, 18] Text("")
+  [0, 5, 7] Text("")
+  [0, 5, 13] Text("")
+  [0, 5, 6] Text("")
+  [0, 5] Text("")
+  [0, 34] Record({"by": Text("")})
+  [0, 6] ·
+  [0, 35] ·
+  [0, 36] Text("")
+  [0, 37] ·
+  [0, 38] ·
+  [0, 39] ·
+  [0, 44, 13] Record({})
+  [0, 44, 2] Boolean(true)
+  [0, 44, 15] ·
+  [0, 44, 18] ·
+  [0, 44, 16] ·
+  [0, 44, 0] ·
+  [0, 44, 6] ·
+  [0, 44, 17] ·
+  [0, 44, 20] ·
+  [0, 44, 4] ·
+  [0, 44, 3] ·
+  [0, 44, 21] ·
+  [0, 44, 7] ·
+  [0, 44, 8] ·
+  [0, 44, 12] ·
+  [0, 44, 19] ·
+  [0, 44, 11] ·
+  [0, 44, 1] ·
+  [0, 44, 9, 14] Record({})
+  [0, 44, 9, 3] Boolean(true)
+  [0, 44, 9, 15] ·
+  [0, 44, 9, 20] ·
+  [0, 44, 9, 9] ·
+  [0, 44, 9, 1] ·
+  [0, 44, 9, 12] ·
+  [0, 44, 9, 10] ·
+  [0, 44, 9, 11] ·
+  [0, 44, 9, 17] ·
+  [0, 44, 9, 18] ·
+  [0, 44, 9, 8] ·
+  [0, 44, 9, 16] ·
+  [0, 44, 9, 13] ·
+  [0, 44, 9, 19] ·
+  [0, 44, 9, 0] ·
+  [0, 44, 9, 7] ·
+  [0, 44, 9, 5] ·
+  [0, 44, 9, 4] ·
+  [0, 44, 9, 2] ·
+  [0, 44, 9, 6] ·
+  [0, 44, 9] ·
+  [0, 44, 22] ·
+  [0, 44, 5] ·
+  [0, 44, 10, 14] Record({})
+  [0, 44, 10, 3] Boolean(true)
+  [0, 44, 10, 15] ·
+  [0, 44, 10, 20] ·
+  [0, 44, 10, 9] ·
+  [0, 44, 10, 1] ·
+  [0, 44, 10, 12] ·
+  [0, 44, 10, 10] ·
+  [0, 44, 10, 11] ·
+  [0, 44, 10, 17] ·
+  [0, 44, 10, 18] ·
+  [0, 44, 10, 8] ·
+  [0, 44, 10, 16] ·
+  [0, 44, 10, 13] ·
+  [0, 44, 10, 19] ·
+  [0, 44, 10, 0] ·
+  [0, 44, 10, 7] ·
+  [0, 44, 10, 5] ·
+  [0, 44, 10, 4] ·
+  [0, 44, 10, 2] ·
+  [0, 44, 10, 6] ·
+  [0, 44, 10] ·
+  [0, 44, 14] ·
+  [0, 44] ·
+  [0, 47] Boolean(false)
+  [0, 48] ·
+  [0, 45] ·
+  [0, 49] Record({})
+  [0, 50] Text("not your turn, or not a square you can fire at")
+  [0, 51] Record({"error": Text("not your turn, or not a square you can fire at")})
+  [0, 52] Record({"error": Text("not your turn, or not a square you can fire at")})
+  [0, 59] Record({"error": Text("not your turn, or not a square you can fire at")})
+  [0, 60] Number(409.0)
+  [0, 61] Number(409.0)
+  [0, 68] Number(409.0)
+  [0, 69, 0] Record({})
+  [0, 69, 1] Record({"status": Number(409.0)})
+  [0, 69, 2] Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)})
+  [0, 69, 3] Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)})
+  [0, 69] Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)})
+  [0] Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)}) | · | ·
+  => Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)}) | · | ·
+== sea-battle · POST /games/:id/fire · input 2
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #9c824cd9266ce334 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 40] ·
+  [0, 11] ·
+  [0, 12] Text("play")
+  [0, 13] ·
+  [0, 27] ·
+  [0, 28] Boolean(false)
+  [0, 29] Boolean(true)
+  [0, 41] Boolean(false)
+  [0, 42] ·
+  [0, 43] ·
+  [0, 30] ·
+  [0, 31] ·
+  [0, 32] ·
+  [0, 33] Record({})
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 5, 4] Boolean(true)
+  [0, 5, 16] Text("")
+  [0, 5, 3] Boolean(true)
+  [0, 5, 17] ·
+  [0, 5, 0] ·
+  [0, 5, 22] ·
+  [0, 5, 1] ·
+  [0, 5, 15] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 20] Boolean(true)
+  [0, 5, 5] ·
+  [0, 5, 21] ·
+  [0, 5, 2] ·
+  [0, 5, 14] ·
+  [0, 5, 9] Boolean(false)
+  [0, 5, 19] Boolean(true)
+  [0, 5, 11] Text("")
+  [0, 5, 18] Text("")
+  [0, 5, 7] Text("")
+  [0, 5, 13] Text("")
+  [0, 5, 6] Text("")
+  [0, 5] Text("")
+  [0, 34] Record({"by": Text("")})
+  [0, 6] ·
+  [0, 35] ·
+  [0, 36] Text("")
+  [0, 37] ·
+  [0, 38] ·
+  [0, 39] ·
+  [0, 44, 13] Record({})
+  [0, 44, 2] Boolean(true)
+  [0, 44, 15] ·
+  [0, 44, 18] ·
+  [0, 44, 16] ·
+  [0, 44, 0] ·
+  [0, 44, 6] ·
+  [0, 44, 17] ·
+  [0, 44, 20] ·
+  [0, 44, 4] ·
+  [0, 44, 3] ·
+  [0, 44, 21] ·
+  [0, 44, 7] ·
+  [0, 44, 8] ·
+  [0, 44, 12] ·
+  [0, 44, 19] ·
+  [0, 44, 11] ·
+  [0, 44, 1] ·
+  [0, 44, 9, 14] Record({})
+  [0, 44, 9, 3] Boolean(true)
+  [0, 44, 9, 15] ·
+  [0, 44, 9, 20] ·
+  [0, 44, 9, 9] ·
+  [0, 44, 9, 1] ·
+  [0, 44, 9, 12] ·
+  [0, 44, 9, 10] ·
+  [0, 44, 9, 11] ·
+  [0, 44, 9, 17] ·
+  [0, 44, 9, 18] ·
+  [0, 44, 9, 8] ·
+  [0, 44, 9, 16] ·
+  [0, 44, 9, 13] ·
+  [0, 44, 9, 19] ·
+  [0, 44, 9, 0] ·
+  [0, 44, 9, 7] ·
+  [0, 44, 9, 5] ·
+  [0, 44, 9, 4] ·
+  [0, 44, 9, 2] ·
+  [0, 44, 9, 6] ·
+  [0, 44, 9] ·
+  [0, 44, 22] ·
+  [0, 44, 5] ·
+  [0, 44, 10, 14] Record({})
+  [0, 44, 10, 3] Boolean(true)
+  [0, 44, 10, 15] ·
+  [0, 44, 10, 20] ·
+  [0, 44, 10, 9] ·
+  [0, 44, 10, 1] ·
+  [0, 44, 10, 12] ·
+  [0, 44, 10, 10] ·
+  [0, 44, 10, 11] ·
+  [0, 44, 10, 17] ·
+  [0, 44, 10, 18] ·
+  [0, 44, 10, 8] ·
+  [0, 44, 10, 16] ·
+  [0, 44, 10, 13] ·
+  [0, 44, 10, 19] ·
+  [0, 44, 10, 0] ·
+  [0, 44, 10, 7] ·
+  [0, 44, 10, 5] ·
+  [0, 44, 10, 4] ·
+  [0, 44, 10, 2] ·
+  [0, 44, 10, 6] ·
+  [0, 44, 10] ·
+  [0, 44, 14] ·
+  [0, 44] ·
+  [0, 47] Boolean(false)
+  [0, 48] ·
+  [0, 45] ·
+  [0, 49] Record({})
+  [0, 50] Text("not your turn, or not a square you can fire at")
+  [0, 51] Record({"error": Text("not your turn, or not a square you can fire at")})
+  [0, 52] Record({"error": Text("not your turn, or not a square you can fire at")})
+  [0, 59] Record({"error": Text("not your turn, or not a square you can fire at")})
+  [0, 60] Number(409.0)
+  [0, 61] Number(409.0)
+  [0, 68] Number(409.0)
+  [0, 69, 0] Record({})
+  [0, 69, 1] Record({"status": Number(409.0)})
+  [0, 69, 2] Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)})
+  [0, 69, 3] Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)})
+  [0, 69] Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)})
+  [0] Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)}) | · | ·
+  => Record({"body": Record({"error": Text("not your turn, or not a square you can fire at")}), "status": Number(409.0)}) | · | ·
+== sea-battle · POST /games/:id/answer · input 0
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({"id": Text("tea")}), "path": … #fa73e509b33f14c3 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 52] ·
+  [0, 11] ·
+  [0, 12] Text("play")
+  [0, 13] ·
+  [0, 25] ·
+  [0, 26] Boolean(false)
+  [0, 27] Boolean(true)
+  [0, 53] Boolean(false)
+  [0, 54] ·
+  [0, 55] ·
+  [0, 35] ·
+  [0, 36] ·
+  [0, 28] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 6] ·
+  [0, 29] ·
+  [0, 30] ·
+  [0, 37] ·
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 5, 4] Boolean(true)
+  [0, 5, 16] Text("")
+  [0, 5, 3] Boolean(true)
+  [0, 5, 17] ·
+  [0, 5, 0] ·
+  [0, 5, 22] ·
+  [0, 5, 1] ·
+  [0, 5, 15] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 20] Boolean(true)
+  [0, 5, 5] ·
+  [0, 5, 21] ·
+  [0, 5, 2] ·
+  [0, 5, 14] ·
+  [0, 5, 9] Boolean(false)
+  [0, 5, 19] Boolean(true)
+  [0, 5, 11] Text("")
+  [0, 5, 18] Text("")
+  [0, 5, 7] Text("")
+  [0, 5, 13] Text("")
+  [0, 5, 6] Text("")
+  [0, 5] Text("")
+  [0, 38] ·
+  [0, 31] ·
+  [0, 32] ·
+  [0, 39] Number(12.0)
+  [0, 40] ·
+  [0, 43] ·
+  [0, 45] ·
+  [0, 46] Boolean(false)
+  [0, 47] Boolean(true)
+  [0, 48] Text("play")
+  [0, 49] Text("play")
+  [0, 50] Text("play")
+  [0, 51] ·
+  [0, 56, 13] Record({})
+  [0, 56, 2] Boolean(true)
+  [0, 56, 15] ·
+  [0, 56, 18] ·
+  [0, 56, 16] ·
+  [0, 56, 0] ·
+  [0, 56, 6] ·
+  [0, 56, 17] ·
+  [0, 56, 20] ·
+  [0, 56, 4] ·
+  [0, 56, 3] ·
+  [0, 56, 21] ·
+  [0, 56, 7] ·
+  [0, 56, 8] ·
+  [0, 56, 12] ·
+  [0, 56, 19] ·
+  [0, 56, 11] ·
+  [0, 56, 1] ·
+  [0, 56, 9, 14] Record({})
+  [0, 56, 9, 3] Boolean(true)
+  [0, 56, 9, 15] ·
+  [0, 56, 9, 20] ·
+  [0, 56, 9, 9] ·
+  [0, 56, 9, 1] ·
+  [0, 56, 9, 12] ·
+  [0, 56, 9, 10] ·
+  [0, 56, 9, 11] ·
+  [0, 56, 9, 17] ·
+  [0, 56, 9, 18] ·
+  [0, 56, 9, 8] ·
+  [0, 56, 9, 16] ·
+  [0, 56, 9, 13] ·
+  [0, 56, 9, 19] ·
+  [0, 56, 9, 0] ·
+  [0, 56, 9, 7] ·
+  [0, 56, 9, 5] ·
+  [0, 56, 9, 4] ·
+  [0, 56, 9, 2] ·
+  [0, 56, 9, 6] ·
+  [0, 56, 9] ·
+  [0, 56, 22] ·
+  [0, 56, 5] ·
+  [0, 56, 10, 14] Record({})
+  [0, 56, 10, 3] Boolean(true)
+  [0, 56, 10, 15] ·
+  [0, 56, 10, 20] ·
+  [0, 56, 10, 9] ·
+  [0, 56, 10, 1] ·
+  [0, 56, 10, 12] ·
+  [0, 56, 10, 10] ·
+  [0, 56, 10, 11] ·
+  [0, 56, 10, 17] ·
+  [0, 56, 10, 18] ·
+  [0, 56, 10, 8] ·
+  [0, 56, 10, 16] ·
+  [0, 56, 10, 13] ·
+  [0, 56, 10, 19] ·
+  [0, 56, 10, 0] ·
+  [0, 56, 10, 7] ·
+  [0, 56, 10, 5] ·
+  [0, 56, 10, 4] ·
+  [0, 56, 10, 2] ·
+  [0, 56, 10, 6] ·
+  [0, 56, 10] ·
+  [0, 56, 14] ·
+  [0, 56] ·
+  [0, 59] Boolean(false)
+  [0, 60] ·
+  [0, 57] ·
+  [0, 61] Record({})
+  [0, 62] Text("no shot at you is waiting for an answer")
+  [0, 63] Record({"error": Text("no shot at you is waiting for an answer")})
+  [0, 64] Record({"error": Text("no shot at you is waiting for an answer")})
+  [0, 71] Record({"error": Text("no shot at you is waiting for an answer")})
+  [0, 72] Number(409.0)
+  [0, 73] Number(409.0)
+  [0, 80] Number(409.0)
+  [0, 81, 0] Record({})
+  [0, 81, 1] Record({"status": Number(409.0)})
+  [0, 81, 2] Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)})
+  [0, 81, 3] Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)})
+  [0, 81] Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)})
+  [0] Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)}) | · | ·
+  => Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)}) | · | ·
+== sea-battle · POST /games/:id/answer · input 1
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #cb04d1924a243b43 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 52] ·
+  [0, 11] ·
+  [0, 12] Text("play")
+  [0, 13] ·
+  [0, 25] ·
+  [0, 26] Boolean(false)
+  [0, 27] Boolean(true)
+  [0, 53] Boolean(false)
+  [0, 54] ·
+  [0, 55] ·
+  [0, 35] ·
+  [0, 36] ·
+  [0, 28] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 6] ·
+  [0, 29] ·
+  [0, 30] ·
+  [0, 37] ·
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 5, 4] Boolean(true)
+  [0, 5, 16] Text("")
+  [0, 5, 3] Boolean(true)
+  [0, 5, 17] ·
+  [0, 5, 0] ·
+  [0, 5, 22] ·
+  [0, 5, 1] ·
+  [0, 5, 15] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 20] Boolean(true)
+  [0, 5, 5] ·
+  [0, 5, 21] ·
+  [0, 5, 2] ·
+  [0, 5, 14] ·
+  [0, 5, 9] Boolean(false)
+  [0, 5, 19] Boolean(true)
+  [0, 5, 11] Text("")
+  [0, 5, 18] Text("")
+  [0, 5, 7] Text("")
+  [0, 5, 13] Text("")
+  [0, 5, 6] Text("")
+  [0, 5] Text("")
+  [0, 38] ·
+  [0, 31] ·
+  [0, 32] ·
+  [0, 39] Number(12.0)
+  [0, 40] ·
+  [0, 43] ·
+  [0, 45] ·
+  [0, 46] Boolean(false)
+  [0, 47] Boolean(true)
+  [0, 48] Text("play")
+  [0, 49] Text("play")
+  [0, 50] Text("play")
+  [0, 51] ·
+  [0, 56, 13] Record({})
+  [0, 56, 2] Boolean(true)
+  [0, 56, 15] ·
+  [0, 56, 18] ·
+  [0, 56, 16] ·
+  [0, 56, 0] ·
+  [0, 56, 6] ·
+  [0, 56, 17] ·
+  [0, 56, 20] ·
+  [0, 56, 4] ·
+  [0, 56, 3] ·
+  [0, 56, 21] ·
+  [0, 56, 7] ·
+  [0, 56, 8] ·
+  [0, 56, 12] ·
+  [0, 56, 19] ·
+  [0, 56, 11] ·
+  [0, 56, 1] ·
+  [0, 56, 9, 14] Record({})
+  [0, 56, 9, 3] Boolean(true)
+  [0, 56, 9, 15] ·
+  [0, 56, 9, 20] ·
+  [0, 56, 9, 9] ·
+  [0, 56, 9, 1] ·
+  [0, 56, 9, 12] ·
+  [0, 56, 9, 10] ·
+  [0, 56, 9, 11] ·
+  [0, 56, 9, 17] ·
+  [0, 56, 9, 18] ·
+  [0, 56, 9, 8] ·
+  [0, 56, 9, 16] ·
+  [0, 56, 9, 13] ·
+  [0, 56, 9, 19] ·
+  [0, 56, 9, 0] ·
+  [0, 56, 9, 7] ·
+  [0, 56, 9, 5] ·
+  [0, 56, 9, 4] ·
+  [0, 56, 9, 2] ·
+  [0, 56, 9, 6] ·
+  [0, 56, 9] ·
+  [0, 56, 22] ·
+  [0, 56, 5] ·
+  [0, 56, 10, 14] Record({})
+  [0, 56, 10, 3] Boolean(true)
+  [0, 56, 10, 15] ·
+  [0, 56, 10, 20] ·
+  [0, 56, 10, 9] ·
+  [0, 56, 10, 1] ·
+  [0, 56, 10, 12] ·
+  [0, 56, 10, 10] ·
+  [0, 56, 10, 11] ·
+  [0, 56, 10, 17] ·
+  [0, 56, 10, 18] ·
+  [0, 56, 10, 8] ·
+  [0, 56, 10, 16] ·
+  [0, 56, 10, 13] ·
+  [0, 56, 10, 19] ·
+  [0, 56, 10, 0] ·
+  [0, 56, 10, 7] ·
+  [0, 56, 10, 5] ·
+  [0, 56, 10, 4] ·
+  [0, 56, 10, 2] ·
+  [0, 56, 10, 6] ·
+  [0, 56, 10] ·
+  [0, 56, 14] ·
+  [0, 56] ·
+  [0, 59] Boolean(false)
+  [0, 60] ·
+  [0, 57] ·
+  [0, 61] Record({})
+  [0, 62] Text("no shot at you is waiting for an answer")
+  [0, 63] Record({"error": Text("no shot at you is waiting for an answer")})
+  [0, 64] Record({"error": Text("no shot at you is waiting for an answer")})
+  [0, 71] Record({"error": Text("no shot at you is waiting for an answer")})
+  [0, 72] Number(409.0)
+  [0, 73] Number(409.0)
+  [0, 80] Number(409.0)
+  [0, 81, 0] Record({})
+  [0, 81, 1] Record({"status": Number(409.0)})
+  [0, 81, 2] Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)})
+  [0, 81, 3] Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)})
+  [0, 81] Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)})
+  [0] Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)}) | · | ·
+  => Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)}) | · | ·
+== sea-battle · POST /games/:id/answer · input 2
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #3b3dcbd606238f92 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 52] ·
+  [0, 11] ·
+  [0, 12] Text("play")
+  [0, 13] ·
+  [0, 25] ·
+  [0, 26] Boolean(false)
+  [0, 27] Boolean(true)
+  [0, 53] Boolean(false)
+  [0, 54] ·
+  [0, 55] ·
+  [0, 35] ·
+  [0, 36] ·
+  [0, 28] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 6] ·
+  [0, 29] ·
+  [0, 30] ·
+  [0, 37] ·
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 5, 4] Boolean(true)
+  [0, 5, 16] Text("")
+  [0, 5, 3] Boolean(true)
+  [0, 5, 17] ·
+  [0, 5, 0] ·
+  [0, 5, 22] ·
+  [0, 5, 1] ·
+  [0, 5, 15] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 20] Boolean(true)
+  [0, 5, 5] ·
+  [0, 5, 21] ·
+  [0, 5, 2] ·
+  [0, 5, 14] ·
+  [0, 5, 9] Boolean(false)
+  [0, 5, 19] Boolean(true)
+  [0, 5, 11] Text("")
+  [0, 5, 18] Text("")
+  [0, 5, 7] Text("")
+  [0, 5, 13] Text("")
+  [0, 5, 6] Text("")
+  [0, 5] Text("")
+  [0, 38] ·
+  [0, 31] ·
+  [0, 32] ·
+  [0, 39] Number(12.0)
+  [0, 40] ·
+  [0, 43] ·
+  [0, 45] ·
+  [0, 46] Boolean(false)
+  [0, 47] Boolean(true)
+  [0, 48] Text("play")
+  [0, 49] Text("play")
+  [0, 50] Text("play")
+  [0, 51] ·
+  [0, 56, 13] Record({})
+  [0, 56, 2] Boolean(true)
+  [0, 56, 15] ·
+  [0, 56, 18] ·
+  [0, 56, 16] ·
+  [0, 56, 0] ·
+  [0, 56, 6] ·
+  [0, 56, 17] ·
+  [0, 56, 20] ·
+  [0, 56, 4] ·
+  [0, 56, 3] ·
+  [0, 56, 21] ·
+  [0, 56, 7] ·
+  [0, 56, 8] ·
+  [0, 56, 12] ·
+  [0, 56, 19] ·
+  [0, 56, 11] ·
+  [0, 56, 1] ·
+  [0, 56, 9, 14] Record({})
+  [0, 56, 9, 3] Boolean(true)
+  [0, 56, 9, 15] ·
+  [0, 56, 9, 20] ·
+  [0, 56, 9, 9] ·
+  [0, 56, 9, 1] ·
+  [0, 56, 9, 12] ·
+  [0, 56, 9, 10] ·
+  [0, 56, 9, 11] ·
+  [0, 56, 9, 17] ·
+  [0, 56, 9, 18] ·
+  [0, 56, 9, 8] ·
+  [0, 56, 9, 16] ·
+  [0, 56, 9, 13] ·
+  [0, 56, 9, 19] ·
+  [0, 56, 9, 0] ·
+  [0, 56, 9, 7] ·
+  [0, 56, 9, 5] ·
+  [0, 56, 9, 4] ·
+  [0, 56, 9, 2] ·
+  [0, 56, 9, 6] ·
+  [0, 56, 9] ·
+  [0, 56, 22] ·
+  [0, 56, 5] ·
+  [0, 56, 10, 14] Record({})
+  [0, 56, 10, 3] Boolean(true)
+  [0, 56, 10, 15] ·
+  [0, 56, 10, 20] ·
+  [0, 56, 10, 9] ·
+  [0, 56, 10, 1] ·
+  [0, 56, 10, 12] ·
+  [0, 56, 10, 10] ·
+  [0, 56, 10, 11] ·
+  [0, 56, 10, 17] ·
+  [0, 56, 10, 18] ·
+  [0, 56, 10, 8] ·
+  [0, 56, 10, 16] ·
+  [0, 56, 10, 13] ·
+  [0, 56, 10, 19] ·
+  [0, 56, 10, 0] ·
+  [0, 56, 10, 7] ·
+  [0, 56, 10, 5] ·
+  [0, 56, 10, 4] ·
+  [0, 56, 10, 2] ·
+  [0, 56, 10, 6] ·
+  [0, 56, 10] ·
+  [0, 56, 14] ·
+  [0, 56] ·
+  [0, 59] Boolean(false)
+  [0, 60] ·
+  [0, 57] ·
+  [0, 61] Record({})
+  [0, 62] Text("no shot at you is waiting for an answer")
+  [0, 63] Record({"error": Text("no shot at you is waiting for an answer")})
+  [0, 64] Record({"error": Text("no shot at you is waiting for an answer")})
+  [0, 71] Record({"error": Text("no shot at you is waiting for an answer")})
+  [0, 72] Number(409.0)
+  [0, 73] Number(409.0)
+  [0, 80] Number(409.0)
+  [0, 81, 0] Record({})
+  [0, 81, 1] Record({"status": Number(409.0)})
+  [0, 81, 2] Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)})
+  [0, 81, 3] Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)})
+  [0, 81] Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)})
+  [0] Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)}) | · | ·
+  => Record({"body": Record({"error": Text("no shot at you is waiting for an answer")}), "status": Number(409.0)}) | · | ·
+== sea-battle · POST /games/:id/reveal · input 0
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({"id": Text("tea")}), "path": … #b29389b262b7b4ea | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 48] ·
+  [0, 10] ·
+  [0, 11] Text("reveal")
+  [0, 12] ·
+  [0, 20] ·
+  [0, 21] Boolean(false)
+  [0, 22] Boolean(true)
+  [0, 49] Boolean(false)
+  [0, 50] ·
+  [0, 51] ·
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 5, 4] Boolean(true)
+  [0, 5, 16] Text("")
+  [0, 5, 3] Boolean(true)
+  [0, 5, 17] ·
+  [0, 5, 0] ·
+  [0, 5, 22] ·
+  [0, 5, 1] ·
+  [0, 5, 15] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 20] Boolean(true)
+  [0, 5, 5] ·
+  [0, 5, 21] ·
+  [0, 5, 2] ·
+  [0, 5, 14] ·
+  [0, 5, 9] Boolean(false)
+  [0, 5, 19] Boolean(true)
+  [0, 5, 11] Text("")
+  [0, 5, 18] Text("")
+  [0, 5, 7] Text("")
+  [0, 5, 13] Text("")
+  [0, 5, 6] Text("")
+  [0, 5] Text("")
+  [0, 23] Text("a")
+  [0, 24] Boolean(false)
+  [0, 26] ·
+  [0, 27] Boolean(false)
+  [0, 28] Boolean(true)
+  [0, 29] Text("a")
+  [0, 30] Text("a")
+  [0, 31] Text("a")
+  [0, 39] ·
+  [0, 40] ·
+  [0, 41] ·
+  [0, 43] ·
+  [0, 44] Boolean(false)
+  [0, 45] Boolean(true)
+  [0, 36] ·
+  [0, 37] ·
+  [0, 32] ·
+  [0, 6] ·
+  [0, 7] Text("")
+  [0, 8] ·
+  [0, 9] Text("")
+  [0, 33] ·
+  [0, 34] ·
+  [0, 35, 7] Boolean(true)
+  [0, 35, 23] ·
+  [0, 35, 6] Boolean(true)
+  [0, 35, 15] ·
+  [0, 35, 5] Boolean(true)
+  [0, 35, 24] Text("")
+  [0, 35, 30] ·
+  [0, 35, 4] Boolean(true)
+  [0, 35, 22] Text("")
+  [0, 35, 28] ·
+  [0, 35, 20] Text("")
+  [0, 35, 16] Text("|")
+  [0, 35, 21] Text("")
+  [0, 35, 19] Text("|")
+  [0, 35, 29] Text("cbe5cfdf7c2118a9c3d78ef1d684f3afa089201352886449a06a6511cfef74a7")
+  [0, 35, 3] ·
+  [0, 35, 27] ·
+  [0, 35, 31] ·
+  [0, 35, 0, 1] Text("(board, said) => {\n  const fleet = [4, 3, 3, 2]\n  const cells = String(board).split(\"\")\n  let wrong =\n    cells.length !== 64 || cells.some((c) => !… #6d55b3505de1008a
+  [0, 35, 0, 2] ·
+  [0, 35, 0, 0] ·
+  [0, 35, 0, 3] ·
+  [0, 35, 0] ·
+  [0, 35, 1] ·
+  [0, 35, 13] ·
+  [0, 35, 10] ·
+  [0, 35, 8] ·
+  [0, 35, 17] ·
+  [0, 35, 12] ·
+  [0, 35] ·
+  [0, 38] ·
+  [0, 46] ·
+  [0, 47] ·
+  [0, 52, 13] Record({})
+  [0, 52, 2] Boolean(true)
+  [0, 52, 15] ·
+  [0, 52, 18] ·
+  [0, 52, 16] ·
+  [0, 52, 0] ·
+  [0, 52, 6] ·
+  [0, 52, 17] ·
+  [0, 52, 20] ·
+  [0, 52, 4] ·
+  [0, 52, 3] ·
+  [0, 52, 21] ·
+  [0, 52, 7] ·
+  [0, 52, 8] ·
+  [0, 52, 12] ·
+  [0, 52, 19] ·
+  [0, 52, 11] ·
+  [0, 52, 1] ·
+  [0, 52, 9, 14] Record({})
+  [0, 52, 9, 3] Boolean(true)
+  [0, 52, 9, 15] ·
+  [0, 52, 9, 20] ·
+  [0, 52, 9, 9] ·
+  [0, 52, 9, 1] ·
+  [0, 52, 9, 12] ·
+  [0, 52, 9, 10] ·
+  [0, 52, 9, 11] ·
+  [0, 52, 9, 17] ·
+  [0, 52, 9, 18] ·
+  [0, 52, 9, 8] ·
+  [0, 52, 9, 16] ·
+  [0, 52, 9, 13] ·
+  [0, 52, 9, 19] ·
+  [0, 52, 9, 0] ·
+  [0, 52, 9, 7] ·
+  [0, 52, 9, 5] ·
+  [0, 52, 9, 4] ·
+  [0, 52, 9, 2] ·
+  [0, 52, 9, 6] ·
+  [0, 52, 9] ·
+  [0, 52, 22] ·
+  [0, 52, 5] ·
+  [0, 52, 10, 14] Record({})
+  [0, 52, 10, 3] Boolean(true)
+  [0, 52, 10, 15] ·
+  [0, 52, 10, 20] ·
+  [0, 52, 10, 9] ·
+  [0, 52, 10, 1] ·
+  [0, 52, 10, 12] ·
+  [0, 52, 10, 10] ·
+  [0, 52, 10, 11] ·
+  [0, 52, 10, 17] ·
+  [0, 52, 10, 18] ·
+  [0, 52, 10, 8] ·
+  [0, 52, 10, 16] ·
+  [0, 52, 10, 13] ·
+  [0, 52, 10, 19] ·
+  [0, 52, 10, 0] ·
+  [0, 52, 10, 7] ·
+  [0, 52, 10, 5] ·
+  [0, 52, 10, 4] ·
+  [0, 52, 10, 2] ·
+  [0, 52, 10, 6] ·
+  [0, 52, 10] ·
+  [0, 52, 14] ·
+  [0, 52] ·
+  [0, 55] Boolean(false)
+  [0, 56] ·
+  [0, 53] ·
+  [0, 57] Record({})
+  [0, 58] Text("nothing to reveal now")
+  [0, 59] Record({"error": Text("nothing to reveal now")})
+  [0, 60] Record({"error": Text("nothing to reveal now")})
+  [0, 67] Record({"error": Text("nothing to reveal now")})
+  [0, 68] Number(409.0)
+  [0, 69] Number(409.0)
+  [0, 76] Number(409.0)
+  [0, 77, 0] Record({})
+  [0, 77, 1] Record({"status": Number(409.0)})
+  [0, 77, 2] Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)})
+  [0, 77, 3] Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)})
+  [0, 77] Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)})
+  [0] Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)}) | · | ·
+  => Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)}) | · | ·
+== sea-battle · POST /games/:id/reveal · input 1
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #4aec6057904e96b4 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 48] ·
+  [0, 10] ·
+  [0, 11] Text("reveal")
+  [0, 12] ·
+  [0, 20] ·
+  [0, 21] Boolean(false)
+  [0, 22] Boolean(true)
+  [0, 49] Boolean(false)
+  [0, 50] ·
+  [0, 51] ·
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 5, 4] Boolean(true)
+  [0, 5, 16] Text("")
+  [0, 5, 3] Boolean(true)
+  [0, 5, 17] ·
+  [0, 5, 0] ·
+  [0, 5, 22] ·
+  [0, 5, 1] ·
+  [0, 5, 15] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 20] Boolean(true)
+  [0, 5, 5] ·
+  [0, 5, 21] ·
+  [0, 5, 2] ·
+  [0, 5, 14] ·
+  [0, 5, 9] Boolean(false)
+  [0, 5, 19] Boolean(true)
+  [0, 5, 11] Text("")
+  [0, 5, 18] Text("")
+  [0, 5, 7] Text("")
+  [0, 5, 13] Text("")
+  [0, 5, 6] Text("")
+  [0, 5] Text("")
+  [0, 23] Text("a")
+  [0, 24] Boolean(false)
+  [0, 26] ·
+  [0, 27] Boolean(false)
+  [0, 28] Boolean(true)
+  [0, 29] Text("a")
+  [0, 30] Text("a")
+  [0, 31] Text("a")
+  [0, 39] ·
+  [0, 40] ·
+  [0, 41] ·
+  [0, 43] ·
+  [0, 44] Boolean(false)
+  [0, 45] Boolean(true)
+  [0, 36] ·
+  [0, 37] ·
+  [0, 32] ·
+  [0, 6] ·
+  [0, 7] Text("")
+  [0, 8] ·
+  [0, 9] Text("")
+  [0, 33] ·
+  [0, 34] ·
+  [0, 35, 7] Boolean(true)
+  [0, 35, 23] ·
+  [0, 35, 6] Boolean(true)
+  [0, 35, 15] ·
+  [0, 35, 5] Boolean(true)
+  [0, 35, 24] Text("")
+  [0, 35, 30] ·
+  [0, 35, 4] Boolean(true)
+  [0, 35, 22] Text("")
+  [0, 35, 28] ·
+  [0, 35, 20] Text("")
+  [0, 35, 16] Text("|")
+  [0, 35, 21] Text("")
+  [0, 35, 19] Text("|")
+  [0, 35, 29] Text("cbe5cfdf7c2118a9c3d78ef1d684f3afa089201352886449a06a6511cfef74a7")
+  [0, 35, 3] ·
+  [0, 35, 27] ·
+  [0, 35, 31] ·
+  [0, 35, 0, 1] Text("(board, said) => {\n  const fleet = [4, 3, 3, 2]\n  const cells = String(board).split(\"\")\n  let wrong =\n    cells.length !== 64 || cells.some((c) => !… #6d55b3505de1008a
+  [0, 35, 0, 2] ·
+  [0, 35, 0, 0] ·
+  [0, 35, 0, 3] ·
+  [0, 35, 0] ·
+  [0, 35, 1] ·
+  [0, 35, 13] ·
+  [0, 35, 10] ·
+  [0, 35, 8] ·
+  [0, 35, 17] ·
+  [0, 35, 12] ·
+  [0, 35] ·
+  [0, 38] ·
+  [0, 46] ·
+  [0, 47] ·
+  [0, 52, 13] Record({})
+  [0, 52, 2] Boolean(true)
+  [0, 52, 15] ·
+  [0, 52, 18] ·
+  [0, 52, 16] ·
+  [0, 52, 0] ·
+  [0, 52, 6] ·
+  [0, 52, 17] ·
+  [0, 52, 20] ·
+  [0, 52, 4] ·
+  [0, 52, 3] ·
+  [0, 52, 21] ·
+  [0, 52, 7] ·
+  [0, 52, 8] ·
+  [0, 52, 12] ·
+  [0, 52, 19] ·
+  [0, 52, 11] ·
+  [0, 52, 1] ·
+  [0, 52, 9, 14] Record({})
+  [0, 52, 9, 3] Boolean(true)
+  [0, 52, 9, 15] ·
+  [0, 52, 9, 20] ·
+  [0, 52, 9, 9] ·
+  [0, 52, 9, 1] ·
+  [0, 52, 9, 12] ·
+  [0, 52, 9, 10] ·
+  [0, 52, 9, 11] ·
+  [0, 52, 9, 17] ·
+  [0, 52, 9, 18] ·
+  [0, 52, 9, 8] ·
+  [0, 52, 9, 16] ·
+  [0, 52, 9, 13] ·
+  [0, 52, 9, 19] ·
+  [0, 52, 9, 0] ·
+  [0, 52, 9, 7] ·
+  [0, 52, 9, 5] ·
+  [0, 52, 9, 4] ·
+  [0, 52, 9, 2] ·
+  [0, 52, 9, 6] ·
+  [0, 52, 9] ·
+  [0, 52, 22] ·
+  [0, 52, 5] ·
+  [0, 52, 10, 14] Record({})
+  [0, 52, 10, 3] Boolean(true)
+  [0, 52, 10, 15] ·
+  [0, 52, 10, 20] ·
+  [0, 52, 10, 9] ·
+  [0, 52, 10, 1] ·
+  [0, 52, 10, 12] ·
+  [0, 52, 10, 10] ·
+  [0, 52, 10, 11] ·
+  [0, 52, 10, 17] ·
+  [0, 52, 10, 18] ·
+  [0, 52, 10, 8] ·
+  [0, 52, 10, 16] ·
+  [0, 52, 10, 13] ·
+  [0, 52, 10, 19] ·
+  [0, 52, 10, 0] ·
+  [0, 52, 10, 7] ·
+  [0, 52, 10, 5] ·
+  [0, 52, 10, 4] ·
+  [0, 52, 10, 2] ·
+  [0, 52, 10, 6] ·
+  [0, 52, 10] ·
+  [0, 52, 14] ·
+  [0, 52] ·
+  [0, 55] Boolean(false)
+  [0, 56] ·
+  [0, 53] ·
+  [0, 57] Record({})
+  [0, 58] Text("nothing to reveal now")
+  [0, 59] Record({"error": Text("nothing to reveal now")})
+  [0, 60] Record({"error": Text("nothing to reveal now")})
+  [0, 67] Record({"error": Text("nothing to reveal now")})
+  [0, 68] Number(409.0)
+  [0, 69] Number(409.0)
+  [0, 76] Number(409.0)
+  [0, 77, 0] Record({})
+  [0, 77, 1] Record({"status": Number(409.0)})
+  [0, 77, 2] Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)})
+  [0, 77, 3] Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)})
+  [0, 77] Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)})
+  [0] Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)}) | · | ·
+  => Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)}) | · | ·
+== sea-battle · POST /games/:id/reveal · input 2
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #33b6953b7abb1f26 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 48] ·
+  [0, 10] ·
+  [0, 11] Text("reveal")
+  [0, 12] ·
+  [0, 20] ·
+  [0, 21] Boolean(false)
+  [0, 22] Boolean(true)
+  [0, 49] Boolean(false)
+  [0, 50] ·
+  [0, 51] ·
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 5, 4] Boolean(true)
+  [0, 5, 16] Text("")
+  [0, 5, 3] Boolean(true)
+  [0, 5, 17] ·
+  [0, 5, 0] ·
+  [0, 5, 22] ·
+  [0, 5, 1] ·
+  [0, 5, 15] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 20] Boolean(true)
+  [0, 5, 5] ·
+  [0, 5, 21] ·
+  [0, 5, 2] ·
+  [0, 5, 14] ·
+  [0, 5, 9] Boolean(false)
+  [0, 5, 19] Boolean(true)
+  [0, 5, 11] Text("")
+  [0, 5, 18] Text("")
+  [0, 5, 7] Text("")
+  [0, 5, 13] Text("")
+  [0, 5, 6] Text("")
+  [0, 5] Text("")
+  [0, 23] Text("a")
+  [0, 24] Boolean(false)
+  [0, 26] ·
+  [0, 27] Boolean(false)
+  [0, 28] Boolean(true)
+  [0, 29] Text("a")
+  [0, 30] Text("a")
+  [0, 31] Text("a")
+  [0, 39] ·
+  [0, 40] ·
+  [0, 41] ·
+  [0, 43] ·
+  [0, 44] Boolean(false)
+  [0, 45] Boolean(true)
+  [0, 36] ·
+  [0, 37] ·
+  [0, 32] ·
+  [0, 6] ·
+  [0, 7] Text("")
+  [0, 8] ·
+  [0, 9] Text("")
+  [0, 33] ·
+  [0, 34] ·
+  [0, 35, 7] Boolean(true)
+  [0, 35, 23] ·
+  [0, 35, 6] Boolean(true)
+  [0, 35, 15] ·
+  [0, 35, 5] Boolean(true)
+  [0, 35, 24] Text("")
+  [0, 35, 30] ·
+  [0, 35, 4] Boolean(true)
+  [0, 35, 22] Text("")
+  [0, 35, 28] ·
+  [0, 35, 20] Text("")
+  [0, 35, 16] Text("|")
+  [0, 35, 21] Text("")
+  [0, 35, 19] Text("|")
+  [0, 35, 29] Text("cbe5cfdf7c2118a9c3d78ef1d684f3afa089201352886449a06a6511cfef74a7")
+  [0, 35, 3] ·
+  [0, 35, 27] ·
+  [0, 35, 31] ·
+  [0, 35, 0, 1] Text("(board, said) => {\n  const fleet = [4, 3, 3, 2]\n  const cells = String(board).split(\"\")\n  let wrong =\n    cells.length !== 64 || cells.some((c) => !… #6d55b3505de1008a
+  [0, 35, 0, 2] ·
+  [0, 35, 0, 0] ·
+  [0, 35, 0, 3] ·
+  [0, 35, 0] ·
+  [0, 35, 1] ·
+  [0, 35, 13] ·
+  [0, 35, 10] ·
+  [0, 35, 8] ·
+  [0, 35, 17] ·
+  [0, 35, 12] ·
+  [0, 35] ·
+  [0, 38] ·
+  [0, 46] ·
+  [0, 47] ·
+  [0, 52, 13] Record({})
+  [0, 52, 2] Boolean(true)
+  [0, 52, 15] ·
+  [0, 52, 18] ·
+  [0, 52, 16] ·
+  [0, 52, 0] ·
+  [0, 52, 6] ·
+  [0, 52, 17] ·
+  [0, 52, 20] ·
+  [0, 52, 4] ·
+  [0, 52, 3] ·
+  [0, 52, 21] ·
+  [0, 52, 7] ·
+  [0, 52, 8] ·
+  [0, 52, 12] ·
+  [0, 52, 19] ·
+  [0, 52, 11] ·
+  [0, 52, 1] ·
+  [0, 52, 9, 14] Record({})
+  [0, 52, 9, 3] Boolean(true)
+  [0, 52, 9, 15] ·
+  [0, 52, 9, 20] ·
+  [0, 52, 9, 9] ·
+  [0, 52, 9, 1] ·
+  [0, 52, 9, 12] ·
+  [0, 52, 9, 10] ·
+  [0, 52, 9, 11] ·
+  [0, 52, 9, 17] ·
+  [0, 52, 9, 18] ·
+  [0, 52, 9, 8] ·
+  [0, 52, 9, 16] ·
+  [0, 52, 9, 13] ·
+  [0, 52, 9, 19] ·
+  [0, 52, 9, 0] ·
+  [0, 52, 9, 7] ·
+  [0, 52, 9, 5] ·
+  [0, 52, 9, 4] ·
+  [0, 52, 9, 2] ·
+  [0, 52, 9, 6] ·
+  [0, 52, 9] ·
+  [0, 52, 22] ·
+  [0, 52, 5] ·
+  [0, 52, 10, 14] Record({})
+  [0, 52, 10, 3] Boolean(true)
+  [0, 52, 10, 15] ·
+  [0, 52, 10, 20] ·
+  [0, 52, 10, 9] ·
+  [0, 52, 10, 1] ·
+  [0, 52, 10, 12] ·
+  [0, 52, 10, 10] ·
+  [0, 52, 10, 11] ·
+  [0, 52, 10, 17] ·
+  [0, 52, 10, 18] ·
+  [0, 52, 10, 8] ·
+  [0, 52, 10, 16] ·
+  [0, 52, 10, 13] ·
+  [0, 52, 10, 19] ·
+  [0, 52, 10, 0] ·
+  [0, 52, 10, 7] ·
+  [0, 52, 10, 5] ·
+  [0, 52, 10, 4] ·
+  [0, 52, 10, 2] ·
+  [0, 52, 10, 6] ·
+  [0, 52, 10] ·
+  [0, 52, 14] ·
+  [0, 52] ·
+  [0, 55] Boolean(false)
+  [0, 56] ·
+  [0, 53] ·
+  [0, 57] Record({})
+  [0, 58] Text("nothing to reveal now")
+  [0, 59] Record({"error": Text("nothing to reveal now")})
+  [0, 60] Record({"error": Text("nothing to reveal now")})
+  [0, 67] Record({"error": Text("nothing to reveal now")})
+  [0, 68] Number(409.0)
+  [0, 69] Number(409.0)
+  [0, 76] Number(409.0)
+  [0, 77, 0] Record({})
+  [0, 77, 1] Record({"status": Number(409.0)})
+  [0, 77, 2] Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)})
+  [0, 77, 3] Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)})
+  [0, 77] Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)})
+  [0] Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)}) | · | ·
+  => Record({"body": Record({"error": Text("nothing to reveal now")}), "status": Number(409.0)}) | · | ·
+== sea-battle · POST /games/:id/claim · input 0
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({"id": Text("tea")}), "path": … #5577e7e6dd8260f8 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 121] ·
+  [0, 42] ·
+  [0, 43] Text("play")
+  [0, 44] ·
+  [0, 51] ·
+  [0, 60] ·
+  [0, 61] Boolean(false)
+  [0, 62] Boolean(true)
+  [0, 122] Boolean(false)
+  [0, 123] ·
+  [0, 124] ·
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 5, 4] Boolean(true)
+  [0, 5, 16] Text("")
+  [0, 5, 3] Boolean(true)
+  [0, 5, 17] ·
+  [0, 5, 0] ·
+  [0, 5, 22] ·
+  [0, 5, 1] ·
+  [0, 5, 15] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 20] Boolean(true)
+  [0, 5, 5] ·
+  [0, 5, 21] ·
+  [0, 5, 2] ·
+  [0, 5, 14] ·
+  [0, 5, 9] Boolean(false)
+  [0, 5, 19] Boolean(true)
+  [0, 5, 11] Text("")
+  [0, 5, 18] Text("")
+  [0, 5, 7] Text("")
+  [0, 5, 13] Text("")
+  [0, 5, 6] Text("")
+  [0, 5] Text("")
+  [0, 63] ·
+  [0, 64] ·
+  [0, 65] ·
+  [0, 67] ·
+  [0, 68] Boolean(false)
+  [0, 69] Boolean(true)
+  [0, 70] ·
+  [0, 71] ·
+  [0, 72] Text("")
+  [0, 73] ·
+  [0, 74] Text("")
+  [0, 75] ·
+  [0, 6] Text("a")
+  [0, 7] Boolean(false)
+  [0, 9] ·
+  [0, 10] Boolean(false)
+  [0, 11] Boolean(true)
+  [0, 12] Text("a")
+  [0, 13] Text("a")
+  [0, 14] Text("a")
+  [0, 76] ·
+  [0, 77, 7] Boolean(true)
+  [0, 77, 23] ·
+  [0, 77, 6] Boolean(true)
+  [0, 77, 15] ·
+  [0, 77, 5] Boolean(true)
+  [0, 77, 24] Text("")
+  [0, 77, 30] ·
+  [0, 77, 4] Boolean(true)
+  [0, 77, 22] Text("")
+  [0, 77, 28] ·
+  [0, 77, 20] Text("")
+  [0, 77, 16] Text("|")
+  [0, 77, 21] Text("")
+  [0, 77, 19] Text("|")
+  [0, 77, 29] Text("cbe5cfdf7c2118a9c3d78ef1d684f3afa089201352886449a06a6511cfef74a7")
+  [0, 77, 3] ·
+  [0, 77, 27] ·
+  [0, 77, 31] ·
+  [0, 77, 0, 1] Text("(board, said) => {\n  const fleet = [4, 3, 3, 2]\n  const cells = String(board).split(\"\")\n  let wrong =\n    cells.length !== 64 || cells.some((c) => !… #6d55b3505de1008a
+  [0, 77, 0, 2] ·
+  [0, 77, 0, 0] ·
+  [0, 77, 0, 3] ·
+  [0, 77, 0] ·
+  [0, 77, 1] ·
+  [0, 77, 13] ·
+  [0, 77, 10] ·
+  [0, 77, 8] ·
+  [0, 77, 17] ·
+  [0, 77, 12] ·
+  [0, 77] ·
+  [0, 78] ·
+  [0, 79] ·
+  [0, 80] ·
+  [0, 81] Text("over")
+  [0, 82] ·
+  [0, 83] ·
+  [0, 84] ·
+  [0, 85] ·
+  [0, 86] ·
+  [0, 87] ·
+  [0, 88] Boolean(false)
+  [0, 89] Boolean(true)
+  [0, 90] Text("")
+  [0, 91] Text("")
+  [0, 92] Text("")
+  [0, 93] ·
+  [0, 94] ·
+  [0, 95] ·
+  [0, 107] ·
+  [0, 108] Boolean(false)
+  [0, 109] Boolean(true)
+  [0, 110] ·
+  [0, 111] ·
+  [0, 112] ·
+  [0, 113] Text(" went silent, and ")
+  [0, 114, 5] Boolean(true)
+  [0, 114, 36] ·
+  [0, 114, 35] ·
+  [0, 114, 55] ·
+  [0, 114, 48] ·
+  [0, 114, 41] ·
+  [0, 114, 19] Boolean(false)
+  [0, 114, 53] Boolean(true)
+  [0, 114, 0] ·
+  [0, 114, 22] Text("")
+  [0, 114, 46] ·
+  [0, 114, 50] ·
+  [0, 114, 40] ·
+  [0, 114, 16] Boolean(false)
+  [0, 114, 51] Boolean(true)
+  [0, 114, 7] ·
+  [0, 114, 25] ·
+  [0, 114, 10] Number(0.0)
+  [0, 114, 28] ·
+  [0, 114, 42] ·
+  [0, 114, 18] Boolean(false)
+  [0, 114, 49] Boolean(true)
+  [0, 114, 20] Text("")
+  [0, 114, 38] Text("")
+  [0, 114, 13] Text("")
+  [0, 114, 44] Text("")
+  [0, 114, 14] Text("")
+  [0, 114, 39] Text("")
+  [0, 114, 11] Text("")
+  [0, 114] Text("")
+  [0, 115] Text("")
+  [0, 116] Text(": nobody wins.")
+  [0, 117] ·
+  [0, 118] ·
+  [0, 119] ·
+  [0, 120] ·
+  [0, 125, 13] Record({})
+  [0, 125, 2] Boolean(true)
+  [0, 125, 15] ·
+  [0, 125, 18] ·
+  [0, 125, 16] ·
+  [0, 125, 0] ·
+  [0, 125, 6] ·
+  [0, 125, 17] ·
+  [0, 125, 20] ·
+  [0, 125, 4] ·
+  [0, 125, 3] ·
+  [0, 125, 21] ·
+  [0, 125, 7] ·
+  [0, 125, 8] ·
+  [0, 125, 12] ·
+  [0, 125, 19] ·
+  [0, 125, 11] ·
+  [0, 125, 1] ·
+  [0, 125, 9, 14] Record({})
+  [0, 125, 9, 3] Boolean(true)
+  [0, 125, 9, 15] ·
+  [0, 125, 9, 20] ·
+  [0, 125, 9, 9] ·
+  [0, 125, 9, 1] ·
+  [0, 125, 9, 12] ·
+  [0, 125, 9, 10] ·
+  [0, 125, 9, 11] ·
+  [0, 125, 9, 17] ·
+  [0, 125, 9, 18] ·
+  [0, 125, 9, 8] ·
+  [0, 125, 9, 16] ·
+  [0, 125, 9, 13] ·
+  [0, 125, 9, 19] ·
+  [0, 125, 9, 0] ·
+  [0, 125, 9, 7] ·
+  [0, 125, 9, 5] ·
+  [0, 125, 9, 4] ·
+  [0, 125, 9, 2] ·
+  [0, 125, 9, 6] ·
+  [0, 125, 9] ·
+  [0, 125, 22] ·
+  [0, 125, 5] ·
+  [0, 125, 10, 14] Record({})
+  [0, 125, 10, 3] Boolean(true)
+  [0, 125, 10, 15] ·
+  [0, 125, 10, 20] ·
+  [0, 125, 10, 9] ·
+  [0, 125, 10, 1] ·
+  [0, 125, 10, 12] ·
+  [0, 125, 10, 10] ·
+  [0, 125, 10, 11] ·
+  [0, 125, 10, 17] ·
+  [0, 125, 10, 18] ·
+  [0, 125, 10, 8] ·
+  [0, 125, 10, 16] ·
+  [0, 125, 10, 13] ·
+  [0, 125, 10, 19] ·
+  [0, 125, 10, 0] ·
+  [0, 125, 10, 7] ·
+  [0, 125, 10, 5] ·
+  [0, 125, 10, 4] ·
+  [0, 125, 10, 2] ·
+  [0, 125, 10, 6] ·
+  [0, 125, 10] ·
+  [0, 125, 14] ·
+  [0, 125] ·
+  [0, 128] Boolean(false)
+  [0, 129] ·
+  [0, 126] ·
+  [0, 130] Record({})
+  [0, 131] Text("your opponent still has time")
+  [0, 132] Record({"error": Text("your opponent still has time")})
+  [0, 133] Record({"error": Text("your opponent still has time")})
+  [0, 140] Record({"error": Text("your opponent still has time")})
+  [0, 141] Number(409.0)
+  [0, 142] Number(409.0)
+  [0, 149] Number(409.0)
+  [0, 150, 0] Record({})
+  [0, 150, 1] Record({"status": Number(409.0)})
+  [0, 150, 2] Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)})
+  [0, 150, 3] Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)})
+  [0, 150] Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)})
+  [0] Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)}) | · | ·
+  => Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)}) | · | ·
+== sea-battle · POST /games/:id/claim · input 1
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #18c265d5ff2622bb | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 121] ·
+  [0, 42] ·
+  [0, 43] Text("play")
+  [0, 44] ·
+  [0, 51] ·
+  [0, 60] ·
+  [0, 61] Boolean(false)
+  [0, 62] Boolean(true)
+  [0, 122] Boolean(false)
+  [0, 123] ·
+  [0, 124] ·
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 5, 4] Boolean(true)
+  [0, 5, 16] Text("")
+  [0, 5, 3] Boolean(true)
+  [0, 5, 17] ·
+  [0, 5, 0] ·
+  [0, 5, 22] ·
+  [0, 5, 1] ·
+  [0, 5, 15] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 20] Boolean(true)
+  [0, 5, 5] ·
+  [0, 5, 21] ·
+  [0, 5, 2] ·
+  [0, 5, 14] ·
+  [0, 5, 9] Boolean(false)
+  [0, 5, 19] Boolean(true)
+  [0, 5, 11] Text("")
+  [0, 5, 18] Text("")
+  [0, 5, 7] Text("")
+  [0, 5, 13] Text("")
+  [0, 5, 6] Text("")
+  [0, 5] Text("")
+  [0, 63] ·
+  [0, 64] ·
+  [0, 65] ·
+  [0, 67] ·
+  [0, 68] Boolean(false)
+  [0, 69] Boolean(true)
+  [0, 70] ·
+  [0, 71] ·
+  [0, 72] Text("")
+  [0, 73] ·
+  [0, 74] Text("")
+  [0, 75] ·
+  [0, 6] Text("a")
+  [0, 7] Boolean(false)
+  [0, 9] ·
+  [0, 10] Boolean(false)
+  [0, 11] Boolean(true)
+  [0, 12] Text("a")
+  [0, 13] Text("a")
+  [0, 14] Text("a")
+  [0, 76] ·
+  [0, 77, 7] Boolean(true)
+  [0, 77, 23] ·
+  [0, 77, 6] Boolean(true)
+  [0, 77, 15] ·
+  [0, 77, 5] Boolean(true)
+  [0, 77, 24] Text("")
+  [0, 77, 30] ·
+  [0, 77, 4] Boolean(true)
+  [0, 77, 22] Text("")
+  [0, 77, 28] ·
+  [0, 77, 20] Text("")
+  [0, 77, 16] Text("|")
+  [0, 77, 21] Text("")
+  [0, 77, 19] Text("|")
+  [0, 77, 29] Text("cbe5cfdf7c2118a9c3d78ef1d684f3afa089201352886449a06a6511cfef74a7")
+  [0, 77, 3] ·
+  [0, 77, 27] ·
+  [0, 77, 31] ·
+  [0, 77, 0, 1] Text("(board, said) => {\n  const fleet = [4, 3, 3, 2]\n  const cells = String(board).split(\"\")\n  let wrong =\n    cells.length !== 64 || cells.some((c) => !… #6d55b3505de1008a
+  [0, 77, 0, 2] ·
+  [0, 77, 0, 0] ·
+  [0, 77, 0, 3] ·
+  [0, 77, 0] ·
+  [0, 77, 1] ·
+  [0, 77, 13] ·
+  [0, 77, 10] ·
+  [0, 77, 8] ·
+  [0, 77, 17] ·
+  [0, 77, 12] ·
+  [0, 77] ·
+  [0, 78] ·
+  [0, 79] ·
+  [0, 80] ·
+  [0, 81] Text("over")
+  [0, 82] ·
+  [0, 83] ·
+  [0, 84] ·
+  [0, 85] ·
+  [0, 86] ·
+  [0, 87] ·
+  [0, 88] Boolean(false)
+  [0, 89] Boolean(true)
+  [0, 90] Text("")
+  [0, 91] Text("")
+  [0, 92] Text("")
+  [0, 93] ·
+  [0, 94] ·
+  [0, 95] ·
+  [0, 107] ·
+  [0, 108] Boolean(false)
+  [0, 109] Boolean(true)
+  [0, 110] ·
+  [0, 111] ·
+  [0, 112] ·
+  [0, 113] Text(" went silent, and ")
+  [0, 114, 5] Boolean(true)
+  [0, 114, 36] ·
+  [0, 114, 35] ·
+  [0, 114, 55] ·
+  [0, 114, 48] ·
+  [0, 114, 41] ·
+  [0, 114, 19] Boolean(false)
+  [0, 114, 53] Boolean(true)
+  [0, 114, 0] ·
+  [0, 114, 22] Text("")
+  [0, 114, 46] ·
+  [0, 114, 50] ·
+  [0, 114, 40] ·
+  [0, 114, 16] Boolean(false)
+  [0, 114, 51] Boolean(true)
+  [0, 114, 7] ·
+  [0, 114, 25] ·
+  [0, 114, 10] Number(0.0)
+  [0, 114, 28] ·
+  [0, 114, 42] ·
+  [0, 114, 18] Boolean(false)
+  [0, 114, 49] Boolean(true)
+  [0, 114, 20] Text("")
+  [0, 114, 38] Text("")
+  [0, 114, 13] Text("")
+  [0, 114, 44] Text("")
+  [0, 114, 14] Text("")
+  [0, 114, 39] Text("")
+  [0, 114, 11] Text("")
+  [0, 114] Text("")
+  [0, 115] Text("")
+  [0, 116] Text(": nobody wins.")
+  [0, 117] ·
+  [0, 118] ·
+  [0, 119] ·
+  [0, 120] ·
+  [0, 125, 13] Record({})
+  [0, 125, 2] Boolean(true)
+  [0, 125, 15] ·
+  [0, 125, 18] ·
+  [0, 125, 16] ·
+  [0, 125, 0] ·
+  [0, 125, 6] ·
+  [0, 125, 17] ·
+  [0, 125, 20] ·
+  [0, 125, 4] ·
+  [0, 125, 3] ·
+  [0, 125, 21] ·
+  [0, 125, 7] ·
+  [0, 125, 8] ·
+  [0, 125, 12] ·
+  [0, 125, 19] ·
+  [0, 125, 11] ·
+  [0, 125, 1] ·
+  [0, 125, 9, 14] Record({})
+  [0, 125, 9, 3] Boolean(true)
+  [0, 125, 9, 15] ·
+  [0, 125, 9, 20] ·
+  [0, 125, 9, 9] ·
+  [0, 125, 9, 1] ·
+  [0, 125, 9, 12] ·
+  [0, 125, 9, 10] ·
+  [0, 125, 9, 11] ·
+  [0, 125, 9, 17] ·
+  [0, 125, 9, 18] ·
+  [0, 125, 9, 8] ·
+  [0, 125, 9, 16] ·
+  [0, 125, 9, 13] ·
+  [0, 125, 9, 19] ·
+  [0, 125, 9, 0] ·
+  [0, 125, 9, 7] ·
+  [0, 125, 9, 5] ·
+  [0, 125, 9, 4] ·
+  [0, 125, 9, 2] ·
+  [0, 125, 9, 6] ·
+  [0, 125, 9] ·
+  [0, 125, 22] ·
+  [0, 125, 5] ·
+  [0, 125, 10, 14] Record({})
+  [0, 125, 10, 3] Boolean(true)
+  [0, 125, 10, 15] ·
+  [0, 125, 10, 20] ·
+  [0, 125, 10, 9] ·
+  [0, 125, 10, 1] ·
+  [0, 125, 10, 12] ·
+  [0, 125, 10, 10] ·
+  [0, 125, 10, 11] ·
+  [0, 125, 10, 17] ·
+  [0, 125, 10, 18] ·
+  [0, 125, 10, 8] ·
+  [0, 125, 10, 16] ·
+  [0, 125, 10, 13] ·
+  [0, 125, 10, 19] ·
+  [0, 125, 10, 0] ·
+  [0, 125, 10, 7] ·
+  [0, 125, 10, 5] ·
+  [0, 125, 10, 4] ·
+  [0, 125, 10, 2] ·
+  [0, 125, 10, 6] ·
+  [0, 125, 10] ·
+  [0, 125, 14] ·
+  [0, 125] ·
+  [0, 128] Boolean(false)
+  [0, 129] ·
+  [0, 126] ·
+  [0, 130] Record({})
+  [0, 131] Text("your opponent still has time")
+  [0, 132] Record({"error": Text("your opponent still has time")})
+  [0, 133] Record({"error": Text("your opponent still has time")})
+  [0, 140] Record({"error": Text("your opponent still has time")})
+  [0, 141] Number(409.0)
+  [0, 142] Number(409.0)
+  [0, 149] Number(409.0)
+  [0, 150, 0] Record({})
+  [0, 150, 1] Record({"status": Number(409.0)})
+  [0, 150, 2] Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)})
+  [0, 150, 3] Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)})
+  [0, 150] Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)})
+  [0] Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)}) | · | ·
+  => Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)}) | · | ·
+== sea-battle · POST /games/:id/claim · input 2
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #033597d2745ef5bb | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 121] ·
+  [0, 42] ·
+  [0, 43] Text("play")
+  [0, 44] ·
+  [0, 51] ·
+  [0, 60] ·
+  [0, 61] Boolean(false)
+  [0, 62] Boolean(true)
+  [0, 122] Boolean(false)
+  [0, 123] ·
+  [0, 124] ·
+  [0, 3] ·
+  [0, 4] Text("")
+  [0, 5, 4] Boolean(true)
+  [0, 5, 16] Text("")
+  [0, 5, 3] Boolean(true)
+  [0, 5, 17] ·
+  [0, 5, 0] ·
+  [0, 5, 22] ·
+  [0, 5, 1] ·
+  [0, 5, 15] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 20] Boolean(true)
+  [0, 5, 5] ·
+  [0, 5, 21] ·
+  [0, 5, 2] ·
+  [0, 5, 14] ·
+  [0, 5, 9] Boolean(false)
+  [0, 5, 19] Boolean(true)
+  [0, 5, 11] Text("")
+  [0, 5, 18] Text("")
+  [0, 5, 7] Text("")
+  [0, 5, 13] Text("")
+  [0, 5, 6] Text("")
+  [0, 5] Text("")
+  [0, 63] ·
+  [0, 64] ·
+  [0, 65] ·
+  [0, 67] ·
+  [0, 68] Boolean(false)
+  [0, 69] Boolean(true)
+  [0, 70] ·
+  [0, 71] ·
+  [0, 72] Text("")
+  [0, 73] ·
+  [0, 74] Text("")
+  [0, 75] ·
+  [0, 6] Text("a")
+  [0, 7] Boolean(false)
+  [0, 9] ·
+  [0, 10] Boolean(false)
+  [0, 11] Boolean(true)
+  [0, 12] Text("a")
+  [0, 13] Text("a")
+  [0, 14] Text("a")
+  [0, 76] ·
+  [0, 77, 7] Boolean(true)
+  [0, 77, 23] ·
+  [0, 77, 6] Boolean(true)
+  [0, 77, 15] ·
+  [0, 77, 5] Boolean(true)
+  [0, 77, 24] Text("")
+  [0, 77, 30] ·
+  [0, 77, 4] Boolean(true)
+  [0, 77, 22] Text("")
+  [0, 77, 28] ·
+  [0, 77, 20] Text("")
+  [0, 77, 16] Text("|")
+  [0, 77, 21] Text("")
+  [0, 77, 19] Text("|")
+  [0, 77, 29] Text("cbe5cfdf7c2118a9c3d78ef1d684f3afa089201352886449a06a6511cfef74a7")
+  [0, 77, 3] ·
+  [0, 77, 27] ·
+  [0, 77, 31] ·
+  [0, 77, 0, 1] Text("(board, said) => {\n  const fleet = [4, 3, 3, 2]\n  const cells = String(board).split(\"\")\n  let wrong =\n    cells.length !== 64 || cells.some((c) => !… #6d55b3505de1008a
+  [0, 77, 0, 2] ·
+  [0, 77, 0, 0] ·
+  [0, 77, 0, 3] ·
+  [0, 77, 0] ·
+  [0, 77, 1] ·
+  [0, 77, 13] ·
+  [0, 77, 10] ·
+  [0, 77, 8] ·
+  [0, 77, 17] ·
+  [0, 77, 12] ·
+  [0, 77] ·
+  [0, 78] ·
+  [0, 79] ·
+  [0, 80] ·
+  [0, 81] Text("over")
+  [0, 82] ·
+  [0, 83] ·
+  [0, 84] ·
+  [0, 85] ·
+  [0, 86] ·
+  [0, 87] ·
+  [0, 88] Boolean(false)
+  [0, 89] Boolean(true)
+  [0, 90] Text("")
+  [0, 91] Text("")
+  [0, 92] Text("")
+  [0, 93] ·
+  [0, 94] ·
+  [0, 95] ·
+  [0, 107] ·
+  [0, 108] Boolean(false)
+  [0, 109] Boolean(true)
+  [0, 110] ·
+  [0, 111] ·
+  [0, 112] ·
+  [0, 113] Text(" went silent, and ")
+  [0, 114, 5] Boolean(true)
+  [0, 114, 36] ·
+  [0, 114, 35] ·
+  [0, 114, 55] ·
+  [0, 114, 48] ·
+  [0, 114, 41] ·
+  [0, 114, 19] Boolean(false)
+  [0, 114, 53] Boolean(true)
+  [0, 114, 0] ·
+  [0, 114, 22] Text("")
+  [0, 114, 46] ·
+  [0, 114, 50] ·
+  [0, 114, 40] ·
+  [0, 114, 16] Boolean(false)
+  [0, 114, 51] Boolean(true)
+  [0, 114, 7] ·
+  [0, 114, 25] ·
+  [0, 114, 10] Number(0.0)
+  [0, 114, 28] ·
+  [0, 114, 42] ·
+  [0, 114, 18] Boolean(false)
+  [0, 114, 49] Boolean(true)
+  [0, 114, 20] Text("")
+  [0, 114, 38] Text("")
+  [0, 114, 13] Text("")
+  [0, 114, 44] Text("")
+  [0, 114, 14] Text("")
+  [0, 114, 39] Text("")
+  [0, 114, 11] Text("")
+  [0, 114] Text("")
+  [0, 115] Text("")
+  [0, 116] Text(": nobody wins.")
+  [0, 117] ·
+  [0, 118] ·
+  [0, 119] ·
+  [0, 120] ·
+  [0, 125, 13] Record({})
+  [0, 125, 2] Boolean(true)
+  [0, 125, 15] ·
+  [0, 125, 18] ·
+  [0, 125, 16] ·
+  [0, 125, 0] ·
+  [0, 125, 6] ·
+  [0, 125, 17] ·
+  [0, 125, 20] ·
+  [0, 125, 4] ·
+  [0, 125, 3] ·
+  [0, 125, 21] ·
+  [0, 125, 7] ·
+  [0, 125, 8] ·
+  [0, 125, 12] ·
+  [0, 125, 19] ·
+  [0, 125, 11] ·
+  [0, 125, 1] ·
+  [0, 125, 9, 14] Record({})
+  [0, 125, 9, 3] Boolean(true)
+  [0, 125, 9, 15] ·
+  [0, 125, 9, 20] ·
+  [0, 125, 9, 9] ·
+  [0, 125, 9, 1] ·
+  [0, 125, 9, 12] ·
+  [0, 125, 9, 10] ·
+  [0, 125, 9, 11] ·
+  [0, 125, 9, 17] ·
+  [0, 125, 9, 18] ·
+  [0, 125, 9, 8] ·
+  [0, 125, 9, 16] ·
+  [0, 125, 9, 13] ·
+  [0, 125, 9, 19] ·
+  [0, 125, 9, 0] ·
+  [0, 125, 9, 7] ·
+  [0, 125, 9, 5] ·
+  [0, 125, 9, 4] ·
+  [0, 125, 9, 2] ·
+  [0, 125, 9, 6] ·
+  [0, 125, 9] ·
+  [0, 125, 22] ·
+  [0, 125, 5] ·
+  [0, 125, 10, 14] Record({})
+  [0, 125, 10, 3] Boolean(true)
+  [0, 125, 10, 15] ·
+  [0, 125, 10, 20] ·
+  [0, 125, 10, 9] ·
+  [0, 125, 10, 1] ·
+  [0, 125, 10, 12] ·
+  [0, 125, 10, 10] ·
+  [0, 125, 10, 11] ·
+  [0, 125, 10, 17] ·
+  [0, 125, 10, 18] ·
+  [0, 125, 10, 8] ·
+  [0, 125, 10, 16] ·
+  [0, 125, 10, 13] ·
+  [0, 125, 10, 19] ·
+  [0, 125, 10, 0] ·
+  [0, 125, 10, 7] ·
+  [0, 125, 10, 5] ·
+  [0, 125, 10, 4] ·
+  [0, 125, 10, 2] ·
+  [0, 125, 10, 6] ·
+  [0, 125, 10] ·
+  [0, 125, 14] ·
+  [0, 125] ·
+  [0, 128] Boolean(false)
+  [0, 129] ·
+  [0, 126] ·
+  [0, 130] Record({})
+  [0, 131] Text("your opponent still has time")
+  [0, 132] Record({"error": Text("your opponent still has time")})
+  [0, 133] Record({"error": Text("your opponent still has time")})
+  [0, 140] Record({"error": Text("your opponent still has time")})
+  [0, 141] Number(409.0)
+  [0, 142] Number(409.0)
+  [0, 149] Number(409.0)
+  [0, 150, 0] Record({})
+  [0, 150, 1] Record({"status": Number(409.0)})
+  [0, 150, 2] Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)})
+  [0, 150, 3] Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)})
+  [0, 150] Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)})
+  [0] Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)}) | · | ·
+  => Record({"body": Record({"error": Text("your opponent still has time")}), "status": Number(409.0)}) | · | ·
 == crunch · POST /stats · input 0
   [0, 0, 0] Record({})
   [0, 0, 1] Record({"after": Text("a")})
