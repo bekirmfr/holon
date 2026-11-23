@@ -59,6 +59,9 @@ mod refused_secrets;
 mod reached;
 /// What a list method's function does, item by item, against JavaScript: the list block of reached.
 mod list_grid;
+/// What an action that waits does, and what its caller is answered, against its text: the
+/// waits block of reached.
+mod waits;
 /// The tests marked heavy are the ones the heavy workflow runs; the file rules name what is
 /// there, and count what Rust reads from docs/ and editor/ as code.
 mod heavy;
