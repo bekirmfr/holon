@@ -1273,7 +1273,7 @@ fn a_grids_sites_are_reached_as_its_debts_say() {
         for (d, n) in &owed {
             println!("  {n:6} site-run differences owed under \"{d}\"");
         }
-        assert!(wrong.is_empty(), "{} differences under no debt:\n{}", wrong.len(), wrong.iter().cloned().collect::<Vec<_>>().join("\n"));
+        assert!(wrong.is_empty(), "{} differences under no debt:\n{}", wrong.len(), wrong.join("\n"));
     }
 }
 
