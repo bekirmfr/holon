@@ -4,7 +4,8 @@
 # it: of all the entries that hold a file, the longest decides. Every entry must exist, and no
 # entry is in a group and its -not section both (tests/heavy.rs holds both).
 #
-# Kept wide on purpose: when unsure whether a file reaches what a group guards, it is in.
+# Kept wide on purpose: when unsure whether a file reaches what a group guards, it is in; and
+# when unsure whether a file is only a document or only the editor's, it is code.
 
 # The heavy grids: how a flow's text is translated to steps and run. The translator and the
 # core crates it compiles to and runs on, and the server's run engine: all of crates/holon/src
@@ -130,3 +131,32 @@ crates/holon/src/listeners.rs
 crates/holon/src/http.rs
 
 [records-not]
+
+# Documents a pull request may add or edit and run nothing: no test and no build reads them. A
+# document deleted or renamed is code all the same (a test holds that every page the code and the
+# manual cite is there), and so is any path no section names.
+[inert]
+CLAUDE.md
+CHANGELOG.md
+docs/
+
+# Under docs/ but read: the manual (the editor builds it in, and Rust tests check its examples,
+# its page of leaves and what it cites), the engineering pages (their cited test names are
+# checked), the language page (its examples are compiled), and a design page a test reads.
+[inert-not]
+docs/manual/
+docs/engineering/
+docs/LANGUAGE.md
+docs/L4s/access-and-approvals-L4.md
+
+# The editor and the VS Code extension: a pull request changing only these (and documents) runs
+# no Rust tests but the one that reads every file for the names the docs cite.
+[editor]
+editor/
+editors/vscode/
+
+# Under editor/ but written or read by Rust tests.
+[editor-not]
+editor/src/can.fixture.json
+editor/src/placed.fixture.json
+editor/src/skipped.fixture.json

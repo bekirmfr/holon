@@ -4,6 +4,13 @@ name: ci
 # open ran twice before). A tag runs no CI of its own: its commit ran it when it reached main.
 # `workflow_dispatch` runs it by hand on any branch. The end-to-end suite is e2e.yml, which runs
 # less often: on main, nightly, and a pull request labelled `e2e` or a release's.
+#
+# On a pull request, what it changes decides what each job does (.github/file-rules.txt, applied
+# by .github/what-changed.sh, the same in every job): a change to documents alone runs nothing
+# and every job ends green; a change to the editor alone (editor/, editors/vscode/) runs no Rust
+# tests but the one that reads every file for the names the docs cite. Every job still starts
+# and reports, so a required check never waits on a job a filter skipped. A push to main and a
+# run by hand run everything.
 on:
   push:
     branches: [main]
@@ -45,23 +52,40 @@ jobs:
       HOLON_TEST_MYSQL: mysql://root:holon@127.0.0.1:3306/mysql
       HOLON_TEST_MONGODB: mongodb://127.0.0.1:27017/holontest?replicaSet=rs0
     steps:
+      # Two deep: a pull request's checkout is the merge commit, compared with its first parent.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: What changed
+        id: changed
+        run: bash .github/what-changed.sh
       # The MongoDB they may be too (mongo.rs): a one-node replica set, since a commit is a
       # transaction. Started by hand: a service container can't be given --replSet.
-      - run: bash .github/start-mongodb.sh
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11-15
+      - if: steps.changed.outputs.rust == 'true'
+        run: bash .github/start-mongodb.sh
+      - if: steps.changed.outputs.code == 'true'
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11-15
         with:
           components: clippy
       # Dependencies built once and kept (Cargo.lock and the toolchain key it); saved from main
       # only, so pull requests read main's and don't crowd the cache. The same in every job.
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2, 2026-11-15
+      - if: steps.changed.outputs.code == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2, 2026-11-15
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test --workspace
+      - if: steps.changed.outputs.rust == 'true'
+        run: cargo test --workspace
+      # A change to the editor alone: of the Rust tests, only the one that reads the editor's
+      # files too (every name the docs cite must be one some code has).
+      - name: The names the docs cite
+        if: steps.changed.outputs.rust != 'true' && steps.changed.outputs.code == 'true'
+        run: cargo test -p holon-author --test manual
       # Lints as errors: the workspace is clean, and stays so.
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - if: steps.changed.outputs.rust == 'true'
+        run: cargo clippy --workspace --all-targets -- -D warnings
       # The `holon` command, as installed: it writes a sample as text and checks it on its own.
-      - run: cargo run -q -p holon -- new "$RUNNER_TEMP/slugs.holon.ts" --sample slugs && cargo run -q -p holon -- check "$RUNNER_TEMP/slugs.holon.ts"
+      - if: steps.changed.outputs.rust == 'true'
+        run: cargo run -q -p holon -- new "$RUNNER_TEMP/slugs.holon.ts" --sample slugs && cargo run -q -p holon -- check "$RUNNER_TEMP/slugs.holon.ts"
 
   # 2. The guardrail: run the parity body UNDER wasm and assert it matches the core. Together with
   #    the native run in job (1), this proves wasm-core hashes bit-identically to native-core. It
@@ -71,19 +95,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11-15
+        with:
+          fetch-depth: 2
+      - name: What changed
+        id: changed
+        run: bash .github/what-changed.sh
+      - if: steps.changed.outputs.code == 'true'
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11-15
         with:
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2, 2026-11-15
+      - if: steps.changed.outputs.code == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2, 2026-11-15
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # wasm-pack at a pinned version, the one releases use (.github/build-setup.yml): asked for
       # "latest", the action asks GitHub's API, and when that fails it installs v0.9.1, which has
       # no --no-opt. A version named is downloaded as it is. The same in every job.
-      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+      - if: steps.changed.outputs.code == 'true'
+        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
         with:
           version: v0.15.0
-      - run: wasm-pack test --node crates/holon-wasm
+      - if: steps.changed.outputs.code == 'true'
+        run: wasm-pack test --node crates/holon-wasm
         # It downloads wasm-bindgen and wasm-opt; a stalled download fails here, not after 6 h.
         timeout-minutes: 10
 
@@ -95,34 +128,49 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11-15
+        with:
+          fetch-depth: 2
+      - name: What changed
+        id: changed
+        run: bash .github/what-changed.sh
+      - if: steps.changed.outputs.code == 'true'
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11-15
         with:
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2, 2026-11-15
+      - if: steps.changed.outputs.code == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2, 2026-11-15
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+      - if: steps.changed.outputs.code == 'true'
+        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
         with:
           version: v0.15.0
       # `--no-opt`, as releases build it (.github/build-setup.yml): the wasm tested is the wasm
       # shipped, and no wasm-opt download or pass.
-      - run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm --no-opt
+      - if: steps.changed.outputs.code == 'true'
+        run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm --no-opt
         timeout-minutes: 10
-      - uses: actions/setup-node@v4
+      - if: steps.changed.outputs.code == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: editor/package-lock.json
-      - run: npm ci
+      - if: steps.changed.outputs.code == 'true'
+        run: npm ci
         working-directory: editor
-      - run: npx tsc --noEmit -p .
+      - if: steps.changed.outputs.code == 'true'
+        run: npx tsc --noEmit -p .
         working-directory: editor
-      - run: npx vitest run
+      - if: steps.changed.outputs.code == 'true'
+        run: npx vitest run
         working-directory: editor
       # The editor, built and compiled into holon, as releases are: one binary serves it.
-      - run: npm run build
+      - if: steps.changed.outputs.code == 'true'
+        run: npm run build
         working-directory: editor
-      - run: cargo test -p holon --features embed-editor editor
+      - if: steps.changed.outputs.code == 'true'
+        run: cargo test -p holon --features embed-editor editor
 
   # 4. The VS Code extension (editors/vscode): in a real VS Code (downloaded, on a virtual
   #    display), a flow's mistake, completion, hover and formatting through `holon lsp`.
@@ -130,19 +178,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11-15
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2, 2026-11-15
+        with:
+          fetch-depth: 2
+      - name: What changed
+        id: changed
+        run: bash .github/what-changed.sh
+      - if: steps.changed.outputs.code == 'true'
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11-15
+      - if: steps.changed.outputs.code == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2, 2026-11-15
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo build -p holon
-      - uses: actions/setup-node@v4
+      - if: steps.changed.outputs.code == 'true'
+        run: cargo build -p holon
+      - if: steps.changed.outputs.code == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: editors/vscode/package-lock.json
-      - run: npm ci
+      - if: steps.changed.outputs.code == 'true'
+        run: npm ci
         working-directory: editors/vscode
-      - run: xvfb-run -a npm run test:vscode
+      - if: steps.changed.outputs.code == 'true'
+        run: xvfb-run -a npm run test:vscode
         working-directory: editors/vscode
 
   # 5. No dependency with a known advisory: the crates Cargo.lock names (`cargo audit`, against
@@ -155,12 +214,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: cargo install cargo-audit --locked --version 0.23.0
-      - run: cargo audit
-      - uses: actions/setup-node@v4
+        with:
+          fetch-depth: 2
+      - name: What changed
+        id: changed
+        run: bash .github/what-changed.sh
+      - if: steps.changed.outputs.code == 'true'
+        run: cargo install cargo-audit --locked --version 0.23.0
+      - if: steps.changed.outputs.code == 'true'
+        run: cargo audit
+      - if: steps.changed.outputs.code == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm audit --omit=dev
+      - if: steps.changed.outputs.code == 'true'
+        run: npm audit --omit=dev
         working-directory: editor
-      - run: npm audit --omit=dev
+      - if: steps.changed.outputs.code == 'true'
+        run: npm audit --omit=dev
         working-directory: editors/vscode

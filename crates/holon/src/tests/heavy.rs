@@ -1,12 +1,16 @@
 //! The heavy tests and the file rules that decide what a change runs (CLAUDE.md, "Heavy tests"):
-//! the tests marked heavy are the ones .github/workflows/heavy.yml runs, and every path
-//! .github/file-rules.txt names is there.
+//! the tests marked heavy are the ones .github/workflows/heavy.yml runs, every path
+//! .github/file-rules.txt names is there, and what Rust reads from docs/ and editor/ is code
+//! under those rules.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// The start of the mark a heavy test carries, as `#[ignore = "heavy: why"]`.
 const MARK: &str = "#[ignore = \"heavy:";
+
+/// Folders under editor/ a build writes, never committed.
+const GENERATED: &[&str] = &["editor/dist", "editor/wasm", "editor/node_modules"];
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -49,6 +53,71 @@ fn file_rules() -> BTreeMap<String, Vec<String>> {
         }
     }
     rules
+}
+
+/// Whether `path` is in `group` as what-changed.sh decides it: the longest entry holding it is
+/// the group's, not its -not section's. An entry ending in / holds everything under it.
+fn within(rules: &BTreeMap<String, Vec<String>>, group: &str, path: &str) -> bool {
+    let best = |section: &str| {
+        rules.get(section).into_iter().flatten().filter(|e| if e.ends_with('/') { path.starts_with(e.as_str()) } else { path == e.as_str() }).map(String::len).max().unwrap_or(0)
+    };
+    best(group) > best(&format!("{group}-not"))
+}
+
+/// **Guards:** what a Rust test or build reads from docs/ or editor/ is code under the file
+/// rules: a pull request changing it runs the Rust tests, not the shortcut of a change to
+/// documents alone or to the editor alone. Read: a path a Rust source names in a string, reached
+/// by `../` or from the root (`include_str!("../../../docs/…")`, `.join("../../editor/src/…")`,
+/// `"docs/manual/…"`), that is there.
+///
+/// **Why:** a pull request touching only documents runs nothing, and one touching only the
+/// editor runs no Rust tests but one (CLAUDE.md, "Heavy tests"). A page or a fixture a Rust test
+/// reads, left in [inert] or [editor], would let a change that breaks that test through green.
+///
+/// **If it fails:** it names the file and the path it reads: put the path in [inert-not] or
+/// [editor-not] in .github/file-rules.txt.
+#[test]
+fn what_rust_reads_from_the_docs_or_the_editor_is_code() {
+    let root = root();
+    let rules = file_rules();
+    let mut files = Vec::new();
+    rust_files(&root.join("crates"), &mut files);
+    let mut wrong = Vec::new();
+    let mut reads = 0;
+    for file in &files {
+        let text = std::fs::read_to_string(file).unwrap();
+        // Every string between quotes; a stray quote only shifts which pieces are looked at,
+        // and a piece counts only if, once its leading `$CARGO_MANIFEST_DIR/` and `../` are
+        // taken off, it names a path under docs/ or editor/ that is there.
+        for piece in text.split('"').skip(1).step_by(2) {
+            let mut path = piece.trim_start_matches("$CARGO_MANIFEST_DIR/");
+            while let Some(rest) = path.strip_prefix("../") {
+                path = rest;
+            }
+            // The folders themselves, bare, are where a scan starts looking, not a path read.
+            let named = path.trim_end_matches('/');
+            if !(path.starts_with("docs/") || path.starts_with("editor/")) || named == "docs" || named == "editor" || path.contains(char::is_whitespace) {
+                continue;
+            }
+            // What a build writes there is never in a change (the built editor the server
+            // embeds is built in the editor's own job, which every change but documents runs).
+            if GENERATED.iter().any(|g| path.trim_end_matches('/') == *g || path.starts_with(&format!("{g}/"))) {
+                continue;
+            }
+            let on_disk = root.join(path);
+            let path = if on_disk.is_dir() { format!("{}/", path.trim_end_matches('/')) } else if on_disk.is_file() { path.to_string() } else { continue };
+            reads += 1;
+            // A folder is read whole: any file under it is code.
+            let probe = if path.ends_with('/') { format!("{path}any.md") } else { path.clone() };
+            if within(&rules, "inert", &probe) || within(&rules, "editor", &probe) {
+                wrong.push(format!("{} reads {path}, which .github/file-rules.txt counts as not code", shown(file)));
+            }
+        }
+    }
+    assert!(reads >= 8, "only {reads} reads of docs/ or editor/ found: is the scan reading the sources?");
+    wrong.sort();
+    wrong.dedup();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 /// **Guards:** the tests marked heavy (`#[ignore = "heavy: …"]`, which every change's run skips)

@@ -67,6 +67,24 @@ the files it guards to that group in `file-rules.txt`. `tests::heavy` fails if a
 named in the workflow, or the workflow names one that isn't marked, or a rule names a path that
 isn't there.
 
+The same file rules let a pull request skip work its change can't affect. Every job of
+`ci.yml` still starts and reports, so required checks never wait:
+
+- A pull request that only adds or edits documents (`CLAUDE.md`, `CHANGELOG.md`, `docs/`) runs
+  nothing and every job ends green. Not documents a test or a build reads: the manual
+  (`docs/manual/`), the engineering pages, `docs/LANGUAGE.md`, `README.md` and the design page a
+  test reads count as code, and so does any document deleted or renamed (a test checks that every
+  page the code and the manual cite is there).
+- A pull request that only touches the editor (`editor/`, `editors/vscode/`, and documents) runs
+  no Rust tests but one, the check of the names the docs cite (it reads the editor's files too);
+  the editor, wasm and VS Code jobs run as always. The editor fixtures a Rust test writes
+  (`editor/src/*.fixture.json`) count as Rust.
+- A push to main and a run by hand run everything. A path the rules don't name counts as code.
+
+When a Rust test starts reading a file in `docs/` or `editor/`, add it to `[inert-not]` or
+`[editor-not]` in `file-rules.txt`; `tests::heavy` fails if a path a Rust source names there is
+left out.
+
 ## Commits and pushes
 
 One commit per step, ending with the `Co-Authored-By` line; commit or push only when asked.
