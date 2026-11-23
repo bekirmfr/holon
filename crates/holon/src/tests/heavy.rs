@@ -123,15 +123,18 @@ fn what_rust_reads_from_the_docs_or_the_editor_is_code() {
 /// **Guards:** the tests marked heavy (`#[ignore = "heavy: …"]`, which every change's run skips)
 /// are exactly the tests .github/workflows/heavy.yml runs, each by its full name; and every path
 /// .github/file-rules.txt names is there, in a section what-changed.sh reads, never in a group
-/// and its -not section both.
+/// and its -not section both; and the grids' sizes what-changed.sh writes (`size=`) are the ones
+/// the grids know (`GRID_SIZES`), handed to them as `HOLON_GRIDS`.
 ///
 /// **Why:** a heavy test is run only where the workflow names it. A test marked heavy and not
 /// named there, or renamed, runs nowhere, and nothing says so; a test named there and no longer
 /// marked runs in every change's run too, and `--exact` passes a name that matches nothing. A
-/// rule naming a path that was moved stops deciding anything, as quietly.
+/// rule naming a path that was moved stops deciding anything, as quietly. A size the grids don't
+/// know fails them on every change; one never handed to them leaves them at the full set.
 ///
-/// **If it fails:** it names the test or the path. Mark the test, or name it in the workflow's
-/// `GRIDS` or `RECORDS`, or take it out of both; fix the path in file-rules.txt.
+/// **If it fails:** it names the test, the path or the size. Mark the test, or name it in the
+/// workflow's `GRIDS` or `RECORDS`, or take it out of both; fix the path in file-rules.txt; make
+/// what-changed.sh write the sizes of `GRID_SIZES`, and the grids' step give it as `HOLON_GRIDS`.
 #[test]
 fn the_heavy_tests_and_the_file_rules_name_what_is_there() {
     let root = root();
@@ -187,6 +190,25 @@ fn the_heavy_tests_and_the_file_rules_name_what_is_there() {
     // The file rules: every entry there, every section one what-changed.sh reads.
     let rules = file_rules();
     let script = std::fs::read_to_string(root.join(".github/what-changed.sh")).unwrap();
+
+    // The grids' sizes: each word what-changed.sh writes after `size=` is one the grids know, and
+    // each they know is written (its comments aside); the grids' step hands it to them.
+    let written: BTreeSet<&str> = script
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .flat_map(|l| l.match_indices("size=").map(move |(i, _)| l[i + "size=".len()..].split(|c: char| !c.is_ascii_lowercase()).next().unwrap()))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let known: BTreeSet<&str> = super::semantics::GRID_SIZES.iter().map(|(name, _)| *name).collect();
+    for size in written.difference(&known) {
+        wrong.push(format!(".github/what-changed.sh writes size={size}, which the grids don't know (GRID_SIZES)"));
+    }
+    for size in known.difference(&written) {
+        wrong.push(format!(".github/what-changed.sh never writes size={size}, a size the grids know (GRID_SIZES)"));
+    }
+    if !workflow.contains("HOLON_GRIDS: ${{ steps.changed.outputs.size }}") {
+        wrong.push(".github/workflows/heavy.yml doesn't give the grids what-changed.sh's size as HOLON_GRIDS".to_string());
+    }
     for (section, entries) in &rules {
         let group = section.strip_suffix("-not").unwrap_or(section);
         if !script.contains(&format!("\"{group}\"")) {
