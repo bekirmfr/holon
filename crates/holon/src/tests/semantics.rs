@@ -1215,7 +1215,13 @@ fn grid(block: Block) {
 "));
     // The grid is no smaller than it was, and most of it is plain JavaScript.
     assert!(runs > 5_000, "{block:?}: {runs} runs");
-    assert!(as_javascript * 2 > runs, "{as_javascript} of {runs} runs do as JavaScript does");
+    // That most runs do as JavaScript is a claim about the whole grid's mix, held by the full set:
+    // the small set keeps the requests that show the most differences, so its share is lower
+    // (45% on 2026-11-23, against 61% in full). It is said, not held, there.
+    println!("  {as_javascript} of {runs} runs ({}%) do as JavaScript does", as_javascript * 100 / runs);
+    if size == GridSize::Full {
+        assert!(as_javascript * 2 > runs, "{as_javascript} of {runs} runs do as JavaScript does");
+    }
     // A debt is struck when no route owes it: a clock's or a queue's grid may owe fewer.
     if block != Block::Route {
         return;

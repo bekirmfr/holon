@@ -65,7 +65,9 @@ back, but not run); the list grid is the same at both sizes. A pull request or a
 the small set; the nightly run, a run by hand and a pull request labelled `heavy` run the full set.
 Every full run also checks that the two requests alone show every kind of finding it shows (each
 debt, and a flow's own rule under each condition), and fails naming the kind and where it showed
-if they don't: then add a request that shows it to `SMALL_REQUESTS` in `tests/semantics.rs`. Put
+if they don't: then add a request that shows it to `SMALL_REQUESTS` in `tests/semantics.rs`. Only
+the full set checks that most runs act as JavaScript (the two requests are the ones that differ
+most); the small set prints that share without checking it. Put
 `HOLON_GRIDS=small` before the command above for the quick check.
 
 and the records sweep the same way when it changes how runs are recorded, exported or verified
