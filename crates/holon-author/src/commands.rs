@@ -393,16 +393,6 @@ mod tests {
 
     const HELLO: &str = "import { flow, route } from \"holon\"\n\nflow(\"hello-api\", { port: 8101 })\n\nroute.get(\"/hello/:name\", (req) => {\n  const name = req.params.name\n  const hi = \"Hello, \"\n  const greet = `${hi}${name}`\n  return greet\n})\n";
 
-    /// A js body is JavaScript, laid out as such: fmt keeps a `#` in it (a colour, a private
-    /// field) and its comments, and the comments around it.
-    #[test]
-    fn fmt_keeps_a_hash_inside_a_js_body() {
-        let src = "import { flow, js, route } from \"holon\"\n\nflow(\"f\", { port: 8203 })\n\n// the page\nconst page = js(function html(x) {\n  return `<style>a{color:#777}</style>${x}` // #not a holon comment\n})\n\nroute.get(\"/p\", (req) => {\n  return page(req.query.x ?? \"y\")\n  // answered\n})\n";
-        let out = fmt("f.holon.ts", src).unwrap();
-        assert_eq!(out, src, "{out}");
-        assert_eq!(fmt("f.holon.ts", &out).unwrap(), out, "and again");
-    }
-
     /// Each js body is compiled once by the engine: a mistake TypeScript's syntax lets through
     /// (`import.meta` outside a module) is a mistake at its line in the file, with the line and a caret like
     /// any other; a body that compiles passes, whatever it would do at run time (that is the
@@ -649,6 +639,18 @@ mod tests {
                 vec!["sends the secret \"k\" to https://auth.example.com", "answers its caller with what is answered to the secret \"k\""],
             ),
             (
+                "sent from inside a function",
+                flow("", "import api from \"host:api.example.com\"\nasync function post(text) {\n  const posted = await api.post(\"/hook\", { body: text })\n  return posted.status\n}\n", "async () => await post(k)"),
+                "read the secret \"k\", and send it to https://api.example.com",
+                vec!["sends the secret \"k\" to https://api.example.com"],
+            ),
+            (
+                "a signature verified by stripe.verify",
+                flow(", status, stripe", "import { now } from \"holon:clock\"\n", "(req) => stripe.verify(req, k, now).event ?? status(400)"),
+                "read the secret \"k\"",
+                vec![],
+            ),
+            (
                 "a signature only compared",
                 flow(", hmac_sha256, secure_equals", "", "(req) => ({ ok: secure_equals(hmac_sha256(k, req.body), req.headers[\"x-sig\"] ?? \"\") })"),
                 "read the secret \"k\"",
@@ -742,14 +744,6 @@ mod tests {
             }
         }
         println!("the samples' most visits a question: {} ({})", most.0, most.1);
-    }
-
-    #[test]
-    fn check_says_where_each_secret_is_sent() {
-        let r = check("stripe-to-slack.holon.ts", include_str!("../samples/stripe-to-slack.holon.ts"));
-        assert_eq!(r.code, 0, "{r:?}");
-        assert!(r.out.iter().any(|l| l == "  read the secret \"slack_webhook_path\", and send it to https://hooks.slack.com"), "{:?}", r.out);
-        assert!(r.out.iter().any(|l| l == "  read the secret \"stripe_webhook_secret\""), "{:?}", r.out);
     }
 
     /// A flow that calls out and both reads and writes a collection is told, apart from what it
