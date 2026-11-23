@@ -46,6 +46,8 @@ pub mod usage;
 pub mod wire;
 #[cfg(test)]
 mod golden;
+#[cfg(test)]
+mod reached_runs;
 
 /// The limits a deployment may ask for, by name, and the unit each is counted in. Durations are
 /// milliseconds (the durable-run wait is in seconds, like the `await` node's `expires`); sizes are

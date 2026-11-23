@@ -18,6 +18,7 @@ pub mod layout;
 pub mod lower;
 pub mod nesting;
 pub mod print;
+pub mod reached;
 pub mod ts;
 
 pub use lower::{lower, LowerError, Lowered};

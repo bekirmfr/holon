@@ -25,6 +25,7 @@ use oxc_span::{GetSpan, SourceType};
 use super::ast::*;
 use super::lower::{alias, is_optional, lower, LowerError, Lowered, RESERVED, ROUTE_WAITS, SOCKET_WAITS};
 use super::nesting;
+use super::reached::{Atom, Site, Why};
 use crate::templates;
 
 type R<T> = Result<T, LowerError>;
@@ -32,7 +33,31 @@ type R<T> = Result<T, LowerError>;
 /// Read and lower a `.holon.ts` text.
 pub fn compile(src: &str) -> R<Lowered> {
     nesting::check(src)?;
-    nesting::on_deep_stack(|| lower(&read(src)?))
+    nesting::on_deep_stack(|| {
+        let (file, sites) = read_sites(src)?;
+        let mut lowered = lower(&file)?;
+        lowered.sites = sites;
+        Ok(lowered)
+    })
+}
+
+/// [`compile`], with the parts of the doing sites' tests ([`super::reached::parts`]) and, for each,
+/// the nodes and outputs it was lowered to: what a run's values are read through to say where
+/// each site is reached. The lowering is [`compile`]'s.
+pub fn compile_watched(src: &str) -> R<(Lowered, Vec<Expr>, super::lower::Found)> {
+    nesting::check(src)?;
+    nesting::on_deep_stack(|| {
+        let (file, sites) = read_sites(src)?;
+        let mut parts = Vec::new();
+        for site in &sites {
+            for test in site.path.iter().filter_map(|a| if let Atom::Holds { test, .. } = a { Some(test) } else { None }).chain(&site.kept) {
+                super::reached::parts(test, &mut parts);
+            }
+        }
+        let (mut lowered, found) = super::lower::lower_watching(&file, &parts)?;
+        lowered.sites = sites;
+        Ok((lowered, parts, found))
+    })
 }
 
 /// Read a `.holon.ts` text into the syntax tree the lowering reads.
@@ -43,6 +68,11 @@ pub fn parse(src: &str) -> R<File> {
 
 /// [`parse`], for a text counted already, on a stack with room for it.
 fn read(src: &str) -> R<File> {
+    read_sites(src).map(|(file, _)| file)
+}
+
+/// [`read`], with each doing site of the text and what reaches it ([`super::reached`]).
+fn read_sites(src: &str) -> R<(File, Vec<Site>)> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, src, SourceType::ts()).parse();
     let lines = Lines::new(src);
@@ -230,6 +260,16 @@ struct Frame {
     received: String,
     /// An action's body before its first wait: the returns read so far ([`Early`]).
     early: Early,
+    /// What a run of this body began with: a handler's run ([`Atom::Entry`], when `None`), or a
+    /// function's call ([`Atom::Entered`]) ([`Reader::reached_here`]).
+    entry: Option<Atom>,
+    /// What else reaches the statement being read beside `guards`, each with how many guards
+    /// stood before it: the statements before it, an arm, an item, a wait answered.
+    marks: Vec<(usize, Atom)>,
+    /// Where this body's sites begin among the Reader's.
+    sites: usize,
+    /// Where the body is written: its sites are within it.
+    body: Span,
 }
 
 /// What an action's body answers before its first wait, as read so far. The text writes those
@@ -448,6 +488,8 @@ struct Reader<'s, 't> {
     /// Every name the text writes, so a name the reader makes is never one of them.
     taken: BTreeSet<String>,
     kind_seen: bool,
+    /// Each doing site read so far, with what reaches it ([`super::reached`]): recorded only.
+    sites: Vec<Site>,
 }
 
 impl<'s, 't> Reader<'s, 't> {
@@ -467,6 +509,7 @@ impl<'s, 't> Reader<'s, 't> {
             frame: Frame::default(),
             taken: BTreeSet::new(),
             kind_seen: false,
+            sites: Vec::new(),
         }
     }
 
@@ -490,7 +533,7 @@ impl<'s, 't> Reader<'s, 't> {
 
     // ── the file ─────────────────────────────────────────────────────────────────────────────
 
-    fn program(mut self, p: &'t js::Program<'t>) -> R<File> {
+    fn program(mut self, p: &'t js::Program<'t>) -> R<(File, Vec<Site>)> {
         struct Words(BTreeSet<String>);
         impl<'a> Visit<'a> for Words {
             fn visit_binding_identifier(&mut self, id: &js::BindingIdentifier<'a>) {
@@ -525,7 +568,7 @@ impl<'s, 't> Reader<'s, 't> {
         let mut headers = self.headers;
         let at = headers.first().map(|h| h.span).unwrap_or_default();
         headers.extend(self.state_keys.iter().map(|k| Header { kind: HeaderKind::State(k.clone()), span: at }));
-        Ok(File { headers, items })
+        Ok((File { headers, items }, self.sites))
     }
 
     fn import(&mut self, i: &js::ImportDeclaration) -> R<()> {
@@ -1250,6 +1293,8 @@ impl<'s, 't> Reader<'s, 't> {
             return fail(self.span(f.span), "a handler isn't a generator");
         }
         let saved = std::mem::take(&mut self.frame);
+        self.frame.sites = self.sites.len();
+        self.frame.body = self.span(f.span());
         self.frame.used.insert(received.to_string());
         self.frame.received = received.to_string();
         self.frame.route = block == Block::Route;
@@ -1395,12 +1440,19 @@ impl<'s, 't> Reader<'s, 't> {
             }
             let Some(i) = stmts.iter().position(|s| matches!(&s.kind, StmtKind::Bind { name, .. } if name.text == h)) else { continue };
             let StmtKind::Bind { value, .. } = stmts.remove(i).kind else { unreachable!("found as a binding") };
-            each_expr(stmts, &mut |e| {
+            let mut inline = |e: &mut Expr| {
                 if matches!(&e.kind, ExprKind::Name(n) if *n == h) {
                     *e = value.clone();
                 }
                 true
-            });
+            };
+            each_expr(stmts, &mut inline);
+            // The paths read it where the body does.
+            for site in &mut self.sites[self.frame.sites..] {
+                for t in site.path.iter_mut().filter_map(|a| if let Atom::Holds { test, .. } = a { Some(test) } else { None }).chain(site.kept.iter_mut()) {
+                    walk(t, &mut inline);
+                }
+            }
         }
     }
 
@@ -1410,8 +1462,10 @@ impl<'s, 't> Reader<'s, 't> {
     /// answered runs only when it didn't, until the list ends.
     fn list(&mut self, body: &[js::Statement], block: Block, stmts: &mut Vec<Stmt>) -> R<Ret> {
         let start = self.frame.guards.len();
+        let marks = self.frame.marks.len();
         let ret = self.run(body, block, stmts, start);
         self.frame.guards.truncate(start);
+        self.frame.marks.truncate(marks);
         ret
     }
 
@@ -1460,8 +1514,17 @@ impl<'s, 't> Reader<'s, 't> {
                     if early && waits.is_none() {
                         self.early_row(s, &r, &stmts[mark..], exits);
                     }
+                    // What follows is reached where this statement completed: in a `try` block,
+                    // where what it made arrived (the guard `go_on_if_arrived` holds below).
+                    if self.frame.trying.is_empty() {
+                        self.mark(Atom::Completed(self.span(s.span())));
+                    }
                     if let Some(ts) = waits {
                         self.waited_on(&ts, stmts, self.span(s.span()));
+                        if let Some(w) = &self.frame.waited {
+                            let test = has_value(w.value.clone());
+                            self.mark(Atom::Holds { why: Why::Answered, test });
+                        }
                     }
                     // What follows runs where the statement didn't return: not where whether it
                     // did has no value, as an `if` on an absent condition (§6.4).
@@ -2286,6 +2349,7 @@ impl<'s, 't> Reader<'s, 't> {
             Place::Local(ts, span) => self.new_version(&ts, span, value, stmts, false),
             Place::State(key, key_span) => self.state_write(key, value, at, key_span, stmts, start),
             Place::Store(collection, span, key) => {
+                self.site(at, "writes");
                 self.frame.written.insert(collection.clone());
                 let key = self.tried(key, stmts);
                 let value = self.tried(value, stmts);
@@ -2312,6 +2376,7 @@ impl<'s, 't> Reader<'s, 't> {
             && let Some(collection) = self.store_name(&c.object)
         {
             let key = self.expr(&c.expression)?;
+            self.site(at, "deletes");
             let key = self.tried(key, stmts);
             let key = self.guarded(key);
             self.frame.written.insert(collection.clone());
@@ -2408,6 +2473,7 @@ impl<'s, 't> Reader<'s, 't> {
     /// `state.k = v`: what the key holds is `v` where this point is reached and what it held
     /// otherwise, written once, where its value is last settled (§5).
     fn state_write(&mut self, key: String, value: Expr, at: Span, key_span: Span, stmts: &mut Vec<Stmt>, start: usize) -> R<()> {
+        self.site(at, "writes");
         self.state_keys.insert(key.clone());
         // Above the returns before the first wait, and again past the wait: a run that returned
         // keeps the first value, which the text, writing the key's value once, can't show.
@@ -2462,6 +2528,88 @@ impl<'s, 't> Reader<'s, 't> {
             stmts.push(Stmt { kind: StmtKind::StateWrite { key: Name { text: key, span: key_span }, value }, span: at, after: self.held(self.waited()) });
         }
         Ok(())
+    }
+
+    /// What reaches the statement being read, in the order the run meets it
+    /// ([`super::reached`]): how the body's run began, then each condition and each statement
+    /// before it, as read. Today's ways of holding a step back each read a part of this (`live`,
+    /// `trigger`, `held`, `cond_since`); this reads it all, and is only recorded.
+    fn reached_here(&self) -> Vec<Atom> {
+        let mut path = vec![self.frame.entry.clone().unwrap_or(Atom::Entry)];
+        let mut marks = self.frame.marks.iter().peekable();
+        for (i, g) in self.frame.guards.iter().enumerate() {
+            // A mark made with `i` guards standing was met before the guard at `i`.
+            while let Some((_, m)) = marks.next_if(|(at, _)| *at <= i) {
+                path.push(m.clone());
+            }
+            path.push(match g {
+                Guard::Branch(c) => Atom::Holds { why: Why::Branch, test: c.clone() },
+                Guard::Live(c) => Atom::Holds { why: Why::NotReturned, test: c.clone() },
+                Guard::Arrived(c) => Atom::Holds { why: Why::Arrived, test: c.clone() },
+                Guard::After(x) => Atom::Holds { why: Why::Present, test: has_value(x.clone()) },
+            });
+        }
+        path.extend(marks.map(|(_, m)| m.clone()));
+        path
+    }
+
+    /// A doing site at `at`, reached as the statement being read is. A part read twice is
+    /// recorded once, as last read.
+    fn site(&mut self, at: Span, does: &'static str) {
+        let site = Site { at, does, within: self.frame.body, path: self.reached_here(), kept: Vec::new() };
+        match self.sites[self.frame.sites..].iter_mut().rev().find(|s| s.at == at && s.does == does) {
+            Some(s) => *s = site,
+            None => self.sites.push(site),
+        }
+    }
+
+    /// Something the statements read after this point are reached through, beside the guards.
+    fn mark(&mut self, atom: Atom) {
+        let at = self.frame.guards.len();
+        self.frame.marks.push((at, atom));
+    }
+
+    /// `read`, a part that runs where `runs` holds: an arm of `?:`, `&&`, `||` or `??`.
+    fn arm<T>(&mut self, runs: Expr, read: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        self.mark(Atom::Holds { why: Why::Arm, test: runs });
+        let r = read(self);
+        self.frame.marks.pop();
+        r
+    }
+
+    /// What `e` does, if it does something the run asks for or makes: a function of the flow's
+    /// entered, an action started or another flow's called, a request, a log line, a send, a
+    /// write, a read of state or of what the flow declares, a wait.
+    fn doing(&self, e: &Expr) -> Option<&'static str> {
+        match &e.kind {
+            ExprKind::Call { callee, .. } if callee.text == "start" => Some("starts"),
+            ExprKind::Call { callee, .. } if matches!(self.defs.get(&callee.text), Some(Def::Holon { .. })) => Some("enters"),
+            ExprKind::Await { .. } => Some("waits"),
+            ExprKind::State(_) => Some("reads"),
+            ExprKind::Index { base, .. } => match &base.kind {
+                ExprKind::Name(n) if self.imports.values().any(|i| matches!(i, Noun::Declared("collection" | "folder", d) if d == n)) => Some("reads"),
+                _ => None,
+            },
+            ExprKind::Method { receiver, method, .. } => {
+                let m = method.text.as_str();
+                match receiver.text.as_str() {
+                    "http" => return Some("requests"),
+                    "@log" => return Some("logs"),
+                    _ => {}
+                }
+                self.imports.values().find_map(|n| match n {
+                    Noun::Action { flow, .. } if super::lower::call_noun(flow) == receiver.text => Some("calls"),
+                    Noun::Declared(kind, name) if *name == receiver.text => match (*kind, m) {
+                        ("channel", "send" | "pipe") | ("mail" | "queue", "send") => Some("sends"),
+                        ("collection", "put" | "delete") | ("folder", "put" | "delete" | "copy" | "create" | "create_copy") | ("database", "exec" | "insert" | "update" | "delete") => Some("writes"),
+                        ("collection" | "folder" | "database", _) => Some("reads"),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+            }
+            _ => None,
+        }
     }
 
     /// Every branch's condition and every `return` not taken, that the statement being read
@@ -2607,7 +2755,9 @@ impl<'s, 't> Reader<'s, 't> {
         self.frame.depth += 1;
         self.frame.trying.push(Trying { guards: self.frame.guards.len(), made: Vec::new(), exits: Vec::new() });
         self.scopes.push(HashMap::new());
+        let sites = self.sites.len();
         let ret = self.list(tried, block, stmts);
+        let tried_sites = sites..self.sites.len();
         self.scopes.pop();
         let trying = self.frame.trying.pop().expect("pushed above");
         self.frame.depth -= 1;
@@ -2673,6 +2823,10 @@ impl<'s, 't> Reader<'s, 't> {
             return fail(at, "nothing in this try can fail, so its catch never runs: write its statements without it");
         };
         let ok = self.hide(ok, "ok", stmts);
+        // What the block did is kept where it succeeded: outer blocks first.
+        for s in &mut self.sites[tried_sites] {
+            s.kept.insert(0, ok.clone());
+        }
         if let ExprKind::Name(n) = &ok.kind {
             let n = n.clone();
             self.unmade(&n);
@@ -2800,6 +2954,7 @@ impl<'s, 't> Reader<'s, 't> {
     fn throw_statement(&mut self, t: &js::ThrowStatement, block: Block, stmts: &mut Vec<Stmt>) -> R<Ret> {
         let at = self.span(t.span);
         let message = self.error_message(&t.argument)?;
+        self.site(at, "throws");
         let mut failed = leaf("fail", &[], vec![message], at);
         if !self.frame.trying.is_empty() {
             self.hide(failed, "thrown", stmts);
@@ -3356,7 +3511,14 @@ impl<'s, 't> Reader<'s, 't> {
             js::LogicalOperator::Coalesce => BinOp::Coalesce,
         };
         let lhs = operand(self, &l.left)?;
-        let rhs = self.unsure(MAY_NOT_RUN, |s| operand(s, &l.right))?;
+        // The right is read where the left lets it run: `&&` where the left holds, `||` where it
+        // doesn't (no value counts), `??` where it has no value.
+        let runs = match op {
+            BinOp::And => lhs.clone(),
+            BinOp::Or => otherwise(&lhs),
+            _ => Expr { kind: ExprKind::Not(Box::new(has_value(lhs.clone()))), span: lhs.span },
+        };
+        let rhs = self.arm(runs, |me| me.unsure(MAY_NOT_RUN, |s| operand(s, &l.right)))?;
         Ok(Expr { kind: ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span })
     }
 
@@ -3521,6 +3683,9 @@ impl<'s, 't> Reader<'s, 't> {
     ) -> R<HolonDef> {
         let saved = std::mem::take(&mut self.frame);
         self.frame.function = true;
+        self.frame.entry = Some(Atom::Entered(name.to_string()));
+        self.frame.sites = self.sites.len();
+        self.frame.body = at;
         self.frame.used.extend(inputs.iter().map(|(_, port)| port.name.text.clone()));
         self.frame.params.extend(inputs.iter().map(|(param, _)| param.clone()));
         // Each parameter reads, in the body, as the port it is.
@@ -3735,7 +3900,17 @@ impl<'s, 't> Reader<'s, 't> {
 
     // ── expressions ──────────────────────────────────────────────────────────────────────────
 
+    /// `e` read as a value ([`Self::value`]), and recorded as a doing site where it does
+    /// something ([`Self::doing`]).
     fn expr(&mut self, e: &js::Expression) -> R<Expr> {
+        let x = self.value(e)?;
+        if let Some(does) = self.doing(&x) {
+            self.site(x.span, does);
+        }
+        Ok(x)
+    }
+
+    fn value(&mut self, e: &js::Expression) -> R<Expr> {
         let span = self.span(e.span());
         let ok = |kind: ExprKind| Ok(Expr { kind, span });
         match e {
@@ -3854,10 +4029,10 @@ impl<'s, 't> Reader<'s, 't> {
             js::Expression::LogicalExpression(l) => self.logical(e, l, span, Self::expr),
             js::Expression::ConditionalExpression(c) => {
                 let cond = self.cond(&c.test)?;
-                let then = self.unsure(MAY_NOT_RUN, |s| s.expr(&c.consequent))?;
+                let then = self.arm(cond.clone(), |me| me.unsure(MAY_NOT_RUN, |s| s.expr(&c.consequent)))?;
                 let els = match self.unwrap(&c.alternate) {
                     js::Expression::Identifier(i) if i.name == "undefined" && self.lookup("undefined").is_none() => None,
-                    other => Some(Box::new(self.unsure(MAY_NOT_RUN, |s| s.expr(other))?)),
+                    other => Some(Box::new(self.arm(otherwise(&cond), |me| me.unsure(MAY_NOT_RUN, |s| s.expr(other)))?)),
                 };
                 ok(ExprKind::If { cond: Box::new(cond), then: Box::new(then), els })
             }
@@ -5349,7 +5524,9 @@ impl<'s, 't> Reader<'s, 't> {
                 let added: Vec<String> = names.iter().map(|(ts, _)| ts.clone()).filter(|ts| !self.frame.params.contains(ts)).collect();
                 self.frame.params.extend(added.iter().cloned());
                 self.scopes.push(scope);
+                self.frame.marks.push((self.frame.guards.len(), Atom::Item { method: method.to_string(), at: span }));
                 let body = self.unsure(IN_A_FUNCTION, |s| s.expr(body));
+                self.frame.marks.pop();
                 self.scopes.pop();
                 for ts in &added {
                     self.frame.params.remove(ts);
