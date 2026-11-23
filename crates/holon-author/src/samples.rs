@@ -1167,6 +1167,18 @@ static SAMPLES: &[Sample] = &[
         try_it: r#"curl -X POST -d '{"name":"Ada"}' http://127.0.0.1:8203/members/ada, then curl -X POST -d '{"member":"ada","amount":120}' http://127.0.0.1:8203/purchases ("recorded"; GET /members/ada has 12 points), then -d '{"member":"bob","amount":50}' ("recorded", and nothing written): holon runs loyalty --run 3 says, under the write, "not made: collection_get "members" found nothing at members[bob]""#,
         text: include_str!("../samples/loyalty.holon.ts"),
     },
+    Sample {
+        name: "sea-battle",
+        title: "Sea battle (a game server that witnesses its players)",
+        description: "Two captains hide a fleet each and take turns firing, and the server never sees a fleet: each browser sends only a seal (the sha256 of its board and a salt) and answers the shots at it, hit or miss, itself. The flow writes every answer down as a witness, and when the battle ends, checks each revealed board against its seal, the fleet against the rules, and every answer against the board, in a js function; a captain who moved a ship or lied about a hit loses, and one who goes silent to dodge the reveal loses after two minutes (POST /games/:id/claim). The flow calls nowhere and holds no secret, and holon verify replays the game.",
+        shows: &["commit and reveal (sha256 seals)", "a server that witnesses its clients", "js rules", "channels", "a page from a const", "collections"],
+        port: Some("8204"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "open http://127.0.0.1:8204/ and start a game, then open the link it shows in a second browser (or a private window) and join; fire by clicking their waters. Tick \"lie about hits\" on one side to see the reveal catch it. curl http://127.0.0.1:8204/games/<game> shows a game as anyone sees it: the seals, the shots and the answers, and the boards once revealed",
+        text: include_str!("../samples/sea-battle.holon.ts"),
+    },
 ];
 
 #[cfg(test)]

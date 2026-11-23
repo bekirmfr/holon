@@ -4479,4 +4479,1756 @@ setTimeout(() => { $("hint").style.opacity = 0; }, 15000);
   commit={"after":16,"n":17} error=null kind="request" method="POST" nonce="e6060000000000000000000000000000" outputs=#8cd2b67d0d2764b5 performed=[] request=#3fda2f9c7b8725dd response_body="recorded" route="POST /purchases" run_id="a34efb7efa6c898f244a0a7e787f46dc26ef1330dfbc80d849e9832c57369ece" seq=16 session=1 skipped=[{"at":[0,11],"effect":"CollectionWrite(\"members\")","from":[0,1],"leaf":"field","level":"missing"}] sourced=#b912165aebd75329 state_after="2894b1884ca4db15f7232833228c6f3303897cce28760c27e3cb393b63cd4fb8" state_before={"#collection:members":{"type":"Text","value":"c160131e26513093b64a67aa606326ce12da161836c8f379e6325271c7ef8b63"}} status=200 timeline=#556564ea78c52aa2 unit="2d9552fbc4ae7be4320ecab95e731064065bc0fd415a883e2ccfffbc67e837a2" url="/purchases"
 == loyalty · POST /purchases · body 373 → 200 recorded
   commit={"after":17,"n":18} error=null kind="request" method="POST" nonce="e9060000000000000000000000000000" outputs=#8cd2b67d0d2764b5 performed=[] request=#c98d14ddc7bdd7a5 response_body="recorded" route="POST /purchases" run_id="e0f73e5a76afe7de1783cd67a708812f56204378bffa6937a23380894c8ea7e4" seq=17 session=1 skipped=[{"at":[0,11],"effect":"CollectionWrite(\"members\")","from":[0,1],"leaf":"field","level":"missing"}] sourced=#059fbac97a714051 state_after="2894b1884ca4db15f7232833228c6f3303897cce28760c27e3cb393b63cd4fb8" state_before={"#collection:members":{"type":"Text","value":"c160131e26513093b64a67aa606326ce12da161836c8f379e6325271c7ef8b63"}} status=200 timeline=#abb137cf4a885a6c unit="2d9552fbc4ae7be4320ecab95e731064065bc0fd415a883e2ccfffbc67e837a2" url="/purchases"
+== sea-battle · POST /games · body 0 → 400 {"error":"a seal is the sha256 of the board and a salt, in hex"}
+  commit={"after":0,"n":1} error=null kind="request" method="POST" nonce="ec060000000000000000000000000000" outputs=#9a49f3b03237d3c6 performed=[] request=#07fee03c19cf247c response_body="{\"error\":\"a seal is the sha256 of the board and a salt, in hex\"}" route="POST /games" run_id="aae65491b09dcfc9bb4c53b3021c09201c1bfb4ed24f384ec20bae2c65052bc5" seq=0 session=1 sourced=#7bf84bc054b9bc82 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=400 timeline=#bb23988d0e9308ad unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games"
+== sea-battle · POST /games · body 232 → 400 {"error":"a seal is the sha256 of the board and a salt, in hex"}
+  commit={"after":1,"n":2} error=null kind="request" method="POST" nonce="ef060000000000000000000000000000" outputs=#9a49f3b03237d3c6 performed=[] request=#94c7d08aa7944ec1 response_body="{\"error\":\"a seal is the sha256 of the board and a salt, in hex\"}" route="POST /games" run_id="777ab45bff693ede3b96a4848c7f35795f677e4f107d276e2083b49e52af101f" seq=1 session=1 sourced=#7a69ccd5ba01b030 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=400 timeline=#a481d22f384dad9e unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games"
+== sea-battle · POST /games · body 373 → 400 {"error":"a seal is the sha256 of the board and a salt, in hex"}
+  commit={"after":2,"n":3} error=null kind="request" method="POST" nonce="f2060000000000000000000000000000" outputs=#9a49f3b03237d3c6 performed=[] request=#84579aa0d5d3a839 response_body="{\"error\":\"a seal is the sha256 of the board and a salt, in hex\"}" route="POST /games" run_id="f6c17f6695e32ca42d086c0da86df735129a27cd42e3ab84504f7e0dc441ccd4" seq=2 session=1 sourced=#1e7209795f64f3fc state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=400 timeline=#ad03e1b4f1a32732 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games"
+== sea-battle · POST /games/tea/reveal · body 0 → 409 {"error":"nothing to reveal now"}
+  commit={"after":3,"n":4} error=null kind="request" method="POST" nonce="f5060000000000000000000000000000" outputs=#2d74280075f9725f performed=[] reads=#2bde8f177059703e request=#7e86d50f633f62ec response_body="{\"error\":\"nothing to reveal now\"}" route="POST /games/:id/reveal" run_id="7a3b176813b6c0182b51b184383d36380720f0a2efd50981f69eb166e00989c5" seq=3 session=1 skipped=[{"at":[0,7],"effect":"CollectionWrite(\"games\")","from":[0,57],"leaf":"collection_get","level":"read","read":0}] sourced=#ac9af5e0548908d1 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#4fc8bdd3b4ed2ac6 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/reveal"
+== sea-battle · POST /games/tea/reveal · body 232 → 409 {"error":"nothing to reveal now"}
+  commit={"after":4,"n":5} error=null kind="request" method="POST" nonce="f8060000000000000000000000000000" outputs=#2d74280075f9725f performed=[] reads=#2bde8f177059703e request=#499c15d3318f2dd9 response_body="{\"error\":\"nothing to reveal now\"}" route="POST /games/:id/reveal" run_id="e1bec5e59f95b23660a443a6659b98e13cfa340a793004eaf91d620f0632a83a" seq=4 session=1 skipped=[{"at":[0,7],"effect":"CollectionWrite(\"games\")","from":[0,57],"leaf":"collection_get","level":"read","read":0}] sourced=#05f058dbffd0b579 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#fa16cdd5562b9fe5 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/reveal"
+== sea-battle · POST /games/tea/reveal · body 373 → 409 {"error":"nothing to reveal now"}
+  commit={"after":5,"n":6} error=null kind="request" method="POST" nonce="fb060000000000000000000000000000" outputs=#2d74280075f9725f performed=[] reads=#2bde8f177059703e request=#3ce37aa7098aba80 response_body="{\"error\":\"nothing to reveal now\"}" route="POST /games/:id/reveal" run_id="8d34b320f40b910d3db653cfe3fb2920b1ff9ceb21c8c0963a1efadb9d4a25c8" seq=5 session=1 skipped=[{"at":[0,7],"effect":"CollectionWrite(\"games\")","from":[0,57],"leaf":"collection_get","level":"read","read":0}] sourced=#6da7f950601d445c state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#cfe05865c80b0f76 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/reveal"
+== sea-battle · GET /live · body 0 → 200 
+  commit={"after":6,"n":7} error=null kind="request" method="GET" nonce="fe060000000000000000000000000000" outputs=#8cff4caecc586271 performed=[] request=#aa7cffe1a3e4bfa3 response_body="" route="GET /live" run_id="72888d836928b537619bc13aa96577c3f4832784eeccc3c9868cee6eb1029067" seq=6 session=1 sourced=#6ca9887df49de92d state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=200 timeline=#ac64f951589b71f6 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/live"
+== sea-battle · GET /live · body 232 → 200 
+  commit={"after":7,"n":8} error=null kind="request" method="GET" nonce="01070000000000000000000000000000" outputs=#8cff4caecc586271 performed=[] request=#b70fe2b961a45513 response_body="" route="GET /live" run_id="05d8347d2e23b2ffdc77eaa96a6edf4d5c87416d4edba1dc9e0e50434f2ab5ff" seq=7 session=1 sourced=#5814bf29f790b38b state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=200 timeline=#cb48760c570d33f1 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/live"
+== sea-battle · GET /live · body 373 → 200 
+  commit={"after":8,"n":9} error=null kind="request" method="GET" nonce="04070000000000000000000000000000" outputs=#8cff4caecc586271 performed=[] request=#c06649e042b67583 response_body="" route="GET /live" run_id="e2080fdc20ed36d69629726de20c8d345aed5eaff70c99ed30de497abbaa406d" seq=8 session=1 sourced=#c9d4cbd8118c0484 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=200 timeline=#0ffacf2648f59a3b unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/live"
+== sea-battle · GET /games/tea · body 0 → 404 {"error":"not found"}
+  commit={"after":9,"n":10} error=null kind="request" method="GET" nonce="07070000000000000000000000000000" outputs=#5369badf53049206 performed=[] reads=#fa9bf08046f32365 request=#832f0d5fbda11c06 response_body="{\"error\":\"not found\"}" route="GET /games/:id" run_id="8d587a6a1f158cf1eb8ea142bbb45c0c7e0b0fd3063be8b0dd9818c6f5b7ffed" seq=9 session=1 sourced=#509b93c6d36d5f12 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=404 timeline=#c2e31c954a17c652 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea"
+== sea-battle · GET /games/tea · body 232 → 404 {"error":"not found"}
+  commit={"after":10,"n":11} error=null kind="request" method="GET" nonce="0a070000000000000000000000000000" outputs=#5369badf53049206 performed=[] reads=#fa9bf08046f32365 request=#22169f4fcfb61704 response_body="{\"error\":\"not found\"}" route="GET /games/:id" run_id="b25ceb7d3d74d1aac94e60f14cf8767f72bbc871cff35b37a0dd17483dfb262f" seq=10 session=1 sourced=#15fe6ef2fb2e7aea state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=404 timeline=#992d56465e255de4 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea"
+== sea-battle · GET /games/tea · body 373 → 404 {"error":"not found"}
+  commit={"after":11,"n":12} error=null kind="request" method="GET" nonce="0d070000000000000000000000000000" outputs=#5369badf53049206 performed=[] reads=#fa9bf08046f32365 request=#3041cd62917d1838 response_body="{\"error\":\"not found\"}" route="GET /games/:id" run_id="a48914b996ab28acb04909a76e375bb4faa26ada64cee688cb83393e62126dd0" seq=11 session=1 sourced=#a6ca6fc15351b57c state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=404 timeline=#2977781b82ddc5ef unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea"
+== sea-battle · POST /games/tea/fire · body 0 → 409 {"error":"not your turn, or not a square you can fire at"}
+  commit={"after":12,"n":13} error=null kind="request" method="POST" nonce="10070000000000000000000000000000" outputs=#108d3b3b91f356ce performed=[] reads=#82f1ff399c99d042 request=#602bef0bde8eaf57 response_body="{\"error\":\"not your turn, or not a square you can fire at\"}" route="POST /games/:id/fire" run_id="436dee9cb7261cb6ca6a5b2e0a5bee9cf1a95908e16f8bad502f18a952594674" seq=12 session=1 skipped=[{"at":[0,6],"effect":"CollectionWrite(\"games\")","from":[0,53],"leaf":"collection_get","level":"read","read":0}] sourced=#376e898d66097981 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#788b690fa5bd7713 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/fire"
+== sea-battle · POST /games/tea/fire · body 232 → 409 {"error":"not your turn, or not a square you can fire at"}
+  commit={"after":13,"n":14} error=null kind="request" method="POST" nonce="13070000000000000000000000000000" outputs=#108d3b3b91f356ce performed=[] reads=#82f1ff399c99d042 request=#79d0a8a5127bc45e response_body="{\"error\":\"not your turn, or not a square you can fire at\"}" route="POST /games/:id/fire" run_id="3e515f6c46a0db164ebb4c3cbb9cc48f3b23f09d094c1479b74f560904de226b" seq=13 session=1 skipped=[{"at":[0,6],"effect":"CollectionWrite(\"games\")","from":[0,53],"leaf":"collection_get","level":"read","read":0}] sourced=#67fa370da5425ce3 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#ab9d8348d37a8fe4 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/fire"
+== sea-battle · POST /games/tea/fire · body 373 → 409 {"error":"not your turn, or not a square you can fire at"}
+  commit={"after":14,"n":15} error=null kind="request" method="POST" nonce="16070000000000000000000000000000" outputs=#108d3b3b91f356ce performed=[] reads=#82f1ff399c99d042 request=#a67c5f4265a9f4cf response_body="{\"error\":\"not your turn, or not a square you can fire at\"}" route="POST /games/:id/fire" run_id="79860cd214128ef33d7c326505afbbf1df97f6d6c53e4cca582f45113c319d2a" seq=14 session=1 skipped=[{"at":[0,6],"effect":"CollectionWrite(\"games\")","from":[0,53],"leaf":"collection_get","level":"read","read":0}] sourced=#c4f0cd541f4a677f state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#5a202607d11f9957 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/fire"
+== sea-battle · POST /games/tea/join · body 0 → 404 {"error":"not found"}
+  commit={"after":15,"n":16} error=null kind="request" method="POST" nonce="19070000000000000000000000000000" outputs=#3f8837953c01db22 performed=[] reads=#950d071bc17e9cc2 request=#9e308d32b949fb7d response_body="{\"error\":\"not found\"}" route="POST /games/:id/join" run_id="22e2a16398358a35195546cbc08b5328bb2e988d0f063467413d4e3b0e84c63b" seq=15 session=1 skipped=#f25044a76f4c9495 sourced=#814e133940b4f5ab state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=404 timeline=#80a8e6537417de52 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/join"
+== sea-battle · POST /games/tea/join · body 232 → 404 {"error":"not found"}
+  commit={"after":16,"n":17} error=null kind="request" method="POST" nonce="1c070000000000000000000000000000" outputs=#3f8837953c01db22 performed=[] reads=#950d071bc17e9cc2 request=#093e898b695615f2 response_body="{\"error\":\"not found\"}" route="POST /games/:id/join" run_id="7c6d4b4c22e42d17a7f3a8f6dd4123ebf6e1468044f873a6b14b197a5b13cfb4" seq=16 session=1 skipped=#f25044a76f4c9495 sourced=#601f646d5beaef09 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=404 timeline=#aa6b5e6bf8a4265d unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/join"
+== sea-battle · POST /games/tea/join · body 373 → 404 {"error":"not found"}
+  commit={"after":17,"n":18} error=null kind="request" method="POST" nonce="1f070000000000000000000000000000" outputs=#3f8837953c01db22 performed=[] reads=#950d071bc17e9cc2 request=#9faf702639e8bbab response_body="{\"error\":\"not found\"}" route="POST /games/:id/join" run_id="4e1ed679d4e0b6484c850ce3a8b6fddbf71bf4ed7db559c2c5c470a7c3b9e995" seq=17 session=1 skipped=#f25044a76f4c9495 sourced=#ecab44e1f7b52639 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=404 timeline=#cae0b18a4b083afa unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/join"
+== sea-battle · GET / · body 0 → 200 <!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sea battle</title>
+<style>
+:root{color-scheme:dark;--sea:#0b2740;--deep:#06182a;--ink:#dbe9f2;--dim:#86a0b4;--ship:#9fb3c4;--hit:#ff6b4a;--miss:#3d6c8f;--ok:#6fd39a;--bad:#ff8a73;--line:#ffffff14}
+*{box-sizing:border-box}
+body{margin:0;background:var(--deep);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:24px 16px 48px}
+h1{margin:0 0 4px;font-size:26px;letter-spacing:.5px}
+p{margin:6px 0}
+.dim{color:var(--dim)}
+.seas{display:flex;flex-wrap:wrap;gap:24px;margin:20px 0}
+.sea{flex:1 1 300px;max-width:400px}
+.sea h2{font-size:15px;margin:0 0 8px;font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(8,1fr);gap:3px;background:var(--line);padding:3px;border-radius:8px}
+.grid button{aspect-ratio:1;border:0;border-radius:4px;background:var(--sea);color:var(--ink);font:inherit;font-size:18px;padding:0;cursor:default}
+.grid button.ship{background:var(--ship)}
+.grid button.miss::after{content:"";display:block;width:26%;aspect-ratio:1;margin:auto;border-radius:50%;background:var(--miss)}
+.grid button.hit{background:var(--hit)}
+.grid button.wait{outline:2px dashed var(--ink);outline-offset:-4px}
+.grid button.lie{box-shadow:inset 0 0 0 3px #ffd54a}
+.grid.aim button:not(.hit):not(.miss):not(.wait){cursor:crosshair}
+.grid.aim button:not(.hit):not(.miss):not(.wait):hover{background:#174a70}
+.seal{font:12px ui-monospace,monospace;color:var(--dim);word-break:break-all}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+input[type=text]{background:var(--sea);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:8px 10px;font:inherit}
+button.go{background:#2f7fb8;color:#fff;border:0;border-radius:6px;padding:8px 14px;font:inherit;cursor:pointer}
+button.go.quiet{background:transparent;border:1px solid var(--line);color:var(--ink)}
+#status{font-size:17px;margin-top:14px;min-height:1.5em}
+#verdict{display:none;margin:18px 0;padding:14px 16px;border-radius:10px;background:#0f3150}
+#verdict.on{display:block}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+#link{font:13px ui-monospace,monospace;word-break:break-all}
+</style>
+<main>
+<h1>Sea battle</h1>
+<p class="dim">The server never sees your fleet. It keeps a seal of it, writes down every answer you give, and checks them all when the boards are revealed.</p>
+
+<section id="lobby">
+<div class="bar"><input type="text" id="name" placeholder="Your name" maxlength="24"><button class="go quiet" id="shuffle">Shuffle fleet</button><button class="go" id="start">Start a game</button></div>
+</section>
+
+<p id="status"></p>
+<p id="share" style="display:none">Send this link to your opponent: <span id="link"></span></p>
+<div class="bar" id="cheat" style="display:none"><label><input type="checkbox" id="lie"> Lie about hits (answer "miss" when they hit me)</label></div>
+
+<div class="seas">
+<div class="sea"><h2 id="leftname">Your waters</h2><div class="grid" id="left"></div><p class="seal" id="leftseal"></p></div>
+<div class="sea"><h2 id="rightname">Their waters</h2><div class="grid" id="right"></div><p class="seal" id="rightseal"></p></div>
+</div>
+
+<p id="claimbar" style="display:none"><button class="go" id="claim"></button></p>
+<div id="verdict"></div>
+</main>
+<script>
+var FLEET = [4, 3, 3, 2];
+var $ = function (id) { return document.getElementById(id); };
+var memory = {};
+var load = function (id) { try { return JSON.parse(localStorage.getItem("sea-battle:" + id)) || memory[id] || null; } catch (e) { return memory[id] || null; } };
+var save = function (id, v) { memory[id] = v; try { localStorage.setItem("sea-battle:" + id, JSON.stringify(v)); } catch (e) {} };
+
+var hex = function (bytes) { return Array.from(bytes, function (b) { return (b + 256).toString(16).slice(1); }).join(""); };
+var sha = function (text) {
+  if (window.crypto && crypto.subtle) return crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)).then(function (d) { return hex(new Uint8Array(d)); });
+  return Promise.resolve(own(text));
+};
+// sha256 for a page served over plain http on a network, where the browser offers none.
+var own = function (text) {
+  var bytes = new TextEncoder().encode(text), primes = [];
+  for (var c = 2; primes.length < 64; c++) if (primes.every(function (p) { return c % p; })) primes.push(c);
+  var frac = function (x) { return x - Math.floor(x); };
+  var K = primes.map(function (p) { return Math.floor(frac(Math.cbrt(p)) * 4294967296); });
+  var h = primes.slice(0, 8).map(function (p) { return Math.floor(frac(Math.sqrt(p)) * 4294967296); });
+  var size = ((bytes.length + 9 + 63) >> 6) << 6, buf = new Uint8Array(size);
+  buf.set(bytes); buf[bytes.length] = 128;
+  var view = new DataView(buf.buffer);
+  view.setUint32(size - 8, Math.floor(bytes.length / 536870912)); view.setUint32(size - 4, (bytes.length << 3) >>> 0);
+  var w = new Array(64), rotr = function (x, n) { return (x >>> n) | (x << (32 - n)); };
+  for (var off = 0; off < size; off += 64) {
+    for (var i = 0; i < 16; i++) w[i] = view.getUint32(off + i * 4);
+    for (i = 16; i < 64; i++) w[i] = (w[i - 16] + (rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3)) + w[i - 7] + (rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10))) >>> 0;
+    var a = h[0], b = h[1], cc = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (i = 0; i < 64; i++) {
+      var t1 = (hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) >>> 0;
+      var t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & cc) ^ (b & cc))) >>> 0;
+      hh = g; g = f; f = e; e = (d + t1) >>> 0; d = cc; cc = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    [a, b, cc, d, e, f, g, hh].forEach(function (v, i) { h[i] = (h[i] + v) >>> 0; });
+  }
+  return h.map(function (v) { return (v + 4294967296).toString(16).slice(1); }).join("");
+};
+
+// A fleet placed at random: ships 1 to 4, each a straight line, none overlapping.
+var shuffle = function () {
+  var cells = new Array(64).fill("0");
+  FLEET.forEach(function (len, i) {
+    for (;;) {
+      var across = Math.random() < 0.5;
+      var r = Math.floor(Math.random() * (across ? 8 : 9 - len)), c = Math.floor(Math.random() * (across ? 9 - len : 8));
+      var at = [];
+      for (var k = 0; k < len; k++) at.push((r + (across ? 0 : k)) * 8 + c + (across ? k : 0));
+      if (at.every(function (x) { return cells[x] === "0"; })) { at.forEach(function (x) { cells[x] = String(i + 1); }); return; }
+    }
+  });
+  return cells.join("");
+};
+var salt = function () { var b = new Uint8Array(16); crypto.getRandomValues(b); return hex(b); };
+
+var grids = {};
+var makeGrid = function (id, onClick) {
+  var el = $(id), cells = [];
+  for (var k = 0; k < 64; k++) {
+    var btn = document.createElement("button");
+    btn.setAttribute("aria-label", "ABCDEFGH"[k % 8] + (Math.floor(k / 8) + 1));
+    (function (k) { btn.onclick = function () { if (onClick) onClick(k); }; })(k);
+    el.appendChild(btn); cells.push(btn);
+  }
+  grids[id] = cells;
+};
+var paint = function (id, cls) { grids[id].forEach(function (b, k) { b.className = cls(k); }); };
+
+var post = function (path, body) {
+  return fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; }); });
+};
+
+var gameId = location.hash.slice(1), game = null, mine = null, draft = { board: shuffle(), salt: salt() }, busy = false;
+
+var marks = function (shots, k) {
+  var s = shots.find(function (s) { return s.cell === k; });
+  return s ? (s.said === "" ? " wait" : " " + s.said) : "";
+};
+var render = function () {
+  var g = game;
+  if (!g) {
+    paint("left", function (k) { return draft.board[k] !== "0" ? "ship" : ""; });
+    paint("right", function () { return ""; });
+    $("leftname").textContent = "Your fleet (only you can see it)";
+    $("rightname").textContent = "Their waters";
+    return;
+  }
+  var me = mine && mine.seat, them = me === "b" ? "a" : "b";
+  var left = me || "a", right = me ? them : "b";
+  var atLeft = g.shots.filter(function (s) { return s.by !== left; });
+  var atRight = g.shots.filter(function (s) { return s.by === left; });
+  var boardOf = function (seat) { return seat === me ? mine.board : g[seat].board; };
+  var lies = function (seat) { return g[seat].lies || []; };
+  var cls = function (seat, shots) {
+    return function (k) {
+      var b = boardOf(seat);
+      return (b && b[k] !== "0" ? "ship" : "") + marks(shots, k) + (lies(seat).indexOf(k) >= 0 ? " lie" : "");
+    };
+  };
+  paint("left", cls(left, atLeft));
+  paint("right", cls(right, atRight));
+  $("leftname").textContent = (me ? "Your waters" : (g.a.name || "Captain A") + "'s waters");
+  $("rightname").textContent = (g[right].name || "Waiting for a captain") + "'s waters";
+  $("leftseal").textContent = "seal " + (g[left].commit || "...");
+  $("rightseal").textContent = "seal " + (g[right].commit || "...");
+  var aim = me && g.phase === "play" && g.turn === me && !g.shots.some(function (s) { return s.said === ""; });
+  $("right").className = "grid" + (aim ? " aim" : "");
+  $("lobby").style.display = "none";
+  $("share").style.display = me === "a" && g.phase === "waiting" ? "" : "none";
+  $("link").textContent = location.href;
+  $("cheat").style.display = me && (g.phase === "play" || g.phase === "waiting") ? "" : "none";
+  var hits = function (seat) { return g.shots.filter(function (s) { return s.by === seat && s.said === "hit"; }).length; };
+  var say = g.phase === "waiting" ? (me ? "Waiting for an opponent to join." : "This game is waiting for a second captain.")
+    : g.phase === "play" ? (me ? (g.turn === me ? "Your turn: fire at their waters." : "Their turn.") : g[g.turn].name + " is firing.") + " Hits " + hits(left) + " / 12, taken " + hits(right) + " / 12."
+    : g.phase === "reveal" ? "The battle is over. The boards are being revealed and checked."
+    : g.winner ? g[g.winner].name + " wins." : "Nobody wins.";
+  $("status").textContent = say;
+  var v = $("verdict");
+  if (g.phase === "over") {
+    var line = function (seat) {
+      var p = g[seat];
+      if (!p.revealed) return "<p><b></b>: <span class=bad>went silent and never revealed a board</span></p>";
+      return "<p><b></b>: " + (p.sealed ? "<span class=ok>board matches its seal</span>" : "<span class=bad>board does not match its seal</span>")
+        + ", " + (p.fleet === "" ? "<span class=ok>legal fleet</span>" : "<span class=bad>illegal fleet</span>")
+        + ", " + (p.lies.length ? "<span class=bad>" + p.lies.length + " false answers (marked in yellow)</span>" : "<span class=ok>every answer true</span>") + "</p>";
+    };
+    v.innerHTML = "<p id=why></p>" + line("a") + line("b");
+    v.querySelector("#why").textContent = g.why;
+    v.querySelectorAll("b")[0].textContent = g.a.name;
+    v.querySelectorAll("b")[1].textContent = g.b.name;
+    v.className = "on";
+  } else v.className = "";
+  silence();
+  act();
+};
+
+// What this page does by itself: answer a shot at it, and reveal its board when the battle ends.
+var act = function () {
+  var g = game, me = mine && mine.seat;
+  if (!g || !me || busy) return;
+  var waiting = g.shots.find(function (s) { return s.said === "" && s.by !== me; });
+  if (g.phase === "play" && waiting) {
+    var hit = mine.board[waiting.cell] !== "0";
+    busy = true;
+    post("/games/" + gameId + "/answer", { key: mine.key, said: hit && !$("lie").checked ? "hit" : "miss" }).then(done);
+  } else if (g.phase === "reveal" && !g[me].revealed) {
+    busy = true;
+    post("/games/" + gameId + "/reveal", { key: mine.key, board: mine.board, salt: mine.salt }).then(done);
+  }
+};
+var done = function (r) { busy = false; if (r.ok && r.body.id) { game = r.body; render(); } };
+
+// When the opponent has kept everyone waiting two minutes, a button to claim the game.
+var silence = function () {
+  var g = game, me = mine && mine.seat, them = me === "b" ? "a" : "b";
+  var pending = g && g.shots.find(function (s) { return s.said === ""; });
+  var waitingOn = !g ? "" : g.phase === "reveal" ? (g[them].revealed ? "" : them) : g.phase !== "play" ? "" : pending ? (pending.by === me ? them : me) : g.turn;
+  var left = g ? 120 - (Date.now() / 1000 - g.since) : 0;
+  var can = me && waitingOn === them && (g.phase === "play" || g[me].revealed) && left <= 0;
+  $("claimbar").style.display = can ? "" : "none";
+  if (can) $("claim").textContent = g[them].name + " has gone silent. Claim the game";
+};
+setInterval(function () { if (game) silence(); }, 5000);
+var claim = function () {
+  if (busy) return;
+  busy = true;
+  post("/games/" + gameId + "/claim", { key: mine.key, board: mine.board, salt: mine.salt }).then(done);
+};
+
+var fire = function (k) {
+  var g = game, me = mine && mine.seat;
+  if (!g || !me || busy || g.phase !== "play" || g.turn !== me) return;
+  busy = true;
+  post("/games/" + gameId + "/fire", { key: mine.key, cell: k }).then(done);
+};
+
+var refresh = function () {
+  return fetch("/games/" + gameId).then(function (r) { return r.ok ? r.json() : null; }).then(function (g) {
+    game = g;
+    if (!g) { $("status").textContent = "There is no game " + gameId + "."; return; }
+    if (!mine && g.phase === "waiting") {
+      $("start").textContent = "Join " + (g.a.name || "this game");
+      $("lobby").style.display = "";
+      $("status").textContent = (g.a.name || "A captain") + " is waiting for an opponent. Shuffle your fleet and join.";
+      game = null; render(); game = g;
+      return;
+    }
+    render();
+  });
+};
+
+var begin = function () {
+  var name = $("name").value.trim();
+  $("start").disabled = true;
+  sha(draft.board + "|" + draft.salt).then(function (commit) {
+    return post(gameId ? "/games/" + gameId + "/join" : "/games", { name: name || undefined, commit: commit });
+  }).then(function (r) {
+    $("start").disabled = false;
+    if (!r.ok) { $("status").textContent = r.body.error || "That didn't work."; return; }
+    gameId = r.body.game;
+    mine = { seat: r.body.seat, key: r.body.key, board: draft.board, salt: draft.salt };
+    save(gameId, mine);
+    history.replaceState(null, "", "#" + gameId);
+    refresh();
+  });
+};
+
+makeGrid("left");
+makeGrid("right", fire);
+$("shuffle").onclick = function () { draft = { board: shuffle(), salt: salt() }; render(); };
+$("start").onclick = begin;
+$("claim").onclick = claim;
+new EventSource("/live").onmessage = function (e) {
+  var g = JSON.parse(e.data);
+  if (g.id === gameId && (mine || g.phase !== "waiting")) { game = g; render(); }
+};
+if (gameId) { mine = load(gameId); refresh(); } else render();
+</script>
+</html>
+  commit={"after":18,"n":19} error=null kind="request" method="GET" nonce="22070000000000000000000000000000" outputs=#58bd1d21442dba58 performed=[] request=#1033d05cc439533d response_body=#439b4a3fb0628bd0 route="GET /" run_id="038ae946b88405f53ac0fb0052998b8666e291c0caf561183e7717d13fec825d" seq=18 session=1 sourced=#604bfe8fd8a935ef state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=200 timeline=#1ab9ceeba1197493 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/"
+== sea-battle · GET / · body 232 → 200 <!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sea battle</title>
+<style>
+:root{color-scheme:dark;--sea:#0b2740;--deep:#06182a;--ink:#dbe9f2;--dim:#86a0b4;--ship:#9fb3c4;--hit:#ff6b4a;--miss:#3d6c8f;--ok:#6fd39a;--bad:#ff8a73;--line:#ffffff14}
+*{box-sizing:border-box}
+body{margin:0;background:var(--deep);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:24px 16px 48px}
+h1{margin:0 0 4px;font-size:26px;letter-spacing:.5px}
+p{margin:6px 0}
+.dim{color:var(--dim)}
+.seas{display:flex;flex-wrap:wrap;gap:24px;margin:20px 0}
+.sea{flex:1 1 300px;max-width:400px}
+.sea h2{font-size:15px;margin:0 0 8px;font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(8,1fr);gap:3px;background:var(--line);padding:3px;border-radius:8px}
+.grid button{aspect-ratio:1;border:0;border-radius:4px;background:var(--sea);color:var(--ink);font:inherit;font-size:18px;padding:0;cursor:default}
+.grid button.ship{background:var(--ship)}
+.grid button.miss::after{content:"";display:block;width:26%;aspect-ratio:1;margin:auto;border-radius:50%;background:var(--miss)}
+.grid button.hit{background:var(--hit)}
+.grid button.wait{outline:2px dashed var(--ink);outline-offset:-4px}
+.grid button.lie{box-shadow:inset 0 0 0 3px #ffd54a}
+.grid.aim button:not(.hit):not(.miss):not(.wait){cursor:crosshair}
+.grid.aim button:not(.hit):not(.miss):not(.wait):hover{background:#174a70}
+.seal{font:12px ui-monospace,monospace;color:var(--dim);word-break:break-all}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+input[type=text]{background:var(--sea);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:8px 10px;font:inherit}
+button.go{background:#2f7fb8;color:#fff;border:0;border-radius:6px;padding:8px 14px;font:inherit;cursor:pointer}
+button.go.quiet{background:transparent;border:1px solid var(--line);color:var(--ink)}
+#status{font-size:17px;margin-top:14px;min-height:1.5em}
+#verdict{display:none;margin:18px 0;padding:14px 16px;border-radius:10px;background:#0f3150}
+#verdict.on{display:block}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+#link{font:13px ui-monospace,monospace;word-break:break-all}
+</style>
+<main>
+<h1>Sea battle</h1>
+<p class="dim">The server never sees your fleet. It keeps a seal of it, writes down every answer you give, and checks them all when the boards are revealed.</p>
+
+<section id="lobby">
+<div class="bar"><input type="text" id="name" placeholder="Your name" maxlength="24"><button class="go quiet" id="shuffle">Shuffle fleet</button><button class="go" id="start">Start a game</button></div>
+</section>
+
+<p id="status"></p>
+<p id="share" style="display:none">Send this link to your opponent: <span id="link"></span></p>
+<div class="bar" id="cheat" style="display:none"><label><input type="checkbox" id="lie"> Lie about hits (answer "miss" when they hit me)</label></div>
+
+<div class="seas">
+<div class="sea"><h2 id="leftname">Your waters</h2><div class="grid" id="left"></div><p class="seal" id="leftseal"></p></div>
+<div class="sea"><h2 id="rightname">Their waters</h2><div class="grid" id="right"></div><p class="seal" id="rightseal"></p></div>
+</div>
+
+<p id="claimbar" style="display:none"><button class="go" id="claim"></button></p>
+<div id="verdict"></div>
+</main>
+<script>
+var FLEET = [4, 3, 3, 2];
+var $ = function (id) { return document.getElementById(id); };
+var memory = {};
+var load = function (id) { try { return JSON.parse(localStorage.getItem("sea-battle:" + id)) || memory[id] || null; } catch (e) { return memory[id] || null; } };
+var save = function (id, v) { memory[id] = v; try { localStorage.setItem("sea-battle:" + id, JSON.stringify(v)); } catch (e) {} };
+
+var hex = function (bytes) { return Array.from(bytes, function (b) { return (b + 256).toString(16).slice(1); }).join(""); };
+var sha = function (text) {
+  if (window.crypto && crypto.subtle) return crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)).then(function (d) { return hex(new Uint8Array(d)); });
+  return Promise.resolve(own(text));
+};
+// sha256 for a page served over plain http on a network, where the browser offers none.
+var own = function (text) {
+  var bytes = new TextEncoder().encode(text), primes = [];
+  for (var c = 2; primes.length < 64; c++) if (primes.every(function (p) { return c % p; })) primes.push(c);
+  var frac = function (x) { return x - Math.floor(x); };
+  var K = primes.map(function (p) { return Math.floor(frac(Math.cbrt(p)) * 4294967296); });
+  var h = primes.slice(0, 8).map(function (p) { return Math.floor(frac(Math.sqrt(p)) * 4294967296); });
+  var size = ((bytes.length + 9 + 63) >> 6) << 6, buf = new Uint8Array(size);
+  buf.set(bytes); buf[bytes.length] = 128;
+  var view = new DataView(buf.buffer);
+  view.setUint32(size - 8, Math.floor(bytes.length / 536870912)); view.setUint32(size - 4, (bytes.length << 3) >>> 0);
+  var w = new Array(64), rotr = function (x, n) { return (x >>> n) | (x << (32 - n)); };
+  for (var off = 0; off < size; off += 64) {
+    for (var i = 0; i < 16; i++) w[i] = view.getUint32(off + i * 4);
+    for (i = 16; i < 64; i++) w[i] = (w[i - 16] + (rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3)) + w[i - 7] + (rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10))) >>> 0;
+    var a = h[0], b = h[1], cc = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (i = 0; i < 64; i++) {
+      var t1 = (hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) >>> 0;
+      var t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & cc) ^ (b & cc))) >>> 0;
+      hh = g; g = f; f = e; e = (d + t1) >>> 0; d = cc; cc = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    [a, b, cc, d, e, f, g, hh].forEach(function (v, i) { h[i] = (h[i] + v) >>> 0; });
+  }
+  return h.map(function (v) { return (v + 4294967296).toString(16).slice(1); }).join("");
+};
+
+// A fleet placed at random: ships 1 to 4, each a straight line, none overlapping.
+var shuffle = function () {
+  var cells = new Array(64).fill("0");
+  FLEET.forEach(function (len, i) {
+    for (;;) {
+      var across = Math.random() < 0.5;
+      var r = Math.floor(Math.random() * (across ? 8 : 9 - len)), c = Math.floor(Math.random() * (across ? 9 - len : 8));
+      var at = [];
+      for (var k = 0; k < len; k++) at.push((r + (across ? 0 : k)) * 8 + c + (across ? k : 0));
+      if (at.every(function (x) { return cells[x] === "0"; })) { at.forEach(function (x) { cells[x] = String(i + 1); }); return; }
+    }
+  });
+  return cells.join("");
+};
+var salt = function () { var b = new Uint8Array(16); crypto.getRandomValues(b); return hex(b); };
+
+var grids = {};
+var makeGrid = function (id, onClick) {
+  var el = $(id), cells = [];
+  for (var k = 0; k < 64; k++) {
+    var btn = document.createElement("button");
+    btn.setAttribute("aria-label", "ABCDEFGH"[k % 8] + (Math.floor(k / 8) + 1));
+    (function (k) { btn.onclick = function () { if (onClick) onClick(k); }; })(k);
+    el.appendChild(btn); cells.push(btn);
+  }
+  grids[id] = cells;
+};
+var paint = function (id, cls) { grids[id].forEach(function (b, k) { b.className = cls(k); }); };
+
+var post = function (path, body) {
+  return fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; }); });
+};
+
+var gameId = location.hash.slice(1), game = null, mine = null, draft = { board: shuffle(), salt: salt() }, busy = false;
+
+var marks = function (shots, k) {
+  var s = shots.find(function (s) { return s.cell === k; });
+  return s ? (s.said === "" ? " wait" : " " + s.said) : "";
+};
+var render = function () {
+  var g = game;
+  if (!g) {
+    paint("left", function (k) { return draft.board[k] !== "0" ? "ship" : ""; });
+    paint("right", function () { return ""; });
+    $("leftname").textContent = "Your fleet (only you can see it)";
+    $("rightname").textContent = "Their waters";
+    return;
+  }
+  var me = mine && mine.seat, them = me === "b" ? "a" : "b";
+  var left = me || "a", right = me ? them : "b";
+  var atLeft = g.shots.filter(function (s) { return s.by !== left; });
+  var atRight = g.shots.filter(function (s) { return s.by === left; });
+  var boardOf = function (seat) { return seat === me ? mine.board : g[seat].board; };
+  var lies = function (seat) { return g[seat].lies || []; };
+  var cls = function (seat, shots) {
+    return function (k) {
+      var b = boardOf(seat);
+      return (b && b[k] !== "0" ? "ship" : "") + marks(shots, k) + (lies(seat).indexOf(k) >= 0 ? " lie" : "");
+    };
+  };
+  paint("left", cls(left, atLeft));
+  paint("right", cls(right, atRight));
+  $("leftname").textContent = (me ? "Your waters" : (g.a.name || "Captain A") + "'s waters");
+  $("rightname").textContent = (g[right].name || "Waiting for a captain") + "'s waters";
+  $("leftseal").textContent = "seal " + (g[left].commit || "...");
+  $("rightseal").textContent = "seal " + (g[right].commit || "...");
+  var aim = me && g.phase === "play" && g.turn === me && !g.shots.some(function (s) { return s.said === ""; });
+  $("right").className = "grid" + (aim ? " aim" : "");
+  $("lobby").style.display = "none";
+  $("share").style.display = me === "a" && g.phase === "waiting" ? "" : "none";
+  $("link").textContent = location.href;
+  $("cheat").style.display = me && (g.phase === "play" || g.phase === "waiting") ? "" : "none";
+  var hits = function (seat) { return g.shots.filter(function (s) { return s.by === seat && s.said === "hit"; }).length; };
+  var say = g.phase === "waiting" ? (me ? "Waiting for an opponent to join." : "This game is waiting for a second captain.")
+    : g.phase === "play" ? (me ? (g.turn === me ? "Your turn: fire at their waters." : "Their turn.") : g[g.turn].name + " is firing.") + " Hits " + hits(left) + " / 12, taken " + hits(right) + " / 12."
+    : g.phase === "reveal" ? "The battle is over. The boards are being revealed and checked."
+    : g.winner ? g[g.winner].name + " wins." : "Nobody wins.";
+  $("status").textContent = say;
+  var v = $("verdict");
+  if (g.phase === "over") {
+    var line = function (seat) {
+      var p = g[seat];
+      if (!p.revealed) return "<p><b></b>: <span class=bad>went silent and never revealed a board</span></p>";
+      return "<p><b></b>: " + (p.sealed ? "<span class=ok>board matches its seal</span>" : "<span class=bad>board does not match its seal</span>")
+        + ", " + (p.fleet === "" ? "<span class=ok>legal fleet</span>" : "<span class=bad>illegal fleet</span>")
+        + ", " + (p.lies.length ? "<span class=bad>" + p.lies.length + " false answers (marked in yellow)</span>" : "<span class=ok>every answer true</span>") + "</p>";
+    };
+    v.innerHTML = "<p id=why></p>" + line("a") + line("b");
+    v.querySelector("#why").textContent = g.why;
+    v.querySelectorAll("b")[0].textContent = g.a.name;
+    v.querySelectorAll("b")[1].textContent = g.b.name;
+    v.className = "on";
+  } else v.className = "";
+  silence();
+  act();
+};
+
+// What this page does by itself: answer a shot at it, and reveal its board when the battle ends.
+var act = function () {
+  var g = game, me = mine && mine.seat;
+  if (!g || !me || busy) return;
+  var waiting = g.shots.find(function (s) { return s.said === "" && s.by !== me; });
+  if (g.phase === "play" && waiting) {
+    var hit = mine.board[waiting.cell] !== "0";
+    busy = true;
+    post("/games/" + gameId + "/answer", { key: mine.key, said: hit && !$("lie").checked ? "hit" : "miss" }).then(done);
+  } else if (g.phase === "reveal" && !g[me].revealed) {
+    busy = true;
+    post("/games/" + gameId + "/reveal", { key: mine.key, board: mine.board, salt: mine.salt }).then(done);
+  }
+};
+var done = function (r) { busy = false; if (r.ok && r.body.id) { game = r.body; render(); } };
+
+// When the opponent has kept everyone waiting two minutes, a button to claim the game.
+var silence = function () {
+  var g = game, me = mine && mine.seat, them = me === "b" ? "a" : "b";
+  var pending = g && g.shots.find(function (s) { return s.said === ""; });
+  var waitingOn = !g ? "" : g.phase === "reveal" ? (g[them].revealed ? "" : them) : g.phase !== "play" ? "" : pending ? (pending.by === me ? them : me) : g.turn;
+  var left = g ? 120 - (Date.now() / 1000 - g.since) : 0;
+  var can = me && waitingOn === them && (g.phase === "play" || g[me].revealed) && left <= 0;
+  $("claimbar").style.display = can ? "" : "none";
+  if (can) $("claim").textContent = g[them].name + " has gone silent. Claim the game";
+};
+setInterval(function () { if (game) silence(); }, 5000);
+var claim = function () {
+  if (busy) return;
+  busy = true;
+  post("/games/" + gameId + "/claim", { key: mine.key, board: mine.board, salt: mine.salt }).then(done);
+};
+
+var fire = function (k) {
+  var g = game, me = mine && mine.seat;
+  if (!g || !me || busy || g.phase !== "play" || g.turn !== me) return;
+  busy = true;
+  post("/games/" + gameId + "/fire", { key: mine.key, cell: k }).then(done);
+};
+
+var refresh = function () {
+  return fetch("/games/" + gameId).then(function (r) { return r.ok ? r.json() : null; }).then(function (g) {
+    game = g;
+    if (!g) { $("status").textContent = "There is no game " + gameId + "."; return; }
+    if (!mine && g.phase === "waiting") {
+      $("start").textContent = "Join " + (g.a.name || "this game");
+      $("lobby").style.display = "";
+      $("status").textContent = (g.a.name || "A captain") + " is waiting for an opponent. Shuffle your fleet and join.";
+      game = null; render(); game = g;
+      return;
+    }
+    render();
+  });
+};
+
+var begin = function () {
+  var name = $("name").value.trim();
+  $("start").disabled = true;
+  sha(draft.board + "|" + draft.salt).then(function (commit) {
+    return post(gameId ? "/games/" + gameId + "/join" : "/games", { name: name || undefined, commit: commit });
+  }).then(function (r) {
+    $("start").disabled = false;
+    if (!r.ok) { $("status").textContent = r.body.error || "That didn't work."; return; }
+    gameId = r.body.game;
+    mine = { seat: r.body.seat, key: r.body.key, board: draft.board, salt: draft.salt };
+    save(gameId, mine);
+    history.replaceState(null, "", "#" + gameId);
+    refresh();
+  });
+};
+
+makeGrid("left");
+makeGrid("right", fire);
+$("shuffle").onclick = function () { draft = { board: shuffle(), salt: salt() }; render(); };
+$("start").onclick = begin;
+$("claim").onclick = claim;
+new EventSource("/live").onmessage = function (e) {
+  var g = JSON.parse(e.data);
+  if (g.id === gameId && (mine || g.phase !== "waiting")) { game = g; render(); }
+};
+if (gameId) { mine = load(gameId); refresh(); } else render();
+</script>
+</html>
+  commit={"after":19,"n":20} error=null kind="request" method="GET" nonce="25070000000000000000000000000000" outputs=#58bd1d21442dba58 performed=[] request=#b6fcac44ef7aa360 response_body=#439b4a3fb0628bd0 route="GET /" run_id="76682fbb9aea85362a21514540f94b8e8ad2b461bc5b9b38393c3db1b698b6ad" seq=19 session=1 sourced=#1b036bdbba3d6401 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=200 timeline=#8b3056cabe7d13dc unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/"
+== sea-battle · GET / · body 373 → 200 <!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sea battle</title>
+<style>
+:root{color-scheme:dark;--sea:#0b2740;--deep:#06182a;--ink:#dbe9f2;--dim:#86a0b4;--ship:#9fb3c4;--hit:#ff6b4a;--miss:#3d6c8f;--ok:#6fd39a;--bad:#ff8a73;--line:#ffffff14}
+*{box-sizing:border-box}
+body{margin:0;background:var(--deep);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:24px 16px 48px}
+h1{margin:0 0 4px;font-size:26px;letter-spacing:.5px}
+p{margin:6px 0}
+.dim{color:var(--dim)}
+.seas{display:flex;flex-wrap:wrap;gap:24px;margin:20px 0}
+.sea{flex:1 1 300px;max-width:400px}
+.sea h2{font-size:15px;margin:0 0 8px;font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(8,1fr);gap:3px;background:var(--line);padding:3px;border-radius:8px}
+.grid button{aspect-ratio:1;border:0;border-radius:4px;background:var(--sea);color:var(--ink);font:inherit;font-size:18px;padding:0;cursor:default}
+.grid button.ship{background:var(--ship)}
+.grid button.miss::after{content:"";display:block;width:26%;aspect-ratio:1;margin:auto;border-radius:50%;background:var(--miss)}
+.grid button.hit{background:var(--hit)}
+.grid button.wait{outline:2px dashed var(--ink);outline-offset:-4px}
+.grid button.lie{box-shadow:inset 0 0 0 3px #ffd54a}
+.grid.aim button:not(.hit):not(.miss):not(.wait){cursor:crosshair}
+.grid.aim button:not(.hit):not(.miss):not(.wait):hover{background:#174a70}
+.seal{font:12px ui-monospace,monospace;color:var(--dim);word-break:break-all}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+input[type=text]{background:var(--sea);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:8px 10px;font:inherit}
+button.go{background:#2f7fb8;color:#fff;border:0;border-radius:6px;padding:8px 14px;font:inherit;cursor:pointer}
+button.go.quiet{background:transparent;border:1px solid var(--line);color:var(--ink)}
+#status{font-size:17px;margin-top:14px;min-height:1.5em}
+#verdict{display:none;margin:18px 0;padding:14px 16px;border-radius:10px;background:#0f3150}
+#verdict.on{display:block}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+#link{font:13px ui-monospace,monospace;word-break:break-all}
+</style>
+<main>
+<h1>Sea battle</h1>
+<p class="dim">The server never sees your fleet. It keeps a seal of it, writes down every answer you give, and checks them all when the boards are revealed.</p>
+
+<section id="lobby">
+<div class="bar"><input type="text" id="name" placeholder="Your name" maxlength="24"><button class="go quiet" id="shuffle">Shuffle fleet</button><button class="go" id="start">Start a game</button></div>
+</section>
+
+<p id="status"></p>
+<p id="share" style="display:none">Send this link to your opponent: <span id="link"></span></p>
+<div class="bar" id="cheat" style="display:none"><label><input type="checkbox" id="lie"> Lie about hits (answer "miss" when they hit me)</label></div>
+
+<div class="seas">
+<div class="sea"><h2 id="leftname">Your waters</h2><div class="grid" id="left"></div><p class="seal" id="leftseal"></p></div>
+<div class="sea"><h2 id="rightname">Their waters</h2><div class="grid" id="right"></div><p class="seal" id="rightseal"></p></div>
+</div>
+
+<p id="claimbar" style="display:none"><button class="go" id="claim"></button></p>
+<div id="verdict"></div>
+</main>
+<script>
+var FLEET = [4, 3, 3, 2];
+var $ = function (id) { return document.getElementById(id); };
+var memory = {};
+var load = function (id) { try { return JSON.parse(localStorage.getItem("sea-battle:" + id)) || memory[id] || null; } catch (e) { return memory[id] || null; } };
+var save = function (id, v) { memory[id] = v; try { localStorage.setItem("sea-battle:" + id, JSON.stringify(v)); } catch (e) {} };
+
+var hex = function (bytes) { return Array.from(bytes, function (b) { return (b + 256).toString(16).slice(1); }).join(""); };
+var sha = function (text) {
+  if (window.crypto && crypto.subtle) return crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)).then(function (d) { return hex(new Uint8Array(d)); });
+  return Promise.resolve(own(text));
+};
+// sha256 for a page served over plain http on a network, where the browser offers none.
+var own = function (text) {
+  var bytes = new TextEncoder().encode(text), primes = [];
+  for (var c = 2; primes.length < 64; c++) if (primes.every(function (p) { return c % p; })) primes.push(c);
+  var frac = function (x) { return x - Math.floor(x); };
+  var K = primes.map(function (p) { return Math.floor(frac(Math.cbrt(p)) * 4294967296); });
+  var h = primes.slice(0, 8).map(function (p) { return Math.floor(frac(Math.sqrt(p)) * 4294967296); });
+  var size = ((bytes.length + 9 + 63) >> 6) << 6, buf = new Uint8Array(size);
+  buf.set(bytes); buf[bytes.length] = 128;
+  var view = new DataView(buf.buffer);
+  view.setUint32(size - 8, Math.floor(bytes.length / 536870912)); view.setUint32(size - 4, (bytes.length << 3) >>> 0);
+  var w = new Array(64), rotr = function (x, n) { return (x >>> n) | (x << (32 - n)); };
+  for (var off = 0; off < size; off += 64) {
+    for (var i = 0; i < 16; i++) w[i] = view.getUint32(off + i * 4);
+    for (i = 16; i < 64; i++) w[i] = (w[i - 16] + (rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3)) + w[i - 7] + (rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10))) >>> 0;
+    var a = h[0], b = h[1], cc = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (i = 0; i < 64; i++) {
+      var t1 = (hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) >>> 0;
+      var t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & cc) ^ (b & cc))) >>> 0;
+      hh = g; g = f; f = e; e = (d + t1) >>> 0; d = cc; cc = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    [a, b, cc, d, e, f, g, hh].forEach(function (v, i) { h[i] = (h[i] + v) >>> 0; });
+  }
+  return h.map(function (v) { return (v + 4294967296).toString(16).slice(1); }).join("");
+};
+
+// A fleet placed at random: ships 1 to 4, each a straight line, none overlapping.
+var shuffle = function () {
+  var cells = new Array(64).fill("0");
+  FLEET.forEach(function (len, i) {
+    for (;;) {
+      var across = Math.random() < 0.5;
+      var r = Math.floor(Math.random() * (across ? 8 : 9 - len)), c = Math.floor(Math.random() * (across ? 9 - len : 8));
+      var at = [];
+      for (var k = 0; k < len; k++) at.push((r + (across ? 0 : k)) * 8 + c + (across ? k : 0));
+      if (at.every(function (x) { return cells[x] === "0"; })) { at.forEach(function (x) { cells[x] = String(i + 1); }); return; }
+    }
+  });
+  return cells.join("");
+};
+var salt = function () { var b = new Uint8Array(16); crypto.getRandomValues(b); return hex(b); };
+
+var grids = {};
+var makeGrid = function (id, onClick) {
+  var el = $(id), cells = [];
+  for (var k = 0; k < 64; k++) {
+    var btn = document.createElement("button");
+    btn.setAttribute("aria-label", "ABCDEFGH"[k % 8] + (Math.floor(k / 8) + 1));
+    (function (k) { btn.onclick = function () { if (onClick) onClick(k); }; })(k);
+    el.appendChild(btn); cells.push(btn);
+  }
+  grids[id] = cells;
+};
+var paint = function (id, cls) { grids[id].forEach(function (b, k) { b.className = cls(k); }); };
+
+var post = function (path, body) {
+  return fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; }); });
+};
+
+var gameId = location.hash.slice(1), game = null, mine = null, draft = { board: shuffle(), salt: salt() }, busy = false;
+
+var marks = function (shots, k) {
+  var s = shots.find(function (s) { return s.cell === k; });
+  return s ? (s.said === "" ? " wait" : " " + s.said) : "";
+};
+var render = function () {
+  var g = game;
+  if (!g) {
+    paint("left", function (k) { return draft.board[k] !== "0" ? "ship" : ""; });
+    paint("right", function () { return ""; });
+    $("leftname").textContent = "Your fleet (only you can see it)";
+    $("rightname").textContent = "Their waters";
+    return;
+  }
+  var me = mine && mine.seat, them = me === "b" ? "a" : "b";
+  var left = me || "a", right = me ? them : "b";
+  var atLeft = g.shots.filter(function (s) { return s.by !== left; });
+  var atRight = g.shots.filter(function (s) { return s.by === left; });
+  var boardOf = function (seat) { return seat === me ? mine.board : g[seat].board; };
+  var lies = function (seat) { return g[seat].lies || []; };
+  var cls = function (seat, shots) {
+    return function (k) {
+      var b = boardOf(seat);
+      return (b && b[k] !== "0" ? "ship" : "") + marks(shots, k) + (lies(seat).indexOf(k) >= 0 ? " lie" : "");
+    };
+  };
+  paint("left", cls(left, atLeft));
+  paint("right", cls(right, atRight));
+  $("leftname").textContent = (me ? "Your waters" : (g.a.name || "Captain A") + "'s waters");
+  $("rightname").textContent = (g[right].name || "Waiting for a captain") + "'s waters";
+  $("leftseal").textContent = "seal " + (g[left].commit || "...");
+  $("rightseal").textContent = "seal " + (g[right].commit || "...");
+  var aim = me && g.phase === "play" && g.turn === me && !g.shots.some(function (s) { return s.said === ""; });
+  $("right").className = "grid" + (aim ? " aim" : "");
+  $("lobby").style.display = "none";
+  $("share").style.display = me === "a" && g.phase === "waiting" ? "" : "none";
+  $("link").textContent = location.href;
+  $("cheat").style.display = me && (g.phase === "play" || g.phase === "waiting") ? "" : "none";
+  var hits = function (seat) { return g.shots.filter(function (s) { return s.by === seat && s.said === "hit"; }).length; };
+  var say = g.phase === "waiting" ? (me ? "Waiting for an opponent to join." : "This game is waiting for a second captain.")
+    : g.phase === "play" ? (me ? (g.turn === me ? "Your turn: fire at their waters." : "Their turn.") : g[g.turn].name + " is firing.") + " Hits " + hits(left) + " / 12, taken " + hits(right) + " / 12."
+    : g.phase === "reveal" ? "The battle is over. The boards are being revealed and checked."
+    : g.winner ? g[g.winner].name + " wins." : "Nobody wins.";
+  $("status").textContent = say;
+  var v = $("verdict");
+  if (g.phase === "over") {
+    var line = function (seat) {
+      var p = g[seat];
+      if (!p.revealed) return "<p><b></b>: <span class=bad>went silent and never revealed a board</span></p>";
+      return "<p><b></b>: " + (p.sealed ? "<span class=ok>board matches its seal</span>" : "<span class=bad>board does not match its seal</span>")
+        + ", " + (p.fleet === "" ? "<span class=ok>legal fleet</span>" : "<span class=bad>illegal fleet</span>")
+        + ", " + (p.lies.length ? "<span class=bad>" + p.lies.length + " false answers (marked in yellow)</span>" : "<span class=ok>every answer true</span>") + "</p>";
+    };
+    v.innerHTML = "<p id=why></p>" + line("a") + line("b");
+    v.querySelector("#why").textContent = g.why;
+    v.querySelectorAll("b")[0].textContent = g.a.name;
+    v.querySelectorAll("b")[1].textContent = g.b.name;
+    v.className = "on";
+  } else v.className = "";
+  silence();
+  act();
+};
+
+// What this page does by itself: answer a shot at it, and reveal its board when the battle ends.
+var act = function () {
+  var g = game, me = mine && mine.seat;
+  if (!g || !me || busy) return;
+  var waiting = g.shots.find(function (s) { return s.said === "" && s.by !== me; });
+  if (g.phase === "play" && waiting) {
+    var hit = mine.board[waiting.cell] !== "0";
+    busy = true;
+    post("/games/" + gameId + "/answer", { key: mine.key, said: hit && !$("lie").checked ? "hit" : "miss" }).then(done);
+  } else if (g.phase === "reveal" && !g[me].revealed) {
+    busy = true;
+    post("/games/" + gameId + "/reveal", { key: mine.key, board: mine.board, salt: mine.salt }).then(done);
+  }
+};
+var done = function (r) { busy = false; if (r.ok && r.body.id) { game = r.body; render(); } };
+
+// When the opponent has kept everyone waiting two minutes, a button to claim the game.
+var silence = function () {
+  var g = game, me = mine && mine.seat, them = me === "b" ? "a" : "b";
+  var pending = g && g.shots.find(function (s) { return s.said === ""; });
+  var waitingOn = !g ? "" : g.phase === "reveal" ? (g[them].revealed ? "" : them) : g.phase !== "play" ? "" : pending ? (pending.by === me ? them : me) : g.turn;
+  var left = g ? 120 - (Date.now() / 1000 - g.since) : 0;
+  var can = me && waitingOn === them && (g.phase === "play" || g[me].revealed) && left <= 0;
+  $("claimbar").style.display = can ? "" : "none";
+  if (can) $("claim").textContent = g[them].name + " has gone silent. Claim the game";
+};
+setInterval(function () { if (game) silence(); }, 5000);
+var claim = function () {
+  if (busy) return;
+  busy = true;
+  post("/games/" + gameId + "/claim", { key: mine.key, board: mine.board, salt: mine.salt }).then(done);
+};
+
+var fire = function (k) {
+  var g = game, me = mine && mine.seat;
+  if (!g || !me || busy || g.phase !== "play" || g.turn !== me) return;
+  busy = true;
+  post("/games/" + gameId + "/fire", { key: mine.key, cell: k }).then(done);
+};
+
+var refresh = function () {
+  return fetch("/games/" + gameId).then(function (r) { return r.ok ? r.json() : null; }).then(function (g) {
+    game = g;
+    if (!g) { $("status").textContent = "There is no game " + gameId + "."; return; }
+    if (!mine && g.phase === "waiting") {
+      $("start").textContent = "Join " + (g.a.name || "this game");
+      $("lobby").style.display = "";
+      $("status").textContent = (g.a.name || "A captain") + " is waiting for an opponent. Shuffle your fleet and join.";
+      game = null; render(); game = g;
+      return;
+    }
+    render();
+  });
+};
+
+var begin = function () {
+  var name = $("name").value.trim();
+  $("start").disabled = true;
+  sha(draft.board + "|" + draft.salt).then(function (commit) {
+    return post(gameId ? "/games/" + gameId + "/join" : "/games", { name: name || undefined, commit: commit });
+  }).then(function (r) {
+    $("start").disabled = false;
+    if (!r.ok) { $("status").textContent = r.body.error || "That didn't work."; return; }
+    gameId = r.body.game;
+    mine = { seat: r.body.seat, key: r.body.key, board: draft.board, salt: draft.salt };
+    save(gameId, mine);
+    history.replaceState(null, "", "#" + gameId);
+    refresh();
+  });
+};
+
+makeGrid("left");
+makeGrid("right", fire);
+$("shuffle").onclick = function () { draft = { board: shuffle(), salt: salt() }; render(); };
+$("start").onclick = begin;
+$("claim").onclick = claim;
+new EventSource("/live").onmessage = function (e) {
+  var g = JSON.parse(e.data);
+  if (g.id === gameId && (mine || g.phase !== "waiting")) { game = g; render(); }
+};
+if (gameId) { mine = load(gameId); refresh(); } else render();
+</script>
+</html>
+  commit={"after":20,"n":21} error=null kind="request" method="GET" nonce="28070000000000000000000000000000" outputs=#58bd1d21442dba58 performed=[] request=#9b5f45198d0a20cb response_body=#439b4a3fb0628bd0 route="GET /" run_id="3fa9d90360930ca235b45b5d1a1f55edc8cbfb6306ed0ba01e4ded791ea37abb" seq=20 session=1 sourced=#89c528fc115d2bf4 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=200 timeline=#3c2f5ca8a831cf65 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/"
+== sea-battle · POST /games/tea/claim · body 0 → 409 {"error":"your opponent still has time"}
+  commit={"after":21,"n":22} error=null kind="request" method="POST" nonce="2b070000000000000000000000000000" outputs=#125fa9aaa2c35654 performed=[] reads=#f0f63b4b1d95e7b8 request=#bbbebbb273601e76 response_body="{\"error\":\"your opponent still has time\"}" route="POST /games/:id/claim" run_id="6355af034ae97b61415c330007edd9430001a72136d486c93d859439b23bb749" seq=21 session=1 skipped=[{"at":[0,10],"effect":"CollectionWrite(\"games\")","from":[0,109],"leaf":"collection_get","level":"read","read":0}] sourced=#628151d0c8ed7619 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#bdf0532ac5eb37d1 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/claim"
+== sea-battle · POST /games/tea/claim · body 232 → 409 {"error":"your opponent still has time"}
+  commit={"after":22,"n":23} error=null kind="request" method="POST" nonce="2e070000000000000000000000000000" outputs=#125fa9aaa2c35654 performed=[] reads=#f0f63b4b1d95e7b8 request=#22392cbb0383beb5 response_body="{\"error\":\"your opponent still has time\"}" route="POST /games/:id/claim" run_id="5752b403b1e2a5a7ac2fadab1d61be52f5b7b60e52d92aed79b5d6584493a9dd" seq=22 session=1 skipped=[{"at":[0,10],"effect":"CollectionWrite(\"games\")","from":[0,109],"leaf":"collection_get","level":"read","read":0}] sourced=#1c713f65c0a9d9b6 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#df9c57ed36136ed8 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/claim"
+== sea-battle · POST /games/tea/claim · body 373 → 409 {"error":"your opponent still has time"}
+  commit={"after":23,"n":24} error=null kind="request" method="POST" nonce="31070000000000000000000000000000" outputs=#125fa9aaa2c35654 performed=[] reads=#f0f63b4b1d95e7b8 request=#608d8f1d684f8ed1 response_body="{\"error\":\"your opponent still has time\"}" route="POST /games/:id/claim" run_id="1a7f6c52c22aa235453b34d5bf4782dbbe14c1342078ee9247a30b7fd0c0fe51" seq=23 session=1 skipped=[{"at":[0,10],"effect":"CollectionWrite(\"games\")","from":[0,109],"leaf":"collection_get","level":"read","read":0}] sourced=#32700265dc15493f state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#38efaa84356bafde unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/claim"
+== sea-battle · POST /games/tea/answer · body 0 → 409 {"error":"no shot at you is waiting for an answer"}
+  commit={"after":24,"n":25} error=null kind="request" method="POST" nonce="34070000000000000000000000000000" outputs=#0748295044b7be47 performed=[] reads=#b0ff2d1f9971430e request=#74aadbf50fa828ca response_body="{\"error\":\"no shot at you is waiting for an answer\"}" route="POST /games/:id/answer" run_id="f227bd2edbdfb6c5bd8196207136b1f3954948f0ea9ff25521a5d48668f25782" seq=24 session=1 skipped=[{"at":[0,7],"effect":"CollectionWrite(\"games\")","from":[0,63],"leaf":"collection_get","level":"read","read":0}] sourced=#ef1b021ef34e2556 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#37c19a5ea0fb034b unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/answer"
+== sea-battle · POST /games/tea/answer · body 232 → 409 {"error":"no shot at you is waiting for an answer"}
+  commit={"after":25,"n":26} error=null kind="request" method="POST" nonce="37070000000000000000000000000000" outputs=#0748295044b7be47 performed=[] reads=#b0ff2d1f9971430e request=#e9a27ebb8f2ae325 response_body="{\"error\":\"no shot at you is waiting for an answer\"}" route="POST /games/:id/answer" run_id="7be8bee7a5acb335a8160239790e79255dfc498783f0da5377365501c7f24057" seq=25 session=1 skipped=[{"at":[0,7],"effect":"CollectionWrite(\"games\")","from":[0,63],"leaf":"collection_get","level":"read","read":0}] sourced=#d62aac68e0267513 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#6b3400cac6b4cf8d unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/answer"
+== sea-battle · POST /games/tea/answer · body 373 → 409 {"error":"no shot at you is waiting for an answer"}
+  commit={"after":26,"n":27} error=null kind="request" method="POST" nonce="3a070000000000000000000000000000" outputs=#0748295044b7be47 performed=[] reads=#b0ff2d1f9971430e request=#4f71719113e9fc57 response_body="{\"error\":\"no shot at you is waiting for an answer\"}" route="POST /games/:id/answer" run_id="b5addf728ea688793d994af1f0d810857a7c09e5f3290ceda58c8d8970ca8c94" seq=26 session=1 skipped=[{"at":[0,7],"effect":"CollectionWrite(\"games\")","from":[0,63],"leaf":"collection_get","level":"read","read":0}] sourced=#65e7f623558213a2 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#4241fa50a7f3cda2 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/answer"
+== sea-battle · POST /games · body 0 → 400 {"error":"a seal is the sha256 of the board and a salt, in hex"}
+  commit={"after":27,"n":28} error=null kind="request" method="POST" nonce="3d070000000000000000000000000000" outputs=#9a49f3b03237d3c6 performed=[] request=#07fee03c19cf247c response_body="{\"error\":\"a seal is the sha256 of the board and a salt, in hex\"}" route="POST /games" run_id="5c7a7114ee8fa9ce0f8b672311652ea7d19768d1e23289f557cd74b15b5ac5f5" seq=27 session=1 sourced=#8768c4be777592a1 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=400 timeline=#5849c4d455d9ec6b unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games"
+== sea-battle · POST /games · body 232 → 400 {"error":"a seal is the sha256 of the board and a salt, in hex"}
+  commit={"after":28,"n":29} error=null kind="request" method="POST" nonce="40070000000000000000000000000000" outputs=#9a49f3b03237d3c6 performed=[] request=#94c7d08aa7944ec1 response_body="{\"error\":\"a seal is the sha256 of the board and a salt, in hex\"}" route="POST /games" run_id="a119782668904dc2ca8fa1012e7042f933a0572ac491c29ad7eef8d1d2252289" seq=28 session=1 sourced=#e312839134963748 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=400 timeline=#f839bffcd69c187f unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games"
+== sea-battle · POST /games · body 373 → 400 {"error":"a seal is the sha256 of the board and a salt, in hex"}
+  commit={"after":29,"n":30} error=null kind="request" method="POST" nonce="43070000000000000000000000000000" outputs=#9a49f3b03237d3c6 performed=[] request=#84579aa0d5d3a839 response_body="{\"error\":\"a seal is the sha256 of the board and a salt, in hex\"}" route="POST /games" run_id="aa3ee798747520efe1e2b9765bb43533f0f0e7496d99ecef36d03d128a7d3a53" seq=29 session=1 sourced=#b9058f71cc10e7ab state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=400 timeline=#471e9a34a5480ae1 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games"
+== sea-battle · POST /games/tea/reveal · body 0 → 409 {"error":"nothing to reveal now"}
+  commit={"after":30,"n":31} error=null kind="request" method="POST" nonce="46070000000000000000000000000000" outputs=#2d74280075f9725f performed=[] reads=#2bde8f177059703e request=#7e86d50f633f62ec response_body="{\"error\":\"nothing to reveal now\"}" route="POST /games/:id/reveal" run_id="5a5a689e970ee42ec2eb7d017e529af752f494e4ff3bd3e4fa337acc50de031e" seq=30 session=1 skipped=[{"at":[0,7],"effect":"CollectionWrite(\"games\")","from":[0,57],"leaf":"collection_get","level":"read","read":0}] sourced=#1fbcb83f46435322 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#c88da84d6dd8c94c unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/reveal"
+== sea-battle · POST /games/tea/reveal · body 232 → 409 {"error":"nothing to reveal now"}
+  commit={"after":31,"n":32} error=null kind="request" method="POST" nonce="49070000000000000000000000000000" outputs=#2d74280075f9725f performed=[] reads=#2bde8f177059703e request=#499c15d3318f2dd9 response_body="{\"error\":\"nothing to reveal now\"}" route="POST /games/:id/reveal" run_id="b32d2b36c8745a752c59fdce740d5e0013b0584725a3fa21ec870e83595ceb0c" seq=31 session=1 skipped=[{"at":[0,7],"effect":"CollectionWrite(\"games\")","from":[0,57],"leaf":"collection_get","level":"read","read":0}] sourced=#c892094a960e7893 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#19eca4d58a68133f unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/reveal"
+== sea-battle · POST /games/tea/reveal · body 373 → 409 {"error":"nothing to reveal now"}
+  commit={"after":32,"n":33} error=null kind="request" method="POST" nonce="4c070000000000000000000000000000" outputs=#2d74280075f9725f performed=[] reads=#2bde8f177059703e request=#3ce37aa7098aba80 response_body="{\"error\":\"nothing to reveal now\"}" route="POST /games/:id/reveal" run_id="5f8d0900c60ff2adf9e6e80804ec1fae84befa0e11b0e6d358cec48ef6df27ba" seq=32 session=1 skipped=[{"at":[0,7],"effect":"CollectionWrite(\"games\")","from":[0,57],"leaf":"collection_get","level":"read","read":0}] sourced=#3b8888e2d0f8966f state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#07efdb31c92a3698 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/reveal"
+== sea-battle · GET /live · body 0 → 200 
+  commit={"after":33,"n":34} error=null kind="request" method="GET" nonce="4f070000000000000000000000000000" outputs=#8cff4caecc586271 performed=[] request=#aa7cffe1a3e4bfa3 response_body="" route="GET /live" run_id="2078ab9b2bfb1bab4ab6a31590be784041148adc11170791aad423e0d7b2694d" seq=33 session=1 sourced=#40851553c2a02390 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=200 timeline=#ac64f951589b71f6 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/live"
+== sea-battle · GET /live · body 232 → 200 
+  commit={"after":34,"n":35} error=null kind="request" method="GET" nonce="52070000000000000000000000000000" outputs=#8cff4caecc586271 performed=[] request=#b70fe2b961a45513 response_body="" route="GET /live" run_id="76d78e01a8a6fbcbd0a1d725c0dee2f4fcb674f3cc46d05b7cd6a760ae6defc4" seq=34 session=1 sourced=#3fb8780e518b9115 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=200 timeline=#cb48760c570d33f1 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/live"
+== sea-battle · GET /live · body 373 → 200 
+  commit={"after":35,"n":36} error=null kind="request" method="GET" nonce="55070000000000000000000000000000" outputs=#8cff4caecc586271 performed=[] request=#c06649e042b67583 response_body="" route="GET /live" run_id="19dfd66597d30e4c4540f53898432ed251619d76f68ebe2d5b4b9fd8aeaab3a2" seq=35 session=1 sourced=#0de722f6ebf9d6ff state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=200 timeline=#0ffacf2648f59a3b unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/live"
+== sea-battle · GET /games/tea · body 0 → 404 {"error":"not found"}
+  commit={"after":36,"n":37} error=null kind="request" method="GET" nonce="58070000000000000000000000000000" outputs=#5369badf53049206 performed=[] reads=#fa9bf08046f32365 request=#832f0d5fbda11c06 response_body="{\"error\":\"not found\"}" route="GET /games/:id" run_id="ccb28554486e6ea6e20ed6a243d613add576b8010b6863aec520fb78272aadec" seq=36 session=1 sourced=#37b559b7467c6fe1 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=404 timeline=#c2e31c954a17c652 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea"
+== sea-battle · GET /games/tea · body 232 → 404 {"error":"not found"}
+  commit={"after":37,"n":38} error=null kind="request" method="GET" nonce="5b070000000000000000000000000000" outputs=#5369badf53049206 performed=[] reads=#fa9bf08046f32365 request=#22169f4fcfb61704 response_body="{\"error\":\"not found\"}" route="GET /games/:id" run_id="68c2a429f73cb49400fca8733b4aeb29da76c660b4506cad21363e3ae363a3c9" seq=37 session=1 sourced=#7312ac331ae8a363 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=404 timeline=#992d56465e255de4 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea"
+== sea-battle · GET /games/tea · body 373 → 404 {"error":"not found"}
+  commit={"after":38,"n":39} error=null kind="request" method="GET" nonce="5e070000000000000000000000000000" outputs=#5369badf53049206 performed=[] reads=#fa9bf08046f32365 request=#3041cd62917d1838 response_body="{\"error\":\"not found\"}" route="GET /games/:id" run_id="7739482e93a87365f363de9228a49b931ef9698075974200405f15836639792d" seq=38 session=1 sourced=#ee0a6b3e8edbddbc state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=404 timeline=#2977781b82ddc5ef unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea"
+== sea-battle · POST /games/tea/fire · body 0 → 409 {"error":"not your turn, or not a square you can fire at"}
+  commit={"after":39,"n":40} error=null kind="request" method="POST" nonce="61070000000000000000000000000000" outputs=#108d3b3b91f356ce performed=[] reads=#82f1ff399c99d042 request=#602bef0bde8eaf57 response_body="{\"error\":\"not your turn, or not a square you can fire at\"}" route="POST /games/:id/fire" run_id="335fa94aff0b2ac95845453ba08c298b6693e2b3583313ee4c02571d0f0c3c3a" seq=39 session=1 skipped=[{"at":[0,6],"effect":"CollectionWrite(\"games\")","from":[0,53],"leaf":"collection_get","level":"read","read":0}] sourced=#0c66d13aa1fe5a15 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#556f9160033c2687 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/fire"
+== sea-battle · POST /games/tea/fire · body 232 → 409 {"error":"not your turn, or not a square you can fire at"}
+  commit={"after":40,"n":41} error=null kind="request" method="POST" nonce="64070000000000000000000000000000" outputs=#108d3b3b91f356ce performed=[] reads=#82f1ff399c99d042 request=#79d0a8a5127bc45e response_body="{\"error\":\"not your turn, or not a square you can fire at\"}" route="POST /games/:id/fire" run_id="a0c7087795ebbe7bf83f1529bf4d08acc2ca2ffc6c1b4781343c789b2bd6d6c3" seq=40 session=1 skipped=[{"at":[0,6],"effect":"CollectionWrite(\"games\")","from":[0,53],"leaf":"collection_get","level":"read","read":0}] sourced=#fac3dd1ec81fc129 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#d3d82b6aec53d67d unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/fire"
+== sea-battle · POST /games/tea/fire · body 373 → 409 {"error":"not your turn, or not a square you can fire at"}
+  commit={"after":41,"n":42} error=null kind="request" method="POST" nonce="67070000000000000000000000000000" outputs=#108d3b3b91f356ce performed=[] reads=#82f1ff399c99d042 request=#a67c5f4265a9f4cf response_body="{\"error\":\"not your turn, or not a square you can fire at\"}" route="POST /games/:id/fire" run_id="b3191582d90dc1a10710e58b4ebfbe4591ed82c0b6014736a5fbcb3ab3bc25ea" seq=41 session=1 skipped=[{"at":[0,6],"effect":"CollectionWrite(\"games\")","from":[0,53],"leaf":"collection_get","level":"read","read":0}] sourced=#555418a1372c2104 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#d39f2a22004c8987 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/fire"
+== sea-battle · POST /games/tea/join · body 0 → 404 {"error":"not found"}
+  commit={"after":42,"n":43} error=null kind="request" method="POST" nonce="6a070000000000000000000000000000" outputs=#3f8837953c01db22 performed=[] reads=#950d071bc17e9cc2 request=#9e308d32b949fb7d response_body="{\"error\":\"not found\"}" route="POST /games/:id/join" run_id="98d563101027d88adfcadbdd009754d3ae71ffd7218a93931a33bbfd0e2963e4" seq=42 session=1 skipped=#f25044a76f4c9495 sourced=#17e98d8ecf3c484b state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=404 timeline=#265933df3eba9d40 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/join"
+== sea-battle · POST /games/tea/join · body 232 → 404 {"error":"not found"}
+  commit={"after":43,"n":44} error=null kind="request" method="POST" nonce="6d070000000000000000000000000000" outputs=#3f8837953c01db22 performed=[] reads=#950d071bc17e9cc2 request=#093e898b695615f2 response_body="{\"error\":\"not found\"}" route="POST /games/:id/join" run_id="89458231351512fbe4c8a50ecec8ebed6270b198bdf149d2421d152babb3749a" seq=43 session=1 skipped=#f25044a76f4c9495 sourced=#466290e118c2d5b7 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=404 timeline=#100a1173ea56d177 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/join"
+== sea-battle · POST /games/tea/join · body 373 → 404 {"error":"not found"}
+  commit={"after":44,"n":45} error=null kind="request" method="POST" nonce="70070000000000000000000000000000" outputs=#3f8837953c01db22 performed=[] reads=#950d071bc17e9cc2 request=#9faf702639e8bbab response_body="{\"error\":\"not found\"}" route="POST /games/:id/join" run_id="63ec5da2abff1690c963aa188e4ca2e21a499086f3a1c8b7ee4dbd303758c018" seq=44 session=1 skipped=#f25044a76f4c9495 sourced=#b618ae1ffb6c3f05 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=404 timeline=#aa4f0e2fc24c449a unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/join"
+== sea-battle · GET / · body 0 → 200 <!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sea battle</title>
+<style>
+:root{color-scheme:dark;--sea:#0b2740;--deep:#06182a;--ink:#dbe9f2;--dim:#86a0b4;--ship:#9fb3c4;--hit:#ff6b4a;--miss:#3d6c8f;--ok:#6fd39a;--bad:#ff8a73;--line:#ffffff14}
+*{box-sizing:border-box}
+body{margin:0;background:var(--deep);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:24px 16px 48px}
+h1{margin:0 0 4px;font-size:26px;letter-spacing:.5px}
+p{margin:6px 0}
+.dim{color:var(--dim)}
+.seas{display:flex;flex-wrap:wrap;gap:24px;margin:20px 0}
+.sea{flex:1 1 300px;max-width:400px}
+.sea h2{font-size:15px;margin:0 0 8px;font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(8,1fr);gap:3px;background:var(--line);padding:3px;border-radius:8px}
+.grid button{aspect-ratio:1;border:0;border-radius:4px;background:var(--sea);color:var(--ink);font:inherit;font-size:18px;padding:0;cursor:default}
+.grid button.ship{background:var(--ship)}
+.grid button.miss::after{content:"";display:block;width:26%;aspect-ratio:1;margin:auto;border-radius:50%;background:var(--miss)}
+.grid button.hit{background:var(--hit)}
+.grid button.wait{outline:2px dashed var(--ink);outline-offset:-4px}
+.grid button.lie{box-shadow:inset 0 0 0 3px #ffd54a}
+.grid.aim button:not(.hit):not(.miss):not(.wait){cursor:crosshair}
+.grid.aim button:not(.hit):not(.miss):not(.wait):hover{background:#174a70}
+.seal{font:12px ui-monospace,monospace;color:var(--dim);word-break:break-all}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+input[type=text]{background:var(--sea);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:8px 10px;font:inherit}
+button.go{background:#2f7fb8;color:#fff;border:0;border-radius:6px;padding:8px 14px;font:inherit;cursor:pointer}
+button.go.quiet{background:transparent;border:1px solid var(--line);color:var(--ink)}
+#status{font-size:17px;margin-top:14px;min-height:1.5em}
+#verdict{display:none;margin:18px 0;padding:14px 16px;border-radius:10px;background:#0f3150}
+#verdict.on{display:block}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+#link{font:13px ui-monospace,monospace;word-break:break-all}
+</style>
+<main>
+<h1>Sea battle</h1>
+<p class="dim">The server never sees your fleet. It keeps a seal of it, writes down every answer you give, and checks them all when the boards are revealed.</p>
+
+<section id="lobby">
+<div class="bar"><input type="text" id="name" placeholder="Your name" maxlength="24"><button class="go quiet" id="shuffle">Shuffle fleet</button><button class="go" id="start">Start a game</button></div>
+</section>
+
+<p id="status"></p>
+<p id="share" style="display:none">Send this link to your opponent: <span id="link"></span></p>
+<div class="bar" id="cheat" style="display:none"><label><input type="checkbox" id="lie"> Lie about hits (answer "miss" when they hit me)</label></div>
+
+<div class="seas">
+<div class="sea"><h2 id="leftname">Your waters</h2><div class="grid" id="left"></div><p class="seal" id="leftseal"></p></div>
+<div class="sea"><h2 id="rightname">Their waters</h2><div class="grid" id="right"></div><p class="seal" id="rightseal"></p></div>
+</div>
+
+<p id="claimbar" style="display:none"><button class="go" id="claim"></button></p>
+<div id="verdict"></div>
+</main>
+<script>
+var FLEET = [4, 3, 3, 2];
+var $ = function (id) { return document.getElementById(id); };
+var memory = {};
+var load = function (id) { try { return JSON.parse(localStorage.getItem("sea-battle:" + id)) || memory[id] || null; } catch (e) { return memory[id] || null; } };
+var save = function (id, v) { memory[id] = v; try { localStorage.setItem("sea-battle:" + id, JSON.stringify(v)); } catch (e) {} };
+
+var hex = function (bytes) { return Array.from(bytes, function (b) { return (b + 256).toString(16).slice(1); }).join(""); };
+var sha = function (text) {
+  if (window.crypto && crypto.subtle) return crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)).then(function (d) { return hex(new Uint8Array(d)); });
+  return Promise.resolve(own(text));
+};
+// sha256 for a page served over plain http on a network, where the browser offers none.
+var own = function (text) {
+  var bytes = new TextEncoder().encode(text), primes = [];
+  for (var c = 2; primes.length < 64; c++) if (primes.every(function (p) { return c % p; })) primes.push(c);
+  var frac = function (x) { return x - Math.floor(x); };
+  var K = primes.map(function (p) { return Math.floor(frac(Math.cbrt(p)) * 4294967296); });
+  var h = primes.slice(0, 8).map(function (p) { return Math.floor(frac(Math.sqrt(p)) * 4294967296); });
+  var size = ((bytes.length + 9 + 63) >> 6) << 6, buf = new Uint8Array(size);
+  buf.set(bytes); buf[bytes.length] = 128;
+  var view = new DataView(buf.buffer);
+  view.setUint32(size - 8, Math.floor(bytes.length / 536870912)); view.setUint32(size - 4, (bytes.length << 3) >>> 0);
+  var w = new Array(64), rotr = function (x, n) { return (x >>> n) | (x << (32 - n)); };
+  for (var off = 0; off < size; off += 64) {
+    for (var i = 0; i < 16; i++) w[i] = view.getUint32(off + i * 4);
+    for (i = 16; i < 64; i++) w[i] = (w[i - 16] + (rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3)) + w[i - 7] + (rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10))) >>> 0;
+    var a = h[0], b = h[1], cc = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (i = 0; i < 64; i++) {
+      var t1 = (hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) >>> 0;
+      var t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & cc) ^ (b & cc))) >>> 0;
+      hh = g; g = f; f = e; e = (d + t1) >>> 0; d = cc; cc = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    [a, b, cc, d, e, f, g, hh].forEach(function (v, i) { h[i] = (h[i] + v) >>> 0; });
+  }
+  return h.map(function (v) { return (v + 4294967296).toString(16).slice(1); }).join("");
+};
+
+// A fleet placed at random: ships 1 to 4, each a straight line, none overlapping.
+var shuffle = function () {
+  var cells = new Array(64).fill("0");
+  FLEET.forEach(function (len, i) {
+    for (;;) {
+      var across = Math.random() < 0.5;
+      var r = Math.floor(Math.random() * (across ? 8 : 9 - len)), c = Math.floor(Math.random() * (across ? 9 - len : 8));
+      var at = [];
+      for (var k = 0; k < len; k++) at.push((r + (across ? 0 : k)) * 8 + c + (across ? k : 0));
+      if (at.every(function (x) { return cells[x] === "0"; })) { at.forEach(function (x) { cells[x] = String(i + 1); }); return; }
+    }
+  });
+  return cells.join("");
+};
+var salt = function () { var b = new Uint8Array(16); crypto.getRandomValues(b); return hex(b); };
+
+var grids = {};
+var makeGrid = function (id, onClick) {
+  var el = $(id), cells = [];
+  for (var k = 0; k < 64; k++) {
+    var btn = document.createElement("button");
+    btn.setAttribute("aria-label", "ABCDEFGH"[k % 8] + (Math.floor(k / 8) + 1));
+    (function (k) { btn.onclick = function () { if (onClick) onClick(k); }; })(k);
+    el.appendChild(btn); cells.push(btn);
+  }
+  grids[id] = cells;
+};
+var paint = function (id, cls) { grids[id].forEach(function (b, k) { b.className = cls(k); }); };
+
+var post = function (path, body) {
+  return fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; }); });
+};
+
+var gameId = location.hash.slice(1), game = null, mine = null, draft = { board: shuffle(), salt: salt() }, busy = false;
+
+var marks = function (shots, k) {
+  var s = shots.find(function (s) { return s.cell === k; });
+  return s ? (s.said === "" ? " wait" : " " + s.said) : "";
+};
+var render = function () {
+  var g = game;
+  if (!g) {
+    paint("left", function (k) { return draft.board[k] !== "0" ? "ship" : ""; });
+    paint("right", function () { return ""; });
+    $("leftname").textContent = "Your fleet (only you can see it)";
+    $("rightname").textContent = "Their waters";
+    return;
+  }
+  var me = mine && mine.seat, them = me === "b" ? "a" : "b";
+  var left = me || "a", right = me ? them : "b";
+  var atLeft = g.shots.filter(function (s) { return s.by !== left; });
+  var atRight = g.shots.filter(function (s) { return s.by === left; });
+  var boardOf = function (seat) { return seat === me ? mine.board : g[seat].board; };
+  var lies = function (seat) { return g[seat].lies || []; };
+  var cls = function (seat, shots) {
+    return function (k) {
+      var b = boardOf(seat);
+      return (b && b[k] !== "0" ? "ship" : "") + marks(shots, k) + (lies(seat).indexOf(k) >= 0 ? " lie" : "");
+    };
+  };
+  paint("left", cls(left, atLeft));
+  paint("right", cls(right, atRight));
+  $("leftname").textContent = (me ? "Your waters" : (g.a.name || "Captain A") + "'s waters");
+  $("rightname").textContent = (g[right].name || "Waiting for a captain") + "'s waters";
+  $("leftseal").textContent = "seal " + (g[left].commit || "...");
+  $("rightseal").textContent = "seal " + (g[right].commit || "...");
+  var aim = me && g.phase === "play" && g.turn === me && !g.shots.some(function (s) { return s.said === ""; });
+  $("right").className = "grid" + (aim ? " aim" : "");
+  $("lobby").style.display = "none";
+  $("share").style.display = me === "a" && g.phase === "waiting" ? "" : "none";
+  $("link").textContent = location.href;
+  $("cheat").style.display = me && (g.phase === "play" || g.phase === "waiting") ? "" : "none";
+  var hits = function (seat) { return g.shots.filter(function (s) { return s.by === seat && s.said === "hit"; }).length; };
+  var say = g.phase === "waiting" ? (me ? "Waiting for an opponent to join." : "This game is waiting for a second captain.")
+    : g.phase === "play" ? (me ? (g.turn === me ? "Your turn: fire at their waters." : "Their turn.") : g[g.turn].name + " is firing.") + " Hits " + hits(left) + " / 12, taken " + hits(right) + " / 12."
+    : g.phase === "reveal" ? "The battle is over. The boards are being revealed and checked."
+    : g.winner ? g[g.winner].name + " wins." : "Nobody wins.";
+  $("status").textContent = say;
+  var v = $("verdict");
+  if (g.phase === "over") {
+    var line = function (seat) {
+      var p = g[seat];
+      if (!p.revealed) return "<p><b></b>: <span class=bad>went silent and never revealed a board</span></p>";
+      return "<p><b></b>: " + (p.sealed ? "<span class=ok>board matches its seal</span>" : "<span class=bad>board does not match its seal</span>")
+        + ", " + (p.fleet === "" ? "<span class=ok>legal fleet</span>" : "<span class=bad>illegal fleet</span>")
+        + ", " + (p.lies.length ? "<span class=bad>" + p.lies.length + " false answers (marked in yellow)</span>" : "<span class=ok>every answer true</span>") + "</p>";
+    };
+    v.innerHTML = "<p id=why></p>" + line("a") + line("b");
+    v.querySelector("#why").textContent = g.why;
+    v.querySelectorAll("b")[0].textContent = g.a.name;
+    v.querySelectorAll("b")[1].textContent = g.b.name;
+    v.className = "on";
+  } else v.className = "";
+  silence();
+  act();
+};
+
+// What this page does by itself: answer a shot at it, and reveal its board when the battle ends.
+var act = function () {
+  var g = game, me = mine && mine.seat;
+  if (!g || !me || busy) return;
+  var waiting = g.shots.find(function (s) { return s.said === "" && s.by !== me; });
+  if (g.phase === "play" && waiting) {
+    var hit = mine.board[waiting.cell] !== "0";
+    busy = true;
+    post("/games/" + gameId + "/answer", { key: mine.key, said: hit && !$("lie").checked ? "hit" : "miss" }).then(done);
+  } else if (g.phase === "reveal" && !g[me].revealed) {
+    busy = true;
+    post("/games/" + gameId + "/reveal", { key: mine.key, board: mine.board, salt: mine.salt }).then(done);
+  }
+};
+var done = function (r) { busy = false; if (r.ok && r.body.id) { game = r.body; render(); } };
+
+// When the opponent has kept everyone waiting two minutes, a button to claim the game.
+var silence = function () {
+  var g = game, me = mine && mine.seat, them = me === "b" ? "a" : "b";
+  var pending = g && g.shots.find(function (s) { return s.said === ""; });
+  var waitingOn = !g ? "" : g.phase === "reveal" ? (g[them].revealed ? "" : them) : g.phase !== "play" ? "" : pending ? (pending.by === me ? them : me) : g.turn;
+  var left = g ? 120 - (Date.now() / 1000 - g.since) : 0;
+  var can = me && waitingOn === them && (g.phase === "play" || g[me].revealed) && left <= 0;
+  $("claimbar").style.display = can ? "" : "none";
+  if (can) $("claim").textContent = g[them].name + " has gone silent. Claim the game";
+};
+setInterval(function () { if (game) silence(); }, 5000);
+var claim = function () {
+  if (busy) return;
+  busy = true;
+  post("/games/" + gameId + "/claim", { key: mine.key, board: mine.board, salt: mine.salt }).then(done);
+};
+
+var fire = function (k) {
+  var g = game, me = mine && mine.seat;
+  if (!g || !me || busy || g.phase !== "play" || g.turn !== me) return;
+  busy = true;
+  post("/games/" + gameId + "/fire", { key: mine.key, cell: k }).then(done);
+};
+
+var refresh = function () {
+  return fetch("/games/" + gameId).then(function (r) { return r.ok ? r.json() : null; }).then(function (g) {
+    game = g;
+    if (!g) { $("status").textContent = "There is no game " + gameId + "."; return; }
+    if (!mine && g.phase === "waiting") {
+      $("start").textContent = "Join " + (g.a.name || "this game");
+      $("lobby").style.display = "";
+      $("status").textContent = (g.a.name || "A captain") + " is waiting for an opponent. Shuffle your fleet and join.";
+      game = null; render(); game = g;
+      return;
+    }
+    render();
+  });
+};
+
+var begin = function () {
+  var name = $("name").value.trim();
+  $("start").disabled = true;
+  sha(draft.board + "|" + draft.salt).then(function (commit) {
+    return post(gameId ? "/games/" + gameId + "/join" : "/games", { name: name || undefined, commit: commit });
+  }).then(function (r) {
+    $("start").disabled = false;
+    if (!r.ok) { $("status").textContent = r.body.error || "That didn't work."; return; }
+    gameId = r.body.game;
+    mine = { seat: r.body.seat, key: r.body.key, board: draft.board, salt: draft.salt };
+    save(gameId, mine);
+    history.replaceState(null, "", "#" + gameId);
+    refresh();
+  });
+};
+
+makeGrid("left");
+makeGrid("right", fire);
+$("shuffle").onclick = function () { draft = { board: shuffle(), salt: salt() }; render(); };
+$("start").onclick = begin;
+$("claim").onclick = claim;
+new EventSource("/live").onmessage = function (e) {
+  var g = JSON.parse(e.data);
+  if (g.id === gameId && (mine || g.phase !== "waiting")) { game = g; render(); }
+};
+if (gameId) { mine = load(gameId); refresh(); } else render();
+</script>
+</html>
+  commit={"after":45,"n":46} error=null kind="request" method="GET" nonce="73070000000000000000000000000000" outputs=#58bd1d21442dba58 performed=[] request=#1033d05cc439533d response_body=#439b4a3fb0628bd0 route="GET /" run_id="358a0430c46bda3469305b6771c415a0526f3d500985ad5c091f4b74488ee235" seq=45 session=1 sourced=#f970593dddaf9c1f state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=200 timeline=#1ab9ceeba1197493 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/"
+== sea-battle · GET / · body 232 → 200 <!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sea battle</title>
+<style>
+:root{color-scheme:dark;--sea:#0b2740;--deep:#06182a;--ink:#dbe9f2;--dim:#86a0b4;--ship:#9fb3c4;--hit:#ff6b4a;--miss:#3d6c8f;--ok:#6fd39a;--bad:#ff8a73;--line:#ffffff14}
+*{box-sizing:border-box}
+body{margin:0;background:var(--deep);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:24px 16px 48px}
+h1{margin:0 0 4px;font-size:26px;letter-spacing:.5px}
+p{margin:6px 0}
+.dim{color:var(--dim)}
+.seas{display:flex;flex-wrap:wrap;gap:24px;margin:20px 0}
+.sea{flex:1 1 300px;max-width:400px}
+.sea h2{font-size:15px;margin:0 0 8px;font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(8,1fr);gap:3px;background:var(--line);padding:3px;border-radius:8px}
+.grid button{aspect-ratio:1;border:0;border-radius:4px;background:var(--sea);color:var(--ink);font:inherit;font-size:18px;padding:0;cursor:default}
+.grid button.ship{background:var(--ship)}
+.grid button.miss::after{content:"";display:block;width:26%;aspect-ratio:1;margin:auto;border-radius:50%;background:var(--miss)}
+.grid button.hit{background:var(--hit)}
+.grid button.wait{outline:2px dashed var(--ink);outline-offset:-4px}
+.grid button.lie{box-shadow:inset 0 0 0 3px #ffd54a}
+.grid.aim button:not(.hit):not(.miss):not(.wait){cursor:crosshair}
+.grid.aim button:not(.hit):not(.miss):not(.wait):hover{background:#174a70}
+.seal{font:12px ui-monospace,monospace;color:var(--dim);word-break:break-all}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+input[type=text]{background:var(--sea);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:8px 10px;font:inherit}
+button.go{background:#2f7fb8;color:#fff;border:0;border-radius:6px;padding:8px 14px;font:inherit;cursor:pointer}
+button.go.quiet{background:transparent;border:1px solid var(--line);color:var(--ink)}
+#status{font-size:17px;margin-top:14px;min-height:1.5em}
+#verdict{display:none;margin:18px 0;padding:14px 16px;border-radius:10px;background:#0f3150}
+#verdict.on{display:block}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+#link{font:13px ui-monospace,monospace;word-break:break-all}
+</style>
+<main>
+<h1>Sea battle</h1>
+<p class="dim">The server never sees your fleet. It keeps a seal of it, writes down every answer you give, and checks them all when the boards are revealed.</p>
+
+<section id="lobby">
+<div class="bar"><input type="text" id="name" placeholder="Your name" maxlength="24"><button class="go quiet" id="shuffle">Shuffle fleet</button><button class="go" id="start">Start a game</button></div>
+</section>
+
+<p id="status"></p>
+<p id="share" style="display:none">Send this link to your opponent: <span id="link"></span></p>
+<div class="bar" id="cheat" style="display:none"><label><input type="checkbox" id="lie"> Lie about hits (answer "miss" when they hit me)</label></div>
+
+<div class="seas">
+<div class="sea"><h2 id="leftname">Your waters</h2><div class="grid" id="left"></div><p class="seal" id="leftseal"></p></div>
+<div class="sea"><h2 id="rightname">Their waters</h2><div class="grid" id="right"></div><p class="seal" id="rightseal"></p></div>
+</div>
+
+<p id="claimbar" style="display:none"><button class="go" id="claim"></button></p>
+<div id="verdict"></div>
+</main>
+<script>
+var FLEET = [4, 3, 3, 2];
+var $ = function (id) { return document.getElementById(id); };
+var memory = {};
+var load = function (id) { try { return JSON.parse(localStorage.getItem("sea-battle:" + id)) || memory[id] || null; } catch (e) { return memory[id] || null; } };
+var save = function (id, v) { memory[id] = v; try { localStorage.setItem("sea-battle:" + id, JSON.stringify(v)); } catch (e) {} };
+
+var hex = function (bytes) { return Array.from(bytes, function (b) { return (b + 256).toString(16).slice(1); }).join(""); };
+var sha = function (text) {
+  if (window.crypto && crypto.subtle) return crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)).then(function (d) { return hex(new Uint8Array(d)); });
+  return Promise.resolve(own(text));
+};
+// sha256 for a page served over plain http on a network, where the browser offers none.
+var own = function (text) {
+  var bytes = new TextEncoder().encode(text), primes = [];
+  for (var c = 2; primes.length < 64; c++) if (primes.every(function (p) { return c % p; })) primes.push(c);
+  var frac = function (x) { return x - Math.floor(x); };
+  var K = primes.map(function (p) { return Math.floor(frac(Math.cbrt(p)) * 4294967296); });
+  var h = primes.slice(0, 8).map(function (p) { return Math.floor(frac(Math.sqrt(p)) * 4294967296); });
+  var size = ((bytes.length + 9 + 63) >> 6) << 6, buf = new Uint8Array(size);
+  buf.set(bytes); buf[bytes.length] = 128;
+  var view = new DataView(buf.buffer);
+  view.setUint32(size - 8, Math.floor(bytes.length / 536870912)); view.setUint32(size - 4, (bytes.length << 3) >>> 0);
+  var w = new Array(64), rotr = function (x, n) { return (x >>> n) | (x << (32 - n)); };
+  for (var off = 0; off < size; off += 64) {
+    for (var i = 0; i < 16; i++) w[i] = view.getUint32(off + i * 4);
+    for (i = 16; i < 64; i++) w[i] = (w[i - 16] + (rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3)) + w[i - 7] + (rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10))) >>> 0;
+    var a = h[0], b = h[1], cc = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (i = 0; i < 64; i++) {
+      var t1 = (hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) >>> 0;
+      var t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & cc) ^ (b & cc))) >>> 0;
+      hh = g; g = f; f = e; e = (d + t1) >>> 0; d = cc; cc = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    [a, b, cc, d, e, f, g, hh].forEach(function (v, i) { h[i] = (h[i] + v) >>> 0; });
+  }
+  return h.map(function (v) { return (v + 4294967296).toString(16).slice(1); }).join("");
+};
+
+// A fleet placed at random: ships 1 to 4, each a straight line, none overlapping.
+var shuffle = function () {
+  var cells = new Array(64).fill("0");
+  FLEET.forEach(function (len, i) {
+    for (;;) {
+      var across = Math.random() < 0.5;
+      var r = Math.floor(Math.random() * (across ? 8 : 9 - len)), c = Math.floor(Math.random() * (across ? 9 - len : 8));
+      var at = [];
+      for (var k = 0; k < len; k++) at.push((r + (across ? 0 : k)) * 8 + c + (across ? k : 0));
+      if (at.every(function (x) { return cells[x] === "0"; })) { at.forEach(function (x) { cells[x] = String(i + 1); }); return; }
+    }
+  });
+  return cells.join("");
+};
+var salt = function () { var b = new Uint8Array(16); crypto.getRandomValues(b); return hex(b); };
+
+var grids = {};
+var makeGrid = function (id, onClick) {
+  var el = $(id), cells = [];
+  for (var k = 0; k < 64; k++) {
+    var btn = document.createElement("button");
+    btn.setAttribute("aria-label", "ABCDEFGH"[k % 8] + (Math.floor(k / 8) + 1));
+    (function (k) { btn.onclick = function () { if (onClick) onClick(k); }; })(k);
+    el.appendChild(btn); cells.push(btn);
+  }
+  grids[id] = cells;
+};
+var paint = function (id, cls) { grids[id].forEach(function (b, k) { b.className = cls(k); }); };
+
+var post = function (path, body) {
+  return fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; }); });
+};
+
+var gameId = location.hash.slice(1), game = null, mine = null, draft = { board: shuffle(), salt: salt() }, busy = false;
+
+var marks = function (shots, k) {
+  var s = shots.find(function (s) { return s.cell === k; });
+  return s ? (s.said === "" ? " wait" : " " + s.said) : "";
+};
+var render = function () {
+  var g = game;
+  if (!g) {
+    paint("left", function (k) { return draft.board[k] !== "0" ? "ship" : ""; });
+    paint("right", function () { return ""; });
+    $("leftname").textContent = "Your fleet (only you can see it)";
+    $("rightname").textContent = "Their waters";
+    return;
+  }
+  var me = mine && mine.seat, them = me === "b" ? "a" : "b";
+  var left = me || "a", right = me ? them : "b";
+  var atLeft = g.shots.filter(function (s) { return s.by !== left; });
+  var atRight = g.shots.filter(function (s) { return s.by === left; });
+  var boardOf = function (seat) { return seat === me ? mine.board : g[seat].board; };
+  var lies = function (seat) { return g[seat].lies || []; };
+  var cls = function (seat, shots) {
+    return function (k) {
+      var b = boardOf(seat);
+      return (b && b[k] !== "0" ? "ship" : "") + marks(shots, k) + (lies(seat).indexOf(k) >= 0 ? " lie" : "");
+    };
+  };
+  paint("left", cls(left, atLeft));
+  paint("right", cls(right, atRight));
+  $("leftname").textContent = (me ? "Your waters" : (g.a.name || "Captain A") + "'s waters");
+  $("rightname").textContent = (g[right].name || "Waiting for a captain") + "'s waters";
+  $("leftseal").textContent = "seal " + (g[left].commit || "...");
+  $("rightseal").textContent = "seal " + (g[right].commit || "...");
+  var aim = me && g.phase === "play" && g.turn === me && !g.shots.some(function (s) { return s.said === ""; });
+  $("right").className = "grid" + (aim ? " aim" : "");
+  $("lobby").style.display = "none";
+  $("share").style.display = me === "a" && g.phase === "waiting" ? "" : "none";
+  $("link").textContent = location.href;
+  $("cheat").style.display = me && (g.phase === "play" || g.phase === "waiting") ? "" : "none";
+  var hits = function (seat) { return g.shots.filter(function (s) { return s.by === seat && s.said === "hit"; }).length; };
+  var say = g.phase === "waiting" ? (me ? "Waiting for an opponent to join." : "This game is waiting for a second captain.")
+    : g.phase === "play" ? (me ? (g.turn === me ? "Your turn: fire at their waters." : "Their turn.") : g[g.turn].name + " is firing.") + " Hits " + hits(left) + " / 12, taken " + hits(right) + " / 12."
+    : g.phase === "reveal" ? "The battle is over. The boards are being revealed and checked."
+    : g.winner ? g[g.winner].name + " wins." : "Nobody wins.";
+  $("status").textContent = say;
+  var v = $("verdict");
+  if (g.phase === "over") {
+    var line = function (seat) {
+      var p = g[seat];
+      if (!p.revealed) return "<p><b></b>: <span class=bad>went silent and never revealed a board</span></p>";
+      return "<p><b></b>: " + (p.sealed ? "<span class=ok>board matches its seal</span>" : "<span class=bad>board does not match its seal</span>")
+        + ", " + (p.fleet === "" ? "<span class=ok>legal fleet</span>" : "<span class=bad>illegal fleet</span>")
+        + ", " + (p.lies.length ? "<span class=bad>" + p.lies.length + " false answers (marked in yellow)</span>" : "<span class=ok>every answer true</span>") + "</p>";
+    };
+    v.innerHTML = "<p id=why></p>" + line("a") + line("b");
+    v.querySelector("#why").textContent = g.why;
+    v.querySelectorAll("b")[0].textContent = g.a.name;
+    v.querySelectorAll("b")[1].textContent = g.b.name;
+    v.className = "on";
+  } else v.className = "";
+  silence();
+  act();
+};
+
+// What this page does by itself: answer a shot at it, and reveal its board when the battle ends.
+var act = function () {
+  var g = game, me = mine && mine.seat;
+  if (!g || !me || busy) return;
+  var waiting = g.shots.find(function (s) { return s.said === "" && s.by !== me; });
+  if (g.phase === "play" && waiting) {
+    var hit = mine.board[waiting.cell] !== "0";
+    busy = true;
+    post("/games/" + gameId + "/answer", { key: mine.key, said: hit && !$("lie").checked ? "hit" : "miss" }).then(done);
+  } else if (g.phase === "reveal" && !g[me].revealed) {
+    busy = true;
+    post("/games/" + gameId + "/reveal", { key: mine.key, board: mine.board, salt: mine.salt }).then(done);
+  }
+};
+var done = function (r) { busy = false; if (r.ok && r.body.id) { game = r.body; render(); } };
+
+// When the opponent has kept everyone waiting two minutes, a button to claim the game.
+var silence = function () {
+  var g = game, me = mine && mine.seat, them = me === "b" ? "a" : "b";
+  var pending = g && g.shots.find(function (s) { return s.said === ""; });
+  var waitingOn = !g ? "" : g.phase === "reveal" ? (g[them].revealed ? "" : them) : g.phase !== "play" ? "" : pending ? (pending.by === me ? them : me) : g.turn;
+  var left = g ? 120 - (Date.now() / 1000 - g.since) : 0;
+  var can = me && waitingOn === them && (g.phase === "play" || g[me].revealed) && left <= 0;
+  $("claimbar").style.display = can ? "" : "none";
+  if (can) $("claim").textContent = g[them].name + " has gone silent. Claim the game";
+};
+setInterval(function () { if (game) silence(); }, 5000);
+var claim = function () {
+  if (busy) return;
+  busy = true;
+  post("/games/" + gameId + "/claim", { key: mine.key, board: mine.board, salt: mine.salt }).then(done);
+};
+
+var fire = function (k) {
+  var g = game, me = mine && mine.seat;
+  if (!g || !me || busy || g.phase !== "play" || g.turn !== me) return;
+  busy = true;
+  post("/games/" + gameId + "/fire", { key: mine.key, cell: k }).then(done);
+};
+
+var refresh = function () {
+  return fetch("/games/" + gameId).then(function (r) { return r.ok ? r.json() : null; }).then(function (g) {
+    game = g;
+    if (!g) { $("status").textContent = "There is no game " + gameId + "."; return; }
+    if (!mine && g.phase === "waiting") {
+      $("start").textContent = "Join " + (g.a.name || "this game");
+      $("lobby").style.display = "";
+      $("status").textContent = (g.a.name || "A captain") + " is waiting for an opponent. Shuffle your fleet and join.";
+      game = null; render(); game = g;
+      return;
+    }
+    render();
+  });
+};
+
+var begin = function () {
+  var name = $("name").value.trim();
+  $("start").disabled = true;
+  sha(draft.board + "|" + draft.salt).then(function (commit) {
+    return post(gameId ? "/games/" + gameId + "/join" : "/games", { name: name || undefined, commit: commit });
+  }).then(function (r) {
+    $("start").disabled = false;
+    if (!r.ok) { $("status").textContent = r.body.error || "That didn't work."; return; }
+    gameId = r.body.game;
+    mine = { seat: r.body.seat, key: r.body.key, board: draft.board, salt: draft.salt };
+    save(gameId, mine);
+    history.replaceState(null, "", "#" + gameId);
+    refresh();
+  });
+};
+
+makeGrid("left");
+makeGrid("right", fire);
+$("shuffle").onclick = function () { draft = { board: shuffle(), salt: salt() }; render(); };
+$("start").onclick = begin;
+$("claim").onclick = claim;
+new EventSource("/live").onmessage = function (e) {
+  var g = JSON.parse(e.data);
+  if (g.id === gameId && (mine || g.phase !== "waiting")) { game = g; render(); }
+};
+if (gameId) { mine = load(gameId); refresh(); } else render();
+</script>
+</html>
+  commit={"after":46,"n":47} error=null kind="request" method="GET" nonce="76070000000000000000000000000000" outputs=#58bd1d21442dba58 performed=[] request=#b6fcac44ef7aa360 response_body=#439b4a3fb0628bd0 route="GET /" run_id="c6b225e7c562dac2952b2b759b8754e58d80fcaa45ce0c8332ffdbf84233b72c" seq=46 session=1 sourced=#8bab3dfcc29dc5cd state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=200 timeline=#8b3056cabe7d13dc unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/"
+== sea-battle · GET / · body 373 → 200 <!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sea battle</title>
+<style>
+:root{color-scheme:dark;--sea:#0b2740;--deep:#06182a;--ink:#dbe9f2;--dim:#86a0b4;--ship:#9fb3c4;--hit:#ff6b4a;--miss:#3d6c8f;--ok:#6fd39a;--bad:#ff8a73;--line:#ffffff14}
+*{box-sizing:border-box}
+body{margin:0;background:var(--deep);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:24px 16px 48px}
+h1{margin:0 0 4px;font-size:26px;letter-spacing:.5px}
+p{margin:6px 0}
+.dim{color:var(--dim)}
+.seas{display:flex;flex-wrap:wrap;gap:24px;margin:20px 0}
+.sea{flex:1 1 300px;max-width:400px}
+.sea h2{font-size:15px;margin:0 0 8px;font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(8,1fr);gap:3px;background:var(--line);padding:3px;border-radius:8px}
+.grid button{aspect-ratio:1;border:0;border-radius:4px;background:var(--sea);color:var(--ink);font:inherit;font-size:18px;padding:0;cursor:default}
+.grid button.ship{background:var(--ship)}
+.grid button.miss::after{content:"";display:block;width:26%;aspect-ratio:1;margin:auto;border-radius:50%;background:var(--miss)}
+.grid button.hit{background:var(--hit)}
+.grid button.wait{outline:2px dashed var(--ink);outline-offset:-4px}
+.grid button.lie{box-shadow:inset 0 0 0 3px #ffd54a}
+.grid.aim button:not(.hit):not(.miss):not(.wait){cursor:crosshair}
+.grid.aim button:not(.hit):not(.miss):not(.wait):hover{background:#174a70}
+.seal{font:12px ui-monospace,monospace;color:var(--dim);word-break:break-all}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+input[type=text]{background:var(--sea);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:8px 10px;font:inherit}
+button.go{background:#2f7fb8;color:#fff;border:0;border-radius:6px;padding:8px 14px;font:inherit;cursor:pointer}
+button.go.quiet{background:transparent;border:1px solid var(--line);color:var(--ink)}
+#status{font-size:17px;margin-top:14px;min-height:1.5em}
+#verdict{display:none;margin:18px 0;padding:14px 16px;border-radius:10px;background:#0f3150}
+#verdict.on{display:block}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+#link{font:13px ui-monospace,monospace;word-break:break-all}
+</style>
+<main>
+<h1>Sea battle</h1>
+<p class="dim">The server never sees your fleet. It keeps a seal of it, writes down every answer you give, and checks them all when the boards are revealed.</p>
+
+<section id="lobby">
+<div class="bar"><input type="text" id="name" placeholder="Your name" maxlength="24"><button class="go quiet" id="shuffle">Shuffle fleet</button><button class="go" id="start">Start a game</button></div>
+</section>
+
+<p id="status"></p>
+<p id="share" style="display:none">Send this link to your opponent: <span id="link"></span></p>
+<div class="bar" id="cheat" style="display:none"><label><input type="checkbox" id="lie"> Lie about hits (answer "miss" when they hit me)</label></div>
+
+<div class="seas">
+<div class="sea"><h2 id="leftname">Your waters</h2><div class="grid" id="left"></div><p class="seal" id="leftseal"></p></div>
+<div class="sea"><h2 id="rightname">Their waters</h2><div class="grid" id="right"></div><p class="seal" id="rightseal"></p></div>
+</div>
+
+<p id="claimbar" style="display:none"><button class="go" id="claim"></button></p>
+<div id="verdict"></div>
+</main>
+<script>
+var FLEET = [4, 3, 3, 2];
+var $ = function (id) { return document.getElementById(id); };
+var memory = {};
+var load = function (id) { try { return JSON.parse(localStorage.getItem("sea-battle:" + id)) || memory[id] || null; } catch (e) { return memory[id] || null; } };
+var save = function (id, v) { memory[id] = v; try { localStorage.setItem("sea-battle:" + id, JSON.stringify(v)); } catch (e) {} };
+
+var hex = function (bytes) { return Array.from(bytes, function (b) { return (b + 256).toString(16).slice(1); }).join(""); };
+var sha = function (text) {
+  if (window.crypto && crypto.subtle) return crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)).then(function (d) { return hex(new Uint8Array(d)); });
+  return Promise.resolve(own(text));
+};
+// sha256 for a page served over plain http on a network, where the browser offers none.
+var own = function (text) {
+  var bytes = new TextEncoder().encode(text), primes = [];
+  for (var c = 2; primes.length < 64; c++) if (primes.every(function (p) { return c % p; })) primes.push(c);
+  var frac = function (x) { return x - Math.floor(x); };
+  var K = primes.map(function (p) { return Math.floor(frac(Math.cbrt(p)) * 4294967296); });
+  var h = primes.slice(0, 8).map(function (p) { return Math.floor(frac(Math.sqrt(p)) * 4294967296); });
+  var size = ((bytes.length + 9 + 63) >> 6) << 6, buf = new Uint8Array(size);
+  buf.set(bytes); buf[bytes.length] = 128;
+  var view = new DataView(buf.buffer);
+  view.setUint32(size - 8, Math.floor(bytes.length / 536870912)); view.setUint32(size - 4, (bytes.length << 3) >>> 0);
+  var w = new Array(64), rotr = function (x, n) { return (x >>> n) | (x << (32 - n)); };
+  for (var off = 0; off < size; off += 64) {
+    for (var i = 0; i < 16; i++) w[i] = view.getUint32(off + i * 4);
+    for (i = 16; i < 64; i++) w[i] = (w[i - 16] + (rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3)) + w[i - 7] + (rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10))) >>> 0;
+    var a = h[0], b = h[1], cc = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (i = 0; i < 64; i++) {
+      var t1 = (hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) >>> 0;
+      var t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & cc) ^ (b & cc))) >>> 0;
+      hh = g; g = f; f = e; e = (d + t1) >>> 0; d = cc; cc = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    [a, b, cc, d, e, f, g, hh].forEach(function (v, i) { h[i] = (h[i] + v) >>> 0; });
+  }
+  return h.map(function (v) { return (v + 4294967296).toString(16).slice(1); }).join("");
+};
+
+// A fleet placed at random: ships 1 to 4, each a straight line, none overlapping.
+var shuffle = function () {
+  var cells = new Array(64).fill("0");
+  FLEET.forEach(function (len, i) {
+    for (;;) {
+      var across = Math.random() < 0.5;
+      var r = Math.floor(Math.random() * (across ? 8 : 9 - len)), c = Math.floor(Math.random() * (across ? 9 - len : 8));
+      var at = [];
+      for (var k = 0; k < len; k++) at.push((r + (across ? 0 : k)) * 8 + c + (across ? k : 0));
+      if (at.every(function (x) { return cells[x] === "0"; })) { at.forEach(function (x) { cells[x] = String(i + 1); }); return; }
+    }
+  });
+  return cells.join("");
+};
+var salt = function () { var b = new Uint8Array(16); crypto.getRandomValues(b); return hex(b); };
+
+var grids = {};
+var makeGrid = function (id, onClick) {
+  var el = $(id), cells = [];
+  for (var k = 0; k < 64; k++) {
+    var btn = document.createElement("button");
+    btn.setAttribute("aria-label", "ABCDEFGH"[k % 8] + (Math.floor(k / 8) + 1));
+    (function (k) { btn.onclick = function () { if (onClick) onClick(k); }; })(k);
+    el.appendChild(btn); cells.push(btn);
+  }
+  grids[id] = cells;
+};
+var paint = function (id, cls) { grids[id].forEach(function (b, k) { b.className = cls(k); }); };
+
+var post = function (path, body) {
+  return fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; }); });
+};
+
+var gameId = location.hash.slice(1), game = null, mine = null, draft = { board: shuffle(), salt: salt() }, busy = false;
+
+var marks = function (shots, k) {
+  var s = shots.find(function (s) { return s.cell === k; });
+  return s ? (s.said === "" ? " wait" : " " + s.said) : "";
+};
+var render = function () {
+  var g = game;
+  if (!g) {
+    paint("left", function (k) { return draft.board[k] !== "0" ? "ship" : ""; });
+    paint("right", function () { return ""; });
+    $("leftname").textContent = "Your fleet (only you can see it)";
+    $("rightname").textContent = "Their waters";
+    return;
+  }
+  var me = mine && mine.seat, them = me === "b" ? "a" : "b";
+  var left = me || "a", right = me ? them : "b";
+  var atLeft = g.shots.filter(function (s) { return s.by !== left; });
+  var atRight = g.shots.filter(function (s) { return s.by === left; });
+  var boardOf = function (seat) { return seat === me ? mine.board : g[seat].board; };
+  var lies = function (seat) { return g[seat].lies || []; };
+  var cls = function (seat, shots) {
+    return function (k) {
+      var b = boardOf(seat);
+      return (b && b[k] !== "0" ? "ship" : "") + marks(shots, k) + (lies(seat).indexOf(k) >= 0 ? " lie" : "");
+    };
+  };
+  paint("left", cls(left, atLeft));
+  paint("right", cls(right, atRight));
+  $("leftname").textContent = (me ? "Your waters" : (g.a.name || "Captain A") + "'s waters");
+  $("rightname").textContent = (g[right].name || "Waiting for a captain") + "'s waters";
+  $("leftseal").textContent = "seal " + (g[left].commit || "...");
+  $("rightseal").textContent = "seal " + (g[right].commit || "...");
+  var aim = me && g.phase === "play" && g.turn === me && !g.shots.some(function (s) { return s.said === ""; });
+  $("right").className = "grid" + (aim ? " aim" : "");
+  $("lobby").style.display = "none";
+  $("share").style.display = me === "a" && g.phase === "waiting" ? "" : "none";
+  $("link").textContent = location.href;
+  $("cheat").style.display = me && (g.phase === "play" || g.phase === "waiting") ? "" : "none";
+  var hits = function (seat) { return g.shots.filter(function (s) { return s.by === seat && s.said === "hit"; }).length; };
+  var say = g.phase === "waiting" ? (me ? "Waiting for an opponent to join." : "This game is waiting for a second captain.")
+    : g.phase === "play" ? (me ? (g.turn === me ? "Your turn: fire at their waters." : "Their turn.") : g[g.turn].name + " is firing.") + " Hits " + hits(left) + " / 12, taken " + hits(right) + " / 12."
+    : g.phase === "reveal" ? "The battle is over. The boards are being revealed and checked."
+    : g.winner ? g[g.winner].name + " wins." : "Nobody wins.";
+  $("status").textContent = say;
+  var v = $("verdict");
+  if (g.phase === "over") {
+    var line = function (seat) {
+      var p = g[seat];
+      if (!p.revealed) return "<p><b></b>: <span class=bad>went silent and never revealed a board</span></p>";
+      return "<p><b></b>: " + (p.sealed ? "<span class=ok>board matches its seal</span>" : "<span class=bad>board does not match its seal</span>")
+        + ", " + (p.fleet === "" ? "<span class=ok>legal fleet</span>" : "<span class=bad>illegal fleet</span>")
+        + ", " + (p.lies.length ? "<span class=bad>" + p.lies.length + " false answers (marked in yellow)</span>" : "<span class=ok>every answer true</span>") + "</p>";
+    };
+    v.innerHTML = "<p id=why></p>" + line("a") + line("b");
+    v.querySelector("#why").textContent = g.why;
+    v.querySelectorAll("b")[0].textContent = g.a.name;
+    v.querySelectorAll("b")[1].textContent = g.b.name;
+    v.className = "on";
+  } else v.className = "";
+  silence();
+  act();
+};
+
+// What this page does by itself: answer a shot at it, and reveal its board when the battle ends.
+var act = function () {
+  var g = game, me = mine && mine.seat;
+  if (!g || !me || busy) return;
+  var waiting = g.shots.find(function (s) { return s.said === "" && s.by !== me; });
+  if (g.phase === "play" && waiting) {
+    var hit = mine.board[waiting.cell] !== "0";
+    busy = true;
+    post("/games/" + gameId + "/answer", { key: mine.key, said: hit && !$("lie").checked ? "hit" : "miss" }).then(done);
+  } else if (g.phase === "reveal" && !g[me].revealed) {
+    busy = true;
+    post("/games/" + gameId + "/reveal", { key: mine.key, board: mine.board, salt: mine.salt }).then(done);
+  }
+};
+var done = function (r) { busy = false; if (r.ok && r.body.id) { game = r.body; render(); } };
+
+// When the opponent has kept everyone waiting two minutes, a button to claim the game.
+var silence = function () {
+  var g = game, me = mine && mine.seat, them = me === "b" ? "a" : "b";
+  var pending = g && g.shots.find(function (s) { return s.said === ""; });
+  var waitingOn = !g ? "" : g.phase === "reveal" ? (g[them].revealed ? "" : them) : g.phase !== "play" ? "" : pending ? (pending.by === me ? them : me) : g.turn;
+  var left = g ? 120 - (Date.now() / 1000 - g.since) : 0;
+  var can = me && waitingOn === them && (g.phase === "play" || g[me].revealed) && left <= 0;
+  $("claimbar").style.display = can ? "" : "none";
+  if (can) $("claim").textContent = g[them].name + " has gone silent. Claim the game";
+};
+setInterval(function () { if (game) silence(); }, 5000);
+var claim = function () {
+  if (busy) return;
+  busy = true;
+  post("/games/" + gameId + "/claim", { key: mine.key, board: mine.board, salt: mine.salt }).then(done);
+};
+
+var fire = function (k) {
+  var g = game, me = mine && mine.seat;
+  if (!g || !me || busy || g.phase !== "play" || g.turn !== me) return;
+  busy = true;
+  post("/games/" + gameId + "/fire", { key: mine.key, cell: k }).then(done);
+};
+
+var refresh = function () {
+  return fetch("/games/" + gameId).then(function (r) { return r.ok ? r.json() : null; }).then(function (g) {
+    game = g;
+    if (!g) { $("status").textContent = "There is no game " + gameId + "."; return; }
+    if (!mine && g.phase === "waiting") {
+      $("start").textContent = "Join " + (g.a.name || "this game");
+      $("lobby").style.display = "";
+      $("status").textContent = (g.a.name || "A captain") + " is waiting for an opponent. Shuffle your fleet and join.";
+      game = null; render(); game = g;
+      return;
+    }
+    render();
+  });
+};
+
+var begin = function () {
+  var name = $("name").value.trim();
+  $("start").disabled = true;
+  sha(draft.board + "|" + draft.salt).then(function (commit) {
+    return post(gameId ? "/games/" + gameId + "/join" : "/games", { name: name || undefined, commit: commit });
+  }).then(function (r) {
+    $("start").disabled = false;
+    if (!r.ok) { $("status").textContent = r.body.error || "That didn't work."; return; }
+    gameId = r.body.game;
+    mine = { seat: r.body.seat, key: r.body.key, board: draft.board, salt: draft.salt };
+    save(gameId, mine);
+    history.replaceState(null, "", "#" + gameId);
+    refresh();
+  });
+};
+
+makeGrid("left");
+makeGrid("right", fire);
+$("shuffle").onclick = function () { draft = { board: shuffle(), salt: salt() }; render(); };
+$("start").onclick = begin;
+$("claim").onclick = claim;
+new EventSource("/live").onmessage = function (e) {
+  var g = JSON.parse(e.data);
+  if (g.id === gameId && (mine || g.phase !== "waiting")) { game = g; render(); }
+};
+if (gameId) { mine = load(gameId); refresh(); } else render();
+</script>
+</html>
+  commit={"after":47,"n":48} error=null kind="request" method="GET" nonce="79070000000000000000000000000000" outputs=#58bd1d21442dba58 performed=[] request=#9b5f45198d0a20cb response_body=#439b4a3fb0628bd0 route="GET /" run_id="54956d5930e8ebf8126fe49adca511b38896f50ab3cc862b48a752355cbe1f1e" seq=47 session=1 sourced=#3037b92ffb0242de state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=200 timeline=#3c2f5ca8a831cf65 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/"
+== sea-battle · POST /games/tea/claim · body 0 → 409 {"error":"your opponent still has time"}
+  commit={"after":48,"n":49} error=null kind="request" method="POST" nonce="7c070000000000000000000000000000" outputs=#125fa9aaa2c35654 performed=[] reads=#f0f63b4b1d95e7b8 request=#bbbebbb273601e76 response_body="{\"error\":\"your opponent still has time\"}" route="POST /games/:id/claim" run_id="b068235ff6668d4706da93df1050284b3f8a4fd7e0a78310e4472a058b9eb252" seq=48 session=1 skipped=[{"at":[0,10],"effect":"CollectionWrite(\"games\")","from":[0,109],"leaf":"collection_get","level":"read","read":0}] sourced=#e362760d378b883c state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#fc54b97e1d623e47 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/claim"
+== sea-battle · POST /games/tea/claim · body 232 → 409 {"error":"your opponent still has time"}
+  commit={"after":49,"n":50} error=null kind="request" method="POST" nonce="7f070000000000000000000000000000" outputs=#125fa9aaa2c35654 performed=[] reads=#f0f63b4b1d95e7b8 request=#22392cbb0383beb5 response_body="{\"error\":\"your opponent still has time\"}" route="POST /games/:id/claim" run_id="4e00a38c9314ad40b10d74e32db100c18c6f8056935777a552ef899718b17306" seq=49 session=1 skipped=[{"at":[0,10],"effect":"CollectionWrite(\"games\")","from":[0,109],"leaf":"collection_get","level":"read","read":0}] sourced=#929d1134b54ee1a7 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#11796321ea92badb unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/claim"
+== sea-battle · POST /games/tea/claim · body 373 → 409 {"error":"your opponent still has time"}
+  commit={"after":50,"n":51} error=null kind="request" method="POST" nonce="82070000000000000000000000000000" outputs=#125fa9aaa2c35654 performed=[] reads=#f0f63b4b1d95e7b8 request=#608d8f1d684f8ed1 response_body="{\"error\":\"your opponent still has time\"}" route="POST /games/:id/claim" run_id="5369586ece96e2bcac48580add12773c6e1526cc58345bd7a7ecaf35d6d76e05" seq=50 session=1 skipped=[{"at":[0,10],"effect":"CollectionWrite(\"games\")","from":[0,109],"leaf":"collection_get","level":"read","read":0}] sourced=#7d6bc8e300c5c4d5 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#66208b78a5dc093e unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/claim"
+== sea-battle · POST /games/tea/answer · body 0 → 409 {"error":"no shot at you is waiting for an answer"}
+  commit={"after":51,"n":52} error=null kind="request" method="POST" nonce="85070000000000000000000000000000" outputs=#0748295044b7be47 performed=[] reads=#b0ff2d1f9971430e request=#74aadbf50fa828ca response_body="{\"error\":\"no shot at you is waiting for an answer\"}" route="POST /games/:id/answer" run_id="90589cbfeda69d1946ca552a1c80e44a6d552235ef3dba3c5c578a1ca33708b9" seq=51 session=1 skipped=[{"at":[0,7],"effect":"CollectionWrite(\"games\")","from":[0,63],"leaf":"collection_get","level":"read","read":0}] sourced=#ab0ae45c3e70a7fd state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#39bb368d10958007 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/answer"
+== sea-battle · POST /games/tea/answer · body 232 → 409 {"error":"no shot at you is waiting for an answer"}
+  commit={"after":52,"n":53} error=null kind="request" method="POST" nonce="88070000000000000000000000000000" outputs=#0748295044b7be47 performed=[] reads=#b0ff2d1f9971430e request=#e9a27ebb8f2ae325 response_body="{\"error\":\"no shot at you is waiting for an answer\"}" route="POST /games/:id/answer" run_id="0c5dc51d8a7187037946e7a5cb7a24ce8a61484f00228b178dc5eac716c07aa5" seq=52 session=1 skipped=[{"at":[0,7],"effect":"CollectionWrite(\"games\")","from":[0,63],"leaf":"collection_get","level":"read","read":0}] sourced=#a657e188abb6ce00 state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#fab33d9b760b750b unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/answer"
+== sea-battle · POST /games/tea/answer · body 373 → 409 {"error":"no shot at you is waiting for an answer"}
+  commit={"after":53,"n":54} error=null kind="request" method="POST" nonce="8b070000000000000000000000000000" outputs=#0748295044b7be47 performed=[] reads=#b0ff2d1f9971430e request=#4f71719113e9fc57 response_body="{\"error\":\"no shot at you is waiting for an answer\"}" route="POST /games/:id/answer" run_id="b22984871f8a0b9427a38b0778900871fd5511449b5715f3b24a2b26580831ba" seq=53 session=1 skipped=[{"at":[0,7],"effect":"CollectionWrite(\"games\")","from":[0,63],"leaf":"collection_get","level":"read","read":0}] sourced=#617d5d0cab414c4f state_after="2b5b9182dff68d823541c5e3a05909a2d7c43a95e418a1e7bf9a7e8a53792fb0" state_before={} status=409 timeline=#174a0e8ca89d6987 unit="15322f1b71c98fe0a1ed8920abe133e6f9ac7f241893a60a0bdad345d3e86ddc" url="/games/tea/answer"
 skipped (outside the server): fan-out, stripe-to-slack, card-check, cache-aside, proposal, fetch-json, echoed-key, client-credentials, shared-key, basic-auth, license-check, idempotent, site, inbox-report, log-archive, journal, chat-proxy, gemini-chat, chess, shared-ledger, orders-api, refund-once, ticket-numbers, approved-payout, reviewed-draft, atlas-notes, drop-box, file-audit, file-checksums, payout-totals, statement-archive, pgp-outbox, approval-mail, remittance-mail, support-inbox, price-feed, trading-bot, bluesky-mentions, trade-tape, payout-events, ledger-watch, drop-board, shop, stock-sheet, dexpaprika
