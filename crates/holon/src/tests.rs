@@ -55,6 +55,13 @@ mod places;
 use places::{names_no_place, temp_folder};
 /// What `holon check` says the host refuses of a secret, the host refuses, and only that (R165).
 mod refused_secrets;
+/// What a statement reached or not does, case by case, against JavaScript: the debts of reached.
+mod reached;
+/// What a list method's function does, item by item, against JavaScript: the list block of reached.
+mod list_grid;
+/// The tests marked heavy are the ones the heavy workflow runs; the file rules name what is
+/// there, and count what Rust reads from docs/ and editor/ as code.
+mod heavy;
 
 pub(crate) fn test_state() -> AppState {
     test_state_with(SharedStore::new(Box::new(MemStore::new())))
@@ -12871,6 +12878,7 @@ fn changes_of(line: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
 /// more than the line's say-so, and a forger who can chain the log again (no witness) makes it
 /// say anything there.
 #[test]
+#[ignore = "heavy: about 22 minutes, run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
 fn no_line_changed_and_chained_again_passes_as_checked() {
     // Granted plain HTTP to a host on this machine, for the flow that calls one with a secret.
     let mut state = claims_state("");

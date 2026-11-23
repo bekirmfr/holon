@@ -1,0 +1,101 @@
+name: heavy
+
+# The heavy tests: the few Rust tests that hold nearly all the test time, kept out of every
+# change's run (each is `#[ignore = "heavy: ..."]`, so `cargo test --workspace` skips it) and run
+# here, beside the other checks, holding none of them up. Two groups:
+#
+# - grids: how a flow's text is translated to steps and run (the handler grids and the list grid);
+# - records: how run records are kept, exported, chained and verified (the long sweep).
+#
+# A group runs on a pull request (and a push to main) when the change touches a file it guards
+# (.github/file-rules.txt, sections [grids] and [records], read by .github/what-changed.sh), on a
+# pull request labelled `heavy` (both groups), every night (both, whatever changed) and by hand.
+# Each job always starts and decides inside, ending green when there is nothing to run, so it can
+# be made a required check without a skipped check waiting for ever.
+#
+# The tests each group runs are named below, exactly; a test in crates/holon that tests/heavy.rs
+# finds marked heavy and not named here, or named here and not marked, fails every change's run.
+on:
+  push:
+    branches: [main]
+  # `labeled`: adding the `heavy` label to an open pull request starts it.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+# A newer push to a pull request cancels the run it supersedes; on main every run finishes.
+concurrency:
+  group: heavy-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# The token a run holds reads the repository and nothing else: no job here writes to it. An
+# action that isn't GitHub's own is named by its commit, as in ci.yml.
+permissions:
+  contents: read
+
+env:
+  GRIDS: >-
+    tests::semantics::a_handler_does_what_its_text_says
+    tests::semantics::a_clocks_handler_does_what_its_text_says
+    tests::semantics::a_queues_handler_does_what_its_text_says
+    tests::list_grid::a_list_methods_function_makes_what_it_says_item_by_item
+  RECORDS: >-
+    tests::no_line_changed_and_chained_again_passes_as_checked
+
+jobs:
+  grids:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      # The whole history: a push to main is compared with the commit before it.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: What changed
+        id: changed
+        run: bash .github/what-changed.sh
+        env:
+          BEFORE: ${{ github.event.before }}
+          HEAVY_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'heavy') }}
+      - name: Nothing to run
+        if: steps.changed.outputs.grids != 'true'
+        run: |
+          echo "This change touches nothing the grids guard, so nothing runs." >> "$GITHUB_STEP_SUMMARY"
+      - if: steps.changed.outputs.grids == 'true'
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11-15
+      - if: steps.changed.outputs.grids == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2, 2026-11-15
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: The grids
+        if: steps.changed.outputs.grids == 'true'
+        run: cargo test -p holon --bin holon -- --ignored --exact $GRIDS
+
+  records:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: What changed
+        id: changed
+        run: bash .github/what-changed.sh
+        env:
+          BEFORE: ${{ github.event.before }}
+          HEAVY_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'heavy') }}
+      - name: Nothing to run
+        if: steps.changed.outputs.records != 'true'
+        run: |
+          echo "This change touches nothing the records sweep guards, so nothing runs." >> "$GITHUB_STEP_SUMMARY"
+      - if: steps.changed.outputs.records == 'true'
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11-15
+      - if: steps.changed.outputs.records == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2, 2026-11-15
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: The records sweep
+        if: steps.changed.outputs.records == 'true'
+        run: cargo test -p holon --bin holon -- --ignored --exact $RECORDS

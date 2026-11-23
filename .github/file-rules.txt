@@ -1,0 +1,162 @@
+# Which files a change touches decides which work it runs (.github/what-changed.sh applies this
+# file; CLAUDE.md, "Heavy tests", says when each runs). One entry a line: a path ending in / is
+# everything under it, any other path the one file. A group's -not section takes back part of
+# it: of all the entries that hold a file, the longest decides. Every entry must exist, and no
+# entry is in a group and its -not section both (tests/heavy.rs holds both).
+#
+# Kept wide on purpose: when unsure whether a file reaches what a group guards, it is in; and
+# when unsure whether a file is only a document or only the editor's, it is code.
+
+# The heavy grids: how a flow's text is translated to steps and run. The translator and the
+# core crates it compiles to and runs on, and the server's run engine: all of crates/holon/src
+# but what never runs a flow (the commands, the terminal editor, sign-in and who may do what, the
+# record's export and check, housekeeping), and its other test files.
+[grids]
+Cargo.lock
+Cargo.toml
+rust-toolchain.toml
+.github/file-rules.txt
+.github/what-changed.sh
+.github/workflows/heavy.yml
+crates/holon-author/
+crates/holon-core/
+crates/holon-host/
+crates/holon-module/
+fixtures/modules/
+crates/holon/Cargo.toml
+crates/holon/src/
+crates/holon/src/tests/semantics.rs
+crates/holon/src/tests/list_grid.rs
+crates/holon/src/tests/reached.rs
+
+[grids-not]
+crates/holon/src/bin/
+crates/holon/src/testdata/
+crates/holon/src/tests/
+crates/holon/src/workbench/
+crates/holon/src/verify/
+crates/holon/src/access.rs
+crates/holon/src/access_proposals.rs
+crates/holon/src/accesscmd.rs
+crates/holon/src/accounts.rs
+crates/holon/src/accountscmd.rs
+crates/holon/src/activity.rs
+crates/holon/src/auth.rs
+crates/holon/src/bindings.rs
+crates/holon/src/can.rs
+crates/holon/src/changes.rs
+crates/holon/src/cmdline.rs
+crates/holon/src/decidecmd.rs
+crates/holon/src/deploycmd.rs
+crates/holon/src/editor.rs
+crates/holon/src/flowcmd.rs
+crates/holon/src/flowscmd.rs
+crates/holon/src/grantcmd.rs
+crates/holon/src/heads.rs
+crates/holon/src/history.rs
+crates/holon/src/jsonedit.rs
+crates/holon/src/load.rs
+crates/holon/src/local.rs
+crates/holon/src/logincmd.rs
+crates/holon/src/logscmd.rs
+crates/holon/src/lsp.rs
+crates/holon/src/mcp.rs
+crates/holon/src/mcphosts.rs
+crates/holon/src/migrate.rs
+crates/holon/src/oidc.rs
+crates/holon/src/opscmd.rs
+crates/holon/src/pick.rs
+crates/holon/src/proposals.rs
+crates/holon/src/replaycmd.rs
+crates/holon/src/restore.rs
+crates/holon/src/secretcmd.rs
+crates/holon/src/selfmanage.rs
+crates/holon/src/stopping.rs
+crates/holon/src/summary.rs
+crates/holon/src/surfaces.rs
+crates/holon/src/sweep.rs
+crates/holon/src/touches.rs
+crates/holon/src/verify.rs
+crates/holon/src/waitcmd.rs
+
+# The heavy records sweep: how run records are kept, exported, chained and verified. What writes
+# a run's line (the run path, its marks for secrets, what it keeps of files and calls), what
+# keeps and seals the log, what exports and checks it, and what the check runs again (the core
+# crates; the translator, since the sweep's flows are compiled from text).
+[records]
+Cargo.lock
+Cargo.toml
+rust-toolchain.toml
+.github/file-rules.txt
+.github/what-changed.sh
+.github/workflows/heavy.yml
+crates/holon-author/
+crates/holon-core/
+crates/holon-host/
+crates/holon-module/
+fixtures/modules/
+crates/holon/Cargo.toml
+crates/holon/src/main.rs
+crates/holon/src/tests.rs
+crates/holon/src/fixtures.rs
+crates/holon/src/recorder.rs
+crates/holon/src/heads.rs
+crates/holon/src/verify.rs
+crates/holon/src/verify/
+crates/holon/src/at_rest.rs
+crates/holon/src/keys.rs
+crates/holon/src/sealing.rs
+crates/holon/src/storage.rs
+crates/holon/src/persist.rs
+crates/holon/src/firing.rs
+crates/holon/src/units.rs
+crates/holon/src/claims.rs
+crates/holon/src/locks.rs
+crates/holon/src/taint.rs
+crates/holon/src/secrets.rs
+crates/holon/src/secret_sources.rs
+crates/holon/src/never_keep.rs
+crates/holon/src/never_keep/
+crates/holon/src/skipped.rs
+crates/holon/src/durable.rs
+crates/holon/src/outbound.rs
+crates/holon/src/events.rs
+crates/holon/src/deploy.rs
+crates/holon/src/permissions.rs
+crates/holon/src/folders.rs
+crates/holon/src/blobs.rs
+crates/holon/src/logs.rs
+crates/holon/src/data.rs
+crates/holon/src/listeners.rs
+crates/holon/src/http.rs
+
+[records-not]
+
+# Documents a pull request may add or edit and run nothing: no test and no build reads them. A
+# document deleted or renamed is code all the same (a test holds that every page the code and the
+# manual cite is there), and so is any path no section names.
+[inert]
+CLAUDE.md
+CHANGELOG.md
+docs/
+
+# Under docs/ but read: the manual (the editor builds it in, and Rust tests check its examples,
+# its page of leaves and what it cites), the engineering pages (their cited test names are
+# checked), the language page (its examples are compiled), and a design page a test reads.
+[inert-not]
+docs/manual/
+docs/engineering/
+docs/LANGUAGE.md
+docs/L4s/access-and-approvals-L4.md
+
+# The editor and the VS Code extension: a pull request changing only these (and documents) runs
+# no Rust tests but the one that reads every file for the names the docs cite.
+[editor]
+editor/
+editors/vscode/
+
+# Under editor/ but written or read by Rust tests.
+[editor-not]
+editor/src/can.fixture.json
+editor/src/placed.fixture.json
+editor/src/skipped.fixture.json

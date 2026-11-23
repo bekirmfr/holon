@@ -476,6 +476,21 @@ fn fire_one_queue(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Depl
     Some((held_for, failed))
 }
 
+/// A test helper: one run of `slug`'s handler of `queue` on a message whose data is `data`, as a
+/// message received is run, without the queue. Whether it ran.
+#[cfg(test)]
+pub(crate) fn fire_for_test(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, slug: &str, queue: &str, data: Value) -> bool {
+    let Some(l) = listening(store, deployments, slug, queue) else { return false };
+    let message = Value::Record(BTreeMap::from([
+        ("data".to_string(), data),
+        ("id".to_string(), Value::Text("test".to_string())),
+        ("attributes".to_string(), Value::Record(BTreeMap::new())),
+        ("sent".to_string(), Value::Number(0.0)),
+        ("count".to_string(), Value::Number(1.0)),
+    ]));
+    fire_one_queue(store, deployments, deployments_path, &l, message).is_some()
+}
+
 /// The thread that holds the queues' listeners, comparing them with what is listened to every
 /// [`TICK`].
 pub(crate) fn spawn(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: Place) {

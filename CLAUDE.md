@@ -38,6 +38,53 @@ ways, or is on a listed exception with its reason in plain words. The tests that
 exceptions; `OWED` the texts refused today), and the grid's `ROUND_TRIP_DEBTS`
 (`crates/holon/src/tests/semantics.rs`). Their lists only shrink.
 
+## Heavy tests
+
+A few Rust tests hold nearly all the test time. They are marked `#[ignore = "heavy: …"]`, so
+`cargo test --workspace` skips them, and `.github/workflows/heavy.yml` runs them, beside the other
+checks, in two groups:
+
+- the grids, which hold that a flow's text is translated to steps and run as it says:
+  `tests::semantics::a_handler_does_what_its_text_says`, its clock's and queue's forms, and
+  `tests::list_grid::a_list_methods_function_makes_what_it_says_item_by_item`;
+- the records sweep, which holds how run records are kept, exported, chained and verified:
+  `tests::no_line_changed_and_chained_again_passes_as_checked`.
+
+They run on a pull request or a push to main whose change touches a file the group guards (listed
+in `.github/file-rules.txt`, applied by `.github/what-changed.sh`), on a pull request labelled
+`heavy` (both groups), every night (both), and by hand. A session that changes the translator
+(`crates/holon-author`), the core crates or the server's run engine runs the grids by hand before
+calling a step done:
+
+    cargo test -p holon --bin holon -- --ignored --exact tests::semantics::a_handler_does_what_its_text_says tests::semantics::a_clocks_handler_does_what_its_text_says tests::semantics::a_queues_handler_does_what_its_text_says tests::list_grid::a_list_methods_function_makes_what_it_says_item_by_item
+
+and the records sweep the same way when it changes how runs are recorded, exported or verified
+(`… --ignored --exact tests::no_line_changed_and_chained_again_passes_as_checked`).
+
+A new heavy test lives in `crates/holon/src`, at the top of its file. Mark it
+`#[ignore = "heavy: about N minutes, …"]`, name it in the workflow's `GRIDS` or `RECORDS`, and add
+the files it guards to that group in `file-rules.txt`. `tests::heavy` fails if a marked test isn't
+named in the workflow, or the workflow names one that isn't marked, or a rule names a path that
+isn't there.
+
+The same file rules let a pull request skip work its change can't affect. Every job of
+`ci.yml` still starts and reports, so required checks never wait:
+
+- A pull request that only adds or edits documents (`CLAUDE.md`, `CHANGELOG.md`, `docs/`) runs
+  nothing and every job ends green. Not documents a test or a build reads: the manual
+  (`docs/manual/`), the engineering pages, `docs/LANGUAGE.md`, `README.md` and the design page a
+  test reads count as code, and so does any document deleted or renamed (a test checks that every
+  page the code and the manual cite is there).
+- A pull request that only touches the editor (`editor/`, `editors/vscode/`, and documents) runs
+  no Rust tests but one, the check of the names the docs cite (it reads the editor's files too);
+  the editor, wasm and VS Code jobs run as always. The editor fixtures a Rust test writes
+  (`editor/src/*.fixture.json`) count as Rust.
+- A push to main and a run by hand run everything. A path the rules don't name counts as code.
+
+When a Rust test starts reading a file in `docs/` or `editor/`, add it to `[inert-not]` or
+`[editor-not]` in `file-rules.txt`; `tests::heavy` fails if a path a Rust source names there is
+left out.
+
 ## Commits and pushes
 
 One commit per step, ending with the `Co-Authored-By` line; commit or push only when asked.
