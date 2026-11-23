@@ -1116,7 +1116,7 @@ fn a_queues_handler_does_what_its_text_says() {
 ///
 /// **If it fails:** as above.
 #[test]
-#[ignore = "heavy: about 8 minutes, run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
+#[ignore = "heavy: about 7 minutes (alone, 2026-11-23), run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
 fn a_files_handler_does_what_its_text_says() {
     grid(Block::File);
 }
@@ -1127,7 +1127,7 @@ fn a_files_handler_does_what_its_text_says() {
 ///
 /// **If it fails:** as above.
 #[test]
-#[ignore = "heavy: about 8 minutes, run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
+#[ignore = "heavy: about 8 minutes (alone, 2026-11-23), run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
 fn a_mails_handler_does_what_its_text_says() {
     grid(Block::Mail);
 }
@@ -1138,7 +1138,7 @@ fn a_mails_handler_does_what_its_text_says() {
 ///
 /// **If it fails:** as above.
 #[test]
-#[ignore = "heavy: about 8 minutes, run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
+#[ignore = "heavy: about 7 minutes (alone, 2026-11-23), run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
 fn a_feeds_handler_does_what_its_text_says() {
     grid(Block::Feed);
 }
@@ -1149,7 +1149,7 @@ fn a_feeds_handler_does_what_its_text_says() {
 ///
 /// **If it fails:** as above.
 #[test]
-#[ignore = "heavy: about 8 minutes, run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
+#[ignore = "heavy: about 9 minutes (alone, 2026-11-23), run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
 fn a_websockets_message_does_what_its_text_says() {
     grid(Block::Socket);
 }
