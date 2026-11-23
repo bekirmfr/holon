@@ -481,6 +481,12 @@ mod tests {
         let rfc = "eyJ0eXAiOiJKV1QiLA0KICJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
         let oct = r#"{"kty":"oct","k":"AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow"}"#;
         assert!(verify(rfc, &Value::Text(oct.into()), 1_300_819_379.0, "joe", "", 0.0).is_some());
+        // RFC 7515 Appendix A.1's HS256 example: its key a JWK of kind `oct` as a record too, its
+        // claims read, and nothing at its exp.
+        let jwk = crate::json::parse(oct).unwrap();
+        let Some(Value::Record(said)) = verify(rfc, &jwk, 1_300_819_379.0, "joe", "", 0.0) else { panic!("the RFC's token, its JWK a record") };
+        assert_eq!(said["http://example.com/is_root"], Value::Boolean(true));
+        assert_eq!(verify(rfc, &jwk, 1_300_819_380.0, "joe", "", 0.0), None, "at exp");
     }
 
     #[test]
@@ -530,18 +536,5 @@ mod tests {
         assert_eq!(d["payload"], v["claims"]);
         assert_eq!(d["header"], Value::Record(BTreeMap::from([("alg".to_string(), Value::Text("HS256".into()))])));
         assert!(decode(token(&v, "none")).is_some(), "an unsigned one reads too");
-    }
-
-    /// RFC 7515 Appendix A.1's HS256 example, its key a JWK of kind `oct`.
-    #[test]
-    fn rfc_7515s_hs256_example_verifies() {
-        let token = "eyJ0eXAiOiJKV1QiLA0KICJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-        let jwk = Value::Record(BTreeMap::from([
-            ("kty".to_string(), Value::Text("oct".into())),
-            ("k".to_string(), Value::Text("AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow".into())),
-        ]));
-        let Some(Value::Record(claims)) = verify(token, &jwk, 1_300_819_379.0, "joe", "", 0.0) else { panic!() };
-        assert_eq!(claims["http://example.com/is_root"], Value::Boolean(true));
-        assert_eq!(verify(token, &jwk, 1_300_819_380.0, "joe", "", 0.0), None, "at exp");
     }
 }

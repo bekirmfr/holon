@@ -935,6 +935,10 @@ mod tests {
         }
     }
 
+    /// The security-relevant direction: every effectful leaf classifies non-`Pure`
+    /// (and `pure_is_the_only_non_effectful_kind` holds that every other kind is effectful).
+    /// (The cross-crate half — that the host never executes a `Pure`-classified
+    /// name — lands with host execution, P2.4.1 / P2.6.1.)
     #[test]
     fn effectful_exemplars_classify() {
         let key = [Param::frozen("key", "var1")];
@@ -945,28 +949,15 @@ mod tests {
         assert_eq!(kind_of("egress", &[]), Some(Kind::Sink));
     }
 
-    /// The security-relevant direction: every effectful leaf classifies non-`Pure`.
-    /// (The cross-crate half — that the host never executes a `Pure`-classified
-    /// name — lands with host execution, P2.4.1 / P2.6.1.)
-    #[test]
-    fn effectful_exemplars_are_not_pure() {
-        let key = [Param::frozen("key", "var1")];
-        for (name, params) in [
-            ("store_read", &key[..]),
-            ("store_write", &key[..]),
-            ("clock", &[][..]),
-            ("egress", &[][..]),
-        ] {
-            assert!(kind_of(name, params).unwrap().is_effectful(), "{name} must be effectful");
-        }
-    }
-
     /// An unknown leaf fails closed: `None`, never `Some(Pure)`.
     #[test]
     fn unknown_is_none() {
         assert_eq!(kind_of("xyzzy", &[]), None);
         assert_eq!(kind_of("", &[]), None);
         assert_ne!(kind_of("definitely_not_a_primitive", &[]), Some(Kind::Pure));
+        // The manifest it is projected from: none, not an empty one.
+        assert_eq!(capabilities_of("xyzzy", &[]), None);
+        assert_eq!(capabilities_of("", &[]), None);
     }
 
     #[test]
@@ -978,33 +969,6 @@ mod tests {
     }
 
     // ── effects_of: the derived (composite) kind ────────────────────────────
-
-    #[test]
-    fn pure_only_closure_is_pure() {
-        let mut store = MapResolver::new();
-        let n = store.insert(prim("const")).unwrap();
-        let m = store.insert(prim("multiply")).unwrap();
-        let comp = composite(vec![n, m]);
-        let fx = effects_of(&comp, &store);
-        assert!(fx.is_pure());
-        assert_eq!(fx.len(), 0);
-    }
-
-    #[test]
-    fn sink_leaf_at_depth_surfaces() {
-        // An `egress` (Sink) buried three levels down must surface at the top —
-        // and the pure sibling must add nothing.
-        let mut store = MapResolver::new();
-        let egress = store.insert(prim("egress")).unwrap();
-        let inner = store.insert(composite(vec![egress])).unwrap();
-        let mid = store.insert(composite(vec![inner])).unwrap();
-        let pure = store.insert(prim("const")).unwrap();
-        let top = composite(vec![mid, pure]);
-        let fx = effects_of(&top, &store);
-        assert!(!fx.is_pure());
-        assert!(fx.contains(Kind::Sink));
-        assert_eq!(fx.len(), 1);
-    }
 
     #[test]
     fn a_closure_costs_its_units_however_it_shares_or_nests_them() {
@@ -1044,19 +1008,6 @@ mod tests {
         assert!(fx.contains(Kind::Sink));
         assert!(!fx.contains(Kind::State));
         assert_eq!(fx.len(), 2);
-    }
-
-    #[test]
-    fn map_over_effectful_fn_is_effectful() {
-        // The laundering test: `map` is itself Pure, but its `fn` references an
-        // egress-bearing unit — following the hash-valued param is what keeps the
-        // whole thing from reading as pure.
-        let mut store = MapResolver::new();
-        let egress = store.insert(prim("egress")).unwrap();
-        let map = map_over(&egress);
-        let fx = effects_of(&map, &store);
-        assert!(!fx.is_pure());
-        assert!(fx.contains(Kind::Sink));
     }
 
     #[test]
@@ -1135,20 +1086,15 @@ mod tests {
     }
 
     #[test]
-    fn capability_projects_to_expected_kind() {
-        assert_eq!(Capability::NetworkEgress.kind(), Kind::Sink);
-        assert_eq!(Capability::Clock.kind(), Kind::Driver);
-        assert_eq!(Capability::StateRead("var1".to_string()).kind(), Kind::State);
-        assert_eq!(Capability::StateWrite("var1".to_string()).kind(), Kind::State);
-    }
-
-    #[test]
     fn fine_distinguishes_what_coarse_loses() {
         // The motivating case: Clock and SecretAccess both project to Driver, yet
         // are distinct capabilities — kind is lossy where capabilities are not.
         assert_eq!(Capability::Clock.kind(), Kind::Driver);
         assert_eq!(Capability::SecretAccess.kind(), Kind::Driver);
         assert_ne!(Capability::Clock, Capability::SecretAccess);
+        assert_eq!(Capability::NetworkEgress.kind(), Kind::Sink);
+        assert_eq!(Capability::StateRead("var1".to_string()).kind(), Kind::State);
+        assert_eq!(Capability::StateWrite("var1".to_string()).kind(), Kind::State);
     }
 
     #[test]
@@ -1161,12 +1107,6 @@ mod tests {
         ] {
             assert_ne!(cap.kind(), Kind::Pure, "{cap:?} must project to an effect");
         }
-    }
-
-    #[test]
-    fn unknown_leaf_has_no_manifest() {
-        assert_eq!(capabilities_of("frobnicate", &[]), None);
-        assert_eq!(capabilities_of("", &[]), None);
     }
 
     #[test]
@@ -1203,6 +1143,9 @@ mod tests {
         let caps = capabilities(&top, &store);
         assert!(caps.contains(Capability::NetworkEgress));
         assert_eq!(caps.len(), 1);
+        // Projected to kinds, the same: one Sink, the pure sibling adding nothing.
+        let fx = effects_of(&top, &store);
+        assert!(fx.contains(Kind::Sink) && fx.len() == 1);
     }
 
     #[test]
@@ -1212,6 +1155,9 @@ mod tests {
         let m = store.insert(prim("multiply")).unwrap();
         let caps = capabilities(&composite(vec![n, m]), &store);
         assert!(caps.is_pure());
+        let fx = effects_of(&composite(vec![n, m]), &store);
+        assert!(fx.is_pure());
+        assert_eq!(fx.len(), 0);
     }
 
     #[test]
@@ -1250,11 +1196,16 @@ mod tests {
 
     #[test]
     fn map_fn_capabilities_surface() {
-        // A capability routed through a `map` fn-param cannot hide.
+        // A capability routed through a `map` fn-param cannot hide. The laundering test:
+        // `map` is itself Pure, but its `fn` references an egress-bearing unit —
+        // following the hash-valued param is what keeps the whole thing from reading as
+        // pure, as capabilities and as kinds.
         let mut store = MapResolver::new();
         let egress = store.insert(prim("egress")).unwrap();
         let caps = capabilities(&map_over(&egress), &store);
         assert!(caps.contains(Capability::NetworkEgress));
+        let fx = effects_of(&map_over(&egress), &store);
+        assert!(!fx.is_pure() && fx.contains(Kind::Sink));
     }
 
     #[test]

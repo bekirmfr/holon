@@ -334,11 +334,6 @@ mod tests {
         (func (export "run") (param i32 i32) (result i64) i64.const 0))"#;
 
     #[test]
-    fn the_minimal_module_is_a_unit() {
-        assert_eq!(validate_module(&wat::parse_str(MINIMAL).unwrap()), Ok(()));
-    }
-
-    #[test]
     fn an_import_is_refused_by_name() {
         let with_import = r#"(module
             (import "env" "clock" (func (result i64)))
