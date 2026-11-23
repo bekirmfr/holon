@@ -244,6 +244,21 @@ pub(crate) fn run_arrivals(store: &SharedStore, deployments: &Mutex<BTreeMap<Str
     look_at(store, deployments, deployments_path, None);
 }
 
+/// A test helper: one run of each of `slug`'s file handlers for the file `name` of `folder`, new
+/// or changed, as a look that found it runs them, without the look. Whether one ran.
+#[cfg(test)]
+pub(crate) fn fire_for_test(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, slug: &str, folder: &str, name: &str) -> bool {
+    let found = deployments.lock().unwrap().get(slug).filter(|d| d.takes_runs(store)).map(|d| {
+        let handlers: Vec<holon_core::FileHandler> = d.server.as_ref().map(|s| s.files.iter().filter(|h| h.trigger.folder == folder && h.trigger.starts(false, name)).cloned().collect()).unwrap_or_default();
+        (d.unit, d.state.clone(), Arc::clone(&d.permit), Arc::clone(&d.secrets), Arc::clone(&d.folders), handlers)
+    });
+    let Some((unit, state, permit, secrets, files, handlers)) = found else { return false };
+    for h in &handlers {
+        fire_one_arrival(store, deployments, deployments_path, slug, unit, Some(h), state.as_ref(), &permit, &secrets, &files, (folder, name, Event::New));
+    }
+    !handlers.is_empty()
+}
+
 /// What the OS says changed in the watched folders.
 struct Notices {
     /// None if the OS gives none: every folder is looked at every time.

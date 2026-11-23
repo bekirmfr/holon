@@ -708,6 +708,16 @@ fn fire_one_feed(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deplo
     held_for
 }
 
+/// A test helper: one run of `slug`'s handler of `feed` on an event whose data is `data`, as an
+/// event read is run, without the feed. Whether it ran.
+#[cfg(test)]
+pub(crate) fn fire_for_test(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, slug: &str, feed: &str, data: Value) -> bool {
+    let Some(l) = listening(store, deployments, slug, feed) else { return false };
+    let event = Value::Record(BTreeMap::from([("data".to_string(), data), ("event".to_string(), Value::Text("message".to_string())), ("id".to_string(), Value::Text("test".to_string()))]));
+    fire_one_feed(store, deployments, deployments_path, &l, event);
+    true
+}
+
 /// The thread that holds the feeds' connections, comparing them with what is listened to every
 /// [`TICK`].
 pub(crate) fn spawn(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: Place) {

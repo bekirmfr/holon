@@ -171,7 +171,7 @@ pub(super) enum GridSize {
 /// tests/heavy.rs holds that it writes these and no other).
 pub(super) const GRID_SIZES: &[(&str, GridSize)] = &[("full", GridSize::Full), ("small", GridSize::Small)];
 
-fn grid_size() -> GridSize {
+pub(super) fn grid_size() -> GridSize {
     let Ok(name) = std::env::var("HOLON_GRIDS") else { return GridSize::Full };
     GRID_SIZES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s).unwrap_or_else(|| panic!("HOLON_GRIDS={name}: the grids know {}", GRID_SIZES.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(" and ")))
 }
@@ -187,7 +187,7 @@ fn grid_requests(block: Block, size: GridSize) -> Vec<usize> {
     match (size, block) {
         (GridSize::Full, _) => (0..REQUESTS.len()).collect(),
         (GridSize::Small, Block::Route) => SMALL_REQUESTS.to_vec(),
-        (GridSize::Small, Block::Every | Block::Queue) => Vec::new(),
+        (GridSize::Small, _) => Vec::new(),
     }
 }
 
@@ -361,25 +361,57 @@ fn branch_end(s: &str, at: usize) -> usize {
     if s.as_bytes().get(at) == Some(&b'{') { matching(s, at) + 1 } else { s[at..].find('\n').map_or(s.len(), |n| at + n) }
 }
 
-/// The kind of block a grid's handlers are: a route, a clock or a queue's handler. A clock's and a
-/// queue's handler has no request: it reads the grid's request, `{json, body}`, from the state (set
-/// by a route `POST /set` before each tick) or from its message's data.
+/// The kind of block a grid's handlers are: a route, a clock's, a queue's, a file's, a mail's or a
+/// feed's handler, or a websocket's `message` block. A handler that isn't a route's or a
+/// websocket's has no request: it reads the grid's request, `{json, body}`, from the state (set by
+/// a route `POST /set` before each run: a clock's, a file's, a mail's) or from its message's or
+/// event's data (a queue's, a feed's). A websocket's message is its request, its text the body.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Block {
+pub(super) enum Block {
     Route,
     Every,
     Queue,
+    File,
+    Mail,
+    Feed,
+    Socket,
 }
 
-/// The queues a queue grid's flow listens to, one a handler: `q0` to `q39` in its text, bound as
-/// `w<w>q<j>` for the worker `w` that runs it (a queue is listened to by one deployment, so each
-/// worker's flow is removed before its next is deployed).
+impl Block {
+    /// The name a handler's source is imported under in a flow's text, `<name><j>` for its `j`th
+    /// handler, for a block whose source one handler alone listens to; bound as `w<w><name><j>`
+    /// for the worker `w` that runs it (one deployment listens to it, so each worker's flow is
+    /// removed before its next is deployed). Its kind of binding.
+    fn source(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Block::Queue => Some(("q", "queue")),
+            Block::Mail => Some(("mb", "mail")),
+            Block::Feed => Some(("fd", "feed")),
+            _ => None,
+        }
+    }
+
+    /// Whether its run answers nobody, so its returns are bare (`answers_nobody`).
+    fn answers_nobody(self) -> bool {
+        !matches!(self, Block::Route | Block::Socket)
+    }
+
+    /// Whether its handlers read the grid's request from the state, set by `POST /set`.
+    fn reads_the_state(self) -> bool {
+        matches!(self, Block::Every | Block::File | Block::Mail)
+    }
+}
+
+/// The sources a grid's flow listens to, one a handler: `q0` to `q39` in its text, and so on.
 const GRID_QUEUES: usize = 40;
 
-/// The bound name of the `j`th queue of worker `w`'s flows.
-fn grid_queue(w: usize, j: usize) -> String {
-    format!("w{w}q{j}")
+/// The bound name of the `j`th source of `block` of worker `w`'s flows.
+fn grid_source(block: Block, w: usize, j: usize) -> String {
+    format!("w{w}{}{j}", block.source().map_or("", |(n, _)| n))
 }
+
+/// The folder a file grid's handlers watch, each for its own file `r<j>.txt`.
+const GRID_FOLDER: &str = "inbox";
 
 /// How many flows of a grid run side by side.
 fn grid_workers() -> usize {
@@ -392,18 +424,21 @@ fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)], blo
     let uses = |what: &str| handlers.iter().any(|(_, c)| c.body.contains(what));
     let starts = uses("ping(") || uses("go(\"") || uses("maybe(");
     let blocks = match block {
-        Block::Route => "",
+        Block::Route | Block::Socket => "",
         Block::Every => "every, ",
-        Block::Queue => "on, ",
+        Block::Queue | Block::File | Block::Mail | Block::Feed => "on, ",
     };
     let mut text = format!("import {{ {}{blocks}flow, route{} }} from \"holon\"\nimport state from \"state\"\n", if starts { "action, " } else { "" }, if uses("status(") { ", status" } else { "" });
     if block == Block::Every {
         text.push_str("import { now } from \"holon:clock\"\n");
     }
-    if block == Block::Queue {
+    if let Some((name, kind)) = block.source() {
         for j in 0..handlers.len() {
-            text.push_str(&format!("import q{j} from \"queue:q{j}\"\n"));
+            text.push_str(&format!("import {name}{j} from \"{kind}:{name}{j}\"\n"));
         }
+    }
+    if block == Block::File {
+        text.push_str(&format!("import {GRID_FOLDER} from \"folder:{GRID_FOLDER}\"\n"));
     }
     if uses("marks.") || uses("marks[") || uses("part(") || uses("held(") || uses("every") {
         text.push_str("import marks from \"collection:marks\"\n");
@@ -485,7 +520,7 @@ fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)], blo
     if starts {
         text.push_str("\nexport const ping = action(() => ++state.pinged)\n");
     }
-    if block == Block::Every {
+    if block.reads_the_state() {
         text.push_str("\nroute.post(\"/set\", (req) => {\n  state.req = req.json\n  return \"ok\"\n})\n");
     }
     for (j, (i, case)) in handlers.iter().enumerate() {
@@ -493,9 +528,15 @@ fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)], blo
         match block {
             Block::Route => text.push_str(&format!("\nroute.post(\"/r{i}\", {async}(req) => {{\n{}\n}})\n", case.body)),
             // A clock's handler is what is wired to its tick (`now`): the request read from the
-            // state is tied to it, and so all that's computed from it.
+            // state is tied to it, and so all that's computed from it. A file's and a mail's are
+            // tied to what started them the same way.
             Block::Every => text.push_str(&format!("\nevery(\"{}s\", {async}() => {{\nconst req = now > 0 ? state.req : undefined\n{}\n}})\n", j + 1, case.body)),
             Block::Queue => text.push_str(&format!("\non.queue(q{j}, {async}(m) => {{\nconst req = m.data\n{}\n}})\n", case.body)),
+            Block::Feed => text.push_str(&format!("\non.feed(fd{j}, {async}(e) => {{\nconst req = e.data\n{}\n}})\n", case.body)),
+            Block::Mail => text.push_str(&format!("\non.mail(mb{j}, {async}(m) => {{\nconst req = m.subject ? state.req : undefined\n{}\n}})\n", case.body)),
+            Block::File => text.push_str(&format!("\non.file.created({GRID_FOLDER}, {async}(f) => {{\nconst req = f.size >= 0 ? state.req : undefined\n{}\n}}, {{ matching: \"r{j}.txt\" }})\n", case.body)),
+            // A websocket's message is its request: its text is the body the grid reads.
+            Block::Socket => text.push_str(&format!("\nroute.websocket(\"/r{i}\", {{\nmessage: {async}(req) => {{\n{}\n}},\n}})\n", case.body.replace("req.body", "req.text"))),
         }
     }
     text
@@ -552,10 +593,42 @@ fn run_one(state: &AppState, slug: &str, block: Block, (i, j, w): (usize, usize,
         }
         Block::Queue => {
             let data = holon_core::parse_json(&envelope(body).to_string()).unwrap();
-            let queue = grid_queue(w, j);
+            let queue = grid_source(block, w, j);
             assert!(dequeue::fire_for_test(&state.store, &state.deployments, &state.deployments_path, slug, &queue, data), "{queue} of {slug} didn't run");
         }
+        Block::Feed => {
+            let data = holon_core::parse_json(&envelope(body).to_string()).unwrap();
+            let feed = grid_source(block, w, j);
+            assert!(subscriptions::fire_for_test(&state.store, &state.deployments, &state.deployments_path, slug, &feed, data), "{feed} of {slug} didn't run");
+        }
+        Block::File | Block::Mail => {
+            let (status, said, _) = data_call(state, slug, "POST", "/set", &envelope(body).to_string());
+            assert_eq!(status, 200, "{said}");
+            if block == Block::File {
+                assert!(arrivals::fire_for_test(&state.store, &state.deployments, &state.deployments_path, slug, GRID_FOLDER, &format!("r{j}.txt")), "r{j}.txt of {slug} ran nothing");
+            } else {
+                let message = holon_core::parse_json(r#"{"from":"a@acme.com","name":"A","to":["ops@acme.com"],"cc":[],"subject":"s","date":0,"message_id":"<m@acme.com>","text":"hi","attachments":[],"authenticated":true,"verdict":"pass"}"#).unwrap();
+                let mail = grid_source(block, w, j);
+                assert!(inbox::fire_for_test(&state.store, &state.deployments, &state.deployments_path, slug, &mail, message), "{mail} of {slug} didn't run");
+            }
+        }
+        Block::Socket => {
+            let port = state.deployments.lock().unwrap()[slug].server.as_ref().and_then(|s| s.port).expect("a websocket's flow has a port");
+            let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.set_read_timeout(Some(EVENTUALLY)).unwrap();
+            use tungstenite::client::IntoClientRequest;
+            let (mut ws, _) = tungstenite::client(format!("ws://127.0.0.1:{port}/r{i}").into_client_request().unwrap(), stream).unwrap_or_else(|e| panic!("/r{i} of {slug}: {e}"));
+            ws.send(tungstenite::Message::text(body)).unwrap();
+            // Its run is logged before its answer is sent, if it is sent: the log is read until
+            // it gains it (`flow_does`), and then the connection closes.
+            SOCKETS.with(|s| s.borrow_mut().push(ws));
+        }
     }
+}
+
+thread_local! {
+    /// A websocket grid's connections, each held until its run is read from the log.
+    static SOCKETS: std::cell::RefCell<Vec<tungstenite::WebSocket<std::net::TcpStream>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// What a way of running a handler did: the marks it left, in order of their letters, and
@@ -692,7 +765,15 @@ fn javascript_does(handlers: &[&Case], requests: &[usize]) -> Vec<Vec<(Did, Did)
 fn flow_does(state: &AppState, slug: &str, block: Block, at: (usize, usize, usize), body: &str, seen: &mut Option<u64>) -> String {
     run_one(state, slug, block, at, body);
     let after = seen.map(|seq| format!("after={seq}&")).unwrap_or_default();
-    let gained = body_json(route(state, &req("GET", &format!("/deployments/{slug}/log?{after}limit=50"), vec![])));
+    let read = || body_json(route(state, &req("GET", &format!("/deployments/{slug}/log?{after}limit=50"), vec![])));
+    let mut gained = read();
+    // A websocket's message runs on the server's own thread: its log is read until it gains it.
+    if block == Block::Socket {
+        let ran = |g: &serde_json::Value| g["entries"].as_array().is_some_and(|e| e.iter().any(|e| e["kind"] == "websocket"));
+        assert!(soon(|| ran(&read())), "a websocket message to /r{} of {slug} wasn't run", at.0);
+        gained = read();
+        SOCKETS.with(|s| s.borrow_mut().drain(..).for_each(|mut ws| drop(ws.close(None))));
+    }
     let entries = gained["entries"].as_array().unwrap();
     let mut marks: Vec<&str> = Vec::new();
     for e in entries {
@@ -702,7 +783,7 @@ fn flow_does(state: &AppState, slug: &str, block: Block, at: (usize, usize, usiz
         }
         // The handler's own run: a request, a tick or a queue's, but not the request that set a
         // clock's request.
-        if !matches!(e["kind"].as_str(), Some("request" | "tick" | "queue")) || e["route"] == "POST /set" {
+        if !matches!(e["kind"].as_str(), Some("request" | "tick" | "queue" | "file" | "mail" | "feed" | "websocket")) || e["route"] == "POST /set" {
             continue;
         }
         for p in e["performed"].as_array().into_iter().flatten() {
@@ -804,25 +885,31 @@ const KNOWN_FAULTS: &[(&str, &str, &str)] = &[
 ];
 
 /// Handlers the reader takes and `lang::compile` refuses, as their steps written back as text read
-/// as other steps: each debt, and the cases owed under it. Paid when the printer writes the form
-/// as the same steps; then the debt fails the test until it is struck.
+/// as other steps: each debt, the block whose handlers alone owe it (none: any block's, held by
+/// the route's grid), and the cases owed under it. Paid when the printer writes the form as the
+/// same steps; then the debt fails the test until it is struck.
 type Owes = fn(&Case) -> bool;
-const ROUND_TRIP_DEBTS: &[(&str, Owes)] = &[
-    ("the printer writes && / || around an awaited function as other steps", |c| matches!(c.shape, "after &&" | "after ||") && c.mark == "g" && c.condition == "req.json.c"),
+const ROUND_TRIP_DEBTS: &[(&str, Option<Block>, Owes)] = &[
+    // Found by the websocket grid (2026-11-23): a message block whose answer, returned from a
+    // case, is a start, a request, an upload or another flow's action called.
+    ("a websocket's message returning a call from a case is written back as another flow", Some(Block::Socket), |c| {
+        c.shape == "returned from a case" && matches!(c.mark, "s" | "r" | "u" | "k")
+    }),
+    ("the printer writes && / || around an awaited function as other steps", None, |c| matches!(c.shape, "after &&" | "after ||") && c.mark == "g" && c.condition == "req.json.c"),
     // Found by the grid's new columns (2026-11-22): the same shape, a function with a try block
     // of its own.
-    ("the printer writes && / || around a function with a try of its own as other steps", |c| {
+    ("the printer writes && / || around a function with a try of its own as other steps", None, |c| {
         matches!(c.shape, "after &&" | "after ||") && matches!(c.mark, "ft" | "fu" | "fy") && c.condition == "req.json.c"
     }),
     // Found by the `every` columns (2026-11-22): a function that writes state, puts, sends, queues
     // and mails is refused everywhere: "state.set(f, …)'s answer is used, which TypeScript can't
     // say".
-    ("the printer can't write back a function that writes state and then sends, queues and mails", |c| matches!(c.mark, "fa" | "fa2")),
+    ("the printer can't write back a function that writes state and then sends, queues and mails", None, |c| matches!(c.mark, "fa" | "fa2")),
     // Reached's debts whose smallest flow the round trip refuses (reached.rs, `Today::Refused`).
-    (A_FUNCTIONS_OWN_CONDITION.name, |c| c.mark == "fs"),
-    (A_LISTS_FUNCTION_LOSES_ITS_WRITE.name, |c| c.mark == "lf"),
-    (A_LISTS_FUNCTION_STARTS_PAST_A_RETURN.name, |c| c.mark == "ls"),
-    (A_CHOICE_IN_A_FUNCTION_STARTS.name, |c| c.mark == "fr"),
+    (A_FUNCTIONS_OWN_CONDITION.name, None, |c| c.mark == "fs"),
+    (A_LISTS_FUNCTION_LOSES_ITS_WRITE.name, None, |c| c.mark == "lf"),
+    (A_LISTS_FUNCTION_STARTS_PAST_A_RETURN.name, None, |c| c.mark == "ls"),
+    (A_CHOICE_IN_A_FUNCTION_STARTS.name, None, |c| c.mark == "fr"),
 ];
 
 /// The debt a run that differs is owed under, by its case and request and the difference, mark by
@@ -871,25 +958,48 @@ fn debt(case: &Case, request: &str, made: &str, missed: &str) -> Option<Vec<&'st
 /// bound, to a mail sink and a queue standing in for SQS (the review session's, as it wrote it).
 /// The folder its secrets are in, to remove.
 pub(super) fn grid_state(sink: &smtp::sink::Sink, sqs: &sqs::stand_in::StandIn) -> (AppState, std::path::PathBuf) {
-    grid_state_with(sink, sqs, &[])
+    grid_state_with(sink, sqs, Block::Route, &[])
 }
 
-/// The grid's server, with `queues` more, each made on the stand-in and bound by its name.
-fn grid_state_with(sink: &smtp::sink::Sink, sqs: &sqs::stand_in::StandIn, more_queues: &[String]) -> (AppState, std::path::PathBuf) {
+/// The grid's server, with `more` sources of `block`'s kind, each bound by its name (a queue made
+/// on the stand-in first; a mailbox and a feed never read, their runs started by the test), and
+/// for a file grid the folder its handlers watch, holding each handler's file.
+pub(super) fn grid_state_with(sink: &smtp::sink::Sink, sqs: &sqs::stand_in::StandIn, block: Block, more: &[String]) -> (AppState, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!("holon-grid-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
     let env = dir.join(".env");
     let mut secrets = format!("HOLON_SECRET_OPS_SMTP=smtp://ops:s3cret@127.0.0.1:{}\nHOLON_SECRET_JOBS_URL={}\n", sink.port, sqs.url("jobs"));
-    for q in more_queues {
-        sqs.make(q);
-        secrets.push_str(&format!("HOLON_SECRET_{}_URL={}\n", q.to_uppercase(), sqs.url(q)));
+    let mut binds = Vec::new();
+    // What a mail's and a feed's binding is read from as it is bound: a mailbox and a feed that
+    // answer, kept for the grid's length; its runs are started by the test, never read from them.
+    let mailbox = (block == Block::Mail).then(|| imap::stand_in::start("grid", "s3cret", true));
+    let feed = (block == Block::Feed).then(sse::stand_in::StandIn::start);
+    for name in more {
+        let secret = format!("HOLON_SECRET_{}_URL", name.to_uppercase());
+        match block {
+            Block::Queue => {
+                sqs.make(name);
+                secrets.push_str(&format!("{secret}={}\n", sqs.url(name)));
+                binds.push(("/admin/queues", serde_json::json!({ "name": name, "url": format!("env:{secret}") })));
+            }
+            Block::Mail => {
+                secrets.push_str(&format!("{secret}=imap://grid:s3cret@127.0.0.1:{}\n", mailbox.as_ref().unwrap().port));
+                binds.push(("/admin/mails", serde_json::json!({ "name": name, "imap": format!("env:{secret}") })));
+            }
+            Block::Feed => {
+                secrets.push_str(&format!("{secret}={}\n", feed.as_ref().unwrap().url("/events")));
+                binds.push(("/admin/feeds", serde_json::json!({ "name": name, "url": format!("env:{secret}") })));
+            }
+            other => panic!("{other:?} has no sources of its own"),
+        }
     }
     std::fs::write(&env, secrets).unwrap();
     let sources = || secret_sources::Sources::new(Some(env.clone())).unwrap();
     let mut state = claims_state("");
     let mails = mails::Mails::memory().with_sources(sources());
     let queues = queues::Queues::memory().with_sources(sources());
-    state.folders = Arc::new(folders::Folders::memory().with_mails(mails).with_queues(queues));
+    let feeds = feeds::Feeds::memory().with_sources(sources());
+    state.folders = Arc::new(folders::Folders::memory().with_mails(mails).with_queues(queues).with_feeds(feeds));
     state.folders.mails.serve(Arc::clone(&state.deployments));
     state.folders.queues.serve(Arc::clone(&state.deployments));
     for (path, body) in [
@@ -911,10 +1021,24 @@ fn grid_state_with(sink: &smtp::sink::Sink, sqs: &sqs::stand_in::StandIn, more_q
         let status = bound.status_code;
         assert_eq!(status, 200, "{path}: {}", String::from_utf8_lossy(&body_bytes(bound)));
     }
-    for q in more_queues {
-        let body = serde_json::json!({ "name": q, "url": format!("env:HOLON_SECRET_{}_URL", q.to_uppercase()) });
-        assert_eq!(route(&state, &req("POST", "/admin/queues", serde_json::to_vec(&body).unwrap())).status_code, 200, "{q}");
+    for (path, body) in binds {
+        let bound = route(&state, &req("POST", path, serde_json::to_vec(&body).unwrap()));
+        let status = bound.status_code;
+        assert_eq!(status, 200, "{path} {body}: {}", String::from_utf8_lossy(&body_bytes(bound)));
     }
+    if block == Block::File {
+        let watched = dir.join(GRID_FOLDER);
+        std::fs::create_dir_all(&watched).unwrap();
+        for j in 0..GRID_QUEUES {
+            std::fs::write(watched.join(format!("r{j}.txt")), "arrived").unwrap();
+        }
+        let body = serde_json::json!({ "name": GRID_FOLDER, "path": watched.display().to_string(), "access": "read" });
+        assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200, "{GRID_FOLDER}");
+    }
+    if block == Block::Socket {
+        state.listeners = Some(Mutex::new(BTreeMap::new()));
+    }
+    std::mem::forget((mailbox, feed));
     let callee = deploy_text(&state,"import { action, flow } from \"holon\"\n\nflow(\"callee\")\n\nexport const hail = action(() => 1)\n", "127.0.0.1:9");
     assert_eq!(callee, "callee");
     (state, dir)
@@ -986,6 +1110,50 @@ fn a_queues_handler_does_what_its_text_says() {
     grid(Block::Queue);
 }
 
+/// **Guards:** the grid above, every handler a file's (`on.file.created(inbox, (f) => …, {
+/// matching: "r<j>.txt" })`), run for its file as a look that found it new runs it
+/// (`arrivals::fire_for_test`, without the look), its request set in the state just before.
+///
+/// **If it fails:** as above.
+#[test]
+#[ignore = "heavy: about 8 minutes, run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
+fn a_files_handler_does_what_its_text_says() {
+    grid(Block::File);
+}
+
+/// **Guards:** the grid above, every handler a mail's (`on.mail(mb, (m) => …)`), run on a message
+/// as one read from its mailbox is run (`inbox::fire_for_test`, without the mailbox), its request
+/// set in the state just before.
+///
+/// **If it fails:** as above.
+#[test]
+#[ignore = "heavy: about 8 minutes, run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
+fn a_mails_handler_does_what_its_text_says() {
+    grid(Block::Mail);
+}
+
+/// **Guards:** the grid above, every handler a feed's (`on.feed(fd, (e) => …)`), run on an event as
+/// one read from the feed is run (`subscriptions::fire_for_test`, without the feed), its request
+/// the event's data.
+///
+/// **If it fails:** as above.
+#[test]
+#[ignore = "heavy: about 8 minutes, run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
+fn a_feeds_handler_does_what_its_text_says() {
+    grid(Block::Feed);
+}
+
+/// **Guards:** the grid above, every handler a websocket's `message` block (`route.websocket("/r",
+/// { message: (req) => … })`), run on a message sent through a real socket, its request the
+/// message (its text the body).
+///
+/// **If it fails:** as above.
+#[test]
+#[ignore = "heavy: about 8 minutes, run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
+fn a_websockets_message_does_what_its_text_says() {
+    grid(Block::Socket);
+}
+
 /// The grid of `block`'s handlers: every case, checked, run on every request, and compared.
 fn grid(block: Block) {
     let size = grid_size();
@@ -994,22 +1162,27 @@ fn grid(block: Block) {
     let sqs = sqs::stand_in::StandIn::start();
     sqs.make("jobs");
     let workers = grid_workers();
-    let queues: Vec<String> = if block == Block::Queue { (0..workers).flat_map(|w| (0..GRID_QUEUES).map(move |j| grid_queue(w, j))).collect() } else { Vec::new() };
-    let (state, secrets) = grid_state_with(&sink, &sqs, &queues);
+    let sources: Vec<String> = if block.source().is_some() { (0..workers).flat_map(|w| (0..GRID_QUEUES).map(move |j| grid_source(block, w, j))).collect() } else { Vec::new() };
+    let (state, secrets) = grid_state_with(&sink, &sqs, block, &sources);
     let (host, _hits) = counting_server();
     // A clock's grid has no `every` function of the flow's (`fa`, `fa2`): `every` is the clock.
     // A clock's or a queue's run answers nobody: its returns are bare (`answers_nobody`).
     let all: Vec<Case> = cases()
         .into_iter()
         .filter(|c| block != Block::Every || !c.mark.starts_with("fa"))
-        .map(|c| if block == Block::Route { c } else { Case { body: answers_nobody(&c.body), read: answers_nobody(&c.read), ..c } })
+        .map(|c| if !block.answers_nobody() { c } else { Case { body: answers_nobody(&c.body), read: answers_nobody(&c.read), ..c } })
         .collect();
     let flow_text =|name: &str, port: u16, host: &str, handlers: &[(usize, &Case)]| flow_text(name, port, host, handlers, block);
-    // Each block's flows on ports of their own.
+    // Each block's flows on ports of their own. Only a websocket's are listened on, each on a
+    // port free as it is deployed.
     let base = match block {
         Block::Route => 19000,
         Block::Every => 20000,
         Block::Queue => 21000,
+        Block::File => 22000,
+        Block::Mail => 23000,
+        Block::Feed => 24000,
+        Block::Socket => 25000,
     };
     // What the language refuses is left out: said at check, it is no surprise at a run. A graph
     // with a cycle, or an `after` with nothing to tie, is no refusal of the text but the
@@ -1041,8 +1214,8 @@ fn grid(block: Block) {
         let text = flow_text("probe", base, &host, &[(*i, c)]);
         if r.is_err() && holon_author::lang::ts::compile(&text).is_ok() && holon_author::lang::compile(&text).is_err() {
             read_alone.push((*i, c));
-            match ROUND_TRIP_DEBTS.iter().find(|(_, owes)| owes(c)) {
-                Some((debt, _)) => *round_trip_owed.entry(debt).or_default() += 1,
+            match ROUND_TRIP_DEBTS.iter().find(|(_, owed_by, owes)| owed_by.is_none_or(|b| b == block) && owes(c)) {
+                Some((debt, ..)) => *round_trip_owed.entry(debt).or_default() += 1,
                 None => unowed.push(format!("{} | {} | {} | {}", c.shape, c.mark, c.condition, holon_author::lang::compile(&text).map(|_| ()).unwrap_err())),
             }
         }
@@ -1062,6 +1235,10 @@ fn grid(block: Block) {
     let taken: Vec<(usize, &Case)> = checked.into_iter().filter(|(_, r)| r.is_ok()).map(|(c, _)| c).collect();
     assert!(!taken.is_empty(), "{block:?}: the language takes none of the grid's handlers");
     assert!(unowed.is_empty(), "{} handlers the canvas can't write back, under no debt:\n{}", unowed.len(), unowed.join("\n"));
+    // A debt only this block's handlers owe is held here, at check, at either size.
+    for (debt, ..) in ROUND_TRIP_DEBTS.iter().filter(|(_, owed_by, _)| *owed_by == Some(block)) {
+        assert!(round_trip_owed.contains_key(debt), "\"{debt}\": the canvas writes these back now: strike it from ROUND_TRIP_DEBTS");
+    }
     // The grid is no smaller than it was.
     assert!(taken.len() > 600, "{block:?}: {} handlers taken", taken.len());
     // At a size that runs none of this block's handlers, what is held is what is said at check.
@@ -1107,12 +1284,16 @@ fn grid(block: Block) {
                 s.spawn(move || {
                     let mut t = Tally::default();
                     for (n, chunk, alone) in part {
-                        // A queue's flow listens to its worker's queues.
-                        // (A queue is imported under the name it is bound by.)
-                        let text = flow_text(&format!("grid-{n}"), base + 1 + *n as u16, host, chunk)
-                            .replace("import q", &format!("import w{w}q"))
-                            .replace("from \"queue:q", &format!("from \"queue:w{w}q"))
-                            .replace("on.queue(q", &format!("on.queue(w{w}q"));
+                        // A queue's, a mail's or a feed's flow listens to its worker's sources.
+                        // (A source is imported under the name it is bound by.)
+                        let port = if block == Block::Socket { free_port() } else { base + 1 + *n as u16 };
+                        let mut text = flow_text(&format!("grid-{n}"), port, host, chunk);
+                        if let Some((name, kind)) = block.source() {
+                            text = text
+                                .replace(&format!("import {name}"), &format!("import w{w}{name}"))
+                                .replace(&format!("from \"{kind}:{name}"), &format!("from \"{kind}:w{w}{name}"))
+                                .replace(&format!("on.{kind}({name}"), &format!("on.{kind}(w{w}{name}"));
+                        }
                         let slug = if *alone {
                             deploy_read_alone(state, &text, host)
                         } else if text.contains("host:") {
@@ -1120,6 +1301,9 @@ fn grid(block: Block) {
                         } else {
                             deploy_plain_text(state, &text)
                         };
+                        if block == Block::Socket {
+                            sync_listeners(state);
+                        }
                         let javascript = javascript_does(&chunk.iter().map(|(_, c)| *c).collect::<Vec<_>>(), requests);
                         let mut seen = None;
                         for (j, ((i, case), said)) in chunk.iter().zip(&javascript).enumerate() {
@@ -1165,8 +1349,9 @@ fn grid(block: Block) {
                                 }
                             }
                         }
-                        // Its worker's queues are listened to by one deployment at a time.
-                        if block == Block::Queue {
+                        // Its worker's sources are listened to by one deployment at a time; a
+                        // websocket's port is let go.
+                        if block.source().is_some() || block == Block::Socket {
                             assert_eq!(route(state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
                             assert_eq!(route(state, &req("DELETE", &format!("/deployments/{slug}"), vec![])).status_code, 200);
                         }
@@ -1226,7 +1411,7 @@ fn grid(block: Block) {
     if block != Block::Route {
         return;
     }
-    for (debt, _) in ROUND_TRIP_DEBTS {
+    for (debt, ..) in ROUND_TRIP_DEBTS.iter().filter(|(_, owed_by, _)| owed_by.is_none()) {
         assert!(round_trip_owed.contains_key(debt), "\"{debt}\": the canvas writes these back now: strike it from ROUND_TRIP_DEBTS");
     }
     // Every kind of finding shows on the small set's requests, at either size: the full set holds,

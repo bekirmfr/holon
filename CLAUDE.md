@@ -45,7 +45,8 @@ A few Rust tests hold nearly all the test time. They are marked `#[ignore = "hea
 checks, in two groups:
 
 - the grids, which hold that a flow's text is translated to steps and run as it says:
-  `tests::semantics::a_handler_does_what_its_text_says`, its clock's and queue's forms, and
+  `tests::semantics::a_handler_does_what_its_text_says`, its clock's, queue's, file's, mail's,
+  feed's and websocket's forms, and
   `tests::list_grid::a_list_methods_function_makes_what_it_says_item_by_item`;
 - the records sweep, which holds how run records are kept, exported, chained and verified:
   `tests::no_line_changed_and_chained_again_passes_as_checked`.
@@ -56,12 +57,12 @@ in `.github/file-rules.txt`, applied by `.github/what-changed.sh`), on a pull re
 (`crates/holon-author`), the core crates or the server's run engine runs the grids by hand before
 calling a step done:
 
-    cargo test -p holon --bin holon -- --ignored --exact tests::semantics::a_handler_does_what_its_text_says tests::semantics::a_clocks_handler_does_what_its_text_says tests::semantics::a_queues_handler_does_what_its_text_says tests::list_grid::a_list_methods_function_makes_what_it_says_item_by_item
+    cargo test -p holon --bin holon -- --ignored --exact tests::semantics::a_handler_does_what_its_text_says tests::semantics::a_clocks_handler_does_what_its_text_says tests::semantics::a_queues_handler_does_what_its_text_says tests::semantics::a_files_handler_does_what_its_text_says tests::semantics::a_mails_handler_does_what_its_text_says tests::semantics::a_feeds_handler_does_what_its_text_says tests::semantics::a_websockets_message_does_what_its_text_says tests::list_grid::a_list_methods_function_makes_what_it_says_item_by_item
 
 The grids come in two sizes, set by `HOLON_GRIDS`. The full set (`full`, and what runs when it is
 unset) sends every handler all eight requests. The small set (`small`) sends the route handlers
-two of them, and only checks the clock and queue handlers (each is still compiled and written
-back, but not run); the list grid is the same at both sizes. A pull request or a push to main runs
+two of them, and only checks the clock, queue, file, mail, feed and websocket handlers (each is
+still compiled and written back, but not run); the list grid is the same at both sizes. A pull request or a push to main runs
 the small set; the nightly run, a run by hand and a pull request labelled `heavy` run the full set.
 Every full run also checks that the two requests alone show every kind of finding it shows (each
 debt, and a flow's own rule under each condition), and fails naming the kind and where it showed

@@ -409,6 +409,19 @@ fn fire_one_mail(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deplo
     }
 }
 
+/// A test helper: one run of `slug`'s handler of `mail` on `message`, as a message read from its
+/// mailbox is run, without the mailbox. Whether it ran.
+#[cfg(test)]
+pub(crate) fn fire_for_test(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, slug: &str, mail: &str, message: Value) -> bool {
+    let found: Option<Listening> = deployments.lock().unwrap().get(slug).filter(|d| d.takes_runs(store)).and_then(|d| {
+        let h = d.server.as_ref()?.mails.iter().find(|h| h.mail == mail)?.clone();
+        Some((slug.to_string(), h, d.unit, d.state.clone(), Arc::clone(&d.permit), Arc::clone(&d.secrets), Arc::clone(&d.folders)))
+    });
+    let Some(l) = found else { return false };
+    fire_one_mail(store, deployments, deployments_path, &l, message);
+    true
+}
+
 /// The watcher: a thread that starts a look at each mailbox due every [`TICK`], and waits for
 /// none of them.
 pub(crate) fn spawn_watcher(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: Place) {
