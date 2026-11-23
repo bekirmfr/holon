@@ -136,6 +136,15 @@ fn handlers(w: &Watched, store: &mut MapResolver) -> Vec<Handler> {
     for c in &server.clocks {
         out.push(Handler { child: trace(&c.label), label: c.label.clone(), hash: c.hash.clone(), inputs: vec![vec![]] });
     }
+    // A file's, a mail's, a feed's, a queue's and a websocket's handler: golden's bodies as the
+    // record it is handed, on each input it takes.
+    let others = server.files.iter().map(|f| (&f.label, &f.hash)).chain(server.mails.iter().map(|m| (&m.label, &m.hash))).chain(server.feeds.iter().map(|f| (&f.label, &f.hash)));
+    let others = others.chain(server.queues.iter().map(|q| (&q.label, &q.hash))).chain(server.websockets.iter().map(|s| (&s.label, &s.hash)));
+    for (label, hash) in others {
+        let ports = store.resolve(&parse_hash(hash).unwrap()).map_or(1, |u| u.inputs.len());
+        let inputs = bodies().iter().map(|b| vec![Some(holon_core::parse_json(if b.is_empty() { "{}" } else { b }).unwrap_or(Value::Record(BTreeMap::new()))); ports]).collect();
+        out.push(Handler { child: trace(label), label: label.clone(), hash: hash.clone(), inputs });
+    }
     out
 }
 
