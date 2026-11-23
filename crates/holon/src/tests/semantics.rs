@@ -1253,7 +1253,7 @@ enum Kind {
 impl Kind {
     /// Every kind the grid can show.
     fn all() -> impl Iterator<Item = Kind> {
-        DEBTS.iter().map(|d| Kind::Debt(d.name)).chain(CONDITIONS.iter().map(|(c, _, _)| Kind::OwnRule(*c)))
+        DEBTS.iter().map(|d| Kind::Debt(d.name)).chain(CONDITIONS.iter().map(|(c, _, _)| Kind::OwnRule(c)))
     }
 }
 
