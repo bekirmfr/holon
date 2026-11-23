@@ -1514,8 +1514,11 @@ impl<'s, 't> Reader<'s, 't> {
                     if early && waits.is_none() {
                         self.early_row(s, &r, &stmts[mark..], exits);
                     }
-                    // What follows is reached where this statement completed: in a `try` block,
-                    // where what it made arrived (the guard `go_on_if_arrived` holds below).
+                    // In a `try` block, what follows is reached where what this statement made
+                    // arrived (the guard `go_on_if_arrived` holds below). Outside one it always
+                    // is, Holon's own rule: a line that gave nothing is a value missing, not a
+                    // failure, where JavaScript would have thrown and run nothing below
+                    // (reached.rs). The statement is marked so a run can be named as that rule's.
                     if self.frame.trying.is_empty() {
                         self.mark(Atom::Completed(self.span(s.span())));
                     }

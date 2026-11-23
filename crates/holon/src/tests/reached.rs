@@ -116,11 +116,19 @@ pub(super) const A_READ_IS_ASKED_PAST_A_RETURN: Debt = Debt {
     name: "a read is asked where its statement isn't reached",
     says: "a collection read in a send's content is asked below a return that answered, though the send is held",
 };
-/// B: a line after a failure outside a try still runs. The owner's question, rule or debt: a debt
-/// until it is decided.
-pub(super) const A_LINE_AFTER_A_FAILURE_RUNS: Debt = Debt {
-    name: "a line after a failure outside a try still runs",
-    says: "a write on the line after a JSON.parse that fails, with no try around them, is made, where JavaScript throws first",
+/// A rule Holon states as its own: where a flow does other than JavaScript on purpose, and the
+/// one sentence that says it.
+pub(super) struct Rule {
+    pub(super) name: &'static str,
+    pub(super) says: &'static str,
+}
+
+/// B, decided by the owner (2026-11-23): outside a `try`, a line that gives nothing is a value
+/// missing, not a failure. What needs the value doesn't run; what doesn't need it does. A `try` is
+/// what turns "gave nothing" into "failed". JavaScript throws at the line, and nothing below runs.
+pub(super) const A_LINE_AFTER_NOTHING_RUNS: Rule = Rule {
+    name: "outside a try, a line after one that gave nothing still runs",
+    says: "a write on the line after a JSON.parse that gives nothing, with no try around them, is made, as it doesn't use what was parsed; JavaScript throws at the parse and runs nothing below it",
 };
 
 /// Every debt of the table, each to be struck when no row differs under it.
@@ -136,7 +144,6 @@ pub(super) const DEBTS: &[&Debt] = &[
     &A_CHOICES_TEST_IS_READ_PAST_A_RETURN,
     &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &A_READ_IS_ASKED_PAST_A_RETURN,
-    &A_LINE_AFTER_A_FAILURE_RUNS,
     &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &AN_UNUSED_READ_IS_NOT_ASKED,
     &A_LISTS_FUNCTION_GOES_PAST_A_FAILURE,
@@ -154,6 +161,8 @@ enum Today {
     /// `lang::compile` refuses the text (the round trip); deployed by its hash with the reader
     /// alone, it does these marks, under the debt.
     Refused(&'static Debt, &'static str),
+    /// The flow does these marks by a rule Holon states as its own: what is expected of it.
+    OwnRule(&'static Rule, &'static str),
 }
 
 /// One row: a plain name, the short text (its route `POST /go`), the request, whether the answer
@@ -298,11 +307,10 @@ fn rows() -> Vec<Row> {
             name: "a write on the line after one that fails, with no try",
             text: "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-11\", { port: 19611 })\n\nroute.post(\"/go\", (req) => {\n  const parsed = JSON.parse(req.json.text)\n  ++state.n\n  return \"end\"\n})\n",
             request: r#"{"text":"{bad"}"#,
-            // JavaScript throws here; what the route should answer is the owner's open decision,
-            // so only what it does is compared.
+            // JavaScript throws here; what the route answers is not compared, only what it does.
             answer: false,
             javascript: "does nothing",
-            today: Today::Differs(&A_LINE_AFTER_A_FAILURE_RUNS, "writes n = 1"),
+            today: Today::OwnRule(&A_LINE_AFTER_NOTHING_RUNS, "writes n = 1"),
             long: Some((
                 "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-11-long\", { port: 19631 })\n\nroute.post(\"/go\", (req) => {\n  try {\n    const parsed = JSON.parse(req.json.text)\n    ++state.n\n  } catch {\n    return \"failed\"\n  }\n  return \"end\"\n})\n",
                 "answers \"failed\"",
@@ -461,6 +469,9 @@ fn deployed(state: &AppState, text: &str, host: &str, refused: bool) -> String {
 /// **Why:** the reached rule is built one kind of step at a time; each step strikes the rows it
 /// cures, in its own commit, and nothing else may move.
 ///
+/// A row under one of Holon's own rules (`OwnRule`) does what the rule says, not what JavaScript
+/// does: that is expected of it, and owes nothing.
+///
 /// **If it fails:** "strike it" means a step cured its case: remove the debt and turn its row to
 /// `AsJavascript`. "Differs another way" means a change moved what the flow does here without
 /// curing it: read the two lines it prints.
@@ -480,6 +491,12 @@ fn the_debts_of_reached_each_differ_as_recorded() {
                 assert!(!refused, "{}: the round trip refuses it: {:?}", row.name, holon_author::lang::compile(&text).err());
                 if did != row.javascript {
                     wrong.push(format!("{}: JavaScript {:?}, the flow {did:?}", row.name, row.javascript));
+                }
+            }
+            Today::OwnRule(rule, expected) => {
+                assert!(!refused, "{}: the round trip refuses it: {:?}", row.name, holon_author::lang::compile(&text).err());
+                if did != expected {
+                    wrong.push(format!("{}: by \"{}\" the flow {expected:?}, it did {did:?} ({})", row.name, rule.name, rule.says));
                 }
             }
             Today::Differs(debt, recorded) | Today::Refused(debt, recorded) => {

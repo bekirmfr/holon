@@ -17,10 +17,15 @@
 //! another order, a path would call a site unreached for a test the run never made. The Reader
 //! keeps the path in the order it reads the text, which is that order ([`Site::path`]).
 //!
-//! What JavaScript does where a step fails outside a `try` (the statement after it doesn't run)
-//! is recorded as [`Atom::Completed`]; which steps fail as JavaScript's throw is not the
-//! catalog's yet (a test's table). A `try`'s own promise, that a failed block keeps none of its
-//! writes, is not part of reached: it is [`Site::kept`], beside it.
+//! A statement that "did not complete" stops what follows only inside a `try`: there, a value it
+//! made that didn't arrive is the block failing ([`Why::Arrived`]). Outside a `try`, Holon's own
+//! rule (the owner, 2026-11-23): a line that gives nothing is a value missing, not a failure, so
+//! what follows and doesn't use it runs, and what uses it has nothing to go on. JavaScript throws
+//! at such a line (`JSON.parse` of a text that isn't JSON, a request that failed), and nothing
+//! below it runs. So [`Atom::Completed`] always holds; it is recorded so that a run where
+//! JavaScript would have stopped there can be named as this rule's, not owed. A `try`'s own
+//! promise, that a failed block keeps none of its writes, is not part of reached either: it is
+//! [`Site::kept`], beside it.
 
 use super::ast::{Expr, Span};
 
@@ -52,8 +57,8 @@ pub enum Atom {
     Item { method: String, at: Span },
     /// `test` has a value and it is true, as JavaScript reads a condition; why it is on the path.
     Holds { why: Why, test: Expr },
-    /// The statement written at the span completed: outside a `try`, a step in it that throws in
-    /// JavaScript gave nothing (JSON.parse of a text that isn't JSON, a request that failed).
+    /// The statement written at the span, outside a `try`, before the site: it always counts as
+    /// completed (Holon's own rule, above), where JavaScript stops if a step in it threw.
     Completed(Span),
 }
 
