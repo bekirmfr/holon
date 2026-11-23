@@ -552,8 +552,8 @@ What is not defended, or only partly:
   wrong-port Host, a form POST; none saves anything, the editor and curl still do);
   `oversized_body_is_refused` (one byte past `MAX_BODY_BYTES` is a 413).
 - **Roles and accounts**: `the_built_in_roles_are_the_designs`,
-  `the_admin_holds_everything_and_an_agent_its_own` (a role holding an action only on its own
-  holds it on what it saved and nothing else), `every_route_is_reached_and_asks_of_what_it_names`
+  `can_is_the_union_of_the_bindings_that_cover_it` (the admin holds everything; a role holding an
+  action only on its own holds it on what it saved and nothing else), `every_route_is_reached_and_asks_of_what_it_names`
   (`can.rs`), `a_new_server_answers_only_its_setup`,
   `wrong_passwords_sent_at_once_lock_a_name_as_soon`, `an_unknown_name_is_checked_like_a_wrong_password`,
   `no_change_leaves_no_admin`, `kept_as_hashes_and_read_back` (no token or password in the file),
@@ -576,8 +576,8 @@ What is not defended, or only partly:
   `a_binding_at_a_flow_lets_its_holder_act_there_and_nowhere_else` (a unit only another flow
   places is answered 404),
   `the_control_plane_admits_so_many_requests_at_once_and_so_many_from_one_client`,
-  `which_id_tokens_are_taken` (another audience, party, issuer, expiry, signature or key),
-  `a_token_the_provider_signed_for_this_client_says_who` and
+  `which_id_tokens_are_taken` (another audience, party, issuer, expiry, signature or key; and who
+  a token taken says) and
   `signed_in_through_a_provider_is_matched_by_email_then_by_subject` (an email not said to be
   verified signs no one in; another subject with a matched email is no one),
   `a_refused_provider_sign_in_names_no_account` (each way a provider's sign-in is refused, none

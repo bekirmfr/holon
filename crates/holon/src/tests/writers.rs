@@ -57,6 +57,7 @@ fn a_writer_that_fails_is_a_warning_and_health_says_not_ok_until_it_writes_again
     assert!(warned(&state)[1].1.contains("a sync a test failed"), "why, to the admin");
     let other = test_state_at(Place::parse(&dir.join("other.json").to_string_lossy()));
     assert_eq!(health(&other), (200, "ok".into()), "another server in the process isn't told of these");
+    assert_eq!(health(&test_state()), (200, "ok".into()), "a server with no deployments file");
 
     // Each clears as its next write goes through.
     std::fs::remove_dir(&file).unwrap();

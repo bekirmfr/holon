@@ -253,15 +253,16 @@ holon-author golden` writes it afresh.
   flow and as JavaScript over every way a statement is reached, every kind of thing a handler does
   and requests with and without each field ([Testing](../themes/testing.md)). Which trigger is
   tied to what is how the lowering gets there, and is not tested for itself.
-- **Formatting** (`format.rs`): `a_text_as_fmt_writes_it_is_kept`, `comments_stay_where_they_were`,
-  `a_js_body_is_laid_out_like_the_rest`, `a_flow_written_any_which_way` (`tests/fmt/messy.holon.ts` laid out
-  as `messy.laid.holon.ts`).
+- **Formatting** (`format.rs`): `a_flow_written_any_which_way` (`tests/fmt/messy.holon.ts` laid out
+  as `messy.laid.holon.ts`, a line of it for each rule: comments kept where they were, a js body
+  laid out like the rest with its `var` and `==` kept, a long call or chain broken, a short one
+  kept, an object's quotes and breaks kept; and the laid-out text laid out again unchanged).
 - **Round trips** (`print.rs`): `every_sample_round_trips_from_its_text` and
   `every_sample_round_trips_from_its_builder` (the printed text lowers to the same unit hash, and
   printing again changes nothing); `the_canonical_form_of_two_samples`.
 - **Commands** (`commands.rs`): `fmt_is_stable_and_every_sample_round_trips_through_new`,
-  `fmt_keeps_a_hash_inside_a_js_body`, `a_mistake_names_its_file_and_line`,
-  `check_says_where_each_secret_is_sent`, `check_compiles_each_js_body_and_says_a_mistake_at_its_line`.
+  `a_mistake_names_its_file_and_line`,
+  `check_says_where_what_a_flow_makes_with_a_secret_goes`, `check_compiles_each_js_body_and_says_a_mistake_at_its_line`.
 - **Routes** (`routes.rs`): `one_route_per_group_with_a_request_node`,
   `every_group_that_cant_be_a_route_says_why`, `a_route_keeps_the_response_first_and_every_effect`.
 - **Editors and agents**: `editing.rs`'s `a_mistake_has_its_span_and_the_words_check_uses`, `the_word_under_the_cursor_is_said`,

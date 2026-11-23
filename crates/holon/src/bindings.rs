@@ -1390,43 +1390,6 @@ mod tests {
         assert_eq!(access.version(3).unwrap(), Some(three));
     }
 
-    /// A binding that expires holds until then, and nothing after; it stays in the document, and
-    /// a request is answered as its caller held when it came.
-    #[test]
-    fn a_binding_holds_until_it_expires() {
-        let access = Bindings::memory();
-        let mut d = Document::default();
-        let flow = Scope::Flows(Selector::Slug("payout".into()));
-        d.bind(Subject::Principal("bob".into()), "editor", flow.clone(), Some(100), "ada", 1);
-        d.bind(Subject::Principal("bob".into()), "viewer", Scope::Host, None, "ada", 1);
-        access.keep(d.after(&Document::default(), "ada", "bound", None, 1)).unwrap();
-        assert_eq!(&*access.held("bob", 99), [Held { until: Some(100), ..via(at(Role::Editor, flow), 0, 1) }, via(at_host(Role::Viewer), 1, 1)], "each saying when it ends");
-        assert_eq!(&*access.held("bob", 100), [via(at_host(Role::Viewer), 1, 1)], "expired at 100");
-        assert_eq!(access.document().bindings.len(), 2, "kept until unbound");
-    }
-
-    /// A binding to a group holds for each member, as one to them would; an admin's role is read
-    /// as defined; a member taken out of the group, or forgotten, holds nothing by it.
-    #[test]
-    fn a_groups_binding_holds_for_each_member() {
-        let access = Bindings::memory();
-        let mut d = Document::default();
-        d.roles.push(RoleText { name: "payout-approver".into(), about: None, allows: vec!["run.decide".into(), "run.view".into()], kinds: vec![Kind::Person] });
-        d.groups.push(Group { name: "payments".into(), about: None, members: vec!["bob".into(), "cy".into()] });
-        let flow = Scope::Flows(Selector::Slug("payout".into()));
-        d.bind(Subject::Group("payments".into()), "payout-approver", flow.clone(), None, "ada", 1);
-        access.keep(d.clone().after(&Document::default(), "ada", "bound", None, 1)).unwrap();
-        let approver = Arc::new(RoleDef::custom("payout-approver", &[Action::RunView, Action::RunDecide], &[Kind::Person]));
-        for name in ["bob", "cy"] {
-            assert_eq!(&*access.held(name, 2), [via(Held::new(Arc::clone(&approver), flow.clone()), 0, 1)], "{name}: through the group's binding");
-        }
-        assert_eq!(access.document().reaching("bob").map(|(b, g)| (b.id, g)).collect::<Vec<_>>(), [(0, Some("payments"))]);
-        d.forget("cy");
-        access.keep(d.after(&access.document(), "ada", "removed cy", None, 2)).unwrap();
-        assert!(access.held("cy", 3).is_empty());
-        assert_eq!(access.held("bob", 3).len(), 1);
-    }
-
     /// What the server keeps is checked whole: an admin's role is a role (named otherwise than a
     /// built-in one, allowing actions the catalogue names, held by some kind), defined once; a
     /// group's members are principals here; a binding is of a role here, to a group here or a

@@ -192,9 +192,8 @@ In `holon-module`'s `lib.rs`, the runner: `a_module_with_imports_never_runs`,
 
 In `holon-author`: `a_js_node_prints_back_verbatim_lowers_to_the_same_units_and_runs`
 (`print.rs`); `a_js_bodys_types_are_blanked_in_place` (`ts.rs`);
-`a_js_body_is_laid_out_like_the_rest`, `a_js_body_keeps_its_var_and_loose_equality` (`format.rs`);
-`fmt_keeps_a_hash_inside_a_js_body`,
-`check_compiles_each_js_body_and_says_a_mistake_at_its_line` (`commands.rs`);
+`a_flow_written_any_which_way` (`format.rs`: a js body laid out like the rest, keeping its `var`,
+`==` and a `#` in it); `check_compiles_each_js_body_and_says_a_mistake_at_its_line` (`commands.rs`);
 `explain_says_why_a_js_node_gave_nothing` (`agent.rs`). In the server's `permissions.rs`,
 `a_module_s_budgets_are_limits_with_ceilings_and_no_defaults`.
 

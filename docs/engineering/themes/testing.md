@@ -126,7 +126,7 @@ A slower path that is still right would pass every test above; these fail instea
   writes and failed syncs) holds what a run is told.
 - `a_run_writes_only_its_state_head_and_only_when_it_changed_the_state`,
   `a_state_is_kept_by_its_head_across_restarts_concurrent_writes_and_a_delete`.
-- `corrupt_persistence_file_is_an_error_not_an_empty_table` (a corrupt file once loaded as empty,
+- `every_table_opens_only_sealed_and_only_as_itself` (a corrupt file once loaded as empty,
   and the next save overwrote every deployment),
   `unloadable_records_are_an_error_and_state_always_survives_a_restart`,
   `persist_writes_whole_files_and_leaves_no_temp_files`.

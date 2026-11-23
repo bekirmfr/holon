@@ -209,7 +209,7 @@ In tests.rs unless named, in-process through `route` and `serve_data` (`test_sta
 - **State under concurrency**: `concurrent_runs_lose_no_update`,
   `a_state_is_kept_by_its_head_across_restarts_concurrent_writes_and_a_delete`, `redeploy_keeps_state`.
 - **Persistence**: `deployments_persist_across_a_simulated_restart`,
-  `flows_persist_across_a_simulated_restart`, `corrupt_persistence_file_is_an_error_not_an_empty_table`,
+  `flows_persist_across_a_simulated_restart`, `every_table_opens_only_sealed_and_only_as_itself`,
   `persist_writes_whole_files_and_leaves_no_temp_files`, `load_rechecks_each_grant_and_migrates_older_records`.
 - **The data plane over sockets**: `a_server_deployment_answers_on_its_own_port_within_limits`,
   `a_server_deployment_whose_port_is_taken_says_it_is_not_answering`.

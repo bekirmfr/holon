@@ -7,8 +7,9 @@ use super::*;
 /// Every kind of answer the control plane gives goes out with the four guards: the editor's page
 /// and one of its files, an API's JSON and its text, a 404 for no route and for no such thing, a
 /// handler's error, a refusal at the gate (a stranger's Host, another site's Origin, a body sent
-/// as a form, no sign-in), a preflight, and the two 503s `admitted` answers before routing (too
-/// many at once, stopping).
+/// as a form, no sign-in), a preflight, a read from an allowed origin, and the two 503s `admitted`
+/// answers before routing (too many at once, stopping). Only the preflight and the allowed
+/// origin's read tell the origin it may read the answer.
 ///
 /// Why: the editor keeps its session as a bearer token in the browser, so a hostile page that
 /// frames it, signed in, can lure a click onto Approve, and only `X-Frame-Options` and
@@ -47,6 +48,7 @@ fn every_kind_of_control_plane_answer_carries_the_frame_guards() {
         ("a body sent as a form", 415, ask(&state, with("POST", "/deploy", &[("Host", &host), ("Content-Type", "text/plain")]))),
         ("no sign-in", 401, ask(&accounts, req("GET", "/deployments", vec![]))),
         ("a preflight", 204, ask(&state, with("OPTIONS", "/deploy", &[("Host", &host), ("Origin", "http://localhost:5173")]))),
+        ("an allowed Origin", 200, ask(&state, with("GET", "/health", &[("Host", &host), ("Origin", "http://localhost:5173")]))),
         ("too many at once", 503, admitted(&state, &req("GET", "/health", vec![]), &crate::Slots::new(0, 1))),
     ];
     state.store.1.stop();
@@ -63,6 +65,9 @@ fn every_kind_of_control_plane_answer_carries_the_frame_guards() {
         );
         assert_eq!(values("X-Content-Type-Options"), ["nosniff"], "{what}");
         assert_eq!(values("Referrer-Policy"), ["no-referrer"], "{what}");
+        // Only an origin the server allows is told it may read the answer; another site's isn't.
+        let allowed: &[&str] = if matches!(*what, "a preflight" | "an allowed Origin") { &["http://localhost:5173"] } else { &[] };
+        assert_eq!(values("Access-Control-Allow-Origin"), allowed, "{what}");
     }
     let page = &answers[0].2;
     assert!(

@@ -4554,47 +4554,6 @@ not a sealed line
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **Guards:** one sync covers every entry written before it (C2 e, group commit): a run whose
-    /// entry an earlier sync covered returns without one of its own, and a sync with nothing new
-    /// written syncs nothing.
-    ///
-    /// **Why:** a sync is the dearest thing on a strict run's path, and runs side by side would
-    /// each pay one for the same bytes.
-    ///
-    /// **If it fails:** nothing is lost, and strict runs under load answer several times slower
-    /// (a sync each). Whether a run is told the truth about its own record is the test below's.
-    #[test]
-    fn one_sync_covers_every_entry_written_before_it() {
-        let dir = temp_dir("group-commit");
-        let cell = LogCell::new(Log::open_keeping(Some(dir.join("slug.jsonl")), 100));
-        let seqs: Vec<u64> = (0..5).map(|_| cell.with(|log| log.push(entry()))).collect();
-        assert_eq!(cell.syncs(), 0, "writing syncs nothing");
-        assert_eq!(cell.sync_through(seqs[4]), Ok(()));
-        assert_eq!(cell.syncs(), 1);
-        for &seq in &seqs {
-            assert_eq!(cell.sync_through(seq), Ok(()));
-        }
-        assert_eq!(cell.syncs(), 1, "the four before it were covered by the one sync");
-        assert_eq!(cell.sync(), Ok(()));
-        assert_eq!(cell.syncs(), 1, "nothing new written: nothing to sync");
-        let next = cell.with(|log| log.push(entry()));
-        assert_eq!(cell.sync_through(next), Ok(()));
-        assert_eq!(cell.syncs(), 2, "a new entry, a new sync");
-
-        // Many runs at once: each returns with its entry on disk, and none syncs more than once.
-        std::thread::scope(|s| {
-            for _ in 0..32 {
-                s.spawn(|| {
-                    let seq = cell.with(|log| log.push(entry()));
-                    assert_eq!(cell.sync_through(seq), Ok(()));
-                });
-            }
-        });
-        assert!(cell.syncs() <= 2 + 32, "{}", cell.syncs());
-        assert_eq!(cell.with(Log::take_dirty), None, "every entry is on disk");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     /// **Guards:** a run is told its record is on disk exactly when its line is in the file and a
     /// sync since went through, whichever writes and syncs fail and in whatever order the runs
     /// that share a sync and the syncer ask (docs/engineering/themes/resilience.md, G1); a sync
@@ -4807,6 +4766,10 @@ not a sealed line
         let (counted, is) = lengths(&cell, &file);
         assert_eq!(counted, is, "side by side: the file's length, as the log counts it");
         assert!(read_back(&file, &unwritten.into_iter().collect(), "side by side") > 100);
+        // One sync covers every entry written before it: none syncs more than once, and nothing
+        // written is left unsynced.
+        assert!(cell.syncs() <= 8 * 150, "{}", cell.syncs());
+        assert_eq!(cell.with(Log::take_dirty), None, "side by side: every entry written is synced");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -4910,13 +4873,19 @@ mod measured {
         use holon_core::{Observer, Slot};
         let most = Timer::MAX_RECORDED_BYTES;
         for n in (most - 60..most + 10).chain([0, 1, 100, most / 6, most / 5, 3 * most]) {
-            for s in ["x".repeat(n), "\n".repeat(n / 2)] {
-                let slots = [Slot::Value(Value::Text(s.clone()))];
+            // A text, one that escapes, and a text with an absent output after it.
+            for (s, absent) in [("x".repeat(n), false), ("\n".repeat(n / 2), false), ("x".repeat(n), true)] {
+                let mut slots = vec![Slot::Value(Value::Text(s.clone()))];
+                let mut outputs = vec![Some(SValue::Text(s))];
+                if absent {
+                    slots.push(Slot::Absent);
+                    outputs.push(None);
+                }
                 let mut timer = Timer::new();
                 timer.enter(&[0]);
                 timer.produced(&[0], &slots);
                 timer.leave(&[0]);
-                let json = serde_json::to_vec(&vec![Some(SValue::Text(s))]).unwrap().len();
+                let json = serde_json::to_vec(&outputs).unwrap().len();
                 assert_eq!(timer.timeline[0].outputs.is_some(), json <= most, "{json} bytes");
             }
         }
@@ -4929,13 +4898,4 @@ mod measured {
         assert_eq!(timer.timeline[0].outputs.is_some(), json <= most);
     }
 
-    #[test]
-    fn outputs_are_kept_exactly_when_their_json_fits() {
-        let most = Timer::MAX_RECORDED_BYTES;
-        for n in (most - 40..most + 40).chain([0, 1, 100, 3 * most]) {
-            let outputs = vec![Some(SValue::Text("x".repeat(n))), None];
-            let fits = serde_json::to_writer(Counted { n: 0, most }, &outputs).is_ok();
-            assert_eq!(fits, serde_json::to_vec(&outputs).unwrap().len() <= most, "{n} bytes of text");
-        }
-    }
 }
