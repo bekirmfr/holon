@@ -104,7 +104,7 @@ Each faster path is tested against the one it stands in for, on many inputs.
   `‹` or not; `a_run_whose_bytes_hold_no_mark_makes_its_line_once` (the bytes' own test);
   `with_nothing_to_mark_a_text_without_a_mark_sign_stays_as_it_is`: 5,000 awkward texts.
 - The timer's size bound: `the_bound_holds_over_random_values_of_every_kind` (20,000 values, D4),
-  `the_bound_is_never_below_the_json`, `outputs_are_kept_exactly_when_their_json_fits`.
+  `the_bound_is_never_below_the_json`, `the_timer_keeps_outputs_exactly_when_their_json_fits`.
 
 ### Tripwires: fail when a fast path is left
 
@@ -121,12 +121,12 @@ A slower path that is still right would pass every test above; these fail instea
 - `a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer`: strict reads,
   writes and actions sync before answering; lazy ones and 404s add no sync; 32 strict runs at once
   take at most one sync each.
-- `one_sync_covers_every_entry_written_before_it`, `a_log_is_dirty_from_a_write_until_it_is_synced_and_a_cut_back_syncs_it`;
+- `a_log_is_dirty_from_a_write_until_it_is_synced_and_a_cut_back_syncs_it`;
   `a_run_is_told_its_record_is_kept_exactly_when_its_line_is_in_the_file` (a model with failed
   writes and failed syncs) holds what a run is told.
 - `a_run_writes_only_its_state_head_and_only_when_it_changed_the_state`,
   `a_state_is_kept_by_its_head_across_restarts_concurrent_writes_and_a_delete`.
-- `corrupt_persistence_file_is_an_error_not_an_empty_table` (a corrupt file once loaded as empty,
+- `every_table_opens_only_sealed_and_only_as_itself` (a corrupt file once loaded as empty,
   and the next save overwrote every deployment),
   `unloadable_records_are_an_error_and_state_always_survives_a_restart`,
   `persist_writes_whole_files_and_leaves_no_temp_files`.

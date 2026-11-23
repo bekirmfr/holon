@@ -594,16 +594,12 @@ mod tests {
     /// Bytes in the log's JSON are padded base64, and read back as they went in; text that isn't
     /// base64 isn't read.
     #[test]
-    fn bytes_are_base64_in_json_and_read_back() {
+    fn json_holding_a_value_as_deep_as_one_may_be_reads_back() {
         let v = Value::Bytes(vec![0xfb, 0xff, 0x00]);
         let text = serde_json::to_string(&SValue::from_core(&v)).unwrap();
         assert_eq!(text, r#"{"type":"Bytes","value":"+/8A"}"#);
         assert_eq!(read_json::<SValue>(text.as_bytes()).unwrap().into_core(), v);
         assert!(read_json::<SValue>(br#"{"type":"Bytes","value":"not base64!"}"#).is_err());
-    }
-
-    #[test]
-    fn json_holding_a_value_as_deep_as_one_may_be_reads_back() {
         let nested = |depth: usize, record: bool| {
             (0..depth).fold(Value::Number(1.0), |v, _| if record { Value::Record([("k".to_string(), v)].into_iter().collect()) } else { Value::List(vec![v]) })
         };

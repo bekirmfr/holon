@@ -209,7 +209,7 @@ About 340 `#[test]` functions in `src/`, plus the golden records and oracles in 
   `select_is_not_a_choice_and_asks_both_sides`, `pending_crosses_a_holon_boundary_and_a_map`,
   `variadic_leaf_with_an_absent_input_fails_closed`, `edge_from_a_missing_child_reads_as_absent_not_a_panic`,
   `a_composite_nested_as_deep_as_a_host_runs_fits_half_a_threads_stack`; `unknown_leaf_saturates`,
-  `map_over_effectful_fn_is_effectful` (`kind.rs`).
+  `map_fn_capabilities_surface` (`kind.rs`).
 - **Elsewhere.** `the_evaluator_gives_what_its_golden_record_holds` (`holon-author/src/golden.rs`:
   every node's outputs for every sample and `crunch`, against `tests/golden/eval.txt`);
   `keeping_each_composites_shape_changes_nothing_the_evaluator_gives`;

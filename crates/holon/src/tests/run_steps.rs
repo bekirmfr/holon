@@ -133,7 +133,7 @@ fn tool(state: &AppState, token: &str, name: &str, args: &Value) -> Result<Strin
 /// The class: scout (the agent role) and wes (a role holding every viewer's action but run.steps)
 /// are answered the canary on no route the server has, and by no tool an agent has; the routes that
 /// answer a run's steps refuse them, naming run.steps and, to the agent, what a person runs to give
-/// it. The list of runs answers them each run, without its values. cy, a viewer, reads the canary
+/// it, and, once an access change waits for people on this server, that giving it does too. The list of runs answers them each run, without its values. cy, a viewer, reads the canary
 /// in the run's steps and in what its waiting run shows; scout does, once ada binds it the viewer
 /// role on the flow, and `explain` says what each statement did.
 #[test]
@@ -171,6 +171,13 @@ fn a_runs_steps_and_values_are_read_only_with_run_steps() {
             assert!(said.contains("run.steps"), "scout's {name} names what it lacks: {said}");
         }
     }
+    // Once an access change waits for people here (bo, besides ada, may approve one), the refusal
+    // says giving run.steps does too.
+    book.accept(&book.invite("bo", "admin", None, "ada").unwrap(), PW).unwrap();
+    let (code, said) = send(&state, &tokens["ada"], "PUT", "/access/approvals", json!({ "changes": 1 }));
+    assert_eq!(code, 200, "{said}");
+    let refused = error_of(&send(&state, &tokens["scout"], "GET", "/deployments/steps/log", Value::Null).1);
+    assert!(refused.contains("holon bind viewer --to scout --flow steps") && refused.contains("waits for"), "{refused}");
     // Those who hold it read it.
     let (code, log) = send(&state, &tokens["cy"], "GET", "/deployments/steps/log", Value::Null);
     assert!(code == 200 && log.contains(CANARY), "cy, a viewer: {code} {log}");
@@ -183,19 +190,6 @@ fn a_runs_steps_and_values_are_read_only_with_run_steps() {
     let request = heads["entries"].as_array().unwrap().iter().find(|e| e["kind"] == "request").unwrap()["seq"].clone();
     let explained = tool(&state, &tokens["scout"], "explain", &json!({ "slug": "steps", "run": request })).unwrap();
     assert!(explained.contains(CANARY), "what each statement did, with its values: {explained}");
-}
-
-/// When an access change waits for people on this server, the refusal says that giving run.steps
-/// does too.
-#[test]
-fn the_refusal_says_the_grant_waits_only_where_it_does() {
-    let (state, book, tokens) = server();
-    // Someone besides ada who may approve an access change.
-    book.accept(&book.invite("bo", "admin", None, "ada").unwrap(), PW).unwrap();
-    let (code, said) = send(&state, &tokens["ada"], "PUT", "/access/approvals", json!({ "changes": 1 }));
-    assert_eq!(code, 200, "{said}");
-    let refused = error_of(&send(&state, &tokens["scout"], "GET", "/deployments/steps/log", Value::Null).1);
-    assert!(refused.contains("holon bind viewer --to scout --flow steps") && refused.contains("waits for"), "{refused}");
 }
 
 /// Every tool an agent has is in `tool_calls`: a new one is swept as soon as it is served.

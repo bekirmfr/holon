@@ -459,15 +459,6 @@ mod tests {
         assert!(!compatible(&Type::Product(vec![Number, Text]), &Type::Sum(vec![Number, Text])));
     }
 
-    #[test]
-    fn primitive_valid_with_its_catalog_ports() {
-        let r = MapResolver::new();
-        assert_eq!(validate(&num_binop("multiply"), &r), Ok(()));
-        // `add` is the catalog's Any + Any: typed as numbers it isn't its entry.
-        let errors = validate(&num_binop("add"), &r).unwrap_err();
-        assert_eq!(errors[0].to_string(), "add has input 0 \"a\": Number, where the catalog has \"a\": Any");
-    }
-
     /// A family leaf's parameter is one of its values, or the unit is refused: `compare`'s `op`
     /// would otherwise give nothing each time it ran. A hole is filled, and checked, later.
     #[test]
@@ -581,7 +572,16 @@ mod tests {
                 check(&grown, true, format!("{name} grown by three"));
             }
         }
-        assert_eq!(seen, VARIADIC.len(), "every variadic leaf is a genesis leaf");
+        // The 4th catalog fact must name real leaves — a typo here would silently make the
+        // editor offer to grow a port on a primitive that doesn't exist.
+        for &n in VARIADIC {
+            assert!(GENESIS.contains(&n), "{n} is in VARIADIC but not GENESIS");
+        }
+        assert_eq!(seen, VARIADIC.len(), "every variadic leaf is a genesis leaf, once");
+        // `add` is the catalog's Any + Any: typed as numbers it isn't its entry, and the
+        // refusal says which port and what the catalog has.
+        let errors = validate(&num_binop("add"), &r).unwrap_err();
+        assert_eq!(errors[0].to_string(), "add has input 0 \"a\": Number, where the catalog has \"a\": Any");
         // A `const` or `default` typed as its literal, its ports with it; not as another.
         for name in ["const", "default"] {
             let honest = interface_of(name).unwrap();

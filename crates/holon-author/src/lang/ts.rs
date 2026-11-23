@@ -6864,6 +6864,10 @@ route.post("/c", async (req) => await charge(req.json))
 
     /// Slice 2's statements, each beside the same flow written plainly: a `let` given a new value
     /// is a new name, branches join with ternaries, returns fold into one answer.
+    /// A value that isn't a Boolean read as a condition is `is_truthy(…)`, and a status alone has an
+    /// empty body. `try` and `throw` (§8): the try block's values each tested by
+    /// `same_value(x, x) ?? false`, its writes tied to all of them having arrived, the catch's
+    /// answer where they didn't; a throw a `fail`, nothing, where it is reached.
     #[test]
     fn each_statement_lowers_as_its_plain_form() {
         let pairs = [
@@ -7152,84 +7156,6 @@ function price(amount) {
 route.post("/t", (req) => price(req.json.amount))
 "#,
             ),
-        ];
-        for (what, ts, plain) in pairs {
-            same_unit(what, ts, plain);
-        }
-    }
-
-    /// What slice 2 refuses (§12), each saying what to write instead.
-    #[test]
-    fn a_refusal_says_what_to_write() {
-        let refused = [
-            ("route.post(\"/\", (req) => {\n  switch (req.json.op) {\n    case \"a\":\n      notes[req.json.id] = 1\n    case \"b\":\n      notes[req.json.id] = 2\n  }\n  return 1\n})\n", "7:5: a case runs on into the next: end it with break or return"),
-            ("route.post(\"/\", (req) => {\n  if (req.json.a) {\n    break\n  }\n  return 1\n})\n", "7:5: break ends a case, last in it"),
-            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  const ys = xs\n  ys.push(2)\n  return ys\n})\n", "8:3: \"ys\" is held elsewhere too (by another name, a record or a write), which a change in place would change behind it: copy it first, const copy = [...ys] or { ...ys }"),
-            ("route.post(\"/\", (req) => {\n  let a = 1;\n  [notes[req.json.id]] = [a]\n  return a\n})\n", "7:4: a pattern that writes is refused: bind the name, then write it"),
-            ("route.get(\"/\", (req) => req.query.name || \"anon\")\n", "5:25: || takes booleans: a value for where one is absent is ??, x ?? \"none\""),
-            ("route.post(\"/\", (req) => {\n  notes[req.json.id] = req.json\n  return notes[req.json.id]\n})\n", "7:10: notes is read after this run writes to it, and a write is made when the run ends: use the value written"),
-            ("route.post(\"/\", (req) => {\n  return 1\n  notes[req.json.id] = 2\n})\n", "7:3: nothing after a return runs: remove it"),
-            ("route.post(\"/\", (req) => {\n  const n = 1\n  n = 2\n  return n\n})\n", "7:3: \"n\" is a const: declare it with let to give it a new value"),
-            ("route.post(\"/\", (req) => {\n  req = 2\n  return 1\n})\n", "6:3: \"req\" is a parameter, which stays what it was passed: give the new value a name of its own"),
-            ("route.post(\"/\", (req) => {\n  if (req.json.a !== undefined) {\n    return 1\n  }\n  return 2\n})\n", "7:12: a return inside if (x !== undefined) comes in a later slice: return after it, with ?? for when x has no value"),
-            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.sort()\n  return xs\n})\n", "7:3: sort changes the list in place, which a flow's list doesn't: write the new list, xs = xs.toSorted()"),
-            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.fill(0)\n  return xs\n})\n", "7:3: fill changes the list in place, which a flow's list doesn't: write the new list, xs = [...xs].fill(…)"),
-            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.pop()\n  return xs\n})\n", "7:3: pop changes the list in place, which a flow's list doesn't: its last item is xs.at(-1), the rest xs.slice(0, -1)"),
-            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.shift()\n  return xs\n})\n", "7:3: shift changes the list in place, which a flow's list doesn't: its first item is xs.at(0), the rest xs.slice(1)"),
-            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.unshift(0)\n  return xs\n})\n", "7:3: unshift changes the list in place, which a flow's list doesn't: the new list is [x, ...xs]"),
-            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.splice(0, 1)\n  return xs\n})\n", "7:3: splice changes the list in place, which a flow's list doesn't: the new list is xs.toSpliced(…), the items it takes out xs.slice(start, start + count)"),
-            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  return xs.push(2)\n})\n", "7:10: push changes the list in place, which a flow's list doesn't: the new list is [...xs, x]"),
-            ("route.post(\"/\", (req) => {\n  const xs = [3, 1]\n  const s = xs.sort()\n  return [s, xs]\n})\n", "8:14: \"xs\" is read after xs.sort(…) changed it in place: use the list sort gave, or write xs.toSorted() and keep \"xs\" as it was"),
-            ("route.post(\"/\", (req) => {\n  const xs = [3, 1]\n  const ys = xs\n  return ys.reverse()\n})\n", "8:10: \"ys\" is held elsewhere too (by another name, a record or a write), which reverse would change in place behind it: write ys.toReversed()"),
-            ("route.post(\"/\", (req) => req.json.xs.sort())\n", "5:26: sort would change req.json.xs in place, and what holds it with it: write req.json.xs.toSorted()"),
-            ("route.post(\"/\", (req) => req.json.rows.map((row) => row.sort()))\n", "5:53: \"row\" is a parameter, which sort would change in place for whoever passed it too: write row.toSorted()"),
-            ("route.post(\"/\", (req) => req.json.xs.keys())\n", "5:38: xs.keys() is an iterator, which a flow has none of: [...xs.keys()] is the list"),
-            ("route.post(\"/\", (req) => req.json.xs.flat(req.json.n))\n", "5:43: flat's depth is a number written in place, or Infinity: xs.flat(2)"),
-            ("route.post(\"/\", (req) => req.json.xs.includes(1, 2, 3))\n", "5:26: includes takes the item and where to start from, if not the start: xs.includes(x, i)"),
-            ("route.post(\"/\", (req) => req.json.s.match(\"a\"))\n", "5:37: match takes a regular expression, which a flow has none of yet: do it in a js() function"),
-            ("route.post(\"/\", (req) => req.json.s.replace(/a/g, \"b\"))\n", "5:45: a regular expression, which a flow has none of yet: replace takes a text, or do it in a js() function"),
-            ("route.post(\"/\", (req) => req.json.s.replaceAll(\"a\", (m) => m))\n", "5:53: replaceAll takes the replacement as a text, where $& is the match: a function in its place is done in a js() function"),
-            ("route.post(\"/\", (req) => req.json.s.normalize(req.json.f))\n", "5:47: normalize's form is \"NFC\", \"NFD\", \"NFKC\" or \"NFKD\", written in place"),
-            ("route.post(\"/\", (req) => req.json.s.localeCompare(req.json.t))\n", "5:37: a flow has no locale: a < b ? -1 : a > b ? 1 : 0 compares in code units"),
-            ("route.post(\"/\", (req) => req.json.s.toLocaleUpperCase(\"tr\"))\n", "5:37: a flow has no locale: toUpperCase() and toLowerCase() use Unicode's own mappings"),
-            ("route.post(\"/\", (req) => req.json.s.padStart())\n", "5:26: padStart is written s.padStart(n), or s.padStart(n, fill)"),
-            ("route.post(\"/\", (req) => escape(req.json.s))\n", "5:26: escape is JavaScript's legacy form, which a flow doesn't read: encodeURIComponent(s)"),
-            ("route.post(\"/\", (req) => String.raw(req.json.s))\n", "5:33: String.raw is a tag, written before a template: String.raw`a\\n${x}`"),
-            ("route.post(\"/\", (req) => String.trim(req.json.s))\n", "5:33: String.trim isn't one a flow has: String.fromCharCode(…), String.fromCodePoint(…) and String.raw`…` are"),
-            ("route.post(\"/\", (req) => tag`a${req.json.s}`)\n", "5:26: a tag before a template calls a function, which a flow does only for String.raw`…`: write the call, f(`…`)"),
-            ("route.post(\"/\", (req) => req.json.xs.map((x) => x * 2).reduce((a, b) => a + b))\n", "5:26: reduce without a start reads the list twice, its first item and the rest: name it first, const xs = …, or give the start, xs.reduce(f, start)"),
-            ("route.post(\"/\", (req) => Array.from({ length: 3 }))\n", "5:26: Array.from({ length: n }) has n items that are undefined, which a flow has none of: Array.from({ length: n }, (_, i) => …)"),
-            ("route.post(\"/\", (req) => {\n  switch (req.json.op) {\n    case req.json.other:\n      return 1\n  }\n  return 2\n})\n", "7:10: a case is a literal: a number, a text, true or false; to test a condition, use if"),
-            ("route.post(\"/\", (req) => {\n  if (req.json.a) return status(200, 1)\n  return 2 ?? status(400)\n})\n", "7:10: this answer is 400 when its body is absent, and the one on line 6 is 404: say it the same for both"),
-            ("route.post(\"/\", (req) => {\n  const n = req.json.n++\n  return n\n})\n", "6:13: \"req\" is a parameter, which a change in place would change for whoever passed it too: copy it first, const copy = { ...req }"),
-            ("route.post(\"/\", (req) => {\n  let i = 0\n  const n = req.json.a ? i++ : 0\n  return n\n})\n", "7:26: ++ in a part that may not run (after ?, &&, || or ??) isn't taken: give it a statement of its own before, n++, and read n"),
-            ("route.post(\"/\", (req) => {\n  let i = 0\n  return req.json.xs.map((x) => i--)\n})\n", "7:33: -- in a function written in place isn't taken: it would change what is outside it once for each item"),
-            ("route.post(\"/\", (req) => {\n  state.n++\n  notes[state.n++] = 1\n  return 1\n})\n", "7:9: state.n is changed again in this run, and a state key reads as the run began, so this change would count from there: change it once"),
-            ("route.post(\"/\", (req) => {\n  state[req.json.k] = 1\n  return 1\n})\n","6:3: a state key is a name: state.hits = …; a key computed is a collection's, notes[k] = …"),
-            ("route.post(\"/\", (req) => {\n  try {\n    notes[req.json.id] = 1\n  } catch (e) {\n    return 2\n  }\n  return 1\n})\n", "8:12: write catch { … }; the reason is in the run's log"),
-            ("route.post(\"/\", (req) => {\n  try {\n    notes[req.json.id] = 1\n  } catch {\n    state.failed = 1\n  } finally {\n    return 2\n  }\n})\n", "10:13: a finally holds writes and calls: a return or a throw in it comes in a later slice"),
-            ("route.post(\"/\", (req) => {\n  try {\n    state.n = 1\n  } catch {\n    state.n = 2\n  }\n  return 1\n})\n", "6:3: nothing in this try can fail, so its catch never runs: write its statements without it"),
-            ("route.post(\"/\", (req) => {\n  if (req.json.bad) throw \"bad\"\n  return 1\n})\n", "6:27: a throw throws new Error(message): the message goes to the run's log"),
-            ("route.post(\"/\", (req) => {\n  if (req.json.bad) throw new Error()\n  return 1\n})\n", "6:27: new Error takes its message: throw new Error(\"…\")"),
-            ("route.post(\"/\", (req) => {\n  try {\n    switch (req.json.op) {\n      case \"a\":\n        return JSON.parse(req.body)\n    }\n  } catch {\n    return 2\n  }\n  return 1\n})\n", "7:5: a switch that returns, inside try, comes in a later slice: set a let in it, and return after the try"),
-        ];
-        let head = "import { flow, route, status } from \"holon\"\nimport notes from \"collection:notes\"\nimport state from \"state\"\nflow(\"f\", { port: 8000 })\n";
-        let mut wrong = Vec::new();
-        for (body, expected) in refused {
-            let got = parse(&format!("{head}{body}")).map(|_| ()).map_err(|e| e.to_string());
-            if got.as_ref().err().map(String::as_str) != Some(expected) {
-                wrong.push(format!("{body:?}\n  => {got:?}"));
-            }
-        }
-        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    }
-
-    /// `try` and `throw` (§8), beside the same flow written plainly: the try block's values each
-    /// tested by `same_value(x, x) ?? false`, its writes tied to all of them having arrived, the
-    /// catch's answer where they didn't; a throw a `fail`, nothing, where it is reached.
-    #[test]
-    fn a_condition_and_a_status_alone_lower_as_their_plain_form() {
-        let pairs = [
             (
                 "a value that isn't a Boolean, read as a condition",
                 r#"import { flow, route, status } from "holon"
@@ -7316,15 +7242,6 @@ route.post("/n", (req) => {
 })
 "#,
             ),
-        ];
-        for (what, ts, plain) in pairs {
-            same_unit(what, ts, plain);
-        }
-    }
-
-    #[test]
-    fn try_and_throw_lower_as_their_plain_form() {
-        let pairs = [
             (
                 "try and catch",
                 r#"import { flow, route, status } from "holon"
@@ -7411,6 +7328,72 @@ route.post("/n", (req) => {
         for (what, ts, plain) in pairs {
             same_unit(what, ts, plain);
         }
+    }
+
+    /// What slice 2 refuses (§12), each saying what to write instead.
+    #[test]
+    fn a_refusal_says_what_to_write() {
+        let refused = [
+            ("route.post(\"/\", (req) => {\n  switch (req.json.op) {\n    case \"a\":\n      notes[req.json.id] = 1\n    case \"b\":\n      notes[req.json.id] = 2\n  }\n  return 1\n})\n", "7:5: a case runs on into the next: end it with break or return"),
+            ("route.post(\"/\", (req) => {\n  if (req.json.a) {\n    break\n  }\n  return 1\n})\n", "7:5: break ends a case, last in it"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  const ys = xs\n  ys.push(2)\n  return ys\n})\n", "8:3: \"ys\" is held elsewhere too (by another name, a record or a write), which a change in place would change behind it: copy it first, const copy = [...ys] or { ...ys }"),
+            ("route.post(\"/\", (req) => {\n  let a = 1;\n  [notes[req.json.id]] = [a]\n  return a\n})\n", "7:4: a pattern that writes is refused: bind the name, then write it"),
+            ("route.get(\"/\", (req) => req.query.name || \"anon\")\n", "5:25: || takes booleans: a value for where one is absent is ??, x ?? \"none\""),
+            ("route.post(\"/\", (req) => {\n  notes[req.json.id] = req.json\n  return notes[req.json.id]\n})\n", "7:10: notes is read after this run writes to it, and a write is made when the run ends: use the value written"),
+            ("route.post(\"/\", (req) => {\n  return 1\n  notes[req.json.id] = 2\n})\n", "7:3: nothing after a return runs: remove it"),
+            ("route.post(\"/\", (req) => {\n  const n = 1\n  n = 2\n  return n\n})\n", "7:3: \"n\" is a const: declare it with let to give it a new value"),
+            ("route.post(\"/\", (req) => {\n  req = 2\n  return 1\n})\n", "6:3: \"req\" is a parameter, which stays what it was passed: give the new value a name of its own"),
+            ("route.post(\"/\", (req) => {\n  if (req.json.a !== undefined) {\n    return 1\n  }\n  return 2\n})\n", "7:12: a return inside if (x !== undefined) comes in a later slice: return after it, with ?? for when x has no value"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.sort()\n  return xs\n})\n", "7:3: sort changes the list in place, which a flow's list doesn't: write the new list, xs = xs.toSorted()"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.fill(0)\n  return xs\n})\n", "7:3: fill changes the list in place, which a flow's list doesn't: write the new list, xs = [...xs].fill(…)"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.pop()\n  return xs\n})\n", "7:3: pop changes the list in place, which a flow's list doesn't: its last item is xs.at(-1), the rest xs.slice(0, -1)"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.shift()\n  return xs\n})\n", "7:3: shift changes the list in place, which a flow's list doesn't: its first item is xs.at(0), the rest xs.slice(1)"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.unshift(0)\n  return xs\n})\n", "7:3: unshift changes the list in place, which a flow's list doesn't: the new list is [x, ...xs]"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.splice(0, 1)\n  return xs\n})\n", "7:3: splice changes the list in place, which a flow's list doesn't: the new list is xs.toSpliced(…), the items it takes out xs.slice(start, start + count)"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  return xs.push(2)\n})\n", "7:10: push changes the list in place, which a flow's list doesn't: the new list is [...xs, x]"),
+            ("route.post(\"/\", (req) => {\n  const xs = [3, 1]\n  const s = xs.sort()\n  return [s, xs]\n})\n", "8:14: \"xs\" is read after xs.sort(…) changed it in place: use the list sort gave, or write xs.toSorted() and keep \"xs\" as it was"),
+            ("route.post(\"/\", (req) => {\n  const xs = [3, 1]\n  const ys = xs\n  return ys.reverse()\n})\n", "8:10: \"ys\" is held elsewhere too (by another name, a record or a write), which reverse would change in place behind it: write ys.toReversed()"),
+            ("route.post(\"/\", (req) => req.json.xs.sort())\n", "5:26: sort would change req.json.xs in place, and what holds it with it: write req.json.xs.toSorted()"),
+            ("route.post(\"/\", (req) => req.json.rows.map((row) => row.sort()))\n", "5:53: \"row\" is a parameter, which sort would change in place for whoever passed it too: write row.toSorted()"),
+            ("route.post(\"/\", (req) => req.json.xs.keys())\n", "5:38: xs.keys() is an iterator, which a flow has none of: [...xs.keys()] is the list"),
+            ("route.post(\"/\", (req) => req.json.xs.flat(req.json.n))\n", "5:43: flat's depth is a number written in place, or Infinity: xs.flat(2)"),
+            ("route.post(\"/\", (req) => req.json.xs.includes(1, 2, 3))\n", "5:26: includes takes the item and where to start from, if not the start: xs.includes(x, i)"),
+            ("route.post(\"/\", (req) => req.json.s.match(\"a\"))\n", "5:37: match takes a regular expression, which a flow has none of yet: do it in a js() function"),
+            ("route.post(\"/\", (req) => req.json.s.replace(/a/g, \"b\"))\n", "5:45: a regular expression, which a flow has none of yet: replace takes a text, or do it in a js() function"),
+            ("route.post(\"/\", (req) => req.json.s.replaceAll(\"a\", (m) => m))\n", "5:53: replaceAll takes the replacement as a text, where $& is the match: a function in its place is done in a js() function"),
+            ("route.post(\"/\", (req) => req.json.s.normalize(req.json.f))\n", "5:47: normalize's form is \"NFC\", \"NFD\", \"NFKC\" or \"NFKD\", written in place"),
+            ("route.post(\"/\", (req) => req.json.s.localeCompare(req.json.t))\n", "5:37: a flow has no locale: a < b ? -1 : a > b ? 1 : 0 compares in code units"),
+            ("route.post(\"/\", (req) => req.json.s.toLocaleUpperCase(\"tr\"))\n", "5:37: a flow has no locale: toUpperCase() and toLowerCase() use Unicode's own mappings"),
+            ("route.post(\"/\", (req) => req.json.s.padStart())\n", "5:26: padStart is written s.padStart(n), or s.padStart(n, fill)"),
+            ("route.post(\"/\", (req) => escape(req.json.s))\n", "5:26: escape is JavaScript's legacy form, which a flow doesn't read: encodeURIComponent(s)"),
+            ("route.post(\"/\", (req) => String.raw(req.json.s))\n", "5:33: String.raw is a tag, written before a template: String.raw`a\\n${x}`"),
+            ("route.post(\"/\", (req) => String.trim(req.json.s))\n", "5:33: String.trim isn't one a flow has: String.fromCharCode(…), String.fromCodePoint(…) and String.raw`…` are"),
+            ("route.post(\"/\", (req) => tag`a${req.json.s}`)\n", "5:26: a tag before a template calls a function, which a flow does only for String.raw`…`: write the call, f(`…`)"),
+            ("route.post(\"/\", (req) => req.json.xs.map((x) => x * 2).reduce((a, b) => a + b))\n", "5:26: reduce without a start reads the list twice, its first item and the rest: name it first, const xs = …, or give the start, xs.reduce(f, start)"),
+            ("route.post(\"/\", (req) => Array.from({ length: 3 }))\n", "5:26: Array.from({ length: n }) has n items that are undefined, which a flow has none of: Array.from({ length: n }, (_, i) => …)"),
+            ("route.post(\"/\", (req) => {\n  switch (req.json.op) {\n    case req.json.other:\n      return 1\n  }\n  return 2\n})\n", "7:10: a case is a literal: a number, a text, true or false; to test a condition, use if"),
+            ("route.post(\"/\", (req) => {\n  if (req.json.a) return status(200, 1)\n  return 2 ?? status(400)\n})\n", "7:10: this answer is 400 when its body is absent, and the one on line 6 is 404: say it the same for both"),
+            ("route.post(\"/\", (req) => {\n  const n = req.json.n++\n  return n\n})\n", "6:13: \"req\" is a parameter, which a change in place would change for whoever passed it too: copy it first, const copy = { ...req }"),
+            ("route.post(\"/\", (req) => {\n  let i = 0\n  const n = req.json.a ? i++ : 0\n  return n\n})\n", "7:26: ++ in a part that may not run (after ?, &&, || or ??) isn't taken: give it a statement of its own before, n++, and read n"),
+            ("route.post(\"/\", (req) => {\n  let i = 0\n  return req.json.xs.map((x) => i--)\n})\n", "7:33: -- in a function written in place isn't taken: it would change what is outside it once for each item"),
+            ("route.post(\"/\", (req) => {\n  state.n++\n  notes[state.n++] = 1\n  return 1\n})\n", "7:9: state.n is changed again in this run, and a state key reads as the run began, so this change would count from there: change it once"),
+            ("route.post(\"/\", (req) => {\n  state[req.json.k] = 1\n  return 1\n})\n","6:3: a state key is a name: state.hits = …; a key computed is a collection's, notes[k] = …"),
+            ("route.post(\"/\", (req) => {\n  try {\n    notes[req.json.id] = 1\n  } catch (e) {\n    return 2\n  }\n  return 1\n})\n", "8:12: write catch { … }; the reason is in the run's log"),
+            ("route.post(\"/\", (req) => {\n  try {\n    notes[req.json.id] = 1\n  } catch {\n    state.failed = 1\n  } finally {\n    return 2\n  }\n})\n", "10:13: a finally holds writes and calls: a return or a throw in it comes in a later slice"),
+            ("route.post(\"/\", (req) => {\n  try {\n    state.n = 1\n  } catch {\n    state.n = 2\n  }\n  return 1\n})\n", "6:3: nothing in this try can fail, so its catch never runs: write its statements without it"),
+            ("route.post(\"/\", (req) => {\n  if (req.json.bad) throw \"bad\"\n  return 1\n})\n", "6:27: a throw throws new Error(message): the message goes to the run's log"),
+            ("route.post(\"/\", (req) => {\n  if (req.json.bad) throw new Error()\n  return 1\n})\n", "6:27: new Error takes its message: throw new Error(\"…\")"),
+            ("route.post(\"/\", (req) => {\n  try {\n    switch (req.json.op) {\n      case \"a\":\n        return JSON.parse(req.body)\n    }\n  } catch {\n    return 2\n  }\n  return 1\n})\n", "7:5: a switch that returns, inside try, comes in a later slice: set a let in it, and return after the try"),
+        ];
+        let head = "import { flow, route, status } from \"holon\"\nimport notes from \"collection:notes\"\nimport state from \"state\"\nflow(\"f\", { port: 8000 })\n";
+        let mut wrong = Vec::new();
+        for (body, expected) in refused {
+            let got = parse(&format!("{head}{body}")).map(|_| ()).map_err(|e| e.to_string());
+            if got.as_ref().err().map(String::as_str) != Some(expected) {
+                wrong.push(format!("{body:?}\n  => {got:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 
     /// An action called without `await` is started, and one awaited is called, as a JavaScript

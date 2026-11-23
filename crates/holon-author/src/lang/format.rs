@@ -522,8 +522,6 @@ mod tests {
 
     const HEAD: &str = "import { flow, js, respond, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\", { port: 8000 })\n";
 
-    const PAGE: &str = "\nconst page = js(function html(count) {\n  return `<p>${count}</p>`\n})\n\n";
-
     /// **Guards:** fmt formats every text that compiles: three operands under two operators, in
     /// each way parentheses group them (a group inside a group too), as a value and as a
     /// condition, with numbers spelled as fmt
@@ -594,86 +592,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_text_as_fmt_writes_it_is_kept() {
-        kept(&format!("{HEAD}\n// Counts.\nroute.post(\"/count\", (req) => {{\n  const n = (state.count ?? 0) + 1\n  state.count = n\n  return n\n}})\n"));
-    }
-
-    #[test]
-    fn layout_is_canonical() {
-        becomes(
-            &format!("{HEAD}route.post( '/count',(req)=>{{ const n=(state.count??0)+1;\n\n\n state.count=n ; return n }} )\n"),
-            &format!("{HEAD}route.post(\"/count\", (req) => {{\n  const n = (state.count ?? 0) + 1\n\n  state.count = n\n  return n\n}})\n"),
-        );
-    }
-
-    #[test]
-    fn var_and_loose_equality_are_rewritten() {
-        becomes(
-            &format!("{HEAD}route.post(\"/v\", (req) => {{\n  var a = req.json.a\n  var b = 1\n  if (a == 2) b = 3\n  return a != b\n}})\n"),
-            &format!("{HEAD}route.post(\"/v\", (req) => {{\n  const a = req.json.a\n  let b = 1\n  if (a === 2) b = 3\n  return a !== b\n}})\n"),
-        );
-    }
-
-    #[test]
-    fn a_js_body_keeps_its_var_and_loose_equality() {
-        kept(&format!("{HEAD}\nconst loose = js(function alike(a, b) {{\n  var c = a\n  return c == b\n}})\n\nroute.get(\"/\", (req) => loose(req.query.a, req.query.b))\n"));
-    }
-
-    #[test]
-    fn comments_stay_where_they_were() {
-        kept(&format!(
-            "{HEAD}\n// The count.\n// Two lines.\nroute.get(\"/count\", () => state.count ?? 0) // on its line\n\nroute.post(\"/count\", (req) => {{\n  // before\n  state.count = req.json.n // after\n\n  /* block */ return \"ok\"\n  // last\n}})\n"
-        ));
-    }
-
-    #[test]
-    fn a_comment_inside_an_expression_is_laid_out_with_it() {
-        becomes(
-            &format!("{HEAD}\nroute.post(\"/c\", (req) => {{\n  state.count = add(req.json.n,  /* two */ 2)\n  return \"ok\"\n}})\n\nfunction add(a, b) {{\n  return a + b\n}}\n"),
-            &format!("{HEAD}\nroute.post(\"/c\", (req) => {{\n  state.count = add(req.json.n, /* two */ 2)\n  return \"ok\"\n}})\n\nfunction add(a, b) {{\n  return a + b\n}}\n"),
-        );
-    }
-
-    #[test]
-    fn a_js_body_is_laid_out_like_the_rest() {
-        becomes(
-            &format!("{HEAD}\nconst page = js(function html(count) {{\n    return `<p>${{count}}</p>`;   \n}})\n\nroute.get(\"/\", () => page(state.count ?? 0))\n"),
-            &format!("{HEAD}\nconst page = js(function html(count) {{\n  return `<p>${{count}}</p>`\n}})\n\nroute.get(\"/\", () => page(state.count ?? 0))\n"),
-        );
-    }
-
-    #[test]
-    fn a_long_call_breaks_hugging_its_function_or_object() {
-        becomes(
-            &format!("{HEAD}{PAGE}route.get(\"/\", () => respond(page(state.ticks ?? 0), {{ headers: {{ \"content-type\": \"text/html; charset=utf-8\" }}, status: 200 }}))\n"),
-            &format!("{HEAD}{PAGE}route.get(\"/\", () =>\n  respond(page(state.ticks ?? 0), {{\n    headers: {{ \"content-type\": \"text/html; charset=utf-8\" }},\n    status: 200,\n  }}),\n)\n"),
-        );
-    }
-
-    #[test]
-    fn a_handlers_options_after_its_function_break_its_arguments_one_to_a_line() {
-        becomes(
-            &format!("{HEAD}\nroute.post(\"/n\", (req) => {{\n  state.n = req.json.n\n  return \"ok\"\n}}, {{ log: \"lazy\" }})\n"),
-            &format!("{HEAD}\nroute.post(\n  \"/n\",\n  (req) => {{\n    state.n = req.json.n\n    return \"ok\"\n  }},\n  {{ log: \"lazy\" }},\n)\n"),
-        );
-    }
-
-    /// Its head is the reads before the first call, `req.query.title`.
-    #[test]
-    fn a_long_chain_breaks_one_call_to_a_line() {
-        becomes(
-            &format!("{HEAD}\nroute.get(\"/slug\", (req) => {{\n  const slug = req.query.title.toLowerCase().split(\" \").map((word) => word.toUpperCase()).join(\"-\").split(\"--\").join(\"-\")\n  return slug\n}})\n"),
-            &format!("{HEAD}\nroute.get(\"/slug\", (req) => {{\n  const slug = req.query.title\n    .toLowerCase()\n    .split(\" \")\n    .map((word) => word.toUpperCase())\n    .join(\"-\")\n    .split(\"--\")\n    .join(\"-\")\n  return slug\n}})\n"),
-        );
-    }
-
-    #[test]
-    fn a_short_chain_stays_on_its_line() {
-        kept(&format!("{HEAD}\nroute.get(\"/slug\", (req) => req.query.title.toLowerCase().split(\" \"))\n"));
-    }
-
-    /// A flow written any which way, every construct a handler holds, as fmt lays it out.
+    /// A flow written any which way, every construct a handler holds, as fmt lays it out: quotes,
+    /// spaces, `;` and blank lines made canonical (one blank line kept where the text had any),
+    /// `var` and `==` rewritten but kept in a `js()` body, which is laid out like the rest and keeps
+    /// a `#` in it (a colour, a private field) and its comments; every comment where it was (one
+    /// inside an expression laid out with it); a long call hugging its last object, a long chain
+    /// broken one call to a line after its head (the reads before the first call,
+    /// `req.query.title`), a short one kept; a handler's options after its function breaking its
+    /// arguments one to a line; an object the text broke kept broken, and a key's quotes kept.
     /// `HOLON_BLESS=1` writes the layout again, for a change to fmt's.
     #[test]
     fn a_flow_written_any_which_way() {
@@ -683,16 +609,5 @@ mod tests {
             std::fs::write(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fmt/messy.laid.holon.ts"), laid).unwrap();
         }
         becomes(messy, include_str!("../../tests/fmt/messy.laid.holon.ts"));
-    }
-
-    #[test]
-    fn an_object_the_text_broke_stays_broken() {
-        kept(&format!("{HEAD}\nroute.get(\"/\", () => ({{\n  a: 1,\n  b: 2,\n}}))\n"));
-        becomes(&format!("{HEAD}route.get(\"/\", () => ({{ a: 1,\n  b: 2 }}))\n"), &format!("{HEAD}route.get(\"/\", () => ({{ a: 1, b: 2 }}))\n"));
-    }
-
-    #[test]
-    fn an_objects_key_keeps_its_quotes() {
-        kept(&format!("{HEAD}\nroute.get(\"/\", () => ({{ \"$in\": [1], b: 2 }}))\n"));
     }
 }

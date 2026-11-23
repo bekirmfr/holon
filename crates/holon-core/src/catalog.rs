@@ -956,16 +956,6 @@ mod tests {
         assert_eq!(unit.outputs.len(), 1);
         assert_eq!(unit.outputs[0].ty, Type::Boolean);
     }
-
-    #[test]
-    fn variadic_names_are_genesis_leaves() {
-        // The 4th catalog fact must name real leaves — a typo here would silently make the
-        // editor offer to grow a port on a primitive that doesn't exist.
-        for &name in VARIADIC {
-            assert!(GENESIS.contains(&name), "{name} is in VARIADIC but not GENESIS");
-        }
-    }
-
     /// Regression: the palette dropped `compare` with `op="eq"`, an operator `compare` doesn't
     /// accept (its ops are `< > <= >= = !=`), so a freshly placed compare node never fired.
     #[test]

@@ -872,52 +872,6 @@ mod tests {
         }
     }
 
-    /// The admin holds every action, on every resource it is done to; a role that holds an action
-    /// only on its own holds it on what isn't saved yet, and on what it saved, and nothing else.
-    #[test]
-    fn the_admin_holds_everything_and_an_agent_its_own() {
-        let ada = caller("ada", Kind::Person, Role::Admin);
-        for action in Action::ALL {
-            let on: Vec<_> = resources().into_iter().filter(|r| r.takes(action)).collect();
-            assert!(!on.is_empty(), "{} is done to something", action.name());
-            for r in &on {
-                assert_eq!(can(&ada, action, r), Ok(()), "{} on {r:?}", action.name());
-            }
-        }
-        let claude = caller("claude", Kind::Agent, Role::Agent);
-        assert_eq!(can(&claude, FlowEdit, &Resource::Flows), Ok(()));
-        assert_eq!(can(&claude, FlowEdit, &Resource::Saved { name: "f", by: Some("claude") }), Ok(()));
-        for by in [Some("ada"), None] {
-            let said = can(&claude, FlowEdit, &Resource::Saved { name: "f", by }).unwrap_err().0;
-            assert!(said.contains("an agent doesn't replace someone else's flow"), "{said}");
-        }
-    }
-
-    /// `can` reads what the caller holds: it may do what any role it holds there holds, and,
-    /// holding no role, nothing a role holds, told so in words that name the action.
-    #[test]
-    fn a_caller_may_do_what_any_role_it_holds_holds() {
-        let holding = |roles: &[Role]| {
-            let holds = roles.iter().map(|&r| Held::new(Arc::clone(role(r)), crate::bindings::Scope::Host)).collect();
-            Caller { name: Some("eve".into()), kind: Some(Kind::Person), holds: Some(holds), local: None }
-        };
-        let (viewer, editor, both, none) = (holding(&[Role::Viewer]), holding(&[Role::Editor]), holding(&[Role::Viewer, Role::Editor]), holding(&[]));
-        for action in Action::ALL {
-            for r in resources().iter().filter(|r| r.takes(action)) {
-                let may = |c: &Caller| can(c, action, r).is_ok();
-                assert_eq!(may(&both), may(&viewer) || may(&editor), "{} on {r:?}", action.name());
-                let said = can(&none, action, r).unwrap_err().0;
-                if action == RunSteps {
-                    assert_eq!(said, steps_refused(&none, r));
-                    assert!(said.starts_with("eve may not read ") && said.contains("holon bind viewer --to eve"), "{said}");
-                // A person is told whose tokens they are, as before.
-                } else if !matches!(r, Resource::Principal { .. }) {
-                    assert!(said.starts_with("eve may not do that: no role eve holds ") && said.ends_with(action.name()), "{said}");
-                }
-            }
-        }
-    }
-
     /// `can` is the union of the bindings that cover what is asked (the design's §5.3): for every
     /// set of at most two bindings, of the built-in roles and two of an admin's at each kind of
     /// scope, bound to the caller or to a group of theirs, held by each kind of principal, and every
@@ -1002,6 +956,10 @@ mod tests {
                             if covering.is_empty() && !expected && !owns(&who, action, on) && !told_whose {
                                 let said = if action == RunSteps { steps_refused(&who, on) } else { format!("eve may not do that: no role eve holds {place} holds {}", action.name()) };
                                 assert_eq!(got.unwrap_err().0, said, "{}", case(""));
+                                // A person is told the command that gives them run.steps: viewer.
+                                if action == RunSteps && kind == Kind::Person {
+                                    assert!(said.starts_with("eve may not read ") && said.contains("holon bind viewer --to eve"), "{said}");
+                                }
                             }
                         }
                         // An approval's step with a role takes someone bound to it by name where the
@@ -1015,9 +973,41 @@ mod tests {
                     }
                     let at_host = set.iter().any(|(at, h)| *at == 'H' && h.role.kinds.contains(&kind) && h.role.holds_any(FlowView));
                     assert_eq!(everywhere(&who, FlowView), at_host, "{}", case("everywhere"));
+                    // The expired binding held until it expired, saying when; it stays in the document.
+                    if set.is_empty() && group.is_none() && kind == Kind::Person {
+                        assert!(access.held("eve", now - 1).iter().any(|h| h.role.name == "admin" && h.until == Some(now)));
+                        assert!(!access.held("eve", now).iter().any(|h| h.role.name == "admin"));
+                        assert_eq!(access.document().bindings.len(), 1, "kept until unbound");
+                    }
                 }
             }
         }
+        // Every action is done to something the table holds, and the admin may do it there.
+        let ada = caller("ada", Kind::Person, Role::Admin);
+        for action in Action::ALL {
+            assert!(covered.iter().any(|(on, _, _)| on.takes(action)), "{} is done to something", action.name());
+            for r in resources().iter().filter(|r| r.takes(action)) {
+                assert_eq!(can(&ada, action, r), Ok(()), "the admin: {} on {r:?}", action.name());
+            }
+        }
+        // An agent's own role edits only what it saved: not another's, nor what no one saved.
+        let claude = caller("claude", Kind::Agent, Role::Agent);
+        for by in [Some("ada"), None] {
+            let said = can(&claude, FlowEdit, &Resource::Saved { name: "f", by }).unwrap_err().0;
+            assert!(said.contains("an agent doesn't replace someone else's flow"), "{said}");
+        }
+        // A group's binding: reaching names the group; a member forgotten holds nothing by it, and
+        // the other member still does.
+        let mut d = Document::default();
+        d.groups.push(Group { name: "team".into(), about: None, members: vec!["cy".into(), "eve".into()] });
+        d.bind(Subject::Group("team".into()), "viewer", Scope::Host, None, "ada", 1);
+        let access = Bindings::memory();
+        access.keep(d.clone().after(&Document::default(), "ada", "bound", None, 1)).unwrap();
+        assert_eq!(access.document().reaching("cy").map(|(b, g)| (b.id, g)).collect::<Vec<_>>(), [(0, Some("team"))]);
+        d.forget("cy");
+        access.keep(d.after(&access.document(), "ada", "removed cy", None, 2)).unwrap();
+        assert!(access.held("cy", now).is_empty());
+        assert_eq!(access.held("eve", now).len(), 1);
     }
 
     /// No role gives an agent what is a person's (the plan's D20): whatever it holds, an admin's

@@ -3716,9 +3716,7 @@ mod tests {
         let none = Value::Sum { arm: 1, payload: Box::new(list(vec![])) }; // presence, not payload, is what's checked
         assert_eq!(compute("is_truthy", &[&some], &[]), Some(boo(true)));
         assert_eq!(compute("is_truthy", &[&none], &[]), Some(boo(false)));
-    }
-    #[test]
-    fn is_truthy_treats_nan_as_javascript_does() {
+        // NaN and -0 are false, as JavaScript has them.
         assert_eq!(compute("is_truthy", &[&num(f64::NAN)], &[]), Some(boo(false)));
         assert_eq!(compute("is_truthy", &[&num(-0.0)], &[]), Some(boo(false)));
     }

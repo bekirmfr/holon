@@ -810,8 +810,8 @@ mod tests {
         let kept = Kept { file: None, key: Path::new("app").join("prices.json"), memory: Arc::default() };
         let feeds = Feeds::memory();
         let mut made = Made::default();
-        // The last number of each key moves with the position.
-        let at = |p: &str, n: u64| Seen { at: "wss://feed".into(), position: Some(p.into()), numbers: Numbers::from(vec![("BTC-USD".to_string(), n)]), ..Seen::default() };
+        // The last number of each key moves with the position; what it saw recently is kept with it.
+        let at = |p: &str, n: u64| Seen { at: "wss://feed".into(), position: Some(p.into()), recent: VecDeque::from(["1".to_string()]), numbers: Numbers::from(vec![("BTC-USD".to_string(), n)]) };
         *made.seen(&kept) = at("1", 101);
         feeds.hold("app", 7, made.moved(&kept));
         assert!(made.holding());
@@ -830,15 +830,6 @@ mod tests {
         made.moved(&kept)();
         feeds.release("app", 10);
         assert_eq!(kept.read().unwrap(), at("3", 103));
-    }
-
-    #[test]
-    fn where_a_deployment_is_is_kept_in_memory_without_a_file() {
-        let kept = Kept { file: None, key: Path::new("app").join("prices.json"), memory: Arc::default() };
-        assert_eq!(kept.read().unwrap(), Seen::default());
-        let seen = Seen { at: "http://127.0.0.1:1/events".into(), position: Some("41".into()), recent: VecDeque::from(["41".to_string()]), numbers: Numbers::from(vec![("BTC-USD".to_string(), 41)]) };
-        kept.keep(&seen);
-        assert_eq!(kept.read().unwrap(), seen);
     }
 
     #[test]

@@ -325,17 +325,6 @@ pub(crate) mod tests {
         Some(format!("{signed}.{}", holon_core::bytes_text(&[r, &other].concat(), "base64url").unwrap()))
     }
 
-    #[test]
-    fn a_token_the_provider_signed_for_this_client_says_who() {
-        let who = provider().verify(&token(serde_json::json!({ "email": "Ada@Example.com", "email_verified": true, "exp": 4_000_000_000u64 }))).unwrap();
-        assert_eq!(who, Identity { subject: "user-1".into(), email: Some("ada@example.com".into()), unverified: None, expires_at: 4_000_000_000 + LEEWAY });
-        // An email the provider hasn't verified isn't taken; nor one it doesn't say of.
-        let unverified = provider().verify(&token(serde_json::json!({ "email": "ada@example.com", "email_verified": false }))).unwrap();
-        assert_eq!(unverified.email, None);
-        let unsaid = provider().verify(&token(serde_json::json!({ "email": "ada@example.com" }))).unwrap();
-        assert_eq!((unsaid.email, unsaid.unverified.as_deref()), (None, Some("ada@example.com")), "no email_verified: not taken");
-    }
-
     /// Which ID tokens are taken: each row a token that differs from a good one in one way (its
     /// audience, the party it was issued to, its issuer, its expiry, its signature, its key), and
     /// what is said of it: taken, or refused for that reason (OpenID Connect Core 3.1.3.7).
@@ -374,6 +363,17 @@ pub(crate) mod tests {
                 (Err(e), Some(why)) if e.contains(why) => {}
                 (got, _) => panic!("a token {what}: {got:?}, where {}", refused.map_or("it is taken".to_string(), |why| format!("refused: {why}"))),
             }
+        }
+        // Who a token taken says: its subject, its email (lowercased) only where the provider says
+        // it verified it, and when it ends, past its expiry by the clocks' leeway.
+        for (claims, email, unverified) in [
+            (json!({ "email": "Ada@Example.com", "email_verified": true, "exp": 4_000_000_000u64 }), Some("ada@example.com"), None),
+            (json!({ "email": "ada@example.com", "email_verified": false }), None, Some("ada@example.com")),
+            (json!({ "email": "ada@example.com" }), None, Some("ada@example.com")),
+        ] {
+            let who = p.verify(&token(claims.clone())).unwrap();
+            let expires_at = claims["exp"].as_u64().map_or(who.expires_at, |exp| exp + LEEWAY);
+            assert_eq!(who, Identity { subject: "user-1".into(), email: email.map(String::from), unverified: unverified.map(String::from), expires_at }, "{claims}");
         }
     }
 

@@ -328,14 +328,6 @@ fn caller_text(host: &str) -> String {
 // ── /health ──────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn health_check() {
-    let state = test_state();
-    let r = route(&state, &req("GET", "/health", vec![]));
-    assert_eq!(r.status_code, 200);
-    assert_eq!(body_bytes(r), b"ok");
-}
-
-#[test]
 fn version_says_the_hosts() {
     let state = test_state();
     let r = route(&state, &req("GET", "/version", vec![]));
@@ -375,16 +367,6 @@ fn unit_get_rejects_bad_hash_and_404s_a_missing_one() {
 fn trigger_unknown_slug_is_404() {
     let state = test_state();
     assert_eq!(route(&state, &req("POST", "/trigger/nope", b"x".to_vec())).status_code, 404);
-}
-
-#[test]
-fn deploy_rejects_a_unit_with_no_driver_capability() {
-    let state = test_state();
-    route(&state, &req("POST", "/unit", encode_preimage(&test_unit()).unwrap()));
-    let leaf_hash = hash_unit(&test_unit()).unwrap();
-    let body =
-        serde_json::to_vec(&serde_json::json!({"slug": "nope", "unit": to_hex(&leaf_hash)})).unwrap();
-    assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 400);
 }
 
 // ── the clock scheduler, with a controlled clock — no real sleeping ────────────────────
@@ -629,6 +611,8 @@ fn a_deploy_nothing_would_start_is_refused_saying_what_to_add() {
     assert_eq!(holon_core::declaration_of(&handler), Some("action"));
     refused(hash_unit(&handler).unwrap());
     refused(stage(&state, &Unit { body: UnitBody::Composite { children: vec![], edges: vec![] }, params: vec![Param::frozen("declare", "server")], inputs: vec![], outputs: vec![] }));
+    // A unit with no driver at all (a bare leaf).
+    refused(stage(&state, &test_unit()));
     assert_eq!(body_json(route(&state, &req("GET", "/deployments", vec![])))["deployments"], serde_json::json!([]));
 }
 
@@ -4958,10 +4942,12 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
 
 /// Guards: every table the server keeps in its data folder is read only sealed, and only as
 /// itself: an empty one sealed for its role opens; the same text plain on disk, or sealed for
-/// another table, is refused and left as it was (docs/L4s/at-rest-encryption-L4.md, step 2).
+/// another table, is refused and left as it was (docs/L4s/at-rest-encryption-L4.md, step 2); so is
+/// one sealed as itself that doesn't read whole (cut short, or not its shape).
 /// Why: a table holds what a deployment may reach (addresses, paths, references to secrets) and
 /// what its runs keep; one read plain would be one anyone who can write the folder can forge,
-/// and one read as another table one whose contents were moved between them.
+/// and one read as another table one whose contents were moved between them. One that failed to
+/// read once loaded as empty, so the first deploy or save after startup wrote over all of it.
 /// If it fails: the table it names is read past `at_rest::read_sealed` (or `at_rest::read`), or
 /// its role isn't its own. A new table gets a row here.
 #[test]
@@ -5001,36 +4987,17 @@ fn every_table_opens_only_sealed_and_only_as_itself() {
         let refused = opens(path).expect_err(name);
         assert!(refused.contains("doesn't open"), "{name}, sealed as another table: {refused}");
         assert_eq!(std::fs::read(&file).unwrap(), sealed, "{name}: left as it was");
+        // Sealed as itself but not read whole (cut short, or not its shape): refused, not taken as
+        // an empty table the next write would put over it, and left as it was.
+        let foreign: &[u8] = if *empty == b"[]" { b"{\"not\": \"a list\"}" } else { b"[{\"slug\": \"wri" };
+        for bad in [&b"[{\"slug\": \"wri"[..], foreign] {
+            crate::at_rest::write_table(&file, own, bad).unwrap();
+            let sealed = std::fs::read(&file).unwrap();
+            assert!(opens(path).is_err(), "{name}: {}", String::from_utf8_lossy(bad));
+            assert_eq!(std::fs::read(&file).unwrap(), sealed, "{name}: left as it was");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-/// Regression: a persistence file that failed to parse used to load as an empty table, so
-/// the first deploy or save after startup overwrote every deployment, its state, or every
-/// flow. Loading is now an `Err` (main() refuses to start) and the file is left untouched.
-#[test]
-fn corrupt_persistence_file_is_an_error_not_an_empty_table() {
-    let state = test_state();
-    for (label, contents) in [("truncated", &b"[{\"slug\": \"wri"[..]), ("foreign", &b"{\"not\": \"a list\"}"[..])] {
-        let path = unique_temp_path(&format!("corrupt-{label}"));
-        // Plain on disk, and sealed as each table is: refused either way, and left as it was.
-        std::fs::write(&path, contents).unwrap();
-        assert!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).err().unwrap().contains("not sealed"), "{label} deployments file");
-        assert!(load_flows(&Place::parse(&path)).err().unwrap().contains("not sealed"), "{label} flows file");
-        assert_eq!(std::fs::read(&path).unwrap(), contents, "the bad file must be left as it was");
-        crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::DEPLOYMENTS, contents).unwrap();
-        let sealed = std::fs::read(&path).unwrap();
-        assert!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).is_err(), "{label} deployments file, sealed");
-        assert!(load_flows(&Place::parse(&path)).err().unwrap().contains("doesn't open"), "a deployments file isn't read as flows");
-        assert_eq!(std::fs::read(&path).unwrap(), sealed, "the bad file must be left as it was");
-        crate::at_rest::write_table(Path::new(&path), crate::at_rest::role::FLOWS, contents).unwrap();
-        assert!(load_flows(&Place::parse(&path)).is_err(), "{label} flows file, sealed");
-        let _ = std::fs::remove_file(&path);
-    }
-    // A missing file is still a normal first run, not an error.
-    let missing = unique_temp_path("missing");
-    assert!(load_deployments(&Place::parse(&missing), &state.store, &Policy::default()).unwrap().is_empty());
-    assert!(load_flows(&Place::parse(&missing)).unwrap().is_empty());
 }
 
 /// Persisting goes through `write_atomically`: the file always holds one whole, parseable
@@ -7403,32 +7370,14 @@ fn state_persists_across_a_simulated_restart() {
 // ── CORS ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn cors_allows_localhost_origin_and_omits_the_header_for_others() {
-    let state = test_state();
-
-    let allowed =
-        Request::fake_http("GET", "/health", vec![host_header(), ("Origin".to_string(), "http://localhost:5173".to_string())], vec![]);
-    let r1 = with_cors(&state.access, &allowed, route(&state, &allowed));
-    assert!(r1
-        .headers
-        .iter()
-        .any(|(k, v)| k.as_ref() == "Access-Control-Allow-Origin" && v.as_ref() == "http://localhost:5173"));
-
-    let disallowed =
-        Request::fake_http("GET", "/health", vec![host_header(), ("Origin".to_string(), "http://evil.example".to_string())], vec![]);
-    let r2 = with_cors(&state.access, &disallowed, route(&state, &disallowed));
-    assert!(!r2.headers.iter().any(|(k, _)| k.as_ref() == "Access-Control-Allow-Origin"));
-}
-
-#[test]
 fn cors_allows_every_method_this_api_actually_uses() {
     // A real, shipped bug, not a hypothetical: Access-Control-Allow-Methods once listed
     // "GET, POST, OPTIONS" — DELETE was missing. The server-side OPTIONS handling
     // (`route`'s own preflight branch) still answered 204 every time regardless, so nothing
     // about the SERVER looked broken in isolation — a browser reads the *header's own
     // contents*, not just the preflight's status code, and silently refuses to ever send
-    // the real DELETE if its method isn't listed. `assert!(..headers..)` alone (the test
-    // above) would never have caught this — it only checks the header is PRESENT, never
+    // the real DELETE if its method isn't listed. `assert!(..headers..)` alone (frames.rs
+    // checks who is told it) would never have caught this — it only checks the header is PRESENT, never
     // what it actually says. This checks the one thing that matters: every method a route
     // in can.rs's table answers is actually named in the value.
     let state = test_state();

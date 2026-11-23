@@ -3678,16 +3678,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn eval_primitive_add() {
-        let r = MapResolver::new();
-        let add = prim("add", 3, Type::Number);
-        assert_eq!(
-            eval(&add, &[Some(num(3.0)), Some(num(7.0)), Some(num(5.0))], &r).into_vec(),
-            vec![Some(num(15.0))]
-        );
-    }
-
     /// Regression: absent inputs used to be dropped before `compute`, so a variadic leaf fired
     /// on whatever was left — `and(true, <absent>)` was `true`, an auth check failing open.
     #[test]
@@ -3741,6 +3731,7 @@ mod tests {
         assert_eq!(eval(&c, &[], &r).into_vec(), vec![None]);
         // All present still fires, and a zero-input variadic leaf has nothing absent.
         assert_eq!(eval(&prim("and", 2, Type::Boolean), &[Some(t.clone()), Some(t.clone())], &r).into_vec(), vec![Some(t)]);
+        assert_eq!(eval(&prim("add", 3, Type::Number), &[Some(num(3.0)), Some(num(7.0)), Some(num(5.0))], &r).into_vec(), vec![Some(num(15.0))], "grown past two ports");
         assert_eq!(eval(&prim("list", 0, Type::Any), &[], &r).into_vec(), vec![Some(Value::List(vec![]))]);
     }
 

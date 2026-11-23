@@ -211,22 +211,6 @@ fn a_slow_but_steady_request_and_a_long_response_are_not_cut() {
     server.unblock();
 }
 
-/// A response the application sends with `Connection: close` says so and is the connection's
-/// last: the client reads to the end of the stream after it.
-#[test]
-fn a_response_with_connection_close_ends_its_connection() {
-    let (server, at) = serve(Limits { idle: None, ..Limits::default() });
-    let mut s = connect(at);
-    s.write_all(get("/close").as_bytes()).unwrap();
-    let (status, head, body) = answer(&mut s).unwrap();
-    assert_eq!((status, body.as_slice()), (200, &b"bye"[..]));
-    assert!(head.to_ascii_lowercase().contains("connection: close"), "the response says it: {}", head);
-    // Before the read gives up (EVENTUALLY): nothing else would end it, with no idle limit here
-    // and no request begun on it.
-    closed_within(&mut s).expect("the connection ends after it");
-    server.unblock();
-}
-
 /// Past the bound from one address, a new connection is told 503 at once and closed, while
 /// those inside it are still answered; once one closes, a new one is let in. Likewise the bound
 /// on all connections.
@@ -522,11 +506,13 @@ fn what_is_left_of_a_body_nobody_read_is_read_off_within_bounds_or_its_connectio
 /// A connection's last request is answered whole before the connection ends, whatever its shape:
 /// last by `Connection: close` or by HTTP 1.0, with no body (which lets go of the stream at once,
 /// before it is answered), a body read, a body not read, or a body past the bound; its answer
-/// taking a while (a handler that thinks 300 ms first). Then the end of the stream.
+/// taking a while (a handler that thinks 300 ms first); or last because the application's response
+/// says `Connection: close`. Then the end of the stream, with no idle limit to end it otherwise.
 #[test]
 fn a_connections_last_request_is_answered_whole_before_it_ends() {
-    let (server, at) = serve(Limits { leftover: 2000, ..Limits::default() });
+    let (server, at) = serve(Limits { leftover: 2000, idle: None, ..Limits::default() });
     let shapes: Vec<(&str, String, &str)> = vec![
+        ("the application's Connection: close", get("/close"), "bye"),
         ("Connection: close, no body", "GET /think?ms=300 HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n".to_string(), "thought 0"),
         ("HTTP 1.0, no body", "GET /think?ms=300 HTTP/1.0\r\nHost: test\r\n\r\n".to_string(), "thought 0"),
         ("Connection: close, a body read", format!("POST /think?ms=300 HTTP/1.1\r\nHost: test\r\nConnection: close\r\nContent-Length: 1500\r\n\r\n{}", "x".repeat(1500)), "thought 1500"),
@@ -536,27 +522,12 @@ fn a_connections_last_request_is_answered_whole_before_it_ends() {
     for (shape, request, said) in shapes {
         let mut s = connect(at);
         s.write_all(request.as_bytes()).unwrap();
-        let told = answer(&mut s).map(|(status, _, body)| (status, String::from_utf8_lossy(&body).into_owned()));
-        assert_eq!(told, Ok((200, said.to_string())), "{}: answered whole", shape);
+        let (status, head, body) = answer(&mut s).unwrap_or_else(|e| panic!("{}: an answer: {}", shape, e));
+        assert_eq!((status, String::from_utf8_lossy(&body).into_owned()), (200, said.to_string()), "{}: answered whole", shape);
+        if request.starts_with("GET /close ") {
+            assert!(head.to_ascii_lowercase().contains("connection: close"), "{}: the response says it: {}", shape, head);
+        }
         closed_within(&mut s).unwrap_or_else(|e| panic!("{}: then the end of the stream: {}", shape, e));
-    }
-    server.unblock();
-}
-
-/// A request whose line says a version past 1.1 is told 505, and its connection ends and gives
-/// its place back. Upstream wrote the 505 through a writer that waits for the request's own, while
-/// it held the request: the connection waited for ever, its place held after its client had gone
-/// (512 such requests from one address locked it out until a restart).
-#[test]
-fn a_version_past_1_1_is_told_505_and_its_connection_ends() {
-    let (server, at) = serve(Limits::default());
-    for version in ["HTTP/2.0", "HTTP/3.0"] {
-        let mut s = connect(at);
-        s.write_all(format!("GET / {}\r\nHost: test\r\n\r\n", version).as_bytes()).unwrap();
-        assert_eq!(answer(&mut s).map(|a| a.0), Ok(505), "{}: told 505", version);
-        closed_within(&mut s).unwrap_or_else(|e| panic!("{}: then the end of the stream: {}", version, e));
-        drop(s);
-        assert!(until(|| server.open.count() == 0), "{}: its place given back", version);
     }
     server.unblock();
 }
@@ -567,8 +538,11 @@ fn a_version_past_1_1_is_told_505_and_its_connection_ends() {
 /// its own ("request smuggling"; RFC 9112 6.3, 5.2, RFC 9110 5.5, 8.6). A body is taken only by
 /// one `Content-Length` of digits, and any `Transfer-Encoding` is told 411. Each request here is
 /// followed on its connection by `/inner`: after one refused, its status, why in words, and the
-/// end of the stream; after one taken, its body read whole and `/inner` answered as the next
-/// request.
+/// end of the stream, and its place given back; after one taken, its body read whole and `/inner`
+/// answered as the next request. A version past 1.1 is refused the same way, 505: upstream wrote
+/// the 505 through a writer that waits for the request's own, while it held the request, so the
+/// connection waited for ever, its place held after its client had gone (512 such requests from
+/// one address locked it out until a restart).
 #[test]
 fn a_request_that_can_be_read_two_ways_is_refused_and_nothing_after_it_read() {
     let (server, at) = serve(Limits::default());
@@ -596,6 +570,8 @@ fn a_request_that_can_be_read_two_ways_is_refused_and_nothing_after_it_read() {
         ("a lone CR inside a header line", post("X-Note: a\rContent-Length: 5\r\n", "hello"), 400, ""),
         ("a NUL inside a header line", post("X-Note: a\0b\r\nContent-Length: 5\r\n", "hello"), 400, ""),
         ("an Expect other than 100-continue", post("Expect: 100 continue\r\nContent-Length: 5\r\n", "hello"), 417, ""),
+        ("a version past 1.1", "GET / HTTP/2.0\r\nHost: test\r\n\r\n".to_string(), 505, ""),
+        ("a version past 1.1, again", "GET / HTTP/3.0\r\nHost: test\r\n\r\n".to_string(), 505, ""),
     ];
     for (what, request, status, said) in rows {
         let mut s = connect(at);
@@ -610,6 +586,8 @@ fn a_request_that_can_be_read_two_ways_is_refused_and_nothing_after_it_read() {
         } else {
             assert!(body.starts_with("{\"error\":"), "{}: told why: {}", what, body);
             closed_within(&mut s).unwrap_or_else(|e| panic!("{}: then the end of the stream, nothing after it read: {}", what, e));
+            drop(s);
+            assert!(until(|| server.open.count() == 0), "{}: its place given back", what);
         }
     }
     server.unblock();

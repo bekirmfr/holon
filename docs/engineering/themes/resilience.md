@@ -39,7 +39,7 @@ synced first; `lost`, read without the log's lock, keeps the usual case as cheap
   failing, and by runs side by side; the cell syncs what the model says, a failed sync leaving
   the file to sync again, each run is told what its own write and sync did, and the file holds
   the lines told kept, and told unsynced, and no other; it replaced a test of a sync failed by
-  hand), `one_sync_covers_every_entry_written_before_it` (the economy of it: one sync a batch).
+  hand; and the economy of it, one sync a batch, in the syncs it counts).
 
 ### G2. A deployment can't slow another
 

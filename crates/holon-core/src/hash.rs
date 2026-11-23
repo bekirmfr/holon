@@ -1069,6 +1069,8 @@ mod tests {
             outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
         };
         assert_eq!(decode_preimage(&encode_preimage(&u).unwrap()).unwrap(), u);
+        // The legacy bare list it takes is List<Any>.
+        assert_eq!(Type::list_any(), Type::List(Box::new(Type::Any)));
     }
 
     #[test]
@@ -1181,15 +1183,6 @@ mod tests {
         let bytes = encode_preimage(&u).unwrap();
         assert_eq!(decode_preimage(&bytes).unwrap(), u);
         assert_eq!(encode_preimage(&decode_preimage(&bytes).unwrap()).unwrap(), bytes);
-    }
-
-    #[test]
-    fn bare_list_encodes_as_list_any() {
-        // The legacy bare list is List<Any>: tag 4 followed by tag 5 (Any).
-        let mut u = prim("add");
-        u.inputs[0].ty = Type::list_any();
-        let round = decode_preimage(&encode_preimage(&u).unwrap()).unwrap();
-        assert_eq!(round.inputs[0].ty, Type::List(Box::new(Type::Any)));
     }
 
     #[test]

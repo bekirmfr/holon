@@ -1,6 +1,6 @@
 //! Where a resource is (a feed's, a queue's or a mail server's address, and the sources its URL,
 //! headers and login are read from) goes only to whoever may bind resources (web console L4, Q4,
-//! as a folder's path and a database's whereabouts already did), and where the server keeps its
+//! as a folder's path and a database's whereabouts do, each in the data folder here), and where the server keeps its
 //! data only to whoever views the host: no other caller is answered either, by any route. What a
 //! binding does (whom a mail is from and to, a feed's buffer) is shown as a database's access is.
 //! A summary and a check of the logs name only the deployments their caller may see (audit R51).
@@ -123,6 +123,9 @@ fn server() -> Server {
             "/admin/mails",
             json!({ "name": "ops", "smtp": format!("env:HOLON_SECRET_{SOURCE}_SMTP"), "from": "Ops <ops@acme.example>", "to": "*@acme.example", "imap": format!("env:HOLON_SECRET_{SOURCE}_IMAP"), "verdict_from": "mx.acme.example" }),
         ),
+        // A folder and a database, each in the data folder: their paths are where they are.
+        ("/admin/folders", json!({ "name": "inbox", "path": dir.display().to_string(), "access": "read" })),
+        ("/admin/databases", json!({ "name": "shop", "path": dir.join("shop.db").display().to_string(), "schema": "create table orders (id integer primary key)" })),
     ];
     for (path, body) in binds {
         let (code, said) = ask(&state, None, "POST", path, serde_json::to_vec(&body).unwrap());
@@ -225,7 +228,7 @@ fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_hos
     };
 
     // The admin is told where each is, so a sweep that finds none finds them left out.
-    for (path, canary) in [("/admin/feeds", WHERE), ("/admin/queues", WHERE), ("/admin/mails", SOURCE), ("/deployments/w/feeds", WHERE), ("/deployments/w/queues", WHERE)] {
+    for (path, canary) in [("/admin/feeds", WHERE), ("/admin/queues", WHERE), ("/admin/mails", SOURCE), ("/admin/folders", DATA), ("/admin/databases", DATA), ("/deployments/w/feeds", WHERE), ("/deployments/w/queues", WHERE)] {
         assert!(get(&s.ada, path).to_string().contains(canary), "the admin's {path}");
     }
     let (code, said) = ask(state, Some(&s.ada), "POST", "/summary/check", vec![]);
@@ -286,7 +289,7 @@ fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_hos
 
     // rv views every flow and every resource, and binds none.
     let answered = swept(state, &s.rv, "rv", &canaries);
-    for path in ["/admin/feeds", "/admin/queues", "/admin/mails", "/admin/secrets/env", "/deployments/w/feeds", "/deployments/w/queues", "/deployments/w/events", "/summary"] {
+    for path in ["/admin/feeds", "/admin/queues", "/admin/mails", "/admin/folders", "/admin/databases", "/admin/secrets/env", "/deployments/w/feeds", "/deployments/w/queues", "/deployments/w/events", "/summary"] {
         assert!(answered.iter().any(|p| p == path), "rv is answered {path}: {answered:?}");
     }
     for path in ["/admin/feeds", "/admin/queues", "/admin/mails"] {
@@ -308,6 +311,10 @@ fn where_a_resource_or_the_data_is_goes_only_to_whoever_may_bind_or_view_the_hos
     assert_eq!(serde_json::from_str::<Value>(&said).unwrap()["storage"]["backup"], json!("a folder"), "{said}");
     let mails = get(&s.rv, "/admin/mails");
     assert_eq!((mails[0]["to"].clone(), mails[0]["mailbox"]["folder"].clone()), (json!(["*@acme.example"]), json!("INBOX")), "what it does is shown: {mails}");
+    assert_eq!(get(&s.rv, "/admin/folders"), json!([{ "name": "inbox", "deployment": null, "access": "read", "keep": "bytes", "cap": null, "shared": false, "lock": "commit" }]));
+    assert_eq!(get(&s.rv, "/admin/databases"), json!([{ "name": "shop", "deployment": null, "engine": "sqlite", "access": "read-write", "lock": "commit" }]));
+    let (code, said) = ask(state, Some(&s.rv), "POST", "/admin/folders", serde_json::to_vec(&json!({ "name": "x", "path": s.dir.display().to_string() })).unwrap());
+    assert_eq!(code, 403, "rv only views: {said}");
 
     // bob edits w alone: no resource, no data folder, and no other flow.
     let answered = swept(state, &s.bob, "bob", &[canaries.as_slice(), &[HIDDEN]].concat());

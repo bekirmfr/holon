@@ -210,16 +210,6 @@ mod tests {
         println!("{} ({} bytes): read alone {read:.1?} ms, written back too {both:.1?} ms", largest.name, largest.text.len());
     }
 
-    /// Every sample is taken: its steps write back as a text of the same steps.
-    #[test]
-    fn every_sample_is_written_back() {
-        for s in samples::samples() {
-            if let Err(e) = compile(s.text) {
-                panic!("{}: {e}", s.name);
-            }
-        }
-    }
-
     /// Small flows at the edges of what a function, a list's function, a branch and a return can
     /// hold: taken when the way back writes them as the same steps, refused (with the mistake, at
     /// its line) when it can't.

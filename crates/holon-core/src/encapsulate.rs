@@ -536,15 +536,6 @@ mod tests {
     }
 
     #[test]
-    fn derived_unit_validates() {
-        let mut r = MapResolver::new();
-        let hadd = r.insert(binop("add", "a", "b")).unwrap();
-        let spec = default_spec(&[hadd], &[], &r).unwrap();
-        let derived = derive_and_freeze(vec![hadd], vec![], &spec, &r).unwrap();
-        assert!(validate(&derived, &r).is_ok());
-    }
-
-    #[test]
     fn multi_output_composite_exposes_several_independently() {
         // add(a,b) and divide(a,b) as two independent children — neither wired to the
         // other — both exposed as separate composite outputs via a hand-built EncapSpec.
