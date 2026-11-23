@@ -18,12 +18,13 @@
 //! keeps the path in the order it reads the text, which is that order ([`Site::path`]).
 //!
 //! A statement that "did not complete" stops what follows only inside a `try`: there, a value it
-//! made that didn't arrive is the block failing ([`Why::Arrived`]). Outside a `try`, Holon's own
-//! rule (the owner, 2026-11-23): a line that gives nothing is a value missing, not a failure, so
-//! what follows and doesn't use it runs, and what uses it has nothing to go on. JavaScript throws
-//! at such a line (`JSON.parse` of a text that isn't JSON, a request that failed), and nothing
-//! below it runs. So [`Atom::Completed`] always holds; it is recorded so that a run where
-//! JavaScript would have stopped there can be named as this rule's, not owed. A `try`'s own
+//! made that didn't arrive is the block failing ([`Why::Arrived`]). Outside a `try`, a flow today
+//! reads a line that gives nothing as a value missing, not a failure: what follows and doesn't use
+//! it runs, and what uses it has nothing to go on. JavaScript throws at such a line (`JSON.parse`
+//! of a text that isn't JSON, a request that failed), and nothing below it runs. Whether that is
+//! Holon's own rule or owed to JavaScript is the owner's open question; one switch labels it
+//! (`reached_runs::PAST_NOTHING`). So [`Atom::Completed`] always holds, as today; it is recorded so
+//! that a run where JavaScript would have stopped there can be labelled. A `try`'s own
 //! promise, that a failed block keeps none of its writes, is not part of reached either: it is
 //! [`Site::kept`], beside it.
 
@@ -35,12 +36,20 @@ pub struct Site {
     /// Where it is written: the statement's or the expression's span.
     pub at: Span,
     /// What it does, in a word: `writes`, `deletes`, `sends`, `logs`, `requests`, `starts`,
-    /// `calls`, `enters`, `waits`, `reads`, `throws`.
+    /// `calls`, `enters`, `waits`, `reads` (a collection, a folder, a database), `reads state`,
+    /// `throws`.
     pub does: &'static str,
     /// The handler's or the function's body it is in.
     pub within: Span,
     /// What must hold for the run to get there, in the order the run meets it.
     pub path: Vec<Atom>,
+    /// What it is given and can't run without: a write's value (and key), a request's, a send's
+    /// or a call's arguments. Where one has no value, what needs it doesn't run (Holon's rule for
+    /// a value missing), where JavaScript runs it with `undefined`.
+    pub needs: Vec<Expr>,
+    /// For a write to state, its key: the graph writes each key once per run, at one step for
+    /// every place the text writes it (the one-key-many-writes column, beside reached).
+    pub key: Option<String>,
     /// For a site inside a `try` block with a catch, the block's own test (`ok`): what it did is
     /// kept only where that holds. Innermost last.
     pub kept: Vec<Expr>,
@@ -58,7 +67,7 @@ pub enum Atom {
     /// `test` has a value and it is true, as JavaScript reads a condition; why it is on the path.
     Holds { why: Why, test: Expr },
     /// The statement written at the span, outside a `try`, before the site: it always counts as
-    /// completed (Holon's own rule, above), where JavaScript stops if a step in it threw.
+    /// completed (as today, above), where JavaScript stops if a step in it threw.
     Completed(Span),
 }
 

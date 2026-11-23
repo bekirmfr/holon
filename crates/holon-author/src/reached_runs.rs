@@ -1,53 +1,60 @@
-//! Where each doing site of a text is reached, read off a run (step C1 of the one rule for
-//! reached, `lang::reached`): every sample's handlers run in-process as the golden record runs
-//! them (golden.rs), each site's path read on the values the run computed. Today's graph holds a
-//! step back in its own ways; a test of the path the run never computed is "not known", and
-//! counted.
+//! Where each doing site of a text is reached, read off a run, beside what the run did there
+//! (step C1 of the one rule for reached, `lang::reached`). A handler runs in-process, as the golden
+//! record runs it (golden.rs); each site's path is read on the values the run computed, and what
+//! today's graph did at the site (an effect made, a request or a read asked) is read off the same
+//! run. A test of the path the run never computed is "not known". Used by tests alone: nothing a
+//! flow does reads it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use holon_core::{eval_observed, parse_hash, Observer, Resolver, Slot, Value};
+use holon_core::{eval_observed, hex, parse_hash, Answer, MapResolver, Observer, Resolver, Slot, Unit, UnitBody, Value};
 
 use crate::composites::Names;
-use crate::golden::{bodies, request};
-use crate::lang::ast::{Expr, ExprKind, Span};
+use crate::lang::ast::{Expr, ExprKind, Pos, Span};
+use crate::lang::lower::Found;
 use crate::lang::reached::{holds, Atom, Seen, Site};
 use crate::lang::{ts, Lowered};
-use crate::samples::samples;
-use holon_core::MapResolver;
 
-/// What one run computed: each of the handler's own steps' outputs, by its place among them.
+/// What one run computed and asked, by path.
 #[derive(Default)]
-struct Run {
-    produced: HashMap<u32, Vec<Slot>>,
+pub struct Run {
+    pub produced: HashMap<Vec<u32>, Vec<Slot>>,
+    pub entered: HashSet<Vec<u32>>,
+    pub asked: Vec<Vec<u32>>,
+    answer: Option<fn(&Value) -> Answer>,
 }
 
 impl Observer for Run {
+    fn enter(&mut self, path: &[u32]) {
+        self.entered.insert(path.to_vec());
+    }
     fn produced(&mut self, path: &[u32], outputs: &[Slot]) {
-        if let [0, k] = path {
-            self.produced.insert(*k, outputs.to_vec());
-        }
+        self.produced.insert(path.to_vec(), outputs.to_vec());
+    }
+    fn answer(&mut self, path: &[u32], request: &Value) -> Answer {
+        self.asked.push(path.to_vec());
+        self.answer.map_or(Answer::Absent, |a| a(request))
     }
 }
 
 /// A text compiled with its sites, each site's test parts and what each was lowered to.
-pub(crate) struct Watched {
+pub struct Watched {
     pub lowered: Lowered,
     pub parts: Vec<Expr>,
-    pub found: Vec<Vec<(String, usize)>>,
+    pub found: Found,
 }
 
 impl Watched {
-    pub fn of(src: &str) -> Watched {
-        let (lowered, parts, found) = ts::compile_watched(src).unwrap_or_else(|e| panic!("{e}"));
-        Watched { lowered, parts, found }
+    pub fn of(src: &str) -> Result<Watched, String> {
+        let (lowered, parts, found) = ts::compile_watched(src).map_err(|e| e.to_string())?;
+        Ok(Watched { lowered, parts, found })
     }
 
     /// The nodes a part was lowered to; a binding's name read nowhere, its own node.
     fn nodes(&self, part: &Expr) -> Vec<(String, usize)> {
         let i = self.parts.iter().position(|p| p == part).expect("a part of a test");
-        if !self.found[i].is_empty() {
-            return self.found[i].clone();
+        if !self.found.nodes[i].is_empty() {
+            return self.found.nodes[i].clone();
         }
         match &part.kind {
             ExprKind::Name(n) => self.lowered.names.iter().filter(|(_, b)| *b == n).map(|(id, _)| (id.clone(), 0)).collect(),
@@ -56,56 +63,233 @@ impl Watched {
     }
 }
 
-/// One handler of a text: its label, its unit, its steps by node id, and where it is written.
-struct Handler {
-    label: String,
-    hash: String,
-    inputs: Vec<Vec<Option<Value>>>,
-    child: HashMap<String, u32>,
-}
-
 /// Whether `inner` is written within `outer`.
-fn within(inner: Span, outer: Span) -> bool {
-    let at = |p: crate::lang::ast::Pos| (p.line, p.col);
+pub fn within(inner: Span, outer: Span) -> bool {
+    let at = |p: Pos| (p.line, p.col);
     at(outer.start) <= at(inner.start) && at(inner.end) <= at(outer.end)
 }
 
-/// What a site's path gives on one run: reached, not, or not known (the first test it needs the
-/// run never computed), and the tests looked at.
-#[derive(Debug, PartialEq)]
-enum Reached {
+/// What a site's path gives on one run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Reached {
     Yes,
     No,
-    /// At the atom of this index.
+    /// A test it needed (the atom at this index) the run never computed.
     NotKnown(usize),
-    /// Entered from elsewhere: a function's body, or a function written in place.
-    Elsewhere,
 }
 
-fn path_on(site: &Site, w: &Watched, h: &Handler, run: &Run, unknown_parts: &mut Vec<Expr>) -> Reached {
+/// A composite the run went into: its path, and each of its children's node id, in order.
+#[derive(Clone)]
+struct Context {
+    path: Vec<u32>,
+    children: Vec<String>,
+    /// The composite and the context it is a child of: where a function's call is.
+    parent: Option<(Box<Context>, u32)>,
+    /// The function whose body it is.
+    function: Option<String>,
+}
+
+impl Context {
+    fn child(&self, id: &str) -> Option<u32> {
+        self.children.iter().position(|c| c == id).map(|k| k as u32)
+    }
+}
+
+/// One site on one run, in one place it is run (a handler's body once, a function's body once a
+/// call): what its path gives, and what today's graph did there.
+#[derive(Clone, Debug)]
+pub struct SiteRun {
+    /// The site, by its place among the text's.
+    pub site: usize,
+    pub handler: String,
+    pub input: usize,
+    /// Where it was run: the handler's or the function call's path.
+    pub at: Vec<u32>,
+    pub reached: Reached,
+    /// What today's graph did at the site's own step: made it (an effect, a request or read
+    /// asked), or not; `None` where the site has no step of its own (a state key written in
+    /// several places is one step, at its last write).
+    pub today: Option<bool>,
+    /// Where the site is in a `try` block with a catch: whether the block's test held.
+    pub kept: Option<bool>,
+    /// Whether what it needs ([`Site::needs`]) has values: `None` where one was never computed.
+    /// Where one has none, Holon's own rule doesn't run it.
+    pub has_values: Option<bool>,
+    /// Whether, outside a `try`, a statement before it gave nothing at a step that throws in
+    /// JavaScript, which would have stopped there; the flow goes on (labelled by [`PAST_NOTHING`]).
+    pub past_nothing: bool,
+}
+
+/// How a site's run stands beside what today's graph did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Verdict {
+    /// Made where reached and given what it needs, and not made elsewhere.
+    Agrees,
+    /// Reached, a value it needs has none, and not made: Holon's own rule.
+    NothingToGoOn,
+    /// Made, where its path says it isn't reached.
+    MadeUnreached,
+    /// Not made, where its path says it is reached and it has what it needs.
+    MissedReached,
+    /// A test its path or a value it needs was never computed.
+    NotKnown,
+    /// It has no step of its own (a state key written in several places is one step).
+    NoStepOfItsOwn,
+    /// Made past a line outside a `try` that gave nothing where JavaScript throws: labelled by
+    /// [`PAST_NOTHING`].
+    PastNothing(PastNothing),
+    /// What it does isn't compared: a function entered (its body's sites are), a throw (its
+    /// answer is the route's), a read of state (supplied as the run begins, never asked).
+    NotCompared,
+}
+
+impl SiteRun {
+    pub fn verdict(&self, site: &Site) -> Verdict {
+        if matches!(site.does, "enters" | "throws" | "reads state") {
+            return Verdict::NotCompared;
+        }
+        let Some(made) = self.today else { return Verdict::NoStepOfItsOwn };
+        if made && self.past_nothing {
+            return Verdict::PastNothing(PAST_NOTHING);
+        }
+        match (self.reached, self.has_values, made) {
+            (Reached::NotKnown(_), ..) => Verdict::NotKnown,
+            (Reached::No, _, false) => Verdict::Agrees,
+            (Reached::No, _, true) => Verdict::MadeUnreached,
+            (Reached::Yes, Some(false), false) => Verdict::NothingToGoOn,
+            (Reached::Yes, _, true) => Verdict::Agrees,
+            (Reached::Yes, Some(true), false) => Verdict::MissedReached,
+            (Reached::Yes, None, false) => Verdict::NotKnown,
+        }
+    }
+}
+
+/// What a run past a line that gave nothing, outside a `try`, is: a difference owed to
+/// JavaScript, or Holon's own rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PastNothing {
+    /// JavaScript throws at the line and runs nothing below it; the flow owes that.
+    Owed,
+    /// Holon's own rule: a line that gives nothing is a value missing, not a failure.
+    OwnRule,
+}
+
+/// The one switch for it. The owner's question is open (2026-11-23), so it is owed for now;
+/// either answer is this line.
+pub const PAST_NOTHING: PastNothing = PastNothing::Owed;
+
+/// The steps that throw in JavaScript where they give nothing (each by its leaf): a text that
+/// isn't JSON, a request or another flow's action that failed, a `throw`. Outside a `try` the
+/// flow goes on past them (`lang::reached`); a run past one is labelled by [`PAST_NOTHING`].
+pub const THROWS_IN_JAVASCRIPT: &[&str] = &["json_parse", "http_request", "http_upload", "http_stream", "flow_call", "fail"];
+
+/// The doing steps a site's own step is among: what makes an effect, asks a request or a read,
+/// or waits.
+fn does_something(run_paths: &Run, path: &[u32]) -> bool {
+    let effect = run_paths.produced.get(path).is_some_and(|outs| outs.iter().any(|o| matches!(o, Slot::Value(Value::Effect { .. }))));
+    effect || run_paths.asked.iter().any(|a| a.starts_with(path))
+}
+
+/// Each handler of a text's server: its label, its unit's hash, and the node each child of its
+/// handler composite is.
+pub struct Handler {
+    pub label: String,
+    pub kind: &'static str,
+    pub method: String,
+    /// A route's or a websocket's path; a file handler's folder.
+    pub path: String,
+    pub hash: String,
+    pub children: Vec<String>,
+}
+
+/// The handlers of `w`'s server, their units in `store`.
+pub fn handlers(w: &Watched, store: &mut MapResolver) -> Vec<Handler> {
+    let doc = &w.lowered.doc;
+    crate::text::restore(doc, store, &Names::new());
+    let port = doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
+    let server = crate::flow::derive_server(&doc.nodes, &doc.edges, store, &port, doc.unit_settings());
+    let trace = |label: &str| server.trace.get(label).cloned().unwrap_or_default();
+    let mut out = Vec::new();
+    let mut add = |label: String, kind, method: &str, path: &str, hash: &str| {
+        out.push(Handler { children: trace(&label), label, kind, method: method.into(), path: path.into(), hash: hash.into() });
+    };
+    for e in &server.endpoints {
+        add(format!("{} {}", e.method, e.path), "route", &e.method, &e.path, &e.hash);
+    }
+    for a in &server.actions {
+        add(a.label.clone(), "action", "", "", &a.hash);
+    }
+    for c in &server.clocks {
+        add(c.label.clone(), "clock", "", "", &c.hash);
+    }
+    for f in &server.files {
+        add(f.label.clone(), "file", "", &f.folder, &f.hash);
+    }
+    for m in &server.mails {
+        add(m.label.clone(), "mail", "", "", &m.hash);
+    }
+    for f in &server.feeds {
+        add(f.label.clone(), "feed", "", "", &f.hash);
+    }
+    for q in &server.queues {
+        add(q.label.clone(), "queue", "", "", &q.hash);
+    }
+    for s in &server.websockets {
+        add(s.label.clone(), "websocket", "", &s.path, &s.hash);
+    }
+    out
+}
+
+/// What a test's part is in a context: the first of its nodes the context holds, as the run left
+/// it; "not known" where none was computed.
+fn seen(w: &Watched, ctx: &Context, run: &Run, part: &Expr) -> Seen {
+    for (id, port) in w.nodes(part) {
+        let Some(k) = ctx.child(&id) else { continue };
+        let mut at = ctx.path.clone();
+        at.push(k);
+        if let Some(outs) = run.produced.get(&at) {
+            return match outs.get(port) {
+                Some(Slot::Value(v)) => Seen::Value(v.clone()),
+                _ => Seen::Absent,
+            };
+        }
+    }
+    // A function's input: what its call was given, read where the call is.
+    if let (ExprKind::Name(n), Some(f), Some((parent, k))) = (&part.kind, &ctx.function, &ctx.parent) {
+        let i = w.found.inputs.get(f).and_then(|ins| ins.iter().position(|p| p == n));
+        let span = parent.children.get(*k as usize).and_then(|id| w.lowered.spans.get(id));
+        let call = span.and_then(|sp| w.lowered.sites.iter().find(|s| s.does == "enters" && s.at == *sp));
+        if let Some(given) = i.and_then(|i| call.and_then(|c| c.needs.get(i))) {
+            return crate::lang::reached::value(given, &mut |p| seen_need(w, parent, run, p));
+        }
+    }
+    Seen::Unknown
+}
+
+/// A site's path on a run, in context `ctx`.
+fn path_on(w: &Watched, site: &Site, ctx: &Context, run: &Run) -> Reached {
     for (i, atom) in site.path.iter().enumerate() {
         let ok = match atom {
             Atom::Entry => Some(true),
-            Atom::Entered(_) | Atom::Item { .. } => return Reached::Elsewhere,
-            // Which steps throw in JavaScript is the comparison's table, the next step.
+            // As today: outside a try a statement before always counts as completed (a run past
+            // one that gave nothing is labelled by `PAST_NOTHING`).
             Atom::Completed(_) => Some(true),
-            Atom::Holds { test, .. } => holds(test, &mut |part| {
-                let seen = w
-                    .nodes(part)
-                    .iter()
-                    .filter_map(|(id, port)| h.child.get(id).and_then(|k| run.produced.get(k)).map(|outs| outs.get(*port).cloned().unwrap_or(Slot::Absent)))
-                    .map(|slot| match slot {
-                        Slot::Value(v) => Seen::Value(v),
-                        _ => Seen::Absent,
-                    })
-                    .next();
-                seen.unwrap_or_else(|| {
-                    if !unknown_parts.contains(part) {
-                        unknown_parts.push(part.clone());
+            Atom::Entered(_) => match &ctx.parent {
+                // The call this body was entered by: reached where its own site is.
+                Some((parent, k)) => {
+                    let span = parent.children.get(*k as usize).and_then(|id| w.lowered.spans.get(id));
+                    let call = span.and_then(|sp| w.lowered.sites.iter().find(|s| s.does == "enters" && s.at == *sp));
+                    match call.map(|c| path_on(w, c, parent, run)) {
+                        Some(Reached::Yes) => Some(true),
+                        Some(Reached::No) => Some(false),
+                        _ => None,
                     }
-                    Seen::Unknown
-                })
-            }),
+                }
+                None => None,
+            },
+            // A function written in place: its steps aren't reported, item by item.
+            Atom::Item { .. } => None,
+            Atom::Holds { test, .. } => holds(test, &mut |part| seen(w, ctx, run, part)),
         };
         match ok {
             Some(true) => {}
@@ -116,106 +300,225 @@ fn path_on(site: &Site, w: &Watched, h: &Handler, run: &Run, unknown_parts: &mut
     Reached::Yes
 }
 
-/// The handlers a text's server has, each with golden's inputs.
-fn handlers(w: &Watched, store: &mut MapResolver) -> Vec<Handler> {
-    let doc = &w.lowered.doc;
-    crate::text::restore(doc, store, &Names::new());
-    let port = doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
-    let server = crate::flow::derive_server(&doc.nodes, &doc.edges, store, &port, doc.unit_settings());
-    let trace = |label: &str| server.trace.get(label).map(|ids| ids.iter().enumerate().map(|(k, id)| (id.clone(), k as u32)).collect()).unwrap_or_default();
+/// The site's own steps in a context: its children written exactly where the site is, or (a
+/// statement's) within it and within no other site of it.
+fn own_steps(w: &Watched, site: &Site, ctx: &Context, store: &impl Resolver, unit: Option<&Unit>) -> Vec<u32> {
+    let span_of = |id: &str| w.lowered.spans.get(id).copied();
+    // A write to state: the step that writes its key, wherever the lowering put it (at the
+    // statement around the places that write it).
+    if let (Some(key), Some(Unit { body: UnitBody::Composite { children, .. }, .. })) = (&site.key, unit) {
+        let writes = |k: usize| {
+            children.get(k).and_then(|h| store.resolve(h)).is_some_and(|u| {
+                matches!(&u.body, UnitBody::Primitive { name } if name == "store_write") && u.params.iter().any(|p| p.name() == "key" && p.value() == Some(key.as_str()))
+            })
+        };
+        return ctx.children.iter().enumerate().filter(|(k, id)| writes(*k) && span_of(id).is_some_and(|sp| within(site.at, sp))).map(|(k, _)| k as u32).collect();
+    }
+    let exact: Vec<u32> = ctx.children.iter().enumerate().filter(|(_, id)| span_of(id) == Some(site.at)).map(|(k, _)| k as u32).collect();
+    if !exact.is_empty() {
+        return exact;
+    }
+    let others: Vec<Span> = w.lowered.sites.iter().filter(|s| s.at != site.at && within(s.at, site.at)).map(|s| s.at).collect();
+    ctx.children
+        .iter()
+        .enumerate()
+        .filter(|(_, id)| span_of(id).is_some_and(|sp| within(sp, site.at) && !others.iter().any(|o| within(sp, *o))))
+        .map(|(k, _)| k as u32)
+        .collect()
+}
+
+/// The contexts a run went into under `ctx`: the handler, then each function call it entered,
+/// with the function's children.
+fn contexts(w: &Watched, store: &impl Resolver, unit: &Unit, ctx: Context, run: &Run, out: &mut Vec<(Context, Option<String>)>, function: Option<String>) {
+    out.push((ctx.clone(), function));
+    let UnitBody::Composite { children, .. } = &unit.body else { return };
+    for (k, h) in children.iter().enumerate() {
+        let Some(ids) = w.found.holons.get(&hex(h)) else { continue };
+        let mut path = ctx.path.clone();
+        path.push(k as u32);
+        if !run.entered.contains(&path) {
+            continue;
+        }
+        let Some(child) = store.resolve(h) else { continue };
+        let name = ids.first().and_then(|id| id.split('.').next()).map(str::to_string);
+        let inner = Context { path, children: in_run_order(child, ids), parent: Some((Box::new(ctx.clone()), k as u32)), function: name.clone() };
+        contexts(w, store, child, inner, run, out, name);
+    }
+}
+
+/// Whether a statement before `site`, outside a try, gave nothing at a step that throws in
+/// JavaScript, in context `ctx`.
+fn past_nothing(w: &Watched, site: &Site, ctx: &Context, run: &Run, store: &impl Resolver, unit: &Unit) -> bool {
+    let UnitBody::Composite { children, .. } = &unit.body else { return false };
+    site.path.iter().any(|a| {
+        let Atom::Completed(stmt) = a else { return false };
+        ctx.children.iter().enumerate().any(|(k, id)| {
+            let leaf = children.get(k).and_then(|h| store.resolve(h)).and_then(|u| if let UnitBody::Primitive { name } = &u.body { Some(name.as_str()) } else { None });
+            let mut at = ctx.path.clone();
+            at.push(k as u32);
+            leaf.is_some_and(|l| THROWS_IN_JAVASCRIPT.contains(&l))
+                && w.lowered.spans.get(id).is_some_and(|sp| within(*sp, *stmt))
+                && run.produced.get(&at).is_some_and(|outs| outs.iter().all(|o| !matches!(o, Slot::Value(_))))
+                && (run.entered.contains(&at) || run.asked.contains(&at) || leaf == Some("fail") || leaf == Some("json_parse"))
+        })
+    })
+}
+
+/// What a value a site needs gives. A record or a list written in place that the lowering made no
+/// step of (its fields went into the leaf's own settings, or one step each) has a value where each
+/// of its parts has one, as a record with a field that has none has none.
+fn seen_need(w: &Watched, ctx: &Context, run: &Run, need: &Expr) -> Seen {
+    let whole = seen(w, ctx, run, need);
+    if whole != Seen::Unknown {
+        return whole;
+    }
+    let inner: Vec<&Expr> = match &need.kind {
+        ExprKind::Record { spread, fields } => spread.iter().map(|s| &**s).chain(fields.iter().map(|(_, e)| e)).filter(|e| !matches!(e.kind, ExprKind::Lambda { .. })).collect(),
+        ExprKind::List(xs) => xs.iter().collect(),
+        _ => return whole,
+    };
+    let seen: Vec<Seen> = inner.into_iter().map(|e| crate::lang::reached::value(e, &mut |p| seen_need(w, ctx, run, p))).collect();
+    if seen.contains(&Seen::Absent) {
+        Seen::Absent
+    } else if seen.contains(&Seen::Unknown) {
+        Seen::Unknown
+    } else {
+        Seen::Value(Value::Boolean(true))
+    }
+}
+
+/// What a handler is given on one run: its inputs, and what the host supplies its sourced leaves,
+/// by leaf (`file_arrival`, `mail_arrival`, `feed_event`, `queue_message`, …).
+pub type Given = (Vec<Option<Value>>, BTreeMap<String, Value>);
+
+/// The store, with what the host supplies a run's sourced leaves.
+struct Sourcing<'a> {
+    store: &'a MapResolver,
+    sourced: &'a BTreeMap<String, Value>,
+}
+
+impl Resolver for Sourcing<'_> {
+    fn resolve(&self, hash: &holon_core::Hash) -> Option<&Unit> {
+        self.store.resolve(hash)
+    }
+    fn sourced(&self, unit: &Unit) -> Option<&Value> {
+        match &unit.body {
+            UnitBody::Primitive { name } => self.sourced.get(name),
+            _ => None,
+        }
+    }
+}
+
+/// Every site of `w` on every run of every handler: each handler run on each of `given(handler)`,
+/// its asks answered by `answer`.
+pub fn site_runs(w: &Watched, given: &dyn Fn(&Handler, &Unit) -> Vec<Given>, answer: fn(&Value) -> Answer) -> Vec<SiteRun> {
+    let mut store = MapResolver::new();
+    let hs = handlers(w, &mut store);
     let mut out = Vec::new();
-    for e in &server.endpoints {
-        let label = format!("{} {}", e.method, e.path);
-        let inputs = bodies().iter().map(|b| vec![Some(request(&e.method, &e.path, b))]).collect();
-        out.push(Handler { child: trace(&label), label, hash: e.hash.clone(), inputs });
-    }
-    for a in &server.actions {
-        let inputs = bodies().iter().map(|b| vec![Some(holon_core::parse_json(if b.is_empty() { "{}" } else { b }).unwrap_or(Value::Record(BTreeMap::new())))]).collect();
-        out.push(Handler { child: trace(&a.label), label: a.label.clone(), hash: a.hash.clone(), inputs });
-    }
-    for c in &server.clocks {
-        out.push(Handler { child: trace(&c.label), label: c.label.clone(), hash: c.hash.clone(), inputs: vec![vec![]] });
-    }
-    // A file's, a mail's, a feed's, a queue's and a websocket's handler: golden's bodies as the
-    // record it is handed, on each input it takes.
-    let others = server.files.iter().map(|f| (&f.label, &f.hash)).chain(server.mails.iter().map(|m| (&m.label, &m.hash))).chain(server.feeds.iter().map(|f| (&f.label, &f.hash)));
-    let others = others.chain(server.queues.iter().map(|q| (&q.label, &q.hash))).chain(server.websockets.iter().map(|s| (&s.label, &s.hash)));
-    for (label, hash) in others {
-        let ports = store.resolve(&parse_hash(hash).unwrap()).map_or(1, |u| u.inputs.len());
-        let inputs = bodies().iter().map(|b| vec![Some(holon_core::parse_json(if b.is_empty() { "{}" } else { b }).unwrap_or(Value::Record(BTreeMap::new()))); ports]).collect();
-        out.push(Handler { child: trace(label), label: label.clone(), hash: hash.clone(), inputs });
+    for h in &hs {
+        let hash = parse_hash(&h.hash).expect("a hash");
+        let unit = store.resolve(&hash).expect("the handler's unit").clone();
+        // The handler's own composite, inside its endpoint's (or its clock's, …) unit.
+        let UnitBody::Composite { children, .. } = &unit.body else { continue };
+        let Some(handler) = children.first().and_then(|c| store.resolve(c)).cloned() else { continue };
+        // The sites written within this handler's body, and those of the functions it calls.
+        let body = |s: &Site| h.children.iter().any(|id| w.lowered.spans.get(id).is_some_and(|sp| within(*sp, s.within)));
+        for (i, (input, sourced)) in given(h, &unit).into_iter().enumerate() {
+            let mut run = Run { answer: Some(answer), ..Run::default() };
+            eval_observed(&unit, &input, &Sourcing { store: &store, sourced: &sourced }, &mut run);
+            let mut ctxs = Vec::new();
+            contexts(w, &store, &handler, Context { path: vec![0], children: in_run_order(&handler, &h.children), parent: None, function: None }, &run, &mut ctxs, None);
+            for (ctx, function) in &ctxs {
+                let ctx_unit = resolve_at(&store, &unit, &ctx.path);
+                for (n, site) in w.lowered.sites.iter().enumerate() {
+                    let here = match (function, site.path.first()) {
+                        (Some(f), Some(Atom::Entered(g))) => f == g,
+                        (None, Some(Atom::Entry)) => body(site),
+                        _ => false,
+                    };
+                    if !here {
+                        continue;
+                    }
+                    let steps = own_steps(w, site, ctx, &store, ctx_unit.as_ref());
+                    let today = (!steps.is_empty()).then(|| {
+                        steps.iter().any(|k| {
+                            let mut at = ctx.path.clone();
+                            at.push(*k);
+                            does_something(&run, &at)
+                        })
+                    });
+                    let kept = (!site.kept.is_empty()).then(|| site.kept.iter().all(|t| holds(t, &mut |p| seen(w, ctx, &run, p)) == Some(true)));
+                    let past = ctx_unit.as_ref().is_some_and(|u| past_nothing(w, site, ctx, &run, &store, u));
+                    // One with none is enough to say it has none; else one never computed leaves
+                    // it not known.
+                    let values: Vec<Seen> = site.needs.iter().map(|need| crate::lang::reached::value(need, &mut |p| seen_need(w, ctx, &run, p))).collect();
+                    let has_values = if values.contains(&Seen::Absent) {
+                        Some(false)
+                    } else if values.contains(&Seen::Unknown) {
+                        None
+                    } else {
+                        Some(true)
+                    };
+                    out.push(SiteRun { site: n, handler: h.label.clone(), input: i, at: ctx.path.clone(), reached: path_on(w, site, ctx, &run), today, kept, has_values, past_nothing: past });
+                }
+            }
+        }
     }
     out
 }
 
-/// The census at step C1's first stop: how many sites each sample has, and how many of the tests
-/// on their paths today's runs never compute. Printed; it asserts only that watching the
-/// lowering changes nothing it gives.
-#[test]
-fn every_samples_sites_are_read_off_its_runs() {
-    let mut report = String::new();
-    let (mut sites_all, mut by_kind, mut elsewhere_all) = (0, BTreeMap::<&str, usize>::new(), 0);
-    let (mut parts_all, mut parts_unlowered, mut parts_never) = (0, 0, 0);
-    let (mut looked, mut yes, mut no, mut not_known) = (0, 0, 0, 0);
-    let mut unowned = 0;
-    for s in samples() {
-        let w = Watched::of(s.text);
-        let plain = ts::compile(s.text).unwrap();
-        assert!(plain.doc == w.lowered.doc, "{}: watching the lowering changed what it gives", s.name);
-        let mut store = MapResolver::new();
-        let hs = handlers(&w, &mut store);
-        let mut unknown_parts: Vec<Expr> = Vec::new();
-        sites_all += w.lowered.sites.len();
-        for site in &w.lowered.sites {
-            *by_kind.entry(site.does).or_default() += 1;
-        }
-        parts_all += w.parts.len();
-        parts_unlowered += w.parts.iter().filter(|p| w.nodes(p).is_empty()).count();
-        // Each site, under the handler whose steps are written within its body.
-        let mut owned: Vec<Vec<&Site>> = hs.iter().map(|_| Vec::new()).collect();
-        for site in &w.lowered.sites {
-            if site.path.iter().any(|a| matches!(a, Atom::Entered(_) | Atom::Item { .. })) {
-                elsewhere_all += 1;
-                continue;
-            }
-            let mut any = false;
-            for (h, sites) in hs.iter().zip(owned.iter_mut()) {
-                if h.child.keys().any(|id| w.lowered.spans.get(id).is_some_and(|sp| within(*sp, site.within))) {
-                    sites.push(site);
-                    any = true;
-                }
-            }
-            if !any {
-                unowned += 1;
-                let _ = std::fmt::Write::write_fmt(&mut report, format_args!("  {}: no handler holds the site at {:?} ({})\n", s.name, site.at.start, site.does));
-            }
-        }
-        for (h, sites) in hs.iter().zip(&owned) {
-            let hash = parse_hash(&h.hash).unwrap();
-            let unit = store.resolve(&hash).unwrap_or_else(|| panic!("{} {}: unit", s.name, h.label));
-            for input in &h.inputs {
-                let mut run = Run::default();
-                eval_observed(unit, input, &store, &mut run);
-                for site in sites {
-                    looked += 1;
-                    match path_on(site, &w, h, &run, &mut unknown_parts) {
-                        Reached::Yes => yes += 1,
-                        Reached::No => no += 1,
-                        Reached::NotKnown(_) => not_known += 1,
-                        Reached::Elsewhere => unreachable!("left out above"),
-                    }
-                }
-            }
-        }
-        parts_never += unknown_parts.len();
-        for p in &unknown_parts {
-            let line = s.text.lines().nth(p.span.start.line as usize - 1).unwrap_or("").trim();
-            let _ = std::fmt::Write::write_fmt(&mut report, format_args!("  {}: never computed where needed, line {}: {line}\n", s.name, p.span.start.line));
+/// A composite's children's nodes in the order a run in this store goes through them. A trace
+/// (`flow::trace_of`) names them in the canonical order the server's store hands a unit back in;
+/// an in-memory store keeps the order they were made in, which canonical position `p` is child
+/// `order[p]` of.
+fn in_run_order(unit: &Unit, trace: &[String]) -> Vec<String> {
+    let UnitBody::Composite { children, edges } = &unit.body else { return trace.to_vec() };
+    let Ok(order) = holon_core::canonical_child_order(children, edges) else { return trace.to_vec() };
+    let mut out = vec![String::new(); children.len()];
+    for (p, &k) in order.iter().enumerate() {
+        if let (Some(slot), Some(id)) = (out.get_mut(k), trace.get(p)) {
+            *slot = id.clone();
         }
     }
-    println!(
-        "sites: {sites_all} ({by_kind:?}); in a function's body or a function written in place: {elsewhere_all}; in no handler: {unowned}\n\
-         test parts: {parts_all}, lowered to no step of today's graph: {parts_unlowered}, never computed on some run where a path needed it: {parts_never}\n\
-         site runs: {looked}: reached {yes}, not reached {no}, not known {not_known}\n{report}"
-    );
+    out
 }
+
+/// The unit at `path` below `root`.
+fn resolve_at(store: &impl Resolver, root: &Unit, path: &[u32]) -> Option<Unit> {
+    let mut u = root.clone();
+    for k in path {
+        let UnitBody::Composite { children, .. } = &u.body else { return None };
+        u = store.resolve(children.get(*k as usize)?)?.clone();
+    }
+    Some(u)
+}
+
+/// A request as the data plane gives a route one (golden.rs's).
+pub fn request(method: &str, path: &str, body: &str) -> Value {
+    let text = |s: &str| Value::Text(s.into());
+    let params: BTreeMap<String, Value> = path.split('/').filter_map(|seg| seg.strip_prefix(':').or_else(|| seg.strip_prefix('*'))).map(|k| (k.to_string(), text("tea"))).collect();
+    Value::Record(BTreeMap::from([
+        ("method".to_string(), text(method)),
+        ("path".to_string(), text(path)),
+        ("params".to_string(), Value::Record(params)),
+        ("query".to_string(), Value::Record(BTreeMap::from([("after".to_string(), text("a"))]))),
+        ("headers".to_string(), Value::Record(BTreeMap::from([("content-type".to_string(), text("application/json"))]))),
+        ("body".to_string(), text(body)),
+    ]))
+}
+
+/// A host's answer as a test gives it: a request answered 200 with an empty body; any other ask
+/// (a read, a wait) nothing yet or nothing.
+pub fn answer_ok(request: &Value) -> Answer {
+    match request {
+        Value::Record(r) if r.contains_key("url") => Answer::Value(Value::Record(BTreeMap::from([
+            ("status".to_string(), Value::Number(200.0)),
+            ("headers".to_string(), Value::Record(BTreeMap::new())),
+            ("body".to_string(), Value::Text(String::new())),
+        ]))),
+        _ => Answer::Absent,
+    }
+}
+
+#[cfg(test)]
+mod tests;

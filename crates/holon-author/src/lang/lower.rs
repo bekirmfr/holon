@@ -110,11 +110,19 @@ pub fn lower_watching(file: &File, watched: &[Expr]) -> R<(Lowered, Found)> {
     }
     lowerer.watch.exprs = watched.to_vec();
     lowerer.watch.found = vec![Vec::new(); watched.len()];
+    lowerer.b.holon_traces = Some(BTreeMap::new());
     lowerer.run(file)
 }
 
-/// For each expression [`lower_watching`] watched, the nodes and outputs it was lowered to.
-pub type Found = Vec<Vec<(String, usize)>>;
+/// What [`lower_watching`] saw: for each expression watched, the nodes and outputs it was lowered
+/// to; and each function's unit, by hash, with the node each of its children is.
+#[derive(Clone, Debug, Default)]
+pub struct Found {
+    pub nodes: Vec<Vec<(String, usize)>>,
+    pub holons: BTreeMap<String, Vec<String>>,
+    /// Each function's inputs, by its name: what a call of it is given, in order.
+    pub inputs: BTreeMap<String, Vec<String>>,
+}
 
 fn span_key(s: Span) -> (u32, u32, u32, u32) {
     (s.start.line, s.start.col, s.end.line, s.end.col)
@@ -607,6 +615,7 @@ impl<'a> Lowerer<'a> {
         }
         let settings = self.settings(file)?;
         let name = file.headers.iter().find_map(|h| if let HeaderKind::Flow(n) = &h.kind { Some(n.clone()) } else { None });
+        let holons = self.b.holon_traces.take().unwrap_or_default();
         let mut doc = self.b.finish(settings);
         super::layout::lay_out(&mut doc);
         for node in &mut doc.nodes {
@@ -632,7 +641,7 @@ impl<'a> Lowerer<'a> {
                 return err(span, format!("this isn't wired to {what}, so it isn't part of the handler (a handler is everything wired to its trigger): write something with it, or use {use_} in it"));
             }
         }
-        Ok((Lowered { name, doc, names: self.names, spans: self.spans, sites: Vec::new() }, self.watch.found))
+        Ok((Lowered { name, doc, names: self.names, spans: self.spans, sites: Vec::new() }, Found { nodes: self.watch.found, holons, inputs: BTreeMap::new() }))
     }
 
     fn settings(&self, file: &File) -> R<Settings> {

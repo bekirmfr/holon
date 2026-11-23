@@ -53,11 +53,40 @@ pub fn compile_watched(src: &str) -> R<(Lowered, Vec<Expr>, super::lower::Found)
             for test in site.path.iter().filter_map(|a| if let Atom::Holds { test, .. } = a { Some(test) } else { None }).chain(&site.kept) {
                 super::reached::parts(test, &mut parts);
             }
+            for need in &site.needs {
+                need_parts(need, &mut parts);
+            }
         }
-        let (mut lowered, found) = super::lower::lower_watching(&file, &parts)?;
+        let (mut lowered, mut found) = super::lower::lower_watching(&file, &parts)?;
+        for item in &file.items {
+            if let Item::Holon(def) = item {
+                found.inputs.insert(def.name.text.clone(), def.inputs.iter().map(|p| p.name.text.clone()).collect());
+            }
+        }
         lowered.sites = sites;
         Ok((lowered, parts, found))
     })
+}
+
+/// A needed value's parts, and those of each part of a record or a list written in place, read
+/// where the lowering made no step of the whole (`reached_runs`).
+fn need_parts(need: &Expr, out: &mut Vec<Expr>) {
+    let mut mine = Vec::new();
+    super::reached::parts(need, &mut mine);
+    for part in mine {
+        if !out.contains(&part) {
+            out.push(part.clone());
+        }
+        match &part.kind {
+            ExprKind::Record { spread, fields } => {
+                for e in spread.iter().map(|s| &**s).chain(fields.iter().map(|(_, e)| e)).filter(|e| !matches!(e.kind, ExprKind::Lambda { .. })) {
+                    need_parts(e, out);
+                }
+            }
+            ExprKind::List(xs) => xs.iter().for_each(|x| need_parts(x, out)),
+            _ => {}
+        }
+    }
 }
 
 /// Read a `.holon.ts` text into the syntax tree the lowering reads.
@@ -1449,7 +1478,7 @@ impl<'s, 't> Reader<'s, 't> {
             each_expr(stmts, &mut inline);
             // The paths read it where the body does.
             for site in &mut self.sites[self.frame.sites..] {
-                for t in site.path.iter_mut().filter_map(|a| if let Atom::Holds { test, .. } = a { Some(test) } else { None }).chain(site.kept.iter_mut()) {
+                for t in site.path.iter_mut().filter_map(|a| if let Atom::Holds { test, .. } = a { Some(test) } else { None }).chain(site.kept.iter_mut()).chain(site.needs.iter_mut()) {
                     walk(t, &mut inline);
                 }
             }
@@ -1516,9 +1545,10 @@ impl<'s, 't> Reader<'s, 't> {
                     }
                     // In a `try` block, what follows is reached where what this statement made
                     // arrived (the guard `go_on_if_arrived` holds below). Outside one it always
-                    // is, Holon's own rule: a line that gave nothing is a value missing, not a
-                    // failure, where JavaScript would have thrown and run nothing below
-                    // (reached.rs). The statement is marked so a run can be named as that rule's.
+                    // is, as today: a line that gave nothing is a value missing, not a failure,
+                    // where JavaScript would have thrown and run nothing below (reached.rs; owed
+                    // or Holon's own is the owner's open question). The statement is marked so a
+                    // run past it can be labelled.
                     if self.frame.trying.is_empty() {
                         self.mark(Atom::Completed(self.span(s.span())));
                     }
@@ -2352,7 +2382,7 @@ impl<'s, 't> Reader<'s, 't> {
             Place::Local(ts, span) => self.new_version(&ts, span, value, stmts, false),
             Place::State(key, key_span) => self.state_write(key, value, at, key_span, stmts, start),
             Place::Store(collection, span, key) => {
-                self.site(at, "writes");
+                self.site(at, "writes", vec![key.clone(), value.clone()]);
                 self.frame.written.insert(collection.clone());
                 let key = self.tried(key, stmts);
                 let value = self.tried(value, stmts);
@@ -2379,7 +2409,7 @@ impl<'s, 't> Reader<'s, 't> {
             && let Some(collection) = self.store_name(&c.object)
         {
             let key = self.expr(&c.expression)?;
-            self.site(at, "deletes");
+            self.site(at, "deletes", vec![key.clone()]);
             let key = self.tried(key, stmts);
             let key = self.guarded(key);
             self.frame.written.insert(collection.clone());
@@ -2476,7 +2506,10 @@ impl<'s, 't> Reader<'s, 't> {
     /// `state.k = v`: what the key holds is `v` where this point is reached and what it held
     /// otherwise, written once, where its value is last settled (§5).
     fn state_write(&mut self, key: String, value: Expr, at: Span, key_span: Span, stmts: &mut Vec<Stmt>, start: usize) -> R<()> {
-        self.site(at, "writes");
+        self.site(at, "writes", vec![value.clone()]);
+        if let Some(s) = self.sites[self.frame.sites..].iter_mut().rev().find(|s| s.at == at && s.does == "writes") {
+            s.key = Some(key.clone());
+        }
         self.state_keys.insert(key.clone());
         // Above the returns before the first wait, and again past the wait: a run that returned
         // keeps the first value, which the text, writing the key's value once, can't show.
@@ -2558,8 +2591,8 @@ impl<'s, 't> Reader<'s, 't> {
 
     /// A doing site at `at`, reached as the statement being read is. A part read twice is
     /// recorded once, as last read.
-    fn site(&mut self, at: Span, does: &'static str) {
-        let site = Site { at, does, within: self.frame.body, path: self.reached_here(), kept: Vec::new() };
+    fn site(&mut self, at: Span, does: &'static str, needs: Vec<Expr>) {
+        let site = Site { at, does, within: self.frame.body, path: self.reached_here(), kept: Vec::new(), needs, key: None };
         match self.sites[self.frame.sites..].iter_mut().rev().find(|s| s.at == at && s.does == does) {
             Some(s) => *s = site,
             None => self.sites.push(site),
@@ -2588,7 +2621,7 @@ impl<'s, 't> Reader<'s, 't> {
             ExprKind::Call { callee, .. } if callee.text == "start" => Some("starts"),
             ExprKind::Call { callee, .. } if matches!(self.defs.get(&callee.text), Some(Def::Holon { .. })) => Some("enters"),
             ExprKind::Await { .. } => Some("waits"),
-            ExprKind::State(_) => Some("reads"),
+            ExprKind::State(_) => Some("reads state"),
             ExprKind::Index { base, .. } => match &base.kind {
                 ExprKind::Name(n) if self.imports.values().any(|i| matches!(i, Noun::Declared("collection" | "folder", d) if d == n)) => Some("reads"),
                 _ => None,
@@ -2957,7 +2990,7 @@ impl<'s, 't> Reader<'s, 't> {
     fn throw_statement(&mut self, t: &js::ThrowStatement, block: Block, stmts: &mut Vec<Stmt>) -> R<Ret> {
         let at = self.span(t.span);
         let message = self.error_message(&t.argument)?;
-        self.site(at, "throws");
+        self.site(at, "throws", vec![]);
         let mut failed = leaf("fail", &[], vec![message], at);
         if !self.frame.trying.is_empty() {
             self.hide(failed, "thrown", stmts);
@@ -3908,7 +3941,7 @@ impl<'s, 't> Reader<'s, 't> {
     fn expr(&mut self, e: &js::Expression) -> R<Expr> {
         let x = self.value(e)?;
         if let Some(does) = self.doing(&x) {
-            self.site(x.span, does);
+            self.site(x.span, does, needs(&x));
         }
         Ok(x)
     }
@@ -6282,6 +6315,19 @@ fn binary_at(op: BinOp, lhs: Expr, rhs: Expr, span: Span) -> Expr {
 /// `value when c`.
 fn when(value: Expr, c: Expr) -> Expr {
     binary(BinOp::When, value, c)
+}
+
+/// The values a doing expression is given: what it can't run without, where one has none.
+fn needs(e: &Expr) -> Vec<Expr> {
+    match &e.kind {
+        ExprKind::Call { args, .. } | ExprKind::Method { args, .. } => args.iter().filter(|a| !matches!(a.value.kind, ExprKind::Lambda { .. })).map(|a| a.value.clone()).collect(),
+        ExprKind::Leaf { args, .. } => args.iter().filter(|a| !matches!(a.value.kind, ExprKind::Lambda { .. })).map(|a| a.value.clone()).collect(),
+        ExprKind::Index { key, .. } => vec![(**key).clone()],
+        // An approval's wait is asked with what it shows people.
+        ExprKind::Await { shows, .. } => shows.iter().map(|s| (**s).clone()).collect(),
+        ExprKind::Paren(x) => needs(x),
+        _ => vec![],
+    }
 }
 
 /// `c ? a : b`.
