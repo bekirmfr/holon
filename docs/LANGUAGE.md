@@ -2899,8 +2899,12 @@ each case chooses the name's value the same way.
 
 A failure is an absence (§6.3), so `try` is a choice on absence: **the try block succeeds when
 every value it makes arrives**. Each binding it makes, each key and value it writes, and each
-answer it returns is tested, where it is reached (`same_value(x, x) ?? false`, true for any value,
-a `NaN` too), and `ok` is all of them. The block's writes and sends are tied to `ok` (their
+answer it returns is tested, where it is reached (`has_value(x)`, true for any value,
+a `NaN` too), and `ok` is all of them. `has_value` is one step, the leaf of that name: true when
+its input arrived, `false`, `0` and `NaN` included, and false when it didn't, so it never gives
+nothing itself; a wait's hold and an `after` test with it too, and a text may call it (`import {
+has_value } from "holon"`). (Until 2026-11-24 the test was two steps, `same_value(x, x) ?? false`,
+drawn on the canvas as a doubled wire into `same_value` and a `default` after it.) The block's writes and sends are tied to `ok` (their
 `after`), so they are made all together or not at all, and its returns answer only where `ok`
 holds. The catch block is read under `!ok`: its writes are tied to the block having failed, and a
 name or state key either block changes holds `ok ? tried : caught` after them, as after an `if`.
@@ -2931,10 +2935,10 @@ is the same unit as (a test says so):
 route.post("/n", (req) => {
   const note = JSON.parse(req.body)
   const tried_1 = note.id
-  const ok_1 = (same_value(note, note) ?? false) && (same_value(tried_1, tried_1) ?? false)
+  const ok_1 = has_value(note) && has_value(tried_1)
   const tie = ok_1 ? true : undefined
   if (tie !== undefined) {
-    notes[tried_1] = (same_value(note, note) ?? false) ? note : undefined
+    notes[tried_1] = has_value(note) ? note : undefined
   }
   return status(!(ok_1 ?? false) ? 400 : 201, !(ok_1 ?? false) ? "not a note" : "kept")
 })

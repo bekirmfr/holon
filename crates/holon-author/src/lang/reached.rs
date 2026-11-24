@@ -131,7 +131,7 @@ pub fn parts(test: &Expr, out: &mut Vec<Expr>) {
                 parts(e, out);
             }
         }
-        K::Leaf { leaf, args, .. } if leaf.text == "same_value" => args.iter().for_each(|a| parts(&a.value, out)),
+        K::Leaf { leaf, args, .. } if leaf.text == "same_value" || leaf.text == "has_value" => args.iter().for_each(|a| parts(&a.value, out)),
         K::List(xs) => xs.iter().for_each(|x| parts(x, out)),
         _ => {
             if !out.contains(test) {
@@ -187,6 +187,11 @@ pub fn value(test: &Expr, part: &mut dyn FnMut(&Expr) -> Seen) -> Seen {
             Seen::Value(c) if truthy(&c) => value(then, part),
             Seen::Value(_) => els.as_ref().map_or(Seen::Absent, |e| value(e, part)),
             other => other,
+        },
+        K::Leaf { leaf, args, .. } if leaf.text == "has_value" && args.len() == 1 => match value(&args[0].value, part) {
+            Seen::Value(_) => boolean(true),
+            Seen::Absent => boolean(false),
+            Seen::Unknown => Seen::Unknown,
         },
         K::Leaf { leaf, args, .. } if leaf.text == "same_value" && args.len() == 2 => match (value(&args[0].value, part), value(&args[1].value, part)) {
             (Seen::Value(a), Seen::Value(b)) => boolean(a == b || matches!((&a, &b), (V::Number(x), V::Number(y)) if x.is_nan() && y.is_nan())),

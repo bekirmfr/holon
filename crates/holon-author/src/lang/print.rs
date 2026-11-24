@@ -475,10 +475,9 @@ fn without_block_ties<'n>(nodes: Vec<&'n Node>, wires: Vec<BlockWire>, outs: &[(
         }
     }
     // The hold ts.rs `waited_on` binds after the waits in an action's body, which nothing reads:
-    // `when(t, has_value(w))`, `has_value(w)` lowered as `same_value(w, w) ?? false`, `t` the
-    // block's trigger and `w` what the wait gave, or past several the list of what each gave (as
-    // `same_value([a, b], [a, b])`, the list written twice). It keeps what follows each wait in the
-    // action; the text writes that by order alone, so it goes, with its test.
+    // `when(t, has_value(w))`, `t` the block's trigger and `w` what the wait gave, or past several
+    // the list of what each gave. It keeps what follows each wait in the action; the text writes
+    // that by order alone, so it goes, with its test.
     let feeds = |id: &str| wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id: from, .. } if from == id)).count();
     let leaf = |id: &str, name: &str| by_id.get(id).is_some_and(|n| n.data.body == PlacedBody::Primitive && n.data.name == name);
     let waits = |src: &Src| matches!(src, Src::Node { id, .. } if leaf(id, "await") || leaf(id, "approval"));
@@ -493,17 +492,12 @@ fn without_block_ties<'n>(nodes: Vec<&'n Node>, wires: Vec<BlockWire>, outs: &[(
     for n in nodes.iter().filter(|n| leaf(&n.id, "guard") && feeds(&n.id) == 0) {
         let hold = || -> Option<Vec<String>> {
             let base = into(&n.id, "value")?;
-            let Some(Src::Node { id: held, .. }) = into(&n.id, "cond") else { return None };
-            let no = by_id.get(held.as_str()).is_some_and(|d| d.param("type") == "Boolean" && d.param("value") == "false");
-            let Some(Src::Node { id: same, .. }) = into(held, "value") else { return None };
-            let (a, b) = (into(same, "a")?, into(same, "b")?);
-            let parts = leaf(held, "default") && no && feeds(held) == 1 && leaf(same, "same_value") && feeds(same) == 1;
-            let lists = match (list_of_waits(a), list_of_waits(b)) {
-                (Some((la, xs)), Some((lb, ys))) if la != lb && xs == ys => Some([la, lb]),
-                _ => None,
-            };
-            let tests = (a == b && waits(a)) || lists.is_some();
-            (tie(base, TRIGGER) && parts && tests).then(|| [held.clone(), same.clone()].into_iter().chain(lists.into_iter().flatten()).collect())
+            let Some(Src::Node { id: test, .. }) = into(&n.id, "cond") else { return None };
+            let x = into(test, "value")?;
+            let parts = leaf(test, "has_value") && feeds(test) == 1;
+            let list = list_of_waits(x).map(|(l, _)| l);
+            let tests = waits(x) || list.is_some();
+            (tie(base, TRIGGER) && parts && tests).then(|| std::iter::once(test.clone()).chain(list).collect())
         };
         if let Some(parts) = hold() {
             gone.insert(n.id.clone());
@@ -574,8 +568,8 @@ fn without_block_ties<'n>(nodes: Vec<&'n Node>, wires: Vec<BlockWire>, outs: &[(
     }
     gone.extend(arm_gone.keys().cloned());
     // What follows several waits is tied to the list of what each gave, in order (ts.rs
-    // `Reader::waited`): a trigger, the answer's test `same_value([a, b], [a, b]) ?? false` (the
-    // list written twice) or a value's held so, `same_value(l, l)`. The text writes it after the
+    // `Reader::waited`): a trigger, the answer's test `has_value([a, b])` (the
+    // list read once) or a value's held so, `same_value(l, l)`. The text writes it after the
     // last wait, by order alone, as it writes what follows one wait: each read of such a list is
     // read off the last wait, and the list goes.
     let listed = |id: &str| -> Option<Vec<Src>> {
@@ -583,8 +577,9 @@ fn without_block_ties<'n>(nodes: Vec<&'n Node>, wires: Vec<BlockWire>, outs: &[(
         items.sort_by(|x, y| x.0.cmp(y.0));
         (leaf(id, "list") && !gone.contains(id) && items.len() >= 2 && items.iter().all(|(_, s)| waits(s))).then(|| items.into_iter().map(|(_, s)| s.clone()).collect())
     };
-    let tests_lists = |same: &str| match (into(same, "a"), into(same, "b")) {
-        (Some(Src::Node { id: a, .. }), Some(Src::Node { id: b, .. })) => leaf(same, "same_value") && listed(a).is_some() && listed(a) == listed(b),
+    let tests_lists = |test: &str| match (into(test, "a"), into(test, "b"), into(test, "value")) {
+        (Some(Src::Node { id: a, .. }), Some(Src::Node { id: b, .. }), _) => leaf(test, "same_value") && listed(a).is_some() && listed(a) == listed(b),
+        (_, _, Some(Src::Node { id: l, .. })) => leaf(test, "has_value") && listed(l).is_some(),
         _ => false,
     };
     let mut last_of: HashMap<String, Src> = HashMap::new();
@@ -684,9 +679,9 @@ fn returns_before_a_wait(nodes: &[&Node], wires: &[BlockWire]) -> bool {
     let read = |id: &str| wires.iter().any(|(s, _, _)| matches!(s, Src::Node { id: from, .. } if from == id));
     let hold = |h: &str| {
         leaf(h, "guard")
-            && into(h, "cond").is_some_and(|d| leaf(d, "default") && into(d, "value").is_some_and(|s| leaf(s, "same_value") && into(s, "a").is_some_and(|a| leaf(a, "await") || leaf(a, "approval") || leaf(a, "list"))))
+            && into(h, "cond").is_some_and(|d| leaf(d, "has_value") && into(d, "value").is_some_and(|a| leaf(a, "await") || leaf(a, "approval") || leaf(a, "list")))
     };
-    nodes.iter().any(|g| leaf(&g.id, "guard") && !read(&g.id) && into(&g.id, "cond").is_some_and(|c| !leaf(c, "default")) && into(&g.id, "value").is_some_and(hold))
+    nodes.iter().any(|g| leaf(&g.id, "guard") && !read(&g.id) && into(&g.id, "cond").is_some_and(|c| !leaf(c, "has_value")) && into(&g.id, "value").is_some_and(hold))
 }
 
 /// What an action's body answers before its first wait, taken out of its graph: the rest prints as
@@ -774,20 +769,7 @@ fn early_answers(nodes: &[&Node], wires: &[BlockWire]) -> Result<EarlyAnswers, S
     // `when(value, has_value(w))`, `w` what the waits gave: the answer once they are answered.
     let waited = |id: &str| {
         leaf(id, "guard")
-            && node_into(id, "cond").is_some_and(|d| {
-                no(&d)
-                    && node_into(&d, "value").is_some_and(|s| {
-                        leaf(&s, "same_value")
-                            && match (into(&s, "a"), into(&s, "b")) {
-                                (Some(a), Some(b)) if a == b => waits(&a),
-                                (Some(a), Some(b)) => match (&a, &b) {
-                                    (Src::Node { id: la, .. }, Src::Node { id: lb, .. }) => waits_list(&a) && waits_list(&b) && items(la) == items(lb),
-                                    _ => false,
-                                },
-                                _ => false,
-                            }
-                    })
-            })
+            && node_into(id, "cond").is_some_and(|d| leaf(&d, "has_value") && into(&d, "value").is_some_and(|x| waits(&x) || waits_list(&x)))
     };
     let respond = nodes.iter().find(|n| n.is_template("respond")).ok_or("it has no answer")?;
     let before = nodes.iter().find(|n| leaf(&n.id, "await") || leaf(&n.id, "approval")).ok_or("it has no wait")?.id.clone();
@@ -2491,22 +2473,20 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// each gave, read off the last by `without_block_ties`), with the leaves that test `x`.
     /// Written as the value alone: in TypeScript a return after an `await` answers once it is
     /// reached, and reading it back holds it so again.
-    fn waited_answer(&self, respond: &Node) -> Option<[&'g Node; 3]> {
+    fn waited_answer(&self, respond: &Node) -> Option<[&'g Node; 2]> {
         let guard = self.part(respond, "body", "guard", 1)?;
-        let [held, same] = self.held_to_a_wait(guard)?;
-        Some([guard, held, same])
+        let [has] = self.held_to_a_wait(guard)?;
+        Some([guard, has])
     }
 
     /// The test of `guard`, when it holds its value to what a wait gave: `when(value, has_value(x))`,
-    /// `x` an `await`'s or an `approval`'s output, `has_value(x)` written `same_value(x, x) ??
-    /// false`, its fallback frozen in a `default`. The answer of an action that waits is held so
+    /// `x` an `await`'s or an `approval`'s output. The answer of an action that waits is held so
     /// (ts.rs `finish`), and a value bound past a wait with a call in one of its branches (lower.rs
     /// `stmt`). Past the wait, the text writes either as the value alone.
-    fn held_to_a_wait(&self, guard: &Node) -> Option<[&'g Node; 2]> {
-        let held = self.part(guard, "cond", "default", 1).filter(|d| d.param("type") == "Boolean" && d.param("value") == "false")?;
-        let same = self.part(held, "value", "same_value", 1)?;
-        let (a, b) = (self.g.incoming.get(&(same.id.clone(), "a".to_string()))?, self.g.incoming.get(&(same.id.clone(), "b".to_string()))?);
-        (a == b && self.waits_for(a)).then_some([held, same])
+    fn held_to_a_wait(&self, guard: &Node) -> Option<[&'g Node; 1]> {
+        let has = self.part(guard, "cond", "has_value", 1)?;
+        let x = self.g.incoming.get(&(has.id.clone(), "value".to_string()))?;
+        self.waits_for(x).then_some([has])
     }
 
     /// Whether `src` is what a wait gave: an `await`'s or an `approval`'s output, which every write

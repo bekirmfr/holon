@@ -1464,7 +1464,11 @@ impl<'s, 't> Reader<'s, 't> {
             }
         }
         for h in std::mem::take(&mut self.frame.hidden) {
-            if uses(stmts, &h) > 1 {
+            // A value a `try` tests stays bound where it is made: written back into its test, a
+            // call in it would move into the test's `&&`, a branch, and be made only where the
+            // tests before it held. (`same_value(h, h)`, the test before `has_value`, read it
+            // twice, so it never was written back.)
+            if uses(stmts, &h) > 1 || tested(stmts, &h) {
                 continue;
             }
             let Some(i) = stmts.iter().position(|s| matches!(&s.kind, StmtKind::Bind { name, .. } if name.text == h)) else { continue };
@@ -6365,12 +6369,10 @@ fn if_else(c: Expr, a: Expr, b: Expr, at: Span) -> Expr {
     Expr { kind: ExprKind::If { cond: Box::new(c), then: Box::new(a), els: Some(Box::new(b)) }, span: at }
 }
 
-/// `same_value(x, x) ?? false`: whether `x` arrived, a NaN too (§8).
+/// `has_value(x)`: whether `x` arrived, a NaN or `false` too (§8).
 fn has_value(x: Expr) -> Expr {
     let at = x.span;
-    let same = leaf("same_value", &[], vec![x.clone(), x], at);
-    let no = Expr { kind: ExprKind::Bool(false), span: at };
-    Expr { kind: ExprKind::Paren(Box::new(binary_at(BinOp::Coalesce, same, no, at))), span: at }
+    leaf("has_value", &[], vec![x], at)
 }
 
 /// Whether `x`, made under `cond`, arrived where `cond` holds (§8): read only there, so that a
@@ -6429,13 +6431,15 @@ fn no_case(c: &Expr) -> Expr {
     }
 }
 
-/// Whether condition `c` always has a value: `x ?? false`, `true` or `false`, and `!`, `&&` and
-/// `||` of those.
+/// Whether condition `c` always has a value: `x ?? false`, `true` or `false`, `has_value(x)`, and
+/// `!`, `&&` and `||` of those.
 fn sure(c: &Expr) -> bool {
     match &c.kind {
         ExprKind::Bool(_) => true,
         ExprKind::Not(x) | ExprKind::Paren(x) => sure(x),
         ExprKind::Binary { op: BinOp::Coalesce, rhs, .. } => matches!(rhs.kind, ExprKind::Bool(_)),
+        // A try's test of a value it made: true or false, never nothing.
+        ExprKind::Leaf { leaf, .. } => leaf.text == "has_value",
         ExprKind::Binary { op: BinOp::And | BinOp::Or, lhs, rhs } => sure(lhs) && sure(rhs),
         _ => false,
     }
@@ -6829,6 +6833,21 @@ fn uses(stmts: &mut [Stmt], name: &str) -> usize {
     n
 }
 
+/// Whether a `try`'s test reads `name`: `has_value(name)`.
+fn tested(stmts: &mut [Stmt], name: &str) -> bool {
+    let mut found = false;
+    each_expr(stmts, &mut |e| {
+        if let ExprKind::Leaf { leaf, args, .. } = &e.kind
+            && leaf.text == "has_value"
+            && args.iter().any(|a| matches!(&a.value.kind, ExprKind::Name(x) if x == name))
+        {
+            found = true;
+        }
+        true
+    });
+    found
+}
+
 /// `from` renamed `to`, where it is bound and where it is read.
 fn rename(stmts: &mut [Stmt], from: &str, to: &str) {
     for s in stmts.iter_mut() {
@@ -7122,7 +7141,7 @@ route.post("/c", async (req) => await charge(req.json))
     /// is a new name, branches join with ternaries, returns fold into one answer.
     /// A value that isn't a Boolean read as a condition is `is_truthy(…)`, and a status alone has an
     /// empty body. `try` and `throw` (§8): the try block's values each tested by
-    /// `same_value(x, x) ?? false`, its writes tied to all of them having arrived, the catch's
+    /// `has_value(x)`, its writes tied to all of them having arrived, the catch's
     /// answer where they didn't; a throw a `fail`, nothing, where it is reached.
     #[test]
     fn each_statement_lowers_as_its_plain_form() {
@@ -7513,7 +7532,7 @@ route.post("/n", (req) => {
   return status(201, "kept")
 })
 "#,
-                r#"import { flow, route, same_value, status } from "holon"
+                r#"import { flow, has_value, route, status } from "holon"
 import notes from "collection:notes"
 
 flow("t", { port: 8000 })
@@ -7521,10 +7540,10 @@ flow("t", { port: 8000 })
 route.post("/n", (req) => {
   const note = JSON.parse(req.body)
   const tried_1 = note.id
-  const ok_1 = (same_value(note, note) ?? false) && (same_value(tried_1, tried_1) ?? false)
+  const ok_1 = has_value(note) && has_value(tried_1)
   const tie = ok_1 ? true : undefined
   if (tie !== undefined) {
-    notes[tried_1] = (same_value(note, note) ?? false) ? note : undefined
+    notes[tried_1] = has_value(note) ? note : undefined
   }
   return status(!(ok_1 ?? false) ? 400 : 201, !(ok_1 ?? false) ? "not a note" : "kept")
 })

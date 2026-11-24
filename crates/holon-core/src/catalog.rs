@@ -77,10 +77,11 @@ pub const GENESIS: &[&str] = &[
     // pure — OpenPGP (3): a message encrypted to a public key, a detached signature checked with
     // one, and what a key says (pgp.rs, host-capabilities L4 §5.1.11)
     "pgp_encrypt", "pgp_verify", "pgp_key",
-    // pure — universal, any-typed (8): as_text is to_text's message form, the identity on text;
-    // coalesce is the first input that arrived, `default` with its fallback on a wire; fail is
-    // nothing, its message the run log's reason (the language's `throw`)
-    "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fail",
+    // pure — universal, any-typed (9): as_text is to_text's message form, the identity on text;
+    // coalesce is the first input that arrived, `default` with its fallback on a wire; has_value
+    // whether its input arrived; fail is nothing, its message the run log's reason (the
+    // language's `throw`)
+    "to_text", "as_text", "is_truthy", "guard", "default", "has_value", "coalesce", "equals", "fail",
     // request/response — performed by the host, answered in the next round (2): a request, and
     // one whose body is a file a handle names
     "http_request", "http_upload", "http_stream",
@@ -542,6 +543,9 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             vec![Param::frozen("value", "0"), Param::frozen("type", "Number")],
             Any,
         ),
+        // Whether `value` arrived: true when it did, a NaN or `false` too, false when it didn't.
+        // It runs with its input absent, as `default` does.
+        "has_value" => prim(vec![port("value", Any)], vec![], Boolean),
         "equals" => prim(vec![port("a", Any), port("b", Any)], vec![], Boolean),
 
         // ── drivers — sourced (no inputs; host-supplied). Concrete where unambiguous, `Any` where
@@ -873,8 +877,8 @@ mod tests {
         // (pgp_encrypt, pgp_verify, pgp_key) and the run's random bytes (random_bytes); and
         // mail's (mail_send), and a mailbox's trigger (mail_arrival), and a feed's (feed_event),
         // and a queue's (queue_send, queue_message), and a file as a route's answer (file_serve); and
-        // approval, a waiting point people decide.
-        assert_eq!(GENESIS.len(), 195);
+        // approval, a waiting point people decide; and has_value, whether a value arrived.
+        assert_eq!(GENESIS.len(), 196);
     }
 
     #[test]

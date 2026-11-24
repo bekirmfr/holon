@@ -71,7 +71,7 @@ export const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string>
   },
   {
     name: "util",
-    items: new Set(["to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fail"]),
+    items: new Set(["to_text", "as_text", "is_truthy", "guard", "default", "has_value", "coalesce", "equals", "fail"]),
   },
   {
     name: "drivers",

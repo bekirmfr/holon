@@ -1550,6 +1550,13 @@ declare module "holon" {
   export function guard(...args: any[]): any
 
   /**
+   * `has_value(value: Any) -> out: Boolean`
+   *
+   * Whether value arrived: true when it did (false, 0 and NaN too), false when it didn't. How a flow asks whether a step gave anything, as a try, a wait and an after do.
+   */
+  export function has_value(...args: any[]): any
+
+  /**
    * `coalesce(a: Any, b: Any) -> out: Any`
    *
    * Passes a on, or b when a didn't arrive: a fallback that is itself computed, where default's is a fixed value.

@@ -21,7 +21,7 @@
 //!   isn't), so walking into it, as explain once did, would blame a step that never ran. A
 //!   condition that didn't arrive is walked into instead: with it absent neither branch runs
 //!   (§6.4), and what made it absent is the reason. A condition that is false only because an
-//!   arrival test (`same_value(x, x) ?? false`, what `try` tests each value it makes with) found
+//!   arrival test (`has_value(x)`, what `try` tests each value it makes with) found
 //!   `x` absent is seen through to `x`: a `try` didn't test, it caught. A `??` that both sides of
 //!   gave nothing names the side that isn't a condition, so an if-else's write names the branch
 //!   taken.
@@ -171,7 +171,7 @@ pub fn origin(root: &Unit, resolver: &impl Resolver, seen: &impl Seen, at: &[u32
 /// nothing. A call is held when one is absent (eval.rs `held_when_absent`), so it is one of
 /// those.
 fn runs_without_an_input(name: &str) -> bool {
-    matches!(name, "guard" | "coalesce" | "and" | "or" | "default")
+    matches!(name, "guard" | "coalesce" | "and" | "or" | "default" | "has_value")
         || (crate::primitives::has_optional_ports(name) && !CALLS.contains(&name))
         || PASSES_EXTRA.contains(&name)
 }
@@ -444,6 +444,17 @@ impl<'a, R: Resolver, S: Seen> Walk<'a, R, S> {
                     }
                     break;
                 }
+                // `has_value(x)`: false where `x` didn't arrive, seen through to why; but a throw
+                // the try's own text makes (`if (c) throw …` in it) is the flow's own choice.
+                Some("has_value") => match self.feeder(&at.0, 0) {
+                    Some(x) if self.own_throw(&x) => break,
+                    Some(x) => match self.look(&x) {
+                        Look::Nothing => return self.why(&x.0, x.1),
+                        Look::Withheld => return WITHHELD,
+                        Look::Something | Look::Unseen => break,
+                    },
+                    None => break,
+                },
                 // `x ?? false`: the flow's fallback, unless what fell back is an arrival test.
                 Some("default") => match self.feeder(&at.0, 0) {
                     Some(f) => match self.look(&f) {
@@ -464,6 +475,25 @@ impl<'a, R: Resolver, S: Seen> Walk<'a, R, S> {
             }
         }
         self.stop(guard, Level::Condition, false)
+    }
+
+    /// Whether `x` is a throw written in the try itself: a `fail`, or one held by the tests of the
+    /// `if`s around it (`guard`s on their value). A try that caught it did what its text says, as
+    /// an `if` not taken does; a throw inside a function it calls is that function's failure.
+    /// (Before `has_value`, the try tested such a throw as `same_value` of two copies of its guard,
+    /// which the arrival test didn't take for one, so it read as the flow's own test the same way.)
+    fn own_throw(&self, x: &Out) -> bool {
+        let mut at = x.0.clone();
+        loop {
+            match self.leaf_name(&at) {
+                Some("fail") => return true,
+                Some("guard") => match self.feeder(&at, 1) {
+                    Some(v) => at = v.0,
+                    None => return false,
+                },
+                _ => return false,
+            }
+        }
     }
 
     /// `same_value(x, x)`: whether `x` arrived, as `try` and an `after` test it.
@@ -743,6 +773,38 @@ mod tests {
         let g = f.leaf("guard", &[], &[ok, a]);
         let w = f.sink("store_write", &[("key", "d")], g, req);
         assert_eq!(why(f, w, record(&[("a", Value::Number(1.0))])), at(Level::Missing, &[b], "field"));
+    }
+
+    /// The same two, tested as the language writes them now, `has_value(a) && has_value(b)`.
+    #[test]
+    fn a_try_tested_by_has_value_names_the_one_that_failed() {
+        let mut f = Flow::new();
+        let req = f.input();
+        let a = f.leaf("field", &[("name", "a")], &[req]);
+        let b = f.leaf("field", &[("name", "b")], &[req]);
+        let ha = f.leaf("has_value", &[], &[a]);
+        let hb = f.leaf("has_value", &[], &[b]);
+        let ok = f.leaf("and", &[], &[ha, hb]);
+        let g = f.leaf("guard", &[], &[ok, a]);
+        let w = f.sink("store_write", &[("key", "d")], g, req);
+        assert_eq!(why(f, w, record(&[("a", Value::Number(1.0))])), at(Level::Missing, &[b], "field"));
+    }
+
+    /// `try { if (c) throw …; state.d = 1 } catch { … }` with `c` true: the try's own throw, which
+    /// its catch took, is the flow's own choice, as an `if` not taken is; not a failure.
+    #[test]
+    fn a_throw_the_try_writes_is_its_own_choice() {
+        let mut f = Flow::new();
+        let req = f.input();
+        let c = f.konst("true", "Boolean");
+        let no = f.konst("no", "Text");
+        let thrown = f.leaf("fail", &[], &[no]);
+        let held = f.leaf("guard", &[], &[c, thrown]);
+        let ok = f.leaf("has_value", &[], &[held]);
+        let one = f.konst("1", "Number");
+        let g = f.leaf("guard", &[], &[ok, one]);
+        let w = f.sink("store_write", &[("key", "d")], g, req);
+        assert_eq!(why(f, w, record(&[])), at(Level::Condition, &[g], "guard"));
     }
 
     /// `if (req.json.flag ?? false) state.e = 1` without `flag`: the flow gave its own fallback,

@@ -59,6 +59,13 @@ pub(super) const A_FOLD_STOPS_AT_NOTHING: Debt = Debt {
 // W (a finally forgets the returns above), Z (a call in an arm read only in a branch not taken
 // isn't made) and Z's one call deeper were struck by C4: a finally is reached where its try is,
 // and a call in a branch is made where the branch is taken, read or not.
+/// New in C10 (2026-11-24): a list holding an item that didn't arrive is nothing as a whole, where
+/// JavaScript keeps `undefined` there and JSON writes it `null`. Not a reached difference: what a
+/// missing value is belongs to the stages that say it (text-means-javascript S3, S5).
+pub(super) const A_LIST_WITH_A_MISSING_ITEM_IS_NOTHING: Debt = Debt {
+    name: "a list holding a missing item is nothing",
+    says: "a list one of whose items is missing (a field the request lacks, or a list function's answer for an item) has no value, so JSON.stringify of it gives nothing and the route answers 404, where JavaScript writes the missing item as null ([null,2])",
+};
 /// P+R: a wait past a return that answered still waits.
 pub(super) const A_WAIT_PAST_AN_ANSWER_PARKS: Debt = Debt {
     name: "a wait past a return that answered still waits",
@@ -103,6 +110,7 @@ pub(super) const DEBTS: &[&Debt] = &[
     &A_LISTS_FUNCTION_GOES_PAST_A_FAILURE,
     &A_REVIVERS_NOTHING_IS_NULL,
     &A_FOLD_STOPS_AT_NOTHING,
+    &A_LIST_WITH_A_MISSING_ITEM_IS_NOTHING,
 ];
 
 /// How a row stands today.
@@ -339,6 +347,15 @@ fn rows() -> Vec<Row> {
             answer: true,
             javascript: "answers \"end\"; starts ping, ping; writes pinged = 1, pinged = 2",
             today: Today::AsJavascript,
+            long: None,
+        },
+        Row {
+            name: "a list holding a field that's missing, written as JSON",
+            text: "import { flow, route } from \"holon\"\n\nflow(\"reached-22\", { port: 19633 })\n\nroute.post(\"/go\", (req) => {\n  const got = [req.json.a, req.json.b]\n  return JSON.stringify(got)\n})\n",
+            request: r#"{"b":2}"#,
+            answer: true,
+            javascript: "answers \"[null,2]\"",
+            today: Today::Differs(&A_LIST_WITH_A_MISSING_ITEM_IS_NOTHING, "answers 404"),
             long: None,
         },
         Row {
@@ -586,13 +603,15 @@ fn a_loop_is_refused_in_plain_words() {
 /// site's run: a step made where its path says it isn't reached (or where a test of its path was
 /// never looked at), missed where it is, or run past a line that gave nothing; what a failed `try`
 /// keeps. `ListOrder` (what a function a list method calls per item does, and in which order) and
-/// `Parking` (a run that waits) are their own columns, not read by site runs.
+/// `Parking` (a run that waits) are their own columns, not read by site runs. `Value` is what a
+/// value is, not where a step is reached: its rows show no site difference at all.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Column {
     Reached,
     Kept,
     ListOrder,
     Parking,
+    Value,
 }
 
 /// Each debt's column.
@@ -607,6 +626,7 @@ const COLUMNS: &[(&str, Column)] = &[
     (A_LISTS_FUNCTION_GOES_PAST_A_FAILURE.name, Column::ListOrder),
     (A_REVIVERS_NOTHING_IS_NULL.name, Column::ListOrder),
     (A_FOLD_STOPS_AT_NOTHING.name, Column::ListOrder),
+    (A_LIST_WITH_A_MISSING_ITEM_IS_NOTHING.name, Column::Value),
 ];
 
 /// The rows whose difference site runs don't read yet, by name, and why. The list only shrinks:
@@ -701,7 +721,7 @@ fn every_site_is_reached_as_its_row_says() {
         let shown = |c: Column| match c {
             Column::Reached => reached.clone(),
             Column::Kept => kept.clone(),
-            Column::ListOrder | Column::Parking => Vec::new(),
+            Column::ListOrder | Column::Parking | Column::Value => Vec::new(),
         };
         let all: Vec<String> = reached.iter().chain(&kept).cloned().collect();
         let not_yet = NOT_READ_YET.iter().find(|(n, _)| *n == row.name);
@@ -718,6 +738,13 @@ fn every_site_is_reached_as_its_row_says() {
             }
             (Today::Differs(debt, _), None) => {
                 let column = COLUMNS.iter().find(|(d, _)| *d == debt.name).map(|(_, c)| *c).expect("a column");
+                // A value's difference is no reached one: its sites read as their paths say.
+                if column == Column::Value {
+                    if !all.is_empty() {
+                        wrong.push(format!("{} differs in what a value is, its sites too: {}", row.name, all.join("; ")));
+                    }
+                    continue;
+                }
                 if shown(column).is_empty() {
                     wrong.push(format!("{} shows nothing in its column, {column:?} (\"{}\")", row.name, debt.name));
                 }

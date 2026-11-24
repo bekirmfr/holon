@@ -55,6 +55,7 @@ macro_rules! ops {
 ops! {
     "const" => Const,
     "default" => Default,
+    "has_value" => HasValue,
     "equals" => Equals,
     "add" => Add,
     "multiply" => Multiply,
@@ -459,6 +460,7 @@ fn reads(op: Op, first: Option<&Value>) -> Reads {
         | Op::Select
         | Op::Guard
         | Op::Default
+        | Op::HasValue
         | Op::Field
         | Op::Lookup
         | Op::Has
@@ -731,6 +733,15 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         Op::Default => match inputs {
             [v] => Some((*v).clone()),
             [] => parse_literal(param(params, "type")?, param(params, "value")?),
+            _ => None,
+        },
+
+        // Whether its one input arrived: what `try`, a wait and an `after` test. It runs with the
+        // input absent (absence.rs `runs_without_an_input`), as `default` does, and never gives
+        // nothing itself.
+        Op::HasValue => match inputs {
+            [_] => Some(Value::Boolean(true)),
+            [] => Some(Value::Boolean(false)),
             _ => None,
         },
 

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **"Did a value arrive?" is one step, `has_value`.** After a `try`, a wait or a parse, the
+  test whether a value arrived was two steps (`same_value(x, x) ?? false`), drawn on the canvas as
+  a doubled wire into a `default`. It is now one step, `has_value(x)`: true when `x` arrived
+  (`false`, `0` and `NaN` included), false when it did not, never nothing. A text may use it
+  too: `import { has_value } from "holon"`. No flow answers or does anything differently.
+  Who notices: a flow that waits or has a `try` gets a new fingerprint, and its canvas shows one
+  `has_value` box where the pair was.
+
 - **A `finally` below a `return` that answered isn't run.** `if (req.json.stop) return "stopped"`
   above a `try { … } finally { ++state.fin }` still wrote `state.fin` when `stop` was true, and so
   did a `try` without a `catch`; now neither the `try` nor its `finally` is run there, as in

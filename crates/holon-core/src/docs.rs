@@ -180,6 +180,7 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "is_truthy" => "Whether a value counts as true, as JavaScript's Boolean(x) says: false for false, 0, NaN, empty text and none; true for anything else, an empty list or record included. How if (x) and !x read a value that isn't true or false.",
         "guard" => "Passes value on only when cond is true; otherwise nothing, so what follows doesn't run.",
         "default" => "Passes its input on, or the value set on the node when the input didn't arrive: how a flow fills a gap.",
+        "has_value" => "Whether value arrived: true when it did (false, 0 and NaN too), false when it didn't. How a flow asks whether a step gave anything, as a try, a wait and an after do.",
         "coalesce" => "Passes a on, or b when a didn't arrive: a fallback that is itself computed, where default's is a fixed value.",
         "fail" => "Nothing, with message given to the run's log as the reason: JavaScript's throw new Error(message). What reads it has no value, unless a ?? or a catch gives one.",
         "equals" => "Whether two values are the same.",
