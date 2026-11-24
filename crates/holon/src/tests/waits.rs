@@ -419,14 +419,11 @@ fn run_one(state: &AppState, slug: &str, case: &Case, w: usize, input: &str, end
 /// as another flow: each debt, and the cases owed under it.
 type Owes = fn(&Case) -> bool;
 const ROUND_TRIP_DEBTS: &[(&str, Owes)] = &[
-    // Found by this grid (2026-11-23): a row of returns above the wait and a collection's put past
-    // it, using what the wait gave or not, started however: "action pay answers before its first
-    // wait in a shape the text can't write (its text reads back as another action)".
-    (A_PUT_PAST_A_WAIT_READS_BACK_AS_ANOTHER_ACTION, |c| c.past == "p" && c.above != "nothing"),
+    // Struck by C11 (2026-11-25): "the printer writes a put past a wait, below a row of returns,
+    // as another action" (108 flows). It wrote `marks.put(k, v)` as `marks[k] = v`, whose value
+    // reads back held to the returns not taken; it writes the method where the value isn't held
+    // (print.rs `EarlyAnswers::methods`).
 ];
-
-/// The round-trip debt this grid found.
-const A_PUT_PAST_A_WAIT_READS_BACK_AS_ANOTHER_ACTION: &str = "the printer writes a put past a wait, below a row of returns, as another action";
 
 /// A kind of finding: one of a flow's own rules shown.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]

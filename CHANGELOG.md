@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **A step reached in a branch is shown in its `if`.** The text the canvas, the step view and
+  `explain` show for a flow wrote a send, a request, a start, a log line or a call of the flow's
+  own function made only in a branch as `const guard = c ? true : undefined` and
+  `if (guard !== undefined) …`. It now writes `if (c) …`, as the flow's text does. An action
+  whose `marks.put(k, v)` comes after a wait, below a row of `if (test) return …`, was refused
+  ("its text reads back as another action"); it is taken now. No flow answers or does anything
+  differently, and no fingerprint changes.
+  Who notices: someone reading a flow on the canvas or in the step view; and someone whose action
+  writes by `put` after a wait below a return, which the check refused.
+
 - **A wait below a return that answered isn't waited at.** In `if (input.stop) return "stopped"`
   above `const ok = await event("approved", …)`, with `updates.send({ by: ok.by })` past it, a
   run started with `{"stop":true}` answered its caller a waiting link and stayed listed as

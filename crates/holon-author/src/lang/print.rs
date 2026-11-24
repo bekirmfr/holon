@@ -717,6 +717,10 @@ struct EarlyAnswers {
     gone: Beside,
     /// The first wait: the stand-ins go just before it, so the row is written there.
     before: String,
+    /// The writes past the wait whose value (a delete's key) isn't held to the returns not taken:
+    /// written by method (`marks.put(k, v)`), which ts.rs ties by its trigger alone, where the
+    /// assignment form (`marks[k] = v`) would read back with its value held too.
+    methods: HashSet<String>,
 }
 
 /// A stand-in's template: no step of the flow's, only where an `if (test) return value` is written.
@@ -1010,7 +1014,24 @@ fn early_answers(nodes: &[&Node], wires: &[BlockWire]) -> Result<EarlyAnswers, S
         gone.push((id.clone(), anchor));
     }
     let remade = remade.into_iter().map(|(n, _)| n).collect();
-    Ok(EarlyAnswers { stand_ins, remade, wires: kept, gone, before })
+    // A write past the wait whose value came held to the returns not taken (`marks[k] = v` there)
+    // has it so no longer; one whose value didn't was written by method.
+    let methods = nodes
+        .iter()
+        .filter_map(|n| {
+            let input = match n.data.name.as_str() {
+                "collection_put" => "value",
+                "file_write" => "text",
+                "collection_delete" => "key",
+                "file_delete" => "name",
+                _ => return None,
+            };
+            let held = matches!(into(&n.id, input), Some(Src::Node { id, .. }) if instead.contains_key(&id));
+            let past = into(&n.id, TRIGGER).map(|t| resolve(&t)).is_some_and(|t| waits(&t) || waits_list(&t));
+            (n.data.body == PlacedBody::Primitive && past && !held).then(|| n.id.clone())
+        })
+        .collect();
+    Ok(EarlyAnswers { stand_ins, remade, wires: kept, gone, before, methods })
 }
 
 impl EarlyAnswers {
@@ -1108,6 +1129,9 @@ struct Stmt {
     reads: BTreeSet<String>,
     /// What it waits for (`after`): it goes in `if (x !== undefined)`.
     after: Option<String>,
+    /// The test of the branch it is reached in, when its trigger is tied to that alone (a
+    /// [`Block::branch_tie`]): it goes in `if (test)`.
+    branch: Option<String>,
     /// The `let` declared before that `if` for the value it gives inside.
     declares: Option<String>,
 }
@@ -1173,6 +1197,8 @@ pub struct Printer<'s> {
     vocab_used: Option<BTreeSet<String>>,
     /// The actions written with a row of returns above their first wait: each one's label and name.
     early: Vec<(String, String)>,
+    /// The writes written by method in the action being written ([`EarlyAnswers::methods`]).
+    methods: HashSet<String>,
 }
 
 /// A flow document as canonical TypeScript. `known` names composites the document doesn't;
@@ -1235,6 +1261,7 @@ fn written(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolver, know
         avoid: HashSet::new(),
         vocab_used: None,
         early: Vec::new(),
+        methods: HashSet::new(),
     };
     p.collect_collections(&doc.nodes)?;
     // A mail a handler reads is imported as one it sends through is.
@@ -2040,12 +2067,15 @@ impl<'s> Printer<'s> {
         }
         let param = if kind == Kind::Every { String::new() } else { self.handle_name(&trigger.id, fallback) };
         let request = (kind != Kind::Every).then(|| (trigger.id.clone(), param.clone()));
+        self.methods = early.as_ref().map(|e| e.methods.clone()).unwrap_or_default();
         let mut block = Block::new(self, &group, kind, request);
         if kind == Kind::Every {
             block.tick = Some(trigger.id.clone());
         }
-        let mut body = block.body()?;
+        let body = block.body();
         let (read, awaits) = (block.param_read, block.awaits);
+        self.methods.clear();
+        let mut body = body?;
         place_beside(&mut body, &group.beside);
         if let Some(e) = &early {
             e.place(&mut body);
@@ -3108,7 +3138,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 stmts.push(s);
                 continue;
             }
-            if self.inline(node) || self.wholes.values().any(|(call, _)| call.id == *id) {
+            if self.inline(node) || self.wholes.values().any(|(call, _)| call.id == *id) || self.branch_tie(node) {
                 continue;
             }
             self.begin();
@@ -3193,11 +3223,55 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             return Err(format!("{} waits for a value, which TypeScript says only of a write, a request, a send, an action called or started or a function of the flow's: bind it, or wait for its value with ??", node.data.name));
         }
         let saved = std::mem::take(&mut self.touched);
+        // Tied to its branch's test alone: written in that branch, the tie as nothing.
+        if let Some(Src::Node { id, .. }) = self.g.incoming.get(&(node.id.clone(), TRIGGER.to_string())).cloned()
+            && let tie = self.g.node(&id)
+            && self.branch_tie(tie)
+        {
+            let test = self.arg(tie, "cond")?.map(|v| v.0).expect("a tie's test");
+            s.nodes.append(&mut self.touched);
+            s.nodes.push(tie.id.clone());
+            if let Some(Src::Node { id: always, .. }) = self.g.incoming.get(&(tie.id.clone(), "value".to_string())) {
+                s.nodes.push(always.clone());
+            }
+            self.touched = saved;
+            s.branch = Some(test);
+            return Ok(());
+        }
         let x = self.arg(node, TRIGGER)?.map(|v| wrap(v, REL)).expect("tied");
         s.nodes.append(&mut self.touched);
         self.touched = saved;
         s.after = Some(x);
         Ok(())
+    }
+
+    /// Whether `node` is the tie of a branch's statements and nothing else: `when(true, test)`
+    /// (`test ? true : undefined`), unnamed, read only by the triggers of statements that make a
+    /// call or a send, which ts.rs ties so in `if (test) …`. The text writes it as that `if`, the
+    /// tie as nothing (the map's rule 6). A write in the assignment form isn't among them: in an
+    /// `if` its value is held instead, which the printer writes as the value's own choice.
+    fn branch_tie(&self, node: &Node) -> bool {
+        if node.data.body != PlacedBody::Primitive || node.data.name != "guard" || self.named(node) || self.bound.contains_key(&node.id) || self.forced.contains_key(&node.id) {
+            return false;
+        }
+        // Past a wait a branch's statement is tied to `when(w, test)`, `w` what the wait gave
+        // (ts.rs `trigger`); a return past the wait ties what follows it so too, which `if (test)`
+        // doesn't read back as. That one stays as it is written today.
+        let always = matches!(self.g.incoming.get(&(node.id.clone(), "value".to_string())), Some(Src::Node { id, .. }) if { let c = self.g.node(id); c.data.body == PlacedBody::Primitive && c.data.name == "const" && c.param("type") == "Boolean" && c.param("value") == "true" });
+        if !always || !self.g.incoming.contains_key(&(node.id.clone(), "cond".to_string())) {
+            return false;
+        }
+        let uses = self.g.uses(&node.id);
+        !uses.is_empty()
+            && uses.iter().all(|(to, input)| {
+                let to = self.g.node(to);
+                let name = to.data.name.as_str();
+                *input == TRIGGER
+                    && self.g.consumed_total(to) == 0
+                    && !self.unreturned.contains_key(&to.id)
+                    && self.sink(to)
+                    && !(name.starts_with("collection_") || name.starts_with("file_") || name == "store_write")
+            })
     }
 
     /// Whether `node`, written as a statement, is one ts.rs ties to what an `if (x !== undefined)`
@@ -3217,6 +3291,27 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         let mut out = Vec::new();
         let mut i = 0;
         while i < stmts.len() {
+            // Those reached in one branch, together in its `if (test)`.
+            if let Some(test) = stmts[i].branch.clone() {
+                let mut group = vec![stmts[i].clone()];
+                i += 1;
+                while i < stmts.len() && stmts[i].branch.as_deref() == Some(test.as_str()) {
+                    group.push(stmts[i].clone());
+                    i += 1;
+                }
+                // A binding given its value there is read by nothing (`branch_tie`): declared in
+                // the branch, as the text that made it did.
+                for s in group.iter_mut().filter(|s| s.declares.is_some()) {
+                    s.text = format!("const {}", s.text);
+                    s.declares = None;
+                }
+                let text = match group.as_slice() {
+                    [one] if !one.text.starts_with("const ") && !one.text.contains('\n') && one.text.len() + test.len() < 80 => format!("if ({test}) {}", one.text),
+                    _ => format!("if ({test}) {{\n{}\n}}", group.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("\n")),
+                };
+                out.push(Stmt { text, kids: group, ..Default::default() });
+                continue;
+            }
             let Some(x) = stmts[i].after.clone() else {
                 out.push(stmts[i].clone());
                 i += 1;
@@ -3330,7 +3425,13 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// An effect nobody reads, as a statement: in the assignment form where there is one.
     fn effect_statement(&mut self, node: &Node) -> Result<Stmt, String> {
         let d = &node.data;
+        // By method where its value isn't held to the returns above it ([`EarlyAnswers::methods`]).
+        let by_method = self.p.methods.contains(&node.id);
         let (text, writes) = match d.name.as_str() {
+            _ if by_method => {
+                let store = if d.name.starts_with("collection_") { node.param("collection") } else { node.param("folder") }.to_string();
+                (self.render(node, "")?.0, Some(store))
+            }
             "store_write" => {
                 self.p.uses_state = true;
                 (format!("state.{} = {}", node.param("key"), self.required(node, "value", 0)?), None)
@@ -5635,6 +5736,78 @@ export const t = action((input) => {
         assert!(compile(&in_branch).is_ok(), "{:?}", compile(&in_branch).err());
     }
 
+    /// **Guards:** a statement reached only in a branch is written back in that branch's `if`, its
+    /// tie as nothing (the map's rule 6, step C11), for each kind of statement that makes a call or
+    /// a send (an action started, another flow's action called, a request, a log line, a send to a
+    /// channel, a mail and a queue, a function of the flow's that writes, its answer bound or not),
+    /// in a route, an `else`, nested and below a return; and each reads back as the same unit.
+    /// **Why:** the printer wrote such a statement as `const guard = c ? true : undefined` and
+    /// `if (guard !== undefined) …`: the same steps, but not the text written.
+    /// **If it fails:** the case names the statement and the shape, and what was printed.
+    #[test]
+    fn a_statement_reached_in_a_branch_is_written_in_its_if() {
+        let calls = [
+            "ping(req.json)",
+            "await charge(1)",
+            "await api.post(\"/in\", { body: \"x\" })",
+            "console.warn(\"seen\", req.json.id)",
+            "updates.send({ n: 1 })",
+            "ops.send({ to: \"a@acme.com\", subject: \"s\", text: \"hi\" })",
+            "jobs.send({ data: { n: 1 } })",
+            "keep(req.json.a)",
+            "const kept = keep(req.json.a)",
+        ];
+        let shapes = [
+            ("an if", "  if (req.json.c) {\n    @CALL@\n  }\n"),
+            ("an else", "  if (req.json.c) {\n    ++state.n\n  } else {\n    @CALL@\n  }\n"),
+            ("nested ifs", "  if (req.json.c) {\n    if (req.json.d) {\n      @CALL@\n    }\n  }\n"),
+            ("below a return", "  if (req.json.stop) return \"stopped\"\n  if (req.json.c) {\n    @CALL@\n  }\n"),
+        ];
+        let head = "import { action, flow, route } from \"holon\"\nimport state from \"state\"\nimport api from \"host:api.example.com\"\nimport updates from \"channel:updates\"\nimport ops from \"mail:ops\"\nimport jobs from \"queue:jobs\"\nimport { charge } from \"flow:billing\"\n\nflow(\"f\", { port: 8080 })\n\nexport const ping = action((x) => ++state.pinged)\n\nfunction keep(x) {\n  state.kept = x\n  return 1\n}\n";
+        let mut wrong = Vec::new();
+        for call in calls {
+            for (shape, body) in shapes {
+                let src = format!("{head}\nroute.post(\"/\", async (req) => {{\n{}  return \"end\"\n}})\n", body.replace("@CALL@", call));
+                let l = match compile(&src) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        wrong.push(format!("{call} | {shape}: refused: {e}"));
+                        continue;
+                    }
+                };
+                let text = round_trips("f", &l.doc, &l.names);
+                if text.contains("!== undefined") || text.contains("? true : undefined") {
+                    wrong.push(format!("{call} | {shape}: its tie is written:\n{text}"));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// **Guards:** a write past an action's wait, below a row of returns (`marks.put`, `marks[k] =`,
+    /// a delete either way, a folder's put either way), reads back as the same action, the value
+    /// held to the returns or not as the text wrote it.
+    /// **Why:** the printer wrote `marks.put(k, v)` as `marks[k] = v`, which reads back with its
+    /// value held to the returns not taken: another action, so the text was refused (the waits
+    /// grid's 108 flows, C11).
+    #[test]
+    fn a_write_past_a_wait_below_a_return_reads_back_as_written() {
+        let writes = ["marks.put(\"k\", ok.method)", "marks[\"k\"] = ok.method", "marks.put(\"k\", \"v\")", "delete marks[ok.method]", "marks.delete(ok.method)", "files.put(\"a.txt\", ok.method)", "files[\"a.txt\"] = ok.method", "delete files[\"a.txt\"]"];
+        let mut wrong = Vec::new();
+        for write in writes {
+            for above in ["  if (input.stop) return \"stopped\"\n", "  if (input.stop) return \"stopped\"\n  if (input.n > 10) return \"big\"\n"] {
+                let src = format!("import {{ action, event, flow, route }} from \"holon\"\nimport marks from \"collection:marks\"\nimport files from \"folder:files\"\n\nflow(\"f\", {{ port: 8080 }})\n\nexport const pay = action(async (input) => {{\n{above}  const ok = await event(\"ok\", {{ expires: \"1h\" }})\n  {write}\n  return \"done\"\n}})\n\nroute.post(\"/go\", (req) => pay(req.json))\n");
+                match compile(&src) {
+                    Ok(l) => {
+                        round_trips("f", &l.doc, &l.names);
+                    }
+                    Err(e) => wrong.push(format!("{write} | {}: {e}", above.trim())),
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
     /// Another flow's action awaited is called, one not awaited started, the flow's own by its
     /// name; what waits for a value goes in `if (x !== undefined)`.
     #[test]
@@ -6032,7 +6205,9 @@ export const t = action((input) => {
             ("a branch", "  const guard = go.method === \"POST\" ? go : undefined\n  if (guard !== undefined) updates.send({ posted: order.id })\n  return go.method\n", Back::Written),
             ("a branch on two tests", "  const guard = go.method === \"POST\" && order.amount > 1 ? go : undefined\n  if (guard !== undefined) updates.send({ posted: order.id })\n  return go.method\n", Back::Written),
             // A branch past a wait prints as what its value waits for (`const guard = …`); with
-            // returns above the wait it is the same flow all the same (ts.rs `trigger`).
+            // returns above the wait it is the same flow all the same (ts.rs `trigger`). C11 left
+            // it so: a return past the wait ties what follows it the same way, and `if (test)`
+            // doesn't read back as that (`Block::branch_tie`).
             (
                 "a plain branch",
                 "  if (order.loud ?? false) {\n    updates.send({ loud: order.id })\n  }\n  return go.method\n",
