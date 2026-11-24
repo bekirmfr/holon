@@ -896,13 +896,27 @@ fn early_answers(nodes: &[&Node], wires: &[BlockWire]) -> Result<EarlyAnswers, S
         let ws = rest.into_iter().zip(&and.data.inputs).map(|(s, p)| (s, id.clone(), p.name.clone())).collect();
         remade.push((and, ws));
     }
+    // `when(true, L)` on a wait's trigger: the wait is reached where no return above it was taken
+    // (ts.rs `reach_wait`). The text writes that by the wait's place below the returns, so the
+    // tie is the action's own, as a step's tied to its start (`without_block_ties`).
+    let start = nodes.iter().find(|n| n.is_template("action")).map(|n| Src::Node { id: n.id.clone(), output: "input".into() });
+    let always = |s: &Src| matches!(s, Src::Node { id, .. } if leaf(id, "const") && by_id[id.as_str()].param("type") == "Boolean" && by_id[id.as_str()].param("value") == "true");
+    let ties_waits = |id: &str| {
+        let read: Vec<&BlockWire> = wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id: f, .. } if f == id)).collect();
+        !read.is_empty() && read.iter().all(|(_, to, input)| input == TRIGGER && (leaf(to, "await") || leaf(to, "approval")))
+    };
     // `when(x, L)`: `x`. The hold among them, read by nothing.
     for id in named("guard") {
         if taken.contains(&id) {
             continue;
         }
         let Some(steps) = into(&id, "cond").and_then(|c| l(&c)) else { continue };
-        instead.insert(id.clone(), into(&id, "value").ok_or("a value isn't one the text writes")?);
+        let value = into(&id, "value").ok_or("a value isn't one the text writes")?;
+        let value = match &start {
+            Some(start) if always(&value) && ties_waits(&id) => start.clone(),
+            _ => value,
+        };
+        instead.insert(id.clone(), value);
         taken.insert(id);
         taken.extend(steps);
     }

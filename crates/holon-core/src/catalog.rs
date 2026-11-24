@@ -735,9 +735,10 @@ pub fn interface_of(name: &str) -> Option<Unit> {
 
         _ => return None,
     };
-    // A write or a call out takes its trigger last: what starts it, never read (eval drops it), so
-    // a sink belongs to whatever started the run that reaches it (docs/L4s/triggers-L4.md §3).
-    if TRIGGERED.contains(&name) {
+    // A write, a call out or a wait takes its trigger last: what starts it, never read (eval drops
+    // it), so a sink belongs to whatever started the run that reaches it (docs/L4s/triggers-L4.md
+    // §3), and a wait is asked only where it is reached.
+    if takes_a_trigger(name) {
         unit.inputs.push(port(TRIGGER, Any));
     }
     Some(unit)
@@ -781,6 +782,17 @@ pub const TRIGGERED: &[&str] = &[
     "flow_start",
 ];
 
+/// The waiting points: a wait for an event and a wait for people. Neither is a sink (what it
+/// asks is the run's own, answered by the server), but each is a step that does something: a run
+/// that asks one parks there. So each takes a [`TRIGGER`] last, as a sink does, and is asked only
+/// where it is reached; not connected, never.
+pub const WAITS: &[&str] = &["await", "approval"];
+
+/// Whether leaf `name` takes a [`TRIGGER`]: a sink ([`TRIGGERED`]) or a wait ([`WAITS`]).
+pub fn takes_a_trigger(name: &str) -> bool {
+    TRIGGERED.contains(&name) || WAITS.contains(&name)
+}
+
 /// The sinks that answer: each asks the far side to do something and gives back what it said.
 /// Once made, a call can't be taken back, so it is made for what it does: it is kept as an effect
 /// whether or not its answer is read, and its answer is never its caller's to give.
@@ -810,10 +822,10 @@ pub fn sourced_value(unit: &Unit, supplied: Option<&crate::Value>) -> Option<cra
     }
 }
 
-/// Whether `unit` is a sink leaf with its trigger: the last input, by name (a leaf placed before
-/// sinks had one has none, and is computed as it always was).
+/// Whether `unit` is a sink or wait leaf with its trigger: the last input, by name (a leaf placed
+/// before it had one has none, and is computed as it always was).
 pub fn takes_trigger(unit: &Unit) -> bool {
-    matches!(&unit.body, UnitBody::Primitive { name } if TRIGGERED.contains(&name.as_str())) && unit.inputs.last().is_some_and(|p| p.name == TRIGGER)
+    matches!(&unit.body, UnitBody::Primitive { name } if takes_a_trigger(name)) && unit.inputs.last().is_some_and(|p| p.name == TRIGGER)
 }
 
 /// Every genesis primitive's canonical interface, in manifest order. A convenience over

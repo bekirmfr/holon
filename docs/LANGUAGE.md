@@ -476,9 +476,13 @@ reaches both at once), keeps a step that uses nothing of what was sent in the ac
 writes both by order alone, and the canvas prints them back so. A
 wait stands on a line of its own at the top of
 the action's body, `const paid = await event(…)`. A `return` before the first wait may answer
-without it (`if (order.skip ?? false) return "skipped"`): where it does, the wait isn't asked for,
-as the hold too reads the wait only where no such return was taken (`when(<the hold>, c)`, `c`
-the returns not taken), and the answer is held to the waits only past the first. Such returns
+without it (`if (order.skip ?? false) return "skipped"`): where it does, the wait isn't asked for
+and the run doesn't park, whatever past it reads what it gave. A wait is a step that does
+something: it takes a `trigger`, as a write does, tied to the returns not taken (`when(true, c)`,
+`c` the returns not taken), so it is asked only where its line is reached; the hold too reads the
+wait only there (`when(<the hold>, c)`), and the answer is held to the waits only past the first.
+Every wait of an action is tied the same way, never to an earlier wait, so they are still asked
+together. Such returns
 are a row right above the wait, one to a line: `if (test) return value`, or `return` alone
 (`{ return value }` is the same), their tests and values over what the run already has; anything
 may be written above the row. A test may be a name made above the row (`const big = …`, `if

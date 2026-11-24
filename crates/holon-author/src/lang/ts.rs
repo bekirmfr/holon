@@ -1569,6 +1569,7 @@ impl<'s, 't> Reader<'s, 't> {
                         self.mark(Atom::Completed(self.span(s.span())));
                     }
                     if let Some(ts) = waits {
+                        self.reach_wait(&ts, &mut stmts[mark..], self.span(s.span()));
                         self.waited_on(&ts, stmts, self.span(s.span()));
                         if let Some(w) = &self.frame.waited {
                             let test = has_value(w.value.clone());
@@ -1675,6 +1676,21 @@ impl<'s, 't> Reader<'s, 't> {
             }
         }
         found
+    }
+
+    /// The wait `ts` was just bound to, among `made` (its line's statements), tied to where its
+    /// line is reached: under the returns above it not taken (`when(true, !t1 && …)`). A wait is a
+    /// step that does something and takes a trigger (core `WAITS`); tied to the action's start
+    /// alone it was asked in a run that had answered above it, or whose test above it had no
+    /// value, and the run parked there. With no return above, it is tied to the action's start
+    /// with the block's other steps. Never to an earlier wait: every wait is asked as the run
+    /// begins, so a later one answered first is taken (the run parks at them all at once).
+    fn reach_wait(&self, ts: &str, made: &mut [Stmt], at: Span) {
+        let Some(Local::Bound(name) | Local::Var(Some(name))) = self.lookup(ts) else { return };
+        let Some(live) = conj(self.frame.guards.iter().filter_map(|g| if let Guard::Live(c) = g { Some(c.clone()) } else { None })) else { return };
+        if let Some(s) = made.iter_mut().rev().find(|s| matches!(&s.kind, StmtKind::Bind { name: n, .. } if n.text == name)) {
+            s.after = Some(when(Expr { kind: ExprKind::Bool(true), span: at }, live));
+        }
     }
 
     /// `ts`, just bound to what a wait gave (the statement at `at`): what follows waits for it.

@@ -672,7 +672,7 @@ impl NodeKind {
                     "or" => Some(Which::Or),
                     _ => None,
                 };
-                let held_when_absent = primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name);
+                let held_when_absent = primitives::has_optional_ports(name) || crate::takes_a_trigger(name);
                 NodeKind { body, takes_trigger, choice, held_when_absent }
             }
             UnitBody::Composite { .. } => NodeKind { body: Body::Composite, takes_trigger, choice: None, held_when_absent: false },
@@ -4038,11 +4038,12 @@ mod tests {
         assert!(crate::validate(&placed, &r).is_err_and(|e| e.iter().any(|e| matches!(e, crate::ValidationError::Untied { child: 0, .. }))));
     }
 
-    /// The class: every step that does something, placed with each other input given and its
-    /// trigger tied to nothing, gives nothing (eager agrees) and is refused, naming it.
+    /// The class: every step that does something (a sink, or a wait), placed with each other
+    /// input given and its trigger tied to nothing, gives nothing (eager agrees) and is refused,
+    /// naming it. A wait gives nothing without asking: no run parks there.
     #[test]
     fn every_doing_step_tied_to_nothing_never_runs_and_is_refused() {
-        for name in crate::TRIGGERED {
+        for name in crate::TRIGGERED.iter().chain(crate::WAITS) {
             let mut r = MapResolver::new();
             let leaf = crate::interface_of(name).unwrap();
             let given = leaf.inputs.len() - 1;

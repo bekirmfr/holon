@@ -66,16 +66,9 @@ pub(super) const A_LIST_WITH_A_MISSING_ITEM_IS_NOTHING: Debt = Debt {
     name: "a list holding a missing item is nothing",
     says: "a list one of whose items is missing (a field the request lacks, or a list function's answer for an item) has no value, so JSON.stringify of it gives nothing and the route answers 404, where JavaScript writes the missing item as null ([null,2])",
 };
-/// P+R: a wait past a return that answered still waits.
-pub(super) const A_WAIT_PAST_AN_ANSWER_PARKS: Debt = Debt {
-    name: "a wait past a return that answered still waits",
-    says: "an action that returned above its wait parks at the wait anyway, and its caller is answered a waiting link, where what stands past the wait uses what it gave and sends, mails, queues, puts, asks a host or starts an action (the waits grid, 2026-11-23); nothing past it is made",
-};
-/// New in the waits grid (2026-11-23): P+R's sibling, a test with no value in the row above.
-pub(super) const A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS: Debt = Debt {
-    name: "a wait past a test with no value still waits",
-    says: "an action whose row above the wait has a test with no value, which ends the run (§5.4), parks at the wait anyway, and its caller is answered a waiting link, where what stands past the wait uses what it gave and sends, mails, queues, puts, asks a host or starts an action; nothing past it is made",
-};
+// P+R (a wait past a return that answered still waits) and its sibling (a wait past a test with
+// no value still waits) were struck by C6: a wait is a step that does something, tied to where its
+// line is reached, so a run that answered above it, or ended there, isn't parked.
 /// A: an arm's test is read before its statement is reached.
 pub(super) const A_CHOICES_TEST_IS_READ_PAST_A_RETURN: Debt = Debt {
     name: "the arm's test is read before the statement's reached",
@@ -101,8 +94,6 @@ pub(super) const A_LINE_AFTER_A_FAILURE_RUNS: Debt = Debt {
 /// Every debt of the table, each to be struck when no row differs under it.
 pub(super) const DEBTS: &[&Debt] = &[
     &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE,
-    &A_WAIT_PAST_AN_ANSWER_PARKS,
-    &A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS,
     &A_CHOICES_TEST_IS_READ_PAST_A_RETURN,
     &A_READ_IS_ASKED_PAST_A_RETURN,
     &A_LINE_AFTER_A_FAILURE_RUNS,
@@ -211,9 +202,12 @@ fn rows() -> Vec<Row> {
             name: "an action that answers above its wait",
             text: "import { action, event, flow, route } from \"holon\"\nimport updates from \"channel:updates\"\n\nflow(\"reached-07\", { port: 19607 })\n\nexport const pay = action(async (input) => {\n  if (input.stop) return \"stopped\"\n  const ok = await event(\"approved\", { expires: \"1h\" })\n  updates.send({ status: \"paid\", by: ok.by })\n  return \"done\"\n})\n\nroute.post(\"/go\", (req) => {\n  const started = pay(req.json)\n  return started\n})\n",
             request: r#"{"stop":true}"#,
-            answer: true,
-            javascript: "answers \"stopped\"; starts pay",
-            today: Today::Differs(&A_WAIT_PAST_AN_ANSWER_PARKS, "answers a waiting link; starts pay; parks"),
+            // What a start answers is the starter's: `{answer, run}` for a run that answered,
+            // Holon's own (§5.4), where JavaScript's is a promise; the waits grid holds it. So only
+            // what it does is compared: it starts pay, which answers and doesn't park.
+            answer: false,
+            javascript: "starts pay",
+            today: Today::AsJavascript,
             long: Some((
                 "import { action, event, flow, route } from \"holon\"\nimport updates from \"channel:updates\"\n\nflow(\"reached-07-long\", { port: 19627 })\n\nexport const pay = action(async (input) => {\n  const ok = await event(\"approved\", { expires: \"1h\" })\n  updates.send({ status: \"paid\", by: ok.by })\n  return \"done\"\n})\n\nroute.post(\"/go\", (req) => {\n  if (req.json.stop) return \"stopped\"\n  const started = pay(req.json)\n  return started\n})\n",
                 "answers \"stopped\"",
@@ -228,7 +222,7 @@ fn rows() -> Vec<Row> {
             // nothing is the starter's, so only what it does is compared.
             answer: false,
             javascript: "starts pay",
-            today: Today::Differs(&A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS, "starts pay; parks"),
+            today: Today::AsJavascript,
             long: None,
         },
         Row {
@@ -602,23 +596,20 @@ fn a_loop_is_refused_in_plain_words() {
 /// The columns a difference of reached is shown on (step C1). `Reached` and `Kept` are read off a
 /// site's run: a step made where its path says it isn't reached (or where a test of its path was
 /// never looked at), missed where it is, or run past a line that gave nothing; what a failed `try`
-/// keeps. `ListOrder` (what a function a list method calls per item does, and in which order) and
-/// `Parking` (a run that waits) are their own columns, not read by site runs. `Value` is what a
+/// keeps. `ListOrder` (what a function a list method calls per item does, and in which order) is
+/// its own column, not read by site runs. `Value` is what a
 /// value is, not where a step is reached: its rows show no site difference at all.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Column {
     Reached,
     Kept,
     ListOrder,
-    Parking,
     Value,
 }
 
 /// Each debt's column.
 const COLUMNS: &[(&str, Column)] = &[
     (A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE.name, Column::Kept),
-    (A_WAIT_PAST_AN_ANSWER_PARKS.name, Column::Parking),
-    (A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS.name, Column::Parking),
     (A_CHOICES_TEST_IS_READ_PAST_A_RETURN.name, Column::Reached),
     (A_READ_IS_ASKED_PAST_A_RETURN.name, Column::Reached),
     (A_LINE_AFTER_A_FAILURE_RUNS.name, Column::Reached),
@@ -632,8 +623,6 @@ const COLUMNS: &[(&str, Column)] = &[
 /// The rows whose difference site runs don't read yet, by name, and why. The list only shrinks:
 /// a row on it that shows its difference fails, to be taken off.
 const NOT_READ_YET: &[(&str, &str)] = &[
-    ("an action that answers above its wait", "parking: a run that waits is no site"),
-    ("an action whose test above its wait has no value", "parking: a run that waits is no site"),
     ("a list's function that starts something and then fails, on the first item", "list order"),
     ("a reviver that fails on an item, in a try", "list order: a function JSON.parse calls per item"),
     ("a reduce that adds a start's handle to a text", "list order"),
@@ -721,7 +710,7 @@ fn every_site_is_reached_as_its_row_says() {
         let shown = |c: Column| match c {
             Column::Reached => reached.clone(),
             Column::Kept => kept.clone(),
-            Column::ListOrder | Column::Parking | Column::Value => Vec::new(),
+            Column::ListOrder | Column::Value => Vec::new(),
         };
         let all: Vec<String> = reached.iter().chain(&kept).cloned().collect();
         let not_yet = NOT_READ_YET.iter().find(|(n, _)| *n == row.name);

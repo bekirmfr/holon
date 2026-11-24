@@ -100,7 +100,7 @@ fn composite(children: &[Hash], edges: &[Edge], n_outputs: usize, inputs: &[Opti
         // Not connected means never (`eval::untied`).
         let held = crate::eval::untied(child, |p| incoming.contains_key(&(ci as u32, p as u32)))
             || (wired_but_absent
-                && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name.as_str())));
+                && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name) || crate::takes_a_trigger(name)));
         scratch[ci] = if held { vec![None; child.outputs.len()] } else { eval_eager(child, &gathered, resolver) };
     }
     (0..n_outputs as u32)

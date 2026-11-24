@@ -2933,27 +2933,27 @@
   [0, 2] Text("")
   [0, 3] Text("")
   [0, 4] Boolean(true)
-  [0, 12] Boolean(false)
-  [0, 14] Boolean(false)
-  [0, 15] ·
-  [0, 18] Boolean(false)
-  [0, 20] Boolean(false)
-  [0, 21] ·
+  [0, 17] Boolean(false)
+  [0, 19] Boolean(false)
+  [0, 20] ·
   [0, 23] Boolean(false)
   [0, 25] Boolean(false)
   [0, 26] ·
-  [0, 22] ·
-  [0, 27] Record({})
-  [0, 28] Text("it names no order")
-  [0, 29] Record({"refused": Text("it names no order")})
-  [0, 30] Record({"refused": Text("it names no order")})
-  [0, 55] Record({"refused": Text("it names no order")})
-  [0, 56, 0] Record({})
-  [0, 56, 1] Number(200.0)
-  [0, 56, 2] Record({"status": Number(200.0)})
-  [0, 56, 3] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
-  [0, 56, 4] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
-  [0, 56] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 28] Boolean(false)
+  [0, 30] Boolean(false)
+  [0, 31] ·
+  [0, 27] ·
+  [0, 32] Record({})
+  [0, 33] Text("it names no order")
+  [0, 34] Record({"refused": Text("it names no order")})
+  [0, 35] Record({"refused": Text("it names no order")})
+  [0, 60] Record({"refused": Text("it names no order")})
+  [0, 61, 0] Record({})
+  [0, 61, 1] Number(200.0)
+  [0, 61, 2] Record({"status": Number(200.0)})
+  [0, 61, 3] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 61, 4] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 61] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
   [0] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)}) | ·
   => Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)}) | ·
 == refund-review · action refund · input 1
@@ -2962,27 +2962,27 @@
   [0, 2] Text("")
   [0, 3] Text("")
   [0, 4] Boolean(true)
-  [0, 12] Boolean(false)
-  [0, 14] Boolean(false)
-  [0, 15] ·
-  [0, 18] Boolean(false)
-  [0, 20] Boolean(false)
-  [0, 21] ·
+  [0, 17] Boolean(false)
+  [0, 19] Boolean(false)
+  [0, 20] ·
   [0, 23] Boolean(false)
   [0, 25] Boolean(false)
   [0, 26] ·
-  [0, 22] ·
-  [0, 27] Record({})
-  [0, 28] Text("it names no order")
-  [0, 29] Record({"refused": Text("it names no order")})
-  [0, 30] Record({"refused": Text("it names no order")})
-  [0, 55] Record({"refused": Text("it names no order")})
-  [0, 56, 0] Record({})
-  [0, 56, 1] Number(200.0)
-  [0, 56, 2] Record({"status": Number(200.0)})
-  [0, 56, 3] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
-  [0, 56, 4] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
-  [0, 56] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 28] Boolean(false)
+  [0, 30] Boolean(false)
+  [0, 31] ·
+  [0, 27] ·
+  [0, 32] Record({})
+  [0, 33] Text("it names no order")
+  [0, 34] Record({"refused": Text("it names no order")})
+  [0, 35] Record({"refused": Text("it names no order")})
+  [0, 60] Record({"refused": Text("it names no order")})
+  [0, 61, 0] Record({})
+  [0, 61, 1] Number(200.0)
+  [0, 61, 2] Record({"status": Number(200.0)})
+  [0, 61, 3] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 61, 4] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 61] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
   [0] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)}) | ·
   => Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)}) | ·
 == refund-review · action refund · input 2
@@ -2991,27 +2991,27 @@
   [0, 2] Text("")
   [0, 3] Text("")
   [0, 4] Boolean(true)
-  [0, 12] Boolean(false)
-  [0, 14] Boolean(false)
-  [0, 15] ·
-  [0, 18] Boolean(false)
-  [0, 20] Boolean(false)
-  [0, 21] ·
+  [0, 17] Boolean(false)
+  [0, 19] Boolean(false)
+  [0, 20] ·
   [0, 23] Boolean(false)
   [0, 25] Boolean(false)
   [0, 26] ·
-  [0, 22] ·
-  [0, 27] Record({})
-  [0, 28] Text("it names no order")
-  [0, 29] Record({"refused": Text("it names no order")})
-  [0, 30] Record({"refused": Text("it names no order")})
-  [0, 55] Record({"refused": Text("it names no order")})
-  [0, 56, 0] Record({})
-  [0, 56, 1] Number(200.0)
-  [0, 56, 2] Record({"status": Number(200.0)})
-  [0, 56, 3] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
-  [0, 56, 4] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
-  [0, 56] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 28] Boolean(false)
+  [0, 30] Boolean(false)
+  [0, 31] ·
+  [0, 27] ·
+  [0, 32] Record({})
+  [0, 33] Text("it names no order")
+  [0, 34] Record({"refused": Text("it names no order")})
+  [0, 35] Record({"refused": Text("it names no order")})
+  [0, 60] Record({"refused": Text("it names no order")})
+  [0, 61, 0] Record({})
+  [0, 61, 1] Number(200.0)
+  [0, 61, 2] Record({"status": Number(200.0)})
+  [0, 61, 3] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 61, 4] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
+  [0, 61] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)})
   [0] Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)}) | ·
   => Record({"body": Record({"refused": Text("it names no order")}), "status": Number(200.0)}) | ·
 == fetch-json · GET /slideshow · input 0
@@ -12118,10 +12118,10 @@
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == approval-mail · action payout · input 0
+  [0, 0] Record({})
   [0, 1] ·
   [0, 2] Boolean(false)
   [0, 3] ·
-  [0, 0] Record({})
   [0, 6] ·
   [0, 4] ·
   [0, 5] Boolean(false)
@@ -12164,10 +12164,10 @@
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
 == approval-mail · action payout · input 1
+  [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] ·
   [0, 2] Boolean(false)
   [0, 3] ·
-  [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 6] Text("x")
   [0, 4] ·
   [0, 5] Boolean(false)
@@ -12210,10 +12210,10 @@
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
 == approval-mail · action payout · input 2
+  [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] ·
   [0, 2] Boolean(false)
   [0, 3] ·
-  [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 6] ·
   [0, 4] ·
   [0, 5] Boolean(false)
@@ -13015,10 +13015,10 @@
   [0] Record({"body": Text("approved"), "status": Number(200.0)})
   => Record({"body": Text("approved"), "status": Number(200.0)})
 == trading-bot · action approval · input 0
+  [0, 0] Record({})
   [0, 1] ·
   [0, 2] Boolean(false)
   [0, 3] ·
-  [0, 0] Record({})
   [0, 6] ·
   [0, 4] ·
   [0, 5] Boolean(false)
@@ -13043,10 +13043,10 @@
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
 == trading-bot · action approval · input 1
+  [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] ·
   [0, 2] Boolean(false)
   [0, 3] ·
-  [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 6] Text("x")
   [0, 4] ·
   [0, 5] Boolean(false)
@@ -13071,10 +13071,10 @@
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
 == trading-bot · action approval · input 2
+  [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] ·
   [0, 2] Boolean(false)
   [0, 3] ·
-  [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 6] ·
   [0, 4] ·
   [0, 5] Boolean(false)

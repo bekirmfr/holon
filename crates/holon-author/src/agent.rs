@@ -539,8 +539,11 @@ pub fn run_view(name: &str, document: &Value, entry: &Value) -> Result<RunView, 
     let Recorded { values, ran, part, reasons } = recorded(document, entry);
     let has = |id: &str| values.get(id).is_some_and(|o| o.iter().any(|v| !v.is_null()));
     let by_id: HashMap<&str, &crate::canvas::Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    // What feeds each node, for why it has no value. Not its tie (its trigger): a step whose tie
+    // didn't arrive wasn't reached, and didn't run itself, whatever held the tie back (a return
+    // above it answered: a wait past it isn't asked).
     let mut feeds: HashMap<&str, Vec<&str>> = HashMap::new();
-    for w in &doc.edges {
+    for w in doc.edges.iter().filter(|w| w.input() != holon_core::TRIGGER) {
         feeds.entry(w.target.as_str()).or_default().push(w.source.as_str());
     }
     let mut on_line: BTreeMap<u32, Vec<&str>> = BTreeMap::new();

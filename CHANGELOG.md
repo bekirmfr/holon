@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **A wait below a return that answered isn't waited at.** In `if (input.stop) return "stopped"`
+  above `const ok = await event("approved", …)`, with `updates.send({ by: ok.by })` past it, a
+  run started with `{"stop":true}` answered its caller a waiting link and stayed listed as
+  waiting until the wait ran out; now it answers `{answer: "stopped", run}` and nothing waits, as
+  the return says. The same for a test above the wait that has no value, which ends the run: it
+  no longer parks. A wait is a step that does something now: like a write, it takes a trigger,
+  tied to where its line is reached, so it is asked only there. Where no return above it is taken,
+  nothing changes: every wait of an action is still asked as the run begins.
+  Who notices: an action with a return above its wait whose steps past the wait use what the
+  wait gave; it stops parking runs that answered. Actions that wait get a new fingerprint, and the
+  wait's box on the canvas has a trigger input, tied like a write's.
+
 - **A step that does something and is tied to nothing never runs.** A write, a send, a request,
   a start or a placed function with one of those inside takes a tie to what starts it. Left with
   nothing wired there, it used to run with every run; now it never runs, and the check refuses
