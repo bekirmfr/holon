@@ -2414,6 +2414,19 @@ it, as `respond` has its request. Its sinks are tied to it, and a placement is t
 what an `if (x !== undefined)` around it names. A function with no sink, a calculation, has no
 trigger.
 
+What a function does is done where its call is reached and nowhere else, as JavaScript runs a
+function's body only when it is called. A sink under the function's own `if`, below its own
+`return` or in its own `try` is tied to what its conditions there give, held to the trigger being
+there: `guard(same_value(trigger, trigger), c)`, `same_value` so that a trigger of any value
+counts. A request or a start in a branch of the function's `?:`, `&&`, `||` or `??` is made when
+the branch needs it, as in a handler, and only once the function is entered: its trigger is the
+function's too, and its answer leaves by no `called` output. So `function ask(x) { if (x)
+ping(x); return 1 }`, called in a route under `if (req.json.go)`, starts `ping` only where `go`
+holds and `x` does. A function may start an action, its flow's own or another flow's; calling one
+and awaiting it stays a handler's. A function drawn on the canvas without a `trigger` input still
+loads and runs: an input nothing feeds reads as there (§5.11), so its sinks run where its value is
+needed, as they always did; the text written back from it ties them to the call.
+
 Functions are defined at the top level and are visible to the whole file, in any order, so a
 function may use one defined below it. They may not be nested in text (a function declared inside
 a handler is refused); a function placed inside another is the nesting. A function can't place
@@ -3065,7 +3078,7 @@ The error catalogue the reader and the lowering produce, each with the span it p
 | an action answers with a value alone | the `status(…)` or `respond(…)` |
 | a route answers and is done, so it doesn't wait | the `await` |
 | a function computes and never waits; calling another flow's action is a handler's | the `await` |
-| a text the canvas can't write back as the same steps: a function that starts another flow's action; a write, a request or a start inside a list method's function (so one request per item of a list), or under a function's own `if` or `?:`; an action awaiting its own flow's action; `&&` or `\|\|` around an awaited function of the flow | the function's name, or the list method its function is given to; else `flow(…)` |
+| a text the canvas can't write back as the same steps: a write, a request or a start inside a list method's function (so one request per item of a list); an action awaiting its own flow's action; `&&` or `\|\|` around an awaited function of the flow | the function's name, or the list method its function is given to; else `flow(…)` |
 | a flow too long or deeply nested to be shown back as text (from about 25 early returns in a row, 41 writes each under its own `if`, calls or templates nested 21 deep) | where the text nests deepest |
 | a method's function (`map`'s, `filter`'s…) isn't async | the function |
 | no leaf does `.m(…)`: do it in a `js()` function | the method |

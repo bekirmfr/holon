@@ -349,6 +349,10 @@ struct Frame {
     /// The types its inputs are known to have, by port: a function's, as its ports are written,
     /// and the values a function takes from around it, as they were known there.
     types: HashMap<String, WType>,
+    /// In a function's body, `same_value(trigger, trigger)`: true where the call of the function
+    /// is reached, nothing where it isn't. Placed once, on the first statement it holds
+    /// ([`Lowerer::entered`]).
+    entered: Option<Val>,
 }
 
 impl Frame {
@@ -366,6 +370,7 @@ impl Frame {
             branch_fns: vec![],
             branch_ties: HashMap::new(),
             types: HashMap::new(),
+            entered: None,
         }
     }
 }
@@ -1016,8 +1021,11 @@ impl<'a> Lowerer<'a> {
             return err(after.span, "`after` ties a write or a call to what it names: this statement makes none");
         }
         let v = self.expr(after)?;
-        for id in &sinks {
-            self.tie(&v, id, after.span)?;
+        if !sinks.is_empty() {
+            let reached = self.entered(v.clone(), after.span)?;
+            for id in &sinks {
+                self.tie(&reached, id, after.span)?;
+            }
         }
         if let Some(name) = held {
             // A guard passes its value on only when its condition is `true`. What `after` names
@@ -1035,6 +1043,30 @@ impl<'a> Lowerer<'a> {
             self.hold(name, cond, after.span)?;
         }
         Ok(())
+    }
+
+    /// What a statement's `after` names, `v`, held to where the statement is reached. In a handler
+    /// that is `v` itself: the handler's run began. In a function's body it is `v` only where the
+    /// call of the function is reached too, its `trigger` there (`when(v, trigger === trigger)`,
+    /// `same_value` so that a trigger of any value counts, `NaN` and `false` alike): JavaScript
+    /// runs a function's `if` only when the function is called. Without it, a write or a start
+    /// under the function's own `if` was made though the call sat under an `if` that didn't hold
+    /// (crates/holon/src/tests/reached.rs, "a function that starts something, called under an if
+    /// that doesn't hold").
+    fn entered(&mut self, v: Val, span: Span) -> R<Val> {
+        if !matches!(self.cur().kind, FrameKind::Holon { .. }) {
+            return Ok(v);
+        }
+        let entered = match self.cur().entered.clone() {
+            Some(e) => e,
+            None => {
+                let t = Val::In(TRIGGER.into());
+                let e = self.node_with("same_value", &[], &[("a", t.clone()), ("b", t)], span)?;
+                self.frame().entered = Some(e.clone());
+                e
+            }
+        };
+        self.node_with("guard", &[], &[("cond", entered), ("value", v)], span)
     }
 
     /// The name `name` bound to its value `when` `cond`: a guard, which runs the value only where
@@ -1808,10 +1840,24 @@ impl<'a> Lowerer<'a> {
         // gets last, which a placement ties to the block it is placed in.
         let mut implicit_trigger = false;
         if result.is_ok() {
-            match self.tie_block(&Val::In(TRIGGER.into()), def.name.span) {
-                Ok(tied) => implicit_trigger = tied && !def.inputs.iter().any(|p| p.name.text == TRIGGER),
-                Err(e) => result = Err(e),
+            result = self.tie_block(&Val::In(TRIGGER.into()), def.name.span).map(drop);
+        }
+        // A call in a branch of a choice (`x ? ping(x) : 0`) is made when the branch needs it, so
+        // it isn't tied to its statement; in a function it is tied to the call of the function,
+        // or it would be made wherever the function's answer is needed, though the call of the
+        // function isn't reached (reached's case 5). It stays made only when needed: its answer
+        // isn't one the function names (`call_outputs`).
+        if result.is_ok() {
+            let lazy: Vec<String> = self.cur().created.iter().filter(|id| self.cur().in_branches.contains(*id) && self.b.data(id).is_some_and(|d| d.inputs.iter().any(|p| p.name == TRIGGER)) && !self.b.is_wired(id, TRIGGER) && !self.cur().wiring_in.iter().any(|(_, node, input)| node == *id && input == TRIGGER)).cloned().collect();
+            for id in &lazy {
+                if let Err(e) = self.connect(&Val::In(TRIGGER.into()), id, TRIGGER, def.name.span) {
+                    result = Err(e);
+                    break;
+                }
             }
+        }
+        if result.is_ok() {
+            implicit_trigger = !def.inputs.iter().any(|p| p.name.text == TRIGGER) && self.cur().wiring_in.iter().any(|(port, _, _)| port == TRIGGER);
         }
         let frame = self.frames.pop().expect("the holon's frame");
         self.in_progress.remove(name);
@@ -1890,7 +1936,7 @@ impl<'a> Lowerer<'a> {
             for id in &frame.created {
                 let Some(d) = self.b.data(id) else { continue };
                 let answers: Vec<String> = match &d.body {
-                    PlacedBody::Primitive if CALLS.contains(&d.name.as_str()) => {
+                    PlacedBody::Primitive if CALLS.contains(&d.name.as_str()) && !frame.in_branches.contains(id) => {
                         let tied = self.b.is_wired(id, TRIGGER) || wiring_in.iter().any(|(_, node, input)| node == id && input == TRIGGER);
                         if tied { d.outputs.iter().map(|o| o.name.clone()).collect() } else { vec![] }
                     }

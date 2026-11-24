@@ -30,11 +30,6 @@ pub(super) struct Debt {
     pub(super) says: &'static str,
 }
 
-/// F: a function's own condition stands in for its entry.
-pub(super) const A_FUNCTIONS_OWN_CONDITION: Debt = Debt {
-    name: "a function's own condition, not its entry",
-    says: "a function called under an if that doesn't hold still does what its own if allows: its start goes out",
-};
 /// S: a failed try keeps what its functions made.
 pub(super) const A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE: Debt = Debt {
     name: "a failed try keeps what its functions made",
@@ -70,11 +65,6 @@ pub(super) const A_FOLD_STOPS_AT_NOTHING: Debt = Debt {
 pub(super) const A_LISTS_FUNCTION_STARTS_PAST_A_RETURN: Debt = Debt {
     name: "a list's function starts where the run doesn't go",
     says: "an action a list's function starts goes out below a return that answered",
-};
-/// E: a call in a choice inside a function takes no trigger.
-pub(super) const A_CHOICE_IN_A_FUNCTION_STARTS: Debt = Debt {
-    name: "a call in a choice inside a function takes no trigger",
-    says: "a function whose start sits in a ?: arm starts it though the function's call is under an if that doesn't hold",
 };
 /// W: a finally forgets the returns above it.
 pub(super) const A_FINALLY_FORGETS_THE_RETURN_ABOVE: Debt = Debt {
@@ -125,11 +115,9 @@ pub(super) const A_LINE_AFTER_A_FAILURE_RUNS: Debt = Debt {
 
 /// Every debt of the table, each to be struck when no row differs under it.
 pub(super) const DEBTS: &[&Debt] = &[
-    &A_FUNCTIONS_OWN_CONDITION,
     &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE,
     &A_LISTS_FUNCTION_LOSES_ITS_WRITE,
     &A_LISTS_FUNCTION_STARTS_PAST_A_RETURN,
-    &A_CHOICE_IN_A_FUNCTION_STARTS,
     &A_FINALLY_FORGETS_THE_RETURN_ABOVE,
     &A_WAIT_PAST_AN_ANSWER_PARKS,
     &A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS,
@@ -179,7 +167,7 @@ fn rows() -> Vec<Row> {
             request: r#"{"go":false,"a":"x"}"#,
             answer: true,
             javascript: "answers \"end\"",
-            today: Today::Refused(&A_FUNCTIONS_OWN_CONDITION, "answers \"end\"; starts ping; writes pinged = 1"),
+            today: Today::AsJavascript,
             long: Some((
                 "import { action, flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-01-long\", { port: 19621 })\n\n@PING@\nroute.post(\"/go\", (req) => {\n  if (req.json.go) {\n    if (req.json.a) {\n      ping(req.json.a)\n    }\n  }\n  return \"end\"\n})\n",
                 "answers \"end\"",
@@ -222,7 +210,7 @@ fn rows() -> Vec<Row> {
             request: r#"{"go":false,"a":"x"}"#,
             answer: true,
             javascript: "answers \"end\"",
-            today: Today::Refused(&A_CHOICE_IN_A_FUNCTION_STARTS, "answers \"end\"; starts ping; writes pinged = 1"),
+            today: Today::AsJavascript,
             long: Some((
                 "import { action, flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-05-long\", { port: 19625 })\n\n@PING@\nroute.post(\"/go\", (req) => {\n  if (req.json.go) {\n    const made = req.json.a ? ping(req.json.a) : 0\n  }\n  return \"end\"\n})\n",
                 "answers \"end\"",
@@ -323,7 +311,7 @@ fn rows() -> Vec<Row> {
             request: r#"{"a":"x","c":false}"#,
             answer: true,
             javascript: "answers \"no\"; starts ping; writes pinged = 1",
-            today: Today::Refused(&A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "answers \"no\""),
+            today: Today::Differs(&A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "answers \"no\""),
             long: None,
         },
         Row {
@@ -635,11 +623,9 @@ enum Column {
 
 /// Each debt's column.
 const COLUMNS: &[(&str, Column)] = &[
-    (A_FUNCTIONS_OWN_CONDITION.name, Column::Reached),
     (A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE.name, Column::Kept),
     (A_LISTS_FUNCTION_LOSES_ITS_WRITE.name, Column::ListOrder),
     (A_LISTS_FUNCTION_STARTS_PAST_A_RETURN.name, Column::Reached),
-    (A_CHOICE_IN_A_FUNCTION_STARTS.name, Column::Reached),
     (A_FINALLY_FORGETS_THE_RETURN_ABOVE.name, Column::Reached),
     (A_WAIT_PAST_AN_ANSWER_PARKS.name, Column::Parking),
     (A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS.name, Column::Parking),

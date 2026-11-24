@@ -38,8 +38,8 @@
 //! `CONDITIONS`, a new request a line of `REQUESTS`. None needs its answer written.
 
 use super::reached::{
-    Debt, AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, AN_UNUSED_READ_IS_NOT_ASKED, A_CHOICES_TEST_IS_READ_PAST_A_RETURN, A_READ_IS_ASKED_PAST_A_RETURN, A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, A_CHOICE_IN_A_FUNCTION_STARTS, A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, A_FINALLY_FORGETS_THE_RETURN_ABOVE,
-    A_FUNCTIONS_OWN_CONDITION, A_LINE_AFTER_A_FAILURE_RUNS, A_LISTS_FUNCTION_LOSES_ITS_WRITE, A_LISTS_FUNCTION_STARTS_PAST_A_RETURN,
+    Debt, AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, AN_UNUSED_READ_IS_NOT_ASKED, A_CHOICES_TEST_IS_READ_PAST_A_RETURN, A_READ_IS_ASKED_PAST_A_RETURN, A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, A_FINALLY_FORGETS_THE_RETURN_ABOVE,
+    A_LINE_AFTER_A_FAILURE_RUNS, A_LISTS_FUNCTION_LOSES_ITS_WRITE, A_LISTS_FUNCTION_STARTS_PAST_A_RETURN,
 };
 use super::*;
 
@@ -53,7 +53,10 @@ use super::*;
 /// calls out under a condition of its own; `held` has a try block of its own that writes and puts
 /// and then reads its text as JSON, and sends in its catch (given what isn't JSON, `ft`, its block
 /// fails; given JSON, `fu`, it doesn't); `fin` returns early when given "a", and else enters a try
-/// whose finally writes. A list's `.map` places a function that writes (`lf`) or starts (`ls`).
+/// whose finally writes. `doif` puts, sends and starts under an `if` of its own on what it is
+/// given, and `early` sends and puts below a `return` of its own: what a function does under its
+/// own conditions is done only where its call is reached too. A list's `.map` places a function
+/// that writes (`lf`) or starts (`ls`).
 const EFFECTS: &[(&str, &str, &str)] = &[
     ("w", "++state.w", ""),
     ("ws", "state.w = \"v\"", ""),
@@ -76,6 +79,8 @@ const EFFECTS: &[(&str, &str, &str)] = &[
     ("ft", "held(\"a\")", "held(\"a\")"),
     ("fu", "held(\"{}\")", "held(\"{}\")"),
     ("fy", "fin(req.json.k ?? \"none\")", "fin(req.json.k ?? \"none\")"),
+    ("fi", "doif(req.json.c)", "doif(req.json.c)"),
+    ("fe", "early(req.json.k ?? \"none\")", "early(req.json.k ?? \"none\")"),
     ("lf", "const each = [req.body].map((x) => rec(x))", "[req.body].map((x) => rec(x))"),
     ("ls", "const each = [req.body].map((x) => ping(x))", "[req.body].map((x) => ping(x))"),
     ("q", "jobs.send({ data: { n: 1 } })", ""),
@@ -422,7 +427,7 @@ fn grid_workers() -> usize {
 /// seconds or the handler of the queue `q<j>`: only what they use is imported and defined.
 fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)], block: Block) -> String {
     let uses = |what: &str| handlers.iter().any(|(_, c)| c.body.contains(what));
-    let starts = uses("ping(") || uses("go(\"") || uses("maybe(");
+    let starts = uses("ping(") || uses("go(\"") || uses("maybe(") || uses("doif(");
     let blocks = match block {
         Block::Route | Block::Socket => "",
         Block::Every => "every, ",
@@ -440,7 +445,7 @@ fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)], blo
     if block == Block::File {
         text.push_str(&format!("import {GRID_FOLDER} from \"folder:{GRID_FOLDER}\"\n"));
     }
-    if uses("marks.") || uses("marks[") || uses("part(") || uses("held(") || uses("every") {
+    if uses("marks.") || uses("marks[") || uses("part(") || uses("held(") || uses("every") || uses("doif(") || uses("early(") {
         text.push_str("import marks from \"collection:marks\"\n");
     }
     if uses("jobs.") || uses("every") {
@@ -464,7 +469,7 @@ fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)], blo
     if uses("hail(") {
         text.push_str("import { hail } from \"flow:callee\"\n");
     }
-    if uses("news.") || uses("held(") || uses("every") {
+    if uses("news.") || uses("held(") || uses("every") || uses("doif(") || uses("early(") {
         text.push_str("import news from \"channel:news\"\n");
     }
     if uses("api.") || uses("ask(") || uses("ask2(") || uses("askif(") {
@@ -513,6 +518,12 @@ fn flow_text(name: &str, port: u16, host: &str, handlers: &[(usize, &Case)], blo
     }
     if uses("fin(") {
         text.push_str("\nfunction fin(x) {\n  if (x === \"a\") return \"skipped\"\n  try {\n    const parsed = JSON.parse(x)\n  } catch {\n    return \"kept\"\n  } finally {\n    ++state.f\n  }\n  return \"parsed\"\n}\n");
+    }
+    if uses("doif(") {
+        text.push_str("\nfunction doif(x) {\n  if (x) {\n    marks.put(\"k\", x)\n    news.send({ n: 1 })\n    ping({})\n  }\n  return 1\n}\n");
+    }
+    if uses("early(") {
+        text.push_str("\nfunction early(x) {\n  if (x === \"a\") return \"skipped\"\n  news.send({ n: 2 })\n  marks.put(\"k\", x)\n  return \"sent\"\n}\n");
     }
     if uses("held(") {
         text.push_str("\nfunction held(x) {\n  try {\n    ++state.f\n    marks.put(\"k\", x)\n    const parsed = JSON.parse(x)\n    return \"parsed\"\n  } catch {\n    news.send({ n: x })\n    return \"kept\"\n  }\n}\n");
@@ -643,7 +654,7 @@ struct Did {
 /// and as a flow reads it. The names a handler uses are stand-ins that leave their mark; `await`
 /// is dropped, since they answer at once.
 fn javascript_does(handlers: &[&Case], requests: &[usize]) -> Vec<Vec<(Did, Did)>> {
-    let names = "state, marks, console, ping, rec, rec2, rec3, part, ask, ask2, api, status, mark, undo, news, gone, bump, go, maybe, askif, held, fin, notes, check, jobs, ops, every, every2, files, shop, hail, boom";
+    let names = "state, marks, console, ping, rec, rec2, rec3, part, ask, ask2, api, status, mark, undo, news, gone, bump, go, maybe, askif, doif, early, held, fin, notes, check, jobs, ops, every, every2, files, shop, hail, boom";
     let made: Vec<String> = handlers
         .iter()
         .map(|c| {
@@ -697,6 +708,8 @@ fn javascript_does(handlers: &[&Case], requests: &[usize]) -> Vec<Vec<(Did, Did)
       go: (x) => {{ fx.push("s"); return "went " + x }},
       maybe: (x) => {{ if (x) fx.push("s"); return x ? {{ run: "r" }} : 0 }},
       askif: (x) => {{ if (x) fx.push("g"); return 1 }},
+      doif: (x) => {{ if (x) fx.push("p", "c", "s"); return 1 }},
+      early: (x) => {{ if (x === "a") return "skipped"; fx.push("c", "p"); return "sent" }},
       // Its block writes and puts before it fails: JavaScript keeps both, the try's promise
       // neither.
       held: (x) => {{
@@ -847,10 +860,8 @@ const DEBTS: &[&Debt] = &[
     &A_FINALLY_FORGETS_THE_RETURN_ABOVE,
     &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &A_LINE_AFTER_A_FAILURE_RUNS,
-    &A_FUNCTIONS_OWN_CONDITION,
     &A_LISTS_FUNCTION_STARTS_PAST_A_RETURN,
     &A_LISTS_FUNCTION_LOSES_ITS_WRITE,
-    &A_CHOICE_IN_A_FUNCTION_STARTS,
     &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &A_CHOICES_TEST_IS_READ_PAST_A_RETURN,
     &A_READ_IS_ASKED_PAST_A_RETURN,
@@ -901,15 +912,20 @@ const ROUND_TRIP_DEBTS: &[(&str, Option<Block>, Owes)] = &[
     ("the printer writes && / || around a function with a try of its own as other steps", None, |c| {
         matches!(c.shape, "after &&" | "after ||") && matches!(c.mark, "ft" | "fu" | "fy") && c.condition == "req.json.c"
     }),
+    // Found by C2 (2026-11-24): the same shape again. A function whose doings sit under its own
+    // `if` or in a `?:` arm takes a trigger since C2, and the printer writes the `&&` / `||` that
+    // ties it as `(c ? c : undefined) ? req : undefined`, which reads back without the truthiness
+    // test the `&&` holds.
+    ("the printer writes && / || around a function that takes a trigger as other steps", None, |c| {
+        matches!(c.shape, "after &&" | "after ||") && matches!(c.mark, "fr" | "fe") && c.condition == "req.json.c"
+    }),
     // Found by the `every` columns (2026-11-22): a function that writes state, puts, sends, queues
     // and mails is refused everywhere: "state.set(f, …)'s answer is used, which TypeScript can't
     // say".
     ("the printer can't write back a function that writes state and then sends, queues and mails", None, |c| matches!(c.mark, "fa" | "fa2")),
     // Reached's debts whose smallest flow the round trip refuses (reached.rs, `Today::Refused`).
-    (A_FUNCTIONS_OWN_CONDITION.name, None, |c| c.mark == "fs"),
     (A_LISTS_FUNCTION_LOSES_ITS_WRITE.name, None, |c| c.mark == "lf"),
     (A_LISTS_FUNCTION_STARTS_PAST_A_RETURN.name, None, |c| c.mark == "ls"),
-    (A_CHOICE_IN_A_FUNCTION_STARTS.name, None, |c| c.mark == "fr"),
 ];
 
 /// The debt a run that differs is owed under, by its case and request and the difference, mark by
@@ -938,15 +954,13 @@ fn debt(case: &Case, request: &str, made: &str, missed: &str) -> Option<Vec<&'st
     explain(shape == "after a failure, no try" && request == "not json", &A_LINE_AFTER_A_FAILURE_RUNS, "wofpcdgrslqmnhbuktx", "");
     explain(matches!(shape, "in a finally, a return above" | "in a try without a catch, a return above"), &A_FINALLY_FORGETS_THE_RETURN_ABOVE, "wo", "");
     explain(mark == "fy" && (early || !failing_try), &A_FINALLY_FORGETS_THE_RETURN_ABOVE, "f", "");
-    explain(failing_try && matches!(mark, "f" | "f2" | "f3" | "fp" | "fu" | "ft" | "fy" | "fa" | "fa2"), &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, "fpcqm", "");
+    explain(failing_try && matches!(mark, "f" | "f2" | "f3" | "fp" | "fu" | "ft" | "fy" | "fa" | "fa2" | "fi" | "fe"), &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, "fpcqm", "");
     // Another flow's action called (`k`) is started as an action is: the started half's too.
-    explain(failing_try && matches!(mark, "s" | "fs" | "fr" | "k"), &THE_STARTED_HALF, "sk", "");
+    explain(failing_try && matches!(mark, "s" | "fs" | "fr" | "fi" | "k"), &THE_STARTED_HALF, "sk", "");
     explain(shape == "a branch of ?:, read only in a branch" && matches!(mark, "s" | "r" | "u" | "t" | "k"), &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "", "srutk");
     explain(matches!(shape, "bound, and read in a branch" | "a branch of ?:, read only in a branch") && matches!(mark, "ls" | "fr"), &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "", "s");
-    explain(matches!(mark, "ft" | "fu" | "gi"), &A_FUNCTIONS_OWN_CONDITION, "cpg", "");
     explain(mark == "ls", &A_LISTS_FUNCTION_STARTS_PAST_A_RETURN, "s", "");
     explain(mark == "lf", &A_LISTS_FUNCTION_LOSES_ITS_WRITE, "", "f");
-    explain(mark == "fr", &A_CHOICE_IN_A_FUNCTION_STARTS, "s", "");
     let reads_in_test = case.condition.starts_with("notes[");
     explain(reads_in_test && shape.contains("?:"), &A_CHOICES_TEST_IS_READ_PAST_A_RETURN, "n", "");
     explain(matches!(mark, "rd" | "pk"), &A_READ_IS_ASKED_PAST_A_RETURN, "n", "");

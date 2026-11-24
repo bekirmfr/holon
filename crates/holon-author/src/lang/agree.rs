@@ -222,7 +222,7 @@ mod tests {
             (
                 "a function that starts an action inside its if, called under an if",
                 include_str!("../../tests/agree/function-under-if.holon.ts"),
-                refused(13, "the function \"ask\" starts another flow's action: a function only computes, so start it in the route or action that calls \"ask\""),
+                None,
             ),
             ("a function that writes, called in a try that fails", include_str!("../../tests/agree/failed-try-keeps-function-write.holon.ts"), None),
             (
@@ -238,8 +238,12 @@ mod tests {
             (
                 "a function whose start is one side of a choice",
                 include_str!("../../tests/agree/choice-inside-function.holon.ts"),
-                refused(13, "the function \"maybe\" has a write, a request or a start (its own, or one in a function it calls) that the place calling it can't hold back: move it into the route or action that calls \"maybe\""),
+                None,
             ),
+            // Owed by the way back until the reached rule tied a function's steps to its call
+            // (on_par.rs's table, struck then).
+            ("a function of the flow starting its flow's action", "import { action, flow, route } from \"holon\"\n\nflow(\"f\", { port: 8080 })\n\nexport const ping = action((x) => x)\n\nfunction ask(x) {\n  ping(x)\n  return 1\n}\n\nroute.post(\"/\", (req) => ask(req.json))\n", None),
+            ("a request on one side of a ?: in a function", "import { flow, route } from \"holon\"\nimport api from \"host:api.example.com\"\n\nflow(\"f\", { port: 8080 })\n\nasync function ask(x) {\n  return x === \"a\" ? (await api.post(\"/in\", { body: x })).status : 0\n}\n\nroute.post(\"/\", async (req) => await ask(req.json))\n", None),
             ("a write in a finally, below a return", include_str!("../../tests/agree/finally-after-return.holon.ts"), None),
             ("an action answering early, above its wait", include_str!("../../tests/agree/early-answer-above-wait.holon.ts"), None),
             ("a choice whose test reads a collection, below a return", include_str!("../../tests/agree/choice-test-read-after-return.holon.ts"), None),

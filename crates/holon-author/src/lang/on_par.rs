@@ -222,12 +222,6 @@ mod tests {
     /// form the printer learns is taken; its row then fails, to be moved to the texts taken.
     pub(super) const OWED: &[(&str, &str, u32, &str)] = &[
         (
-            "a function of the flow starting another flow's action",
-            "import { action, flow, route } from \"holon\"\n\nflow(\"f\", { port: 8080 })\n\nexport const ping = action((x) => x)\n\nfunction ask(x) {\n  ping(x)\n  return 1\n}\n\nroute.post(\"/\", (req) => ask(req.json))\n",
-            7,
-            "the function \"ask\" starts another flow's action: a function only computes, so start it in the route or action that calls \"ask\"",
-        ),
-        (
             "a write in a list method's function",
             "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\", { port: 8080 })\n\nfunction keep(x) {\n  ++state.n\n  return `${x}!`\n}\n\nroute.post(\"/\", (req) => req.json.map((x) => keep(x)))\n",
             11,
@@ -238,12 +232,6 @@ mod tests {
             "import { flow, route } from \"holon\"\nimport api from \"host:api.example.com\"\n\nflow(\"f\", { port: 8080 })\n\nroute.post(\"/\", (req) => req.json.map((x) => api.get(`/a/${x}`).status))\n",
             6,
             "the function given to map has a write, a request or a start (its own, or one in a function it calls) that the place calling it can't hold back: move it out of the function, into the route or action itself",
-        ),
-        (
-            "a request on one side of a ?: in a function",
-            "import { flow, route } from \"holon\"\nimport api from \"host:api.example.com\"\n\nflow(\"f\", { port: 8080 })\n\nasync function ask(x) {\n  return x === \"a\" ? (await api.post(\"/in\", { body: x })).status : 0\n}\n\nroute.post(\"/\", async (req) => await ask(req.json))\n",
-            6,
-            "the function \"ask\" has a write, a request or a start (its own, or one in a function it calls) that the place calling it can't hold back: move it into the route or action that calls \"ask\"",
         ),
         (
             "&& around an awaited function of the flow",

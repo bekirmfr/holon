@@ -17,7 +17,7 @@
 //! readings differ is one of Holon's own rules, counted; where the flow differs from its reading,
 //! the difference is owed under a named debt of reached (`reached.rs`), or the test fails.
 
-use super::reached::{Debt, A_FUNCTIONS_OWN_CONDITION, A_LISTS_FUNCTION_STARTS_PAST_A_RETURN, A_WAIT_PAST_AN_ANSWER_PARKS, A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS};
+use super::reached::{Debt, A_LISTS_FUNCTION_STARTS_PAST_A_RETURN, A_WAIT_PAST_AN_ANSWER_PARKS, A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS};
 use super::semantics::{grid_state_with, Block};
 use super::*;
 
@@ -450,9 +450,8 @@ const ROUND_TRIP_DEBTS: &[(&str, Owes)] = &[
     // it, using what the wait gave or not, started however: "action pay answers before its first
     // wait in a shape the text can't write (its text reads back as another action)".
     (A_PUT_PAST_A_WAIT_READS_BACK_AS_ANOTHER_ACTION, |c| c.past == "p" && c.above != "nothing"),
-    // Reached's debts whose smallest flow the round trip refuses, as the handler grid owes them: a
-    // function that starts the action, and a list's function that does.
-    (A_FUNCTIONS_OWN_CONDITION.name, |c| c.starter == "a function"),
+    // Reached's debt whose smallest flow the round trip refuses, as the handler grid owes it: a
+    // list's function that starts the action.
     (A_LISTS_FUNCTION_STARTS_PAST_A_RETURN.name, |c| c.starter == "a list's function"),
 ];
 

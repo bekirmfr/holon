@@ -2,21 +2,33 @@
 
 ## Unreleased
 
+- **What a function of the flow does is done only where its call is reached.** A write, a send, a
+  request or a start inside one of the flow's own functions, under the function's own `if`, below
+  its own `return`, in its own `try` or in a branch of its own `?:`, was made though the call of the
+  function sat under an `if` that didn't hold. For example, `function bump(x) { if (x) {
+  news.send({ n: x }) } return x + "!" }`, called in a route as `if (req.json.go) { const b =
+  bump(req.json.a) }`, sent on `news` for `{"go":false,"a":"x"}`; now it sends nothing, as
+  JavaScript would. Functions that start an action are taken again (`function ask(x) { if (x) {
+  ping(x) } return 1 }`, refused since the change below), and do so only where they are called:
+  this fixes the second known limit of 0.1.0-rc.37 (an `if` around a call to one of the flow's
+  own functions).
+  Who notices: a flow with a function that does something under its own conditions; its steps
+  and its fingerprint change on its next deploy. Deployed already, it keeps running as before
+  until it is deployed again.
+
 - **A text is taken only if the canvas can write it back as the same flow.** Holon reads a text
   into steps, and writes steps back as text for the canvas and `holon fmt`. The two could
   disagree: some texts were taken whose steps can't be written back, and some of those steps
   didn't do what the text says. Now every reading of a text (the editor, `holon check` and
   `deploy`, an agent's check, the text shown for a version) writes the steps back and reads them
   again, and refuses the text when that fails or gives other steps, saying what to change. These
-  ran before and are now refused: a function of the flow that starts another flow's action; a
+  ran before and are now refused: a
   write, a request or a start inside a list method's function, so one request per item of a list
   (`items.map((item) => api.get(...))`) is refused too; an action awaiting its own flow's action;
   `&&` or `||` around an awaited function of the flow (`const got = req.json.c && await ask(x)`);
   and very long or deep handlers, from about 25 early returns in a row, 41 writes each under its
-  own `if`, or calls nested 21 deep. For example, `function ask(x) { if (x) { ping(x) } return 1
-  }` is refused with `the function "ask" starts another flow's action: a function only computes,
-  so start it in the route or action that calls "ask"`, which closes the second known limit of
-  0.1.0-rc.37. A handler that is too long says `this flow is too long or too deeply nested to be
+  own `if`, or calls nested 21 deep. (A function of the flow that starts an action was refused
+  here too, until the change above.) A handler that is too long says `this flow is too long or too deeply nested to be
   shown back as text: split the handler, or name parts of it with a const or a function`. Who
   notices: a flow written in one of these ways no longer checks or deploys; deployed already, it
   keeps running. The samples are not affected.
