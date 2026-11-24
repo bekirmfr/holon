@@ -39,13 +39,16 @@ fn err<T>(span: Span, message: impl Into<String>) -> R<T> {
 }
 
 /// A text lowered: the flow's name, its document, each top-level node's name in the text by its
-/// id (bindings and `node` names), and each node's span by its id.
+/// id (bindings and `node` names), each node's span by its id, and its doing sites.
 #[derive(Clone, Debug)]
 pub struct Lowered {
     pub name: Option<String>,
     pub doc: FlowDocument,
     pub names: BTreeMap<String, String>,
     pub spans: BTreeMap<String, Span>,
+    /// Each doing site of the text, and what reaches it ([`super::reached`]): recorded beside the
+    /// document, which doesn't depend on it.
+    pub sites: Vec<super::reached::Site>,
 }
 
 /// The steps of an action's hold: ts.rs `waited_on` binds `waited_N = when(input, has_value(w))`
@@ -94,7 +97,43 @@ pub fn js_source(def: &JsDef) -> String {
 
 /// Lower a parsed text.
 pub fn lower(file: &File) -> R<Lowered> {
-    Lowerer::new(file).run(file)
+    Lowerer::new(file).run(file).map(|(lowered, _)| lowered)
+}
+
+/// [`lower`], saying for each of `watched` the nodes and outputs it was lowered to, wherever it
+/// was (none where it never was, or where it is a function's input). The document is the one
+/// [`lower`] gives: watching only looks.
+pub fn lower_watching(file: &File, watched: &[Expr]) -> R<(Lowered, Found)> {
+    let mut lowerer = Lowerer::new(file);
+    for (i, e) in watched.iter().enumerate() {
+        lowerer.watch.by_span.entry(span_key(e.span)).or_default().push(i);
+    }
+    lowerer.watch.exprs = watched.to_vec();
+    lowerer.watch.found = vec![Vec::new(); watched.len()];
+    lowerer.b.holon_traces = Some(BTreeMap::new());
+    lowerer.run(file)
+}
+
+/// What [`lower_watching`] saw: for each expression watched, the nodes and outputs it was lowered
+/// to; and each function's unit, by hash, with the node each of its children is.
+#[derive(Clone, Debug, Default)]
+pub struct Found {
+    pub nodes: Vec<Vec<(String, usize)>>,
+    pub holons: BTreeMap<String, Vec<String>>,
+    /// Each function's inputs, by its name: what a call of it is given, in order.
+    pub inputs: BTreeMap<String, Vec<String>>,
+}
+
+fn span_key(s: Span) -> (u32, u32, u32, u32) {
+    (s.start.line, s.start.col, s.end.line, s.end.col)
+}
+
+/// The expressions a caller of [`lower_watching`] asked for, and what each was lowered to.
+#[derive(Default)]
+struct Watch {
+    by_span: HashMap<(u32, u32, u32, u32), Vec<usize>>,
+    exprs: Vec<Expr>,
+    found: Vec<Vec<(String, usize)>>,
 }
 
 /// The leaf that holds a parameter a function written in place doesn't use (two are held by one
@@ -393,6 +432,8 @@ struct Lowerer<'a> {
     /// The flow's waits by name: an approval's steps, or none for an event. A run keeps one
     /// decision a name, so a name is one wait across the flow (`approval::named_apart`).
     waits: BTreeMap<String, Option<String>>,
+    /// What a caller asked to see lowered ([`lower_watching`]): empty but there.
+    watch: Watch,
 }
 
 impl<'a> Lowerer<'a> {
@@ -458,6 +499,7 @@ impl<'a> Lowerer<'a> {
             socket: false,
             never_keeps: file.headers.iter().find_map(|h| if let HeaderKind::NeverKeep(k) = &h.kind { k.first().cloned() } else { None }),
             waits: BTreeMap::new(),
+            watch: Watch::default(),
         }
     }
 
@@ -475,7 +517,8 @@ impl<'a> Lowerer<'a> {
         self.frames.last().expect("a frame")
     }
 
-    fn run(mut self, file: &'a File) -> R<Lowered> {
+    /// The text lowered, and what each watched expression was lowered to ([`lower_watching`]).
+    fn run(mut self, file: &'a File) -> R<(Lowered, Found)> {
         // Holons and js nodes twice defined (or one of each under a name).
         let mut seen = HashSet::new();
         for i in &file.items {
@@ -572,6 +615,7 @@ impl<'a> Lowerer<'a> {
         }
         let settings = self.settings(file)?;
         let name = file.headers.iter().find_map(|h| if let HeaderKind::Flow(n) = &h.kind { Some(n.clone()) } else { None });
+        let holons = self.b.holon_traces.take().unwrap_or_default();
         let mut doc = self.b.finish(settings);
         super::layout::lay_out(&mut doc);
         for node in &mut doc.nodes {
@@ -597,7 +641,7 @@ impl<'a> Lowerer<'a> {
                 return err(span, format!("this isn't wired to {what}, so it isn't part of the handler (a handler is everything wired to its trigger): write something with it, or use {use_} in it"));
             }
         }
-        Ok(Lowered { name, doc, names: self.names, spans: self.spans })
+        Ok((Lowered { name, doc, names: self.names, spans: self.spans, sites: Vec::new() }, Found { nodes: self.watch.found, holons, inputs: BTreeMap::new() }))
     }
 
     fn settings(&self, file: &File) -> R<Settings> {
@@ -2054,7 +2098,23 @@ impl<'a> Lowerer<'a> {
 
     // ── expressions ──────────────────────────────────────────────────────────────────────────
 
+    /// `e` lowered ([`Self::lowered`]); where a caller watches it, what it was lowered to is noted.
     fn expr(&mut self, e: &'a Expr) -> R<Val> {
+        let v = self.lowered(e)?;
+        if !self.watch.by_span.is_empty()
+            && let Some(is) = self.watch.by_span.get(&span_key(e.span))
+            && let Val::Out { id, port, .. } = &v
+        {
+            for &i in is {
+                if self.watch.exprs[i] == *e && !self.watch.found[i].contains(&(id.clone(), *port)) {
+                    self.watch.found[i].push((id.clone(), *port));
+                }
+            }
+        }
+        Ok(v)
+    }
+
+    fn lowered(&mut self, e: &'a Expr) -> R<Val> {
         match &e.kind {
             ExprKind::Number { text, .. } => self.node("const", &[("value".into(), text.clone()), ("type".into(), "Number".into())], e.span),
             ExprKind::Duration { seconds, .. } => self.node("const", &[("value".into(), number_text(*seconds)), ("type".into(), "Number".into())], e.span),

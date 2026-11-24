@@ -950,6 +950,8 @@ fn debt(case: &Case, request: &str, made: &str, missed: &str) -> Option<Vec<&'st
     let reads_in_test = case.condition.starts_with("notes[");
     explain(reads_in_test && shape.contains("?:"), &A_CHOICES_TEST_IS_READ_PAST_A_RETURN, "n", "");
     explain(matches!(mark, "rd" | "pk"), &A_READ_IS_ASKED_PAST_A_RETURN, "n", "");
+    // Its folder's kind, seen by C1's site runs alone (`v`, `a_grids_sites_are_reached_as_its_debts_say`).
+    explain(mark == "u", &A_READ_IS_ASKED_PAST_A_RETURN, "v", "");
     explain(true, &AN_UNUSED_READ_IS_NOT_ASKED, "", "n");
     (made.is_empty() && missed.is_empty() && !owed.is_empty()).then_some(owed)
 }
@@ -1152,6 +1154,127 @@ fn a_feeds_handler_does_what_its_text_says() {
 #[ignore = "heavy: about 9 minutes (alone, 2026-11-23), run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
 fn a_websockets_message_does_what_its_text_says() {
     grid(Block::Socket);
+}
+
+/// The mark a site of a grid's handler leaves (`flow_does`'s letters), read off its text: what it
+/// does and to what. `?` where the grid has no mark for it.
+fn site_mark(does: &str, written: &str) -> char {
+    let has = |s: &str| written.contains(s);
+    match does {
+        "starts" => 's',
+        "deletes" => 'd',
+        "logs" => 'l',
+        "calls" => 'k',
+        "reads" if has("notes") => 'n',
+        // A folder's file read (an upload's handle): no mark on the server, whose log the grid
+        // reads for collections' reads alone.
+        "reads" if has("files.file") => 'v',
+        "sends" if has("news.") => 'c',
+        "sends" if has("jobs.") => 'q',
+        "sends" if has("ops.") => 'm',
+        "requests" if has("/hit") => 'r',
+        "requests" if has("/in\"") => 'g',
+        "requests" if has("/up") => 'u',
+        "requests" if has("/st") => 't',
+        _ if has("hail(") => 'k',
+        _ if has("shop.") => 'b',
+        "writes" if has("state.w") => 'w',
+        "writes" if has("state.o") => 'o',
+        "writes" if has("state.f") => 'f',
+        "writes" if has("marks") => 'p',
+        "writes" if has("files[") => 'h',
+        _ => '?',
+    }
+}
+
+/// **Guards:** reached (step C1) read off every site of the route's and the websocket's grid
+/// handlers, in process, on the requests the size runs: a site that differs from its path is
+/// owed under the debt the grid's own matcher (`debt`) names for that handler and request, by the
+/// marks it made or missed; any other fails.
+///
+/// The clock's, queue's, file's, mail's and feed's handlers are not read in process: they read
+/// the grid's request from the state a `POST /set` before each run wrote (a clock's, a file's, a
+/// mail's) or from a queue's or a feed's message the server builds, so a run here, with empty
+/// state, would show only values missing. Their grids hold them on the server.
+///
+/// **If it fails:** read the handler and request it names. A path the Reader got wrong is fixed in
+/// `lang/ts.rs`; a graph doing other than its text is a new hole, a named row in `reached.rs`.
+#[test]
+#[ignore = "heavy: about 2 minutes (alone, 2026-11-23), run by .github/workflows/heavy.yml (CLAUDE.md, Heavy tests)"]
+fn a_grids_sites_are_reached_as_its_debts_say() {
+    use holon_author::reached_runs::{answer_ok, given_on, site_runs, Handler, PastNothing, Verdict, Watched};
+    let size = grid_size();
+    for block in [Block::Route, Block::Socket] {
+        let requests = grid_requests(block, size);
+        if requests.is_empty() {
+            println!("{block:?}: run on no request at this size ({size:?})");
+            continue;
+        }
+        let all = cases();
+        let workers = grid_workers();
+        let indexed: Vec<(usize, &Case)> = all.iter().enumerate().collect();
+        let (read, wrong, owed): (usize, Vec<String>, BTreeMap<&'static str, usize>) = thread::scope(|s| {
+            let running: Vec<_> = indexed
+                .chunks(indexed.len().div_ceil(workers))
+                .map(|part| {
+                    let requests = &requests;
+                    s.spawn(move || {
+                        let (mut read, mut wrong, mut owed) = (0, Vec::new(), BTreeMap::<&'static str, usize>::new());
+                        for &(i, case) in part {
+                            let text = flow_text("probe", 19000, "127.0.0.1:9", &[(i, case)], block);
+                            // What the grid runs: what the language takes, and what the round trip
+                            // alone refuses (run read alone).
+                            let takes = holon_author::agent::plan(&text).is_ok();
+                            let alone = !takes && holon_author::lang::ts::compile(&text).is_ok() && holon_author::lang::compile(&text).is_err();
+                            if !takes && !alone {
+                                continue;
+                            }
+                            let w = Watched::of(&text).unwrap_or_else(|e| panic!("{} | {} | {}: {e}", case.shape, case.mark, case.condition));
+                            read += 1;
+                            for &r in requests {
+                                let request = REQUESTS[r];
+                                let given = |h: &Handler, u: &holon_core::Unit| if matches!(h.kind, "route" | "websocket") { given_on(h, u, &[request.to_string()]) } else { Vec::new() };
+                                let (mut made, mut missed, mut said) = (String::new(), String::new(), Vec::new());
+                                for run in site_runs(&w, &given, answer_ok) {
+                                    let site = &w.lowered.sites[run.site];
+                                    let verdict = run.verdict(site);
+                                    if !super::reached::is_owed(verdict) {
+                                        continue;
+                                    }
+                                    let lines: Vec<&str> = text.lines().skip(site.at.start.line as usize - 1).take((site.at.end.line - site.at.start.line + 1) as usize).collect();
+                                    let mark = site_mark(site.does, &lines.join("\n"));
+                                    match verdict {
+                                        Verdict::MissedReached => missed.push(mark),
+                                        Verdict::MadeUnreached | Verdict::MadeUnlooked | Verdict::PastNothing(PastNothing::Owed) => made.push(mark),
+                                        _ => {}
+                                    }
+                                    said.push(format!("{} at line {}: {verdict:?}", site.does, site.at.start.line));
+                                }
+                                if said.is_empty() {
+                                    continue;
+                                }
+                                match debt(case, request, &made, &missed) {
+                                    Some(debts) => debts.iter().for_each(|d| *owed.entry(d.name).or_default() += 1),
+                                    None => wrong.push(format!("{block:?} | {} | {} | {} | {request} | {} (made {made:?}, missed {missed:?})", case.shape, case.mark, case.condition, said.join("; "))),
+                                }
+                            }
+                        }
+                        (read, wrong, owed)
+                    })
+                })
+                .collect();
+            running.into_iter().map(|r| r.join().unwrap()).fold((0, Vec::new(), BTreeMap::new()), |(n, mut w, mut o), (n2, w2, o2)| {
+                w.extend(w2);
+                o2.into_iter().for_each(|(k, v)| *o.entry(k).or_default() += v);
+                (n + n2, w, o)
+            })
+        });
+        println!("{block:?}: {read} handlers read, on {} requests ({size:?})", requests.len());
+        for (d, n) in &owed {
+            println!("  {n:6} site-run differences owed under \"{d}\"");
+        }
+        assert!(wrong.is_empty(), "{} differences under no debt:\n{}", wrong.len(), wrong.join("\n"));
+    }
 }
 
 /// The grid of `block`'s handlers: every case, checked, run on every request, and compared.

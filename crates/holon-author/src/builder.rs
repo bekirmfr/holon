@@ -246,6 +246,9 @@ pub struct FlowBuilder {
     holons: Vec<Hash>,
     names: BTreeMap<String, String>,
     frames: Vec<Frame>,
+    /// When kept (`Some`), each holon's unit, by hash, with the node each of its children is, in
+    /// the unit's order: what a run's steps inside it were (`flow::trace_of`).
+    pub holon_traces: Option<BTreeMap<String, Vec<String>>>,
 }
 
 impl Default for FlowBuilder {
@@ -256,7 +259,7 @@ impl Default for FlowBuilder {
 
 impl FlowBuilder {
     pub fn new() -> FlowBuilder {
-        FlowBuilder { store: MapResolver::new(), counter: 0, holons: vec![], names: BTreeMap::new(), frames: vec![Frame { nodes: vec![], wires: vec![], prefix: String::new() }] }
+        FlowBuilder { store: MapResolver::new(), counter: 0, holons: vec![], names: BTreeMap::new(), frames: vec![Frame { nodes: vec![], wires: vec![], prefix: String::new() }], holon_traces: None }
     }
 
     fn frame(&mut self) -> &mut Frame {
@@ -459,6 +462,12 @@ impl FlowBuilder {
         }
         let (hash, inputs, outputs) =
             freeze_inner(&boundary(inputs), &boundary(outputs), &inner.nodes, &inner.wires, &mut self.store).map_err(|e| format!("holon \"{name}\": {}", e.message))?;
+        if let Some(traces) = &mut self.holon_traces
+            && let Some(unit) = parse_hash(&hash).and_then(|h| self.store.resolve(&h).cloned())
+        {
+            let group: Vec<&Node> = inner.nodes.iter().collect();
+            traces.insert(hash.clone(), crate::flow::trace_of(&unit, &group));
+        }
         self.keep(name, &hash);
         Ok(Holon { name: name.into(), hash, inputs, outputs })
     }
