@@ -2543,6 +2543,31 @@ and replayed from there (the `basket` sample prices each line from a collection)
 `map` or `fold` whose function reads from outside with what the run recorded it produced, as it
 does a function that reads.
 
+A list method's function may also do things, as a function of the flow may: write, put, delete,
+send, log, ask a host or start an action (the `restock` sample asks a supplier and keeps a line for
+each item of an order). What it does is made once per item it is applied to, in the order
+JavaScript calls the callback: from the first item; `find`, `findIndex`, `some` and `every` stop at
+the item that decides, `findLast` and `findLastIndex` go from the last, and an item whose function
+gives nothing (where JavaScript's callback would throw) stops the method there, so no item after it
+is applied. The writes, sends and log lines land in that order. The list call itself is reached as
+any step that does something is: below a return that answered, in a branch not taken or an `if`
+not entered, nothing of it is made; bound to a name read only in a branch not taken, it is made,
+as JavaScript makes it. On the canvas the method's step takes a `trigger` input, tied as any such
+step's, and, when its function writes, sends or logs, a second output, `did`: its effects in the
+order made, which the host performs with the run's others. A function written in place whose answer is
+the write, send or log itself (`xs.map((x) => marks.put(x, x))`, where JavaScript keeps `undefined`
+for each item) is refused: the write goes in a function of the flow's, as a statement, which
+returns a value.
+
+What bounds it: a list holds at most 1,048,576 items (`MAX_ITEMS`), and each application is a step
+of the run's `max_steps`. The items' requests and starts are asked in one round, at most
+`per_host_concurrency` at once to a host (6 by default, 32 at most; an action's starts one at a
+time), and every one counts toward the run's `max_requests` (50 by default, 1,000 at most), checked
+before the round is sent: a list of 10,000 items whose function asks a host fails the run with
+nothing sent. Two differences from JavaScript are left: an item whose function starts something and
+then fails stops the items after it only once the start is answered, so theirs are already asked;
+and a `reduce` whose function adds a start's handle to a text stops at the first item.
+
 ### 5.10 Effects and statements
 
 The IR has one rule for effects: an Effect-typed output that nothing consumes is exposed by the
@@ -3078,7 +3103,8 @@ The error catalogue the reader and the lowering produce, each with the span it p
 | an action answers with a value alone | the `status(…)` or `respond(…)` |
 | a route answers and is done, so it doesn't wait | the `await` |
 | a function computes and never waits; calling another flow's action is a handler's | the `await` |
-| a text the canvas can't write back as the same steps: a write, a request or a start inside a list method's function (so one request per item of a list); an action awaiting its own flow's action; `&&` or `\|\|` around an awaited function of the flow | the function's name, or the list method its function is given to; else `flow(…)` |
+| a function written in place whose answer is a write, a send or a log: put it in a function of the flow's, as a statement of its own, and return a value | the function's body |
+| a text the canvas can't write back as the same steps: an action awaiting its own flow's action | the function's name, or the list method its function is given to; else `flow(…)` |
 | a flow too long or deeply nested to be shown back as text (from about 25 early returns in a row, 41 writes each under its own `if`, calls or templates nested 21 deep) | where the text nests deepest |
 | a method's function (`map`'s, `filter`'s…) isn't async | the function |
 | no leaf does `.m(…)`: do it in a `js()` function | the method |

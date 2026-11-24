@@ -249,9 +249,11 @@ pub fn default_spec(
     // A call tied to a trigger is made when the trigger arrives, whatever reads its answer: once
     // made it can't be taken back (`CALLS`). Its answer leaves the boundary too, so the call is
     // made even when what reads it is a branch not taken. One left untied is made when needed.
+    // So is a list method whose function does something, which takes its function's trigger
+    // (`DID`): JavaScript runs the callback on each item when the call is reached.
     let tied_call = |ci: usize| {
         let child = resolved[ci];
-        matches!(&child.body, UnitBody::Primitive { name } if crate::CALLS.contains(&name.as_str()))
+        matches!(&child.body, UnitBody::Primitive { name } if crate::CALLS.contains(&name.as_str()) || crate::PASSES_EXTRA.contains(&name.as_str()))
             && inner_edges.iter().any(|e| e.to_child as usize == ci && child.inputs.get(e.to_port as usize).is_some_and(|p| p.name == crate::TRIGGER))
     };
 

@@ -222,30 +222,6 @@ mod tests {
     /// form the printer learns is taken; its row then fails, to be moved to the texts taken.
     pub(super) const OWED: &[(&str, &str, u32, &str)] = &[
         (
-            "a write in a list method's function",
-            "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\", { port: 8080 })\n\nfunction keep(x) {\n  ++state.n\n  return `${x}!`\n}\n\nroute.post(\"/\", (req) => req.json.map((x) => keep(x)))\n",
-            11,
-            "the function given to map has a write, a request or a start (its own, or one in a function it calls) that the place calling it can't hold back: move it out of the function, into the route or action itself",
-        ),
-        (
-            "a request for each item of a list",
-            "import { flow, route } from \"holon\"\nimport api from \"host:api.example.com\"\n\nflow(\"f\", { port: 8080 })\n\nroute.post(\"/\", (req) => req.json.map((x) => api.get(`/a/${x}`).status))\n",
-            6,
-            "the function given to map has a write, a request or a start (its own, or one in a function it calls) that the place calling it can't hold back: move it out of the function, into the route or action itself",
-        ),
-        (
-            "&& around an awaited function of the flow",
-            "import { flow, route } from \"holon\"\nimport api from \"host:api.example.com\"\n\nflow(\"f\", { port: 8080 })\n\nasync function ask(x) {\n  const sent = await api.post(\"/in\", { body: x })\n  return sent.status\n}\n\nroute.post(\"/\", async (req) => {\n  const got = req.json.c && await ask(\"a\")\n  return \"end\"\n})\n",
-            4,
-            "written back from its steps, this text reads as another flow, so the canvas would show something other than what runs: write it another way (and please report it: Holon's two readings of a text should agree)",
-        ),
-        (
-            "|| around an awaited function of the flow",
-            "import { flow, route } from \"holon\"\nimport api from \"host:api.example.com\"\n\nflow(\"f\", { port: 8080 })\n\nasync function ask(x) {\n  const sent = await api.post(\"/in\", { body: x })\n  return sent.status\n}\n\nroute.post(\"/\", async (req) => {\n  const got = req.json.c || await ask(\"a\")\n  return \"end\"\n})\n",
-            4,
-            "written back from its steps, this text reads as another flow, so the canvas would show something other than what runs: write it another way (and please report it: Holon's two readings of a text should agree)",
-        ),
-        (
             "an action awaiting its own flow's action",
             "import { action, flow } from \"holon\"\nimport { go } from \"flow:me\"\n\nflow(\"me\")\n\nexport const go = action(async (input) => {\n  const r = await go(input)\n  return r\n})\n",
             4,

@@ -1167,6 +1167,18 @@ static SAMPLES: &[Sample] = &[
         try_it: r#"curl -X POST -d '{"name":"Ada"}' http://127.0.0.1:8203/members/ada, then curl -X POST -d '{"member":"ada","amount":120}' http://127.0.0.1:8203/purchases ("recorded"; GET /members/ada has 12 points), then -d '{"member":"bob","amount":50}' ("recorded", and nothing written): holon runs loyalty --run 3 says, under the write, "not made: collection_get "members" found nothing at members[bob]""#,
         text: include_str!("../samples/loyalty.holon.ts"),
     },
+    Sample {
+        name: "restock",
+        title: "Restock order (a request and a write per item)",
+        description: "Takes a restock order of several lines and, for each line, asks the supplier for it and keeps the line in a collection: one request and one put per item, made in the items' order as JavaScript's map makes them. A line whose function fails stops the lines after it, and a list longer than the run may send requests for fails before any is sent.",
+        shows: &["a list's function that does something", "http_request", "collections", "map"],
+        port: Some("8204"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -X POST -d '{"lines":[{"sku":"a1","qty":3},{"sku":"b2","qty":5}]}' http://127.0.0.1:8204/restock answers {"asked":["a1","b2"]}, and holon runs restock --run 1 shows two requests to httpbin.org and two puts in stock, a1's first"#,
+        text: include_str!("../samples/restock.holon.ts"),
+    },
 ];
 
 #[cfg(test)]

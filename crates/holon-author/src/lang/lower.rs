@@ -1840,21 +1840,7 @@ impl<'a> Lowerer<'a> {
         // gets last, which a placement ties to the block it is placed in.
         let mut implicit_trigger = false;
         if result.is_ok() {
-            result = self.tie_block(&Val::In(TRIGGER.into()), def.name.span).map(drop);
-        }
-        // A call in a branch of a choice (`x ? ping(x) : 0`) is made when the branch needs it, so
-        // it isn't tied to its statement; in a function it is tied to the call of the function,
-        // or it would be made wherever the function's answer is needed, though the call of the
-        // function isn't reached (reached's case 5). It stays made only when needed: its answer
-        // isn't one the function names (`call_outputs`).
-        if result.is_ok() {
-            let lazy: Vec<String> = self.cur().created.iter().filter(|id| self.cur().in_branches.contains(*id) && self.b.data(id).is_some_and(|d| d.inputs.iter().any(|p| p.name == TRIGGER)) && !self.b.is_wired(id, TRIGGER) && !self.cur().wiring_in.iter().any(|(_, node, input)| node == *id && input == TRIGGER)).cloned().collect();
-            for id in &lazy {
-                if let Err(e) = self.connect(&Val::In(TRIGGER.into()), id, TRIGGER, def.name.span) {
-                    result = Err(e);
-                    break;
-                }
-            }
+            result = self.tie_own(def.name.span);
         }
         if result.is_ok() {
             implicit_trigger = !def.inputs.iter().any(|p| p.name.text == TRIGGER) && self.cur().wiring_in.iter().any(|(port, _, _)| port == TRIGGER);
@@ -1936,7 +1922,8 @@ impl<'a> Lowerer<'a> {
             for id in &frame.created {
                 let Some(d) = self.b.data(id) else { continue };
                 let answers: Vec<String> = match &d.body {
-                    PlacedBody::Primitive if CALLS.contains(&d.name.as_str()) && !frame.in_branches.contains(id) => {
+                    // A list method whose function does something is made as a call is.
+                    PlacedBody::Primitive if (CALLS.contains(&d.name.as_str()) || PASSES_EXTRA.contains(&d.name.as_str())) && !frame.in_branches.contains(id) => {
                         let tied = self.b.is_wired(id, TRIGGER) || wiring_in.iter().any(|(_, node, input)| node == id && input == TRIGGER);
                         if tied { d.outputs.iter().map(|o| o.name.clone()).collect() } else { vec![] }
                     }
@@ -1962,6 +1949,43 @@ impl<'a> Lowerer<'a> {
         };
         self.holons.insert(name.to_string(), holon.clone());
         Ok(holon)
+    }
+
+    /// The sinks placed in a function's body and not tied by `after`, tied to its own trigger: the
+    /// input named so, which a placement ties to the block it is placed in, or a list method to
+    /// the block it is called in and passes on to each item's application.
+    ///
+    /// A call in a branch of a choice (`x ? ping(x) : 0`) is made when the branch needs it, so it
+    /// isn't tied to its statement; in a function it is tied to the call of the function, or it
+    /// would be made wherever the function's answer is needed, though the call of the function
+    /// isn't reached (reached's case 5). It stays made only when needed: its answer isn't one the
+    /// function names (`call_outputs`).
+    fn tie_own(&mut self, span: Span) -> R<()> {
+        self.tie_block(&Val::In(TRIGGER.into()), span)?;
+        let lazy: Vec<String> = self.cur().created.iter().filter(|id| self.cur().in_branches.contains(*id) && self.b.data(id).is_some_and(|d| d.inputs.iter().any(|p| p.name == TRIGGER)) && !self.b.is_wired(id, TRIGGER) && !self.cur().wiring_in.iter().any(|(_, node, input)| node == *id && input == TRIGGER)).cloned().collect();
+        for id in &lazy {
+            self.connect(&Val::In(TRIGGER.into()), id, TRIGGER, span)?;
+        }
+        Ok(())
+    }
+
+    /// What a list method's function makes and nothing in it reads (a write, a send, a call of a
+    /// function of the flow that writes, a list method's inside it), as outputs of its own after
+    /// its answer `out` (fed by `answer`): the list method hands them out (core's `DID`).
+    fn handed_effects(&self, answer: (&str, &str), outputs: &mut Vec<HolonPort>, wiring_out: &mut Vec<(String, String, String)>) {
+        for (id, output) in self.b.unread_effects() {
+            if (id.as_str(), output.as_str()) == answer || wiring_out.iter().any(|(node, out, _)| *node == id && *out == output) {
+                continue;
+            }
+            let mut pname = output.clone();
+            let mut n = 1;
+            while outputs.iter().any(|o| o.name == pname) {
+                n += 1;
+                pname = format!("{output}_{n}");
+            }
+            wiring_out.push((id, output, pname.clone()));
+            outputs.push(HolonPort { name: pname, unit: None });
+        }
     }
 
     /// A `js` node (docs/L4s/js-node-L4.md §3): a composite the printer can read back, over the
@@ -2087,7 +2111,7 @@ impl<'a> Lowerer<'a> {
     /// A function: an anonymous holon with the parameters as inputs, then each name it uses from
     /// around it, and the body as its one output. Its hash, as a `fn` param; how many inputs it
     /// takes; and the values of the names it captured, for the call to pass.
-    fn lambda(&mut self, params: &'a [Name], body: &'a Expr, span: Span) -> R<(String, usize, Vec<Val>)> {
+    fn lambda(&mut self, params: &'a [Name], body: &'a Expr, span: Span) -> R<Applied> {
         self.lambdas += 1;
         let name = format!("fn_{}", self.lambdas);
         self.b.begin_holon(&name);
@@ -2122,11 +2146,23 @@ impl<'a> Lowerer<'a> {
                 v = Err(e);
             }
         }
+        // What it does is tied to its own trigger, which its list method passes it.
+        if v.is_ok()
+            && let Err(e) = self.tie_own(span)
+        {
+            v = Err(e);
+        }
         let frame = self.frames.pop().expect("the function's frame");
         let v = v?;
         let Val::Out { id, outputs, port, .. } = &v else {
             return err(body.span, "a function's body can't be a parameter passed straight through: put a node between");
         };
+        // A write, a send or a log answers nothing (`undefined` in JavaScript); the flow has no
+        // such value to give for the item, so its answer read as a value (the function's, or kept
+        // in a list, a text or a branch of it) is refused rather than answered otherwise.
+        if outputs.get(*port).is_some_and(|o| o.ty == WType::Effect) || self.b.reads_an_effect() {
+            return err(body.span, "a write, a send or a log answers nothing a list can keep: put it in a function of the flow's, as a statement of its own, and return a value");
+        }
         let output = outputs.get(*port).map(|o| o.name.clone()).unwrap_or_else(|| "out".into());
         let FrameKind::Lambda { captures } = &frame.kind else { unreachable!() };
         // By name, not by first use, so the function's inputs are the same however its body is
@@ -2134,12 +2170,21 @@ impl<'a> Lowerer<'a> {
         let mut captures = captures.clone();
         captures.sort_by(|a, b| a.0.cmp(&b.0));
         // A parameter the body doesn't use is an input left unwired: `(_, i) => i`.
-        let inputs: Vec<HolonPort> =
+        let trigger = frame.wiring_in.iter().any(|(port, _, _)| port == TRIGGER);
+        let mut inputs: Vec<HolonPort> =
             params.iter().map(|p| p.text.clone()).chain(captures.iter().map(|(n, _)| n.clone())).map(|name| HolonPort { name, unit: None }).collect();
+        let takes = inputs.len();
+        if trigger {
+            inputs.push(HolonPort { name: TRIGGER.into(), unit: None });
+        }
         let mut wiring_in = frame.wiring_in;
         wiring_in.sort_by_key(|(port, _, _)| inputs.iter().position(|p| p.name == *port));
-        let h = self.b.end_holon_exact(&name, &inputs, &[HolonPort { name: "out".into(), unit: None }], &wiring_in, &[(id.clone(), output, "out".into())]).or_else(|e| err(span, e))?;
-        Ok((h.hash, inputs.len(), captures.into_iter().map(|(_, v)| v).collect()))
+        let mut outputs = vec![HolonPort { name: "out".into(), unit: None }];
+        let mut wiring_out = vec![(id.clone(), output.clone(), "out".to_string())];
+        self.handed_effects((id, &output), &mut outputs, &mut wiring_out);
+        let effects = outputs.len() > 1;
+        let h = self.b.end_holon_exact(&name, &inputs, &outputs, &wiring_in, &wiring_out).or_else(|e| err(span, e))?;
+        Ok(Applied { hash: h.hash, takes, captured: captures.into_iter().map(|(_, v)| v).collect(), trigger, effects })
     }
 
     // ── expressions ──────────────────────────────────────────────────────────────────────────
@@ -2457,6 +2502,10 @@ impl<'a> Lowerer<'a> {
                             let inputs: Vec<(&str, Val)> = ports.iter().map(String::as_str).zip(vals.iter().cloned()).collect();
                             self.node_with(leaf, &[], &inputs, o.span)?
                         };
+                        // Whether the run goes on to the operand is the truth of those before it,
+                        // as JavaScript reads it: what the printer writes back for the tie (a
+                        // guard of a true or false) then reads as the same steps.
+                        let before = if self.boolean(&before) { before } else { self.node_with("is_truthy", &[], &[("value", before)], o.span)? };
                         let reached = if op == BinOp::And { before } else { self.node_with("not", &[], &[("v", before)], o.span)? };
                         self.taken_when(since, &reached, o.span)?;
                     }
@@ -3155,7 +3204,7 @@ impl<'a> Lowerer<'a> {
         let mut extra: Vec<&'a Expr> = Vec::new();
         // A `fn:` argument: how many inputs it takes, and the values it captured, which the call
         // passes after its own extra inputs.
-        let mut function: Option<(usize, Vec<Val>, Span)> = None;
+        let mut function: Option<(Applied, Span)> = None;
         let mut positional = 0;
         let zero_input = inputs.is_empty();
         // A sink's trigger, last, is never an argument in order: the block or `after` ties it.
@@ -3192,8 +3241,9 @@ impl<'a> Lowerer<'a> {
                         }
                         // A higher-order leaf's `fn` is a function; a family's (`math`) is a name.
                         let value = if n.text == "fn" && PASSES_EXTRA.contains(&leaf) {
-                            let (hash, takes, captured) = self.fn_param(&a.value)?;
-                            function = Some((takes, captured, a.value.span));
+                            let applied = self.fn_param(&a.value)?;
+                            let hash = applied.hash.clone();
+                            function = Some((applied, a.value.span));
                             hash
                         } else {
                             self.literal_text(&a.value)?
@@ -3217,8 +3267,8 @@ impl<'a> Lowerer<'a> {
                 vals.push((inputs[k].name.clone(), self.expr(e)?));
             }
         }
-        let captured = function.as_ref().map(|(_, c, _)| c.clone()).unwrap_or_default();
-        if let Some((takes, _, fn_span)) = &function
+        let captured = function.as_ref().map(|(f, _)| f.captured.clone()).unwrap_or_default();
+        if let Some((Applied { takes, .. }, fn_span)) = &function
             && PASSES_EXTRA.contains(&leaf)
         {
             let gives = holon_core::function_takes(leaf) + extra.len() + captured.len();
@@ -3248,6 +3298,22 @@ impl<'a> Lowerer<'a> {
         if grown > inputs.len() {
             self.b.arity(&id, grown).or_else(|e| err(span, e))?;
         }
+        // A function that does something: the call takes its trigger, for the block to tie (in a
+        // branch, only where the branch is taken, as a function placed there), and hands out what
+        // its applications make.
+        // A list method's function is a function's call to the reader (ts.rs `calls_function`):
+        // tied whatever it is, one that only computes holding nothing back.
+        if function.is_some() {
+            self.placed += 1;
+        }
+        if let Some((f, _)) = &function
+            && (f.trigger || f.effects)
+        {
+            self.b.hands_out(&id, f.trigger, f.effects).or_else(|e| err(span, e))?;
+            if f.trigger && self.cur().branches > 0 {
+                self.frame().branch_fns.push(id.clone());
+            }
+        }
         for (port, val) in &vals {
             self.connect(val, &id, port, span)?;
         }
@@ -3256,12 +3322,16 @@ impl<'a> Lowerer<'a> {
 
     /// A `fn:` argument: a holon by name, or a function; its hash, how many inputs it takes, and
     /// the values a function captured from around it.
-    fn fn_param(&mut self, e: &'a Expr) -> R<(String, usize, Vec<Val>)> {
+    fn fn_param(&mut self, e: &'a Expr) -> R<Applied> {
         match &e.kind {
             ExprKind::Name(n) if self.is_def(n) => {
                 let h = self.holon(n, e.span)?;
-                if h.outputs.iter().filter(|p| p.ty != WType::Effect).count() < 2 {
-                    return Ok((h.hash, h.inputs.len(), vec![]));
+                let trigger = h.inputs.last().is_some_and(|p| p.name == TRIGGER);
+                let takes = h.inputs.len() - usize::from(trigger);
+                let calls = self.b.call_outputs_of(&h.hash);
+                let effects = h.outputs.iter().any(|p| p.ty == WType::Effect);
+                if h.outputs.iter().filter(|p| p.ty != WType::Effect && !calls.contains(&p.name)).count() < 2 {
+                    return Ok(Applied { hash: h.hash, takes, captured: vec![], trigger, effects });
                 }
                 // `map` and `fold` read a function's one answer: one returning `{ a, b }` is
                 // placed in a function of the same inputs that answers the record of them.
@@ -3281,14 +3351,29 @@ impl<'a> Lowerer<'a> {
                 let Val::Out { id: rec, outputs, port, .. } = placed? else { unreachable!("a record") };
                 let output = outputs.get(port).map(|o| o.name.clone()).unwrap_or_else(|| "out".into());
                 let inputs: Vec<HolonPort> = h.inputs.iter().map(|p| HolonPort { name: p.name.clone(), unit: None }).collect();
-                let wrapped = self.b.end_holon_exact(&name, &inputs, &[HolonPort { name: "out".into(), unit: None }], &frame.wiring_in, &[(rec, output, "out".into())]).or_else(|err_| err(e.span, err_))?;
-                Ok((wrapped.hash, inputs.len(), vec![]))
+                let mut outputs = vec![HolonPort { name: "out".into(), unit: None }];
+                let mut wiring_out = vec![(rec.clone(), output.clone(), "out".to_string())];
+                self.handed_effects((&rec, &output), &mut outputs, &mut wiring_out);
+                let wrapped = self.b.end_holon_exact(&name, &inputs, &outputs, &frame.wiring_in, &wiring_out).or_else(|err_| err(e.span, err_))?;
+                Ok(Applied { hash: wrapped.hash, takes, captured: vec![], trigger, effects: outputs.len() > 1 })
             }
             ExprKind::Name(n) => err(e.span, format!("\"{n}\" is not a holon: fn: takes a holon's name or fn(…) -> …")),
             ExprKind::Lambda { params, body } => self.lambda(params, body, e.span),
             _ => err(e.span, "fn: takes a holon's name or a function, fn(a, b) -> …"),
         }
     }
+}
+
+/// A higher-order leaf's function, lowered: its hash, how many inputs it takes before its trigger,
+/// the values it captured from around it (for the call to pass after the item), whether it takes a
+/// trigger (it does something, which its list method's call is tied for) and whether it hands out
+/// Effects (core's `DID`).
+struct Applied {
+    hash: String,
+    takes: usize,
+    captured: Vec<Val>,
+    trigger: bool,
+    effects: bool,
 }
 
 /// A `match` pattern's value, for telling two patterns apart: `1` and `1.0` are one number, and

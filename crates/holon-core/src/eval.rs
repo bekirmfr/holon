@@ -694,14 +694,14 @@ fn eval_as(
     // absent): it is dropped here, so the leaf computes on its own inputs as it always did.
     let inputs = if kind.takes_trigger && inputs.len() == unit.inputs.len() { &inputs[..inputs.len() - 1] } else { inputs };
     match (kind.body, &unit.body) {
-        (Body::Map, _) => smallvec![eval_map(&mut lent(inputs), &unit.params, resolver, observer, path)],
+        (Body::Map, _) => handed_out(unit, |fx| eval_map(&mut lent(inputs), &unit.params, resolver, observer, path, fx)),
         // `fold` is the one iteration primitive (the universal list donor). It threads an
         // accumulator, which `map` does not.
-        (Body::Fold, _) => smallvec![eval_fold(&mut lent(inputs), &unit.params, resolver, observer, path)],
-        (Body::Test(test), _) => smallvec![eval_test(test, &mut lent(inputs), &unit.params, resolver, observer, path)],
-        (Body::SortBy, _) => smallvec![eval_sort_by(&mut lent(inputs), &unit.params, resolver, observer, path)],
-        (Body::GroupBy, _) => smallvec![eval_group_by(&mut lent(inputs), &unit.params, resolver, observer, path)],
-        (Body::Json(json), _) => smallvec![eval_json(json, &mut lent(inputs), &unit.params, resolver, observer, path)],
+        (Body::Fold, _) => handed_out(unit, |fx| eval_fold(&mut lent(inputs), &unit.params, resolver, observer, path, fx)),
+        (Body::Test(test), _) => handed_out(unit, |fx| eval_test(test, &mut lent(inputs), &unit.params, resolver, observer, path, fx)),
+        (Body::SortBy, _) => handed_out(unit, |fx| eval_sort_by(&mut lent(inputs), &unit.params, resolver, observer, path, fx)),
+        (Body::GroupBy, _) => handed_out(unit, |fx| eval_group_by(&mut lent(inputs), &unit.params, resolver, observer, path, fx)),
+        (Body::Json(json), _) => handed_out(unit, |fx| eval_json(json, &mut lent(inputs), &unit.params, resolver, observer, path, fx)),
         (Body::Ask(request), _) => ask(request.build(inputs, &unit.params), observer, path),
         (Body::Sourced, _) => smallvec![Slot::of(crate::sourced_value(unit, resolver.sourced(unit)))],
         // `coalesce` is the one leaf whose meaning is about absence: the first input that
@@ -789,12 +789,12 @@ fn eval_given<'r>(unit: &'r Unit, kind: &NodeKind, args: &mut Args<'_>, resolver
     // A sink's trigger only has to be there, as `eval_as` reads it.
     let n = if kind.takes_trigger && args.len() == unit.inputs.len() { args.len() - 1 } else { args.len() };
     match (kind.body, &unit.body) {
-        (Body::Map, _) => smallvec![eval_map(&mut args[..n], &unit.params, resolver, observer, path)],
-        (Body::Fold, _) => smallvec![eval_fold(&mut args[..n], &unit.params, resolver, observer, path)],
-        (Body::Test(test), _) => smallvec![eval_test(test, &mut args[..n], &unit.params, resolver, observer, path)],
-        (Body::SortBy, _) => smallvec![eval_sort_by(&mut args[..n], &unit.params, resolver, observer, path)],
-        (Body::GroupBy, _) => smallvec![eval_group_by(&mut args[..n], &unit.params, resolver, observer, path)],
-        (Body::Json(json), _) => smallvec![eval_json(json, &mut args[..n], &unit.params, resolver, observer, path)],
+        (Body::Map, _) => handed_out(unit, |fx| eval_map(&mut args[..n], &unit.params, resolver, observer, path, fx)),
+        (Body::Fold, _) => handed_out(unit, |fx| eval_fold(&mut args[..n], &unit.params, resolver, observer, path, fx)),
+        (Body::Test(test), _) => handed_out(unit, |fx| eval_test(test, &mut args[..n], &unit.params, resolver, observer, path, fx)),
+        (Body::SortBy, _) => handed_out(unit, |fx| eval_sort_by(&mut args[..n], &unit.params, resolver, observer, path, fx)),
+        (Body::GroupBy, _) => handed_out(unit, |fx| eval_group_by(&mut args[..n], &unit.params, resolver, observer, path, fx)),
+        (Body::Json(json), _) => handed_out(unit, |fx| eval_json(json, &mut args[..n], &unit.params, resolver, observer, path, fx)),
         (_, UnitBody::Composite { children, edges }) => eval_composite(unit, children, edges, &mut args[..n], resolver, observer, path),
         (Body::Leaf { variadic, op: Some(op) }, UnitBody::Primitive { name }) if args.iter().any(|a| matches!(a, Some(Cow::Owned(v)) if heavy(v))) => {
             smallvec![leaf_given(op, name, variadic, &mut args[..n], &unit.params, observer)]
@@ -2513,7 +2513,7 @@ pub(crate) fn topo_order(n: usize, edges: &[Edge]) -> Option<Vec<usize>> {
 /// lifted to an input of its own) while staying a sealed unit. Like any variadic leaf, `map`
 /// fires only when every extra input is present. Each application asks the host for what it
 /// requests or reads at its own path (see [`Observer`]).
-fn eval_map(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slot {
+fn eval_map(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>, fx: Option<&mut Did>) -> Slot {
     let len = match inputs.first() {
         Some(Some(list)) => match list.as_ref() {
             Value::List(xs) => xs.len(),
@@ -2529,9 +2529,11 @@ fn eval_map(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &
 
     let mut out = Vec::with_capacity(len);
     let (mut pending, mut absent) = (false, false);
-    let mut asks = Asks::new(observer);
+    let mut asks = Asks::handing(observer, fx, unit.unit());
     // Every item is applied, even after one comes out absent, so each item's requests are asked
-    // in the same round rather than one round per item. A result goes a level down, into the
+    // in the same round rather than one round per item; but not past an application of a function
+    // that does something which gave nothing ([`Asks::stopped`]), as JavaScript stops at the item
+    // whose callback throws. A result goes a level down, into the
     // list: one already as deep as a value may nest makes the map give nothing
     // (`value_hash::MAX_VALUE_DEPTH`), as a leaf that would put it there does.
     let mut tally = |slot: Slot| match slot {
@@ -2570,6 +2572,9 @@ fn eval_map(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &
             args.extend(extra.iter().map(|v| v.as_deref().map(Cow::Borrowed)));
             let Some(items) = Items::of(list[0].take()) else { return Slot::Absent };
             for (k, item) in items.enumerate() {
+                if asks.stopped {
+                    break;
+                }
                 args[0] = Some(item);
                 tally(apply(&unit, &mut args, resolver, &mut asks, path, k));
             }
@@ -2597,7 +2602,7 @@ fn eval_map(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &
 /// application asks at the node's path then the item's position, as `map`'s do. The items are
 /// lent to the function; a list given to `filter`, `find` or `find_last` moves the items it
 /// answers with rather than copying them.
-fn eval_test(test: Test, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slot {
+fn eval_test(test: Test, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>, fx: Option<&mut Did>) -> Slot {
     if !matches!(inputs.first(), Some(Some(list)) if matches!(list.as_ref(), Value::List(_))) || !present(&inputs[1..]) {
         return Slot::Absent;
     }
@@ -2607,9 +2612,13 @@ fn eval_test(test: Test, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param]
     // What it keeps of a lent list it copies, and is charged so.
     let lent = matches!(list[0], Some(Cow::Borrowed(_)));
     let Some(items) = Items::of(take_given(&mut list[0])) else { return Slot::Absent };
-    let mut asks = Asks::new(observer);
-    // Item `k`'s answer: true or false, or the slot that stops the leaf.
+    let mut asks = Asks::handing(observer, fx, unit.unit());
+    // The answer of the item applied `k`th: true or false, or the slot that stops the leaf. Past
+    // an application of a function that does something which gave nothing, none is applied.
     let mut answer = |k: usize, item: &Value| {
+        if asks.stopped {
+            return Err(Slot::Absent);
+        }
         let mut args: Args = SmallVec::with_capacity(1 + extra.len());
         args.push(Some(Cow::Borrowed(item)));
         args.extend(extra.iter().map(|v| v.as_deref().map(Cow::Borrowed)));
@@ -2656,8 +2665,12 @@ fn eval_test(test: Test, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param]
             let backward = matches!(test, Test::FindLast | Test::FindLastIndex);
             let mut items = items.enumerate();
             let mut found = None;
+            // Each application asks at the order it is made in, so the host makes a backward
+            // scan's starts and requests from the last item, as JavaScript calls them.
+            let mut applied = 0;
             while let Some((k, item)) = if backward { items.next_back() } else { items.next() } {
-                match answer(k, &item) {
+                applied += 1;
+                match answer(applied - 1, &item) {
                     Ok(true) => {
                         found = Some((k, item));
                         break;
@@ -2686,7 +2699,7 @@ fn eval_test(test: Test, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param]
 /// wait. Either stops it, since which items are compared next depends on that answer. The `k`th
 /// comparison asks at the node's path then `k`. The items are lent to the function, and a list given
 /// to the leaf is reordered without copying its items.
-fn eval_sort_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slot {
+fn eval_sort_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>, fx: Option<&mut Did>) -> Slot {
     if !matches!(inputs.first(), Some(Some(list)) if matches!(list.as_ref(), Value::List(_))) || !present(&inputs[1..]) {
         return Slot::Absent;
     }
@@ -2700,7 +2713,7 @@ fn eval_sort_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolve
     if !charge(observer, xs.len() as u64 / primitives::UNITS_PER_STEP) {
         return Slot::Absent;
     }
-    let mut asks = Asks::new(observer);
+    let mut asks = Asks::handing(observer, fx, unit.unit());
     let order = {
         let Value::List(xs) = list.as_ref() else { unreachable!("checked to be a list") };
         let mut compared = 0;
@@ -2744,7 +2757,7 @@ fn eval_sort_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolve
 /// round. An answer that isn't a text (JavaScript converts a number) or none makes the leaf give
 /// nothing, and one that waits makes it wait, waiting winning. The items are lent to the function;
 /// a list given to the leaf moves its items into their groups rather than copying them.
-fn eval_group_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slot {
+fn eval_group_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>, fx: Option<&mut Did>) -> Slot {
     // The items go a level down, each into its group's list.
     if !matches!(inputs.first(), Some(Some(list)) if matches!(list.as_ref(), Value::List(_)) && nests_within(list, MAX_VALUE_DEPTH - 1)) || !present(&inputs[1..]) {
         return Slot::Absent;
@@ -2753,9 +2766,12 @@ fn eval_group_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolv
     let unit = Ready::of(unit, resolver);
     let (list, extra) = inputs.split_at_mut(1);
     let Some(items) = Items::of(take_given(&mut list[0])) else { return Slot::Absent };
-    let mut asks = Asks::new(observer);
+    let mut asks = Asks::handing(observer, fx, unit.unit());
     let (mut groups, mut pending, mut absent) = (std::collections::BTreeMap::<String, Vec<Value>>::new(), false, false);
     for (k, item) in items.enumerate() {
+        if asks.stopped {
+            break;
+        }
         let key = {
             let mut args: Args = SmallVec::with_capacity(1 + extra.len());
             args.push(Some(Cow::Borrowed(&*item)));
@@ -2792,7 +2808,7 @@ fn eval_group_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolv
 /// on that answer (a reviver's answer is part of the value its holder's application is given, a
 /// replacer's decides which members are visited). The `k`th application asks at the node's path
 /// then `k`, in the walk's order.
-fn eval_json(json: Json, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slot {
+fn eval_json(json: Json, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>, fx: Option<&mut Did>) -> Slot {
     if !matches!(inputs.first(), Some(Some(_))) || !present(&inputs[1..]) {
         return Slot::Absent;
     }
@@ -2809,7 +2825,7 @@ fn eval_json(json: Json, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param]
     if !charge(observer, read) {
         return Slot::Absent;
     }
-    let mut asks = Asks::new(observer);
+    let mut asks = Asks::handing(observer, fx, unit.unit());
     let mut applied = 0;
     let mut answer = |key: &str, value: &Value| -> Result<Option<Value>, Slot> {
         let key = Value::Text(key.to_string());
@@ -2910,6 +2926,13 @@ enum Ready<'r> {
 }
 
 impl<'r> Ready<'r> {
+    /// The function itself.
+    fn unit(&self) -> &'r Unit {
+        match self {
+            Ready::Composite(unit, _) | Ready::Other(unit, _) => unit,
+        }
+    }
+
     fn of(unit: &'r Unit, resolver: &'r impl Resolver) -> Ready<'r> {
         match &unit.body {
             UnitBody::Composite { children, edges } => Ready::Composite(unit, Prepared::of(unit, children, edges, resolver).map(|p| Box::new(p.planned()))),
@@ -2946,7 +2969,74 @@ fn at_item(k: usize, asks: &mut Asks, path: &mut Vec<u32>, eval: impl FnOnce(&mu
     path.push(k);
     let mut outs = eval(asks, path);
     path.pop();
-    if outs.len() == 1 { outs.pop().unwrap() } else { Slot::Absent }
+    let answer = at_answer(asks, &mut outs);
+    asks.stopped |= asks.stops && matches!(answer, Slot::Absent);
+    answer
+}
+
+/// The answer of an application whose outputs are `outs`, keeping its Effects where the leaf
+/// hands them out.
+fn at_answer(asks: &mut Asks, outs: &mut Slots) -> Slot {
+    match asks.fx.as_deref_mut() {
+        // A leaf that hands out what its function makes ([`Did`]): the function's first output is
+        // its answer, its Effects are kept in the order applied.
+        Some(fx) if !fx.ports.is_empty() => {
+            let answer = if outs.is_empty() { Slot::Absent } else { std::mem::replace(&mut outs[0], Slot::Absent) };
+            if !fx.stopped {
+                for &p in &fx.ports {
+                    if let Some(Slot::Value(v)) = outs.get_mut(p as usize).map(|s| std::mem::replace(s, Slot::Absent)) {
+                        fx.made.push(v);
+                    }
+                }
+                // JavaScript stops at the item whose function throws: nothing after it is made.
+                fx.stopped = matches!(answer, Slot::Absent);
+            }
+            answer
+        }
+        _ if outs.len() == 1 => outs.pop().unwrap(),
+        // A function that does something: its first output is its answer, the others the answers
+        // of the calls it makes (a start's handle, a request's response), made where they are.
+        _ if asks.stops && !outs.is_empty() => std::mem::replace(&mut outs[0], Slot::Absent),
+        _ => Slot::Absent,
+    }
+}
+
+/// What a higher-order leaf ([`crate::PASSES_EXTRA`]) placed with a second output, `did`, hands
+/// out: the Effects its function's applications gave at their Effect outputs (a write, a send, a
+/// log line…, and what a list's function inside gave out the same way), in the order applied, up
+/// to and with the first application that gives nothing, where JavaScript's callback would have
+/// thrown. The leaf answers at its first output as it always does.
+#[derive(Default)]
+pub(crate) struct Did {
+    made: Vec<Value>,
+    /// The function's Effect outputs, after its answer.
+    ports: SmallVec<[u32; 4]>,
+    stopped: bool,
+}
+
+impl Did {
+    /// Kept from the outputs of `unit`, the function applied.
+    fn of(&mut self, unit: &Unit) {
+        self.ports = unit.outputs.iter().enumerate().skip(1).filter(|(_, p)| p.ty == crate::Type::Effect).map(|(i, _)| i as u32).collect();
+    }
+}
+
+/// A higher-order leaf's outputs: its answer, and, where it is placed with a second output, what
+/// its function's applications made ([`Did`]): nothing while it waits or where nothing was made.
+fn handed_out(unit: &Unit, run: impl FnOnce(Option<&mut Did>) -> Slot) -> Slots {
+    if unit.outputs.len() < 2 {
+        return smallvec![run(None)];
+    }
+    let mut did = Did::default();
+    let answer = run(Some(&mut did));
+    let made = match &answer {
+        Slot::Pending => Slot::Pending,
+        _ if did.made.is_empty() => Slot::Absent,
+        _ => Slot::Value(Value::List(did.made)),
+    };
+    let mut outs: Slots = smallvec![answer, made];
+    outs.resize(unit.outputs.len(), Slot::Absent);
+    outs
 }
 
 /// The observer inside a `map`/`fold` application: it passes on what is asked (requests, reads,
@@ -2963,6 +3053,14 @@ struct Asks<'a> {
     taken: u32,
     /// What `outside` allows the thread to hold for a step to be taken.
     at_most: i64,
+    /// What the leaf's applications make, kept where the leaf hands it out ([`Did`]).
+    fx: Option<&'a mut Did>,
+    /// Whether the function applied does something (it takes a trigger): an application that
+    /// gives nothing then stops the leaf there, as JavaScript stops at the item whose callback
+    /// throws, so no item after it makes its starts, requests or writes.
+    stops: bool,
+    /// Whether an application of such a function gave nothing.
+    stopped: bool,
 }
 
 /// The steps [`Asks`] takes from the observer outside at a time.
@@ -2971,7 +3069,18 @@ const STEPS_TAKEN: u32 = 256;
 impl<'a> Asks<'a> {
     fn new(outside: &'a mut dyn Observer) -> Asks<'a> {
         let at_most = outside.held_at_most();
-        Asks { outside, taken: 0, at_most }
+        Asks { outside, taken: 0, at_most, fx: None, stops: false, stopped: false }
+    }
+
+    /// The same, keeping what applications of `unit` make where the leaf hands it out ([`Did`]).
+    fn handing(outside: &'a mut dyn Observer, fx: Option<&'a mut Did>, unit: &Unit) -> Asks<'a> {
+        let mut asks = Asks::new(outside);
+        asks.stops = unit.inputs.last().is_some_and(|p| p.name == crate::TRIGGER);
+        if let Some(f) = fx {
+            f.of(unit);
+            asks.fx = Some(f);
+        }
+        asks
     }
 }
 
@@ -3047,7 +3156,7 @@ fn present(inputs: &[Option<Cow<'_, Value>>]) -> bool {
 /// The accumulator is given to each application, not lent: nothing else reads it, so a function
 /// that grows it (`[...acc, x]`, `insert(acc, k, v)`) grows it in place, one step O(1) where
 /// copying it made the fold O(n²).
-fn eval_fold(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slot {
+fn eval_fold(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>, fx: Option<&mut Did>) -> Slot {
     if !matches!(inputs.first(), Some(Some(_))) || !matches!(inputs.get(1), Some(Some(list)) if matches!(list.as_ref(), Value::List(_))) {
         return Slot::Absent;
     }
@@ -3060,7 +3169,7 @@ fn eval_fold(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: 
     let (head, extra) = inputs.split_at_mut(2);
     // A lent start is copied, and charged so ([`own_item`]).
     let Some(mut acc) = take_given(&mut head[0]).and_then(|start| own_item(start, observer)) else { return Slot::Absent };
-    let mut asks = Asks::new(observer);
+    let mut asks = Asks::handing(observer, fx, unit.unit());
     // A list given to the fold gives each item to its application too.
     let Some(items) = Items::of(take_given(&mut head[1])) else { return Slot::Absent };
     for (k, elem) in items.enumerate() {
@@ -4383,16 +4492,18 @@ mod tests {
         assert_eq!(run("all", &["no", "yes"]), (value(Value::Boolean(false)), asked(&[(0, "no")])));
         assert_eq!(run("find", &["no", "yes", "yes"]), (value(txt("yes")), asked(&[(0, "no"), (1, "yes")])));
         assert_eq!(run("find_index", &["no", "yes", "yes"]), (value(num(1.0)), asked(&[(0, "no"), (1, "yes")])));
-        assert_eq!(run("find_last", &["yes", "yes", "no"]), (value(txt("yes")), asked(&[(2, "no"), (1, "yes")])));
-        assert_eq!(run("find_last_index", &["yes", "yes", "no"]), (value(num(1.0)), asked(&[(2, "no"), (1, "yes")])));
+        // `findLast` goes from the last item, each application asked at its place in that order
+        // (the host asks a round in path order, so its requests go in the items' visit order).
+        assert_eq!(run("find_last", &["yes", "yes", "no"]), (value(txt("yes")), asked(&[(0, "no"), (1, "yes")])));
+        assert_eq!(run("find_last_index", &["yes", "yes", "no"]), (value(num(1.0)), asked(&[(0, "no"), (1, "yes")])));
         assert_eq!(run("filter", &["no", "yes", "no", "yes"]), (value(list(vec![txt("yes"), txt("yes")])), asked(&[(0, "no"), (1, "yes"), (2, "no"), (3, "yes")])));
         // What nobody stops at: everything applied.
         assert_eq!(run("any", &["no", "no"]), (value(Value::Boolean(false)), asked(&[(0, "no"), (1, "no")])));
-        assert_eq!(run("find_last", &["no", "no"]), (vec![Slot::Absent], asked(&[(1, "no"), (0, "no")])));
+        assert_eq!(run("find_last", &["no", "no"]), (vec![Slot::Absent], asked(&[(0, "no"), (1, "no")])));
         // A waiting or absent answer stops a stopping leaf.
         assert_eq!(run("any", &["wait", "yes"]), (vec![Slot::Pending], asked(&[(0, "wait")])));
         assert_eq!(run("all", &["gone", "no"]), (vec![Slot::Absent], asked(&[(0, "gone")])));
-        assert_eq!(run("find_last", &["yes", "gone"]), (vec![Slot::Absent], asked(&[(1, "gone")])));
+        assert_eq!(run("find_last", &["yes", "gone"]), (vec![Slot::Absent], asked(&[(0, "gone")])));
         // `filter` goes on, as `map` does, so each item's request is asked in the same round.
         assert_eq!(run("filter", &["gone", "wait", "yes"]), (vec![Slot::Pending], asked(&[(0, "gone"), (1, "wait"), (2, "yes")])));
         assert_eq!(run("filter", &["gone", "yes"]), (vec![Slot::Absent], asked(&[(0, "gone"), (1, "yes")])));

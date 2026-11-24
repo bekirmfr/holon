@@ -39,7 +39,7 @@
 
 use super::reached::{
     Debt, AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, AN_UNUSED_READ_IS_NOT_ASKED, A_CHOICES_TEST_IS_READ_PAST_A_RETURN, A_READ_IS_ASKED_PAST_A_RETURN, A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, A_FINALLY_FORGETS_THE_RETURN_ABOVE,
-    A_LINE_AFTER_A_FAILURE_RUNS, A_LISTS_FUNCTION_LOSES_ITS_WRITE, A_LISTS_FUNCTION_STARTS_PAST_A_RETURN,
+    A_LINE_AFTER_A_FAILURE_RUNS,
 };
 use super::*;
 
@@ -860,8 +860,6 @@ const DEBTS: &[&Debt] = &[
     &A_FINALLY_FORGETS_THE_RETURN_ABOVE,
     &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &A_LINE_AFTER_A_FAILURE_RUNS,
-    &A_LISTS_FUNCTION_STARTS_PAST_A_RETURN,
-    &A_LISTS_FUNCTION_LOSES_ITS_WRITE,
     &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &A_CHOICES_TEST_IS_READ_PAST_A_RETURN,
     &A_READ_IS_ASKED_PAST_A_RETURN,
@@ -883,11 +881,8 @@ const FAILING_TRIES: &[&str] = &["before a failure in a try", "bound before a fa
 /// owned elsewhere: by shape and effect, and why. Each is left out as a refusal is, and one that
 /// compiles again fails the test, to be struck from here.
 const KNOWN_FAULTS: &[(&str, &str, &str)] = &[
-    (
-        "tied to a value there",
-        "ls",
-        "a list's function that starts an action, bound under a condition (`if (v) got = [\"a\"].map((x) => ping(x))`): \"`after` ties a write or a call to what it names: this statement makes none\" (R174)",
-    ),
+    // R174 (a list's function that starts an action, bound under a condition) compiles since C3:
+    // the list call is a step that does something, so the condition's `after` ties it.
     (
         "tied to a value there",
         "rd",
@@ -906,26 +901,15 @@ const ROUND_TRIP_DEBTS: &[(&str, Option<Block>, Owes)] = &[
     ("a websocket's message returning a call from a case is written back as another flow", Some(Block::Socket), |c| {
         c.shape == "returned from a case" && matches!(c.mark, "s" | "r" | "u" | "k")
     }),
-    ("the printer writes && / || around an awaited function as other steps", None, |c| matches!(c.shape, "after &&" | "after ||") && c.mark == "g" && c.condition == "req.json.c"),
-    // Found by the grid's new columns (2026-11-22): the same shape, a function with a try block
-    // of its own.
-    ("the printer writes && / || around a function with a try of its own as other steps", None, |c| {
-        matches!(c.shape, "after &&" | "after ||") && matches!(c.mark, "ft" | "fu" | "fy") && c.condition == "req.json.c"
-    }),
-    // Found by C2 (2026-11-24): the same shape again. A function whose doings sit under its own
-    // `if` or in a `?:` arm takes a trigger since C2, and the printer writes the `&&` / `||` that
-    // ties it as `(c ? c : undefined) ? req : undefined`, which reads back without the truthiness
-    // test the `&&` holds.
-    ("the printer writes && / || around a function that takes a trigger as other steps", None, |c| {
-        matches!(c.shape, "after &&" | "after ||") && matches!(c.mark, "fr" | "fe") && c.condition == "req.json.c"
-    }),
+    // Struck by C3 (2026-11-24), one mechanism for the three: "the printer writes && / || around
+    // an awaited function", "… around a function with a try of its own" and "… around a function
+    // that takes a trigger as other steps". The lowering now ties each to the truth of the left
+    // side (`is_truthy`, the test the `&&` holds), and the printer leaves that tie to the `&&` it
+    // writes back (print.rs `taken_chain`), which reads as the same steps.
     // Found by the `every` columns (2026-11-22): a function that writes state, puts, sends, queues
     // and mails is refused everywhere: "state.set(f, …)'s answer is used, which TypeScript can't
     // say".
     ("the printer can't write back a function that writes state and then sends, queues and mails", None, |c| matches!(c.mark, "fa" | "fa2")),
-    // Reached's debts whose smallest flow the round trip refuses (reached.rs, `Today::Refused`).
-    (A_LISTS_FUNCTION_LOSES_ITS_WRITE.name, None, |c| c.mark == "lf"),
-    (A_LISTS_FUNCTION_STARTS_PAST_A_RETURN.name, None, |c| c.mark == "ls"),
 ];
 
 /// The debt a run that differs is owed under, by its case and request and the difference, mark by
@@ -954,13 +938,11 @@ fn debt(case: &Case, request: &str, made: &str, missed: &str) -> Option<Vec<&'st
     explain(shape == "after a failure, no try" && request == "not json", &A_LINE_AFTER_A_FAILURE_RUNS, "wofpcdgrslqmnhbuktx", "");
     explain(matches!(shape, "in a finally, a return above" | "in a try without a catch, a return above"), &A_FINALLY_FORGETS_THE_RETURN_ABOVE, "wo", "");
     explain(mark == "fy" && (early || !failing_try), &A_FINALLY_FORGETS_THE_RETURN_ABOVE, "f", "");
-    explain(failing_try && matches!(mark, "f" | "f2" | "f3" | "fp" | "fu" | "ft" | "fy" | "fa" | "fa2" | "fi" | "fe"), &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, "fpcqm", "");
+    explain(failing_try && matches!(mark, "f" | "f2" | "f3" | "fp" | "fu" | "ft" | "fy" | "fa" | "fa2" | "fi" | "fe" | "lf"), &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, "fpcqm", "");
     // Another flow's action called (`k`) is started as an action is: the started half's too.
-    explain(failing_try && matches!(mark, "s" | "fs" | "fr" | "fi" | "k"), &THE_STARTED_HALF, "sk", "");
+    explain(failing_try && matches!(mark, "s" | "fs" | "fr" | "fi" | "k" | "ls"), &THE_STARTED_HALF, "sk", "");
     explain(shape == "a branch of ?:, read only in a branch" && matches!(mark, "s" | "r" | "u" | "t" | "k"), &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "", "srutk");
-    explain(matches!(shape, "bound, and read in a branch" | "a branch of ?:, read only in a branch") && matches!(mark, "ls" | "fr"), &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "", "s");
-    explain(mark == "ls", &A_LISTS_FUNCTION_STARTS_PAST_A_RETURN, "s", "");
-    explain(mark == "lf", &A_LISTS_FUNCTION_LOSES_ITS_WRITE, "", "f");
+    explain(matches!(shape, "bound, and read in a branch" | "a branch of ?:, read only in a branch") && mark == "fr", &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "", "s");
     let reads_in_test = case.condition.starts_with("notes[");
     explain(reads_in_test && shape.contains("?:"), &A_CHOICES_TEST_IS_READ_PAST_A_RETURN, "n", "");
     explain(matches!(mark, "rd" | "pk"), &A_READ_IS_ASKED_PAST_A_RETURN, "n", "");

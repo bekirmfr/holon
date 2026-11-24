@@ -433,6 +433,14 @@ refused: do them in a `js()` function.
 | `[...xs.keys()]`, `[...xs.entries()]` | the indices; the `[index, item]` pairs |
 | `Array.isArray(x)`, `Array.of(a, b)`, `Array.from(xs, f)`, `Array.from({ length: n }, (_, i) => …)` | whether `x` is a list; `[a, b]`; `xs.map(f)`; `range(n).map((i) => …)` |
 
+The function given to a list method may write, send, log, ask a host or start an action: it does so
+once per item it is applied to, in the order JavaScript calls it (the ones that stop early stop
+there, `findLast` goes from the last item, and an item whose function gives nothing stops the
+items after it), and only where the run reaches the list call. A list's requests count toward the
+run's `max_requests` (50 by default), checked before any is sent, and go at most
+`per_host_concurrency` at once to a host (6 by default); the `restock` sample asks and keeps one
+line per item.
+
 A list never changes. `xs.sort()`, `xs.reverse()`, `xs.fill(v)` and `xs.copyWithin(t, s)` are read
 as the list they give, on a list made where they are called (`[...xs].sort()`) or one of the
 handler's own that isn't read after; alone, or on a list something else holds, they are refused,

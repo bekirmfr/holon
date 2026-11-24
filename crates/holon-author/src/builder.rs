@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use holon_core::{encode_preimage, interface_of, parse_hash, validate, Hash, MapResolver, Resolver, Unit, UnitBody, BOUNDARY, CALLS, PASSES_EXTRA, TRIGGER, VARIADIC};
+use holon_core::{encode_preimage, interface_of, parse_hash, validate, Hash, MapResolver, Resolver, Unit, UnitBody, BOUNDARY, CALLS, DID, PASSES_EXTRA, TRIGGER, VARIADIC};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -173,8 +173,10 @@ pub fn call_outputs(unit: &Unit, store: &impl Resolver) -> Vec<String> {
     for e in edges.iter().filter(|e| e.to_child == BOUNDARY && e.from_child != BOUNDARY) {
         let Some(child) = children.get(e.from_child as usize).and_then(|h| store.resolve(h)) else { continue };
         let answers = match &child.body {
+            // A list method whose function does something is made as a call is (core's
+            // `default_spec`): its answer, and what it hands out.
             UnitBody::Primitive { name } => {
-                CALLS.contains(&name.as_str()) && edges.iter().any(|t| t.to_child == e.from_child && child.inputs.get(t.to_port as usize).is_some_and(|p| p.name == TRIGGER))
+                (CALLS.contains(&name.as_str()) || PASSES_EXTRA.contains(&name.as_str())) && edges.iter().any(|t| t.to_child == e.from_child && child.inputs.get(t.to_port as usize).is_some_and(|p| p.name == TRIGGER))
             }
             UnitBody::Composite { .. } => {
                 let theirs = placed.entry(e.from_child).or_insert_with(|| call_outputs(child, store));
@@ -377,6 +379,15 @@ impl FlowBuilder {
     /// (core's `default_spec`), and a holon's boundary must name them or they are never performed.
     /// As there, a trigger that waits for one doesn't take it in, nor does a test that it arrived,
     /// nor a node that gives it on only to such tests (`takes_in`).
+    /// Whether a node of the current holon reads an Effect as a value (any input but a trigger):
+    /// a write's, a send's or a log's answer kept in a list, a text or a branch.
+    pub fn reads_an_effect(&self) -> bool {
+        let Some(f) = self.frames.last() else { return false };
+        f.wires.iter().any(|w| {
+            w.input() != holon_core::TRIGGER && f.nodes.iter().any(|n| n.id == w.source && n.data.outputs.iter().any(|p| p.name == w.output() && p.ty == WType::Effect))
+        })
+    }
+
     pub fn unread_effects(&self) -> Vec<(String, String)> {
         let Some(f) = self.frames.last() else { return vec![] };
         let mut gives = HashMap::new();
@@ -405,6 +416,23 @@ impl FlowBuilder {
             // map's and fold's extra inputs are whatever their function takes after the item.
             let ty = if PASSES_EXTRA.contains(&n.data.name.as_str()) { WType::Any } else { n.data.inputs.first().map(|p| p.ty.clone()).unwrap_or(WType::Any) };
             n.data.inputs.push(WPort { name, ty });
+        }
+        Ok(())
+    }
+
+    /// A higher-order leaf whose function does something: the function's trigger taken last, for
+    /// the block to tie, and what its applications make handed out at a second output (core's
+    /// `DID`), for the handler to perform.
+    pub fn hands_out(&mut self, node: &str, trigger: bool, did: bool) -> Result<(), String> {
+        let n = self.find(node)?;
+        if !PASSES_EXTRA.contains(&n.data.name.as_str()) {
+            return Err(format!("{} takes no function", n.data.name));
+        }
+        if trigger {
+            n.data.inputs.push(WPort { name: TRIGGER.into(), ty: WType::Any });
+        }
+        if did {
+            n.data.outputs.push(WPort { name: DID.into(), ty: WType::Effect });
         }
         Ok(())
     }

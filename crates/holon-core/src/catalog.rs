@@ -743,6 +743,12 @@ pub fn interface_of(name: &str) -> Option<Unit> {
 /// trigger, whatever `after` names). It is never read; it only has to be there.
 pub const TRIGGER: &str = "trigger";
 
+/// The output a higher-order leaf ([`PASSES_EXTRA`]) whose function does something is placed
+/// with, after its answer: the Effects its function's applications made, in the order applied
+/// (eval.rs `Did`). Such a leaf takes its function's [`TRIGGER`] last, and passes it on to each
+/// application with the other values after the item.
+pub const DID: &str = "did";
+
 /// The sinks: the leaves whose output is an Effect the host performs, and the calls out. Each
 /// takes a [`TRIGGER`] input last. `channel_subscribe` and `file_serve` are a route's answers
 /// and take none.

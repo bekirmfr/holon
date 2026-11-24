@@ -10,9 +10,8 @@
 //! - a row that no longer differs fails until its debt is struck (each step of the reached rule
 //!   strikes its rows in its own commit);
 //! - a row that differs in another way than recorded fails;
-//! - a row whose text the round trip refuses (`lang::compile`) is deployed by its hash with the
-//!   reader alone (`deploy_read_alone`), so what it does stays on record until the printer and
-//!   the rule take it.
+//! - a row whose text the round trip refuses (`lang::compile`) fails: since C3, when a list's
+//!   function hands out what it makes, the round trip takes every row.
 //!
 //! Seven of the debts have a long form: the same flow written so that today's compiler gets it
 //! right. It does what JavaScript does with it today, and is the target of its debt's step: once
@@ -35,21 +34,15 @@ pub(super) const A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE: Debt = Debt {
     name: "a failed try keeps what its functions made",
     says: "a write a function makes in a try block that then fails is kept, where the try's promise keeps nothing",
 };
-/// L: what a list's function makes is dropped.
-pub(super) const A_LISTS_FUNCTION_LOSES_ITS_WRITE: Debt = Debt {
-    name: "what a list's function makes is dropped",
-    says: "a write made by a function given to a list method is lost, where JavaScript makes it once per item; so are its puts, sends, queued messages, mails and log lines (the list grid, 2026-11-22)",
-};
+// L (what a list's function makes is dropped) was struck by C3: a list's function hands out
+// what it makes, once per item (core's `did`).
 /// G, new in the list grid (2026-11-22): a list's function goes on past an item that fails.
 pub(super) const A_LISTS_FUNCTION_GOES_PAST_A_FAILURE: Debt = Debt {
     name: "a list's function goes on past an item that fails",
     says: "map, filter, groupBy and the others call their function on the items after one whose function fails, and make its starts and requests there, where JavaScript stops at the item that throws",
 };
-/// New in the list grid (2026-11-22): a findLast calls its function from the first item.
-pub(super) const A_FIND_LAST_GOES_IN_ITEM_ORDER: Debt = Debt {
-    name: "a findLast starts and asks in the items' order",
-    says: "findLast and findLastIndex make their function's starts and requests from the first item on, where JavaScript goes from the last",
-};
+// "a findLast starts and asks in the items' order" was struck by C3: each application asks at
+// the order it is made in.
 /// New in the list grid (2026-11-22): a reviver or replacer that gives nothing puts null there.
 pub(super) const A_REVIVERS_NOTHING_IS_NULL: Debt = Debt {
     name: "a reviver's nothing is null",
@@ -61,11 +54,8 @@ pub(super) const A_FOLD_STOPS_AT_NOTHING: Debt = Debt {
     name: "a fold stops at a result that is nothing",
     says: "a reduce whose function gives nothing for an item (text and a start's handle added) makes no start for the items after it, where JavaScript goes on (its sum is a text)",
 };
-/// R173: a list's function starts where the run doesn't go.
-pub(super) const A_LISTS_FUNCTION_STARTS_PAST_A_RETURN: Debt = Debt {
-    name: "a list's function starts where the run doesn't go",
-    says: "an action a list's function starts goes out below a return that answered",
-};
+// R173 (a list's function starts where the run doesn't go) was struck by C3: the list call takes
+// a trigger, tied as any step that does something.
 /// W: a finally forgets the returns above it.
 pub(super) const A_FINALLY_FORGETS_THE_RETURN_ABOVE: Debt = Debt {
     name: "a finally forgets the returns above",
@@ -116,8 +106,6 @@ pub(super) const A_LINE_AFTER_A_FAILURE_RUNS: Debt = Debt {
 /// Every debt of the table, each to be struck when no row differs under it.
 pub(super) const DEBTS: &[&Debt] = &[
     &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE,
-    &A_LISTS_FUNCTION_LOSES_ITS_WRITE,
-    &A_LISTS_FUNCTION_STARTS_PAST_A_RETURN,
     &A_FINALLY_FORGETS_THE_RETURN_ABOVE,
     &A_WAIT_PAST_AN_ANSWER_PARKS,
     &A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS,
@@ -128,7 +116,6 @@ pub(super) const DEBTS: &[&Debt] = &[
     &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &AN_UNUSED_READ_IS_NOT_ASKED,
     &A_LISTS_FUNCTION_GOES_PAST_A_FAILURE,
-    &A_FIND_LAST_GOES_IN_ITEM_ORDER,
     &A_REVIVERS_NOTHING_IS_NULL,
     &A_FOLD_STOPS_AT_NOTHING,
 ];
@@ -137,11 +124,10 @@ pub(super) const DEBTS: &[&Debt] = &[
 enum Today {
     /// The flow does what JavaScript does.
     AsJavascript,
-    /// The flow is taken and does these marks instead, under the debt.
+    /// The flow is taken and does these marks instead, under the debt. (Until C3 a row could also
+    /// be refused by the round trip and deployed by the reader alone; none is now, and a row the
+    /// round trip refuses fails.)
     Differs(&'static Debt, &'static str),
-    /// `lang::compile` refuses the text (the round trip); deployed by its hash with the reader
-    /// alone, it does these marks, under the debt.
-    Refused(&'static Debt, &'static str),
 }
 
 /// One row: a plain name, the short text (its route `POST /go`), the request, whether the answer
@@ -192,7 +178,7 @@ fn rows() -> Vec<Row> {
             request: r#"{"a":"x"}"#,
             answer: true,
             javascript: "answers \"end\"; writes n = 1",
-            today: Today::Refused(&A_LISTS_FUNCTION_LOSES_ITS_WRITE, "answers \"end\""),
+            today: Today::AsJavascript,
             long: None,
         },
         Row {
@@ -201,7 +187,7 @@ fn rows() -> Vec<Row> {
             request: r#"{"stop":true,"a":"x"}"#,
             answer: true,
             javascript: "answers \"early\"",
-            today: Today::Refused(&A_LISTS_FUNCTION_STARTS_PAST_A_RETURN, "answers \"early\"; starts ping; writes pinged = 1"),
+            today: Today::AsJavascript,
             long: None,
         },
         Row {
@@ -302,7 +288,7 @@ fn rows() -> Vec<Row> {
             request: r#"{"a":"x","c":false}"#,
             answer: true,
             javascript: "answers \"no\"; starts ping; writes pinged = 1",
-            today: Today::Refused(&A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "answers \"no\""),
+            today: Today::AsJavascript,
             long: None,
         },
         Row {
@@ -331,7 +317,7 @@ fn rows() -> Vec<Row> {
             // question (B), so only what it does is compared.
             answer: false,
             javascript: "starts ping; writes pinged = 1",
-            today: Today::Refused(&A_LISTS_FUNCTION_GOES_PAST_A_FAILURE, "starts ping, ping; writes pinged = 1, pinged = 2"),
+            today: Today::Differs(&A_LISTS_FUNCTION_GOES_PAST_A_FAILURE, "starts ping, ping; writes pinged = 1, pinged = 2"),
             long: None,
         },
         Row {
@@ -340,7 +326,7 @@ fn rows() -> Vec<Row> {
             request: r#"{"a":"a","b":"b"}"#,
             answer: true,
             javascript: "answers \"end\"; starts ping, ping; writes seen = \"b\", seen = \"ba\"",
-            today: Today::Refused(&A_FIND_LAST_GOES_IN_ITEM_ORDER, "answers \"end\"; starts ping, ping; writes seen = \"a\", seen = \"ab\""),
+            today: Today::AsJavascript,
             long: None,
         },
         Row {
@@ -358,7 +344,7 @@ fn rows() -> Vec<Row> {
             request: r#"{"a":"a","b":"b"}"#,
             answer: true,
             javascript: "answers \"end\"; starts ping, ping; writes pinged = 1, pinged = 2",
-            today: Today::Refused(&A_FOLD_STOPS_AT_NOTHING, "answers \"end\"; starts ping; writes pinged = 1"),
+            today: Today::Differs(&A_FOLD_STOPS_AT_NOTHING, "answers \"end\"; starts ping; writes pinged = 1"),
             long: None,
         },
         Row {
@@ -436,12 +422,6 @@ pub(super) fn marks_of(state: &AppState, slug: &str, url: &str, body: &str, answ
     if marks.is_empty() { "does nothing".to_string() } else { marks.join("; ") }
 }
 
-/// A row's text deployed: by the language when `lang::compile` takes it, by its hash with the
-/// reader alone when the round trip refuses it.
-fn deployed(state: &AppState, text: &str, host: &str, refused: bool) -> String {
-    if refused { deploy_read_alone(state, text, host) } else { deploy_text(state, text, host) }
-}
-
 /// **Guards:** each debt of reached is one named difference, held exactly: a row that no longer
 /// differs fails until its debt is struck, a row that differs otherwise fails, and every long form
 /// does what JavaScript does with it.
@@ -460,19 +440,19 @@ fn the_debts_of_reached_each_differ_as_recorded() {
     let mut owing: BTreeSet<&str> = BTreeSet::new();
     for row in rows() {
         let text = row.text.replace("@PING@", PING);
-        let refused = holon_author::lang::compile(&text).is_err();
-        let slug = deployed(&state, &text, &host, refused);
+        if let Err(e) = holon_author::lang::compile(&text) {
+            wrong.push(format!("{}: the round trip refuses it: {e}", row.name));
+            continue;
+        }
+        let slug = deploy_text(&state, &text, &host);
         let did = marks_of(&state, &slug, "/go", row.request, row.answer);
         match row.today {
             Today::AsJavascript => {
-                assert!(!refused, "{}: the round trip refuses it: {:?}", row.name, holon_author::lang::compile(&text).err());
                 if did != row.javascript {
                     wrong.push(format!("{}: JavaScript {:?}, the flow {did:?}", row.name, row.javascript));
                 }
             }
-            Today::Differs(debt, recorded) | Today::Refused(debt, recorded) => {
-                let should_refuse = matches!(row.today, Today::Refused(..));
-                assert_eq!(refused, should_refuse, "{}: the round trip {} it now: {:?}", row.name, if refused { "refuses" } else { "takes" }, holon_author::lang::compile(&text).err());
+            Today::Differs(debt, recorded) => {
                 owing.insert(debt.name);
                 if did == row.javascript {
                     wrong.push(format!("\"{}\" no longer differs on {:?}: strike it ({})", debt.name, row.name, debt.says));
@@ -624,8 +604,6 @@ enum Column {
 /// Each debt's column.
 const COLUMNS: &[(&str, Column)] = &[
     (A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE.name, Column::Kept),
-    (A_LISTS_FUNCTION_LOSES_ITS_WRITE.name, Column::ListOrder),
-    (A_LISTS_FUNCTION_STARTS_PAST_A_RETURN.name, Column::Reached),
     (A_FINALLY_FORGETS_THE_RETURN_ABOVE.name, Column::Reached),
     (A_WAIT_PAST_AN_ANSWER_PARKS.name, Column::Parking),
     (A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS.name, Column::Parking),
@@ -636,7 +614,6 @@ const COLUMNS: &[(&str, Column)] = &[
     (A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE.name, Column::Reached),
     (AN_UNUSED_READ_IS_NOT_ASKED.name, Column::Reached),
     (A_LISTS_FUNCTION_GOES_PAST_A_FAILURE.name, Column::ListOrder),
-    (A_FIND_LAST_GOES_IN_ITEM_ORDER.name, Column::ListOrder),
     (A_REVIVERS_NOTHING_IS_NULL.name, Column::ListOrder),
     (A_FOLD_STOPS_AT_NOTHING.name, Column::ListOrder),
 ];
@@ -644,17 +621,13 @@ const COLUMNS: &[(&str, Column)] = &[
 /// The rows whose difference site runs don't read yet, by name, and why. The list only shrinks:
 /// a row on it that shows its difference fails, to be taken off.
 const NOT_READ_YET: &[(&str, &str)] = &[
-    ("a function that writes, given to a list's map", "list order: what a list's function does isn't reported by a run in process"),
-    ("a list's function that starts something, below a return that answered", "a step inside a list's function isn't reported by a run in process"),
     ("an action that answers above its wait", "parking: a run that waits is no site"),
     ("an action whose test above its wait has no value", "parking: a run that waits is no site"),
     // Way (b), its own later step: a second, test-only run of a copy of the handler that also
     // gives out the tests this run never computed, so their values are known.
     ("a start in a choice that is taken, its value read only in a branch that isn't", "the arm's test is never computed by the run (way b)"),
-    ("a list's function that starts something, the list read only in a branch not taken", "a step inside a list's function isn't reported by a run in process"),
     ("a function whose start is in a choice, its value read only in a branch not taken", "the call is never computed by the run, so its body isn't entered (way b)"),
     ("a list's function that starts something and then fails, on the first item", "list order"),
-    ("a findLast whose function starts something", "list order"),
     ("a reviver that fails on an item, in a try", "list order: a function JSON.parse calls per item"),
     ("a reduce that adds a start's handle to a text", "list order"),
 ];
@@ -756,7 +729,7 @@ fn every_site_is_reached_as_its_row_says() {
                     wrong.push(format!("{} shows now ({}): take it off NOT_READ_YET ({why})", row.name, all.join("; ")));
                 }
             }
-            (Today::Differs(debt, _) | Today::Refused(debt, _), None) => {
+            (Today::Differs(debt, _), None) => {
                 let column = COLUMNS.iter().find(|(d, _)| *d == debt.name).map(|(_, c)| *c).expect("a column");
                 if shown(column).is_empty() {
                     wrong.push(format!("{} shows nothing in its column, {column:?} (\"{}\")", row.name, debt.name));

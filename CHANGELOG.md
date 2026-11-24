@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- **A list method's function may write, send, ask a host or start an action, once per item.** A
+  write, a put, a send, a log line, a request or a start inside the function given to `map`,
+  `filter`, `find`, `some`, `every`, `reduce`, `toSorted`, `Object.groupBy`, a `JSON.parse` reviver
+  and the others was refused ("the function given to map has a write, a request or a start"), and a
+  flow deployed before that refusal lost the write or made the start below a `return` that had
+  answered. Now each is made once per item, in the order JavaScript calls the function: `find`,
+  `some` and `every` stop at the item that decides, `findLast` goes from the last item, and an item
+  whose function gives nothing stops the items after it. For example, `const asked =
+  req.json.lines.map((line) => reorder(line))`, where `reorder` posts to a supplier and puts the
+  line in a collection, makes one request and one put per line, the first line's first (the
+  `restock` sample). The list call is reached as any step that does something: below a `return`
+  that answered it makes nothing, and bound to a name read only in a branch not taken it is made,
+  as JavaScript makes it. A list of 10,000 items whose function asks a host fails the run before
+  anything is sent (`max_requests`, 50 by default).
+  Who notices: nobody's flow changes, since such a flow was refused; a new one can be written.
+
+- **`&&` and `||` around a function that does something are taken.** `const got = req.json.c &&
+  await ask("a")`, where `ask` sends a request, was refused ("written back from its steps, this
+  text reads as another flow"); so was the same around a function with a `try` of its own, or one
+  whose doings sit under its own `if`. It is taken now, and the function is called where the left
+  side is truthy (`||`: falsy), as JavaScript calls it.
+  Who notices: nobody's flow changes, since such a flow was refused.
+
+- **A function whose request's answer nobody reads is taken.** `async function ping(x) { const
+  sent = await api.post("/in", { body: x }); return 1 }` was refused ("written back from its
+  steps, this text reads as another flow"), also under the function's own `if`. It is taken now,
+  and the request is made where the function's call is reached.
+  Who notices: nobody's flow changes, since such a flow was refused.
+
 - **What a function of the flow does is done only where its call is reached.** A write, a send, a
   request or a start inside one of the flow's own functions, under the function's own `if`, below
   its own `return`, in its own `try` or in a branch of its own `?:`, was made though the call of the

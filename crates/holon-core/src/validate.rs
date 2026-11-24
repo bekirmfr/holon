@@ -20,7 +20,7 @@
 //! is a *source* for inputs and a *sink* for outputs — so it never forms a cycle, and it
 //! needs no new fields and no encoder change.
 
-use crate::{Edge, Resolver, Type, Unit, UnitBody, BOUNDARY};
+use crate::{Edge, Resolver, Type, Unit, UnitBody, BOUNDARY, DID};
 use std::collections::BTreeSet;
 
 /// A single validation failure.
@@ -192,7 +192,26 @@ fn leaf_port_mistakes(name: &str, unit: &Unit) -> Vec<ValidationError> {
     };
     let fits = |ty: &Type, catalog: &Type| ty == catalog || literal.as_ref() == Some(ty);
     let mut errors = Vec::new();
-    for (which, have, want) in [("input", &unit.inputs, &entry.inputs), ("output", &unit.outputs, &entry.outputs)] {
+    // A higher-order leaf whose function does something takes that function's trigger last, and
+    // hands out what it made at a second output (eval.rs `Did`).
+    let (mut inputs, mut outputs) = (&unit.inputs[..], &unit.outputs[..]);
+    if crate::PASSES_EXTRA.contains(&name) {
+        if let Some((last, rest)) = inputs.split_last()
+            && last.name == crate::TRIGGER
+        {
+            if last.ty != Type::Any {
+                errors.push(mistake(format!("has its trigger typed {:?}, where it is Any", last.ty)));
+            }
+            inputs = rest;
+        }
+        if let [answer, did] = outputs {
+            if did.name != DID || did.ty != Type::Effect {
+                errors.push(mistake(format!("has output 1 {:?}: {:?}, where one more is {DID:?}: Effect", did.name, did.ty)));
+            }
+            outputs = std::slice::from_ref(answer);
+        }
+    }
+    for (which, have, want) in [("input", inputs, &entry.inputs[..]), ("output", outputs, &entry.outputs[..])] {
         let grows = which == "input" && crate::VARIADIC.contains(&name);
         if have.len() < want.len() || (have.len() > want.len() && !grows) {
             errors.push(mistake(format!("has {} {which}s, where the catalog gives it {}", have.len(), want.len())));

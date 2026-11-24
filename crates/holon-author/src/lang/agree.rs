@@ -226,14 +226,14 @@ mod tests {
             ),
             ("a function that writes, called in a try that fails", include_str!("../../tests/agree/failed-try-keeps-function-write.holon.ts"), None),
             (
-                "a function that writes, called by the function given to map",
+                "a function that writes, called by the function given to map (C3: the list hands it out)",
                 include_str!("../../tests/agree/list-function-write-dropped.holon.ts"),
-                refused(17, "the function given to map has a write, a request or a start (its own, or one in a function it calls) that the place calling it can't hold back: move it out of the function, into the route or action itself"),
+                None,
             ),
             (
                 "the function given to map starts an action, below a return",
                 include_str!("../../tests/agree/list-start-after-return.holon.ts"),
-                refused(15, "the function given to map has a write, a request or a start (its own, or one in a function it calls) that the place calling it can't hold back: move it out of the function, into the route or action itself"),
+                None,
             ),
             (
                 "a function whose start is one side of a choice",
@@ -244,6 +244,21 @@ mod tests {
             // (on_par.rs's table, struck then).
             ("a function of the flow starting its flow's action", "import { action, flow, route } from \"holon\"\n\nflow(\"f\", { port: 8080 })\n\nexport const ping = action((x) => x)\n\nfunction ask(x) {\n  ping(x)\n  return 1\n}\n\nroute.post(\"/\", (req) => ask(req.json))\n", None),
             ("a request on one side of a ?: in a function", "import { flow, route } from \"holon\"\nimport api from \"host:api.example.com\"\n\nflow(\"f\", { port: 8080 })\n\nasync function ask(x) {\n  return x === \"a\" ? (await api.post(\"/in\", { body: x })).status : 0\n}\n\nroute.post(\"/\", async (req) => await ask(req.json))\n", None),
+            // Owed by the way back until a list's function handed out what it makes (C3).
+            ("a write in a list method's function", "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\", { port: 8080 })\n\nfunction keep(x) {\n  ++state.n\n  return `${x}!`\n}\n\nroute.post(\"/\", (req) => req.json.map((x) => keep(x)))\n", None),
+            ("a request for each item of a list", "import { flow, route } from \"holon\"\nimport api from \"host:api.example.com\"\n\nflow(\"f\", { port: 8080 })\n\nroute.post(\"/\", (req) => req.json.map((x) => api.get(`/a/${x}`).status))\n", None),
+            // Owed by the way back until && and || tied a function on the truth of what comes before (C3).
+            ("&& around an awaited function of the flow", "import { flow, route } from \"holon\"\nimport api from \"host:api.example.com\"\n\nflow(\"f\", { port: 8080 })\n\nasync function ask(x) {\n  const sent = await api.post(\"/in\", { body: x })\n  return sent.status\n}\n\nroute.post(\"/\", async (req) => {\n  const got = req.json.c && await ask(\"a\")\n  return \"end\"\n})\n", None),
+            ("|| around an awaited function of the flow", "import { flow, route } from \"holon\"\nimport api from \"host:api.example.com\"\n\nflow(\"f\", { port: 8080 })\n\nasync function ask(x) {\n  const sent = await api.post(\"/in\", { body: x })\n  return sent.status\n}\n\nroute.post(\"/\", async (req) => {\n  const got = req.json.c || await ask(\"a\")\n  return \"end\"\n})\n", None),
+            // Written back since C3: the call in the branch, by its place there.
+            ("a function's call in a ?? branch of a list's function", "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\", { port: 8080 })\n\nfunction keep(x) {\n  state.w = x\n  return `did ${x}`\n}\n\nroute.post(\"/\", (req) => req.json.map((x) => ({ a: \"did a\" })[x] ?? keep(x)))\n", None),
+            ("a function whose request's answer is unread, under its own if", "import { flow, route } from \"holon\"\nimport api from \"host:api.example.com\"\n\nflow(\"f\", { port: 8080 })\n\nasync function ask(x) {\n  if (x) {\n    const sent = await api.post(\"/in\", { body: x })\n  }\n  return 1\n}\n\nroute.post(\"/\", async (req) => await ask(req.json.a))\n", None),
+            // JavaScript keeps `undefined` for each item; the flow has no such value.
+            (
+                "a list's function answering a write",
+                "import { flow, route } from \"holon\"\nimport marks from \"collection:marks\"\n\nflow(\"f\", { port: 8080 })\n\nroute.post(\"/\", (req) => req.json.map((x) => marks.put(x, x)))\n",
+                refused(6, "a write, a send or a log answers nothing a list can keep: put it in a function of the flow's, as a statement of its own, and return a value"),
+            ),
             ("a write in a finally, below a return", include_str!("../../tests/agree/finally-after-return.holon.ts"), None),
             ("an action answering early, above its wait", include_str!("../../tests/agree/early-answer-above-wait.holon.ts"), None),
             ("a choice whose test reads a collection, below a return", include_str!("../../tests/agree/choice-test-read-after-return.holon.ts"), None),

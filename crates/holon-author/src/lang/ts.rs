@@ -1984,11 +1984,19 @@ impl<'s, 't> Reader<'s, 't> {
     /// a trigger, like a leaf that does; which it is the lowering knows, where the function's body
     /// is lowered (lower.rs `stmt`), so under a condition a call of any function is tied to the
     /// condition, and the tie holds whatever in its body there is to hold.
+    ///
+    /// A list method's function is one too (`xs.map((x) => keep(x))`, `xs.map(keep)`): the list
+    /// method's call takes its trigger and passes it to each item's application (lower.rs
+    /// `hands_out`), so it is tied as a call of the function is.
     fn calls_function(&self, e: &Expr) -> bool {
         let mut found = false;
         walk(&mut e.clone(), &mut |x| {
-            found |= matches!(&x.kind, ExprKind::Call { callee, .. } if matches!(self.defs.get(&callee.text), Some(Def::Holon { .. })));
-            !matches!(x.kind, ExprKind::Lambda { .. })
+            found |= match &x.kind {
+                ExprKind::Call { callee, .. } => matches!(self.defs.get(&callee.text), Some(Def::Holon { .. })),
+                ExprKind::Name(n) => matches!(self.defs.get(n), Some(Def::Holon { .. })),
+                _ => false,
+            };
+            true
         });
         found
     }
@@ -2020,7 +2028,8 @@ impl<'s, 't> Reader<'s, 't> {
                         _ => false,
                     });
             }
-            !matches!(x.kind, ExprKind::Lambda { .. })
+            // A list method's function makes what it makes once per item: the call makes it.
+            true
         });
         found
     }
