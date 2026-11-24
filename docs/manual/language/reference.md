@@ -904,7 +904,9 @@ route.get("/hit", () => {
 ```
 
 `state.hits = hits` never looks at the request, and is still the route's: the write is tied to
-the request. The tie is never read; it only has to be there.
+the request. The tie is never read; it only has to be there. A write or call with no tie at all
+never runs, and the check refuses the flow; the language always ties one, so this is met only
+in a flow built on the canvas or sent as a graph.
 
 **`if (x !== undefined)` ties a statement to `x` instead.** Its writes and calls happen once `x`
 has a value in the run, and not at all when `x` has none:

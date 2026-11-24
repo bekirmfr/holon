@@ -111,7 +111,8 @@ export type WValidationError =
   | { kind: "Module"; message: string }
   | { kind: "FamilyParam"; leaf: string; param: string; value: string | null; message: string }
   | { kind: "UnknownLeaf"; leaf: string; message: string }
-  | { kind: "LeafPorts"; leaf: string; message: string };
+  | { kind: "LeafPorts"; leaf: string; message: string }
+  | { kind: "Untied"; child: number; message: string };
 
 /** A promotion choice: which inner (child, port) input becomes a boundary input, and what
  *  it's named. Mirrors `core::Promote`. */

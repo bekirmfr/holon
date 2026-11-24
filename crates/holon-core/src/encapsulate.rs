@@ -220,9 +220,9 @@ pub fn default_spec(
     let mut promote = Vec::new();
     for (ci, child) in resolved.iter().enumerate().take(k) {
         for (p, port) in child.inputs.iter().enumerate() {
-            // A trigger left open stays open: the sink runs with the unit it is grouped into
-            // (`open_trigger`), and the group doesn't grow a port per sink.
-            if !bound.contains(&(ci as u32, p as u32)) && port.name != crate::TRIGGER {
+            // A trigger is promoted as any input is: not connected means never (`validate`), so
+            // a sink tied from outside the group stays tied to the same value through it.
+            if !bound.contains(&(ci as u32, p as u32)) {
                 promote.push(Promote {
                     child: ci as u32,
                     port: p as u32,
@@ -248,7 +248,8 @@ pub fn default_spec(
     }
     // A call tied to a trigger is made when the trigger arrives, whatever reads its answer: once
     // made it can't be taken back (`CALLS`). Its answer leaves the boundary too, so the call is
-    // made even when what reads it is a branch not taken. One left untied is made when needed.
+    // made even when what reads it is a branch not taken. One left untied is never made
+    // (`validate` refuses it).
     // So is a list method whose function does something, which takes its function's trigger
     // (`DID`): JavaScript runs the callback on each item when the call is reached.
     let tied_call = |ci: usize| {
@@ -322,24 +323,25 @@ mod tests {
     fn num(n: f64) -> Value { Value::Number(n) }
     fn port(name: &str) -> Port { Port { name: name.into(), ty: Type::Number } }
 
-    /// A trigger is never promoted (the lowering ties it), and an effect that only a trigger reads
+    /// A trigger left open is promoted as any input is (not connected means never, so the group
+    /// takes it from outside), one wired inside isn't, and an effect that only a trigger reads
     /// (`after saved`) is still exposed, so the host performs it.
     #[test]
-    fn a_trigger_is_not_promoted_and_an_effect_into_one_is_still_exposed() {
+    fn an_open_trigger_is_promoted_and_an_effect_into_one_is_still_exposed() {
         let mut r = MapResolver::new();
         let put = r.insert(Unit { params: vec![crate::Param::frozen("collection", "c")], ..crate::interface_of("collection_put").unwrap() }).unwrap();
         let write = r.insert(Unit { params: vec![crate::Param::frozen("key", "k")], ..crate::interface_of("store_write").unwrap() }).unwrap();
         // put.out → write.trigger
         let edges = vec![e(0, 0, 1, 1)];
         let spec = default_spec(&[put, write], &edges, &r).unwrap();
-        let promoted: Vec<&str> = spec.promote.iter().map(|p| p.name.as_str()).collect();
-        assert!(!promoted.contains(&crate::TRIGGER), "{promoted:?}");
+        let triggers: Vec<u32> = spec.promote.iter().filter(|p| p.name == crate::TRIGGER).map(|p| p.child).collect();
+        assert_eq!(triggers, vec![0], "the put's own trigger, open, is promoted; the write's, wired to the put, isn't");
         let exposed: Vec<(u32, u32)> = spec.expose.iter().map(|x| (x.child, x.port)).collect();
         assert_eq!(exposed, vec![(0, 0), (1, 0)], "both effects leave the boundary");
     }
 
     /// A call tied to a trigger is made when the trigger arrives, so its answer leaves the
-    /// boundary though a branch reads it; one left untied is made only when it is needed.
+    /// boundary though a branch reads it; one left untied isn't exposed (it never runs).
     #[test]
     fn a_tied_call_is_exposed_though_its_answer_is_read() {
         let mut r = MapResolver::new();
@@ -352,7 +354,7 @@ mod tests {
         let read = e(1, 0, 2, 1);
         let exposed = |edges: &[Edge]| default_spec(&[go, call, guard], edges, &r).unwrap().expose.iter().map(|x| (x.child, x.port)).collect::<Vec<_>>();
         assert_eq!(exposed(&[e(0, 0, 1, trigger), read]), vec![(1, 0), (2, 0)], "tied: made when reached");
-        assert_eq!(exposed(&[read]), vec![(0, 0), (2, 0)], "untied: made when the branch needs it");
+        assert_eq!(exposed(&[read]), vec![(0, 0), (2, 0)], "untied: not exposed, never made");
     }
 
     #[test]

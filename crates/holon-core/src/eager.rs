@@ -89,17 +89,18 @@ fn composite(children: &[Hash], edges: &[Edge], n_outputs: usize, inputs: &[Opti
     for ci in order {
         let child = resolved[ci];
         let k = child.inputs.len();
-        let mut gathered: Vec<Option<Value>> = (0..k)
+        let gathered: Vec<Option<Value>> = (0..k)
             .map(|p| match incoming.get(&(ci as u32, p as u32)) {
                 Some(&(BOUNDARY, fp)) => inputs.get(fp as usize).cloned().flatten(),
                 Some(&(fc, fp)) => output_of(&scratch, fc, fp),
                 None => None,
             })
             .collect();
-        crate::eval::open_triggers(child, &mut gathered, crate::open_trigger, |p| incoming.contains_key(&(ci as u32, p as u32)));
         let wired_but_absent = (0..k).any(|p| gathered[p].is_none() && incoming.contains_key(&(ci as u32, p as u32)));
-        let held = wired_but_absent
-            && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name.as_str()));
+        // Not connected means never (`eval::untied`).
+        let held = crate::eval::untied(child, |p| incoming.contains_key(&(ci as u32, p as u32)))
+            || (wired_but_absent
+                && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name.as_str())));
         scratch[ci] = if held { vec![None; child.outputs.len()] } else { eval_eager(child, &gathered, resolver) };
     }
     (0..n_outputs as u32)

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A step that does something and is tied to nothing never runs.** A write, a send, a request,
+  a start or a placed function with one of those inside takes a tie to what starts it. Left with
+  nothing wired there, it used to run with every run; now it never runs, and the check refuses
+  the flow: "child 3 (store_write) has nothing wired to its trigger, so it would never run: tie it
+  to what reaches it". A flow written as text always ties each one, so no text flow and no
+  sample changes. Who notices: someone who builds a flow on the canvas and drops a write on a
+  canvas with no route, clock or other start to tie it to; the editor marks it as an error.
+
 - **"Did a value arrive?" is one step, `has_value`.** After a `try`, a wait or a parse, the
   test whether a value arrived was two steps (`same_value(x, x) ?? false`), drawn on the canvas as
   a doubled wire into a `default`. It is now one step, `has_value(x)`: true when `x` arrived

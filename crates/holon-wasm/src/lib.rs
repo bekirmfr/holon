@@ -511,6 +511,8 @@ pub enum WValidationError {
     UnknownLeaf { leaf: String, message: String },
     /// A leaf whose ports aren't its catalog entry's: the message says which, and how.
     LeafPorts { leaf: String, message: String },
+    /// A step that does something with nothing wired to its trigger: it would never run.
+    Untied { child: u32, message: String },
 }
 
 impl WValidationError {
@@ -545,6 +547,7 @@ impl WValidationError {
             }
             ValidationError::UnknownLeaf { leaf } => WValidationError::UnknownLeaf { leaf: leaf.clone(), message },
             ValidationError::LeafPorts { leaf, .. } => WValidationError::LeafPorts { leaf: leaf.clone(), message },
+            ValidationError::Untied { child, .. } => WValidationError::Untied { child: *child, message },
             ValidationError::TypeMismatch { edge, src, dst } => WValidationError::TypeMismatch {
                 edge: *edge,
                 src: WType::from_core(src),

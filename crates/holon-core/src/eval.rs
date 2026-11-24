@@ -1933,7 +1933,6 @@ impl<'r> Prepared<'r> {
     #[allow(clippy::too_many_arguments)]
     fn run_planned(&self, plan: &Plan, scratch: &mut Vec<Option<Slots>>, n_outputs: usize, inputs: &mut [Option<Cow<'_, Value>>], resolver: &'r impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
         scratch.resize(self.resolved.len(), None);
-        let open = crate::open_trigger();
         for &step in &plan.order {
             let (ci, builder) = match step {
                 Step::Eval(ci) => (ci as usize, false),
@@ -1996,7 +1995,7 @@ impl<'r> Prepared<'r> {
                 } else if builder && !pending && self.giving(ci, &gathered, scratch, inputs) {
                     Fired::Giving
                 } else {
-                    Fired::Done(self.fire(ci, &mut gathered, pending, &open, resolver, observer, path))
+                    Fired::Done(self.fire(ci, &mut gathered, pending, resolver, observer, path))
                 }
             };
             let outs = match fired {
@@ -2013,13 +2012,13 @@ impl<'r> Prepared<'r> {
     /// still waiting on an answer), telling the observer: what the walk and the plan do with a
     /// child once its inputs are in.
     #[allow(clippy::too_many_arguments)]
-    fn fire<'v>(&self, ci: usize, gathered: &mut Refs<'v>, pending: bool, open: &'v Value, resolver: &'r impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
+    fn fire<'v>(&self, ci: usize, gathered: &mut Refs<'v>, pending: bool, resolver: &'r impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
         let (child, kind) = (self.resolved[ci], &self.kinds[ci]);
         if pending {
             // Waiting on an answer: not run in this round.
             return smallvec![Slot::Pending; child.outputs.len()];
         }
-        let outs = self.told(ci, observer, path, |observer, path| match self.ahead(ci, gathered, open, observer, path) {
+        let outs = self.told(ci, observer, path, |observer, path| match self.ahead(ci, gathered, observer, path) {
             Some(outs) => outs,
             None => match (kind.body, &self.many) {
                 // A composite child of a preparation run many times runs its own, kept.
@@ -2067,16 +2066,19 @@ impl<'r> Prepared<'r> {
     }
 
     /// What child `ci` produces without being computed, if anything: held, or what the observer
-    /// stands in for it ([`Observer::asserted`]), on its inputs (`gathered`, which gets the open
-    /// triggers it reads). Asked once the child is entered.
-    fn ahead<'v>(&self, ci: usize, gathered: &mut Refs<'v>, open: &'v Value, observer: &mut impl Observer, path: &[u32]) -> Option<Slots> {
+    /// stands in for it ([`Observer::asserted`]), on its inputs (`gathered`). Asked once the child
+    /// is entered.
+    fn ahead<'v>(&self, ci: usize, gathered: &mut Refs<'v>, observer: &mut impl Observer, path: &[u32]) -> Option<Slots> {
         let (child, kind, incoming) = (self.resolved[ci], &self.kinds[ci], &self.shape.incoming);
         // A leaf with optional ports (an `http_request`'s headers and body) reads an *unwired*
         // one as "none"; a *wired* one whose value is absent means what absence means everywhere
         // else: the node doesn't fire. Otherwise a request downstream of a check that failed (a
         // webhook whose signature didn't verify) still went out, bodiless.
-        open_triggers(child, gathered, || open, |p| incoming.wired(ci as u32, p as u32));
-        // A sink is held the same way: its trigger, wired, hasn't arrived.
+        // A step whose trigger nothing is wired to is never reached (`untied`).
+        if untied(child, |p| incoming.wired(ci as u32, p as u32)) {
+            return Some(smallvec![Slot::Absent; child.outputs.len()]);
+        }
+        // A sink is held the same way where its trigger, wired, hasn't arrived.
         if kind.held_when_absent && (0..child.inputs.len()).any(|p| gathered[p].is_none() && incoming.wired(ci as u32, p as u32)) {
             return Some(smallvec![Slot::Absent; child.outputs.len()]);
         }
@@ -2092,14 +2094,13 @@ impl<'r> Prepared<'r> {
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     fn fire_giving(&self, ci: usize, scratch: &mut [Option<Slots>], inputs: &mut [Option<Cow<'_, Value>>], walked: bool, resolver: &'r impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
-        let (child, kind, incoming) = (self.resolved[ci], &self.kinds[ci], &self.shape.incoming);
+        let (child, kind) = (self.resolved[ci], &self.kinds[ci]);
         let Some(many) = self.many.as_deref() else { return smallvec![Slot::Absent; child.outputs.len()] };
         let k = child.inputs.len();
-        let open = crate::open_trigger();
         let outs = self.told(ci, observer, path, |observer, path| {
             let ahead = {
                 let mut gathered: Refs = (0..k).map(|p| self.read(ci, p, scratch, inputs).value()).collect();
-                self.ahead(ci, &mut gathered, &open, observer, path)
+                self.ahead(ci, &mut gathered, observer, path)
             };
             if let Some(outs) = ahead {
                 return outs;
@@ -2107,7 +2108,6 @@ impl<'r> Prepared<'r> {
             let given: SmallVec<[Option<Value>; 4]> = (0..k).map(|p| self.may_give(ci, p, scratch, inputs, walked).and_then(|_| self.take(ci, p, scratch, inputs))).collect();
             let (outs, back) = {
                 let mut args: Args = given.into_iter().enumerate().map(|(p, v)| v.map(Cow::Owned).or_else(|| self.read(ci, p, scratch, inputs).value().map(Cow::Borrowed))).collect();
-                open_triggers(child, &mut args, || Cow::Borrowed(&open), |p| incoming.wired(ci as u32, p as u32));
                 match (kind.body, &child.body) {
                     (Body::Leaf { variadic, op: Some(op) }, UnitBody::Primitive { name }) if !kind.takes_trigger => give_to_leaf(op, name, variadic, args, &child.params, observer),
                     (Body::Composite, _) => match many.nested(ci, child, resolver) {
@@ -2138,9 +2138,6 @@ impl<'r> Prepared<'r> {
         // Per-evaluation scratch, indexed by child: `None` not evaluated (yet, or at all), else
         // EACH child's own output slots (a child may itself be a multi-output composite).
         scratch.resize(n, None);
-
-        // What a placed holon's open trigger reads as (`open_triggers`).
-        let open = crate::open_trigger();
 
         // Depth-first from the roots, with an explicit stack: a node is run once everything it
         // needs is evaluated; until then, what it needs next is pushed. Looking at a node copies
@@ -2179,7 +2176,7 @@ impl<'r> Prepared<'r> {
                     }) {
                         Some(p) => Walk::Need(p),
                         None if !pending && self.giving(ci, &gathered, scratch, inputs) => Walk::Giving,
-                        None => Walk::Fired(self.fire(ci, &mut gathered, pending, &open, resolver, observer, path)),
+                        None => Walk::Fired(self.fire(ci, &mut gathered, pending, resolver, observer, path)),
                     },
                 }
             };
@@ -2453,17 +2450,12 @@ fn has_cycle(n: usize, edges: &[Edge]) -> bool {
     seen < n
 }
 
-/// A placed holon's trigger left unwired reads as present ([`crate::open_trigger`]): its sinks run
-/// with the unit around it, as a leaf's open trigger lets it.
-pub(crate) fn open_triggers<T>(child: &Unit, gathered: &mut [Option<T>], open: impl Fn() -> T, wired: impl Fn(usize) -> bool) {
-    if matches!(child.body, UnitBody::Primitive { .. }) {
-        return;
-    }
-    for (p, port) in child.inputs.iter().enumerate() {
-        if port.name == crate::TRIGGER && gathered.get(p).is_some_and(Option::is_none) && !wired(p) {
-            gathered[p] = Some(open());
-        }
-    }
+/// Not connected means never: a step that takes a [`crate::TRIGGER`] (a sink, a call, a function
+/// that does something, a list method handing out what its function does) with nothing wired to
+/// it runs nowhere. `validate` refuses such a unit; one that reaches the evaluator anyway is held,
+/// every output absent, rather than run as if something had reached it.
+pub(crate) fn untied(child: &Unit, wired: impl Fn(usize) -> bool) -> bool {
+    child.inputs.iter().enumerate().any(|(p, port)| port.name == crate::TRIGGER && !wired(p))
 }
 
 /// Kahn's algorithm over in-range child→child edges, emitting a deterministic order
@@ -4015,10 +4007,11 @@ mod tests {
     }
 
     /// A sink's trigger (docs/L4s/triggers-L4.md §3): never read, dropped before it computes;
-    /// wired and absent, it holds the sink back; open, the sink runs with the unit around it. A
-    /// holon's own trigger left open reads as present, so its sinks run as a leaf's would.
+    /// wired and absent, it holds the sink back. Not connected means never: a sink whose trigger
+    /// nothing is wired to doesn't run, nor does a holon placed with its own trigger left open
+    /// (`validate` refuses both; `untied`).
     #[test]
-    fn a_sink_waits_for_its_trigger_and_an_open_one_runs_with_its_unit() {
+    fn a_sink_waits_for_its_trigger_and_an_untied_one_never_runs() {
         let mut r = MapResolver::new();
         let write = Unit { params: vec![Param::frozen("key", "k")], ..crate::interface_of("store_write").unwrap() };
         assert_eq!(write.inputs.last().map(|p| p.name.as_str()), Some(crate::TRIGGER));
@@ -4036,11 +4029,36 @@ mod tests {
         };
         assert_eq!(run(&tied, &[Some(num(2.0)), Some(Value::Boolean(true))], &r), vec![effect(2.0)]);
         assert_eq!(run(&tied, &[Some(num(2.0)), None], &r), vec![None], "wired, absent: held");
-        assert_eq!(run(&open, &[Some(num(3.0))], &r), vec![effect(3.0)], "open: runs with its unit");
-        // The tied one placed as a holon, its trigger left open: its sink runs.
+        assert_eq!(run(&open, &[Some(num(3.0))], &r), vec![None], "untied: never");
+        assert!(crate::validate(&open, &r).is_err_and(|e| e.iter().any(|e| matches!(e, crate::ValidationError::Untied { child: 0, .. }))), "untied: refused");
+        // The tied one placed as a holon, its trigger left open: never, and refused.
         let holon = r.insert(tied).unwrap();
         let placed = composite(vec![nport("value")], Type::Effect, vec![holon], vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, BOUNDARY, 0)]);
-        assert_eq!(run(&placed, &[Some(num(4.0))], &r), vec![effect(4.0)]);
+        assert_eq!(run(&placed, &[Some(num(4.0))], &r), vec![None]);
+        assert!(crate::validate(&placed, &r).is_err_and(|e| e.iter().any(|e| matches!(e, crate::ValidationError::Untied { child: 0, .. }))));
+    }
+
+    /// The class: every step that does something, placed with each other input given and its
+    /// trigger tied to nothing, gives nothing (eager agrees) and is refused, naming it.
+    #[test]
+    fn every_doing_step_tied_to_nothing_never_runs_and_is_refused() {
+        for name in crate::TRIGGERED {
+            let mut r = MapResolver::new();
+            let leaf = crate::interface_of(name).unwrap();
+            let given = leaf.inputs.len() - 1;
+            let out = leaf.outputs[0].ty.clone();
+            let ports = leaf.inputs[..given].to_vec();
+            let h = r.insert(leaf).unwrap();
+            let mut edges: Vec<Edge> = (0..given as u32).map(|p| edge(BOUNDARY, p, 0, p)).collect();
+            edges.push(edge(0, 0, BOUNDARY, 0));
+            let open = composite(ports, out, vec![h], edges);
+            let inputs: Vec<Option<Value>> = (0..given).map(|_| Some(Value::Text("x".into()))).collect();
+            let lazy = eval(&open, &inputs, &r).into_vec();
+            assert_eq!(lazy, vec![None], "{name}: untied, never");
+            assert_eq!(crate::eager::eval_eager(&open, &inputs, &r), lazy, "{name}: eager agrees");
+            let refused = crate::validate(&open, &r).unwrap_err();
+            assert!(refused.contains(&crate::ValidationError::Untied { child: 0, what: name.to_string() }), "{name}: {refused:?}");
+        }
     }
 
     #[test]

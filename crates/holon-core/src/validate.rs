@@ -57,6 +57,10 @@ pub enum ValidationError {
     UnknownLeaf { leaf: String },
     /// A leaf's ports aren't its catalog entry's ([`leaf_port_mistakes`]): which, and how.
     LeafPorts { leaf: String, why: String },
+    /// A step that does something (a write, a send, a call, a function that does one) has nothing
+    /// wired to its [`crate::TRIGGER`]: what reaches it isn't said, and a step nothing reaches
+    /// never runs.
+    Untied { child: u32, what: String },
 }
 
 impl std::fmt::Display for ValidationError {
@@ -99,6 +103,9 @@ impl std::fmt::Display for ValidationError {
             }
             ValidationError::UnknownLeaf { leaf } => write!(f, "no leaf is named {leaf:?}"),
             ValidationError::LeafPorts { leaf, why } => write!(f, "{leaf} {why}"),
+            ValidationError::Untied { child, what } => {
+                write!(f, "child {child} ({what}) has nothing wired to its trigger, so it would never run: tie it to what reaches it")
+            }
         }
     }
 }
@@ -359,6 +366,23 @@ pub fn validate(unit: &Unit, resolver: &impl Resolver) -> Result<(), Vec<Validat
 
     if has_cycle(n, edges) {
         errors.push(ValidationError::Cycle);
+    }
+
+    // Not connected means never: a step that takes a trigger runs only where one arrives, so one
+    // left unwired is a step that never runs, which no flow means. Refused here, where a unit is
+    // checked whoever built it.
+    for (ci, child) in resolved.iter().enumerate() {
+        let Some(child) = child else { continue };
+        for (p, port) in child.inputs.iter().enumerate() {
+            if port.name == crate::TRIGGER && !edges.iter().any(|e| e.to_child == ci as u32 && e.to_port == p as u32) {
+                let what = match &child.body {
+                    UnitBody::Primitive { name } => name.clone(),
+                    UnitBody::Composite { .. } => "a function".to_string(),
+                    UnitBody::Module { .. } => "a module".to_string(),
+                };
+                errors.push(ValidationError::Untied { child: ci as u32, what });
+            }
+        }
     }
 
     if errors.is_empty() {
@@ -670,6 +694,13 @@ mod tests {
         effects.outputs[0].ty = Type::List(Box::new(Type::Effect));
         let effects = r.insert(effects).unwrap();
         let mismatch = |src| ValidationError::TypeMismatch { edge: 0, src, dst: Type::Any };
+        // What it says of the types alone: these sinks are left untied, which is refused apart.
+        let validate = |c: &Unit, r: &MapResolver| {
+            validate(c, r).or_else(|e| {
+                let e: Vec<_> = e.into_iter().filter(|e| !matches!(e, ValidationError::Untied { .. })).collect();
+                if e.is_empty() { Ok(()) } else { Err(e) }
+            })
+        };
 
         // egress(egress(x)): the outer payload port is Any, and still refuses the Effect.
         let nested = composite(vec![egress, egress], vec![edge(0, 0, 1, 0)]);

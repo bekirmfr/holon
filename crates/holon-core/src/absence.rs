@@ -627,7 +627,7 @@ mod tests {
                 unit.params.retain(|p| p.name() != *k);
                 unit.params.push(Param::frozen(*k, *v));
             }
-            unit.inputs.push(port(TRIGGER));
+            // The catalog's interface already ends with the trigger.
             self.place(unit, &[value, trigger])
         }
         fn place(&mut self, unit: Unit, from: &[u32]) -> u32 {
@@ -948,7 +948,8 @@ mod tests {
     /// through its input to the caller's field.
     fn function_flow() -> (Flow, u32) {
         let mut f = Flow::new();
-        // fn(k) { state.a = notes[k.name] }: field, file_read, store_write (an open trigger).
+        // fn(k) { state.a = notes[k.name] }: field, file_read, store_write (tied to the function's
+        // trigger, as the lowering ties it).
         let inner = Unit {
             body: UnitBody::Composite {
                 children: vec![
@@ -960,15 +961,16 @@ mod tests {
                     Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 },
                     Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 },
                     Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 },
+                    Edge { from_child: BOUNDARY, from_port: 1, to_child: 2, to_port: 1 },
                     Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 },
                 ],
             },
             params: vec![],
-            inputs: vec![port("k")],
+            inputs: vec![port("k"), port(TRIGGER)],
             outputs: vec![Port { name: "write".into(), ty: Type::Effect }],
         };
         let req = f.input();
-        let call = f.place(inner, &[req]);
+        let call = f.place(inner, &[req, req]);
         (f, call)
     }
 

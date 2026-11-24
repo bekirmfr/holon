@@ -429,11 +429,12 @@ same thing, and no node belongs to a handler by a field you can't see.
 **What core does with it, as built.** The trigger is never read: a sink drops it before it
 computes (`takes_trigger`, eval.rs and eager.rs), so it computes on its own inputs as it always
 did. Wired and absent, it holds the sink back, as a wired optional input does (the hold, eval.rs).
-Left unwired, it is open, and the sink runs with the unit around it, as an unwired optional input
-lets a leaf fire. A holon's own trigger left unwired reads as present (`open_trigger`), so its
-sinks run as a leaf's would. Open is what keeps a whole-canvas flow and a node just dropped on the
-canvas working. It doesn't make membership invisible again: the lowering ties every sink a block
-places, and the canvas flags an open trigger on a canvas that has a trigger to tie it to (§7).
+Left unwired, it means never (reached C9): the sink, or a holon whose own trigger is left
+unwired, gives nothing (`eval::untied`, read in eval.rs and eager.rs), and `validate` refuses the
+unit (`ValidationError::Untied`). (Until C9 an unwired trigger read as present, `open_trigger`, so
+forgetting a tie meant "always".) The lowering ties every sink a block places, and the canvas
+flags an open trigger on a canvas that has a trigger to tie it to (§7); on one with none, the
+check's refusal marks it.
 
 Saved flows need a migration, because a saved flow is its graph. The editor saves a `FlowDocument`
 of React Flow nodes and edges, with the text only as an optional `source` (`useSavedFlows.ts`

@@ -2705,7 +2705,10 @@ every sink placed in it:
   `state.hits = hits` never looks at the request, and is the route's. A function with a sink in it
   takes a trigger too, which its placement wires the same way (§5.8).
 - **The trigger is never read;** it only has to be there. A sink whose trigger has no value does
-  nothing.
+  nothing. **Not connected means never:** a sink, or a placed function with a sink in it, whose
+  trigger nothing is wired to never runs, and the check refuses the flow ("… has nothing wired
+  to its trigger, so it would never run: tie it to what reaches it"). The lowering always wires
+  it, so a text can't leave one untied; a graph built on the canvas or sent by an agent can.
 - **`if (x !== undefined) …` ties a statement's sinks to `x` instead:** `if (saved !== undefined)
   state.last = id` writes once `saved`, the put before it, has its result in the run, so
   `state.last` never names a visit that isn't kept; `if (found !== undefined) state.seen = id`

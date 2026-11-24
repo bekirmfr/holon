@@ -816,13 +816,6 @@ pub fn takes_trigger(unit: &Unit) -> bool {
     matches!(&unit.body, UnitBody::Primitive { name } if TRIGGERED.contains(&name.as_str())) && unit.inputs.last().is_some_and(|p| p.name == TRIGGER)
 }
 
-/// What a unit's input named [`TRIGGER`] reads when nothing is wired to it: present, so a holon
-/// placed without a tie runs its sinks with the unit around it, as a leaf with an open trigger
-/// does. Never read for its value.
-pub fn open_trigger() -> crate::Value {
-    crate::Value::Boolean(true)
-}
-
 /// Every genesis primitive's canonical interface, in manifest order. A convenience over
 /// `GENESIS` + [`interface_of`] (what the editor's palette will be derived from).
 pub fn genesis_units() -> Vec<Unit> {
