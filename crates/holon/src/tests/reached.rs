@@ -56,11 +56,9 @@ pub(super) const A_FOLD_STOPS_AT_NOTHING: Debt = Debt {
 };
 // R173 (a list's function starts where the run doesn't go) was struck by C3: the list call takes
 // a trigger, tied as any step that does something.
-/// W: a finally forgets the returns above it.
-pub(super) const A_FINALLY_FORGETS_THE_RETURN_ABOVE: Debt = Debt {
-    name: "a finally forgets the returns above",
-    says: "a state write in a finally, or in a try without a catch, is made though a return above the try answered and the try was never reached",
-};
+// W (a finally forgets the returns above), Z (a call in an arm read only in a branch not taken
+// isn't made) and Z's one call deeper were struck by C4: a finally is reached where its try is,
+// and a call in a branch is made where the branch is taken, read or not.
 /// P+R: a wait past a return that answered still waits.
 pub(super) const A_WAIT_PAST_AN_ANSWER_PARKS: Debt = Debt {
     name: "a wait past a return that answered still waits",
@@ -75,16 +73,6 @@ pub(super) const A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS: Debt = Debt {
 pub(super) const A_CHOICES_TEST_IS_READ_PAST_A_RETURN: Debt = Debt {
     name: "the arm's test is read before the statement's reached",
     says: "a ?: whose test reads a collection asks that read below a return that answered",
-};
-/// Z: a call in an arm, read only in a branch not taken, isn't made.
-pub(super) const AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE: Debt = Debt {
-    name: "a call in an arm, read only in a branch not taken, isn't made",
-    says: "a call in a ?: arm that is taken, a start or a request, is not made when its value is read only in a branch that isn't",
-};
-/// New in the grid (2026-11-22): Z's laziness one call deeper. Not among the eleven cases.
-pub(super) const A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE: Debt = Debt {
-    name: "a start inside a list's function or a function's arm, read only in a branch not taken, isn't made",
-    says: "an action started by a list's function, or in a ?: arm inside a function, is not started when the value is bound and read only in a branch that isn't taken",
 };
 /// New in the grid (2026-11-22): R's other side, a read left unasked where JavaScript asks it.
 pub(super) const AN_UNUSED_READ_IS_NOT_ASKED: Debt = Debt {
@@ -106,14 +94,11 @@ pub(super) const A_LINE_AFTER_A_FAILURE_RUNS: Debt = Debt {
 /// Every debt of the table, each to be struck when no row differs under it.
 pub(super) const DEBTS: &[&Debt] = &[
     &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE,
-    &A_FINALLY_FORGETS_THE_RETURN_ABOVE,
     &A_WAIT_PAST_AN_ANSWER_PARKS,
     &A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS,
     &A_CHOICES_TEST_IS_READ_PAST_A_RETURN,
-    &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &A_READ_IS_ASKED_PAST_A_RETURN,
     &A_LINE_AFTER_A_FAILURE_RUNS,
-    &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &AN_UNUSED_READ_IS_NOT_ASKED,
     &A_LISTS_FUNCTION_GOES_PAST_A_FAILURE,
     &A_REVIVERS_NOTHING_IS_NULL,
@@ -208,7 +193,7 @@ fn rows() -> Vec<Row> {
             request: r#"{"stop":true,"text":"{}"}"#,
             answer: true,
             javascript: "answers \"stopped\"",
-            today: Today::Differs(&A_FINALLY_FORGETS_THE_RETURN_ABOVE, "answers \"stopped\"; writes fin = 1"),
+            today: Today::AsJavascript,
             long: Some((
                 "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-06-long\", { port: 19626 })\n\nroute.post(\"/go\", (req) => {\n  if (req.json.stop) return \"stopped\"\n  if (!req.json.stop) {\n    try {\n      const parsed = JSON.parse(req.json.text)\n    } catch {\n      return \"bad\"\n    } finally {\n      ++state.fin\n    }\n  }\n  return \"end\"\n})\n",
                 "answers \"stopped\"",
@@ -253,7 +238,7 @@ fn rows() -> Vec<Row> {
             request: r#"{"c":true,"d":false}"#,
             answer: true,
             javascript: "answers \"no\"; starts ping; writes pinged = 1",
-            today: Today::Differs(&AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "answers \"no\""),
+            today: Today::AsJavascript,
             long: Some((
                 "import { action, flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-09-long\", { port: 19629 })\n\n@PING@\nroute.post(\"/go\", (req) => {\n  if (req.json.c) {\n    ping(req.json)\n  }\n  return req.json.d ? \"yes\" : \"no\"\n})\n",
                 "answers \"no\"; starts ping; writes pinged = 1",
@@ -297,7 +282,7 @@ fn rows() -> Vec<Row> {
             request: r#"{"a":"x","c":false}"#,
             answer: true,
             javascript: "answers \"no\"; starts ping; writes pinged = 1",
-            today: Today::Differs(&A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "answers \"no\""),
+            today: Today::AsJavascript,
             long: None,
         },
         Row {
@@ -345,6 +330,15 @@ fn rows() -> Vec<Row> {
             answer: true,
             javascript: "answers \"end\"; starts ping, ping; writes pinged = 1, pinged = 2",
             today: Today::Differs(&A_FOLD_STOPS_AT_NOTHING, "answers \"end\"; starts ping; writes pinged = 1"),
+            long: None,
+        },
+        Row {
+            name: "a list's function that starts something, an item's answer missing",
+            text: "import { action, flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-21\", { port: 19632 })\n\n@PING@\nfunction go(x) {\n  ping(x)\n  return x.maybe\n}\n\nroute.post(\"/go\", (req) => {\n  const got = [req.json.a, req.json.b].map((x) => go(x))\n  return \"end\"\n})\n",
+            request: r#"{"a":{"n":1},"b":{"maybe":2}}"#,
+            answer: true,
+            javascript: "answers \"end\"; starts ping, ping; writes pinged = 1, pinged = 2",
+            today: Today::AsJavascript,
             long: None,
         },
         Row {
@@ -604,14 +598,11 @@ enum Column {
 /// Each debt's column.
 const COLUMNS: &[(&str, Column)] = &[
     (A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE.name, Column::Kept),
-    (A_FINALLY_FORGETS_THE_RETURN_ABOVE.name, Column::Reached),
     (A_WAIT_PAST_AN_ANSWER_PARKS.name, Column::Parking),
     (A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS.name, Column::Parking),
     (A_CHOICES_TEST_IS_READ_PAST_A_RETURN.name, Column::Reached),
-    (AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE.name, Column::Reached),
     (A_READ_IS_ASKED_PAST_A_RETURN.name, Column::Reached),
     (A_LINE_AFTER_A_FAILURE_RUNS.name, Column::Reached),
-    (A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE.name, Column::Reached),
     (AN_UNUSED_READ_IS_NOT_ASKED.name, Column::Reached),
     (A_LISTS_FUNCTION_GOES_PAST_A_FAILURE.name, Column::ListOrder),
     (A_REVIVERS_NOTHING_IS_NULL.name, Column::ListOrder),
@@ -623,10 +614,6 @@ const COLUMNS: &[(&str, Column)] = &[
 const NOT_READ_YET: &[(&str, &str)] = &[
     ("an action that answers above its wait", "parking: a run that waits is no site"),
     ("an action whose test above its wait has no value", "parking: a run that waits is no site"),
-    // Way (b), its own later step: a second, test-only run of a copy of the handler that also
-    // gives out the tests this run never computed, so their values are known.
-    ("a start in a choice that is taken, its value read only in a branch that isn't", "the arm's test is never computed by the run (way b)"),
-    ("a function whose start is in a choice, its value read only in a branch not taken", "the call is never computed by the run, so its body isn't entered (way b)"),
     ("a list's function that starts something and then fails, on the first item", "list order"),
     ("a reviver that fails on an item, in a try", "list order: a function JSON.parse calls per item"),
     ("a reduce that adds a start's handle to a text", "list order"),

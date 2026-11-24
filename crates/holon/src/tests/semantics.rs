@@ -38,7 +38,7 @@
 //! `CONDITIONS`, a new request a line of `REQUESTS`. None needs its answer written.
 
 use super::reached::{
-    Debt, AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, AN_UNUSED_READ_IS_NOT_ASKED, A_CHOICES_TEST_IS_READ_PAST_A_RETURN, A_READ_IS_ASKED_PAST_A_RETURN, A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, A_FINALLY_FORGETS_THE_RETURN_ABOVE,
+    Debt, AN_UNUSED_READ_IS_NOT_ASKED, A_CHOICES_TEST_IS_READ_PAST_A_RETURN, A_READ_IS_ASKED_PAST_A_RETURN, A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE,
     A_LINE_AFTER_A_FAILURE_RUNS,
 };
 use super::*;
@@ -857,10 +857,7 @@ fn flow_does(state: &AppState, slug: &str, block: Block, at: (usize, usize, usiz
 const DEBTS: &[&Debt] = &[
     &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE,
     &THE_STARTED_HALF,
-    &A_FINALLY_FORGETS_THE_RETURN_ABOVE,
-    &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &A_LINE_AFTER_A_FAILURE_RUNS,
-    &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE,
     &A_CHOICES_TEST_IS_READ_PAST_A_RETURN,
     &A_READ_IS_ASKED_PAST_A_RETURN,
     &AN_UNUSED_READ_IS_NOT_ASKED,
@@ -932,17 +929,10 @@ fn debt(case: &Case, request: &str, made: &str, missed: &str) -> Option<Vec<&'st
     };
     let (shape, mark) = (case.shape, case.mark);
     let failing_try = FAILING_TRIES.contains(&shape);
-    // `fin` returns early on "a": its finally's write there is W's; elsewhere, in a try that fails,
-    // it is a write the failed try keeps.
-    let early = request.contains("\"k\":\"a\"");
     explain(shape == "after a failure, no try" && request == "not json", &A_LINE_AFTER_A_FAILURE_RUNS, "wofpcdgrslqmnhbuktx", "");
-    explain(matches!(shape, "in a finally, a return above" | "in a try without a catch, a return above"), &A_FINALLY_FORGETS_THE_RETURN_ABOVE, "wo", "");
-    explain(mark == "fy" && (early || !failing_try), &A_FINALLY_FORGETS_THE_RETURN_ABOVE, "f", "");
     explain(failing_try && matches!(mark, "f" | "f2" | "f3" | "fp" | "fu" | "ft" | "fy" | "fa" | "fa2" | "fi" | "fe" | "lf"), &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, "fpcqm", "");
     // Another flow's action called (`k`) is started as an action is: the started half's too.
     explain(failing_try && matches!(mark, "s" | "fs" | "fr" | "fi" | "k" | "ls"), &THE_STARTED_HALF, "sk", "");
-    explain(shape == "a branch of ?:, read only in a branch" && matches!(mark, "s" | "r" | "u" | "t" | "k"), &AN_ARMS_CALL_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "", "srutk");
-    explain(matches!(shape, "bound, and read in a branch" | "a branch of ?:, read only in a branch") && mark == "fr", &A_CALLED_START_READ_ONLY_ELSEWHERE_IS_NOT_MADE, "", "s");
     let reads_in_test = case.condition.starts_with("notes[");
     explain(reads_in_test && shape.contains("?:"), &A_CHOICES_TEST_IS_READ_PAST_A_RETURN, "n", "");
     explain(matches!(mark, "rd" | "pk"), &A_READ_IS_ASKED_PAST_A_RETURN, "n", "");
@@ -1238,7 +1228,14 @@ fn a_grids_sites_are_reached_as_its_debts_say() {
                                         continue;
                                     }
                                     let lines: Vec<&str> = text.lines().skip(site.at.start.line as usize - 1).take((site.at.end.line - site.at.start.line + 1) as usize).collect();
-                                    let mark = site_mark(site.does, &lines.join("\n"));
+                                    // A site on one line is read from its own column: a test
+                                    // reading a collection shares its line with what follows it
+                                    // (`notes[k] === "v" && await api.put(…, files.file(…))`).
+                                    let written = match lines.as_slice() {
+                                        [line] => line.chars().skip((site.at.start.col as usize).saturating_sub(1)).take((site.at.end.col.saturating_sub(site.at.start.col) as usize) + 2).collect(),
+                                        _ => lines.join("\n"),
+                                    };
+                                    let mark = site_mark(site.does, &written);
                                     match verdict {
                                         Verdict::MissedReached => missed.push(mark),
                                         Verdict::MadeUnreached | Verdict::MadeUnlooked | Verdict::PastNothing(PastNothing::Owed) => made.push(mark),

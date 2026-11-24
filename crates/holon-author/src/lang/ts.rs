@@ -1498,6 +1498,18 @@ impl<'s, 't> Reader<'s, 't> {
         ret
     }
 
+    /// `body`'s statements, a block inside the list whose conditions begin at guard `start` (a
+    /// `try`'s block without a catch, a `finally`): what it writes is held to the returns above
+    /// it not taken, as the list's own statements are; the conditions it adds end with it.
+    fn within(&mut self, body: &[js::Statement], block: Block, stmts: &mut Vec<Stmt>, start: usize) -> R<Ret> {
+        let guards = self.frame.guards.len();
+        let marks = self.frame.marks.len();
+        let ret = self.run(body, block, stmts, start);
+        self.frame.guards.truncate(guards);
+        self.frame.marks.truncate(marks);
+        ret
+    }
+
     /// `body`'s statements in order, in the list whose conditions begin at guard `start`.
     fn run(&mut self, body: &[js::Statement], block: Block, stmts: &mut Vec<Stmt>, start: usize) -> R<Ret> {
         let mut ret = Ret::Never;
@@ -2773,15 +2785,17 @@ impl<'s, 't> Reader<'s, 't> {
             }
             None => {
                 self.scopes.push(HashMap::new());
-                let r = self.list(&t.block.body, block, stmts);
+                let r = self.within(&t.block.body, block, stmts, start);
                 self.scopes.pop();
                 r?
             }
         };
+        // C runs where the try is reached, whatever A or B returned: under the returns above the
+        // try not taken, as the statement itself is (`within`), and none of A's or B's.
         if let Some(f) = &t.finalizer {
             let exits = self.frame.exits.len();
             self.scopes.push(HashMap::new());
-            let r = self.list(&f.body, block, stmts);
+            let r = self.within(&f.body, block, stmts, start);
             self.scopes.pop();
             if !matches!(r?, Ret::Never) || self.frame.exits.len() > exits {
                 return fail(self.span(f.span), "a finally holds writes and calls: a return or a throw in it comes in a later slice");

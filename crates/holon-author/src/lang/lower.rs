@@ -724,8 +724,12 @@ impl<'a> Lowerer<'a> {
         let id = self.b.node(leaf, params, None).or_else(|e| err(span, e))?;
         self.spans.insert(id.clone(), span);
         self.frame().created.push(id.clone());
+        // A call in a branch is made where JavaScript evaluates it: where the run reaches its
+        // statement and every branch around it is taken, read or not. Its trigger says so, as a
+        // function's placed there (`branch_ties`), and its answer is kept as a call's.
         if self.cur().branches > 0 && CALLS.contains(&leaf) {
             self.frame().in_branches.insert(id.clone());
+            self.frame().branch_fns.push(id.clone());
         }
         Ok(self.out(&id))
     }
@@ -772,10 +776,13 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Tie node `id`'s trigger to `v`: for a function placed in a branch, only where the branch
-    /// is taken (`branch_ties`).
+    /// is taken (`branch_ties`), that tie on the call's own place in the text.
     fn tie(&mut self, v: &Val, id: &str, span: Span) -> R<()> {
         let v = match self.cur().branch_ties.get(id).cloned() {
-            Some(taken) => self.node_with("guard", &[], &[("cond", taken), ("value", v.clone())], span)?,
+            Some(taken) => {
+                let at = self.spans.get(id).copied().unwrap_or(span);
+                self.node_with("guard", &[], &[("cond", taken), ("value", v.clone())], at)?
+            }
             None => v.clone(),
         };
         self.connect(&v, id, TRIGGER, span)
@@ -1089,13 +1096,12 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    /// Whether node `id` takes a trigger (a sink, or a holon with one) that nothing feeds yet,
-    /// and is no call made in a branch (`branch`).
+    /// Whether node `id` takes a trigger (a sink, a call, or a holon with one) that nothing feeds
+    /// yet. One placed in a branch is tied where the branch is taken (`tie`).
     fn untied(&self, id: &str) -> bool {
         self.b.data(id).is_some_and(|d| d.inputs.iter().any(|p| p.name == TRIGGER))
             && !self.b.is_wired(id, TRIGGER)
             && !self.cur().wiring_in.iter().any(|(_, node, input)| node == id && input == TRIGGER)
-            && !self.cur().in_branches.contains(id)
     }
 
     /// Every sink placed in this block and not tied by `after`, tied to `v`: the block's trigger.
@@ -1918,12 +1924,12 @@ impl<'a> Lowerer<'a> {
             // the run reaches its statement, whatever reads its answer. A handler's group exposes
             // them by the IR's rule (core's `default_spec`); a holon's boundary names them, so
             // it is entered for them even where nothing reads what it returns. One made in a
-            // branch is left untied, and made when the branch needs it.
+            // branch is tied where the branch is taken, and named too.
             for id in &frame.created {
                 let Some(d) = self.b.data(id) else { continue };
                 let answers: Vec<String> = match &d.body {
                     // A list method whose function does something is made as a call is.
-                    PlacedBody::Primitive if (CALLS.contains(&d.name.as_str()) || PASSES_EXTRA.contains(&d.name.as_str())) && !frame.in_branches.contains(id) => {
+                    PlacedBody::Primitive if CALLS.contains(&d.name.as_str()) || PASSES_EXTRA.contains(&d.name.as_str()) => {
                         let tied = self.b.is_wired(id, TRIGGER) || wiring_in.iter().any(|(_, node, input)| node == id && input == TRIGGER);
                         if tied { d.outputs.iter().map(|o| o.name.clone()).collect() } else { vec![] }
                     }
@@ -1955,17 +1961,11 @@ impl<'a> Lowerer<'a> {
     /// input named so, which a placement ties to the block it is placed in, or a list method to
     /// the block it is called in and passes on to each item's application.
     ///
-    /// A call in a branch of a choice (`x ? ping(x) : 0`) is made when the branch needs it, so it
-    /// isn't tied to its statement; in a function it is tied to the call of the function, or it
-    /// would be made wherever the function's answer is needed, though the call of the function
-    /// isn't reached (reached's case 5). It stays made only when needed: its answer isn't one the
-    /// function names (`call_outputs`).
+    /// A call in a branch of a choice (`x ? ping(x) : 0`) is tied to the call of the function and
+    /// the branch being taken (`tie`), as JavaScript evaluates it; its answer is one the function
+    /// names (`call_outputs`), so it is made whatever reads it (reached's cases 9 and 14).
     fn tie_own(&mut self, span: Span) -> R<()> {
         self.tie_block(&Val::In(TRIGGER.into()), span)?;
-        let lazy: Vec<String> = self.cur().created.iter().filter(|id| self.cur().in_branches.contains(*id) && self.b.data(id).is_some_and(|d| d.inputs.iter().any(|p| p.name == TRIGGER)) && !self.b.is_wired(id, TRIGGER) && !self.cur().wiring_in.iter().any(|(_, node, input)| node == *id && input == TRIGGER)).cloned().collect();
-        for id in &lazy {
-            self.connect(&Val::In(TRIGGER.into()), id, TRIGGER, span)?;
-        }
         Ok(())
     }
 

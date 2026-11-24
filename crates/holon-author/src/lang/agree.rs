@@ -266,6 +266,12 @@ mod tests {
             ("a send reading a collection, below a return", include_str!("../../tests/agree/read-after-return.holon.ts"), None),
             ("a write on the line after one that fails", include_str!("../../tests/agree/line-after-failure-no-try.holon.ts"), None),
             ("a key written again in an if on nothing", include_str!("../../tests/agree/if-on-nothing-undoes-write.holon.ts"), None),
+            // C4: a finally and a try without a catch held to the returns above the try, and a
+            // call in a branch made where the branch is taken, read or not.
+            ("a try without a catch, below a return", "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\", { port: 8080 })\n\nroute.post(\"/\", (req) => {\n  if (req.json.stop) return \"stopped\"\n  try {\n    ++state.fin\n  } finally {\n    state.done = 1\n  }\n  return \"end\"\n})\n", None),
+            ("a function whose start is in a choice, its value read in a branch not taken", "import { action, flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\", { port: 8080 })\n\nexport const ping = action((x) => ++state.pinged)\n\nfunction maybe(x) {\n  return x ? ping(x) : 0\n}\n\nroute.post(\"/\", (req) => {\n  const got = maybe(req.json.a)\n  return req.json.c ? got : \"no\"\n})\n", None),
+            ("a request in a choice past an action's wait", "import { action, event, flow, route } from \"holon\"\nimport api from \"host:api.example.com\"\n\nflow(\"f\", { port: 8080 })\n\nroute.post(\"/go/:token\", () => \"ok\", { resumes: \"go\" })\n\nexport const job = action(async (asked) => {\n  const go = await event(\"go\", { expires: \"1d\" })\n  const checked = asked.check ? await api.get(\"/check\") : undefined\n  return { done: checked.status }\n})\n", None),
+            ("a function that puts, in a choice of a handler, its field read", "import { flow, route } from \"holon\"\nimport state from \"state\"\nimport marks from \"collection:marks\"\n\nflow(\"f\", { port: 8080 })\n\nfunction both(x) {\n  ++state.f\n  const put = marks.put(\"k\", x)\n  const did = `did ${x}`\n  return { put, did }\n}\n\nroute.post(\"/\", (req) => {\n  const got = req.json.c ? both(\"a\").did : undefined\n  return \"end\"\n})\n", None),
         ];
         let mut wrong = Vec::new();
         for (what, src, want) in rows {

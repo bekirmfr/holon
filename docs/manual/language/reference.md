@@ -252,7 +252,7 @@ value, the `switch` has none: it never falls through to another case. With no ca
 [How a flow runs](#how-a-flow-runs)), and `throw new Error(message)` makes one: nothing, with the
 message in the run's log. The try block succeeds when every value it makes arrives; its writes are
 made only then, all together, and otherwise the catch block runs instead. `finally` runs either
-way:
+way, wherever the try itself is reached (a `return` above it that answered skips both):
 
 ```ts
 import { flow, route, status } from "holon"
@@ -1059,7 +1059,8 @@ misled, the compiler refuses instead.
   isn't reached: in an `if` whose condition doesn't hold or has no value, or after a `return` that
   answered (or an `if` that holds one, on a condition with no value). One
   written in a branch (`x ?? (await api.get(…)).body`, `c ? await api.get(…) : undefined`) is
-  made only when the branch needs it, so a branch not taken makes no call. To make a bound call
+  made only when the branch is taken, so a branch not taken makes no call, and one taken makes
+  it whatever reads its answer, as JavaScript does. To make a bound call
   only sometimes, put it in an `if`, or tie it to a value: `if (first !== undefined) charged =
   await api.post(…)`.
 - **Waiting.** `await event(name)` parks the run, an action's: a route answers and is done, and

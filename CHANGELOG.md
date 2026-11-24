@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **A `finally` below a `return` that answered isn't run.** `if (req.json.stop) return "stopped"`
+  above a `try { … } finally { ++state.fin }` still wrote `state.fin` when `stop` was true, and so
+  did a `try` without a `catch`; now neither the `try` nor its `finally` is run there, as in
+  JavaScript. Where the `try` is reached, the `finally` runs whatever the `try` or `catch`
+  returned, as before.
+  Who notices: a flow with a `finally` (or a `try` without a `catch`) after a `return` that
+  can answer; it stops writing there.
+
+- **A request or a start in a branch is made where the branch is taken, read or not.** `const got
+  = req.json.c ? ping(req.json) : 0`, with `got` read only in a branch not taken (`return
+  req.json.d ? got : "no"`), started nothing for `{"c":true,"d":false}`; JavaScript starts
+  `ping`, and so does the flow now. The same holds for a request, inside a function's `?:`,
+  `&&`, `||` and `??`, and one call deeper (`function maybe(x) { return x ? ping(x) : 0 }`).
+  A branch not taken still makes no call.
+  Who notices: a flow that makes a call in a branch and reads its answer only somewhere not
+  always taken; it now makes the call where JavaScript would. The samples do the same as before.
+
 - **A list method's function may write, send, ask a host or start an action, once per item.** A
   write, a put, a send, a log line, a request or a start inside the function given to `map`,
   `filter`, `find`, `some`, `every`, `reduce`, `toSorted`, `Object.groupBy`, a `JSON.parse` reviver

@@ -437,9 +437,10 @@ impl<'g> Group<'g> {
 /// trigger (a route's request, a clock's tick, a file handler's file, an action's input, a
 /// function's own `trigger`, or the pass-through the lowering places when that feeds several,
 /// which goes too, with its `true`). What's left on a trigger is written in an
-/// `if (x !== undefined)`. Also the nodes whose ties went, but a function's calls made in a branch
-/// of a choice: lower.rs ties those to the function's trigger too, and names none of their answers
-/// among the function's outputs (`outs`), as it names those of the calls its statements make.
+/// `if (x !== undefined)`. Also the nodes whose ties went, and the ties of calls made in a branch
+/// of a choice: lower.rs ties those where the branch is taken (`taken_chain`), and names their
+/// answers among the function's outputs (`outs`), as it names those of the calls its statements
+/// make.
 fn without_block_ties<'n>(nodes: Vec<&'n Node>, wires: Vec<BlockWire>, outs: &[(String, String, String)]) -> (Vec<&'n Node>, Vec<BlockWire>, HashSet<String>, Beside, HashSet<String>) {
     let (nodes, wires) = without_entered_holds(nodes, wires);
     let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), *n)).collect();
@@ -531,19 +532,25 @@ fn without_block_ties<'n>(nodes: Vec<&'n Node>, wires: Vec<BlockWire>, outs: &[(
         }
     };
     let mut in_arm: HashSet<String> = HashSet::new();
-    let mut arm_gone: HashSet<String> = HashSet::new();
+    // Each tie that goes, with the call it held: it is on that call's line (`place_beside`).
+    let mut arm_gone: HashMap<String, String> = HashMap::new();
     for n in &nodes {
         if !n.data.inputs.iter().any(|p| p.name == TRIGGER) {
             continue;
         }
         let Some(Src::Node { id: g, .. }) = into(&n.id, TRIGGER) else { continue };
-        if !leaf(g, "guard") || feeds(g) != 1 || !into(g, "value").is_some_and(own_trigger) {
+        // A function's own trigger, for any call; a handler's, or what a wait gave past it, for
+        // a leaf's call (a start, a request), which the text writes in its branch. A function
+        // placed in a handler's branch keeps its tie, written as the `if` it is made in (`ifs`).
+        let call = n.data.body == PlacedBody::Primitive && CALLS.contains(&n.data.name.as_str());
+        if !leaf(g, "guard") || feeds(g) != 1 || !into(g, "value").is_some_and(|v| own_trigger(v) || (call && (tie(v, TRIGGER) || waits(v)))) {
             continue;
         }
         let Some(Src::Node { id: taken, .. }) = into(g, "cond") else { continue };
         if let Some(chain) = taken_chain(taken) {
-            arm_gone.insert(g.clone());
-            arm_gone.extend(chain);
+            for id in std::iter::once(g.clone()).chain(chain) {
+                arm_gone.entry(id).or_insert_with(|| n.id.clone());
+            }
             in_arm.insert(n.id.clone());
         }
     }
@@ -553,18 +560,19 @@ fn without_block_ties<'n>(nodes: Vec<&'n Node>, wires: Vec<BlockWire>, outs: &[(
     while grew {
         grew = false;
         for n in &nodes {
-            if gone.contains(&n.id) || arm_gone.contains(&n.id) || n.data.body != PlacedBody::Primitive || n.data.inputs.iter().any(|p| p.name == TRIGGER) || n.data.outputs.iter().any(|o| o.ty == WType::Effect) {
+            if gone.contains(&n.id) || arm_gone.contains_key(&n.id) || n.data.body != PlacedBody::Primitive || n.data.inputs.iter().any(|p| p.name == TRIGGER) || n.data.outputs.iter().any(|o| o.ty == WType::Effect) {
                 continue;
             }
             let reads: Vec<&BlockWire> = wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id, .. } if *id == n.id)).collect();
-            let only_ties = !reads.is_empty() && reads.iter().all(|(_, to, _)| arm_gone.contains(to));
+            let only_ties = !reads.is_empty() && reads.iter().all(|(_, to, _)| arm_gone.contains_key(to));
             if only_ties && !outs.iter().any(|(id, _, _)| *id == n.id) {
-                arm_gone.insert(n.id.clone());
+                let call = arm_gone[&reads[0].1].clone();
+                arm_gone.insert(n.id.clone(), call);
                 grew = true;
             }
         }
     }
-    gone.extend(arm_gone);
+    gone.extend(arm_gone.keys().cloned());
     // What follows several waits is tied to the list of what each gave, in order (ts.rs
     // `Reader::waited`): a trigger, the answer's test `same_value([a, b], [a, b]) ?? false` (the
     // list written twice) or a value's held so, `same_value(l, l)`. The text writes it after the
@@ -589,7 +597,10 @@ fn without_block_ties<'n>(nodes: Vec<&'n Node>, wires: Vec<BlockWire>, outs: &[(
     }
     gone.extend(last_of.keys().cloned());
     // Each such list is on the line of the step that read it (`place_beside`).
-    let beside: Beside = last_of.keys().map(|l| (l.clone(), wires.iter().find(|(s, _, _)| matches!(s, Src::Node { id, .. } if id == l)).map(|(_, to, _)| to.clone()))).collect();
+    let mut beside: Beside = last_of.keys().map(|l| (l.clone(), wires.iter().find(|(s, _, _)| matches!(s, Src::Node { id, .. } if id == l)).map(|(_, to, _)| to.clone()))).collect();
+    let mut arm_ties: Vec<(String, String)> = arm_gone.into_iter().collect();
+    arm_ties.sort();
+    beside.extend(arm_ties.into_iter().map(|(id, call)| (id, Some(call))));
     let wires: Vec<BlockWire> = wires
         .iter()
         .map(|(s, to, input)| match s {
@@ -2444,7 +2455,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// what it makes, which leaves by the function's outputs: written in its branch.
     fn in_arm_once(&self, node: &Node) -> bool {
         // What it makes or what its calls answered, leaving by an output (`call_outputs`).
-        let handed = self.g.outs.iter().filter(|(id, output, _)| *id == node.id && node.data.outputs.iter().skip(1).any(|o| o.name == *output)).count();
+        // A leaf's call (a start, a request) leaves by a port of its own (`calls`).
+        let handed = self.g.outs.iter().filter(|(id, output, port)| *id == node.id && (self.calls.contains(port) || node.data.outputs.iter().skip(1).any(|o| o.name == *output))).count();
         self.g.in_arm.contains(&node.id) && self.g.consumed_total(node) == handed + 1
     }
 
@@ -3639,9 +3651,11 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     fn one_value(&self, n: &Node) -> bool {
         let outs = n.data.outputs.len();
         outs == 1 || outs > 1 && {
-            let mut calls = self.answers(n);
+            // An output both answers a call and is handed out (an Effect a function placed in a
+            // branch makes) is counted once.
+            let mut calls: BTreeSet<usize> = self.answers(n).into_iter().collect();
             calls.extend((1..outs).filter(|&k| self.handed(n, k)));
-            outs - calls.len() == 1 && !calls.contains(&0)
+            outs.checked_sub(calls.len()) == Some(1) && !calls.contains(&0)
         }
     }
 
@@ -5571,7 +5585,7 @@ export const t = action((input) => {
     }
 
     /// A call bound as a statement is made when the run reaches it, so a branch reading it keeps
-    /// it a statement; one written in a branch is made only when the branch needs it, and stays
+    /// it a statement; one written in a branch is made only when the branch is taken, and stays
     /// there. Two units, each printed as written.
     #[test]
     fn a_call_stays_where_it_was_written_beside_a_branch() {
@@ -5583,13 +5597,14 @@ export const t = action((input) => {
             prints_back(src);
             hashes.push(hash_of(&compile(src).unwrap().doc));
         }
-        assert_ne!(hashes[0], hashes[1], "made when reached, or when the branch needs it");
+        assert_ne!(hashes[0], hashes[1], "made when reached, or when the branch is taken");
     }
 
-    /// A function's call bound on a statement is made when the function is entered, whatever
-    /// reads its answer, so the answer leaves its boundary as `called`, and a function placing it
-    /// gives that on as its own; one made in a branch doesn't. The printer leaves them out of
-    /// what each returns, and the lowering names them again.
+    /// A function's call is made when the run reaches it, whatever reads its answer: bound on a
+    /// statement, when the function is entered; in a branch, when the branch is taken too (as
+    /// JavaScript evaluates it, reached's cases 9 and 14). Either way its answer leaves the
+    /// boundary as `called`, and a function placing it gives that on as its own. The printer
+    /// leaves them out of what each returns, and the lowering names them again.
     #[test]
     fn a_functions_call_leaves_by_a_port_it_doesnt_return() {
         let head = "import { flow, route } from \"holon\"\nimport api from \"host:api.example\"\n\nflow(\"f\", { port: 8080 })\n\n";
@@ -5619,8 +5634,8 @@ export const t = action((input) => {
         assert!(text.contains("return x === \"a\" ? response.status : 0\n}") && text.contains("return ask_result ?? 0\n}"), "returned as written, the call aside:\n{text}");
         assert_eq!(outputs(&reached, "ask"), ["out", "called"], "ask's request leaves");
         assert_eq!(outputs(&reached, "ask2"), ["out", "called"], "and ask2 gives it on");
-        assert_eq!(outputs(&in_branch, "ask"), ["out"], "made in a branch, when the branch needs it");
-        assert_eq!(outputs(&in_branch, "ask2"), ["out"]);
+        assert_eq!(outputs(&in_branch, "ask"), ["out", "called"], "made in a branch where the branch is taken, read or not");
+        assert_eq!(outputs(&in_branch, "ask2"), ["out", "called"]);
         // Tied to the call of the function (lower.rs `holon`), it is written back as made in the
         // branch, and taken.
         assert!(compile(&in_branch).is_ok(), "{:?}", compile(&in_branch).err());

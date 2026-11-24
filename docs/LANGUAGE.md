@@ -1936,7 +1936,7 @@ handler (§10, §12).
 | `if (c) …; else …` | its writes guarded by their branch's condition; writes to one key in both branches are one write, of `a` or `b` as `c` says. On a `c` with no value neither branch runs (§6.4) |
 | `if (x !== undefined) { … }` | its writes and calls tied to `x` (§5.11) |
 | `switch (s) { case …: … }` | a choice by value (§6.5) |
-| `try { … } catch { … } finally { … }` | a choice on the try block's values having arrived: its writes, sends and returns are tied to that, the catch block's to its negation, and a name either assigns is the one chosen, as after an `if`; `finally`'s are tied to neither (§6.5a) |
+| `try { … } catch { … } finally { … }` | a choice on the try block's values having arrived: its writes, sends and returns are tied to that, the catch block's to its negation, and a name either assigns is the one chosen, as after an `if`; `finally`'s are tied to neither, only to the `try` being reached (§6.5a) |
 | `throw new Error(m)` | the `fail` leaf, nothing, `m` for the run's log: in a try block, its failure; elsewhere the handler's answer, as a `return` of nothing: a route's 404 (§6.5a) |
 | `return e` | the handler's answer (§5.11), or a function's outputs (§5.8) |
 | `expr` | an effect (§5.10) |
@@ -2419,8 +2419,9 @@ function's body only when it is called. A sink under the function's own `if`, be
 `return` or in its own `try` is tied to what its conditions there give, held to the trigger being
 there: `guard(same_value(trigger, trigger), c)`, `same_value` so that a trigger of any value
 counts. A request or a start in a branch of the function's `?:`, `&&`, `||` or `??` is made when
-the branch needs it, as in a handler, and only once the function is entered: its trigger is the
-function's too, and its answer leaves by no `called` output. So `function ask(x) { if (x)
+the branch is taken, as in a handler, and only once the function is entered: its trigger is the
+function's, held to the branch's test, and its answer leaves by a `called` output, so it is made
+whatever reads it. So `function ask(x) { if (x)
 ping(x); return 1 }`, called in a route under `if (req.json.go)`, starts `ping` only where `go`
 holds and `x` does. A function may start an action, its flow's own or another flow's; calling one
 and awaiting it stays a handler's. A function drawn on the canvas without a `trigger` input still
@@ -2802,14 +2803,20 @@ call's arguments are: `h(go, await api.get(…))` sends the request even if `h` 
 
 A binding isn't a branch. A call written in a branch, `ids[name] ?? JSON.parse((await
 httpbin.get("/uuid")).body).uuid` (the `cache-aside` sample) or `c ? await api.get(…) : undefined`,
-is made only when the branch needs it; a call bound on a statement of its own, `const page = await
-api.get(…)`, is made when the run reaches the statement, whatever reads `page`, even a branch not
-taken (§5.4). A statement in an `if` whose condition doesn't hold, or after a `return` that
+is made only when the branch is taken, as JavaScript evaluates it; a call bound on a statement of
+its own, `const page = await api.get(…)`, is made when the run reaches the statement, whatever
+reads `page`, even a branch not taken (§5.4). Either way, once made, it is made whatever reads its
+answer: `const got = c ? ping(x) : 0`, where `c` holds and `got` is read only in a branch not
+taken, starts `ping`, as JavaScript does. A statement in an `if` whose condition doesn't hold, or after a `return` that
 answered, isn't reached: its call isn't made, though a later statement reads its answer. In the
 graph the difference is the call's trigger: one bound on a statement is tied to its handler's
 trigger, to what an `if (x !== undefined)` around it names, or to the conditions it runs under
-(an `if`'s, and that no `return` before it answered), and its handler keeps it as an output; one written in a branch is left untied, and is made when its answer is
-needed. So whether a call goes out is said where it is written: in the branch that needs it, or by
+(an `if`'s, and that no `return` before it answered), and its handler keeps it as an output; one
+written in a branch is tied the same way, held also to the branch's test (`guard(taken, trigger)`,
+`taken` the tests of the branches around it, innermost first), and kept as an output too. (Until
+2026-11-24 one written in a branch was left untied and made only when its answer was needed: in
+the case above `ping` wasn't started, and a function's `c ? ping(x) : 0` bound to a name read only
+in a branch not taken started nothing.) So whether a call goes out is said where it is written: in the branch that is taken, or by
 its own tie, `if (first !== undefined) charged = await api.post(…)`, never by a reader somewhere
 else. The printer keeps each where it was written. A call in a branch of a value bound in an
 `if`, or after a `return` that may answer (`if (d) { got = v ?? (await api.get(…)).body }`), is
@@ -2897,7 +2904,10 @@ a `NaN` too), and `ok` is all of them. The block's writes and sends are tied to 
 `after`), so they are made all together or not at all, and its returns answer only where `ok`
 holds. The catch block is read under `!ok`: its writes are tied to the block having failed, and a
 name or state key either block changes holds `ok ? tried : caught` after them, as after an `if`.
-`finally` holds statements tied to neither, made whichever block ran, as JavaScript's are. And
+`finally` holds statements tied to neither, made whichever block ran, as JavaScript's are, and
+only where the `try` itself is reached: a `return` above the `try` that answered, or an `if` around
+it not entered, leaves the `finally` unmade too, as it leaves a `try` without a `catch`. (Until
+2026-11-24 a `finally`'s write was made though a `return` above the `try` had answered.) And
 what follows a statement in the try block runs only where what that statement made arrived, as
 the rest of JavaScript's block is skipped once a statement throws: a call bound after a failure
 isn't made, and a function after it isn't entered. Its write is tied to that too (here,
@@ -3464,7 +3474,7 @@ is `status(204)`).
   read, and its answer is never its handler's (§5.4, §5.10). The `fan-out` sample shows it. And a
   call bound on a statement was made only when something needed its answer, so whether a charge
   went out could be decided by a reader lines away. Decided and built: a call is made where it is
-  written, when the run reaches its statement or when the branch it is written in needs it (§6.4);
+  written, when the run reaches its statement or when the branch it is written in is taken (§6.4);
   the `idempotent` sample's charge says its own condition. And in a function, a call bound on a
   statement was still made only when the function's answer was needed. Decided and built
   (2026-11-11): its answer leaves the function's boundary by an output of its own, `called`, which
