@@ -4,8 +4,8 @@ Everything about Holon's license in one place: the terms, where they live and sh
 and why it was made, what is still missing, and what to check before each release. The terms
 themselves are in [`../LICENSE`](../LICENSE); when this page and that file disagree, the file wins.
 
-Set on 2026-11-25 (commit `dedb8a3`). The first release under these terms is the one after
-0.1.0-rc.37.
+Set on 2026-11-25 (commit `dedb8a3`; the engine, `holon-core`, moved from Apache-2.0 to the main
+terms the same day, §3). The first release under these terms is the one after 0.1.0-rc.37.
 
 ## 1. The terms in short
 
@@ -25,8 +25,7 @@ By part:
 
 | Part | License |
 |---|---|
-| `crates/holon-core` (the engine that evaluates flows) | Apache-2.0 |
-| `crates/holon-module`, `fixtures/modules/js-engine` (the WebAssembly and JavaScript engine) | MIT or Apache-2.0 |
+| `crates/holon-module`, `fixtures/modules/js-engine` (the WebAssembly and JavaScript engine) | MIT or Apache-2.0; they use `holon-core`, so using them apart from Holon still needs the main terms for it |
 | `vendor/` (third-party code kept in the repository) | each its own |
 | everything else, and the programs built from it (`holon`, the server, the web editor, the VS Code extension) | PolyForm Noncommercial 1.0.0 + Holon Additional Grant 1.0 |
 
@@ -35,7 +34,7 @@ By part:
 | File | What it holds |
 |---|---|
 | `LICENSE` | All of it in one file: the summary, which part is under what, the Additional Grant, how to get a commercial license, and the PolyForm Noncommercial 1.0.0 text, word for word as published |
-| `LICENSE-APACHE` | The Apache License 2.0, as apache.org publishes it |
+| `LICENSE-APACHE` | The Apache License 2.0, as apache.org publishes it (for `holon-module`) |
 | `LICENSE-MIT` | The MIT License, with Holon's copyright line |
 | `THIRD-PARTY-NOTICES.md` | The 700 outside packages Holon is built with, their licenses and license files |
 | `.github/third-party-notices.mjs` | The script that writes the notices from the lockfiles |
@@ -52,10 +51,10 @@ What carries them:
   `LICENSE` and `THIRD-PARTY-NOTICES.md` from the root, and `.vscodeignore` lets them in. vsce
   renames `LICENSE` to `LICENSE.txt` inside the package. Checked once, by packaging it.
 - **The web editor** is built into the `holon` binary, so the archive's files cover it.
-- **Manifests.** `holon`, `holon-author`, `holon-host` and `holon-wasm` have
-  `license-file = "../../LICENSE"`; `holon-core` has `license = "Apache-2.0"`; `holon-module`
-  has `MIT OR Apache-2.0`. `editor/package.json` says `SEE LICENSE IN ../LICENSE`. No crate is
-  published to crates.io (`publish = false`), so these fields only label the code.
+- **Manifests.** `holon`, `holon-core`, `holon-author`, `holon-host` and `holon-wasm` have
+  `license-file = "../../LICENSE"`; `holon-module` has `MIT OR Apache-2.0`.
+  `editor/package.json` says `SEE LICENSE IN ../LICENSE`. No crate is published to crates.io
+  (`publish = false`), so these fields only label the code.
 
 The source itself is the public repository (`bekirmfr/holon`). Releases carry no source tarball
 (`source-tarball = false`).
@@ -112,10 +111,26 @@ None of it should carry Holon's license with it.
 Noncommercial itself (charities, schools, research, public safety and health, environmental
 groups, government), and the grant leaves it as it is.
 
-**The engine is Apache-2.0.** `holon-core` is what flows run on, what replay and verification
-re-run, and what an editor or agent tool would build on. Giving it away widely helps Holon and
-supports the "anyone can check" promise. `holon-module` (and the js engine module built on it)
-already said MIT or Apache-2.0 and keeps it. Releasing code under Apache can't be taken back.
+**The engine is under the main terms, not Apache-2.0.** `holon-core` holds the evaluator and what
+works out a flow's permissions from its graph: Holon's central idea. It was first put under
+Apache-2.0 so that anyone could check run records, and moved to the main terms the same day,
+before any merge or release, once it was clear Apache gave nothing that reason needed: checking
+records is free to everyone by grant §2.5, and the source is public to read either way. What
+Apache adds is the right to change the engine and sell it inside another product. For users of
+Holon nothing differs: they need the server, under the main terms, whatever the engine's
+license. For a company that would build the engine into its own product (an agent platform
+showing what code may do before it runs) it decides everything: under Apache it owes nothing,
+under the main terms it needs a license, which is a second way to earn beside selling Holon. An
+ecosystem of tools on the engine would be Apache's gain, and there is none yet to win. Opening it
+later stays possible; closing a release once it is out under Apache isn't. The Apache claim stood
+only on the public session branch (`ccr-06677e91-qg36p3`, commit `dedb8a3` until the next one),
+never on `main` or in a release. FSL (each release Apache after two years) was weighed as a middle
+way and set aside as more to explain than it is worth until someone asks to build on the engine.
+
+**The WebAssembly and JavaScript engine stays MIT or Apache-2.0.** `holon-module` (and the js
+engine module built on it) said so before these terms. It runs code modules under a budget and
+holds none of Holon's central idea, so leaving it open costs little; it uses `holon-core`, so
+using it apart from Holon still needs the main terms for that.
 
 **Versions of the grant.** A later version applies to the releases made with it and takes away
 nothing an earlier version gave for its releases. People can rely on the terms of the release
@@ -136,6 +151,7 @@ is cleaner (§5).
 | FSL or BSL (source-available, free internal use, no competing service) | Large companies would use it free internally; money only from extras |
 | AGPL with paid licenses | Many companies, fintechs among them, ban AGPL outright |
 | Apache-2.0 for everything | Anyone could host and resell it |
+| Apache-2.0 for the engine (`holon-core`) only | Lets other companies build the engine into their products for nothing; checking records is free by the grant anyway (§3, the engine) |
 
 ## 4. Third-party notices
 

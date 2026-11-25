@@ -9,10 +9,9 @@
   than 30 people and under USD 1,000,000 a year in revenue, commercial use included; free for a
   larger organization to evaluate for 60 days, then under a commercial license; and free for anyone
   to read, export and verify run records. The flows you write, the files Holon writes into your
-  projects and the samples are yours to use as you like. The engine (`holon-core`) is under the
-  Apache License 2.0. Releases and the VS Code extension now carry `THIRD-PARTY-NOTICES.md`, the
-  licenses of the software Holon is built with (written by `.github/third-party-notices.mjs`). Who
-  notices: anyone deciding whether they may use Holon; a larger organization using it beyond an
+  projects and the samples are yours to use as you like. Releases and the VS Code extension now
+  carry `THIRD-PARTY-NOTICES.md`, the licenses of the software Holon is built with (written by
+  `.github/third-party-notices.mjs`). Who notices: anyone deciding whether they may use Holon; a larger organization using it beyond an
   evaluation, which now needs a commercial license.
 - **A text is taken only if the canvas can write it back as the same flow.** Holon reads a text
   into steps, and writes steps back as text for the canvas and `holon fmt`. The two could

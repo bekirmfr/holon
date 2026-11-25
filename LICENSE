@@ -18,11 +18,10 @@ This file holds the terms in full:
 1. Which license covers which part
 ================================================================================================
 
-- crates/holon-core (the engine that evaluates flows): the Apache License 2.0 (LICENSE-APACHE).
-
 - crates/holon-module and fixtures/modules/js-engine (the engine that runs WebAssembly modules and
   JavaScript bodies): the MIT License (LICENSE-MIT) or the Apache License 2.0 (LICENSE-APACHE),
-  at your option.
+  at your option. They use crates/holon-core, which is under the terms below: using them apart
+  from Holon still needs those terms for it.
 
 - vendor/ (third-party code kept in this repository): each under its own license, in its own
   folder.

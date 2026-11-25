@@ -434,10 +434,9 @@ Using Holon for a client (setting it up, running it or writing its flows) is the
 too: the client's size is the one that counts. The flows you write are yours, and so are the files
 Holon writes into your projects (`holon new`, `holon types`) and the samples you copy.
 
-The engine that evaluates flows (`crates/holon-core`) is under the Apache License 2.0
-([`LICENSE-APACHE`](LICENSE-APACHE)); the engine that runs WebAssembly modules and JavaScript
-bodies (`crates/holon-module`) under MIT or Apache 2.0, at your choice. The third-party software
-the releases are built with, and its licenses, are in
+The engine that runs WebAssembly modules and JavaScript bodies (`crates/holon-module`) is under
+MIT ([`LICENSE-MIT`](LICENSE-MIT)) or Apache 2.0 ([`LICENSE-APACHE`](LICENSE-APACHE)), at your
+choice. The third-party software the releases are built with, and its licenses, are in
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
 
 For a commercial license, contact [bekirmfr](https://github.com/bekirmfr).
