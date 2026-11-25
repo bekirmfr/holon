@@ -71,7 +71,11 @@ fn masked(text: &str) -> String {
 /// fetched answers the second from what it kept, as cache-aside does), and writes what the log holds
 /// of each run to `editor/src/recorded.fixture.json`. `recordedRuns.test.ts` replays each there as
 /// view mode does and fails where the replay runs other nodes than the run did, or answers
-/// otherwise.
+/// otherwise. Beside each run it writes the steps explain reads as not run (`explain_not_run`:
+/// core held them back, its `held` read off the record), which the editor's replay must show as
+/// not run too, and no other: the record notes such a step (C4 made a call tied to a branch not
+/// taken a step that gives nothing), and the owner's word is that it wasn't run, read so by every
+/// reader from the one rule while the record stays as it is.
 ///
 /// **Why:** the replay is the editor's own walk of the canvas, beside core's. When core began to
 /// make a call tied to a branch's trigger even where nothing reads its answer (S1's C4), the walk
@@ -152,7 +156,21 @@ fn every_samples_runs_go_to_the_editor() {
             }
         }
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
-        let entries: Vec<String> = export.lines.iter().map(|l| for_editor(&serde_json::from_str(l).unwrap()).to_string()).collect();
+        // Beside each run, the steps explain (and `holon runs --run N`, which prints it) reads as
+        // held back and so not run, by core's one rule read off the record: the editor's test holds
+        // its replay to the same nodes.
+        let document = serde_json::to_value(&plan.document).unwrap();
+        let entries: Vec<String> = export
+            .lines
+            .iter()
+            .map(|l| {
+                let line: serde_json::Value = serde_json::from_str(l).unwrap();
+                let view = holon_author::agent::run_view(&slug, &document, &line).unwrap_or_else(|e| panic!("{slug}: explain reads its run: {e}"));
+                let mut entry = for_editor(&line);
+                entry["explain_not_run"] = serde_json::json!(view.not_run);
+                entry.to_string()
+            })
+            .collect();
         // A run a line, so a change shows as the runs it changed.
         runs.push(format!("{{\"sample\":{},\"unit\":{},\"entries\":[\n{}\n]}}", serde_json::json!(sample.name), serde_json::json!(plan.unit), entries.join(",\n")));
     }

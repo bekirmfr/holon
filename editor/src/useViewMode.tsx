@@ -347,7 +347,7 @@ export function inspectorRun(view: ViewMode, flow: FlowMeta): InspectorRun | nul
     changed: view.flowState.changed,
     collections: view.collections,
     trace: trace && inspectNode ? { ...trace, issue: replayed?.diagnosis?.issues.get(inspectNode) } : undefined,
-    notRun: inspectNode && replayed?.notRun.has(inspectNode) ? whyNotRun(view.viewNodes, replayed.notRun.get(inspectNode)!) : undefined,
+    notRun: inspectNode && replayed?.notRun.has(inspectNode) ? whyNotRun(view.viewNodes, replayed.notRun.get(inspectNode)!, replayed.held?.get(inspectNode)) : undefined,
     timing: inspectNode ? view.timings.get(inspectNode) : undefined,
     inside: view.inside,
     openRun: view.openRun,

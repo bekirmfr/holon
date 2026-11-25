@@ -69,5 +69,10 @@ export function replayAsViewed(
   // can tell.
   const ranSame = sameNodesRan(runGroup(nodes, edges, entry), run, nodeTimings(entry, trace), (entry.parked?.length ?? 0) > 0);
   const verdict = replayVerdict(entry, run, nodes, nodeOutputs(entry, trace), ranSame);
-  return { ...run, ranSame, verdict };
+  // Shown: a node held back (core's `held`) wasn't run, though the record notes it as a step and
+  // the replay walked to it (held to the record above): out of what ran, and in `notRun`.
+  const held = run.held ?? new Map();
+  const order = run.order.filter((id) => !held.has(id));
+  const traces = new Map([...run.traces].filter(([id]) => !held.has(id)));
+  return { ...run, order, traces, ranSame, verdict };
 }

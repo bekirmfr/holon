@@ -96,11 +96,9 @@ fn composite(children: &[Hash], edges: &[Edge], n_outputs: usize, inputs: &[Opti
                 None => None,
             })
             .collect();
-        let wired_but_absent = (0..k).any(|p| gathered[p].is_none() && incoming.contains_key(&(ci as u32, p as u32)));
-        // Not connected means never (`eval::untied`).
-        let held = crate::eval::untied(child, |p| incoming.contains_key(&(ci as u32, p as u32)))
-            || (wired_but_absent
-                && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name) || crate::takes_a_trigger(name)));
+        // Held back as the evaluator holds it (`eval::held`, the one rule).
+        let holds_back = matches!(&child.body, UnitBody::Primitive { name } if crate::eval::holds_back(name));
+        let held = crate::eval::held(holds_back, child.inputs.iter().map(|p| p.name.as_str()), |p| incoming.contains_key(&(ci as u32, p as u32)), |p| gathered[p].is_some());
         scratch[ci] = if held { vec![None; child.outputs.len()] } else { eval_eager(child, &gathered, resolver) };
     }
     (0..n_outputs as u32)

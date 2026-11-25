@@ -3,7 +3,9 @@
 // **Guards:** for each run holon's `every_samples_runs_go_to_the_editor` made of each sample it
 // deploys (every one that needs nothing but the server and the hosts it calls), the editor's
 // replay over the sample as the editor builds it runs the nodes the run's timeline ran, and view
-// mode's verdict is not "replay differs from the run". The runs are the server's own, written to
+// mode's verdict is not "replay differs from the run". And every step core held back (core's
+// `held`: its tie didn't arrive, or a wired input it needs didn't) is shown not run, never as run,
+// and no step shown not run made a call the record holds. The runs are the server's own, written to
 // `recorded.fixture.json` by that test (`HOLON_BLESS=1` writes it again).
 //
 // **Why:** the replay is the editor's own walk of the canvas, beside core's. When core began to
@@ -12,7 +14,11 @@
 // differed from itself (#158, found only by an end-to-end test of that one sample). Nothing held
 // the walk to the server's runs across the samples. The first run of this test found a second
 // case, older than S1: a route answering a subscription (ticker's, live-board's, chess's, …) was
-// said to differ because the answer's effect came with its keys in another order.
+// said to differ because the answer's effect came with its keys in another order. And since C4
+// the record notes a held call as a step (it gave nothing, made nothing): the owner's word is that
+// such a step is "not run", so every reader says so from the one rule, and the record stays as it
+// is (a record without the step changed what a secret-decided run's record says of an effect it
+// skipped: "withheld" became "missing", with where).
 //
 // **If it fails:** a run names its sample, route and the nodes the two disagree on. Where the
 // replay skipped or added a node, its roots or its choices (replay.ts `replay`) no longer match
@@ -29,13 +35,15 @@ import { restoreUnits } from "./docUnits";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import type { LogEntry } from "./server";
-import { nodeTimings } from "./replay";
+import { nodeExchanges, nodeTimings } from "./replay";
 import { replayAsViewed } from "./viewReplay";
 
 initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
 
 type Fixture = { runs: { sample: string; unit: string; entries: LogEntry[] }[] };
 const fixture: Fixture = JSON.parse(readFileSync(join(process.cwd(), "src", "recorded.fixture.json"), "utf8"));
+// The samples where a run held a step back, as the sweep finds them.
+const heldSeen = new Set<string>();
 
 describe("every sample's recorded runs, replayed as view mode does", () => {
   it("holds runs of the samples, one that calls a host among them", () => {
@@ -62,8 +70,26 @@ describe("every sample's recorded runs, replayed as view mode does", () => {
     for (const entry of recorded.entries) {
       await yieldTurn();
       const run = replayAsViewed(nodes, edges, entry, trace, ev);
+      const held = run.held ?? new Map();
+      if (held.size > 0) heldSeen.add(recorded.sample);
+      // Held means shown not run: in notRun, not among what ran, no values.
+      for (const id of held.keys()) {
+        if (!run.notRun.has(id) || run.order.includes(id) || run.traces.has(id)) differs.push(`${entry.kind} ${entry.route ?? ""}: ${name.get(id)} (${id}) is held and shown as run`);
+      }
+      // Among the steps the record notes, the same ones as explain reads as not run off the record
+      // (the Rust half writes them). A replay goes on past a waiting point the run is parked at,
+      // where the record notes nothing: what it holds there is not run too, and not explain's.
+      const explained = (entry as LogEntry & { explain_not_run?: string[] }).explain_not_run ?? [];
+      const noted = nodeTimings(entry, trace);
+      const mine = [...held.keys()].filter((id) => noted.has(id)).sort();
+      if (JSON.stringify(mine) !== JSON.stringify([...explained].sort())) differs.push(`${entry.kind} ${entry.route ?? ""}: held [${mine.join(", ")}], explain reads not run [${explained.join(", ")}]`);
+      // No step shown not run made a call the record holds.
+      for (const x of nodeExchanges(entry, trace)) {
+        if (run.notRun.has(x.id)) differs.push(`${entry.kind} ${entry.route ?? ""}: ${name.get(x.id)} (${x.id}) is shown not run and made a call`);
+      }
       if (run.ranSame !== false && run.verdict !== false) continue;
-      const ran = new Set(run.order);
+      // What the replay walked to: what it shows as run, and what it walked to and found held.
+      const ran = new Set([...run.order, ...held.keys()]);
       const timed = new Set(nodeTimings(entry, trace).keys());
       const only = (a: Set<string>, b: Set<string>) => [...a].filter((id) => !b.has(id)).map((id) => `${name.get(id)} (${id})`);
       differs.push(
@@ -73,4 +99,9 @@ describe("every sample's recorded runs, replayed as view mode does", () => {
     // The runs in the message itself: vitest folds equal-looking diffs of several samples into one.
     expect(differs, differs.join("\n")).toEqual([]);
   }, 60_000);
+
+  // After the sweep (tests run in the order written): one held step at least, cache-aside's call.
+  it("held a step back in a run: cache-aside's call, when the name is kept", () => {
+    expect(heldSeen.has("cache-aside")).toBe(true);
+  });
 });

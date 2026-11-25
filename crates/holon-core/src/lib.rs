@@ -107,7 +107,7 @@ pub use texts::MAX_TEXT;
 pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Expose, Promote};
 pub use promote::{instantiate, open_param, open_params, ParamError};
-pub use eval::{choice_next, eval, eval_observed, eval_one, node_path, would_plan,Answer, Budgeted, Choice, NoObserver, Observer, Resolved, Shape, Shapes, Slot, DEFAULT_MAX_FUEL, DEFAULT_MAX_MEMORY, DEFAULT_MAX_STEPS, MAX_FUEL_CEILING, MAX_MEMORY_CEILING, MAX_STEPS_CEILING};
+pub use eval::{choice_next, eval, eval_observed, eval_one, held, holds_back, node_path, would_plan,Answer, Budgeted, Choice, NoObserver, Observer, Resolved, Shape, Shapes, Slot, DEFAULT_MAX_FUEL, DEFAULT_MAX_MEMORY, DEFAULT_MAX_STEPS, MAX_FUEL_CEILING, MAX_MEMORY_CEILING, MAX_STEPS_CEILING};
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
 pub use catalog::{family_values, function_takes, genesis_units, interface_of, made_when_tied, sourced_value, takes_a_trigger, takes_trigger, ASKS_HOST, CALLS, DID, FAMILIES, GENESIS, PASSES_EXTRA, SOURCED, TRIGGER, TRIGGERED, VARIADIC, WAITS};

@@ -25,6 +25,7 @@ import init, {
   passes_extra_primitives,
   asks_host_primitives,
   made_when_tied,
+  held_step,
   always_tainted,
   is_taint_key,
   family_params,
@@ -294,6 +295,17 @@ export function asksHostPrimitives(): Set<string> {
  */
 export function madeWhenTied(name: string): boolean {
   return made_when_tied(name);
+}
+
+/**
+ * Whether a step is held back, so the run didn't run it (core's `held`, the one rule): its
+ * trigger left unwired, or it is a leaf that holds back (one that does something, or has optional
+ * ports) and an input wired to it didn't arrive. `leaf` is its primitive's name ("" for any other
+ * node); `ports` its inputs' names; `wired` and `arrived` one per port. Call after
+ * {@link ensureReady}.
+ */
+export function heldStep(leaf: string, ports: string[], wired: boolean[], arrived: boolean[]): boolean {
+  return held_step(leaf, ports, Uint8Array.from(wired.map(Number)), Uint8Array.from(arrived.map(Number)));
 }
 
 /**

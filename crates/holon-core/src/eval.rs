@@ -672,7 +672,7 @@ impl NodeKind {
                     "or" => Some(Which::Or),
                     _ => None,
                 };
-                let held_when_absent = primitives::has_optional_ports(name) || crate::takes_a_trigger(name);
+                let held_when_absent = holds_back(name);
                 NodeKind { body, takes_trigger, choice, held_when_absent }
             }
             UnitBody::Composite { .. } => NodeKind { body: Body::Composite, takes_trigger, choice: None, held_when_absent: false },
@@ -2074,12 +2074,9 @@ impl<'r> Prepared<'r> {
         // one as "none"; a *wired* one whose value is absent means what absence means everywhere
         // else: the node doesn't fire. Otherwise a request downstream of a check that failed (a
         // webhook whose signature didn't verify) still went out, bodiless.
-        // A step whose trigger nothing is wired to is never reached (`untied`).
-        if untied(child, |p| incoming.wired(ci as u32, p as u32)) {
-            return Some(smallvec![Slot::Absent; child.outputs.len()]);
-        }
-        // A sink is held the same way where its trigger, wired, hasn't arrived.
-        if kind.held_when_absent && (0..child.inputs.len()).any(|p| gathered[p].is_none() && incoming.wired(ci as u32, p as u32)) {
+        // A step whose trigger nothing is wired to is never reached (`untied`); a sink is held
+        // the same way where its trigger, wired, hasn't arrived (`held`, the one rule).
+        if held(kind.held_when_absent, child.inputs.iter().map(|p| p.name.as_str()), |p| incoming.wired(ci as u32, p as u32), |p| gathered[p].is_some()) {
             return Some(smallvec![Slot::Absent; child.outputs.len()]);
         }
         observer.asserted(path, child, gathered).filter(|a| a.len() == child.outputs.len()).map(|a| a.into_iter().map(Slot::of).collect())
@@ -2450,12 +2447,25 @@ fn has_cycle(n: usize, edges: &[Edge]) -> bool {
     seen < n
 }
 
-/// Not connected means never: a step that takes a [`crate::TRIGGER`] (a sink, a call, a function
-/// that does something, a list method handing out what its function does) with nothing wired to
-/// it runs nowhere. `validate` refuses such a unit; one that reaches the evaluator anyway is held,
-/// every output absent, rather than run as if something had reached it.
-pub(crate) fn untied(child: &Unit, wired: impl Fn(usize) -> bool) -> bool {
-    child.inputs.iter().enumerate().any(|(p, port)| port.name == crate::TRIGGER && !wired(p))
+/// Whether leaf `name` is held back where an input wired to it doesn't arrive ([`held`]): a step
+/// that does something (it takes a trigger) and one with optional ports (an `http_request`'s
+/// headers and body), whose wired port left absent means it doesn't fire.
+pub fn holds_back(name: &str) -> bool {
+    primitives::has_optional_ports(name) || crate::takes_a_trigger(name)
+}
+
+/// Whether a step is held back: core doesn't run it, and every output is absent. Its trigger is
+/// left unwired (untied; not connected means never: a step that takes a [`crate::TRIGGER`], a
+/// sink, a call, a function that does something, a list method handing out what its function
+/// does, with nothing wired to it runs nowhere; `validate` refuses such a unit, and one that
+/// reaches the evaluator anyway is held rather than run as if something had reached it), or it holds back (`holds_back`: a leaf
+/// that [`holds_back`]) and an input wired to it didn't arrive. `ports` are its input ports'
+/// names, `wired(p)` whether something is wired to port `p`, `arrived(p)` whether a value came
+/// in there. The one rule: the evaluator holds a step by it, its eager oracle too, and every
+/// reader of a run (explain, `holon runs --run N`, the editor's view mode through the wasm) says
+/// a step it holds wasn't run, though the run's record, which notes the step, is left as it is.
+pub fn held<'a>(holds_back: bool, ports: impl IntoIterator<Item = &'a str>, wired: impl Fn(usize) -> bool, arrived: impl Fn(usize) -> bool) -> bool {
+    ports.into_iter().enumerate().any(|(p, name)| if wired(p) { holds_back && !arrived(p) } else { name == crate::TRIGGER })
 }
 
 /// Kahn's algorithm over in-range child→child edges, emitting a deterministic order

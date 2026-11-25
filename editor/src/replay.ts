@@ -13,7 +13,7 @@
 //
 // Evaluation itself is passed in (`evalNode`), so this is testable without a real evaluator.
 
-import { asksHostPrimitives, choiceNext, madeWhenTied, type WParam, type WPort, type WValue } from "./holon";
+import { asksHostPrimitives, choiceNext, heldStep, madeWhenTied, type WParam, type WPort, type WValue } from "./holon";
 import { components } from "./derive";
 import { stable } from "./textSync";
 
@@ -81,6 +81,10 @@ export type Replay = {
   /** The nodes of the run's group it didn't run, each with the choice that skipped it (`null`
    *  when none did: a cycle, or nothing the run needed uses it). */
   notRun: Map<string, string | null>;
+  /** The nodes the walk evaluated and core holds back (core's `held`, through the wasm): the run
+   *  noted each as a step, and didn't run it. Each is in `notRun` too, and says why: its tie didn't
+   *  arrive (`trigger`: the run didn't reach it), or an input wired to it didn't (`input`). */
+  held?: Map<string, "trigger" | "input">;
 };
 
 const frozen = (params: WParam[], name: string) => {
@@ -790,6 +794,10 @@ export function replay(
     if (primitive && name === "resume_token") return { inputs, outputs: [{ type: "Text", value: `‹token:${param("await")}›` }] };
     // The editor never has a secret's value: a placeholder stands in, as the log shows it.
     if (primitive && name === "secret") {
+      // One the run didn't have (none set) gave nothing, as its step says: no placeholder then,
+      // or a step it held back would read as run.
+      const noted = produced.get(id);
+      if (noted && noted.every((o) => o === null)) return { inputs, outputs: [null] };
       const secret = param("name");
       const shown = entry.secrets?.[secret];
       return { inputs, outputs: [{ type: "Text", value: `‹secret:${secret}${shown ? ` ${shown}` : ""}›` }] };
@@ -863,12 +871,30 @@ export function replay(
     }
     notRun.set(n.id, by);
   }
-  return { order, traces, notRun };
+
+  // A node walked to and held back, by core's one rule on what reached it: the run noted it as a
+  // step (so it stays in `order`, which `sameNodesRan` holds to the run's timeline) and didn't run
+  // it, so it is not run here too.
+  const held = new Map<string, "trigger" | "input">();
+  for (const id of order) {
+    const n = byId.get(id)!;
+    const given = traces.get(id)!.inputs;
+    const ports = n.data.inputs.map((p) => p.name);
+    const wired = ports.map((p) => wires.some((w) => w.target === id && w.targetHandle === p));
+    const arrived = ports.map((_, i) => (given[i] ?? null) !== null);
+    if (!heldStep(n.data.body.kind === "Primitive" ? n.data.name : "", ports, wired, arrived)) continue;
+    held.set(id, ports.some((p, i) => p === "trigger" && !(wired[i] && arrived[i])) ? "trigger" : "input");
+    notRun.set(id, null);
+  }
+  return { order, traces, notRun, held };
 }
 
 /** Why a node didn't run, in a line: the choice that skipped it (`by`, from `notRun`), in its
  *  own terms. */
-export function whyNotRun(nodes: ReplayNode[], by: string | null): string {
+export function whyNotRun(nodes: ReplayNode[], by: string | null, held?: "trigger" | "input"): string {
+  // Held back (core's `held`): nothing tied it to a line that ran, or an input it needs is missing.
+  if (held === "trigger") return "not run: the run didn't reach it";
+  if (held === "input") return "not run: an input it needs didn't arrive";
   const choice = by === null ? undefined : nodes.find((n) => n.id === by);
   if (!choice) return "not run: nothing the run needed uses it";
   switch (choice.data.name) {
@@ -934,7 +960,8 @@ export function verdictSays(verdict: boolean | null, otherVersion: boolean): str
 
 export function sameNodesRan(group: string[], run: Replay, timings: Map<string, unknown>, waited: boolean): boolean | null {
   if (timings.size === 0 || waited) return null;
-  if (run.notRun.size > 0 && group.every((id) => timings.has(id))) return null;
+  // A node held back is noted as a step and walked to by the replay too: it tells nothing here.
+  if ([...run.notRun.keys()].some((id) => !run.held?.has(id)) && group.every((id) => timings.has(id))) return null;
   const ran = new Set(run.order);
   return group.every((id) => ran.has(id) === timings.has(id));
 }

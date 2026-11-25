@@ -975,7 +975,8 @@ test("cache-aside answers a name it has from its collection without the fetch, w
   const skipped = page.locator('.hl-node[data-run="skipped"]');
   await expect(skipped.filter({ hasText: "http_request" })).toHaveCount(1);
   await skipped.filter({ hasText: "http_request" }).locator(".hl-node__title").click();
-  await expect(page.getByRole("complementary", { name: "Inspector" })).toContainText("not run: the coalesce after it already had a value");
+  // The run notes the call as a step core held back (its tie didn't arrive): not run, by core's rule.
+  await expect(page.getByRole("complementary", { name: "Inspector" })).toContainText("not run: the run didn't reach it");
 });
 
 test("an env secret is picked from the server's HOLON_SECRET_… names, its dotenv file read again for each", async ({ page, request, adminToken }) => {

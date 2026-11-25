@@ -338,6 +338,16 @@ pub fn made_when_tied(name: &str) -> bool {
     holon_core::made_when_tied(name)
 }
 
+/// Whether a step is held back, so core doesn't run it (core's `held`, the one rule): `leaf` is
+/// its primitive's name (empty for any other node), `ports` its input ports' names, `wired` and
+/// `arrived` one per port, nonzero where something is wired there and where a value came in. A
+/// replay says such a step wasn't run, as the run didn't run it.
+#[wasm_bindgen]
+pub fn held_step(leaf: &str, ports: Vec<String>, wired: Vec<u8>, arrived: Vec<u8>) -> bool {
+    let holds_back = !leaf.is_empty() && holon_core::holds_back(leaf);
+    holon_core::held(holds_back, ports.iter().map(String::as_str), |p| wired.get(p).is_some_and(|w| *w != 0), |p| arrived.get(p).is_some_and(|a| *a != 0))
+}
+
 /// The leaves that ask the host (core's `catalog::ASKS_HOST`): a replay answers each from what
 /// the run recorded, never recomputing it.
 #[wasm_bindgen]
