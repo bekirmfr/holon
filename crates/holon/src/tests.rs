@@ -18,6 +18,8 @@ mod deploy_review;
 mod frames;
 /// A run of every kind shows its steps, in explain and the editor alike (R151).
 mod run_kinds;
+/// Every sample's runs, as the server records them, for the editor's replay to be held to.
+mod recorded_runs;
 /// Reading a run's steps and values takes run.steps (R55).
 mod run_steps;
 /// An expired waiting run slow to go on holds no other deadline (R34).

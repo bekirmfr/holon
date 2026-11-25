@@ -24,6 +24,7 @@ import init, {
   variadic_primitives,
   passes_extra_primitives,
   asks_host_primitives,
+  made_when_tied,
   always_tainted,
   is_taint_key,
   family_params,
@@ -284,6 +285,15 @@ export function passesExtraPrimitives(): Set<string> {
  */
 export function asksHostPrimitives(): Set<string> {
   return new Set(asks_host_primitives() as string[]);
+}
+
+/**
+ * Whether leaf `name`, tied to a trigger, is made when the trigger arrives, whatever reads its
+ * answer (core's `made_when_tied`: a call, or a list method whose function does something). The
+ * run starts from such a leaf, so a replay does too. Call after {@link ensureReady}.
+ */
+export function madeWhenTied(name: string): boolean {
+  return made_when_tied(name);
 }
 
 /**

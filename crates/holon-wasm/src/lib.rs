@@ -331,6 +331,13 @@ pub fn passes_extra_primitives() -> Vec<String> {
     holon_core::PASSES_EXTRA.iter().map(|s| s.to_string()).collect()
 }
 
+/// Whether leaf `name`, tied to a trigger, is made when the trigger arrives whatever reads its
+/// answer (core's `made_when_tied`): a replay starts from it, as the run does.
+#[wasm_bindgen]
+pub fn made_when_tied(name: &str) -> bool {
+    holon_core::made_when_tied(name)
+}
+
 /// The leaves that ask the host (core's `catalog::ASKS_HOST`): a replay answers each from what
 /// the run recorded, never recomputing it.
 #[wasm_bindgen]

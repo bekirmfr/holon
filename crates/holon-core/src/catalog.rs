@@ -798,6 +798,14 @@ pub fn takes_a_trigger(name: &str) -> bool {
 /// whether or not its answer is read, and its answer is never its caller's to give.
 pub const CALLS: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call", "flow_start"];
 
+/// Whether leaf `name`, tied to a trigger, is made when the trigger arrives, whatever reads its
+/// answer: a call ([`CALLS`]), or a list method ([`PASSES_EXTRA`]) whose function does something
+/// and so takes its trigger. A composite's boundary exposes such a leaf's outputs (`default_spec`),
+/// and the editor's replay starts from it as the run does.
+pub fn made_when_tied(name: &str) -> bool {
+    CALLS.contains(&name) || PASSES_EXTRA.contains(&name)
+}
+
 /// The leaves whose value the host supplies as the run starts (`Resolver::sourced`): the clock, the
 /// run's random bytes (as a number, or as they are), a secret, the file, the mail, the feed's
 /// event or the queue's message that started the run, a state key. Each computes nothing; the other reads (a collection's, a folder's, a database's, a

@@ -254,7 +254,7 @@ pub fn default_spec(
     // (`DID`): JavaScript runs the callback on each item when the call is reached.
     let tied_call = |ci: usize| {
         let child = resolved[ci];
-        matches!(&child.body, UnitBody::Primitive { name } if crate::CALLS.contains(&name.as_str()) || crate::PASSES_EXTRA.contains(&name.as_str()))
+        matches!(&child.body, UnitBody::Primitive { name } if crate::made_when_tied(name))
             && inner_edges.iter().any(|e| e.to_child as usize == ci && child.inputs.get(e.to_port as usize).is_some_and(|p| p.name == crate::TRIGGER))
     };
 

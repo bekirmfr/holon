@@ -13,7 +13,7 @@
 //
 // Evaluation itself is passed in (`evalNode`), so this is testable without a real evaluator.
 
-import { asksHostPrimitives, choiceNext, type WParam, type WPort, type WValue } from "./holon";
+import { asksHostPrimitives, choiceNext, madeWhenTied, type WParam, type WPort, type WValue } from "./holon";
 import { components } from "./derive";
 import { stable } from "./textSync";
 
@@ -704,14 +704,20 @@ export function replay(
 
   // The roots, as the unit the run ran has them: for a request, the respond node, every effect
   // left unwired, and any node nothing consumes; for a whole flow, every node with an output left
-  // unwired. Among them, the one the run evaluated first goes first, then canvas order.
+  // unwired. Either way, a call (or a list method doing something) tied to a trigger: core makes
+  // it when the trigger arrives, whatever reads its answer, even a branch not taken (core's
+  // `made_when_tied`, as `default_spec` exposes it). Among them, the one the run evaluated first
+  // goes first, then canvas order.
   const wiredOut = (n: ReplayNode, port: string) => wires.some((w) => w.source === n.id && w.sourceHandle === port);
+  const tiedCall = (n: ReplayNode) =>
+    n.data.body.kind === "Primitive" && wires.some((w) => w.target === n.id && w.targetHandle === "trigger") && madeWhenTied(n.data.name);
   const isRoot = (n: ReplayNode) =>
-    entry.kind === "request"
+    tiedCall(n) ||
+    (entry.kind === "request"
       ? !wires.some((w) => w.source === n.id) ||
         (n.data.name === "respond" && n.data.body.kind === "Template") ||
         n.data.outputs.some((p) => p.ty === "Effect" && !wiredOut(n, p.name))
-      : n.data.outputs.length === 0 || n.data.outputs.some((p) => !wiredOut(n, p.name));
+      : n.data.outputs.length === 0 || n.data.outputs.some((p) => !wiredOut(n, p.name)));
   const rank = (id: string) => {
     const i = executed.indexOf(id);
     return [i < 0 ? Infinity : i, group.findIndex((n) => n.id === id)];
@@ -909,7 +915,9 @@ export function replayVerdict(entry: VerdictRun, run: Pick<Replay, "order" | "tr
   });
   const waiting = (entry.parked?.length ?? 0) > 0;
   if (!waiting && respond && entry.outputs.length > 0) {
-    return JSON.stringify(run.traces.get(respond)?.outputs[0] ?? null) === JSON.stringify(entry.outputs[0]);
+    // Compared whatever order a record's keys come in: an effect the answer carries (a
+    // subscription's) is written by the log `payload` first, by the wasm `sink` first.
+    return stable(run.traces.get(respond)?.outputs[0] ?? null) === stable(entry.outputs[0]);
   }
   const ran = [...recorded].filter(([id]) => run.traces.has(id));
   return ran.length > 0 ? ran.every(([id, outputs]) => stable(run.traces.get(id)!.outputs) === stable(outputs)) : null;
