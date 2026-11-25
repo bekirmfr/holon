@@ -14,6 +14,8 @@ Current:
   per host capability. Each says how it works, why, how far it reaches and where it stops, and
   what the tests hold.
 - `../CLAUDE.md`: how work is done here (samples for every feature, commits).
+- `LICENSING.md`: Holon's license: the terms, where they ship, each choice and why, what is
+  still missing, and what to check before each release.
 - `PLATFORM_LAYOUT.md`: the current plan: one product, the crates, permissions (manifest, policy,
   grant, permit), effects that answer, runs that last, what has landed, and what comes next
   (§7: M3, the first outside job, and the bar for 0.1.0).
