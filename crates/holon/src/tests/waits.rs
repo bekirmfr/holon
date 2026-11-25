@@ -15,9 +15,10 @@
 //! listed as waiting, what it made before the wait ended and what after. It is held to the same
 //! run read as a flow reads it (`reads`, with JavaScript's reading beside it): where the two
 //! readings differ is one of Holon's own rules, counted; where the flow differs from its reading,
-//! the difference is owed under a named debt of reached (`reached.rs`), or the test fails.
+//! the test fails. (Two debts of reached were owed here until C6, a wait past a return that
+//! answered, or past a test with no value, still waiting: a wait now takes a trigger, tied to
+//! where its line is reached.)
 
-use super::reached::{Debt, A_FUNCTIONS_OWN_CONDITION, A_LISTS_FUNCTION_STARTS_PAST_A_RETURN, A_WAIT_PAST_AN_ANSWER_PARKS, A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS};
 use super::semantics::{grid_state_with, Block};
 use super::*;
 
@@ -414,58 +415,19 @@ fn run_one(state: &AppState, slug: &str, case: &Case, w: usize, input: &str, end
     Seen { caller, listed: !runs.is_empty(), before, after }
 }
 
-/// The debts of reached a run that differs is owed under, by its case and the difference: each
-/// explains the fields it moves, and the run is owed when none is left.
-fn debt(case: &Case, input: &str, did: &Seen, read: &Seen) -> Option<Vec<&'static Debt>> {
-    let mut owed = Vec::new();
-    let mut did = did.clone();
-    let row = row(case.above, input, false);
-    // A wait past a return that answered, or a test with no value, still waits where what stands
-    // past it uses what it gave and is a send, a mail, a queued message, a put, a request or a
-    // start: the caller is handed a waiting run, the run is listed as waiting, and nothing past the
-    // wait is made.
-    let parks = matches!(case.past, "c" | "m" | "q" | "p" | "r" | "s") && case.uses && did.listed && !read.listed;
-    let parked = match row {
-        Row::Returns(_) if parks => Some(&A_WAIT_PAST_AN_ANSWER_PARKS),
-        Row::Ends if parks => Some(&A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS),
-        _ => None,
-    };
-    // Such a run waits at the first wait alone: a second's link is refused, and answering the
-    // first makes nothing.
-    let first = format!("its link at {} ", case.wait.points[0]);
-    if let Some(debt) = parked.filter(|_| did.after.split(" (").next() == Some("") && !did.after.contains(&first)) {
-        did.listed = false;
-        did.caller = read.caller.clone();
-        did.after = read.after.clone();
-        owed.push(debt);
-    }
-    (did == *read && !owed.is_empty()).then_some(owed)
-}
-
 /// Flows the reader takes and `lang::compile` refuses, as their steps written back as text read
 /// as another flow: each debt, and the cases owed under it.
 type Owes = fn(&Case) -> bool;
 const ROUND_TRIP_DEBTS: &[(&str, Owes)] = &[
-    // Found by this grid (2026-11-23): a row of returns above the wait and a collection's put past
-    // it, using what the wait gave or not, started however: "action pay answers before its first
-    // wait in a shape the text can't write (its text reads back as another action)".
-    (A_PUT_PAST_A_WAIT_READS_BACK_AS_ANOTHER_ACTION, |c| c.past == "p" && c.above != "nothing"),
-    // Reached's debts whose smallest flow the round trip refuses, as the handler grid owes them: a
-    // function that starts the action, and a list's function that does.
-    (A_FUNCTIONS_OWN_CONDITION.name, |c| c.starter == "a function"),
-    (A_LISTS_FUNCTION_STARTS_PAST_A_RETURN.name, |c| c.starter == "a list's function"),
+    // Struck by C11 (2026-11-25): "the printer writes a put past a wait, below a row of returns,
+    // as another action" (108 flows). It wrote `marks.put(k, v)` as `marks[k] = v`, whose value
+    // reads back held to the returns not taken; it writes the method where the value isn't held
+    // (print.rs `EarlyAnswers::methods`).
 ];
 
-/// The round-trip debt this grid found.
-const A_PUT_PAST_A_WAIT_READS_BACK_AS_ANOTHER_ACTION: &str = "the printer writes a put past a wait, below a row of returns, as another action";
-
-/// The debts this grid can owe.
-const DEBTS: &[&Debt] = &[&A_WAIT_PAST_AN_ANSWER_PARKS, &A_WAIT_PAST_A_TEST_WITH_NO_VALUE_PARKS];
-
-/// A kind of finding: a debt owed, or one of a flow's own rules shown.
+/// A kind of finding: one of a flow's own rules shown.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Kind {
-    Debt(&'static str),
     OwnRule(&'static str),
 }
 
@@ -475,14 +437,13 @@ const EXPIRED_GIVES_NOTHING: &str = "a value an expired wait doesn't give isn't 
 
 impl Kind {
     fn all() -> impl Iterator<Item = Kind> {
-        DEBTS.iter().map(|d| Kind::Debt(d.name)).chain([NO_VALUE_ENDS, EXPIRED_GIVES_NOTHING].map(Kind::OwnRule))
+        [NO_VALUE_ENDS, EXPIRED_GIVES_NOTHING].into_iter().map(Kind::OwnRule)
     }
 }
 
 impl std::fmt::Display for Kind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Kind::Debt(name) => write!(f, "debt \"{name}\""),
             Kind::OwnRule(rule) => write!(f, "own rule: {rule}"),
         }
     }
@@ -499,12 +460,12 @@ fn runs_of(case: &Case) -> Vec<(usize, &'static str)> {
 /// caller `{answer, run}` and leaves nothing waiting; otherwise its caller is answered `{run,
 /// waiting}` (a token for each event), the run is listed as waiting, and what stands past the wait
 /// is made once the wait is answered or runs out, never before; a test with no value ends it.
-/// Each run is held to the same run as a flow reads it, and every difference from that is owed
-/// under a named debt of reached.
+/// Each run is held to the same run as a flow reads it; a difference from that fails.
 ///
 /// **Why:** a wait parks the run where its graph's trigger says, not where its text's order does:
-/// a statement past the wait tied to the wait alone asks for it in a run that already answered
-/// (R162), and a send using the wait's value parks a run that returned (reached's debt).
+/// a statement past the wait tied to the wait alone asked for it in a run that already answered
+/// (R162), and a send using the wait's value parked a run that returned, until the wait took a
+/// trigger of its own (C6).
 ///
 /// **If it fails:** a line names the case (what stands above the wait, the wait, what stands past
 /// it, what started it), the input, how the wait ended, what the run did, and what it reads as.
@@ -554,7 +515,6 @@ fn an_action_that_waits_does_what_its_text_says() {
         runs: usize,
         as_javascript: usize,
         by_rule: BTreeMap<&'static str, usize>,
-        owed: BTreeMap<&'static str, usize>,
         wrong: Vec<String>,
         seen: BTreeMap<Kind, String>,
         lines: Vec<String>,
@@ -594,15 +554,7 @@ fn an_action_that_waits_does_what_its_text_says() {
                                 }
                                 continue;
                             }
-                            match debt(case, input, &did, &read) {
-                                Some(owing) => {
-                                    for d in owing {
-                                        *t.owed.entry(d.name).or_default() += 1;
-                                        saw(&mut t, Kind::Debt(d.name));
-                                    }
-                                }
-                                None => t.wrong.push(format!("{} | the flow did: {did} | it reads as: {read} | JavaScript: {js}", at())),
-                            }
+                            t.wrong.push(format!("{} | the flow did: {did} | it reads as: {read} | JavaScript: {js}", at()));
                         }
                         assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
                         assert_eq!(route(&state, &req("DELETE", &format!("/deployments/{slug}"), vec![])).status_code, 200);
@@ -619,7 +571,6 @@ fn an_action_that_waits_does_what_its_text_says() {
         all_t.runs += t.runs;
         all_t.as_javascript += t.as_javascript;
         t.by_rule.into_iter().for_each(|(k, n)| *all_t.by_rule.entry(k).or_default() += n);
-        t.owed.into_iter().for_each(|(k, n)| *all_t.owed.entry(k).or_default() += n);
         all_t.wrong.extend(t.wrong);
         t.seen.into_iter().for_each(|(k, at)| {
             all_t.seen.entry(k).or_insert(at);
@@ -631,20 +582,15 @@ fn an_action_that_waits_does_what_its_text_says() {
         std::fs::write(path, all_t.lines.join("\n") + "\n").unwrap();
     }
     let by_rule: usize = all_t.by_rule.values().sum();
-    let owed: usize = all_t.owed.values().sum();
-    println!("waits: {} cases, {} the language takes, {} runs: {} as JavaScript, {by_rule} by a flow's own rule, {owed} owed, {} wrong", all.len(), taken.len(), all_t.runs, all_t.as_javascript, all_t.wrong.len());
+    println!("waits: {} cases, {} the language takes, {} runs: {} as JavaScript, {by_rule} by a flow's own rule, {} wrong", all.len(), taken.len(), all_t.runs, all_t.as_javascript, all_t.wrong.len());
     for (rule, n) in &all_t.by_rule {
         println!("  {n:5} runs by the rule: {rule}");
-    }
-    for (debt, n) in &all_t.owed {
-        println!("  {n:5} runs owed under \"{debt}\"");
     }
     for (kind, at) in &all_t.seen {
         println!("  kind: {kind} | first at {at}");
     }
     assert!(all_t.wrong.is_empty(), "{} runs don't do what their text says:\n{}", all_t.wrong.len(), all_t.wrong.join("\n"));
-    // Every kind still shows: a debt that shows nowhere is paid, and is struck; a rule that shows
-    // nowhere means the grid lost the run that showed it.
+    // Every kind still shows: a rule that shows nowhere means the grid lost the run that showed it.
     let lost: Vec<String> = Kind::all().filter(|k| !all_t.seen.contains_key(k)).map(|kind| format!("{kind}: shows nowhere: strike it, or the grid lost the run that showed it")).collect();
     assert!(lost.is_empty(), "{} kinds of finding show nowhere:\n{}", lost.len(), lost.join("\n"));
 }

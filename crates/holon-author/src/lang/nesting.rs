@@ -1045,7 +1045,7 @@ mod tests {
     /// printer nests; a try's statements; calls and templates past fmt's layout bound
     /// ([`format::MAX_LAYOUT_NESTING`]); sums, powers and negations with the parentheses fmt adds.
     /// The forms not here are written back as deep as the reader takes them.
-    const WRITTEN_BACK: &[(&str, usize)] = &[("returns", 25), ("writes", 41), ("tries", 59), ("calls", 21), ("templates", 21), ("powers", 62), ("negations", 122), ("sums", 123), ("ifs", 61)];
+    const WRITTEN_BACK: &[(&str, usize)] = &[("returns", 25), ("writes", 41), ("tries", 60), ("calls", 21), ("templates", 21), ("powers", 62), ("negations", 122), ("sums", 123), ("ifs", 61)];
 
     /// Guards: the round trip's own bound is what [`WRITTEN_BACK`] says, form by form: one level
     /// shallower is taken, and at it the text is refused cleanly (`agree::TOO_DEEP`) though the
@@ -1062,7 +1062,7 @@ mod tests {
                     panic!("{name}, {} deep: refused: {e}", n - 1);
                 }
                 assert!(ts::compile(&form(n)).is_ok(), "{name}, {n} deep: the reader alone refuses it");
-                let said = crate::lang::compile(&form(n)).map(|_| ()).unwrap_err().message;
+                let said = crate::lang::compile(&form(n)).map(|_| ()).err().unwrap_or_else(|| panic!("{name}, {n} deep: taken, where the way back was to refuse it")).message;
                 assert_eq!(said, crate::lang::agree::TOO_DEEP, "{name}, {n} deep");
             }
         };

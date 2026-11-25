@@ -24,6 +24,8 @@ import init, {
   variadic_primitives,
   passes_extra_primitives,
   asks_host_primitives,
+  made_when_tied,
+  held_step,
   always_tainted,
   is_taint_key,
   family_params,
@@ -111,7 +113,8 @@ export type WValidationError =
   | { kind: "Module"; message: string }
   | { kind: "FamilyParam"; leaf: string; param: string; value: string | null; message: string }
   | { kind: "UnknownLeaf"; leaf: string; message: string }
-  | { kind: "LeafPorts"; leaf: string; message: string };
+  | { kind: "LeafPorts"; leaf: string; message: string }
+  | { kind: "Untied"; child: number; message: string };
 
 /** A promotion choice: which inner (child, port) input becomes a boundary input, and what
  *  it's named. Mirrors `core::Promote`. */
@@ -283,6 +286,26 @@ export function passesExtraPrimitives(): Set<string> {
  */
 export function asksHostPrimitives(): Set<string> {
   return new Set(asks_host_primitives() as string[]);
+}
+
+/**
+ * Whether leaf `name`, tied to a trigger, is made when the trigger arrives, whatever reads its
+ * answer (core's `made_when_tied`: a call, or a list method whose function does something). The
+ * run starts from such a leaf, so a replay does too. Call after {@link ensureReady}.
+ */
+export function madeWhenTied(name: string): boolean {
+  return made_when_tied(name);
+}
+
+/**
+ * Whether a step is held back, so the run didn't run it (core's `held`, the one rule): its
+ * trigger left unwired, or it is a leaf that holds back (one that does something, or has optional
+ * ports) and an input wired to it didn't arrive. `leaf` is its primitive's name ("" for any other
+ * node); `ports` its inputs' names; `wired` and `arrived` one per port. Call after
+ * {@link ensureReady}.
+ */
+export function heldStep(leaf: string, ports: string[], wired: boolean[], arrived: boolean[]): boolean {
+  return held_step(leaf, ports, Uint8Array.from(wired.map(Number)), Uint8Array.from(arrived.map(Number)));
 }
 
 /**

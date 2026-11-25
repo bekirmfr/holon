@@ -11,23 +11,135 @@
   to read, export and verify run records. The flows you write, the files Holon writes into your
   projects and the samples are yours to use as you like. Releases and the VS Code extension now
   carry `THIRD-PARTY-NOTICES.md`, the licenses of the software Holon is built with (written by
-  `.github/third-party-notices.mjs`). Who notices: anyone deciding whether they may use Holon; a larger organization using it beyond an
-  evaluation, which now needs a commercial license.
+  `.github/third-party-notices.mjs`).
+  Who notices: anyone deciding whether they may use Holon; a larger organization using it beyond
+  an evaluation, which now needs a commercial license.
+
+- **A `try` keeps what it did before the line that failed, as JavaScript's does.** In
+  `try { state.tried = (state.tried ?? 0) + 1; const body = JSON.parse(req.body); … } catch { … }`,
+  a body that isn't JSON used to leave `tried` as it was: a try that failed kept none of its
+  writes. Now the count is written, as JavaScript writes it, and what comes after the failing line
+  still isn't. The same holds for a send, a start, a collection item put or deleted, and a write
+  made inside a function the try calls. A name or a state key the block changes holds the last
+  value it was given on a line that was reached, so the catch, and the code after the `try`, see
+  what the block left (before, the catch saw them as they were before the `try`). A state key
+  written above the failing line and again below it keeps the first value. The new `signup`
+  sample shows it.
+  Who notices: someone whose `try` block writes, sends, puts, deletes or starts something above a
+  line that can fail; that is now made when the line fails. A try whose writes all come after its
+  last line that can fail does what it did. Flows with a `try` get a new fingerprint.
+
+- **A step reached in a branch is shown in its `if`.** The text the canvas, the step view and
+  `explain` show for a flow wrote a send, a request, a start, a log line or a call of the flow's
+  own function made only in a branch as `const guard = c ? true : undefined` and
+  `if (guard !== undefined) …`. It now writes `if (c) …`, as the flow's text does. An action
+  whose `marks.put(k, v)` comes after a wait, below a row of `if (test) return …`, was refused
+  ("its text reads back as another action"); it is taken now. No flow answers or does anything
+  differently, and no fingerprint changes.
+  Who notices: someone reading a flow on the canvas or in the step view; and someone whose action
+  writes by `put` after a wait below a return, which the check refused.
+
+- **A wait below a return that answered isn't waited at.** In `if (input.stop) return "stopped"`
+  above `const ok = await event("approved", …)`, with `updates.send({ by: ok.by })` past it, a
+  run started with `{"stop":true}` answered its caller a waiting link and stayed listed as
+  waiting until the wait ran out; now it answers `{answer: "stopped", run}` and nothing waits, as
+  the return says. The same for a test above the wait that has no value, which ends the run: it
+  no longer parks. A wait is a step that does something now: like a write, it takes a trigger,
+  tied to where its line is reached, so it is asked only there. Where no return above it is taken,
+  nothing changes: every wait of an action is still asked as the run begins.
+  Who notices: an action with a return above its wait whose steps past the wait use what the
+  wait gave; it stops parking runs that answered. Actions that wait get a new fingerprint, and the
+  wait's box on the canvas has a trigger input, tied like a write's.
+
+- **A step that does something and is tied to nothing never runs.** A write, a send, a request,
+  a start or a placed function with one of those inside takes a tie to what starts it. Left with
+  nothing wired there, it used to run with every run; now it never runs, and the check refuses
+  the flow: "child 3 (store_write) has nothing wired to its trigger, so it would never run: tie it
+  to what reaches it". A flow written as text always ties each one, so no text flow and no
+  sample changes. Who notices: someone who builds a flow on the canvas and drops a write on a
+  canvas with no route, clock or other start to tie it to; the editor marks it as an error.
+
+- **"Did a value arrive?" is one step, `has_value`.** After a `try`, a wait or a parse, the
+  test whether a value arrived was two steps (`same_value(x, x) ?? false`), drawn on the canvas as
+  a doubled wire into a `default`. It is now one step, `has_value(x)`: true when `x` arrived
+  (`false`, `0` and `NaN` included), false when it did not, never nothing. A text may use it
+  too: `import { has_value } from "holon"`. No flow answers or does anything differently.
+  Who notices: a flow that waits or has a `try` gets a new fingerprint, and its canvas shows one
+  `has_value` box where the pair was.
+
+- **A `finally` below a `return` that answered isn't run.** `if (req.json.stop) return "stopped"`
+  above a `try { … } finally { ++state.fin }` still wrote `state.fin` when `stop` was true, and so
+  did a `try` without a `catch`; now neither the `try` nor its `finally` is run there, as in
+  JavaScript. Where the `try` is reached, the `finally` runs whatever the `try` or `catch`
+  returned, as before.
+  Who notices: a flow with a `finally` (or a `try` without a `catch`) after a `return` that
+  can answer; it stops writing there.
+
+- **A request or a start in a branch is made where the branch is taken, read or not.** `const got
+  = req.json.c ? ping(req.json) : 0`, with `got` read only in a branch not taken (`return
+  req.json.d ? got : "no"`), started nothing for `{"c":true,"d":false}`; JavaScript starts
+  `ping`, and so does the flow now. The same holds for a request, inside a function's `?:`,
+  `&&`, `||` and `??`, and one call deeper (`function maybe(x) { return x ? ping(x) : 0 }`).
+  A branch not taken still makes no call.
+  Who notices: a flow that makes a call in a branch and reads its answer only somewhere not
+  always taken; it now makes the call where JavaScript would. The samples do the same as before.
+
+- **A list method's function may write, send, ask a host or start an action, once per item.** A
+  write, a put, a send, a log line, a request or a start inside the function given to `map`,
+  `filter`, `find`, `some`, `every`, `reduce`, `toSorted`, `Object.groupBy`, a `JSON.parse` reviver
+  and the others was refused ("the function given to map has a write, a request or a start"), and a
+  flow deployed before that refusal lost the write or made the start below a `return` that had
+  answered. Now each is made once per item, in the order JavaScript calls the function: `find`,
+  `some` and `every` stop at the item that decides, `findLast` goes from the last item, and an item
+  whose function gives nothing stops the items after it. For example, `const asked =
+  req.json.lines.map((line) => reorder(line))`, where `reorder` posts to a supplier and puts the
+  line in a collection, makes one request and one put per line, the first line's first (the
+  `restock` sample). The list call is reached as any step that does something: below a `return`
+  that answered it makes nothing, and bound to a name read only in a branch not taken it is made,
+  as JavaScript makes it. A list of 10,000 items whose function asks a host fails the run before
+  anything is sent (`max_requests`, 50 by default).
+  Who notices: nobody's flow changes, since such a flow was refused; a new one can be written.
+
+- **`&&` and `||` around a function that does something are taken.** `const got = req.json.c &&
+  await ask("a")`, where `ask` sends a request, was refused ("written back from its steps, this
+  text reads as another flow"); so was the same around a function with a `try` of its own, or one
+  whose doings sit under its own `if`. It is taken now, and the function is called where the left
+  side is truthy (`||`: falsy), as JavaScript calls it.
+  Who notices: nobody's flow changes, since such a flow was refused.
+
+- **A function whose request's answer nobody reads is taken.** `async function ping(x) { const
+  sent = await api.post("/in", { body: x }); return 1 }` was refused ("written back from its
+  steps, this text reads as another flow"), also under the function's own `if`. It is taken now,
+  and the request is made where the function's call is reached.
+  Who notices: nobody's flow changes, since such a flow was refused.
+
+- **What a function of the flow does is done only where its call is reached.** A write, a send, a
+  request or a start inside one of the flow's own functions, under the function's own `if`, below
+  its own `return`, in its own `try` or in a branch of its own `?:`, was made though the call of the
+  function sat under an `if` that didn't hold. For example, `function bump(x) { if (x) {
+  news.send({ n: x }) } return x + "!" }`, called in a route as `if (req.json.go) { const b =
+  bump(req.json.a) }`, sent on `news` for `{"go":false,"a":"x"}`; now it sends nothing, as
+  JavaScript would. Functions that start an action are taken again (`function ask(x) { if (x) {
+  ping(x) } return 1 }`, refused since the change below), and do so only where they are called:
+  this fixes the second known limit of 0.1.0-rc.37 (an `if` around a call to one of the flow's
+  own functions).
+  Who notices: a flow with a function that does something under its own conditions; its steps
+  and its fingerprint change on its next deploy. Deployed already, it keeps running as before
+  until it is deployed again.
+
 - **A text is taken only if the canvas can write it back as the same flow.** Holon reads a text
   into steps, and writes steps back as text for the canvas and `holon fmt`. The two could
   disagree: some texts were taken whose steps can't be written back, and some of those steps
   didn't do what the text says. Now every reading of a text (the editor, `holon check` and
   `deploy`, an agent's check, the text shown for a version) writes the steps back and reads them
   again, and refuses the text when that fails or gives other steps, saying what to change. These
-  ran before and are now refused: a function of the flow that starts another flow's action; a
+  ran before and are now refused: a
   write, a request or a start inside a list method's function, so one request per item of a list
   (`items.map((item) => api.get(...))`) is refused too; an action awaiting its own flow's action;
   `&&` or `||` around an awaited function of the flow (`const got = req.json.c && await ask(x)`);
   and very long or deep handlers, from about 25 early returns in a row, 41 writes each under its
-  own `if`, or calls nested 21 deep. For example, `function ask(x) { if (x) { ping(x) } return 1
-  }` is refused with `the function "ask" starts another flow's action: a function only computes,
-  so start it in the route or action that calls "ask"`, which closes the second known limit of
-  0.1.0-rc.37. A handler that is too long says `this flow is too long or too deeply nested to be
+  own `if`, or calls nested 21 deep. (A function of the flow that starts an action was refused
+  here too, until the change above.) A handler that is too long says `this flow is too long or too deeply nested to be
   shown back as text: split the handler, or name parts of it with a const or a function`. Who
   notices: a flow written in one of these ways no longer checks or deploys; deployed already, it
   keeps running. The samples are not affected.

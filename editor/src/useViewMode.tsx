@@ -7,31 +7,22 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { Edge } from "@xyflow/react";
-import { buildPreimage, passesExtraPrimitives, readsFromOutside, type Evaluator, type WUnit, type WValue } from "./holon";
+import type { Evaluator, WUnit } from "./holon";
 import { FAIL, type PrimitiveNodeType } from "./PrimitiveNode";
-import { unitFor } from "./canvasUnits";
 import { restoreDocument } from "./docUnits";
 import { valueChip } from "./diagnostics";
 import {
   collectionsAtStep,
   diagnose,
   heldEffects,
-  executionOrder,
   innerSteps,
   nodeExchanges,
-  nodeOutputs,
   nodeTimings,
-  recordedReads,
-  recordedResponses,
-  replay,
-  replayVerdict,
   failureWire,
-  runGroup,
-  sameNodesRan,
   stateAtStep,
   whyNotRun,
-  type ReplayNode,
 } from "./replay";
+import { replayAsViewed } from "./viewReplay";
 import { printHolon } from "./holonText";
 import { getDeployedDocument, getRun, wholeRun, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
 import { BottomPane, type InsideStep, type InspectorRun } from "./ViewPanes";
@@ -121,57 +112,17 @@ export function useViewMode(input: ViewModeInput) {
         ? `shown on the version it ran on (${viewUnit.slice(0, 8)}…), an earlier deploy`
         : "";
 
-  // One node of a replay: its unit, evaluated on the inputs its wires brought.
-  const evalNode = useCallback(
-    (node: ReplayNode, inputs: (WValue | null)[]): (WValue | null)[] => {
-      try {
-        const hash = unitFor(node as PrimitiveNodeType, ev);
-        return ev.eval(buildPreimage(ev.get_unit(hash) as WUnit), inputs) as (WValue | null)[];
-      } catch {
-        return node.data.outputs.map(() => null);
-      }
-    },
-    [ev],
-  );
-
   // The selected run, replayed on the canvas; and whether that reproduced what the server sent.
   const replayed = useMemo(() => {
     if (!viewing || !selectedRun) return null;
     const { nodes: ns, edges: es } = live.current;
-    // Outbound requests are answered from the run's record, never the network.
-    const run = replay(
-      ns,
-      es,
-      selectedRun,
-      evalNode,
-      new Map([...recordedResponses(nodeExchanges(selectedRun, viewTrace)), ...recordedReads(selectedRun, viewTrace)]),
-      nodeOutputs(selectedRun, viewTrace),
-      // Stepped through in the order the run evaluated its nodes.
-      executionOrder(nodeTimings(selectedRun, viewTrace)),
-      // A holon reading from outside within itself replays from what the run recorded.
-      // So does a map, fold or other higher-order leaf whose function reads from outside.
-      (node) => {
-        const { body, name, params } = (node as PrimitiveNodeType).data;
-        const fn = body.kind === "Primitive" && passesExtraPrimitives().has(name) ? params.find((p) => p.kind === "Frozen" && p.name === "fn") : undefined;
-        const hash = body.kind === "Composite" ? body.hash : fn?.kind === "Frozen" ? fn.value : "";
-        if (!hash) return false;
-        try {
-          return readsFromOutside(ev.capability_names(hash) as string[]);
-        } catch {
-          return true;
-        }
-      },
-    );
+    const run = replayAsViewed(ns, es, selectedRun, viewTrace, ev);
     // Why it failed, and the effects it held and didn't make, as the server noted each.
     const diagnosis = diagnose(ns, es, selectedRun, run, heldEffects(selectedRun, viewTrace, ns));
-    // It ran the nodes the run ran (a branch the run took, the replay took), where the timeline
-    // can tell.
-    const ranSame = sameNodesRan(runGroup(ns, es, selectedRun), run, nodeTimings(selectedRun, viewTrace), (selectedRun.parked?.length ?? 0) > 0);
-    const verdict = replayVerdict(selectedRun, run, ns, nodeOutputs(selectedRun, viewTrace), ranSame);
-    return { ...run, verdict, diagnosis };
+    return { ...run, diagnosis };
     // live.current is read on purpose: canvasKey changes exactly when the structure does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewing, selectedRun, canvasKey, evalNode, viewTrace, ev]);
+  }, [viewing, selectedRun, canvasKey, viewTrace, ev]);
 
   // Show a node on the canvas and in the side pane: what "show where it failed" does.
   const showNode = useCallback(
@@ -396,7 +347,7 @@ export function inspectorRun(view: ViewMode, flow: FlowMeta): InspectorRun | nul
     changed: view.flowState.changed,
     collections: view.collections,
     trace: trace && inspectNode ? { ...trace, issue: replayed?.diagnosis?.issues.get(inspectNode) } : undefined,
-    notRun: inspectNode && replayed?.notRun.has(inspectNode) ? whyNotRun(view.viewNodes, replayed.notRun.get(inspectNode)!) : undefined,
+    notRun: inspectNode && replayed?.notRun.has(inspectNode) ? whyNotRun(view.viewNodes, replayed.notRun.get(inspectNode)!, replayed.held?.get(inspectNode)) : undefined,
     timing: inspectNode ? view.timings.get(inspectNode) : undefined,
     inside: view.inside,
     openRun: view.openRun,

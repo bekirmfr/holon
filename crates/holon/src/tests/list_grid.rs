@@ -8,23 +8,21 @@
 //! grid crosses the ways a list call is reached (`SHAPES`) with the methods that take a function
 //! (`METHODS`, core's `PASSES_EXTRA` each reached by one), where the effect is written in the
 //! function (`FORMS`) and its kind (`EFFECTS`), and runs each handler once, on one request, as
-//! the flow and as JavaScript with the try's promise (a failed try block keeps nothing but the
-//! requests it asked, docs/LANGUAGE.md §6.5) written as JavaScript, as the handler grid has it.
+//! the flow and as JavaScript. A try works as JavaScript's (docs/LANGUAGE.md §6.5a): a failed
+//! block keeps what it did above the line that failed, so nothing is written for it.
 //!
 //! What is compared is what each made, kind by kind, in the order made: each entry its kind and
 //! the item it carries (`c:zz2`). Answers aren't compared: this is a grid of reached. The order
 //! between kinds isn't either (a run's record keeps its requests, its writes and its starts
 //! apart).
 //!
-//! The grid is the review session's list block's idea (its methods, forms and the try's promise),
-//! written again for this branch, where a list's function doesn't yet make what it says (L), with
-//! section E's rows added: a list in a list's function, in a catch, in a finally, and on both
-//! sides of `&&`, `||` and `??`. A wait is left out.
+//! The grid is the review session's list block's idea (its methods, forms and tries),
+//! written again for the reached branch, with section E's rows added: a list in a list's function,
+//! in a catch, in a finally, and on both sides of `&&`, `||` and `??`. A wait is left out. Since C3
+//! a list's function hands out what it makes (core's `did`) and its list call is tied as any step
+//! that does something, so the grid compares what each made where the text says.
 
-use super::reached::{
-    Debt, A_FIND_LAST_GOES_IN_ITEM_ORDER, A_FOLD_STOPS_AT_NOTHING, A_LISTS_FUNCTION_GOES_PAST_A_FAILURE, A_LISTS_FUNCTION_LOSES_ITS_WRITE, A_LISTS_FUNCTION_STARTS_PAST_A_RETURN, A_REVIVERS_NOTHING_IS_NULL,
-};
-use super::semantics::THE_STARTED_HALF;
+use super::reached::{Debt, A_FOLD_STOPS_AT_NOTHING, A_LISTS_FUNCTION_GOES_PAST_A_FAILURE, A_REVIVERS_NOTHING_IS_NULL};
 use super::*;
 
 /// The items a list holds, and a request holding them, `bad` no JSON for a try block to fail on.
@@ -236,17 +234,15 @@ struct JsDid {
     answer: String,
 }
 
-/// What JavaScript does with each of `handlers` on `LIST_REQUEST`, with the try's promise written
-/// as JavaScript (`mark`, `undo`, which keeps the requests asked). Its stand-in for a host answers
+/// What JavaScript does with each of `handlers` on `LIST_REQUEST`. Its stand-in for a host answers
 /// at once, so a function that waits on one is written without the wait.
 fn javascript_does(handlers: &[&ListCase]) -> Vec<JsDid> {
     let made: Vec<String> = handlers
         .iter()
         .map(|c| {
             let (body, function) = c.parts("each");
-            let undone = |t: &str| t.replace("try {\n", "const TM = mark()\ntry {\n").replace("} catch {\n", "} catch {\nundo(TM)\n");
-            let text = format!("{}\n{}", functions(&[c]), undone(&function)).replace("async function", "function").replace("await ", "");
-            format!("(env) => {{\nconst {{ state, marks, news, jobs, ops, console, ping, api, mark, undo }} = env;\n{text}\nreturn (req) => {{\n{}\n}}\n}}", undone(&body))
+            let text = format!("{}\n{}", functions(&[c]), function).replace("async function", "function").replace("await ", "");
+            format!("(env) => {{\nconst {{ state, marks, news, jobs, ops, console, ping, api }} = env;\n{text}\nreturn (req) => {{\n{}\n}}\n}}", body)
         })
         .collect();
     let source = r#"(req) => {
@@ -272,13 +268,6 @@ fn javascript_does(handlers: &[&ListCase]) -> Vec<JsDid> {
       console: { log: (x) => { fx.push("l:" + x) } },
       ping: (a) => { fx.push("s:" + a.n); return { run: "r" } },
       api: { post: (path, o) => { fx.push("r:" + o.body); return { status: 200 } } },
-      mark: () => [fx.length, Object.assign({}, st)],
-      undo: ([n, kept]) => {
-        // A request asked is asked: the try's promise holds back what it made, not what it asked.
-        fx.push(...fx.splice(n).filter((e) => e.startsWith("r:")));
-        for (const k of Object.keys(st)) delete st[k];
-        Object.assign(st, kept);
-      },
     };
     let answer, threw = false;
     try { answer = make(env)(req) } catch (e) { answer = "threw " + e; threw = true }
@@ -350,10 +339,7 @@ fn flow_does(state: &AppState, slug: &str, i: usize, seen: &mut Option<u64>) -> 
 /// The debts a list handler that differs is owed under, each matched by the one difference it
 /// names; any other difference fails.
 const LIST_DEBTS: &[&Debt] = &[
-    &A_LISTS_FUNCTION_LOSES_ITS_WRITE,
-    &THE_STARTED_HALF,
     &A_LISTS_FUNCTION_GOES_PAST_A_FAILURE,
-    &A_FIND_LAST_GOES_IN_ITEM_ORDER,
     &A_REVIVERS_NOTHING_IS_NULL,
     &A_FOLD_STOPS_AT_NOTHING,
 ];
@@ -369,13 +355,13 @@ fn per_kind(made: &str) -> BTreeMap<&str, Vec<&str>> {
 }
 
 /// What a comparator's calls make is left to the engine: JavaScript doesn't say how often or in
-/// what order `toSorted` calls its function, so a start or a request there is not compared (the
-/// others, dropped under L, are). The text without them, and whether any were there.
+/// what order `toSorted` calls its function, so what it makes there, of any kind, is not compared.
+/// The text without it.
 fn without_a_comparators_calls(case: &ListCase, made: &str) -> String {
     if case.method != "toSorted" {
         return made.to_string();
     }
-    made.split(' ').filter(|e| !e.starts_with("s:") && !e.starts_with("r:")).collect::<Vec<_>>().join(" ")
+    String::new()
 }
 
 /// The debts (`LIST_DEBTS`) a differing list handler is owed under, kind by kind: each kind that
@@ -384,8 +370,6 @@ fn list_debt(case: &ListCase, made: &str, answer: &str, js: &JsDid) -> Option<Ve
     let (ours, theirs) = (per_kind(made), per_kind(&js.made));
     let kinds: BTreeSet<&str> = ours.keys().chain(theirs.keys()).copied().collect();
     let fails = case.form.starts_with("fails at");
-    // A try block that fails: the shape's, or the shape's try around a function that fails.
-    let failing_try = case.shape == "in a try that then fails" || (fails && case.shape.starts_with("in a try") && !case.shape.ends_with("not taken"));
     let mut owed: Vec<&'static Debt> = Vec::new();
     let mut owe = |d: &'static Debt| {
         if !owed.iter().any(|o| o.name == d.name) {
@@ -398,20 +382,9 @@ fn list_debt(case: &ListCase, made: &str, answer: &str, js: &JsDid) -> Option<Ve
         if o == t {
             continue;
         }
-        fn sorted<'a>(v: &[&'a str]) -> Vec<&'a str> {
-            let mut v = v.to_vec();
-            v.sort();
-            v
-        }
         // The flow went on from where JavaScript stopped: JavaScript's items, then more.
         let goes_on = o.len() > t.len() && o.starts_with(t);
-        if "wpcqml".contains(kind) && o.is_empty() {
-            owe(&A_LISTS_FUNCTION_LOSES_ITS_WRITE);
-        } else if kind == "s" && failing_try && t.is_empty() {
-            owe(&THE_STARTED_HALF);
-        } else if case.method.starts_with("findLast") && sorted(o) == sorted(t) {
-            owe(&A_FIND_LAST_GOES_IN_ITEM_ORDER);
-        } else if fails && goes_on && case.method.starts_with("JSON.") && answer.contains("null") {
+        if fails && goes_on && case.method.starts_with("JSON.") && answer.contains("null") {
             owe(&A_REVIVERS_NOTHING_IS_NULL);
         } else if fails && goes_on {
             owe(&A_LISTS_FUNCTION_GOES_PAST_A_FAILURE);
@@ -427,12 +400,8 @@ fn list_debt(case: &ListCase, made: &str, answer: &str, js: &JsDid) -> Option<Ve
 /// Handlers the reader takes and `lang::compile` refuses: each debt, and the cases owed under it.
 type Owes = fn(&ListCase) -> bool;
 const ROUND_TRIP_DEBTS: &[(&str, Owes)] = &[
-    // A list in a list's function: the inner arrow uses `xs` from around it.
-    ("the printer can't write a list's function that uses values from around it", |c| c.shape == "in a list's function"),
-    // Reached's debts whose smallest flow the round trip refuses (reached.rs, `Today::Refused`):
-    // a start in a list's function is R173's, anything else it makes L's.
-    (A_LISTS_FUNCTION_STARTS_PAST_A_RETURN.name, |c| c.kind == "s"),
-    (A_LISTS_FUNCTION_LOSES_ITS_WRITE.name, |_| true),
+    // Struck by C3 (2026-11-24): "the printer can't write a list's function that uses values from
+    // around it" (a list in a list's function, the inner arrow using `xs`), written back since.
 ];
 
 /// **Guards:** a list method's function makes what the functions it calls make, once per item it
@@ -483,10 +452,7 @@ fn a_list_methods_function_makes_what_it_says_item_by_item() {
         let text = flow_text("probe", 23000, &host, &[(*i, c)]);
         if holon_author::lang::ts::compile(&text).is_ok() && holon_author::lang::compile(&text).is_err() {
             read_alone.push((*i, c));
-            // The round trip's two refusals here: what a list's function makes, which it can't
-            // hold back (L, R173), and a list's function using values from around it.
-            let said = e.contains("has a write, a request or a start") || e.contains("uses values from around it");
-            match ROUND_TRIP_DEBTS.iter().find(|(_, owes)| owes(c)).filter(|_| said) {
+            match ROUND_TRIP_DEBTS.iter().find(|(_, owes)| owes(c)) {
                 Some((debt, _)) => *round_trip_owed.entry(debt).or_default() += 1,
                 None => wrong.push(format!("{} | {} | {} | {} | the canvas can't write it back: {}", c.shape, c.method, c.form, c.kind, e.lines().next().unwrap_or(""))),
             }

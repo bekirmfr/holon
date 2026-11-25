@@ -1213,6 +1213,7 @@ fn a_run_that_failed_opens_on_why_and_on_which_line() {
         notes: [(6, vec!["⇒ nothing: closest gave nothing: out of fuel".to_string()]), (7, vec!["⇒ nothing: closest gave nothing: out of fuel".to_string()])].into_iter().collect(),
         after: vec!["answered 500: ".into(), "failed: closest gave nothing".into()],
         steps: vec![],
+        not_run: vec![],
     };
     let entry = serde_json::json!({ "seq": 3, "kind": "request", "method": "GET", "url": "/nearest/kittne", "status": 500, "duration_ms": 2.5, "error": "closest gave nothing" });
     let mut runs = Runs { slug: "nearest".into(), entries: vec![entry], sel: 0, view: Some(Ok(view)), step: 0, pane: RunPane::Details };

@@ -927,7 +927,8 @@ impl<R: Resolver> Walk<'_, R> {
         chosen_among(children.len(), edges, &choices, path, fed);
         // A step a choice decided by a secret takes runs only when it does: an effect of a kind
         // the host refuses a secret to ([`refuses_a_secret`]) made there, or not, says which way
-        // it went, as one in a `try` block the secret can fail does. So it is a sink the secret
+        // it went, as one in a `try` block after a line the secret can make fail does (or in its
+        // catch). So it is a sink the secret
         // reaches, decided ([`SecretFed::reach`]): check marks it and the host refuses it, a
         // write after the run ([`SecretFed::derives_effect`]) and a call or a start at its node.
         // The secret's own walk only: what a call answered to it, or a hash made with it,
@@ -1136,8 +1137,8 @@ pub enum Reach {
     /// On what it is given: the secret, or something computed from it, is in what it does.
     Given,
     /// Only in whether it runs: what it is given carries nothing of the secret, but whether it
-    /// runs at all is decided by it, through its trigger (a statement in a `try` block a secret
-    /// can fail, one in `if (test)`) or by a choice it decides (`test ? start(x) : undefined`).
+    /// runs at all is decided by it, through its trigger (a statement in a `try` block after a
+    /// line a secret can make fail, or in its catch; one in `if (test)`) or by a choice it decides (`test ? start(x) : undefined`).
     Decided,
 }
 

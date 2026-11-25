@@ -356,8 +356,8 @@ export function tieEdge(sink: string, t: { id: string; output: string }): Edge {
 }
 
 /** The nodes whose trigger nothing feeds, on a canvas that has a trigger to tie them to: each is
- *  flagged "not tied to a trigger", with a fix for each trigger. (A canvas with none runs as a
- *  whole, every sink with it, and flags nothing.) */
+ *  flagged "not tied to a trigger", with a fix for each trigger. (On a canvas with none there is
+ *  nothing to offer: core's check refuses each such sink, which never runs, as an error.) */
 export function untiedSinks(nodes: PrimitiveNodeType[], edges: Edge[]): Set<string> {
   if (triggersOf(nodes).length === 0) return new Set();
   const fed = new Set(edges.filter((e) => e.targetHandle === TRIGGER).map((e) => e.target));

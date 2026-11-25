@@ -473,6 +473,9 @@ pub struct RunView {
     pub after: Vec<String>,
     /// When each statement ran, in the order they started: what a run's timeline draws.
     pub steps: Vec<Step>,
+    /// The nodes whose steps the record notes and core held back (core's `held`, read off the
+    /// record): read as not run. By node id, in the document's order.
+    pub not_run: Vec<String>,
 }
 
 /// A statement's part of a run: its line (1-based), and when its steps began and ended, in
@@ -536,11 +539,43 @@ pub fn run_view(name: &str, document: &Value, entry: &Value) -> Result<RunView, 
     let (text, lines) = print_lines(Some(name), &doc, &mut MapResolver::new(), &Names::new(), &bindings)?;
     // `part`: the nodes this run is made of (its route's, or the whole flow's); the rest of the
     // text is shown without values.
-    let Recorded { values, ran, part, reasons } = recorded(document, entry);
-    let has = |id: &str| values.get(id).is_some_and(|o| o.iter().any(|v| !v.is_null()));
+    let Recorded { mut values, mut ran, part, reasons } = recorded(document, entry);
     let by_id: HashMap<&str, &crate::canvas::Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    // A step core held back (core's `held`: its tie didn't arrive, or an input wired to it that it
+    // needs didn't) is noted by the record and wasn't run: it reads as not run. What reached it is
+    // read off the record, each input from the step that fed it; one whose value the record
+    // doesn't keep (too large, or computed from a secret) counts as arrived, so a step is said held
+    // only where the record shows it, and reads the same whatever such a value was.
+    let arrived = |w: &crate::canvas::Wire| -> bool {
+        if !ran.contains(&w.source) {
+            return false;
+        }
+        let Some(outs) = values.get(&w.source) else { return true };
+        let at = by_id.get(w.source.as_str()).and_then(|n| n.data.outputs.iter().position(|p| p.name == w.output()));
+        // An output the record doesn't hold (a choice that lent its value is noted with none) is
+        // taken as arrived, as above.
+        at.and_then(|i| outs.get(i)).is_none_or(|v| !v.is_null())
+    };
+    let not_run: Vec<String> = ran
+        .iter()
+        .filter(|id| {
+            let Some(n) = by_id.get(id.as_str()) else { return false };
+            let wire = |p: usize| doc.edges.iter().find(|w| w.target == **id && n.data.inputs.get(p).is_some_and(|port| port.name == w.input()));
+            let leaf = matches!(n.data.body, crate::canvas::PlacedBody::Primitive) && holon_core::holds_back(&n.data.name);
+            holon_core::held(leaf, n.data.inputs.iter().map(|p| p.name.as_str()), |p| wire(p).is_some(), |p| wire(p).is_some_and(arrived))
+        })
+        .cloned()
+        .collect();
+    for id in &not_run {
+        ran.remove(id);
+        values.remove(id);
+    }
+    let has = |id: &str| values.get(id).is_some_and(|o| o.iter().any(|v| !v.is_null()));
+    // What feeds each node, for why it has no value. Not its tie (its trigger): a step whose tie
+    // didn't arrive wasn't reached, and didn't run itself, whatever held the tie back (a return
+    // above it answered: a wait past it isn't asked).
     let mut feeds: HashMap<&str, Vec<&str>> = HashMap::new();
-    for w in &doc.edges {
+    for w in doc.edges.iter().filter(|w| w.input() != holon_core::TRIGGER) {
         feeds.entry(w.target.as_str()).or_default().push(w.source.as_str());
     }
     let mut on_line: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
@@ -670,9 +705,12 @@ pub fn run_view(name: &str, document: &Value, entry: &Value) -> Result<RunView, 
     if let Some(e) = entry.get("error").and_then(Value::as_str) {
         out.push(format!("failed: {e}"));
     }
-    let line_of: HashMap<&str, u32> = lines.iter().map(|(id, l)| (id.as_str(), *l)).collect();
+    // A held step took no part in the run: its line has no step of it.
+    let line_of: HashMap<&str, u32> = lines.iter().filter(|(id, _)| !not_run.contains(id)).map(|(id, l)| (id.as_str(), *l)).collect();
     let steps = steps_of(document, entry, &line_of);
-    Ok(RunView { head, no_steps, text: text.lines().map(str::to_string).collect(), notes, after: out, steps })
+    let mut not_run = not_run;
+    not_run.sort_by_key(|id| doc.nodes.iter().position(|n| &n.id == id));
+    Ok(RunView { head, no_steps, text: text.lines().map(str::to_string).collect(), notes, after: out, steps, not_run })
 }
 
 /// One recorded run as [`run_view`]'s parts, in JSON: what the Runs panel reads for its steps,
@@ -686,6 +724,7 @@ pub fn run_json(name: &str, document: &Value, entry: &Value) -> Result<Value, St
         "notes": v.notes.iter().map(|(line, notes)| (line.to_string(), json!(notes))).collect::<serde_json::Map<String, Value>>(),
         "after": v.after,
         "steps": v.steps.iter().map(|s| json!({ "line": s.line, "start_us": s.start_us, "end_us": s.end_us })).collect::<Vec<_>>(),
+        "not_run": v.not_run,
     }))
 }
 

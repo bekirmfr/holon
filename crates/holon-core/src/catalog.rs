@@ -77,10 +77,11 @@ pub const GENESIS: &[&str] = &[
     // pure — OpenPGP (3): a message encrypted to a public key, a detached signature checked with
     // one, and what a key says (pgp.rs, host-capabilities L4 §5.1.11)
     "pgp_encrypt", "pgp_verify", "pgp_key",
-    // pure — universal, any-typed (8): as_text is to_text's message form, the identity on text;
-    // coalesce is the first input that arrived, `default` with its fallback on a wire; fail is
-    // nothing, its message the run log's reason (the language's `throw`)
-    "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fail",
+    // pure — universal, any-typed (9): as_text is to_text's message form, the identity on text;
+    // coalesce is the first input that arrived, `default` with its fallback on a wire; has_value
+    // whether its input arrived; fail is nothing, its message the run log's reason (the
+    // language's `throw`)
+    "to_text", "as_text", "is_truthy", "guard", "default", "has_value", "coalesce", "equals", "fail",
     // request/response — performed by the host, answered in the next round (2): a request, and
     // one whose body is a file a handle names
     "http_request", "http_upload", "http_stream",
@@ -542,6 +543,9 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             vec![Param::frozen("value", "0"), Param::frozen("type", "Number")],
             Any,
         ),
+        // Whether `value` arrived: true when it did, a NaN or `false` too, false when it didn't.
+        // It runs with its input absent, as `default` does.
+        "has_value" => prim(vec![port("value", Any)], vec![], Boolean),
         "equals" => prim(vec![port("a", Any), port("b", Any)], vec![], Boolean),
 
         // ── drivers — sourced (no inputs; host-supplied). Concrete where unambiguous, `Any` where
@@ -731,9 +735,10 @@ pub fn interface_of(name: &str) -> Option<Unit> {
 
         _ => return None,
     };
-    // A write or a call out takes its trigger last: what starts it, never read (eval drops it), so
-    // a sink belongs to whatever started the run that reaches it (docs/L4s/triggers-L4.md §3).
-    if TRIGGERED.contains(&name) {
+    // A write, a call out or a wait takes its trigger last: what starts it, never read (eval drops
+    // it), so a sink belongs to whatever started the run that reaches it (docs/L4s/triggers-L4.md
+    // §3), and a wait is asked only where it is reached.
+    if takes_a_trigger(name) {
         unit.inputs.push(port(TRIGGER, Any));
     }
     Some(unit)
@@ -742,6 +747,12 @@ pub fn interface_of(name: &str) -> Option<Unit> {
 /// The input every sink takes last: the value that starts it (a route's request, a holon's own
 /// trigger, whatever `after` names). It is never read; it only has to be there.
 pub const TRIGGER: &str = "trigger";
+
+/// The output a higher-order leaf ([`PASSES_EXTRA`]) whose function does something is placed
+/// with, after its answer: the Effects its function's applications made, in the order applied
+/// (eval.rs `Did`). Such a leaf takes its function's [`TRIGGER`] last, and passes it on to each
+/// application with the other values after the item.
+pub const DID: &str = "did";
 
 /// The sinks: the leaves whose output is an Effect the host performs, and the calls out. Each
 /// takes a [`TRIGGER`] input last. `channel_subscribe` and `file_serve` are a route's answers
@@ -771,10 +782,29 @@ pub const TRIGGERED: &[&str] = &[
     "flow_start",
 ];
 
+/// The waiting points: a wait for an event and a wait for people. Neither is a sink (what it
+/// asks is the run's own, answered by the server), but each is a step that does something: a run
+/// that asks one parks there. So each takes a [`TRIGGER`] last, as a sink does, and is asked only
+/// where it is reached; not connected, never.
+pub const WAITS: &[&str] = &["await", "approval"];
+
+/// Whether leaf `name` takes a [`TRIGGER`]: a sink ([`TRIGGERED`]) or a wait ([`WAITS`]).
+pub fn takes_a_trigger(name: &str) -> bool {
+    TRIGGERED.contains(&name) || WAITS.contains(&name)
+}
+
 /// The sinks that answer: each asks the far side to do something and gives back what it said.
 /// Once made, a call can't be taken back, so it is made for what it does: it is kept as an effect
 /// whether or not its answer is read, and its answer is never its caller's to give.
 pub const CALLS: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call", "flow_start"];
+
+/// Whether leaf `name`, tied to a trigger, is made when the trigger arrives, whatever reads its
+/// answer: a call ([`CALLS`]), or a list method ([`PASSES_EXTRA`]) whose function does something
+/// and so takes its trigger. A composite's boundary exposes such a leaf's outputs (`default_spec`),
+/// and the editor's replay starts from it as the run does.
+pub fn made_when_tied(name: &str) -> bool {
+    CALLS.contains(&name) || PASSES_EXTRA.contains(&name)
+}
 
 /// The leaves whose value the host supplies as the run starts (`Resolver::sourced`): the clock, the
 /// run's random bytes (as a number, or as they are), a secret, the file, the mail, the feed's
@@ -800,17 +830,10 @@ pub fn sourced_value(unit: &Unit, supplied: Option<&crate::Value>) -> Option<cra
     }
 }
 
-/// Whether `unit` is a sink leaf with its trigger: the last input, by name (a leaf placed before
-/// sinks had one has none, and is computed as it always was).
+/// Whether `unit` is a sink or wait leaf with its trigger: the last input, by name (a leaf placed
+/// before it had one has none, and is computed as it always was).
 pub fn takes_trigger(unit: &Unit) -> bool {
-    matches!(&unit.body, UnitBody::Primitive { name } if TRIGGERED.contains(&name.as_str())) && unit.inputs.last().is_some_and(|p| p.name == TRIGGER)
-}
-
-/// What a unit's input named [`TRIGGER`] reads when nothing is wired to it: present, so a holon
-/// placed without a tie runs its sinks with the unit around it, as a leaf with an open trigger
-/// does. Never read for its value.
-pub fn open_trigger() -> crate::Value {
-    crate::Value::Boolean(true)
+    matches!(&unit.body, UnitBody::Primitive { name } if takes_a_trigger(name)) && unit.inputs.last().is_some_and(|p| p.name == TRIGGER)
 }
 
 /// Every genesis primitive's canonical interface, in manifest order. A convenience over
@@ -867,8 +890,8 @@ mod tests {
         // (pgp_encrypt, pgp_verify, pgp_key) and the run's random bytes (random_bytes); and
         // mail's (mail_send), and a mailbox's trigger (mail_arrival), and a feed's (feed_event),
         // and a queue's (queue_send, queue_message), and a file as a route's answer (file_serve); and
-        // approval, a waiting point people decide.
-        assert_eq!(GENESIS.len(), 195);
+        // approval, a waiting point people decide; and has_value, whether a value arrived.
+        assert_eq!(GENESIS.len(), 196);
     }
 
     #[test]

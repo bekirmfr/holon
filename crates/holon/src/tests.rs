@@ -18,6 +18,8 @@ mod deploy_review;
 mod frames;
 /// A run of every kind shows its steps, in explain and the editor alike (R151).
 mod run_kinds;
+/// Every sample's runs, as the server records them, for the editor's replay to be held to.
+mod recorded_runs;
 /// Reading a run's steps and values takes run.steps (R55).
 mod run_steps;
 /// An expired waiting run slow to go on holds no other deadline (R34).
@@ -262,7 +264,7 @@ fn test_store_read(key: &str) -> Unit {
 
 /// `store_write(key)` — writes this deployment's own state at `key`.
 fn test_store_write(key: &str) -> Unit {
-    // Its trigger is left open: the run's.
+    // Its trigger is last; `endpoint` ties it to the request.
     Unit { params: vec![Param::frozen("key", key)], ..holon_core::interface_of("store_write").unwrap() }
 }
 
@@ -5136,8 +5138,17 @@ fn leaf(name: &str, params: Vec<Param>, inputs: Vec<(&str, Type)>, out: Type) ->
 }
 
 /// An endpoint wrapping `children` wired by `edges`: input 0 is the request, output 0 the
-/// response, and `extra_outputs` more outputs carry effects.
-fn endpoint(state: &AppState, method: &str, path: &str, children: Vec<Unit>, edges: Vec<Edge>, extra_outputs: usize) -> Hash {
+/// response, and `extra_outputs` more outputs carry effects. A trigger `edges` leaves unwired is
+/// tied to the request, as the lowering ties a route's sinks (one tied to nothing never runs).
+fn endpoint(state: &AppState, method: &str, path: &str, children: Vec<Unit>, mut edges: Vec<Edge>, extra_outputs: usize) -> Hash {
+    for (ci, child) in children.iter().enumerate() {
+        for (p, port) in child.inputs.iter().enumerate() {
+            let (ci, p) = (ci as u32, p as u32);
+            if port.name == holon_core::TRIGGER && !edges.iter().any(|e| e.to_child == ci && e.to_port == p) {
+                edges.push(Edge { from_child: BOUNDARY, from_port: 0, to_child: ci, to_port: p });
+            }
+        }
+    }
     let children = children.iter().map(|u| stage(state, u)).collect();
     let mut outputs = vec![Port { name: "response".into(), ty: Type::Any }];
     for i in 0..extra_outputs {
@@ -18563,7 +18574,8 @@ route.get("/record/:n", (req) => range(Number(req.params.n)).reduce((acc, i) => 
 /// laid out before it was validated, an edge to port four billion asked for a list of 51 GiB.
 ///
 /// Units are drawn, a few thousand: children staged or not, edges to and from ports that exist,
-/// don't, or are far out, to one port twice, round in a cycle, an effect into a sink's data. Each
+/// don't, or are far out, to one port twice, round in a cycle, an effect into a sink's data, a
+/// sink's trigger left untied. Each
 /// is loaded as a root and nested, and what the loader says is what `validate` says of it; a
 /// deploy of one refused is told so, and the server answers on. The kinds of mistake are counted,
 /// so the drawing is known to make each.
@@ -18644,8 +18656,10 @@ fn a_staged_unit_loads_or_is_refused_whatever_its_wiring() {
             assert!(String::from_utf8_lossy(&body_bytes(deployed)).contains("can't run"));
         }
     }
-    assert!(refused > 1_000 && loaded > 300, "{refused} refused, {loaded} loaded");
-    for kind in ["ChildOutOfRange", "OutputPortOutOfRange", "InputPortOutOfRange", "BoundaryInputOutOfRange", "BoundaryOutputOutOfRange", "DuplicateInputEdge", "Cycle", "TypeMismatch", "EffectIntoSink"] {
+    // A sink drawn with nothing on its trigger is refused too (not connected means never), so
+    // fewer load than the other mistakes alone would leave.
+    assert!(refused > 1_000 && loaded > 150, "{refused} refused, {loaded} loaded");
+    for kind in ["ChildOutOfRange", "OutputPortOutOfRange", "InputPortOutOfRange", "BoundaryInputOutOfRange", "BoundaryOutputOutOfRange", "DuplicateInputEdge", "Cycle", "TypeMismatch", "EffectIntoSink", "Untied"] {
         assert!(kinds.get(kind).is_some_and(|n| *n >= 10), "the drawing makes {kind} too seldom: {kinds:?}");
     }
     assert_eq!(route(&state, &req("GET", "/deployments", vec![])).status_code, 200, "the server answers on");

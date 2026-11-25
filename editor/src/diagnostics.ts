@@ -54,6 +54,7 @@ export function validationErrorNodeIndices(err: WValidationError, wedges: WEdge[
     case "UnresolvedChild":
     case "OutputPortOutOfRange":
     case "InputPortOutOfRange":
+    case "Untied":
       return [err.child];
     case "DuplicateInputEdge":
       return [err.to_child];

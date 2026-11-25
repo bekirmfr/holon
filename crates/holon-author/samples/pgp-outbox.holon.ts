@@ -38,13 +38,15 @@ flow("pgp-outbox", { port: 8149 })
 export const trust = action((input) => {
   try {
     const key = pgp_key(input.key)
-    state.bank = { key: input.key, fingerprint: key.fingerprint }
-    return {
+    const answer = {
       fingerprint: key.fingerprint,
       user_ids: key.user_ids,
       expires: key.expires ?? "never",
       revoked: key.revoked,
     }
+    // Kept last, so a key the lines above refuse keeps nothing.
+    state.bank = { key: input.key, fingerprint: key.fingerprint }
+    return answer
   } catch {
     return { refused: "not one OpenPGP public key its own signatures hold for" }
   }
