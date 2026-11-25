@@ -15,6 +15,12 @@
   Who notices: anyone deciding whether they may use Holon; a larger organization using it beyond
   an evaluation, which now needs a commercial license.
 
+- **A library updated for a security advisory.** `url`, which the server's HTTP client, its
+  control port and its MySQL and MongoDB drivers use, is now 2.5.9: 2.5.8 could overflow its stack
+  working out the origin of a deeply nested `blob:` address (RUSTSEC-2026-0592). Holon doesn't
+  ask for that itself; it is updated so no library it carries can. Who notices: nobody; nothing
+  to redeploy.
+
 - **A `try` keeps what it did before the line that failed, as JavaScript's does.** In
   `try { state.tried = (state.tried ?? 0) + 1; const body = JSON.parse(req.body); … } catch { … }`,
   a body that isn't JSON used to leave `tried` as it was: a try that failed kept none of its
