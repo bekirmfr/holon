@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Holon may now be used freely by individuals and small teams.** Until now its license
+  reserved every right, so even installing a release and running it needed a written agreement.
+  It is now source-available, under the PolyForm Noncommercial License 1.0.0 with Holon's
+  Additional Grant (`LICENSE`): free for any non-commercial purpose; free for a small team, fewer
+  than 30 people and under USD 1,000,000 a year in revenue, commercial use included; free for a
+  larger organization to evaluate for 60 days, then under a commercial license; and free for anyone
+  to read, export and verify run records. The flows you write, the files Holon writes into your
+  projects and the samples are yours to use as you like. Releases and the VS Code extension now
+  carry `THIRD-PARTY-NOTICES.md`, the licenses of the software Holon is built with (written by
+  `.github/third-party-notices.mjs`).
+  Who notices: anyone deciding whether they may use Holon; a larger organization using it beyond
+  an evaluation, which now needs a commercial license.
+
 - **A library updated for a security advisory.** `url`, which the server's HTTP client, its
   control port and its MySQL and MongoDB drivers use, is now 2.5.9: 2.5.8 could overflow its stack
   working out the origin of a deeply nested `blob:` address (RUSTSEC-2026-0592). Holon doesn't
