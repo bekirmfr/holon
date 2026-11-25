@@ -250,8 +250,10 @@ value, the `switch` has none: it never falls through to another case. With no ca
 
 **`try`, `catch` and `throw`.** A failure is a value that didn't arrive (see
 [How a flow runs](#how-a-flow-runs)), and `throw new Error(message)` makes one: nothing, with the
-message in the run's log. The try block succeeds when every value it makes arrives; its writes are
-made only then, all together, and otherwise the catch block runs instead. `finally` runs either
+message in the run's log. The try block succeeds when every value it makes arrives, and
+otherwise the catch block runs. As in JavaScript, the block stops at the line that failed: what it
+did above that line (a write, a send, a request) is done and kept, what is below it isn't, and the
+catch, and what follows the `try`, see each name as the block last set it. `finally` runs either
 way, wherever the try itself is reached (a `return` above it that answered skips both):
 
 ```ts
@@ -287,10 +289,8 @@ this differs from JavaScript:
 - **`catch` catches absence too.** A field the try block reads that isn't there is a failure,
   where JavaScript carries on with `undefined`. Give it a fallback inside the block
   (`req.json.kind ?? "plain"`) when its absence isn't one.
-- **The try block's writes are all or none.** JavaScript keeps the writes made before the throw.
-- **A request the try block makes is made when what it reads arrives,** even after a failure that
-  it doesn't read. If it fails, the catch block runs.
-- **The catch block sees names as they were before the try,** not as the try block left them.
+- **A request the try block binds is part of what must arrive:** if it fails, the catch block
+  runs.
 - **`catch (e)` is refused:** a failure's reason is the run log's, not a value; write
   `catch { … }`. A `return` or a `throw` in `finally` is refused too.
 

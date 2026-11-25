@@ -50,7 +50,7 @@ pub fn compile_watched(src: &str) -> R<(Lowered, Vec<Expr>, super::lower::Found)
         let (file, sites) = read_sites(src)?;
         let mut parts = Vec::new();
         for site in &sites {
-            for test in site.path.iter().filter_map(|a| if let Atom::Holds { test, .. } = a { Some(test) } else { None }).chain(&site.kept) {
+            for test in site.path.iter().filter_map(|a| if let Atom::Holds { test, .. } = a { Some(test) } else { None }) {
                 super::reached::parts(test, &mut parts);
             }
             for need in &site.needs {
@@ -269,6 +269,9 @@ struct Frame {
     function: bool,
     /// The `try` blocks being read, innermost last (§8).
     trying: Vec<Trying>,
+    /// Each line of a `try` block that may fail, innermost last: what follows it is a branch
+    /// taken where what it made arrived, joined as an `if`'s is where its list ends ([`Arrival`]).
+    arrivals: Vec<Arrival>,
     /// The bindings of a `throw`'s nothing: an answer of several outputs throws for each.
     throws: BTreeSet<String>,
     /// What the `++` and `--` written as values in the statement being read did, made before it
@@ -352,6 +355,21 @@ impl Waited {
 struct Updates {
     binds: Vec<Stmt>,
     writes: Vec<(Place, Expr, Span)>,
+}
+
+/// A line of a `try` block that may fail, as JavaScript's block goes on past it: the rest of its
+/// list is read as the branch of an `if` on what it made arriving, with no else. Where the list
+/// ends, each name and state key the rest changed holds the rest's value where it arrived and the
+/// value it had at the line where it didn't, so the catch, and what follows the `try`, see the
+/// last assignment reached (§6.5a), as JavaScript's do.
+struct Arrival {
+    /// Where the guard it holds stands among the frame's guards.
+    guard: usize,
+    /// That what the line made arrived: the guard's test.
+    test: Expr,
+    /// The names and the state keys as they were at the line.
+    scopes: Vec<HashMap<String, Local>>,
+    writes: Vec<(String, Expr, Span)>,
 }
 
 /// A `try` block being read: what it makes, whose arriving is the block succeeding (§8).
@@ -1482,7 +1500,7 @@ impl<'s, 't> Reader<'s, 't> {
             each_expr(stmts, &mut inline);
             // The paths read it where the body does.
             for site in &mut self.sites[self.frame.sites..] {
-                for t in site.path.iter_mut().filter_map(|a| if let Atom::Holds { test, .. } = a { Some(test) } else { None }).chain(site.kept.iter_mut()).chain(site.needs.iter_mut()) {
+                for t in site.path.iter_mut().filter_map(|a| if let Atom::Holds { test, .. } = a { Some(test) } else { None }).chain(site.needs.iter_mut()) {
                     walk(t, &mut inline);
                 }
             }
@@ -1496,10 +1514,40 @@ impl<'s, 't> Reader<'s, 't> {
     fn list(&mut self, body: &[js::Statement], block: Block, stmts: &mut Vec<Stmt>) -> R<Ret> {
         let start = self.frame.guards.len();
         let marks = self.frame.marks.len();
-        let ret = self.run(body, block, stmts, start);
+        let ret = self.run(body, block, stmts, start).and_then(|r| self.join_arrivals(start, stmts, start).map(|()| r));
         self.frame.guards.truncate(start);
         self.frame.marks.truncate(marks);
         ret
+    }
+
+    /// Where a list ends, each line in it that may fail (an [`Arrival`]) joined as an `if` with no
+    /// else is ([`Self::join`]), innermost first: a name or a state key the statements after it
+    /// changed holds their value where what it made arrived, and the value it had at the line
+    /// where it didn't. One mechanism for every value the try block changes, as JavaScript keeps
+    /// the last assignment reached before a throw.
+    fn join_arrivals(&mut self, from: usize, stmts: &mut Vec<Stmt>, start: usize) -> R<()> {
+        while self.frame.arrivals.last().is_some_and(|a| a.guard >= from) {
+            let a = self.frame.arrivals.pop().expect("checked");
+            self.frame.guards.truncate(a.guard);
+            let at = a.test.span;
+            let depth = self.scopes.len();
+            // The rest: what the statements after the line left.
+            let rest = Path { scopes: self.scopes.clone(), writes: self.frame.writes.clone(), ret: Ret::Never, exits: 0 };
+            // At the line: each name as it was then; one declared after it stays as it is.
+            let mut there = self.scopes.clone();
+            for (d, scope) in a.scopes.iter().take(depth).enumerate() {
+                for (ts, local) in scope {
+                    if there[d].contains_key(ts) {
+                        there[d].insert(ts.clone(), local.clone());
+                    }
+                }
+            }
+            self.scopes = there.clone();
+            self.frame.writes = a.writes.clone();
+            let line = Path { scopes: there, writes: a.writes, ret: Ret::Never, exits: 0 };
+            self.join(&Choice::If(a.test), vec![rest], line, stmts, start, at)?;
+        }
+        Ok(())
     }
 
     /// `body`'s statements, a block inside the list whose conditions begin at guard `start` (a
@@ -1508,7 +1556,7 @@ impl<'s, 't> Reader<'s, 't> {
     fn within(&mut self, body: &[js::Statement], block: Block, stmts: &mut Vec<Stmt>, start: usize) -> R<Ret> {
         let guards = self.frame.guards.len();
         let marks = self.frame.marks.len();
-        let ret = self.run(body, block, stmts, start);
+        let ret = self.run(body, block, stmts, start).and_then(|r| self.join_arrivals(guards, stmts, start).map(|()| r));
         self.frame.guards.truncate(guards);
         self.frame.marks.truncate(marks);
         ret
@@ -2633,7 +2681,7 @@ impl<'s, 't> Reader<'s, 't> {
     /// A doing site at `at`, reached as the statement being read is. A part read twice is
     /// recorded once, as last read.
     fn site(&mut self, at: Span, does: &'static str, needs: Vec<Expr>) {
-        let site = Site { at, does, within: self.frame.body, path: self.reached_here(), kept: Vec::new(), needs, key: None };
+        let site = Site { at, does, within: self.frame.body, path: self.reached_here(), needs, key: None };
         match self.sites[self.frame.sites..].iter_mut().rev().find(|s| s.at == at && s.does == does) {
             Some(s) => *s = site,
             None => self.sites.push(site),
@@ -2789,11 +2837,12 @@ impl<'s, 't> Reader<'s, 't> {
     }
 
     /// `try { A } catch { B } finally { C }` (§8). A's values arriving is the block succeeding,
-    /// `ok`: A's writes, sends and returns are tied to it, B is read where it doesn't hold, and
-    /// each name and state key either changes holds `if ok then A's else B's`, as after an `if`.
-    /// C is tied to neither. A call A binds is made where what A made before it arrived, as
-    /// JavaScript's is made only until a statement throws (`go_on_if_arrived`). Without a catch, A
-    /// is a block, and nothing is caught.
+    /// `ok`. As JavaScript's, each line of A runs where every line above it that may fail didn't
+    /// (`go_on_if_arrived`), so what A did above the line that failed is done and kept, and each
+    /// name and state key holds the last assignment reached in A ([`Self::join_arrivals`]). B is
+    /// read where `ok` doesn't hold, seeing what A left; each name and state key either changes
+    /// holds `if ok then A's else B's`, as after an `if`. A's returns answer where `ok` holds. C is
+    /// tied to neither. Without a catch, A is a block, and nothing is caught.
     fn try_statement(&mut self, t: &js::TryStatement, block: Block, stmts: &mut Vec<Stmt>, start: usize) -> R<Ret> {
         let at = self.span(t.span);
         let ret = match &t.handler {
@@ -2826,17 +2875,13 @@ impl<'s, 't> Reader<'s, 't> {
 
     /// `try { A } catch { B }`: A read as a branch is, then `ok`, then B under its negation.
     fn caught(&mut self, tried: &[js::Statement], catch: &[js::Statement], block: Block, stmts: &mut Vec<Stmt>, start: usize, at: Span) -> R<Ret> {
-        let scopes = self.scopes.clone();
-        let writes = self.frame.writes.clone();
-        let written = self.frame.written.clone();
         let from = stmts.len();
         let exits = self.frame.exits.len();
+        let writes = self.frame.writes.clone();
         self.frame.depth += 1;
         self.frame.trying.push(Trying { guards: self.frame.guards.len(), made: Vec::new(), exits: Vec::new() });
         self.scopes.push(HashMap::new());
-        let sites = self.sites.len();
         let ret = self.list(tried, block, stmts);
-        let tried_sites = sites..self.sites.len();
         self.scopes.pop();
         let trying = self.frame.trying.pop().expect("pushed above");
         self.frame.depth -= 1;
@@ -2901,50 +2946,43 @@ impl<'s, 't> Reader<'s, 't> {
         let Some(ok) = conj(tests) else {
             return fail(at, "nothing in this try can fail, so its catch never runs: write its statements without it");
         };
-        let ok = self.hide(ok, "ok", stmts);
-        // What the block did is kept where it succeeded: outer blocks first.
-        for s in &mut self.sites[tried_sites] {
-            s.kept.insert(0, ok.clone());
-        }
+        // Bound where the try is, and kept bound where it is read once (by the catch alone): the
+        // try's own row, which the editor draws its outcome on.
+        let ok = match ok.kind {
+            ExprKind::Name(_) => ok,
+            _ => {
+                let name = self.hidden_name("ok");
+                self.note_call(&name, &ok, at);
+                stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: name.clone(), span: at }, value: ok }, span: at, after: None });
+                Expr { kind: ExprKind::Name(name), span: at }
+            }
+        };
         if let ExprKind::Name(n) = &ok.kind {
             let n = n.clone();
             self.unmade(&n);
         }
-        // A's writes and sends, tied to ok, after it.
-        let mut tied = Vec::new();
-        let mut i = from;
-        while i < stmts.len() {
-            let effect = match &stmts[i].kind {
-                StmtKind::StateWrite { .. } | StmtKind::CollectionWrite { .. } | StmtKind::Delete { .. } => true,
-                StmtKind::Expr(value) => self.contains_sink(value),
-                _ => false,
-            };
-            if effect {
-                let mut s = stmts.remove(i);
-                let yes = Expr { kind: ExprKind::Bool(true), span: s.span };
-                s.after = Some(when(s.after.take().unwrap_or(yes), ok.clone()));
-                tied.push(s);
-            } else {
-                i += 1;
-            }
-        }
-        stmts.extend(tied);
+        // What A did where it was reached is done, as JavaScript's is: a write, a send, a start
+        // or a request on a line above the one that failed is made, and one below it isn't (the
+        // lines after a line that may fail are held to what it made arriving, `go_on_if_arrived`).
+        // A return answers where it is reached and what it answers arrived: its conditions name
+        // its branches alone, so `ok`, which tests both, says so.
         for e in &mut self.frame.exits[exits..] {
             e.cond = conj(e.cond.take().into_iter().chain([ok.clone()]));
         }
-        let a = Path {
-            scopes: std::mem::replace(&mut self.scopes, scopes),
-            writes: std::mem::replace(&mut self.frame.writes, writes),
-            exits: self.frame.exits.len() - exits,
-            ret,
-        };
-        let a_written = std::mem::replace(&mut self.frame.written, written);
+        // B sees what A left: each name and state key as the last assignment reached in A gave
+        // it ([`Self::join_arrivals`]).
+        let a = Path { scopes: self.scopes.clone(), writes: self.frame.writes.clone(), exits: self.frame.exits.len() - exits, ret };
         let b = self.branches(vec![(Guard::Branch(otherwise(&ok)), Some(catch))], block, stmts)?.pop().expect("a catch");
-        self.frame.written.extend(a_written);
         // A returns only where a return in it answers: a throw in it is caught.
         let returns = if a.exits == 0 { Ret::Never } else { a.ret.clone() };
         let ret = ret_if(&ok, &returns, &b.ret);
-        self.join(&Choice::If(ok), vec![a], b, stmts, start, at)?;
+        // A state key is written once, where the try's list and the catch are joined: each key
+        // either changed holds what it chose against its value before the try.
+        self.frame.writes = writes;
+        // `ok` is true or false, never nothing (`?? false` says so where it is a name): a key the
+        // catch left as the block did holds that value, whichever ran.
+        let sure_ok = if sure(&ok) { ok } else { binary(BinOp::Coalesce, ok, Expr { kind: ExprKind::Bool(false), span: at }) };
+        self.join(&Choice::If(sure_ok), vec![a], b, stmts, start, at)?;
         Ok(ret)
     }
 
@@ -2991,7 +3029,10 @@ impl<'s, 't> Reader<'s, 't> {
             let fails = stmts.iter().any(|s| matches!(&s.kind, StmtKind::Bind { name: n, value } if n.text == name && !never_fails(value)));
             if fails {
                 let span = stmts.iter().rev().find_map(|s| matches!(&s.kind, StmtKind::Bind { name: n, .. } if n.text == name).then_some(s.span)).expect("found above");
-                self.hold(Guard::Arrived(arrived(Expr { kind: ExprKind::Name(name), span }, cond.as_ref())), span)?;
+                let test = arrived(Expr { kind: ExprKind::Name(name), span }, cond.as_ref());
+                let guard = self.frame.guards.len();
+                self.hold(Guard::Arrived(test.clone()), span)?;
+                self.frame.arrivals.push(Arrival { guard, test, scopes: self.scopes.clone(), writes: self.frame.writes.clone() });
             }
         }
         Ok(())
@@ -7556,11 +7597,8 @@ flow("t", { port: 8000 })
 route.post("/n", (req) => {
   const note = JSON.parse(req.body)
   const tried_1 = note.id
+  notes[tried_1] = has_value(note) ? note : undefined
   const ok_1 = has_value(note) && has_value(tried_1)
-  const tie = ok_1 ? true : undefined
-  if (tie !== undefined) {
-    notes[tried_1] = has_value(note) ? note : undefined
-  }
   return status(!(ok_1 ?? false) ? 400 : 201, !(ok_1 ?? false) ? "not a note" : "kept")
 })
 "#,

@@ -24,9 +24,8 @@
 //! of a text that isn't JSON, a request that failed), and nothing below it runs. Whether that is
 //! Holon's own rule or owed to JavaScript is the owner's open question; one switch labels it
 //! (`reached_runs::PAST_NOTHING`). So [`Atom::Completed`] always holds, as today; it is recorded so
-//! that a run where JavaScript would have stopped there can be labelled. A `try`'s own
-//! promise, that a failed block keeps none of its writes, is not part of reached either: it is
-//! [`Site::kept`], beside it.
+//! that a run where JavaScript would have stopped there can be labelled. A `try` block keeps what
+//! it did above the line that failed, as JavaScript's does: nothing of reached is undone.
 
 use super::ast::{Expr, Span};
 
@@ -50,9 +49,6 @@ pub struct Site {
     /// For a write to state, its key: the graph writes each key once per run, at one step for
     /// every place the text writes it (the one-key-many-writes column, beside reached).
     pub key: Option<String>,
-    /// For a site inside a `try` block with a catch, the block's own test (`ok`): what it did is
-    /// kept only where that holds. Innermost last.
-    pub kept: Vec<Expr>,
 }
 
 /// One thing a path needs, in the order the run meets them.

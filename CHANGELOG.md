@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **A `try` keeps what it did before the line that failed, as JavaScript's does.** In
+  `try { state.tried = (state.tried ?? 0) + 1; const body = JSON.parse(req.body); … } catch { … }`,
+  a body that isn't JSON used to leave `tried` as it was: a try that failed kept none of its
+  writes. Now the count is written, as JavaScript writes it, and what comes after the failing line
+  still isn't. The same holds for a send, a start, a collection item put or deleted, and a write
+  made inside a function the try calls. A name or a state key the block changes holds the last
+  value it was given on a line that was reached, so the catch, and the code after the `try`, see
+  what the block left (before, the catch saw them as they were before the `try`). A state key
+  written above the failing line and again below it keeps the first value. The new `signup`
+  sample shows it.
+  Who notices: someone whose `try` block writes, sends, puts, deletes or starts something above a
+  line that can fail; that is now made when the line fails. A try whose writes all come after its
+  last line that can fail does what it did. Flows with a `try` get a new fingerprint.
+
 - **A step reached in a branch is shown in its `if`.** The text the canvas, the step view and
   `explain` show for a flow wrote a send, a request, a start, a log line or a call of the flow's
   own function made only in a branch as `const guard = c ? true : undefined` and

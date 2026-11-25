@@ -110,8 +110,6 @@ pub struct SiteRun {
     /// asked), or not; `None` where the site has no step of its own (a state key written in
     /// several places is one step, at its last write).
     pub today: Option<bool>,
-    /// Where the site is in a `try` block with a catch: whether the block's test held.
-    pub kept: Option<bool>,
     /// Whether what it needs ([`Site::needs`]) has values: `None` where one was never computed.
     /// Where one has none, Holon's own rule doesn't run it.
     pub has_values: Option<bool>,
@@ -139,9 +137,6 @@ pub enum Verdict {
     MadeUnlooked,
     /// A key written at several sites, by one step: compared on its own column.
     OneKey,
-    /// Reached, in a `try` block that failed, and not made: the try's promise, that a block that
-    /// fails keeps nothing (its requests aside), not a difference.
-    NotKept,
     /// A test its path or a value it needs was never computed.
     NotKnown,
     /// It has no step of its own (a state key written in several places is one step).
@@ -163,9 +158,6 @@ impl SiteRun {
             return Verdict::OneKey;
         }
         let Some(made) = self.today else { return Verdict::NoStepOfItsOwn };
-        if !made && self.reached == Reached::Yes && self.kept == Some(false) {
-            return Verdict::NotKept;
-        }
         if made && self.past_nothing {
             return Verdict::PastNothing(PAST_NOTHING);
         }
@@ -465,7 +457,6 @@ pub fn site_runs(w: &Watched, given: &dyn Fn(&Handler, &Unit) -> Vec<Given>, ans
                             does_something(&run, &at)
                         })
                     });
-                    let kept = (!site.kept.is_empty()).then(|| site.kept.iter().all(|t| holds(t, &mut |p| seen(w, ctx, &run, p)) == Some(true)));
                     let past = ctx_unit.as_ref().is_some_and(|u| past_nothing(w, site, ctx, &run, &store, u));
                     // One with none is enough to say it has none; else one never computed leaves
                     // it not known.
@@ -478,7 +469,7 @@ pub fn site_runs(w: &Watched, given: &dyn Fn(&Handler, &Unit) -> Vec<Given>, ans
                         Some(true)
                     };
                     let one_key = site.key.is_some() && w.lowered.sites.iter().filter(|s| s.key == site.key && s.within == site.within).count() > 1;
-                    out.push(SiteRun { site: n, handler: h.label.clone(), input: i, at: ctx.path.clone(), reached: path_on(w, site, ctx, &run), today, kept, has_values, past_nothing: past, one_key });
+                    out.push(SiteRun { site: n, handler: h.label.clone(), input: i, at: ctx.path.clone(), reached: path_on(w, site, ctx, &run), today, has_values, past_nothing: past, one_key });
                 }
             }
         }

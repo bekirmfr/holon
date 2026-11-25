@@ -10631,35 +10631,35 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/batch"), "… #b40f3ad22fe889ca | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] List([])
   [0, 2] List([])
-  [0, 108] Boolean(true)
+  [0, 142] Boolean(true)
   [0, 3] ·
   [0, 4] Number(1000.0)
   [0, 5] ·
-  [0, 109] Boolean(false)
-  [0, 140] Boolean(false)
-  [0, 141] Boolean(false)
-  [0, 142] Boolean(true)
-  [0, 143] Record({})
-  [0, 144] Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140, each IBAN as one… #2a64ae745e15ff33
-  [0, 145] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
-  [0, 146] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
-  [0, 150] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
-  [0, 151] Boolean(false)
-  [0, 152] Boolean(true)
-  [0, 153] Record({})
-  [0, 154] Record({})
-  [0, 161] Record({})
-  [0, 162] Boolean(false)
-  [0, 163] Boolean(true)
-  [0, 164] Number(400.0)
-  [0, 165] Number(400.0)
-  [0, 170] Number(400.0)
-  [0, 171, 0] Record({})
-  [0, 171, 1] Record({"status": Number(400.0)})
-  [0, 171, 2] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #b11f3bccc45911df
-  [0, 171, 3] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
-  [0, 171, 4] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
-  [0, 171] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
+  [0, 143] Boolean(false)
+  [0, 174] Boolean(false)
+  [0, 175] Boolean(false)
+  [0, 176] Boolean(true)
+  [0, 177] Record({})
+  [0, 178] Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140, each IBAN as one… #2a64ae745e15ff33
+  [0, 179] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
+  [0, 180] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
+  [0, 184] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
+  [0, 185] Boolean(false)
+  [0, 186] Boolean(true)
+  [0, 187] Record({})
+  [0, 188] Record({})
+  [0, 195] Record({})
+  [0, 196] Boolean(false)
+  [0, 197] Boolean(true)
+  [0, 198] Number(400.0)
+  [0, 199] Number(400.0)
+  [0, 204] Number(400.0)
+  [0, 205, 0] Record({})
+  [0, 205, 1] Record({"status": Number(400.0)})
+  [0, 205, 2] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #b11f3bccc45911df
+  [0, 205, 3] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
+  [0, 205, 4] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
+  [0, 205] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
   [0] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
   => Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
 == payment-batch · POST /batch · input 1
@@ -10671,31 +10671,31 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #24e5440566d5fd60 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] ·
   [0, 2] ·
-  [0, 108] Boolean(false)
-  [0, 140] Boolean(false)
-  [0, 141] Boolean(false)
-  [0, 142] Boolean(true)
-  [0, 143] Record({})
-  [0, 144] Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140, each IBAN as one… #2a64ae745e15ff33
-  [0, 145] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
-  [0, 146] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
-  [0, 150] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
-  [0, 151] Boolean(false)
-  [0, 152] Boolean(true)
-  [0, 153] Record({})
-  [0, 154] Record({})
-  [0, 161] Record({})
-  [0, 162] Boolean(false)
-  [0, 163] Boolean(true)
-  [0, 164] Number(400.0)
-  [0, 165] Number(400.0)
-  [0, 170] Number(400.0)
-  [0, 171, 0] Record({})
-  [0, 171, 1] Record({"status": Number(400.0)})
-  [0, 171, 2] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #b11f3bccc45911df
-  [0, 171, 3] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
-  [0, 171, 4] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
-  [0, 171] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
+  [0, 142] Boolean(false)
+  [0, 174] Boolean(false)
+  [0, 175] Boolean(false)
+  [0, 176] Boolean(true)
+  [0, 177] Record({})
+  [0, 178] Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140, each IBAN as one… #2a64ae745e15ff33
+  [0, 179] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
+  [0, 180] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
+  [0, 184] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
+  [0, 185] Boolean(false)
+  [0, 186] Boolean(true)
+  [0, 187] Record({})
+  [0, 188] Record({})
+  [0, 195] Record({})
+  [0, 196] Boolean(false)
+  [0, 197] Boolean(true)
+  [0, 198] Number(400.0)
+  [0, 199] Number(400.0)
+  [0, 204] Number(400.0)
+  [0, 205, 0] Record({})
+  [0, 205, 1] Record({"status": Number(400.0)})
+  [0, 205, 2] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #b11f3bccc45911df
+  [0, 205, 3] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
+  [0, 205, 4] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
+  [0, 205] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
   [0] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
   => Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
 == payment-batch · POST /batch · input 2
@@ -10707,31 +10707,31 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #658a5b4a2d5e930f | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] ·
   [0, 2] ·
-  [0, 108] Boolean(false)
-  [0, 140] Boolean(false)
-  [0, 141] Boolean(false)
-  [0, 142] Boolean(true)
-  [0, 143] Record({})
-  [0, 144] Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140, each IBAN as one… #2a64ae745e15ff33
-  [0, 145] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
-  [0, 146] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
-  [0, 150] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
-  [0, 151] Boolean(false)
-  [0, 152] Boolean(true)
-  [0, 153] Record({})
-  [0, 154] Record({})
-  [0, 161] Record({})
-  [0, 162] Boolean(false)
-  [0, 163] Boolean(true)
-  [0, 164] Number(400.0)
-  [0, 165] Number(400.0)
-  [0, 170] Number(400.0)
-  [0, 171, 0] Record({})
-  [0, 171, 1] Record({"status": Number(400.0)})
-  [0, 171, 2] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #b11f3bccc45911df
-  [0, 171, 3] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
-  [0, 171, 4] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
-  [0, 171] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
+  [0, 142] Boolean(false)
+  [0, 174] Boolean(false)
+  [0, 175] Boolean(false)
+  [0, 176] Boolean(true)
+  [0, 177] Record({})
+  [0, 178] Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140, each IBAN as one… #2a64ae745e15ff33
+  [0, 179] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
+  [0, 180] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
+  [0, 184] Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and reference of 1 to 140,… #6841beaff97a816b
+  [0, 185] Boolean(false)
+  [0, 186] Boolean(true)
+  [0, 187] Record({})
+  [0, 188] Record({})
+  [0, 195] Record({})
+  [0, 196] Boolean(false)
+  [0, 197] Boolean(true)
+  [0, 198] Number(400.0)
+  [0, 199] Number(400.0)
+  [0, 204] Number(400.0)
+  [0, 205, 0] Record({})
+  [0, 205, 1] Record({"status": Number(400.0)})
+  [0, 205, 2] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #b11f3bccc45911df
+  [0, 205, 3] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
+  [0, 205, 4] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
+  [0, 205] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
   [0] Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
   => Record({"body": Record({"error": Text("not a CSV of payouts a pain.001 takes: id,name,iban,amount,reference, each id of 1 to 35 characters, each name and refere… #182c8618edd7f4d3
 == payment-batch · POST /status · input 0
@@ -11233,13 +11233,10 @@
   [0, 7] ·
   [0, 8] ·
   [0, 9] ·
-  [0, 102] Boolean(false)
-  [0, 113] Boolean(false)
-  [0, 114] ·
-  [0, 56] Boolean(false)
-  [0, 101] Boolean(false)
-  [0, 117] ·
-  [0, 115] ·
+  [0, 31] Boolean(false)
+  [0, 42] Boolean(false)
+  [0, 43] ·
+  [0, 44] ·
   [0, 10] ·
   [0, 11] Text("")
   [0, 12] Text(" ")
@@ -11247,67 +11244,69 @@
   [0, 14] Text("payouts:write")
   [0, 15] Boolean(false)
   [0, 16] Boolean(true)
+  [0, 70] Boolean(false)
+  [0, 115] Boolean(false)
+  [0, 116] Boolean(false)
+  [0, 117] ·
   [0, 118] Boolean(false)
-  [0, 119] ·
-  [0, 120] Boolean(false)
-  [0, 121] Boolean(true)
-  [0, 132] Boolean(false)
-  [0, 133] Boolean(true)
-  [0, 122] ·
-  [0, 123] Boolean(false)
-  [0, 124] Boolean(true)
-  [0, 128] Boolean(true)
-  [0, 125] Record({})
-  [0, 126] Text("a token a trusted partner signed for payouts-api is needed")
+  [0, 119] Boolean(true)
+  [0, 130] Boolean(false)
+  [0, 131] Boolean(true)
+  [0, 120] ·
+  [0, 121] Boolean(false)
+  [0, 122] Boolean(true)
+  [0, 126] Boolean(true)
+  [0, 123] Record({})
+  [0, 124] Text("a token a trusted partner signed for payouts-api is needed")
+  [0, 125] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
   [0, 127] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 128] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
   [0, 129] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 130] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 131] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 132] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 133] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
   [0, 134] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 135] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 136] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 137] Boolean(false)
-  [0, 139] ·
-  [0, 140] Boolean(false)
-  [0, 141] Boolean(true)
-  [0, 153] Boolean(false)
-  [0, 154] Boolean(true)
-  [0, 143] ·
-  [0, 144] Boolean(false)
-  [0, 145] Boolean(true)
-  [0, 149] Boolean(true)
-  [0, 146] Record({})
-  [0, 147] Text("Bearer")
+  [0, 135] Boolean(false)
+  [0, 137] ·
+  [0, 138] Boolean(false)
+  [0, 139] Boolean(true)
+  [0, 151] Boolean(false)
+  [0, 152] Boolean(true)
+  [0, 141] ·
+  [0, 142] Boolean(false)
+  [0, 143] Boolean(true)
+  [0, 147] Boolean(true)
+  [0, 144] Record({})
+  [0, 145] Text("Bearer")
+  [0, 146] Record({"www-authenticate": Text("Bearer")})
   [0, 148] Record({"www-authenticate": Text("Bearer")})
+  [0, 149] Record({"www-authenticate": Text("Bearer")})
   [0, 150] Record({"www-authenticate": Text("Bearer")})
-  [0, 151] Record({"www-authenticate": Text("Bearer")})
-  [0, 152] Record({"www-authenticate": Text("Bearer")})
+  [0, 153] Record({"www-authenticate": Text("Bearer")})
+  [0, 154] Record({"www-authenticate": Text("Bearer")})
   [0, 155] Record({"www-authenticate": Text("Bearer")})
-  [0, 156] Record({"www-authenticate": Text("Bearer")})
-  [0, 157] Record({"www-authenticate": Text("Bearer")})
-  [0, 158] Boolean(false)
-  [0, 160] ·
-  [0, 161] Boolean(false)
-  [0, 162] Boolean(true)
-  [0, 171] Boolean(false)
-  [0, 172] Boolean(true)
-  [0, 163] ·
-  [0, 164] Boolean(false)
+  [0, 156] Boolean(false)
+  [0, 158] ·
+  [0, 159] Boolean(false)
+  [0, 160] Boolean(true)
+  [0, 169] Boolean(false)
+  [0, 170] Boolean(true)
+  [0, 161] ·
+  [0, 162] Boolean(false)
+  [0, 163] Boolean(true)
   [0, 165] Boolean(true)
-  [0, 167] Boolean(true)
+  [0, 164] Number(401.0)
   [0, 166] Number(401.0)
+  [0, 167] Number(401.0)
   [0, 168] Number(401.0)
-  [0, 169] Number(401.0)
-  [0, 170] Number(401.0)
+  [0, 171] Number(401.0)
+  [0, 172] Number(401.0)
   [0, 173] Number(401.0)
-  [0, 174] Number(401.0)
-  [0, 175] Number(401.0)
-  [0, 176, 0] Record({})
-  [0, 176, 1] Record({"status": Number(401.0)})
-  [0, 176, 2] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "status": Number(401.0)})
-  [0, 176, 3] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
-  [0, 176, 4] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
-  [0, 176] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 174, 0] Record({})
+  [0, 174, 1] Record({"status": Number(401.0)})
+  [0, 174, 2] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "status": Number(401.0)})
+  [0, 174, 3] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 174, 4] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 174] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
   [0] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1 | ·
   => Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1 | ·
 == jwt-api · POST /payouts · input 1
@@ -11335,13 +11334,10 @@
   [0, 7] ·
   [0, 8] ·
   [0, 9] ·
-  [0, 102] Boolean(false)
-  [0, 113] Boolean(false)
-  [0, 114] ·
-  [0, 56] Boolean(false)
-  [0, 101] Boolean(false)
-  [0, 117] ·
-  [0, 115] ·
+  [0, 31] Boolean(false)
+  [0, 42] Boolean(false)
+  [0, 43] ·
+  [0, 44] ·
   [0, 10] ·
   [0, 11] Text("")
   [0, 12] Text(" ")
@@ -11349,67 +11345,69 @@
   [0, 14] Text("payouts:write")
   [0, 15] Boolean(false)
   [0, 16] Boolean(true)
+  [0, 70] Boolean(false)
+  [0, 115] Boolean(false)
+  [0, 116] Boolean(false)
+  [0, 117] ·
   [0, 118] Boolean(false)
-  [0, 119] ·
-  [0, 120] Boolean(false)
-  [0, 121] Boolean(true)
-  [0, 132] Boolean(false)
-  [0, 133] Boolean(true)
-  [0, 122] ·
-  [0, 123] Boolean(false)
-  [0, 124] Boolean(true)
-  [0, 128] Boolean(true)
-  [0, 125] Record({})
-  [0, 126] Text("a token a trusted partner signed for payouts-api is needed")
+  [0, 119] Boolean(true)
+  [0, 130] Boolean(false)
+  [0, 131] Boolean(true)
+  [0, 120] ·
+  [0, 121] Boolean(false)
+  [0, 122] Boolean(true)
+  [0, 126] Boolean(true)
+  [0, 123] Record({})
+  [0, 124] Text("a token a trusted partner signed for payouts-api is needed")
+  [0, 125] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
   [0, 127] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 128] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
   [0, 129] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 130] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 131] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 132] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 133] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
   [0, 134] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 135] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 136] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 137] Boolean(false)
-  [0, 139] ·
-  [0, 140] Boolean(false)
-  [0, 141] Boolean(true)
-  [0, 153] Boolean(false)
-  [0, 154] Boolean(true)
-  [0, 143] ·
-  [0, 144] Boolean(false)
-  [0, 145] Boolean(true)
-  [0, 149] Boolean(true)
-  [0, 146] Record({})
-  [0, 147] Text("Bearer")
+  [0, 135] Boolean(false)
+  [0, 137] ·
+  [0, 138] Boolean(false)
+  [0, 139] Boolean(true)
+  [0, 151] Boolean(false)
+  [0, 152] Boolean(true)
+  [0, 141] ·
+  [0, 142] Boolean(false)
+  [0, 143] Boolean(true)
+  [0, 147] Boolean(true)
+  [0, 144] Record({})
+  [0, 145] Text("Bearer")
+  [0, 146] Record({"www-authenticate": Text("Bearer")})
   [0, 148] Record({"www-authenticate": Text("Bearer")})
+  [0, 149] Record({"www-authenticate": Text("Bearer")})
   [0, 150] Record({"www-authenticate": Text("Bearer")})
-  [0, 151] Record({"www-authenticate": Text("Bearer")})
-  [0, 152] Record({"www-authenticate": Text("Bearer")})
+  [0, 153] Record({"www-authenticate": Text("Bearer")})
+  [0, 154] Record({"www-authenticate": Text("Bearer")})
   [0, 155] Record({"www-authenticate": Text("Bearer")})
-  [0, 156] Record({"www-authenticate": Text("Bearer")})
-  [0, 157] Record({"www-authenticate": Text("Bearer")})
-  [0, 158] Boolean(false)
-  [0, 160] ·
-  [0, 161] Boolean(false)
-  [0, 162] Boolean(true)
-  [0, 171] Boolean(false)
-  [0, 172] Boolean(true)
-  [0, 163] ·
-  [0, 164] Boolean(false)
+  [0, 156] Boolean(false)
+  [0, 158] ·
+  [0, 159] Boolean(false)
+  [0, 160] Boolean(true)
+  [0, 169] Boolean(false)
+  [0, 170] Boolean(true)
+  [0, 161] ·
+  [0, 162] Boolean(false)
+  [0, 163] Boolean(true)
   [0, 165] Boolean(true)
-  [0, 167] Boolean(true)
+  [0, 164] Number(401.0)
   [0, 166] Number(401.0)
+  [0, 167] Number(401.0)
   [0, 168] Number(401.0)
-  [0, 169] Number(401.0)
-  [0, 170] Number(401.0)
+  [0, 171] Number(401.0)
+  [0, 172] Number(401.0)
   [0, 173] Number(401.0)
-  [0, 174] Number(401.0)
-  [0, 175] Number(401.0)
-  [0, 176, 0] Record({})
-  [0, 176, 1] Record({"status": Number(401.0)})
-  [0, 176, 2] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "status": Number(401.0)})
-  [0, 176, 3] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
-  [0, 176, 4] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
-  [0, 176] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 174, 0] Record({})
+  [0, 174, 1] Record({"status": Number(401.0)})
+  [0, 174, 2] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "status": Number(401.0)})
+  [0, 174, 3] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 174, 4] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 174] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
   [0] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1 | ·
   => Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1 | ·
 == jwt-api · POST /payouts · input 2
@@ -11437,13 +11435,10 @@
   [0, 7] ·
   [0, 8] ·
   [0, 9] ·
-  [0, 102] Boolean(false)
-  [0, 113] Boolean(false)
-  [0, 114] ·
-  [0, 56] Boolean(false)
-  [0, 101] Boolean(false)
-  [0, 117] ·
-  [0, 115] ·
+  [0, 31] Boolean(false)
+  [0, 42] Boolean(false)
+  [0, 43] ·
+  [0, 44] ·
   [0, 10] ·
   [0, 11] Text("")
   [0, 12] Text(" ")
@@ -11451,67 +11446,69 @@
   [0, 14] Text("payouts:write")
   [0, 15] Boolean(false)
   [0, 16] Boolean(true)
+  [0, 70] Boolean(false)
+  [0, 115] Boolean(false)
+  [0, 116] Boolean(false)
+  [0, 117] ·
   [0, 118] Boolean(false)
-  [0, 119] ·
-  [0, 120] Boolean(false)
-  [0, 121] Boolean(true)
-  [0, 132] Boolean(false)
-  [0, 133] Boolean(true)
-  [0, 122] ·
-  [0, 123] Boolean(false)
-  [0, 124] Boolean(true)
-  [0, 128] Boolean(true)
-  [0, 125] Record({})
-  [0, 126] Text("a token a trusted partner signed for payouts-api is needed")
+  [0, 119] Boolean(true)
+  [0, 130] Boolean(false)
+  [0, 131] Boolean(true)
+  [0, 120] ·
+  [0, 121] Boolean(false)
+  [0, 122] Boolean(true)
+  [0, 126] Boolean(true)
+  [0, 123] Record({})
+  [0, 124] Text("a token a trusted partner signed for payouts-api is needed")
+  [0, 125] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
   [0, 127] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 128] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
   [0, 129] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 130] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 131] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 132] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
+  [0, 133] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
   [0, 134] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 135] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 136] Record({"error": Text("a token a trusted partner signed for payouts-api is needed")})
-  [0, 137] Boolean(false)
-  [0, 139] ·
-  [0, 140] Boolean(false)
-  [0, 141] Boolean(true)
-  [0, 153] Boolean(false)
-  [0, 154] Boolean(true)
-  [0, 143] ·
-  [0, 144] Boolean(false)
-  [0, 145] Boolean(true)
-  [0, 149] Boolean(true)
-  [0, 146] Record({})
-  [0, 147] Text("Bearer")
+  [0, 135] Boolean(false)
+  [0, 137] ·
+  [0, 138] Boolean(false)
+  [0, 139] Boolean(true)
+  [0, 151] Boolean(false)
+  [0, 152] Boolean(true)
+  [0, 141] ·
+  [0, 142] Boolean(false)
+  [0, 143] Boolean(true)
+  [0, 147] Boolean(true)
+  [0, 144] Record({})
+  [0, 145] Text("Bearer")
+  [0, 146] Record({"www-authenticate": Text("Bearer")})
   [0, 148] Record({"www-authenticate": Text("Bearer")})
+  [0, 149] Record({"www-authenticate": Text("Bearer")})
   [0, 150] Record({"www-authenticate": Text("Bearer")})
-  [0, 151] Record({"www-authenticate": Text("Bearer")})
-  [0, 152] Record({"www-authenticate": Text("Bearer")})
+  [0, 153] Record({"www-authenticate": Text("Bearer")})
+  [0, 154] Record({"www-authenticate": Text("Bearer")})
   [0, 155] Record({"www-authenticate": Text("Bearer")})
-  [0, 156] Record({"www-authenticate": Text("Bearer")})
-  [0, 157] Record({"www-authenticate": Text("Bearer")})
-  [0, 158] Boolean(false)
-  [0, 160] ·
-  [0, 161] Boolean(false)
-  [0, 162] Boolean(true)
-  [0, 171] Boolean(false)
-  [0, 172] Boolean(true)
-  [0, 163] ·
-  [0, 164] Boolean(false)
+  [0, 156] Boolean(false)
+  [0, 158] ·
+  [0, 159] Boolean(false)
+  [0, 160] Boolean(true)
+  [0, 169] Boolean(false)
+  [0, 170] Boolean(true)
+  [0, 161] ·
+  [0, 162] Boolean(false)
+  [0, 163] Boolean(true)
   [0, 165] Boolean(true)
-  [0, 167] Boolean(true)
+  [0, 164] Number(401.0)
   [0, 166] Number(401.0)
+  [0, 167] Number(401.0)
   [0, 168] Number(401.0)
-  [0, 169] Number(401.0)
-  [0, 170] Number(401.0)
+  [0, 171] Number(401.0)
+  [0, 172] Number(401.0)
   [0, 173] Number(401.0)
-  [0, 174] Number(401.0)
-  [0, 175] Number(401.0)
-  [0, 176, 0] Record({})
-  [0, 176, 1] Record({"status": Number(401.0)})
-  [0, 176, 2] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "status": Number(401.0)})
-  [0, 176, 3] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
-  [0, 176, 4] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
-  [0, 176] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 174, 0] Record({})
+  [0, 174, 1] Record({"status": Number(401.0)})
+  [0, 174, 2] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "status": Number(401.0)})
+  [0, 174, 3] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 174, 4] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
+  [0, 174] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1
   [0] Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1 | ·
   => Record({"body": Record({"error": Text("a token a trusted partner signed for payouts-api is needed")}), "headers": Record({"www-authenticate": Text("Bearer")}), … #c7ab54b3a6b7b5d1 | ·
 == jwt-api · action trust · input 0
@@ -11635,78 +11632,81 @@
   [0, 0] Record({})
   [0, 1] ·
   [0, 2] ·
-  [0, 18] Boolean(false)
-  [0, 21] Boolean(false)
-  [0, 22] ·
-  [0, 23] ·
-  [0, 24] ·
   [0, 25] Boolean(false)
-  [0, 26] Boolean(true)
+  [0, 26] ·
+  [0, 27] ·
+  [0, 18] Boolean(false)
+  [0, 22] Boolean(false)
+  [0, 28] ·
+  [0, 29] Boolean(false)
   [0, 30] Boolean(true)
-  [0, 27] Record({})
-  [0, 28] Text("not one OpenPGP public key its own signatures hold for")
-  [0, 29] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
-  [0, 31] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
-  [0, 32] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
+  [0, 34] Boolean(true)
+  [0, 31] Record({})
+  [0, 32] Text("not one OpenPGP public key its own signatures hold for")
   [0, 33] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
-  [0, 34, 0] Record({})
-  [0, 34, 1] Number(200.0)
-  [0, 34, 2] Record({"status": Number(200.0)})
-  [0, 34, 3] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
-  [0, 34, 4] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
-  [0, 34] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
+  [0, 35] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
+  [0, 36] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
+  [0, 37] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
+  [0, 38, 0] Record({})
+  [0, 38, 1] Number(200.0)
+  [0, 38, 2] Record({"status": Number(200.0)})
+  [0, 38, 3] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
+  [0, 38, 4] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
+  [0, 38] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
   [0] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)}) | ·
   => Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)}) | ·
 == pgp-outbox · action trust · input 1
   [0, 0] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] ·
   [0, 2] ·
-  [0, 18] Boolean(false)
-  [0, 21] Boolean(false)
-  [0, 22] ·
-  [0, 23] ·
-  [0, 24] ·
   [0, 25] Boolean(false)
-  [0, 26] Boolean(true)
+  [0, 26] ·
+  [0, 27] ·
+  [0, 18] Boolean(false)
+  [0, 22] Boolean(false)
+  [0, 28] ·
+  [0, 29] Boolean(false)
   [0, 30] Boolean(true)
-  [0, 27] Record({})
-  [0, 28] Text("not one OpenPGP public key its own signatures hold for")
-  [0, 29] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
-  [0, 31] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
-  [0, 32] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
+  [0, 34] Boolean(true)
+  [0, 31] Record({})
+  [0, 32] Text("not one OpenPGP public key its own signatures hold for")
   [0, 33] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
-  [0, 34, 0] Record({})
-  [0, 34, 1] Number(200.0)
-  [0, 34, 2] Record({"status": Number(200.0)})
-  [0, 34, 3] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
-  [0, 34, 4] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
-  [0, 34] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
+  [0, 35] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
+  [0, 36] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
+  [0, 37] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
+  [0, 38, 0] Record({})
+  [0, 38, 1] Number(200.0)
+  [0, 38, 2] Record({"status": Number(200.0)})
+  [0, 38, 3] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
+  [0, 38, 4] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
+  [0, 38] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
   [0] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)}) | ·
   => Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)}) | ·
 == pgp-outbox · action trust · input 2
   [0, 0] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] ·
   [0, 2] ·
-  [0, 18] Boolean(false)
-  [0, 21] Boolean(false)
-  [0, 22] ·
-  [0, 23] ·
-  [0, 24] ·
   [0, 25] Boolean(false)
-  [0, 26] Boolean(true)
+  [0, 26] ·
+  [0, 27] ·
+  [0, 18] Boolean(false)
+  [0, 22] Boolean(false)
+  [0, 28] ·
+  [0, 29] Boolean(false)
   [0, 30] Boolean(true)
-  [0, 27] Record({})
-  [0, 28] Text("not one OpenPGP public key its own signatures hold for")
-  [0, 29] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
-  [0, 31] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
-  [0, 32] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
+  [0, 34] Boolean(true)
+  [0, 31] Record({})
+  [0, 32] Text("not one OpenPGP public key its own signatures hold for")
   [0, 33] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
-  [0, 34, 0] Record({})
-  [0, 34, 1] Number(200.0)
-  [0, 34, 2] Record({"status": Number(200.0)})
-  [0, 34, 3] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
-  [0, 34, 4] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
-  [0, 34] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
+  [0, 35] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
+  [0, 36] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
+  [0, 37] Record({"refused": Text("not one OpenPGP public key its own signatures hold for")})
+  [0, 38, 0] Record({})
+  [0, 38, 1] Number(200.0)
+  [0, 38, 2] Record({"status": Number(200.0)})
+  [0, 38, 3] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
+  [0, 38, 4] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
+  [0, 38] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)})
   [0] Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)}) | ·
   => Record({"body": Record({"refused": Text("not one OpenPGP public key its own signatures hold for")}), "status": Number(200.0)}) | ·
 == approval-mail · POST /payouts · input 0
@@ -20419,18 +20419,17 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/orders"), … #1957cbdc54144298 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] ·
   [0, 7] ·
-  [0, 12] Boolean(false)
-  [0, 14] Boolean(false)
-  [0, 15] ·
   [0, 8] Boolean(false)
-  [0, 11] Boolean(false)
-  [0, 18] ·
-  [0, 16] ·
+  [0, 10] Boolean(false)
+  [0, 11] ·
+  [0, 12] ·
   [0, 19] ·
   [0, 20] Number(0.0)
   [0, 21] Number(1.0)
   [0, 22] Number(1.0)
   [0, 23] Effect { sink: "store_write:tried", payload: Number(1.0) }
+  [0, 15] Boolean(false)
+  [0, 18] Boolean(false)
   [0, 24] Boolean(false)
   [0, 25] Boolean(true)
   [0, 26] Record({})
@@ -20459,7 +20458,7 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #0756e7c5f52a12a8 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 7] Text("x")
-  [0, 12] Boolean(true)
+  [0, 8] Boolean(true)
   [0, 2] Record({})
   [0, 3] Text("x")
   [0, 4] Record({"id": Text("x")})
@@ -20478,19 +20477,18 @@
   [0, 5, 8] ·
   [0, 5] ·
   [0, 6] ·
-  [0, 13] Boolean(false)
-  [0, 14] Boolean(false)
-  [0, 15] ·
-  [0, 8] Boolean(true)
   [0, 9] Boolean(false)
-  [0, 11] Boolean(false)
-  [0, 18] ·
-  [0, 16] ·
+  [0, 10] Boolean(false)
+  [0, 11] ·
+  [0, 12] ·
   [0, 19] ·
   [0, 20] Number(0.0)
   [0, 21] Number(1.0)
   [0, 22] Number(1.0)
   [0, 23] Effect { sink: "store_write:tried", payload: Number(1.0) }
+  [0, 15] Boolean(true)
+  [0, 16] Boolean(false)
+  [0, 18] Boolean(false)
   [0, 24] Boolean(false)
   [0, 25] Boolean(true)
   [0, 26] Record({})
@@ -20519,7 +20517,7 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #0d1ee3a89cfb69d7 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 7] ·
-  [0, 12] Boolean(true)
+  [0, 8] Boolean(true)
   [0, 2] Record({})
   [0, 3] ·
   [0, 4] ·
@@ -20538,19 +20536,18 @@
   [0, 5, 8] ·
   [0, 5] ·
   [0, 6] ·
-  [0, 13] Boolean(false)
-  [0, 14] Boolean(false)
-  [0, 15] ·
-  [0, 8] Boolean(true)
   [0, 9] Boolean(false)
-  [0, 11] Boolean(false)
-  [0, 18] ·
-  [0, 16] ·
+  [0, 10] Boolean(false)
+  [0, 11] ·
+  [0, 12] ·
   [0, 19] ·
   [0, 20] Number(0.0)
   [0, 21] Number(1.0)
   [0, 22] Number(1.0)
   [0, 23] Effect { sink: "store_write:tried", payload: Number(1.0) }
+  [0, 15] Boolean(true)
+  [0, 16] Boolean(false)
+  [0, 18] Boolean(false)
   [0, 24] Boolean(false)
   [0, 25] Boolean(true)
   [0, 26] Record({})
@@ -21318,6 +21315,281 @@
   [0, 5] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
   [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | · | ·
   => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)}) | ·
+== signup · POST /signup · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/signup"), … #ae7e2c5965e7d357 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 6] ·
+  [0, 16] ·
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Number(1.0)
+  [0, 5] Number(1.0)
+  [0, 20] Boolean(true)
+  [0, 21] Boolean(false)
+  [0, 29] Boolean(false)
+  [0, 30] ·
+  [0, 31] ·
+  [0, 108] Effect { sink: "store_write:tried", payload: Number(1.0) }
+  [0, 85] Boolean(true)
+  [0, 86] Boolean(false)
+  [0, 107] Boolean(false)
+  [0, 109] Boolean(false)
+  [0, 110] Boolean(true)
+  [0, 111] Record({})
+  [0, 79] Boolean(true)
+  [0, 73] Boolean(false)
+  [0, 74] ·
+  [0, 75] Boolean(false)
+  [0, 76] Boolean(true)
+  [0, 1] Text("counted")
+  [0, 77] Text("counted")
+  [0, 78] Text("counted")
+  [0, 80] Text("counted")
+  [0, 84] Text("counted")
+  [0, 112] Record({"failed_after": Text("counted")})
+  [0, 113] Record({"failed_after": Text("counted")})
+  [0, 119] Record({"failed_after": Text("counted")})
+  [0, 120] Boolean(false)
+  [0, 121] Boolean(true)
+  [0, 122] Number(400.0)
+  [0, 123] Number(400.0)
+  [0, 128] Number(400.0)
+  [0, 129, 0] Record({})
+  [0, 129, 1] Record({"status": Number(400.0)})
+  [0, 129, 2] Record({"body": Record({"failed_after": Text("counted")}), "status": Number(400.0)})
+  [0, 129, 3] Record({"body": Record({"failed_after": Text("counted")}), "status": Number(400.0)})
+  [0, 129] Record({"body": Record({"failed_after": Text("counted")}), "status": Number(400.0)})
+  [0] Record({"body": Record({"failed_after": Text("counted")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
+  => Record({"body": Record({"failed_after": Text("counted")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
+== signup · POST /signup · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #e670c1ab60f43ff6 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 6] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 16] ·
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Number(1.0)
+  [0, 5] Number(1.0)
+  [0, 20] Boolean(true)
+  [0, 21] Boolean(true)
+  [0, 8] ·
+  [0, 9] Text("@")
+  [0, 10] ·
+  [0, 11] Number(1.0)
+  [0, 12] ·
+  [0, 22] ·
+  [0, 29] ·
+  [0, 30] ·
+  [0, 31] ·
+  [0, 108] Effect { sink: "store_write:tried", payload: Number(1.0) }
+  [0, 85] Boolean(true)
+  [0, 86] Boolean(true)
+  [0, 87] Boolean(false)
+  [0, 107] Boolean(false)
+  [0, 109] Boolean(false)
+  [0, 110] Boolean(true)
+  [0, 111] Record({})
+  [0, 79] Boolean(true)
+  [0, 73] Boolean(true)
+  [0, 67] Boolean(false)
+  [0, 68] ·
+  [0, 69] Boolean(false)
+  [0, 70] Boolean(true)
+  [0, 7] Text("read")
+  [0, 71] Text("read")
+  [0, 72] Text("read")
+  [0, 74] Text("read")
+  [0, 78] Text("read")
+  [0, 80] Text("read")
+  [0, 84] Text("read")
+  [0, 112] Record({"failed_after": Text("read")})
+  [0, 113] Record({"failed_after": Text("read")})
+  [0, 119] Record({"failed_after": Text("read")})
+  [0, 120] Boolean(false)
+  [0, 121] Boolean(true)
+  [0, 122] Number(400.0)
+  [0, 123] Number(400.0)
+  [0, 128] Number(400.0)
+  [0, 129, 0] Record({})
+  [0, 129, 1] Record({"status": Number(400.0)})
+  [0, 129, 2] Record({"body": Record({"failed_after": Text("read")}), "status": Number(400.0)})
+  [0, 129, 3] Record({"body": Record({"failed_after": Text("read")}), "status": Number(400.0)})
+  [0, 129] Record({"body": Record({"failed_after": Text("read")}), "status": Number(400.0)})
+  [0] Record({"body": Record({"failed_after": Text("read")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
+  => Record({"body": Record({"failed_after": Text("read")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
+== signup · POST /signup · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #6bd028959828c40f | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 6] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 16] ·
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Number(1.0)
+  [0, 5] Number(1.0)
+  [0, 20] Boolean(true)
+  [0, 21] Boolean(true)
+  [0, 8] ·
+  [0, 9] Text("@")
+  [0, 10] ·
+  [0, 11] Number(1.0)
+  [0, 12] ·
+  [0, 22] ·
+  [0, 29] ·
+  [0, 30] ·
+  [0, 31] ·
+  [0, 108] Effect { sink: "store_write:tried", payload: Number(1.0) }
+  [0, 85] Boolean(true)
+  [0, 86] Boolean(true)
+  [0, 87] Boolean(false)
+  [0, 107] Boolean(false)
+  [0, 109] Boolean(false)
+  [0, 110] Boolean(true)
+  [0, 111] Record({})
+  [0, 79] Boolean(true)
+  [0, 73] Boolean(true)
+  [0, 67] Boolean(false)
+  [0, 68] ·
+  [0, 69] Boolean(false)
+  [0, 70] Boolean(true)
+  [0, 7] Text("read")
+  [0, 71] Text("read")
+  [0, 72] Text("read")
+  [0, 74] Text("read")
+  [0, 78] Text("read")
+  [0, 80] Text("read")
+  [0, 84] Text("read")
+  [0, 112] Record({"failed_after": Text("read")})
+  [0, 113] Record({"failed_after": Text("read")})
+  [0, 119] Record({"failed_after": Text("read")})
+  [0, 120] Boolean(false)
+  [0, 121] Boolean(true)
+  [0, 122] Number(400.0)
+  [0, 123] Number(400.0)
+  [0, 128] Number(400.0)
+  [0, 129, 0] Record({})
+  [0, 129, 1] Record({"status": Number(400.0)})
+  [0, 129, 2] Record({"body": Record({"failed_after": Text("read")}), "status": Number(400.0)})
+  [0, 129, 3] Record({"body": Record({"failed_after": Text("read")}), "status": Number(400.0)})
+  [0, 129] Record({"body": Record({"failed_after": Text("read")}), "status": Number(400.0)})
+  [0] Record({"body": Record({"failed_after": Text("read")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
+  => Record({"body": Record({"failed_after": Text("read")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
+== signup · GET /stats · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/stats"), "q… #75f920070e3a41a5 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Record({})
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Record({"tried": Number(0.0)})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0, 5, 4] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0, 5] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  => Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+== signup · GET /stats · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #215ff180d4426edf | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Record({})
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Record({"tried": Number(0.0)})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0, 5, 4] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0, 5] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  => Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+== signup · GET /stats · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #96ff405c2c4407b1 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Record({})
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Record({"tried": Number(0.0)})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0, 5, 4] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0, 5] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  => Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+== signup · GET /accounts · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/accounts"),… #584956425168c9c3 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] ·
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] ·
+  [0, 2, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 2] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== signup · GET /accounts · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #9f9c5f7228f29f40 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] ·
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] ·
+  [0, 2, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 2] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== signup · GET /accounts · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #73cb3b89dd5e70c1 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] ·
+  [0, 2, 0] Record({})
+  [0, 2, 1] Number(200.0)
+  [0, 2, 2] Record({"status": Number(200.0)})
+  [0, 2, 3] ·
+  [0, 2, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 2] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == crunch · POST /stats · input 0
   [0, 0, 0] Record({})
   [0, 0, 1] Record({"after": Text("a")})

@@ -23,11 +23,11 @@
 //! rule. The flow does what the third does, always; where the third differs from the second
 //! is the whole of what a reader of JavaScript has to know, and is counted.
 //!
-//! It keeps one promise JavaScript doesn't, also on purpose: a `try` block that fails leaves
-//! nothing behind but the requests it made (docs/LANGUAGE.md §6.5), written here as JavaScript
-//! once (`mark` as the block begins, `undo` in its catch). Outside a try, a throw ends the handler
-//! as a return of nothing, and so, as in JavaScript, does a line that fails (the owner's open
-//! question: today a flow goes on, owed under its debt).
+//! A `try` block works as JavaScript's (docs/LANGUAGE.md §6.5a): what it did above the line that
+//! failed is kept, and the catch and what follows see the last value each name and state key was
+//! given. So a try is JavaScript's own here, with nothing written for it. Outside a try, a throw
+//! ends the handler as a return of nothing, and so, as in JavaScript, does a line that fails (the
+//! owner's open question: today a flow goes on, owed under its debt).
 //!
 //! Where a flow doesn't yet do what it reads as, the difference is owed under a named debt of
 //! reached (`reached.rs`, each with its smallest flow), matched mark by mark (`debt`): any other
@@ -38,8 +38,7 @@
 //! `CONDITIONS`, a new request a line of `REQUESTS`. None needs its answer written.
 
 use super::reached::{
-    Debt, AN_UNUSED_READ_IS_NOT_ASKED, A_CHOICES_TEST_IS_READ_PAST_A_RETURN, A_READ_IS_ASKED_PAST_A_RETURN, A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE,
-    A_LINE_AFTER_A_FAILURE_RUNS,
+    Debt, AN_UNUSED_READ_IS_NOT_ASKED, A_CHOICES_TEST_IS_READ_PAST_A_RETURN, A_LINE_AFTER_A_FAILURE_RUNS, A_READ_IS_ASKED_PAST_A_RETURN,
 };
 use super::*;
 
@@ -280,8 +279,6 @@ fn cases() -> Vec<Case> {
                 };
                 // A subject that isn't there takes no case, the default no more than another.
                 let read = read.replace("req.json.", "J.").replace("switch (J.k) {", "if (J.k !== undefined) switch (J.k) {");
-                // A try block that fails leaves nothing behind but the requests it made.
-                let read = read.replace("try {\n", "const TM = mark()\ntry {\n").replace("} catch {\n", "} catch {\nundo(TM)\n");
                 // Outside a try, a throw ends the handler as a return of nothing (§6.5a); a line
                 // that fails ends it too, as JavaScript's throw does (the owner's open question:
                 // a flow goes on today, owed under its debt).
@@ -654,7 +651,7 @@ struct Did {
 /// and as a flow reads it. The names a handler uses are stand-ins that leave their mark; `await`
 /// is dropped, since they answer at once.
 fn javascript_does(handlers: &[&Case], requests: &[usize]) -> Vec<Vec<(Did, Did)>> {
-    let names = "state, marks, console, ping, rec, rec2, rec3, part, ask, ask2, api, status, mark, undo, news, gone, bump, go, maybe, askif, doif, early, held, fin, notes, check, jobs, ops, every, every2, files, shop, hail, boom";
+    let names = "state, marks, console, ping, rec, rec2, rec3, part, ask, ask2, api, status, news, gone, bump, go, maybe, askif, doif, early, held, fin, notes, check, jobs, ops, every, every2, files, shop, hail, boom";
     let made: Vec<String> = handlers
         .iter()
         .map(|c| {
@@ -668,7 +665,7 @@ fn javascript_does(handlers: &[&Case], requests: &[usize]) -> Vec<Vec<(Did, Did)
   const handlers = [
 {}
   ];
-  const run = (make, req, promise) => {{
+  const run = (make, req, asFlow) => {{
     const fx = [];
     const state = {{}};
     const env = {{
@@ -710,12 +707,11 @@ fn javascript_does(handlers: &[&Case], requests: &[usize]) -> Vec<Vec<(Did, Did)
       askif: (x) => {{ if (x) fx.push("g"); return 1 }},
       doif: (x) => {{ if (x) fx.push("p", "c", "s"); return 1 }},
       early: (x) => {{ if (x === "a") return "skipped"; fx.push("c", "p"); return "sent" }},
-      // Its block writes and puts before it fails: JavaScript keeps both, the try's promise
-      // neither.
+      // Its block writes and puts before it fails: JavaScript keeps both, and so does a flow.
       held: (x) => {{
         let ok = true;
         try {{ JSON.parse(x) }} catch (e) {{ ok = false }}
-        if (ok || !promise) fx.push("f", "p");
+        fx.push("f", "p");
         if (!ok) fx.push("c");
         return ok ? "parsed" : "kept";
       }},
@@ -727,18 +723,10 @@ fn javascript_does(handlers: &[&Case], requests: &[usize]) -> Vec<Vec<(Did, Did)
         try {{ JSON.parse(x) }} catch (e) {{ ok = false }}
         return ok ? "parsed" : "kept";
       }},
-      // The try's promise (§6.5): what a failed block made is undone, but for its requests and
-      // the reads it asked.
-      mark: () => [fx.length, Object.assign({{}}, state)],
-      undo: ([n, kept]) => {{
-        fx.push(...fx.splice(n).filter((m) => m === "r" || m === "g" || m === "n" || m === "u" || m === "t" || m === "x"));
-        for (const k of Object.keys(state)) delete state[k];
-        Object.assign(state, kept);
-      }},
     }};
     let threw = false;
     // As a flow reads it, a throw outside a try ends the handler as a return of nothing.
-    try {{ make(env)(req) }} catch (e) {{ threw = !(promise && String(e).includes("boom")) }}
+    try {{ make(env)(req) }} catch (e) {{ threw = !(asFlow && String(e).includes("boom")) }}
     for (const k of Object.keys(state)) fx.push(k);
     return {{ marks: fx.sort().join(""), threw }};
   }};
@@ -852,27 +840,15 @@ fn flow_does(state: &AppState, slug: &str, block: Block, at: (usize, usize, usiz
 
 /// Where a flow doesn't yet do what it reads as, and why: debts, each to be paid by a change to
 /// the language and then struck from here. A difference outside these fails the test, and so does
-/// one of these that no longer differs anywhere. The debts are reached's (`reached.rs`, one smallest flow each), and the started half, carried
-/// from the try's own work.
+/// one of these that no longer differs anywhere. The debts are reached's (`reached.rs`, one smallest
+/// flow each). (S and the started half, what a failed try's functions and starts kept against its
+/// promise, were struck by C7: a try keeps what it did, as JavaScript's does.)
 const DEBTS: &[&Debt] = &[
-    &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE,
-    &THE_STARTED_HALF,
     &A_LINE_AFTER_A_FAILURE_RUNS,
     &A_CHOICES_TEST_IS_READ_PAST_A_RETURN,
     &A_READ_IS_ASKED_PAST_A_RETURN,
     &AN_UNUSED_READ_IS_NOT_ASKED,
 ];
-
-/// The started half: a start in a try block that then fails is made, as JavaScript makes it,
-/// where the try's promise keeps nothing of a failed block but its requests (the started half's
-/// own design, open).
-pub(super) const THE_STARTED_HALF: Debt = Debt {
-    name: "the started half",
-    says: "an action a try block starts, bound to a name or through a function, or another flow's action it calls, is started though the block then fails",
-};
-
-/// The shapes whose try block fails on some request, the statement in it reached before.
-const FAILING_TRIES: &[&str] = &["before a failure in a try", "bound before a failure in a try", "returned after a failure in a try", "before a throw in a try"];
 
 /// Where the compiler refuses a handler with a fault of its own (a graph that can't run), known and
 /// owned elsewhere: by shape and effect, and why. Each is left out as a refusal is, and one that
@@ -928,11 +904,7 @@ fn debt(case: &Case, request: &str, made: &str, missed: &str) -> Option<Vec<&'st
         }
     };
     let (shape, mark) = (case.shape, case.mark);
-    let failing_try = FAILING_TRIES.contains(&shape);
     explain(shape == "after a failure, no try" && request == "not json", &A_LINE_AFTER_A_FAILURE_RUNS, "wofpcdgrslqmnhbuktx", "");
-    explain(failing_try && matches!(mark, "f" | "f2" | "f3" | "fp" | "fu" | "ft" | "fy" | "fa" | "fa2" | "fi" | "fe" | "lf"), &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, "fpcqm", "");
-    // Another flow's action called (`k`) is started as an action is: the started half's too.
-    explain(failing_try && matches!(mark, "s" | "fs" | "fr" | "fi" | "k" | "ls"), &THE_STARTED_HALF, "sk", "");
     let reads_in_test = case.condition.starts_with("notes[");
     explain(reads_in_test && shape.contains("?:"), &A_CHOICES_TEST_IS_READ_PAST_A_RETURN, "n", "");
     explain(matches!(mark, "rd" | "pk"), &A_READ_IS_ASKED_PAST_A_RETURN, "n", "");

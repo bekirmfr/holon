@@ -1628,7 +1628,8 @@ function total(order) {
   return sum
 }
 
-// Keeps an order only when every step of the try block succeeded; counts every attempt.
+// Keeps an order only when every line of the try block above its write succeeded; counts every
+// attempt.
 route.post("/orders", (req) => {
   let order
   try {
@@ -1654,9 +1655,8 @@ route.get("/stats", () => ({ tried: state.tried ?? 0 }))
 ```
 
 `throw new Error(message)` is the `fail` leaf: nothing, with its message given to the run's log.
-`total` answers nothing for an order without lines, and the try block, whose values must all
-arrive, fails: its write to `orders` is tied to them having arrived, so nothing is kept, and the
-catch's 400 answers. A body that isn't JSON fails it the same way, and so does a line without a
+`total` answers nothing for an order without lines, and the try block fails at that line: the
+write to `orders` is below it and isn't reached, so nothing is kept, and the catch's 400 answers. A body that isn't JSON fails it the same way, and so does a line without a
 price, whose sum has no value: catch catches a value that has none, as much as a throw (§6.5a).
 `finally` is tied to neither, so every attempt counts. `/check` has no try, and a throw nothing
 catches is nothing, which its `?? status(422)` answers.
@@ -1940,7 +1940,7 @@ handler (§10, §12).
 | `if (c) …; else …` | its writes guarded by their branch's condition; writes to one key in both branches are one write, of `a` or `b` as `c` says. On a `c` with no value neither branch runs (§6.4) |
 | `if (x !== undefined) { … }` | its writes and calls tied to `x` (§5.11) |
 | `switch (s) { case …: … }` | a choice by value (§6.5) |
-| `try { … } catch { … } finally { … }` | a choice on the try block's values having arrived: its writes, sends and returns are tied to that, the catch block's to its negation, and a name either assigns is the one chosen, as after an `if`; `finally`'s are tied to neither, only to the `try` being reached (§6.5a) |
+| `try { … } catch { … } finally { … }` | a choice on the try block's values having arrived: each line of the block is reached where the lines above it that can fail didn't, so what it did above the line that failed is kept and a name keeps the last value reached; its returns are tied to the block succeeding, the catch block's statements to its failing, and a name either assigns is the one chosen, as after an `if`; `finally`'s are tied to neither, only to the `try` being reached (§6.5a) |
 | `throw new Error(m)` | the `fail` leaf, nothing, `m` for the run's log: in a try block, its failure; elsewhere the handler's answer, as a `return` of nothing: a route's 404 (§6.5a) |
 | `return e` | the handler's answer (§5.11), or a function's outputs (§5.8) |
 | `expr` | an effect (§5.10) |
@@ -2911,18 +2911,20 @@ a `NaN` too), and `ok` is all of them. `has_value` is one step, the leaf of that
 its input arrived, `false`, `0` and `NaN` included, and false when it didn't, so it never gives
 nothing itself; a wait's hold and an `after` test with it too, and a text may call it (`import {
 has_value } from "holon"`). (Until 2026-11-24 the test was two steps, `same_value(x, x) ?? false`,
-drawn on the canvas as a doubled wire into `same_value` and a `default` after it.) The block's writes and sends are tied to `ok` (their
-`after`), so they are made all together or not at all, and its returns answer only where `ok`
-holds. The catch block is read under `!ok`: its writes are tied to the block having failed, and a
-name or state key either block changes holds `ok ? tried : caught` after them, as after an `if`.
-`finally` holds statements tied to neither, made whichever block ran, as JavaScript's are, and
+drawn on the canvas as a doubled wire into `same_value` and a `default` after it.)
+
+A try block runs as JavaScript's does: **each line runs only where the lines above it that can
+fail didn't**, and what the block did above the line that failed is done and kept. A write, a
+send, a start or a request on a line above it is made; one below it isn't. Each name and state key
+the block changes holds the last value it was given on a line that was reached, so the catch, and
+what follows the `try`, see what the block left, as in JavaScript. A state key written above the
+failing line and again below it keeps the first value. Its returns answer only where `ok` holds.
+The catch block is read under `!ok`, and a name or state key either block changes holds
+`ok ? tried : caught` after them, as after an `if`. `finally` holds statements tied to neither, made whichever block ran, as JavaScript's are, and
 only where the `try` itself is reached: a `return` above the `try` that answered, or an `if` around
 it not entered, leaves the `finally` unmade too, as it leaves a `try` without a `catch`. (Until
-2026-11-24 a `finally`'s write was made though a `return` above the `try` had answered.) And
-what follows a statement in the try block runs only where what that statement made arrived, as
-the rest of JavaScript's block is skipped once a statement throws: a call bound after a failure
-isn't made, and a function after it isn't entered. Its write is tied to that too (here,
-`notes[tried_1]` is written only where `note` arrived).
+2026-11-24 a `finally`'s write was made though a `return` above the `try` had answered.) Here,
+`notes[tried_1]` is written only where `note` arrived, and the answer is chosen by `ok`.
 
 ```ts
 route.post("/n", (req) => {
@@ -2942,11 +2944,8 @@ is the same unit as (a test says so):
 route.post("/n", (req) => {
   const note = JSON.parse(req.body)
   const tried_1 = note.id
+  notes[tried_1] = has_value(note) ? note : undefined
   const ok_1 = has_value(note) && has_value(tried_1)
-  const tie = ok_1 ? true : undefined
-  if (tie !== undefined) {
-    notes[tried_1] = has_value(note) ? note : undefined
-  }
   return status(!(ok_1 ?? false) ? 400 : 201, !(ok_1 ?? false) ? "not a note" : "kept")
 })
 ```
@@ -2967,16 +2966,11 @@ absence:
   didn't arrive, so the catch runs, where JavaScript would carry on with `undefined` (all but the
   last two). Give such a value its fallback inside the block (`req.json.kind ?? "plain"`) when its
   absence isn't a failure.
-- **The try block's writes are all or none.** JavaScript keeps the writes made before the throw;
-  Holon makes none of them, as a run's writes are made at its end (§6.6).
 - **A call the try block binds is made when the statements before it succeeded,** as
   JavaScript's is: one written after a failure isn't made (until 2026-11-11 it was, unless it read
   what failed). So the requests a try block makes go one after another, each in a round of its
   own, where elsewhere those that don't read each other go together. Its answer's arriving is part
-  of `ok`, so a failed request reaches the catch. A send written as a statement is tied to `ok`, as
-  a write is.
-- **The catch block sees the names as they were before the try,** not as the try block left them,
-  since what the try block made may not have arrived.
+  of `ok`, so a failed request reaches the catch.
 - `catch (e)` is refused, "write `catch { … }`; the reason is in the run's log": a failure carries
   no reason as a value yet (the L4's slice 10). A `return` or `throw` in `finally`, and a `switch`
   that returns inside a try block, come in later slices.

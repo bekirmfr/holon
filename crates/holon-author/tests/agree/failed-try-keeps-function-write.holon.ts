@@ -1,7 +1,8 @@
 // A function writes inside a try that then fails.
 //
 // Send:        curl -X POST -H "Content-Type: application/json" -d '{"a":"x","text":"{bad"}' http://127.0.0.1:9642/go
-// JavaScript:  throws at JSON.parse, lands in catch; Holon's promise: a failed try keeps nothing, so n stays 0.
+// JavaScript:  bump writes n = 1, then JSON.parse throws and the catch answers "bad"; a try keeps what it did
+//              above the line that failed, so n is 1, in JavaScript and in Holon alike.
 // Then look:   curl http://127.0.0.1:9642/count
 import { flow, route } from "holon"
 import state from "state"

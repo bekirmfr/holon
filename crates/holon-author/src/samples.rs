@@ -1122,7 +1122,7 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "intake",
         title: "Intake (try, catch, throw and finally)",
-        description: "Takes orders as JSON and keeps one only when every step of a try block succeeded: a function that throws new Error(…) for an order with no lines or a total not over 0, a body that isn't JSON, and a line without a price each answer the catch's 400, with nothing kept, and a throw's message goes to the run's log. finally counts every attempt, kept or not. A throw nothing catches is nothing, which a ?? answers.",
+        description: "Takes orders as JSON and keeps one only when every line of a try block above its write succeeded: a function that throws new Error(…) for an order with no lines or a total not over 0, a body that isn't JSON, and a line without a price each answer the catch's 400, with nothing kept, and a throw's message goes to the run's log. finally counts every attempt, kept or not. A throw nothing catches is nothing, which a ?? answers.",
         shows: &["try and catch", "throw", "finally", "fail"],
         port: Some("8178"),
         secrets: &[],
@@ -1178,6 +1178,18 @@ static SAMPLES: &[Sample] = &[
         browsers: None,
         try_it: r#"curl -X POST -d '{"lines":[{"sku":"a1","qty":3},{"sku":"b2","qty":5}]}' http://127.0.0.1:8204/restock answers {"asked":["a1","b2"]}, and holon runs restock --run 1 shows two requests to httpbin.org and two puts in stock, a1's first"#,
         text: include_str!("../samples/restock.holon.ts"),
+    },
+    Sample {
+        name: "signup",
+        title: "Signup (a try keeps what it did before it failed)",
+        description: "Takes a signup as JSON in steps inside a try: it counts the attempt, reads the body, checks the email and keeps the account. As in JavaScript, a line that fails ends the block there: the count above it stays, the account below it isn't kept, and the catch answers the last step reached, read from a let the block was changing.",
+        shows: &["try and catch", "what a failed try keeps", "a let changed in a try", "throw"],
+        port: Some("8209"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -X POST -d '{"email":"ada@example.com","name":"Ada"}' http://127.0.0.1:8209/signup answers 201 {"step":"kept"}; -d 'not json' answers 400 {"failed_after":"counted"}; -d '{"email":"ada","name":"Ada"}' answers 400 {"failed_after":"read"}; curl http://127.0.0.1:8209/stats then counts all three, and /accounts holds Ada's alone"#,
+        text: include_str!("../samples/signup.holon.ts"),
     },
 ];
 

@@ -29,11 +29,9 @@ pub(super) struct Debt {
     pub(super) says: &'static str,
 }
 
-/// S: a failed try keeps what its functions made.
-pub(super) const A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE: Debt = Debt {
-    name: "a failed try keeps what its functions made",
-    says: "a write a function makes in a try block that then fails is kept, where the try's promise keeps nothing",
-};
+// S (a failed try keeps what its functions made) and the started half were struck by C7
+// (2026-11-25): a try works as JavaScript's does and keeps what its block did above the line that
+// failed, a function's writes and starts with the rest, so neither is a difference any more.
 // L (what a list's function makes is dropped) was struck by C3: a list's function hands out
 // what it makes, once per item (core's `did`).
 /// G, new in the list grid (2026-11-22): a list's function goes on past an item that fails.
@@ -93,7 +91,6 @@ pub(super) const A_LINE_AFTER_A_FAILURE_RUNS: Debt = Debt {
 
 /// Every debt of the table, each to be struck when no row differs under it.
 pub(super) const DEBTS: &[&Debt] = &[
-    &A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE,
     &A_CHOICES_TEST_IS_READ_PAST_A_RETURN,
     &A_READ_IS_ASKED_PAST_A_RETURN,
     &A_LINE_AFTER_A_FAILURE_RUNS,
@@ -112,7 +109,17 @@ enum Today {
     /// be refused by the round trip and deployed by the reader alone; none is now, and a row the
     /// round trip refuses fails.)
     Differs(&'static Debt, &'static str),
+    /// Waiting for the owner: the flow is left doing these marks, as it did before the question
+    /// was asked, until it is decided whether this is a difference at all. A row that starts doing
+    /// what JavaScript does, or anything else, fails, to be turned to its answer.
+    WaitsForTheOwner(&'static str, &'static str),
 }
+
+/// The owner's open question, asked with C7 (2026-11-25): in a `try`, does a request, a start or a
+/// send written on its own line, its value not bound, run the catch when it itself fails (a host
+/// that refuses the connection), as JavaScript's `await fetch(…)` throws there? Left as before C7:
+/// such a line is no line that may fail, and the catch doesn't run.
+pub(super) const OWN_LINE_FAILURE_RUNS_THE_CATCH: &str = "does a request, start or send on its own line that fails run the catch";
 
 /// One row: a plain name, the short text (its route `POST /go`), the request, whether the answer
 /// is compared, what JavaScript does, how it stands today, and the long form with what JavaScript
@@ -148,12 +155,11 @@ fn rows() -> Vec<Row> {
             text: "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-02\", { port: 19602 })\n\nfunction bump(x) {\n  ++state.n\n  return x + \"!\"\n}\n\nroute.post(\"/go\", (req) => {\n  try {\n    const n = bump(req.json.a)\n    const parsed = JSON.parse(req.json.text)\n  } catch {\n    return \"bad\"\n  }\n  return \"end\"\n})\n",
             request: r#"{"a":"x","text":"{bad"}"#,
             answer: true,
-            // Holon's promise, not JavaScript's: a try block that fails keeps nothing.
-            javascript: "answers \"bad\"",
-            today: Today::Differs(&A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE, "answers \"bad\"; writes n = 1"),
+            javascript: "answers \"bad\"; writes n = 1",
+            today: Today::AsJavascript,
             long: Some((
                 "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"reached-02-long\", { port: 19622 })\n\nroute.post(\"/go\", (req) => {\n  try {\n    ++state.n\n    const parsed = JSON.parse(req.json.text)\n  } catch {\n    return \"bad\"\n  }\n  return \"end\"\n})\n",
-                "answers \"bad\"",
+                "answers \"bad\"; writes n = 1",
             )),
         },
         Row {
@@ -361,6 +367,15 @@ fn rows() -> Vec<Row> {
             today: Today::AsJavascript,
             long: None,
         },
+        Row {
+            name: "a request on its own line, in a try, to a host that refuses it",
+            text: "import { flow, route } from \"holon\"\nimport api from \"host:@REFUSED@\"\n\nflow(\"reached-23\", { port: 19634 })\n\nroute.post(\"/go\", async (req) => {\n  try {\n    await api.post(\"/hit\", { body: req.json.a })\n    const parsed = JSON.parse(req.json.text)\n  } catch {\n    return \"bad\"\n  }\n  return \"end\"\n})\n",
+            request: r#"{"a":"x","text":"{}"}"#,
+            answer: true,
+            javascript: "answers \"bad\"",
+            today: Today::WaitsForTheOwner(OWN_LINE_FAILURE_RUNS_THE_CATCH, "answers \"end\""),
+            long: None,
+        },
     ]
 }
 
@@ -441,15 +456,16 @@ pub(super) fn marks_of(state: &AppState, slug: &str, url: &str, body: &str, answ
 fn the_debts_of_reached_each_differ_as_recorded() {
     let state = claims_state("");
     let (host, _hits) = counting_server();
+    let refused = refusing_host();
     let mut wrong = Vec::new();
     let mut owing: BTreeSet<&str> = BTreeSet::new();
     for row in rows() {
-        let text = row.text.replace("@PING@", PING);
+        let text = row.text.replace("@PING@", PING).replace("@REFUSED@", &refused);
         if let Err(e) = holon_author::lang::compile(&text) {
             wrong.push(format!("{}: the round trip refuses it: {e}", row.name));
             continue;
         }
-        let slug = deploy_text(&state, &text, &host);
+        let slug = deploy_text(&state, &text, if text.contains(&refused) { &refused } else { &host });
         let did = marks_of(&state, &slug, "/go", row.request, row.answer);
         match row.today {
             Today::AsJavascript => {
@@ -463,6 +479,11 @@ fn the_debts_of_reached_each_differ_as_recorded() {
                     wrong.push(format!("\"{}\" no longer differs on {:?}: strike it ({})", debt.name, row.name, debt.says));
                 } else if did != recorded {
                     wrong.push(format!("{}: differs another way than \"{}\" records: recorded {recorded:?}, the flow {did:?}, JavaScript {:?}", row.name, debt.name, row.javascript));
+                }
+            }
+            Today::WaitsForTheOwner(question, recorded) => {
+                if did != recorded {
+                    wrong.push(format!("{}: left as it was while the owner decides \"{question}\", it now does {did:?} (recorded {recorded:?}, JavaScript {:?})", row.name, row.javascript));
                 }
             }
         }
@@ -581,6 +602,153 @@ fn one_key_written_before_an_if_and_inside_it_holds_its_value() {
     assert!(as_javascript > by_rule, "{as_javascript} as JavaScript, {by_rule} by rule");
 }
 
+/// A local address nothing listens on: a request to it is refused at once.
+fn refusing_host() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    drop(listener);
+    host
+}
+
+/// The kinds of thing a `try` block changes, for the join sweep: a name, the statement that
+/// changes it to the request's `one`, what reads it (`{R}`, what a catch or the code after the
+/// try answers), and what sets it before the try, if anything.
+const JOIN_KINDS: &[(&str, &str, &str, &str)] = &[
+    ("a local name", "v = req.json.one", "v", "let v = req.json.zero\n  "),
+    ("a state key", "state.k = req.json.one", "\"end\"", ""),
+    ("a state key written twice", "state.k = req.json.one", "\"end\"", "@IN@state.k = req.json.zero\n    "),
+    ("a collection item", "notes[req.json.key] = req.json.one", "\"end\"", ""),
+    ("a delete", "delete gone[req.json.key]", "\"end\"", ""),
+];
+
+/// The ways a line of a `try` block fails, each failing on the sweep's second request and not on
+/// its first.
+const JOIN_FAILURES: &[&str] = &["const p = JSON.parse(req.json.text)", "const p = req.json.a.b", "if (req.json.bad) throw new Error(\"no\")"];
+
+/// The sweep's requests: one on which no line fails, one on which each does.
+const JOIN_REQUESTS: &[&str] = &[r#"{"zero":"zero","one":"one","key":"k","text":"{}","a":{"b":1},"bad":false}"#, r#"{"zero":"zero","one":"one","key":"k","text":"{bad","bad":true}"#];
+
+/// The sweep's handlers: each kind, changed before or after the failing line (a key written twice:
+/// before and after), read by the catch or by the code after the try, for each way to fail.
+fn join_handlers() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (kind, change, read, before) in JOIN_KINDS {
+        let (outside, inside) = match before.strip_prefix("@IN@") {
+            Some(inside) => ("", inside),
+            None => (*before, ""),
+        };
+        let places: &[&str] = if inside.is_empty() { &["before", "after"] } else { &["around"] };
+        for place in places {
+            for reader in ["the catch", "after the try"] {
+                for failure in JOIN_FAILURES {
+                    let block = match *place {
+                        "before" => format!("{change}\n    {failure}"),
+                        "after" => format!("{failure}\n    {change}"),
+                        _ => format!("{inside}{failure}\n    {change}"),
+                    };
+                    let (caught, after) = if reader == "the catch" { (format!("\n    return {read}\n  "), "\"done\"".to_string()) } else { ("\n  ".to_string(), read.to_string()) };
+                    let body = format!("{outside}try {{\n    {block}\n  }} catch {{{caught}}}\n  return {after}");
+                    out.push((format!("{kind}, changed {place} the failing line, read by {reader}, failing by {failure}"), body));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// What JavaScript does with each handler on each request: its answer, then what it left in
+/// `state.k`, which items of `notes` it put and of `gone` it deleted.
+fn join_in_javascript(handlers: &[(String, String)]) -> Vec<Vec<String>> {
+    let made: Vec<String> = handlers.iter().map(|(_, body)| format!("({{ state, notes, gone }}) => (req) => {{\n{body}\n}}")).collect();
+    let source = format!(
+        r#"(requests) => {{
+  const handlers = [
+{}
+  ];
+  const run = (make, req) => {{
+    const fx = [];
+    const state = {{}};
+    const notes = new Proxy({{}}, {{ set: (t, k, v) => {{ fx.push("puts notes " + k + " = " + v); return true }} }});
+    const gone = new Proxy({{}}, {{ deleteProperty: (t, k) => {{ fx.push("deletes gone " + k); return true }} }});
+    const answer = make({{ state, notes, gone }})(req);
+    if (state.k !== undefined) fx.push("writes k = " + state.k);
+    return ["answers " + answer, ...fx].join("; ");
+  }};
+  return handlers.map((make) => requests.map((req) => run(make, req)));
+}}"#,
+        made.join(",\n")
+    );
+    let requests: Vec<Value> = JOIN_REQUESTS
+        .iter()
+        .map(|body| Value::Record(BTreeMap::from([("body".to_string(), Value::Text(body.to_string())), ("json".to_string(), holon_core::parse_json(body).unwrap())])))
+        .collect();
+    let limits = holon_core::ModuleLimits { fuel: 1_000_000_000, memory: 64 << 20 };
+    let outs = holon_module::shared().run(holon_module::JS_ENGINE, &limits, &[Some(Value::Text(source)), Some(Value::List(vec![Value::List(requests)]))]).unwrap();
+    let Some(Value::Record(answer)) = outs.into_iter().next().flatten() else { panic!("the engine answers a record") };
+    let Some(Value::List(per_handler)) = answer.get("value") else { panic!("JavaScript failed: {answer:?}") };
+    let list = |v: &Value| match v {
+        Value::List(items) => items.clone(),
+        other => panic!("{other:?}"),
+    };
+    per_handler.iter().map(|per| list(per).iter().map(|v| if let Value::Text(t) = v { t.clone() } else { panic!("{v:?}") }).collect()).collect()
+}
+
+/// **Guards:** a `try` block keeps what it did above the line that failed, and the catch and the
+/// code after the try see the last value each thing it changed was given, as JavaScript's do: for
+/// a local name, a state key (and one written on both sides of the failing line, which keeps the
+/// first), a collection item put and one deleted; changed before or after the failing line; read
+/// by the catch or by what follows the try; for each way a line fails (a text that isn't JSON, a
+/// field read through one that's missing, a throw), on a request where it fails and one where it
+/// doesn't.
+///
+/// **Why:** C7 (2026-11-25) made a try JavaScript's: each line that may fail is a branch on what
+/// it made arriving, joined where the block ends as an `if`'s branches are (ts.rs
+/// `join_arrivals`). One join for every kind, so one sweep holds them all.
+///
+/// **If it fails:** the line names the handler, the request, and what JavaScript and the flow did.
+#[test]
+fn a_try_keeps_the_last_value_reached_as_javascript_does() {
+    let handlers = join_handlers();
+    let javascript = join_in_javascript(&handlers);
+    let state = claims_state("");
+    let mut text = "import { flow, route } from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\nimport gone from \"collection:gone\"\n\nflow(\"try-join\", { port: 19643 })\n".to_string();
+    for (i, (_, body)) in handlers.iter().enumerate() {
+        text.push_str(&format!("\nroute.post(\"/j{i}\", (req) => {{\n  {body}\n}})\n"));
+    }
+    if let Err(e) = holon_author::lang::compile(&text) {
+        panic!("the sweep's flow is refused: {e}\n{text}");
+    }
+    let slug = deploy_plain_text(&state, &text);
+    let (mut same, mut wrong) = (0, Vec::new());
+    for (i, ((name, _), said)) in handlers.iter().zip(&javascript).enumerate() {
+        for (request, js) in JOIN_REQUESTS.iter().zip(said) {
+            let before = log_entries(&state, &slug).iter().filter_map(|e| e["seq"].as_u64()).max();
+            let (status, answer, _) = data_call(&state, &slug, "POST", &format!("/j{i}"), request);
+            let entries = log_entries(&state, &slug);
+            let ran = entries.iter().find(|e| before.is_none_or(|b| e["seq"].as_u64().is_some_and(|s| s > b))).expect("the run's entry");
+            let mut did = vec![if status == 200 { format!("answers {}", answer.trim_matches('"')) } else { format!("answers {status}") }];
+            let mut wrote = None;
+            for p in ran["performed"].as_array().into_iter().flatten() {
+                match p["capability"].as_str().unwrap_or("") {
+                    "StateWrite(\"k\")" => wrote = Some(format!("writes k = {}", shown(&p["payload"]).trim_matches('"'))),
+                    "CollectionWrite(\"notes\")" => did.push("puts notes k = one".to_string()),
+                    "CollectionWrite(\"gone\")" => did.push("deletes gone k".to_string()),
+                    other => panic!("an effect the sweep doesn't know: {other}"),
+                }
+            }
+            did.extend(wrote);
+            let did = did.join("; ");
+            if did == *js {
+                same += 1;
+            } else {
+                wrong.push(format!("{name} | {request} | JavaScript {js:?}, the flow {did:?}"));
+            }
+        }
+    }
+    println!("try join: {same} runs as JavaScript, {} not", wrong.len());
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 /// **Guards:** a loop is refused, in plain words, as the language says (docs/LANGUAGE.md: until
 /// the L4's slice 6 a loop is refused): the reached rule has no loop to reach into.
 #[test]
@@ -593,23 +761,21 @@ fn a_loop_is_refused_in_plain_words() {
     }
 }
 
-/// The columns a difference of reached is shown on (step C1). `Reached` and `Kept` are read off a
-/// site's run: a step made where its path says it isn't reached (or where a test of its path was
-/// never looked at), missed where it is, or run past a line that gave nothing; what a failed `try`
-/// keeps. `ListOrder` (what a function a list method calls per item does, and in which order) is
+/// The columns a difference of reached is shown on (step C1). `Reached` is read off a site's run: a
+/// step made where its path says it isn't reached (or where a test of its path was never looked
+/// at), missed where it is, or run past a line that gave nothing. (`Kept`, what a failed `try`
+/// kept, went with C7: a try keeps what it did, as JavaScript's does.) `ListOrder` (what a function a list method calls per item does, and in which order) is
 /// its own column, not read by site runs. `Value` is what a
 /// value is, not where a step is reached: its rows show no site difference at all.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Column {
     Reached,
-    Kept,
     ListOrder,
     Value,
 }
 
 /// Each debt's column.
 const COLUMNS: &[(&str, Column)] = &[
-    (A_FAILED_TRY_KEEPS_A_FUNCTIONS_WRITE.name, Column::Kept),
     (A_CHOICES_TEST_IS_READ_PAST_A_RETURN.name, Column::Reached),
     (A_READ_IS_ASKED_PAST_A_RETURN.name, Column::Reached),
     (A_LINE_AFTER_A_FAILURE_RUNS.name, Column::Reached),
@@ -631,11 +797,11 @@ const NOT_READ_YET: &[(&str, &str)] = &[
 /// What a text's sites do on a body sent to each route (or socket message) handler, beside where
 /// their paths say they are reached: per column, each site run that differs, as `<what it does>
 /// at line <n>: <verdict>`.
-pub(super) fn site_differences(text: &str, body: &str) -> Result<(Vec<String>, Vec<String>), String> {
+pub(super) fn site_differences(text: &str, body: &str) -> Result<Vec<String>, String> {
     use holon_author::reached_runs::{answer_ok, given_on, site_runs, Handler, Watched};
     let w = Watched::of(text)?;
     let given = |h: &Handler, u: &holon_core::Unit| if matches!(h.kind, "route" | "websocket") { given_on(h, u, &[body.to_string()]) } else { Vec::new() };
-    let (mut reached, mut kept) = (Vec::new(), Vec::new());
+    let mut reached = Vec::new();
     for r in site_runs(&w, &given, answer_ok) {
         let site = &w.lowered.sites[r.site];
         let verdict = r.verdict(site);
@@ -643,11 +809,8 @@ pub(super) fn site_differences(text: &str, body: &str) -> Result<(Vec<String>, V
         if is_owed(verdict) {
             reached.push(format!("{at}: {verdict:?}"));
         }
-        if r.today == Some(true) && r.kept == Some(false) {
-            kept.push(format!("{at}: kept by a try that failed"));
-        }
     }
-    Ok((reached, kept))
+    Ok(reached)
 }
 
 /// Whether a site run's verdict is a difference owed: made where not reached or not looked at,
@@ -699,8 +862,8 @@ fn every_site_is_reached_as_its_row_says() {
         assert!(COLUMNS.iter().any(|(d, _)| *d == debt.name), "{:?} has no column", debt.name);
     }
     for row in rows() {
-        let text = row.text.replace("@PING@", PING);
-        let (reached, kept) = match site_differences(&text, row.request) {
+        let text = row.text.replace("@PING@", PING).replace("@REFUSED@", "127.0.0.1:9");
+        let reached = match site_differences(&text, row.request) {
             Ok(d) => d,
             Err(e) => {
                 wrong.push(format!("{}: not read: {e}", row.name));
@@ -709,12 +872,13 @@ fn every_site_is_reached_as_its_row_says() {
         };
         let shown = |c: Column| match c {
             Column::Reached => reached.clone(),
-            Column::Kept => kept.clone(),
             Column::ListOrder | Column::Value => Vec::new(),
         };
-        let all: Vec<String> = reached.iter().chain(&kept).cloned().collect();
+        let all: Vec<String> = reached.clone();
         let not_yet = NOT_READ_YET.iter().find(|(n, _)| *n == row.name);
         match (&row.today, not_yet) {
+            // What its sites say waits on the owner's answer, as the row does.
+            (Today::WaitsForTheOwner(..), _) => {}
             (Today::AsJavascript, _) => {
                 if !all.is_empty() {
                     wrong.push(format!("{} reads as JavaScript, its sites differ: {}", row.name, all.join("; ")));
@@ -737,7 +901,7 @@ fn every_site_is_reached_as_its_row_says() {
                 if shown(column).is_empty() {
                     wrong.push(format!("{} shows nothing in its column, {column:?} (\"{}\")", row.name, debt.name));
                 }
-                let elsewhere: Vec<String> = [Column::Reached, Column::Kept].into_iter().filter(|c| *c != column).flat_map(shown).collect();
+                let elsewhere: Vec<String> = [Column::Reached].into_iter().filter(|c| *c != column).flat_map(shown).collect();
                 if !elsewhere.is_empty() {
                     wrong.push(format!("{} differs outside its column {column:?}: {}", row.name, elsewhere.join("; ")));
                 }
