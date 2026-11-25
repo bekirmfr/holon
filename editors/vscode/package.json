@@ -391,7 +391,7 @@
     "pretest:vscode": "npm run bundle",
     "test:vscode": "node test/integration/run.js",
     "vscode:prepublish": "npm run bundle",
-    "package": "vsce package --skip-license --no-dependencies --out holon-vscode.vsix"
+    "package": "node -e \"for (const f of ['LICENSE', 'THIRD-PARTY-NOTICES.md']) require('fs').copyFileSync('../../' + f, f)\" && vsce package --no-dependencies --out holon-vscode.vsix"
   },
   "dependencies": {
     "vscode-languageclient": "9.0.1"

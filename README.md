@@ -4,7 +4,7 @@
 
 [![ci](https://github.com/bekirmfr/holon/actions/workflows/ci.yml/badge.svg)](https://github.com/bekirmfr/holon/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/bekirmfr/holon?include_prereleases&label=release)](https://github.com/bekirmfr/holon/releases)
-![license](https://img.shields.io/badge/license-proprietary-lightgrey)
+![license](https://img.shields.io/badge/license-source--available-blue)
 
 Holon runs small services (APIs, webhooks, scheduled jobs, runs that wait for a person) written
 as **flows**: programs in a small language, or the same graph on a canvas. Flows are written by
@@ -419,5 +419,25 @@ npm --prefix editor run e2e                     # end to end, through a real ser
 
 ## License
 
-Proprietary: all rights reserved (see [`LICENSE`](LICENSE)). No use, copying or distribution
-without a written commercial agreement.
+Holon is source-available. The full terms are in [`LICENSE`](LICENSE): the PolyForm
+Noncommercial License 1.0.0, with Holon's Additional Grant on top of it.
+
+| Who | Terms |
+|---|---|
+| Anyone, for a non-commercial purpose (personal projects, study, charities, schools, research, government) | free |
+| A small team: fewer than 30 people and under USD 1,000,000 a year in revenue, counting the whole company and its affiliates | free, commercial use included |
+| A larger organization | free to evaluate for 60 days, then a commercial license |
+| A team that grows past the small-team limits | 90 days to take a commercial license |
+| Anyone reading, exporting or checking run records (`holon export`, `holon verify`) | free, whatever their size |
+
+Using Holon for a client (setting it up, running it or writing its flows) is the client's use
+too: the client's size is the one that counts. The flows you write are yours, and so are the files
+Holon writes into your projects (`holon new`, `holon types`) and the samples you copy.
+
+The engine that evaluates flows (`crates/holon-core`) is under the Apache License 2.0
+([`LICENSE-APACHE`](LICENSE-APACHE)); the engine that runs WebAssembly modules and JavaScript
+bodies (`crates/holon-module`) under MIT or Apache 2.0, at your choice. The third-party software
+the releases are built with, and its licenses, are in
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+For a commercial license, contact [bekirmfr](https://github.com/bekirmfr).

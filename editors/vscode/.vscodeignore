@@ -1,7 +1,10 @@
-# The package is the bundle (dist/extension.js, with vscode-languageclient in it), the manifest
-# and the README; everything else stays here.
+# The package is the bundle (dist/extension.js, with vscode-languageclient in it), the manifest,
+# the README, and the terms (LICENSE and THIRD-PARTY-NOTICES.md, copied from the repository's root
+# by `npm run package`); everything else stays here.
 **
 !package.json
 !README.md
+!LICENSE
+!THIRD-PARTY-NOTICES.md
 !dist/extension.js
 !media/holon.svg

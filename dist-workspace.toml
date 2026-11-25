@@ -22,7 +22,10 @@ install-path = "~/.holon/bin"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
-# Proprietary (LICENSE): releases carry the binaries and the license, never the source.
+# Releases carry the binaries and the terms: LICENSE (auto-included, as holon's license-file), the
+# texts it refers to, and the third-party notices (`include`: relative to this file, each put at
+# the archive's root beside the binaries). The source is the repository's, not a tarball.
+include = ["LICENSE-APACHE", "LICENSE-MIT", "THIRD-PARTY-NOTICES.md"]
 source-tarball = false
 # Before building: the core for the editor (wasm-pack), then the editor, which the server
 # builds in (its `embed-editor` feature, set in its Cargo.toml).
