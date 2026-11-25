@@ -231,7 +231,10 @@ impl Outbound {
             .timeout(limits.request_timeout)
             .redirects(0) // followed below, each one checked
             .resolver(move |netloc: &str| -> std::io::Result<Vec<SocketAddr>> {
-                let addrs: Vec<SocketAddr> = netloc.to_socket_addrs()?.collect();
+                let addrs: Vec<SocketAddr> = match stand_in::at(netloc) {
+                    Some(at) => vec![at],
+                    None => netloc.to_socket_addrs()?.collect(),
+                };
                 // A cloud's metadata service is never reached, private addresses granted or not.
                 let public: Vec<SocketAddr> = addrs.iter().copied().filter(|a| !is_metadata(a.ip()) && (allow_private || !is_private(a.ip()))).collect();
                 if public.is_empty() && !addrs.is_empty() {
@@ -514,6 +517,36 @@ pub(crate) fn is_private(ip: IpAddr) -> bool {
                 || seg[..2] == [0x2001, 0] // 2001::/32, Teredo: an IPv4 client hidden in it, unknowable here
                 || seg[..2] == [0x2001, 0xdb8] // 2001:db8::/32, documentation: never a real host
         }
+    }
+}
+
+/// Hosts a test answers itself: a host name looked up goes to a server of the test's on this
+/// machine instead of the network, so a flow calling a host on the internet runs, as written,
+/// with no network (the editor's fixture of every sample's runs). Only in the tests, and only for
+/// the names a test sets; outside them each lookup is `None`, inlined away.
+pub(crate) mod stand_in {
+    use std::net::SocketAddr;
+
+    #[cfg(test)]
+    static AT: crate::sync::Mutex<std::collections::BTreeMap<String, SocketAddr>> = crate::sync::Mutex::new(std::collections::BTreeMap::new());
+
+    /// From now on, `host` is looked up as `at`, in every test of this process.
+    #[cfg(test)]
+    pub(crate) fn answer(host: &str, at: SocketAddr) {
+        AT.lock().unwrap().insert(host.to_ascii_lowercase(), at);
+    }
+
+    /// Where `netloc` (`host:port`) is looked up, when a test answers its host.
+    #[cfg(test)]
+    pub(crate) fn at(netloc: &str) -> Option<SocketAddr> {
+        let host = netloc.rsplit_once(':').map_or(netloc, |(h, _)| h);
+        AT.lock().unwrap().get(&host.to_ascii_lowercase()).copied()
+    }
+
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn at(_netloc: &str) -> Option<SocketAddr> {
+        None
     }
 }
 

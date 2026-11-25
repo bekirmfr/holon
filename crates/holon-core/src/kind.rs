@@ -341,7 +341,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         | "gzip" | "gunzip" | "zip" | "unzip"
         | "jwt_verify" | "jwt_decode"
         | "pgp_encrypt" | "pgp_verify" | "pgp_key"
-        | "to_text" | "as_text" | "is_truthy" | "guard" | "default" | "coalesce" | "equals" | "fail"
+        | "to_text" | "as_text" | "is_truthy" | "guard" | "default" | "has_value" | "coalesce" | "equals" | "fail"
         | "fold" | "map" => vec![],
 
         // Effectful exemplars (classification only; execution is host-side). A state
@@ -928,7 +928,7 @@ mod tests {
             "gzip", "gunzip", "zip", "unzip",
             "jwt_verify", "jwt_decode",
             "pgp_encrypt", "pgp_verify", "pgp_key",
-            "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fail", "fold", "map",
+            "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "to_text", "as_text", "is_truthy", "guard", "default", "has_value", "coalesce", "equals", "fail", "fold", "map",
         ];
         for name in PURE {
             assert_eq!(kind_of(name, &[]), Some(Kind::Pure), "{name} should be Pure");

@@ -23,7 +23,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use holon_core::{family_values, function_takes, interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, CALLS, PASSES_EXTRA, TRIGGER, VARIADIC};
+use holon_core::{family_values, function_takes, interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, CALLS, DID, PASSES_EXTRA, TRIGGER, VARIADIC};
 use oxc_allocator::Allocator;
 use oxc_ast::ast as js;
 use oxc_parser::Parser;
@@ -362,11 +362,14 @@ struct Group<'g> {
     /// The nodes left out that the text writes with another: each, with the node whose line it
     /// is on (`place_beside`).
     beside: Beside,
+    /// The calls placed in a branch of a choice whose tie went with the branch's (`taken_chain`):
+    /// written in the branch, inline, though what they make leaves by an output too.
+    in_arm: HashSet<String>,
 }
 
 impl<'g> Group<'g> {
     fn new(nodes: Vec<&'g Node>, wires: Vec<BlockWire>, outs: Vec<(String, String, String)>) -> Group<'g> {
-        let (nodes, wires, block_tied, beside) = without_block_ties(nodes, wires);
+        let (nodes, wires, block_tied, beside, in_arm) = without_block_ties(nodes, wires, &outs);
         let ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
         let mut incoming = HashMap::new();
         let mut consumers: HashMap<(String, String), usize> = HashMap::new();
@@ -409,7 +412,7 @@ impl<'g> Group<'g> {
                 }
             }
         }
-        Group { nodes, incoming, consumers, outs, order, block_tied, beside }
+        Group { nodes, incoming, consumers, outs, order, block_tied, beside, in_arm }
     }
 
     fn node(&self, id: &str) -> &'g Node {
@@ -434,8 +437,12 @@ impl<'g> Group<'g> {
 /// trigger (a route's request, a clock's tick, a file handler's file, an action's input, a
 /// function's own `trigger`, or the pass-through the lowering places when that feeds several,
 /// which goes too, with its `true`). What's left on a trigger is written in an
-/// `if (x !== undefined)`. Also the nodes whose ties went.
-fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, Vec<BlockWire>, HashSet<String>, Beside) {
+/// `if (x !== undefined)`. Also the nodes whose ties went, and the ties of calls made in a branch
+/// of a choice: lower.rs ties those where the branch is taken (`taken_chain`), and names their
+/// answers among the function's outputs (`outs`), as it names those of the calls its statements
+/// make.
+fn without_block_ties<'n>(nodes: Vec<&'n Node>, wires: Vec<BlockWire>, outs: &[(String, String, String)]) -> (Vec<&'n Node>, Vec<BlockWire>, HashSet<String>, Beside, HashSet<String>) {
+    let (nodes, wires) = without_entered_holds(nodes, wires);
     let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), *n)).collect();
     // The last wire into an input is the one that counts, as `Group` keeps it: a holon's
     // boundary is listed as its node first, then as the port.
@@ -468,10 +475,9 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, 
         }
     }
     // The hold ts.rs `waited_on` binds after the waits in an action's body, which nothing reads:
-    // `when(t, has_value(w))`, `has_value(w)` lowered as `same_value(w, w) ?? false`, `t` the
-    // block's trigger and `w` what the wait gave, or past several the list of what each gave (as
-    // `same_value([a, b], [a, b])`, the list written twice). It keeps what follows each wait in the
-    // action; the text writes that by order alone, so it goes, with its test.
+    // `when(t, has_value(w))`, `t` the block's trigger and `w` what the wait gave, or past several
+    // the list of what each gave. It keeps what follows each wait in the action; the text writes
+    // that by order alone, so it goes, with its test.
     let feeds = |id: &str| wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id: from, .. } if from == id)).count();
     let leaf = |id: &str, name: &str| by_id.get(id).is_some_and(|n| n.data.body == PlacedBody::Primitive && n.data.name == name);
     let waits = |src: &Src| matches!(src, Src::Node { id, .. } if leaf(id, "await") || leaf(id, "approval"));
@@ -486,26 +492,84 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, 
     for n in nodes.iter().filter(|n| leaf(&n.id, "guard") && feeds(&n.id) == 0) {
         let hold = || -> Option<Vec<String>> {
             let base = into(&n.id, "value")?;
-            let Some(Src::Node { id: held, .. }) = into(&n.id, "cond") else { return None };
-            let no = by_id.get(held.as_str()).is_some_and(|d| d.param("type") == "Boolean" && d.param("value") == "false");
-            let Some(Src::Node { id: same, .. }) = into(held, "value") else { return None };
-            let (a, b) = (into(same, "a")?, into(same, "b")?);
-            let parts = leaf(held, "default") && no && feeds(held) == 1 && leaf(same, "same_value") && feeds(same) == 1;
-            let lists = match (list_of_waits(a), list_of_waits(b)) {
-                (Some((la, xs)), Some((lb, ys))) if la != lb && xs == ys => Some([la, lb]),
-                _ => None,
-            };
-            let tests = (a == b && waits(a)) || lists.is_some();
-            (tie(base, TRIGGER) && parts && tests).then(|| [held.clone(), same.clone()].into_iter().chain(lists.into_iter().flatten()).collect())
+            let Some(Src::Node { id: test, .. }) = into(&n.id, "cond") else { return None };
+            let x = into(test, "value")?;
+            let parts = leaf(test, "has_value") && feeds(test) == 1;
+            let list = list_of_waits(x).map(|(l, _)| l);
+            let tests = waits(x) || list.is_some();
+            (tie(base, TRIGGER) && parts && tests).then(|| std::iter::once(test.clone()).chain(list).collect())
         };
         if let Some(parts) = hold() {
             gone.insert(n.id.clone());
             gone.extend(parts);
         }
     }
+    // A function (or a list method whose function does something) placed in a branch of a choice
+    // is tied where the branch is taken (lower.rs `taken_when`): `guard(taken, t)`, `t` the block's
+    // trigger and `taken` the branches' tests, innermost first, `guard(c, c)` or `guard(c2,
+    // guard(c1, c1))`. The text writes it by its place in the branch, so the tie goes; written
+    // in the wrong place, the round trip refuses it.
+    let taken_chain = |id: &str| -> Option<Vec<String>> {
+        let mut ids = Vec::new();
+        let mut at = id.to_string();
+        loop {
+            if !leaf(&at, "guard") || feeds(&at) != 1 {
+                return None;
+            }
+            ids.push(at.clone());
+            let (c, v) = (into(&at, "cond")?, into(&at, "value")?);
+            if c == v {
+                return Some(ids);
+            }
+            let Src::Node { id: next, .. } = v else { return None };
+            at = next.clone();
+        }
+    };
+    let mut in_arm: HashSet<String> = HashSet::new();
+    // Each tie that goes, with the call it held: it is on that call's line (`place_beside`).
+    let mut arm_gone: HashMap<String, String> = HashMap::new();
+    for n in &nodes {
+        if !n.data.inputs.iter().any(|p| p.name == TRIGGER) {
+            continue;
+        }
+        let Some(Src::Node { id: g, .. }) = into(&n.id, TRIGGER) else { continue };
+        // A function's own trigger, for any call; a handler's, or what a wait gave past it, for
+        // a leaf's call (a start, a request), which the text writes in its branch. A function
+        // placed in a handler's branch keeps its tie, written as the `if` it is made in (`ifs`).
+        let call = n.data.body == PlacedBody::Primitive && CALLS.contains(&n.data.name.as_str());
+        if !leaf(g, "guard") || feeds(g) != 1 || !into(g, "value").is_some_and(|v| own_trigger(v) || (call && (tie(v, TRIGGER) || waits(v)))) {
+            continue;
+        }
+        let Some(Src::Node { id: taken, .. }) = into(g, "cond") else { continue };
+        if let Some(chain) = taken_chain(taken) {
+            for id in std::iter::once(g.clone()).chain(chain) {
+                arm_gone.entry(id).or_insert_with(|| n.id.clone());
+            }
+            in_arm.insert(n.id.clone());
+        }
+    }
+    // The tests only those ties read go with them (`a ?? f(x)`'s `!(a === a)`, `a || f(x)`'s
+    // `!is_truthy(a)`): the text says them by the branch, and the lowering makes them again.
+    let mut grew = !in_arm.is_empty();
+    while grew {
+        grew = false;
+        for n in &nodes {
+            if gone.contains(&n.id) || arm_gone.contains_key(&n.id) || n.data.body != PlacedBody::Primitive || n.data.inputs.iter().any(|p| p.name == TRIGGER) || n.data.outputs.iter().any(|o| o.ty == WType::Effect) {
+                continue;
+            }
+            let reads: Vec<&BlockWire> = wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id, .. } if *id == n.id)).collect();
+            let only_ties = !reads.is_empty() && reads.iter().all(|(_, to, _)| arm_gone.contains_key(to));
+            if only_ties && !outs.iter().any(|(id, _, _)| *id == n.id) {
+                let call = arm_gone[&reads[0].1].clone();
+                arm_gone.insert(n.id.clone(), call);
+                grew = true;
+            }
+        }
+    }
+    gone.extend(arm_gone.keys().cloned());
     // What follows several waits is tied to the list of what each gave, in order (ts.rs
-    // `Reader::waited`): a trigger, the answer's test `same_value([a, b], [a, b]) ?? false` (the
-    // list written twice) or a value's held so, `same_value(l, l)`. The text writes it after the
+    // `Reader::waited`): a trigger, the answer's test `has_value([a, b])` (the
+    // list read once) or a value's held so, `same_value(l, l)`. The text writes it after the
     // last wait, by order alone, as it writes what follows one wait: each read of such a list is
     // read off the last wait, and the list goes.
     let listed = |id: &str| -> Option<Vec<Src>> {
@@ -513,8 +577,9 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, 
         items.sort_by(|x, y| x.0.cmp(y.0));
         (leaf(id, "list") && !gone.contains(id) && items.len() >= 2 && items.iter().all(|(_, s)| waits(s))).then(|| items.into_iter().map(|(_, s)| s.clone()).collect())
     };
-    let tests_lists = |same: &str| match (into(same, "a"), into(same, "b")) {
-        (Some(Src::Node { id: a, .. }), Some(Src::Node { id: b, .. })) => leaf(same, "same_value") && listed(a).is_some() && listed(a) == listed(b),
+    let tests_lists = |test: &str| match (into(test, "a"), into(test, "b"), into(test, "value")) {
+        (Some(Src::Node { id: a, .. }), Some(Src::Node { id: b, .. }), _) => leaf(test, "same_value") && listed(a).is_some() && listed(a) == listed(b),
+        (_, _, Some(Src::Node { id: l, .. })) => leaf(test, "has_value") && listed(l).is_some(),
         _ => false,
     };
     let mut last_of: HashMap<String, Src> = HashMap::new();
@@ -527,7 +592,10 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, 
     }
     gone.extend(last_of.keys().cloned());
     // Each such list is on the line of the step that read it (`place_beside`).
-    let beside: Beside = last_of.keys().map(|l| (l.clone(), wires.iter().find(|(s, _, _)| matches!(s, Src::Node { id, .. } if id == l)).map(|(_, to, _)| to.clone()))).collect();
+    let mut beside: Beside = last_of.keys().map(|l| (l.clone(), wires.iter().find(|(s, _, _)| matches!(s, Src::Node { id, .. } if id == l)).map(|(_, to, _)| to.clone()))).collect();
+    let mut arm_ties: Vec<(String, String)> = arm_gone.into_iter().collect();
+    arm_ties.sort();
+    beside.extend(arm_ties.into_iter().map(|(id, call)| (id, Some(call))));
     let wires: Vec<BlockWire> = wires
         .iter()
         .map(|(s, to, input)| match s {
@@ -539,8 +607,61 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, 
     let kept: Vec<BlockWire> = wires.iter().filter(|w| !tie(&w.0, &w.2) && !touches_gone(w)).cloned().collect();
     // What a wait's value triggers is made when the run reaches it past the wait, as what the
     // block's trigger feeds is when the run starts.
-    let tied: HashSet<String> = wires.iter().filter(|w| tie(&w.0, &w.2) || (w.2 == TRIGGER && waits(&w.0))).map(|w| w.1.clone()).collect();
-    (nodes.into_iter().filter(|n| !gone.contains(&n.id)).collect(), kept, tied, beside)
+    let own_or_passed = |s: &Src| own_trigger(s) || matches!(s, Src::Node { id, .. } if passes_trigger(id));
+    let lazy = |id: &str| {
+        by_id.get(id).is_some_and(|n| n.data.body == PlacedBody::Primitive && CALLS.contains(&n.data.name.as_str()))
+            && wires.iter().any(|(s, t, i)| t == id && i == TRIGGER && own_or_passed(s))
+            && !outs.iter().any(|(n, _, _)| n == id)
+    };
+    let tied: HashSet<String> = wires.iter().filter(|w| tie(&w.0, &w.2) || (w.2 == TRIGGER && waits(&w.0))).map(|w| w.1.clone()).filter(|id| !lazy(id)).collect();
+    (nodes.into_iter().filter(|n| !gone.contains(&n.id)).collect(), kept, tied, beside, in_arm)
+}
+
+/// `nodes` and `wires` of a function's body without the holds that tie what a statement's `after`
+/// names to the call of the function being reached (lower.rs `entered`): `when(v, trigger ===
+/// trigger)`, lowered `guard(same_value(t, t), v)` with `t` the function's own trigger (or the
+/// pass-through the lowering places when that feeds several, `guard(true, t)`), read by triggers
+/// alone. The text writes the call of a function as what reaches its body, so each trigger it fed
+/// is fed `v`, and the hold goes, with its `same_value` once nothing else reads it.
+fn without_entered_holds(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, Vec<BlockWire>) {
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), *n)).collect();
+    let into = |to: &str, input: &str| wires.iter().rev().find(|(_, t, i)| t == to && i == input).map(|(s, _, _)| s);
+    let leaf = |id: &str, name: &str| by_id.get(id).is_some_and(|n| n.data.body == PlacedBody::Primitive && n.data.name == name);
+    let own_trigger = |src: &Src| match src {
+        Src::In(p) => p == TRIGGER,
+        Src::Node { id, output } => {
+            (id == crate::composites::BOUNDARY_IN && output == TRIGGER)
+                || (leaf(id, "guard")
+                    && into(id, "value").is_some_and(|v| matches!(v, Src::In(p) if p == TRIGGER) || matches!(v, Src::Node { id, output } if id == crate::composites::BOUNDARY_IN && output == TRIGGER))
+                    && matches!(into(id, "cond"), Some(Src::Node { id: c, .. }) if by_id.get(c.as_str()).is_some_and(|c| c.data.name == "const" && c.param("type") == "Boolean" && c.param("value") == "true")))
+        }
+    };
+    let feeds = |id: &str| -> Vec<&BlockWire> { wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id: from, .. } if from == id)).collect() };
+    let entered: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).filter(|id| leaf(id, "same_value") && into(id, "a").is_some_and(own_trigger) && into(id, "b").is_some_and(own_trigger)).collect();
+    let holds: HashMap<String, Src> = nodes
+        .iter()
+        .filter(|n| leaf(&n.id, "guard") && matches!(into(&n.id, "cond"), Some(Src::Node { id, .. }) if entered.contains(id.as_str())))
+        .filter(|n| {
+            let f = feeds(&n.id);
+            !f.is_empty() && f.iter().all(|(_, _, input)| input == TRIGGER)
+        })
+        .filter_map(|n| into(&n.id, "value").map(|v| (n.id.clone(), v.clone())))
+        .collect();
+    if holds.is_empty() {
+        return (nodes, wires);
+    }
+    let wires: Vec<BlockWire> = wires
+        .into_iter()
+        .filter(|(_, to, _)| !holds.contains_key(to))
+        .map(|(s, to, input)| match &s {
+            Src::Node { id, .. } if holds.contains_key(id) => (holds[id].clone(), to, input),
+            _ => (s, to, input),
+        })
+        .collect();
+    let read = |id: &str| wires.iter().any(|(s, _, _)| matches!(s, Src::Node { id: from, .. } if from == id));
+    let gone: HashSet<String> = holds.keys().cloned().chain(entered.iter().filter(|id| !read(id)).map(|id| id.to_string())).collect();
+    let wires = wires.into_iter().filter(|(_, to, _)| !gone.contains(to)).collect();
+    (nodes.into_iter().filter(|n| !gone.contains(&n.id)).collect(), wires)
 }
 
 /// Whether an action's body answers before its first wait: its hold (ts.rs `waited_on`) is held to
@@ -558,9 +679,9 @@ fn returns_before_a_wait(nodes: &[&Node], wires: &[BlockWire]) -> bool {
     let read = |id: &str| wires.iter().any(|(s, _, _)| matches!(s, Src::Node { id: from, .. } if from == id));
     let hold = |h: &str| {
         leaf(h, "guard")
-            && into(h, "cond").is_some_and(|d| leaf(d, "default") && into(d, "value").is_some_and(|s| leaf(s, "same_value") && into(s, "a").is_some_and(|a| leaf(a, "await") || leaf(a, "approval") || leaf(a, "list"))))
+            && into(h, "cond").is_some_and(|d| leaf(d, "has_value") && into(d, "value").is_some_and(|a| leaf(a, "await") || leaf(a, "approval") || leaf(a, "list")))
     };
-    nodes.iter().any(|g| leaf(&g.id, "guard") && !read(&g.id) && into(&g.id, "cond").is_some_and(|c| !leaf(c, "default")) && into(&g.id, "value").is_some_and(hold))
+    nodes.iter().any(|g| leaf(&g.id, "guard") && !read(&g.id) && into(&g.id, "cond").is_some_and(|c| !leaf(c, "has_value")) && into(&g.id, "value").is_some_and(hold))
 }
 
 /// What an action's body answers before its first wait, taken out of its graph: the rest prints as
@@ -596,6 +717,10 @@ struct EarlyAnswers {
     gone: Beside,
     /// The first wait: the stand-ins go just before it, so the row is written there.
     before: String,
+    /// The writes past the wait whose value (a delete's key) isn't held to the returns not taken:
+    /// written by method (`marks.put(k, v)`), which ts.rs ties by its trigger alone, where the
+    /// assignment form (`marks[k] = v`) would read back with its value held too.
+    methods: HashSet<String>,
 }
 
 /// A stand-in's template: no step of the flow's, only where an `if (test) return value` is written.
@@ -648,20 +773,7 @@ fn early_answers(nodes: &[&Node], wires: &[BlockWire]) -> Result<EarlyAnswers, S
     // `when(value, has_value(w))`, `w` what the waits gave: the answer once they are answered.
     let waited = |id: &str| {
         leaf(id, "guard")
-            && node_into(id, "cond").is_some_and(|d| {
-                no(&d)
-                    && node_into(&d, "value").is_some_and(|s| {
-                        leaf(&s, "same_value")
-                            && match (into(&s, "a"), into(&s, "b")) {
-                                (Some(a), Some(b)) if a == b => waits(&a),
-                                (Some(a), Some(b)) => match (&a, &b) {
-                                    (Src::Node { id: la, .. }, Src::Node { id: lb, .. }) => waits_list(&a) && waits_list(&b) && items(la) == items(lb),
-                                    _ => false,
-                                },
-                                _ => false,
-                            }
-                    })
-            })
+            && node_into(id, "cond").is_some_and(|d| leaf(&d, "has_value") && into(&d, "value").is_some_and(|x| waits(&x) || waits_list(&x)))
     };
     let respond = nodes.iter().find(|n| n.is_template("respond")).ok_or("it has no answer")?;
     let before = nodes.iter().find(|n| leaf(&n.id, "await") || leaf(&n.id, "approval")).ok_or("it has no wait")?.id.clone();
@@ -788,13 +900,27 @@ fn early_answers(nodes: &[&Node], wires: &[BlockWire]) -> Result<EarlyAnswers, S
         let ws = rest.into_iter().zip(&and.data.inputs).map(|(s, p)| (s, id.clone(), p.name.clone())).collect();
         remade.push((and, ws));
     }
+    // `when(true, L)` on a wait's trigger: the wait is reached where no return above it was taken
+    // (ts.rs `reach_wait`). The text writes that by the wait's place below the returns, so the
+    // tie is the action's own, as a step's tied to its start (`without_block_ties`).
+    let start = nodes.iter().find(|n| n.is_template("action")).map(|n| Src::Node { id: n.id.clone(), output: "input".into() });
+    let always = |s: &Src| matches!(s, Src::Node { id, .. } if leaf(id, "const") && by_id[id.as_str()].param("type") == "Boolean" && by_id[id.as_str()].param("value") == "true");
+    let ties_waits = |id: &str| {
+        let read: Vec<&BlockWire> = wires.iter().filter(|(s, _, _)| matches!(s, Src::Node { id: f, .. } if f == id)).collect();
+        !read.is_empty() && read.iter().all(|(_, to, input)| input == TRIGGER && (leaf(to, "await") || leaf(to, "approval")))
+    };
     // `when(x, L)`: `x`. The hold among them, read by nothing.
     for id in named("guard") {
         if taken.contains(&id) {
             continue;
         }
         let Some(steps) = into(&id, "cond").and_then(|c| l(&c)) else { continue };
-        instead.insert(id.clone(), into(&id, "value").ok_or("a value isn't one the text writes")?);
+        let value = into(&id, "value").ok_or("a value isn't one the text writes")?;
+        let value = match &start {
+            Some(start) if always(&value) && ties_waits(&id) => start.clone(),
+            _ => value,
+        };
+        instead.insert(id.clone(), value);
         taken.insert(id);
         taken.extend(steps);
     }
@@ -888,7 +1014,24 @@ fn early_answers(nodes: &[&Node], wires: &[BlockWire]) -> Result<EarlyAnswers, S
         gone.push((id.clone(), anchor));
     }
     let remade = remade.into_iter().map(|(n, _)| n).collect();
-    Ok(EarlyAnswers { stand_ins, remade, wires: kept, gone, before })
+    // A write past the wait whose value came held to the returns not taken (`marks[k] = v` there)
+    // has it so no longer; one whose value didn't was written by method.
+    let methods = nodes
+        .iter()
+        .filter_map(|n| {
+            let input = match n.data.name.as_str() {
+                "collection_put" => "value",
+                "file_write" => "text",
+                "collection_delete" => "key",
+                "file_delete" => "name",
+                _ => return None,
+            };
+            let held = matches!(into(&n.id, input), Some(Src::Node { id, .. }) if instead.contains_key(&id));
+            let past = into(&n.id, TRIGGER).map(|t| resolve(&t)).is_some_and(|t| waits(&t) || waits_list(&t));
+            (n.data.body == PlacedBody::Primitive && past && !held).then(|| n.id.clone())
+        })
+        .collect();
+    Ok(EarlyAnswers { stand_ins, remade, wires: kept, gone, before, methods })
 }
 
 impl EarlyAnswers {
@@ -986,6 +1129,9 @@ struct Stmt {
     reads: BTreeSet<String>,
     /// What it waits for (`after`): it goes in `if (x !== undefined)`.
     after: Option<String>,
+    /// The test of the branch it is reached in, when its trigger is tied to that alone (a
+    /// [`Block::branch_tie`]): it goes in `if (test)`.
+    branch: Option<String>,
     /// The `let` declared before that `if` for the value it gives inside.
     declares: Option<String>,
 }
@@ -1051,6 +1197,8 @@ pub struct Printer<'s> {
     vocab_used: Option<BTreeSet<String>>,
     /// The actions written with a row of returns above their first wait: each one's label and name.
     early: Vec<(String, String)>,
+    /// The writes written by method in the action being written ([`EarlyAnswers::methods`]).
+    methods: HashSet<String>,
 }
 
 /// A flow document as canonical TypeScript. `known` names composites the document doesn't;
@@ -1113,6 +1261,7 @@ fn written(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolver, know
         avoid: HashSet::new(),
         vocab_used: None,
         early: Vec::new(),
+        methods: HashSet::new(),
     };
     p.collect_collections(&doc.nodes)?;
     // A mail a handler reads is imported as one it sends through is.
@@ -1448,6 +1597,16 @@ impl<'s> Printer<'s> {
                         walk(store, c, seen, out);
                     }
                 }
+                // A list method's function: what it writes or sends is the file's to import too.
+                UnitBody::Primitive { name } if PASSES_EXTRA.contains(&name.as_str()) => {
+                    let given = unit.params.iter().find_map(|p| match p {
+                        holon_core::Param::Frozen { name, value } if name == "fn" => Some(value.as_str()),
+                        _ => None,
+                    });
+                    if let Some((h, _)) = given.and_then(|f| resolve(store, f).ok()) {
+                        walk(store, &h, seen, out);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1458,6 +1617,11 @@ impl<'s> Printer<'s> {
                 PlacedBody::Primitive if named_by(&n.data.name).is_some() => {
                     let param = named_by(&n.data.name).expect("checked");
                     found(&mut out, param, n.param(param).to_string());
+                }
+                PlacedBody::Primitive if PASSES_EXTRA.contains(&n.data.name.as_str()) && !n.param("fn").is_empty() => {
+                    if let Ok((h, _)) = resolve(self.store, n.param("fn")) {
+                        walk(self.store, &h, &mut seen, &mut out);
+                    }
                 }
                 PlacedBody::Composite { hash } => {
                     let (h, _) = resolve(self.store, hash)?;
@@ -1903,12 +2067,15 @@ impl<'s> Printer<'s> {
         }
         let param = if kind == Kind::Every { String::new() } else { self.handle_name(&trigger.id, fallback) };
         let request = (kind != Kind::Every).then(|| (trigger.id.clone(), param.clone()));
+        self.methods = early.as_ref().map(|e| e.methods.clone()).unwrap_or_default();
         let mut block = Block::new(self, &group, kind, request);
         if kind == Kind::Every {
             block.tick = Some(trigger.id.clone());
         }
-        let mut body = block.body()?;
+        let body = block.body();
         let (read, awaits) = (block.param_read, block.awaits);
+        self.methods.clear();
+        let mut body = body?;
         place_beside(&mut body, &group.beside);
         if let Some(e) = &early {
             e.place(&mut body);
@@ -2218,6 +2385,9 @@ struct Block<'p, 's, 'g> {
     auto: Vec<String>,
     /// A function's outputs that answer a call tied to its trigger (`call_outputs`).
     calls: Vec<String>,
+    /// The calls whose answers leave by those outputs, which aren't returned (the lowering names
+    /// them again): one nothing else reads is written as a statement of its own.
+    unreturned: HashMap<String, usize>,
     /// A function's other outputs: each port and where its value comes from.
     declared: Vec<(String, Src)>,
     /// The nodes rendered into the statement being written, and the stores it reads.
@@ -2259,6 +2429,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             wholes: HashMap::new(),
             auto: Vec::new(),
             calls: Vec::new(),
+            unreturned: HashMap::new(),
             declared: Vec::new(),
             touched: Vec::new(),
             reads: BTreeSet::new(),
@@ -2297,7 +2468,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// Whether `node`'s one output prints inline at its one consumer.
     fn inline(&self, node: &Node) -> bool {
         self.free(node)
-            && (self.g.consumed_total(node) == 1 || self.absorbed.contains(&node.id))
+            && (self.g.consumed_total(node) == 1 || self.absorbed.contains(&node.id) || self.in_arm_once(node))
             && !self.tied_elsewhere(node)
             && !self.awaited(node)
             && !self.made_before_a_branch(node)
@@ -2306,11 +2477,21 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             && !self.matches.contains_key(&node.id)
     }
 
+    /// Whether `node` is a call placed in a branch of a choice (`Group::in_arm`) read once besides
+    /// what it makes, which leaves by the function's outputs: written in its branch.
+    fn in_arm_once(&self, node: &Node) -> bool {
+        // What it makes or what its calls answered, leaving by an output (`call_outputs`).
+        // A leaf's call (a start, a request) leaves by a port of its own (`calls`).
+        let handed = self.g.outs.iter().filter(|(id, output, port)| *id == node.id && (self.calls.contains(port) || node.data.outputs.iter().skip(1).any(|o| o.name == *output))).count();
+        self.g.in_arm.contains(&node.id) && self.g.consumed_total(node) == handed + 1
+    }
+
     /// Whether `node` is a call its block makes when reached (tied to the block's trigger) that,
     /// inline, would be written in a branch, where the lowering makes a call only when the branch
     /// needs it: it keeps its binding, a statement of its own.
     fn made_before_a_branch(&self, node: &Node) -> bool {
-        CALLS.contains(&node.data.name.as_str()) && self.g.block_tied.contains(&node.id) && self.lands_in_a_branch(node)
+        // A list method whose function does something is made as a call is.
+        (CALLS.contains(&node.data.name.as_str()) || PASSES_EXTRA.contains(&node.data.name.as_str())) && self.g.block_tied.contains(&node.id) && self.lands_in_a_branch(node)
     }
 
     /// Whether `node`'s one use, followed through the nodes that print inline, is a branch of a
@@ -2336,22 +2517,20 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// each gave, read off the last by `without_block_ties`), with the leaves that test `x`.
     /// Written as the value alone: in TypeScript a return after an `await` answers once it is
     /// reached, and reading it back holds it so again.
-    fn waited_answer(&self, respond: &Node) -> Option<[&'g Node; 3]> {
+    fn waited_answer(&self, respond: &Node) -> Option<[&'g Node; 2]> {
         let guard = self.part(respond, "body", "guard", 1)?;
-        let [held, same] = self.held_to_a_wait(guard)?;
-        Some([guard, held, same])
+        let [has] = self.held_to_a_wait(guard)?;
+        Some([guard, has])
     }
 
     /// The test of `guard`, when it holds its value to what a wait gave: `when(value, has_value(x))`,
-    /// `x` an `await`'s or an `approval`'s output, `has_value(x)` written `same_value(x, x) ??
-    /// false`, its fallback frozen in a `default`. The answer of an action that waits is held so
+    /// `x` an `await`'s or an `approval`'s output. The answer of an action that waits is held so
     /// (ts.rs `finish`), and a value bound past a wait with a call in one of its branches (lower.rs
     /// `stmt`). Past the wait, the text writes either as the value alone.
-    fn held_to_a_wait(&self, guard: &Node) -> Option<[&'g Node; 2]> {
-        let held = self.part(guard, "cond", "default", 1).filter(|d| d.param("type") == "Boolean" && d.param("value") == "false")?;
-        let same = self.part(held, "value", "same_value", 1)?;
-        let (a, b) = (self.g.incoming.get(&(same.id.clone(), "a".to_string()))?, self.g.incoming.get(&(same.id.clone(), "b".to_string()))?);
-        (a == b && self.waits_for(a)).then_some([held, same])
+    fn held_to_a_wait(&self, guard: &Node) -> Option<[&'g Node; 1]> {
+        let has = self.part(guard, "cond", "has_value", 1)?;
+        let x = self.g.incoming.get(&(has.id.clone(), "value".to_string()))?;
+        self.waits_for(x).then_some([has])
     }
 
     /// Whether `src` is what a wait gave: an `await`'s or an `approval`'s output, which every write
@@ -2720,11 +2899,13 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 continue;
             }
             let (_, unit) = resolve(self.p.store, n.param("fn"))?;
-            let ports: Vec<String> = unit.inputs.iter().skip(own).map(|p| p.name.clone()).collect();
-            if ports.windows(2).any(|w| w[0] >= w[1]) || ports.len() != n.data.inputs.len() - base {
+            // Its function's trigger, last on both, is the leaf's tie (`function_text`).
+            let ports: Vec<String> = unit.inputs.iter().skip(own).filter(|p| p.name != TRIGGER).map(|p| p.name.clone()).collect();
+            let extras: Vec<&WPort> = n.data.inputs[base..].iter().filter(|p| p.name != TRIGGER).collect();
+            if ports.windows(2).any(|w| w[0] >= w[1]) || ports.len() != extras.len() {
                 return Err(format!("{}: the values its function uses from around it aren't in the order TypeScript passes them", n.data.name));
             }
-            for (port, input) in ports.iter().zip(&n.data.inputs[base..]) {
+            for (port, input) in ports.iter().zip(extras) {
                 match self.g.incoming.get(&(n.id.clone(), input.name.clone())) {
                     Some(Src::In(p)) if p == port => {}
                     Some(Src::Node { id, output }) if self.is_request(id) && (output == "request" || output == "file" || output == "message" || output == "event" || output == "input") && local_name(&self.request.as_ref().expect("checked").1) == *port => {}
@@ -2820,6 +3001,30 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                     && names(k) == outs[k..].iter().map(|(_, _, p)| p.clone()).collect::<Vec<_>>()
             };
             if let Some(k) = (1..outs.len()).find(|&k| called(k)) {
+                for (id, _, _) in &outs[k..] {
+                    *self.unreturned.entry(id.clone()).or_default() += 1;
+                }
+                outs.truncate(k);
+            }
+            // Before them, the effects of the functions it places that nothing in it reads: the
+            // lowering names each after the port it left its own by (`put`, then `put_2`), and
+            // names them again, so they aren't returned either.
+            let handed = |k: usize| {
+                let mut taken: Vec<String> = outs[..k].iter().map(|(_, _, p)| p.clone()).collect();
+                outs[k..].iter().all(|(id, output, port)| {
+                    let n = self.g.node(id);
+                    let effect = matches!(n.data.body, PlacedBody::Composite { .. }) && n.data.outputs.iter().any(|o| o.name == *output && o.ty == WType::Effect);
+                    let mut name = output.clone();
+                    let mut m = 1;
+                    while taken.contains(&name) || self.inputs.contains_key(&name) {
+                        m += 1;
+                        name = format!("{output}_{m}");
+                    }
+                    taken.push(name.clone());
+                    effect && name == *port && self.g.consumed_total(n) > outs.iter().filter(|(i, _, _)| i == id).count()
+                })
+            };
+            if let Some(k) = (1..outs.len()).find(|&k| handed(k)) {
                 outs.truncate(k);
             }
         }
@@ -2913,7 +3118,27 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 stmts.append(&mut lets);
                 continue;
             }
-            if self.inline(node) || self.wholes.values().any(|(call, _)| call.id == *id) {
+            // A call of the function's whose answer only leaves by an output not returned: made,
+            // its answer bound and unread, as `const response = api.post(…)` says (alone, the
+            // call would read back as an effect with no answer).
+            if self.unreturned.get(id).is_some_and(|&left_out| self.g.consumed_total(node) == left_out) {
+                self.begin();
+                let single = self.one_value(node);
+                let (text, _) = self.render(node, if single { &node.data.outputs[0].name } else { "" })?;
+                let name = self.bind(node);
+                // In an `if (x !== undefined)`, declared before it with `let` (`ifs`).
+                let mut s = if self.tied_elsewhere(node) {
+                    let mut s = self.statement(format!("{name} = {text}"));
+                    s.declares = Some(name);
+                    s
+                } else {
+                    self.statement(format!("const {name} = {text}"))
+                };
+                self.after_of(node, &mut s)?;
+                stmts.push(s);
+                continue;
+            }
+            if self.inline(node) || self.wholes.values().any(|(call, _)| call.id == *id) || self.branch_tie(node) {
                 continue;
             }
             self.begin();
@@ -2998,11 +3223,55 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             return Err(format!("{} waits for a value, which TypeScript says only of a write, a request, a send, an action called or started or a function of the flow's: bind it, or wait for its value with ??", node.data.name));
         }
         let saved = std::mem::take(&mut self.touched);
+        // Tied to its branch's test alone: written in that branch, the tie as nothing.
+        if let Some(Src::Node { id, .. }) = self.g.incoming.get(&(node.id.clone(), TRIGGER.to_string())).cloned()
+            && let tie = self.g.node(&id)
+            && self.branch_tie(tie)
+        {
+            let test = self.arg(tie, "cond")?.map(|v| v.0).expect("a tie's test");
+            s.nodes.append(&mut self.touched);
+            s.nodes.push(tie.id.clone());
+            if let Some(Src::Node { id: always, .. }) = self.g.incoming.get(&(tie.id.clone(), "value".to_string())) {
+                s.nodes.push(always.clone());
+            }
+            self.touched = saved;
+            s.branch = Some(test);
+            return Ok(());
+        }
         let x = self.arg(node, TRIGGER)?.map(|v| wrap(v, REL)).expect("tied");
         s.nodes.append(&mut self.touched);
         self.touched = saved;
         s.after = Some(x);
         Ok(())
+    }
+
+    /// Whether `node` is the tie of a branch's statements and nothing else: `when(true, test)`
+    /// (`test ? true : undefined`), unnamed, read only by the triggers of statements that make a
+    /// call or a send, which ts.rs ties so in `if (test) …`. The text writes it as that `if`, the
+    /// tie as nothing (the map's rule 6). A write in the assignment form isn't among them: in an
+    /// `if` its value is held instead, which the printer writes as the value's own choice.
+    fn branch_tie(&self, node: &Node) -> bool {
+        if node.data.body != PlacedBody::Primitive || node.data.name != "guard" || self.named(node) || self.bound.contains_key(&node.id) || self.forced.contains_key(&node.id) {
+            return false;
+        }
+        // Past a wait a branch's statement is tied to `when(w, test)`, `w` what the wait gave
+        // (ts.rs `trigger`); a return past the wait ties what follows it so too, which `if (test)`
+        // doesn't read back as. That one stays as it is written today.
+        let always = matches!(self.g.incoming.get(&(node.id.clone(), "value".to_string())), Some(Src::Node { id, .. }) if { let c = self.g.node(id); c.data.body == PlacedBody::Primitive && c.data.name == "const" && c.param("type") == "Boolean" && c.param("value") == "true" });
+        if !always || !self.g.incoming.contains_key(&(node.id.clone(), "cond".to_string())) {
+            return false;
+        }
+        let uses = self.g.uses(&node.id);
+        !uses.is_empty()
+            && uses.iter().all(|(to, input)| {
+                let to = self.g.node(to);
+                let name = to.data.name.as_str();
+                *input == TRIGGER
+                    && self.g.consumed_total(to) == 0
+                    && !self.unreturned.contains_key(&to.id)
+                    && self.sink(to)
+                    && !(name.starts_with("collection_") || name.starts_with("file_") || name == "store_write")
+            })
     }
 
     /// Whether `node`, written as a statement, is one ts.rs ties to what an `if (x !== undefined)`
@@ -3022,6 +3291,27 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         let mut out = Vec::new();
         let mut i = 0;
         while i < stmts.len() {
+            // Those reached in one branch, together in its `if (test)`.
+            if let Some(test) = stmts[i].branch.clone() {
+                let mut group = vec![stmts[i].clone()];
+                i += 1;
+                while i < stmts.len() && stmts[i].branch.as_deref() == Some(test.as_str()) {
+                    group.push(stmts[i].clone());
+                    i += 1;
+                }
+                // A binding given its value there is read by nothing (`branch_tie`): declared in
+                // the branch, as the text that made it did.
+                for s in group.iter_mut().filter(|s| s.declares.is_some()) {
+                    s.text = format!("const {}", s.text);
+                    s.declares = None;
+                }
+                let text = match group.as_slice() {
+                    [one] if !one.text.starts_with("const ") && !one.text.contains('\n') && one.text.len() + test.len() < 80 => format!("if ({test}) {}", one.text),
+                    _ => format!("if ({test}) {{\n{}\n}}", group.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("\n")),
+                };
+                out.push(Stmt { text, kids: group, ..Default::default() });
+                continue;
+            }
             let Some(x) = stmts[i].after.clone() else {
                 out.push(stmts[i].clone());
                 i += 1;
@@ -3135,7 +3425,13 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// An effect nobody reads, as a statement: in the assignment form where there is one.
     fn effect_statement(&mut self, node: &Node) -> Result<Stmt, String> {
         let d = &node.data;
+        // By method where its value isn't held to the returns above it ([`EarlyAnswers::methods`]).
+        let by_method = self.p.methods.contains(&node.id);
         let (text, writes) = match d.name.as_str() {
+            _ if by_method => {
+                let store = if d.name.starts_with("collection_") { node.param("collection") } else { node.param("folder") }.to_string();
+                (self.render(node, "")?.0, Some(store))
+            }
             "store_write" => {
                 self.p.uses_state = true;
                 (format!("state.{} = {}", node.param("key"), self.required(node, "value", 0)?), None)
@@ -3450,9 +3746,21 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     fn one_value(&self, n: &Node) -> bool {
         let outs = n.data.outputs.len();
         outs == 1 || outs > 1 && {
-            let calls = self.answers(n);
-            outs - calls.len() == 1 && !calls.contains(&0)
+            // An output both answers a call and is handed out (an Effect a function placed in a
+            // branch makes) is counted once.
+            let mut calls: BTreeSet<usize> = self.answers(n).into_iter().collect();
+            calls.extend((1..outs).filter(|&k| self.handed(n, k)));
+            outs.checked_sub(calls.len()) == Some(1) && !calls.contains(&0)
         }
+    }
+
+    /// Whether `n`'s output `k` is what it hands out, read by nothing here: a list method's `did`
+    /// (what its function made), or, in a function written in place, any Effect its list method
+    /// hands out (lower.rs `handed_effects`). Neither is a value the text names.
+    fn handed(&self, n: &Node, k: usize) -> bool {
+        let Some(p) = n.data.outputs.get(k) else { return false };
+        let handing = (p.name == DID && PASSES_EXTRA.contains(&n.data.name.as_str()) && n.data.body == PlacedBody::Primitive) || self.kind == Kind::Lambda || self.g.in_arm.contains(&n.id);
+        handing && p.ty == WType::Effect && !self.g.incoming.values().any(|src| matches!(src, Src::Node { id, output } if *id == n.id && *output == p.name))
     }
 
     /// The outputs of node `n`, a function placed, that answer a call it makes (`call_outputs`),
@@ -3927,8 +4235,11 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 Ok((format!("await {call}"), UNARY))
             }
             "flow_call" | "flow_start" => {
-                if function {
-                    return Err(format!("a function computes: {} another flow's action is a handler's", if d.name == "flow_call" { "calling" } else { "starting" }));
+                // A function may start an action: the start is tied to the call of the function
+                // (lower.rs `entered`). Calling one, awaited, is a handler's (ts.rs refuses it in
+                // a function), and a call not awaited reads as a start.
+                if function && d.name == "flow_call" {
+                    return Err("a function computes: calling another flow's action is a handler's".into());
                 }
                 let (flow, action) = (node.param("flow").to_string(), node.param("action").to_string());
                 let input = match self.arg(node, "input")? {
@@ -4503,9 +4814,11 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             return Err(format!("{} without a function has no TypeScript form", d.name));
         }
         let (_, unit) = resolve(self.p.store, &hash)?;
-        let ports: Vec<String> = unit.inputs.iter().skip(own).map(|p| p.name.clone()).collect();
+        // A function that does something takes its trigger last, which the leaf passes it from
+        // its own: the block's tie, not a value the text names.
+        let ports: Vec<String> = unit.inputs.iter().skip(own).filter(|p| p.name != TRIGGER).map(|p| p.name.clone()).collect();
         let mut captures = Vec::new();
-        for (port, input) in ports.iter().zip(d.inputs.iter().skip(base)) {
+        for (port, input) in ports.iter().zip(d.inputs.iter().skip(base).filter(|p| p.name != TRIGGER)) {
             let text = self.required(node, &input.name, ATOM)?;
             captures.push((port.clone(), text));
         }
@@ -4802,10 +5115,16 @@ impl<'s> Printer<'s> {
         }
         let (_, unit) = resolve(self.store, hash)?;
         let unit = unit.clone();
-        if is_js_node(self.store, &unit) || unit.outputs.len() != 1 || unit.inputs.len() != own + captures.len() {
+        // What it does is tied to a trigger its leaf passes it, last; and handed out at outputs
+        // after its answer, which the leaf hands out (lower.rs `handed_effects`): neither is
+        // written.
+        let triggered = unit.inputs.last().is_some_and(|p| p.name == TRIGGER);
+        let handed = unit.outputs.iter().skip(1).all(|p| p.ty == holon_core::Type::Effect);
+        if is_js_node(self.store, &unit) || unit.outputs.is_empty() || !handed || unit.inputs.len() != own + captures.len() + usize::from(triggered) {
             return Ok(None);
         }
-        let Ok(opened) = self.open(hash, "fn", &unit) else { return Ok(None) };
+        let Ok(mut opened) = self.open(hash, "fn", &unit) else { return Ok(None) };
+        opened.outs.retain(|(_, _, port)| *port == unit.outputs[0].name);
         // A parameter the function doesn't use is held by a node nothing reads (lower.rs
         // `UNUSED`, or a `list` holding two), which the body leaves out.
         let own_param = |src: &Src| matches!(src, Src::In(p) if unit.inputs.iter().take(own).any(|q| q.name == *p));
@@ -5361,7 +5680,7 @@ export const t = action((input) => {
     }
 
     /// A call bound as a statement is made when the run reaches it, so a branch reading it keeps
-    /// it a statement; one written in a branch is made only when the branch needs it, and stays
+    /// it a statement; one written in a branch is made only when the branch is taken, and stays
     /// there. Two units, each printed as written.
     #[test]
     fn a_call_stays_where_it_was_written_beside_a_branch() {
@@ -5373,13 +5692,14 @@ export const t = action((input) => {
             prints_back(src);
             hashes.push(hash_of(&compile(src).unwrap().doc));
         }
-        assert_ne!(hashes[0], hashes[1], "made when reached, or when the branch needs it");
+        assert_ne!(hashes[0], hashes[1], "made when reached, or when the branch is taken");
     }
 
-    /// A function's call bound on a statement is made when the function is entered, whatever
-    /// reads its answer, so the answer leaves its boundary as `called`, and a function placing it
-    /// gives that on as its own; one made in a branch doesn't. The printer leaves them out of
-    /// what each returns, and the lowering names them again.
+    /// A function's call is made when the run reaches it, whatever reads its answer: bound on a
+    /// statement, when the function is entered; in a branch, when the branch is taken too (as
+    /// JavaScript evaluates it, reached's cases 9 and 14). Either way its answer leaves the
+    /// boundary as `called`, and a function placing it gives that on as its own. The printer
+    /// leaves them out of what each returns, and the lowering names them again.
     #[test]
     fn a_functions_call_leaves_by_a_port_it_doesnt_return() {
         let head = "import { flow, route } from \"holon\"\nimport api from \"host:api.example\"\n\nflow(\"f\", { port: 8080 })\n\n";
@@ -5387,8 +5707,7 @@ export const t = action((input) => {
         let ask2 = "async function ask2(x) {\n  const got = await ask(x)\n  return got ?? 0\n}\n";
         let reached = format!("{head}async function ask(x) {{\n  const sent = await api.post(\"/in\", {{ body: x }})\n  return x === \"a\" ? sent.status : 0\n}}\n\n{ask2}\n{route}");
         let in_branch = format!("{head}async function ask(x) {{\n  return x === \"a\" ? (await api.post(\"/in\", {{ body: x }})).status : 0\n}}\n\n{ask2}\n{route}");
-        // The lowering's ports, read by the reader alone: the printer can't write a request made
-        // in a branch of a function, so `compile` refuses `in_branch` (agree.rs).
+        // The lowering's ports, read by the reader alone.
         let outputs = |src: &str, f: &str| {
             let l = crate::lang::ts::compile(src).unwrap();
             let mut store = MapResolver::new();
@@ -5410,9 +5729,83 @@ export const t = action((input) => {
         assert!(text.contains("return x === \"a\" ? response.status : 0\n}") && text.contains("return ask_result ?? 0\n}"), "returned as written, the call aside:\n{text}");
         assert_eq!(outputs(&reached, "ask"), ["out", "called"], "ask's request leaves");
         assert_eq!(outputs(&reached, "ask2"), ["out", "called"], "and ask2 gives it on");
-        assert_eq!(outputs(&in_branch, "ask"), ["out"], "made in a branch, when the branch needs it");
-        assert_eq!(outputs(&in_branch, "ask2"), ["out"]);
-        assert!(compile(&in_branch).unwrap_err().message.starts_with("the function \"ask\" has a write, a request or a start"), "refused: the canvas can't write it back");
+        assert_eq!(outputs(&in_branch, "ask"), ["out", "called"], "made in a branch where the branch is taken, read or not");
+        assert_eq!(outputs(&in_branch, "ask2"), ["out", "called"]);
+        // Tied to the call of the function (lower.rs `holon`), it is written back as made in the
+        // branch, and taken.
+        assert!(compile(&in_branch).is_ok(), "{:?}", compile(&in_branch).err());
+    }
+
+    /// **Guards:** a statement reached only in a branch is written back in that branch's `if`, its
+    /// tie as nothing (the map's rule 6, step C11), for each kind of statement that makes a call or
+    /// a send (an action started, another flow's action called, a request, a log line, a send to a
+    /// channel, a mail and a queue, a function of the flow's that writes, its answer bound or not),
+    /// in a route, an `else`, nested and below a return; and each reads back as the same unit.
+    /// **Why:** the printer wrote such a statement as `const guard = c ? true : undefined` and
+    /// `if (guard !== undefined) …`: the same steps, but not the text written.
+    /// **If it fails:** the case names the statement and the shape, and what was printed.
+    #[test]
+    fn a_statement_reached_in_a_branch_is_written_in_its_if() {
+        let calls = [
+            "ping(req.json)",
+            "await charge(1)",
+            "await api.post(\"/in\", { body: \"x\" })",
+            "console.warn(\"seen\", req.json.id)",
+            "updates.send({ n: 1 })",
+            "ops.send({ to: \"a@acme.com\", subject: \"s\", text: \"hi\" })",
+            "jobs.send({ data: { n: 1 } })",
+            "keep(req.json.a)",
+            "const kept = keep(req.json.a)",
+        ];
+        let shapes = [
+            ("an if", "  if (req.json.c) {\n    @CALL@\n  }\n"),
+            ("an else", "  if (req.json.c) {\n    ++state.n\n  } else {\n    @CALL@\n  }\n"),
+            ("nested ifs", "  if (req.json.c) {\n    if (req.json.d) {\n      @CALL@\n    }\n  }\n"),
+            ("below a return", "  if (req.json.stop) return \"stopped\"\n  if (req.json.c) {\n    @CALL@\n  }\n"),
+        ];
+        let head = "import { action, flow, route } from \"holon\"\nimport state from \"state\"\nimport api from \"host:api.example.com\"\nimport updates from \"channel:updates\"\nimport ops from \"mail:ops\"\nimport jobs from \"queue:jobs\"\nimport { charge } from \"flow:billing\"\n\nflow(\"f\", { port: 8080 })\n\nexport const ping = action((x) => ++state.pinged)\n\nfunction keep(x) {\n  state.kept = x\n  return 1\n}\n";
+        let mut wrong = Vec::new();
+        for call in calls {
+            for (shape, body) in shapes {
+                let src = format!("{head}\nroute.post(\"/\", async (req) => {{\n{}  return \"end\"\n}})\n", body.replace("@CALL@", call));
+                let l = match compile(&src) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        wrong.push(format!("{call} | {shape}: refused: {e}"));
+                        continue;
+                    }
+                };
+                let text = round_trips("f", &l.doc, &l.names);
+                if text.contains("!== undefined") || text.contains("? true : undefined") {
+                    wrong.push(format!("{call} | {shape}: its tie is written:\n{text}"));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// **Guards:** a write past an action's wait, below a row of returns (`marks.put`, `marks[k] =`,
+    /// a delete either way, a folder's put either way), reads back as the same action, the value
+    /// held to the returns or not as the text wrote it.
+    /// **Why:** the printer wrote `marks.put(k, v)` as `marks[k] = v`, which reads back with its
+    /// value held to the returns not taken: another action, so the text was refused (the waits
+    /// grid's 108 flows, C11).
+    #[test]
+    fn a_write_past_a_wait_below_a_return_reads_back_as_written() {
+        let writes = ["marks.put(\"k\", ok.method)", "marks[\"k\"] = ok.method", "marks.put(\"k\", \"v\")", "delete marks[ok.method]", "marks.delete(ok.method)", "files.put(\"a.txt\", ok.method)", "files[\"a.txt\"] = ok.method", "delete files[\"a.txt\"]"];
+        let mut wrong = Vec::new();
+        for write in writes {
+            for above in ["  if (input.stop) return \"stopped\"\n", "  if (input.stop) return \"stopped\"\n  if (input.n > 10) return \"big\"\n"] {
+                let src = format!("import {{ action, event, flow, route }} from \"holon\"\nimport marks from \"collection:marks\"\nimport files from \"folder:files\"\n\nflow(\"f\", {{ port: 8080 }})\n\nexport const pay = action(async (input) => {{\n{above}  const ok = await event(\"ok\", {{ expires: \"1h\" }})\n  {write}\n  return \"done\"\n}})\n\nroute.post(\"/go\", (req) => pay(req.json))\n");
+                match compile(&src) {
+                    Ok(l) => {
+                        round_trips("f", &l.doc, &l.names);
+                    }
+                    Err(e) => wrong.push(format!("{write} | {}: {e}", above.trim())),
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 
     /// Another flow's action awaited is called, one not awaited started, the flow's own by its
@@ -5812,7 +6205,9 @@ export const t = action((input) => {
             ("a branch", "  const guard = go.method === \"POST\" ? go : undefined\n  if (guard !== undefined) updates.send({ posted: order.id })\n  return go.method\n", Back::Written),
             ("a branch on two tests", "  const guard = go.method === \"POST\" && order.amount > 1 ? go : undefined\n  if (guard !== undefined) updates.send({ posted: order.id })\n  return go.method\n", Back::Written),
             // A branch past a wait prints as what its value waits for (`const guard = …`); with
-            // returns above the wait it is the same flow all the same (ts.rs `trigger`).
+            // returns above the wait it is the same flow all the same (ts.rs `trigger`). C11 left
+            // it so: a return past the wait ties what follows it the same way, and `if (test)`
+            // doesn't read back as that (`Block::branch_tie`).
             (
                 "a plain branch",
                 "  if (order.loud ?? false) {\n    updates.send({ loud: order.id })\n  }\n  return go.method\n",

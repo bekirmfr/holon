@@ -63,18 +63,9 @@ fn a_run_tried_again_sends_no_call_twice() {
         let bound = serde_json::json!({ "name": "shop", "path": file.display().to_string(), "access": "read-write", "schema": SCHEMA });
         assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&bound).unwrap())).status_code, 200, "{why}");
         let text = reader(&host, body);
-        // A request for each item of a list is refused by the text check today (a request in a
-        // list's function: the canvas can't write it back), a known refusal to lift when the
-        // printer learns the form. What a run of it does still holds: it is deployed by its units,
-        // past the text check, as a client sending no text may.
-        let reader = match body == EACH_ITEM {
-            true => {
-                let refused = holon_author::lang::compile(&text).map(|_| ()).unwrap_err().message;
-                assert!(refused.starts_with("the function given to map has a write, a request or a start"), "{why}: {refused}");
-                deploy_read_alone(&state, &text, &host)
-            }
-            false => deploy_text(&state, &text, &host),
-        };
+        // A request for each item of a list is taken since C3 (the list hands out what its
+        // function does), so every reader is deployed by its text.
+        let reader = deploy_text(&state, &text, &host);
         let writer = deploy_text(&state, &writer(change), &host);
         let (sold, set) = second_while_first_is_out(&gate, || data_call(&state, &reader, "POST", "/sell", ""), || data_call(&state, &writer, "POST", "/change", ""));
         assert_eq!(set.0, 200, "{why}: the writer: {}", set.1);

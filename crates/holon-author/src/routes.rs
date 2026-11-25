@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use holon_core::{parse_hash, parse_path, same_requests, Edge, EncapSpec, Hash, Param, Port, Resolver, Type, Unit, UnitBody, BOUNDARY, CALLS, METHODS};
+use holon_core::{parse_hash, parse_path, same_requests, Edge, EncapSpec, Hash, Param, Port, Resolver, Type, Unit, UnitBody, BOUNDARY, CALLS, METHODS, PASSES_EXTRA, TRIGGER};
 use serde::Serialize;
 
 use crate::builder::{call_outputs, UnitSettings};
@@ -483,11 +483,8 @@ pub fn find_routes(nodes: &[Node], wires: &[Wire]) -> (Vec<RouteGroup>, Vec<Stri
 /// `has_optional_ports`). An http_request's headers and body; a collection's or folder's listing's
 /// prefix and after; a file's lines' first line.
 pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
-    // A sink's trigger, or a holon's: left open, it runs with the unit around it (core's
-    // `open_trigger`). The lowering ties it wherever there is a trigger.
-    if port == Some(holon_core::TRIGGER) {
-        return true;
-    }
+    // A sink's trigger, or a holon's, is never optional: not connected means never (core's
+    // `validate`), so one left open is said, "… · trigger is not wired".
     let optional: &[&str] = match n.data.name.as_str() {
         "http_request" => &["headers", "body"],
         "http_upload" => &["headers"],
@@ -585,7 +582,9 @@ fn is_call(group: &[&Node], child: u32, port: u32, store: &impl Resolver) -> boo
         PlacedBody::Composite { hash } => parse_hash(hash)
             .and_then(|h| store.resolve(&h))
             .is_some_and(|u| u.outputs.get(port as usize).is_some_and(|p| call_outputs(u, store).contains(&p.name))),
-        _ => CALLS.contains(&n.data.name.as_str()),
+        // A list method whose function does something takes its trigger, and is made as a call is
+        // (core's `default_spec`).
+        _ => CALLS.contains(&n.data.name.as_str()) || (port == 0 && PASSES_EXTRA.contains(&n.data.name.as_str()) && n.data.inputs.iter().any(|p| p.name == TRIGGER)),
     }
 }
 

@@ -3,8 +3,8 @@
 // Takes orders as JSON. total() throws when an order has no lines, or its total isn't more than
 // 0, and the route's try { ... } catch { ... } answers 400 for that, or for a body that isn't JSON,
 // or for a line without a price (catch catches a value that has none, as much as a throw). The
-// order is stored only when the whole try block succeeded. finally counts every attempt, kept or
-// not. A throw's message goes to the run's log. /check reads total() without a try: a throw
+// order is stored on the block's last line, so only when every line above it succeeded. finally
+// counts every attempt, kept or not. A throw's message goes to the run's log. /check reads total() without a try: a throw
 // nothing catches is nothing, which its ?? answers.
 //
 // Try it: deploy it, then
@@ -31,7 +31,8 @@ function total(order) {
   return sum
 }
 
-// Keeps an order only when every step of the try block succeeded; counts every attempt.
+// Keeps an order only when every line of the try block above its write succeeded; counts every
+// attempt.
 route.post("/orders", (req) => {
   let order
   try {

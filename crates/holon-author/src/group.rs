@@ -48,6 +48,7 @@ fn validation_children(err: &ValidationError, edges: &[holon_core::Edge]) -> Vec
         | ValidationError::OutputPortOutOfRange { child, .. }
         | ValidationError::InputPortOutOfRange { child, .. } => vec![*child],
         ValidationError::DuplicateInputEdge { to_child, .. } => vec![*to_child],
+        ValidationError::Untied { child, .. } => vec![*child],
         ValidationError::TypeMismatch { edge, .. } => {
             edges.get(*edge).map(|e| [e.from_child, e.to_child].into_iter().filter(|&c| c != BOUNDARY).collect()).unwrap_or_default()
         }

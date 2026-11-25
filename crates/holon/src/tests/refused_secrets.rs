@@ -147,11 +147,12 @@ fn what_check_says_the_host_refuses_of_a_secret_it_refuses_on_every_input_of_eve
 }
 
 /// A flow `trier` whose routes each make one effect a secret reaches: by its trigger (a
-/// statement in a `try` block that fails when the secret's first four characters aren't JSON),
+/// statement in a `try` block below a line that fails when the secret's first four characters
+/// aren't JSON: one above it is made whatever the secret, as JavaScript makes it),
 /// or by what it is given. A start of the flow `worker`'s action, a write, a request to `host`.
 fn trier(host: &str) -> String {
     let tried = |path: &str, statement: &str| {
-        format!("route.post(\"{path}\", async (req) => {{\n  try {{\n    {statement}\n    const p = JSON.parse(k.slice(0, 4))\n  }} catch {{\n    return \"caught\"\n  }}\n  return \"done\"\n}})\n")
+        format!("route.post(\"{path}\", async (req) => {{\n  try {{\n    const p = JSON.parse(k.slice(0, 4))\n    {statement}\n  }} catch {{\n    return \"caught\"\n  }}\n  return \"done\"\n}})\n")
     };
     let given = |path: &str, statement: &str| format!("route.post(\"{path}\", async (req) => {{\n  {statement}\n  return \"done\"\n}})\n");
     [
@@ -169,8 +170,8 @@ fn trier(host: &str) -> String {
 
 /// **Guards:** in runs, under a secret whose first four characters are JSON and one whose aren't:
 /// an effect check says "the host refuses it" of is made in neither run, whether the secret is
-/// in what it is given or only decides whether it runs (a statement in a `try` block it can
-/// fail, in `if (test)` or a ternary on a test of it); one check says nothing of refusing is made
+/// in what it is given or only decides whether it runs (a statement in a `try` block below a
+/// line it can fail, in `if (test)` or a ternary on a test of it); one check says nothing of refusing is made
 /// where the secret lets it (a request is approved to go where the secret goes). And check's line
 /// says which: the secret kept, handed on, or deciding.
 /// **Why:** a start in a `try` block a secret can fail was made in one run and not the other,
@@ -310,8 +311,8 @@ route.post("/picked", async (req) => {{
     }
 }
 
-/// **Guards:** two starts of one action in one route, one a secret decides (in a `try` block it
-/// can fail) and one it doesn't: the one it doesn't is made in every run and recorded as made,
+/// **Guards:** two starts of one action in one route, one a secret decides (in a `try` block,
+/// below a line it can fail) and one it doesn't: the one it doesn't is made in every run and recorded as made,
 /// the other in none. The host refuses a call or a start by its own node, never by its action:
 /// a start is a request the host answers between rounds (eval.rs `Request::FlowStart`), never an
 /// effect performed after the run, where a write is refused by its kind for the whole flow.
@@ -322,7 +323,7 @@ route.post("/picked", async (req) => {{
 fn a_start_no_secret_decides_is_made_beside_one_a_secret_decides() {
     let state = claims_state("");
     let text = format!(
-        "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport {{ touch }} from \"flow:worker\"\n\nflow(\"two\", {{ port: {} }})\n\nroute.post(\"/two\", async (req) => {{\n  touch({{ n: 6, at: req.path }})\n  try {{\n    touch({{ n: 7 }})\n    const p = JSON.parse(k.slice(0, 4))\n  }} catch {{\n    return \"caught\"\n  }}\n  return \"done\"\n}})\n",
+        "import {{ flow, route }} from \"holon\"\nimport k from \"secret:k\"\nimport {{ touch }} from \"flow:worker\"\n\nflow(\"two\", {{ port: {} }})\n\nroute.post(\"/two\", async (req) => {{\n  touch({{ n: 6, at: req.path }})\n  try {{\n    const p = JSON.parse(k.slice(0, 4))\n    touch({{ n: 7 }})\n  }} catch {{\n    return \"caught\"\n  }}\n  return \"done\"\n}})\n",
         free_port()
     );
     let worker = deploy_text_to(&state, &worker(), &[]);

@@ -476,9 +476,13 @@ reaches both at once), keeps a step that uses nothing of what was sent in the ac
 writes both by order alone, and the canvas prints them back so. A
 wait stands on a line of its own at the top of
 the action's body, `const paid = await event(…)`. A `return` before the first wait may answer
-without it (`if (order.skip ?? false) return "skipped"`): where it does, the wait isn't asked for,
-as the hold too reads the wait only where no such return was taken (`when(<the hold>, c)`, `c`
-the returns not taken), and the answer is held to the waits only past the first. Such returns
+without it (`if (order.skip ?? false) return "skipped"`): where it does, the wait isn't asked for
+and the run doesn't park, whatever past it reads what it gave. A wait is a step that does
+something: it takes a `trigger`, as a write does, tied to the returns not taken (`when(true, c)`,
+`c` the returns not taken), so it is asked only where its line is reached; the hold too reads the
+wait only there (`when(<the hold>, c)`), and the answer is held to the waits only past the first.
+Every wait of an action is tied the same way, never to an earlier wait, so they are still asked
+together. Such returns
 are a row right above the wait, one to a line: `if (test) return value`, or `return` alone
 (`{ return value }` is the same), their tests and values over what the run already has; anything
 may be written above the row. A test may be a name made above the row (`const big = …`, `if
@@ -1624,7 +1628,8 @@ function total(order) {
   return sum
 }
 
-// Keeps an order only when every step of the try block succeeded; counts every attempt.
+// Keeps an order only when every line of the try block above its write succeeded; counts every
+// attempt.
 route.post("/orders", (req) => {
   let order
   try {
@@ -1650,9 +1655,8 @@ route.get("/stats", () => ({ tried: state.tried ?? 0 }))
 ```
 
 `throw new Error(message)` is the `fail` leaf: nothing, with its message given to the run's log.
-`total` answers nothing for an order without lines, and the try block, whose values must all
-arrive, fails: its write to `orders` is tied to them having arrived, so nothing is kept, and the
-catch's 400 answers. A body that isn't JSON fails it the same way, and so does a line without a
+`total` answers nothing for an order without lines, and the try block fails at that line: the
+write to `orders` is below it and isn't reached, so nothing is kept, and the catch's 400 answers. A body that isn't JSON fails it the same way, and so does a line without a
 price, whose sum has no value: catch catches a value that has none, as much as a throw (§6.5a).
 `finally` is tied to neither, so every attempt counts. `/check` has no try, and a throw nothing
 catches is nothing, which its `?? status(422)` answers.
@@ -1936,7 +1940,7 @@ handler (§10, §12).
 | `if (c) …; else …` | its writes guarded by their branch's condition; writes to one key in both branches are one write, of `a` or `b` as `c` says. On a `c` with no value neither branch runs (§6.4) |
 | `if (x !== undefined) { … }` | its writes and calls tied to `x` (§5.11) |
 | `switch (s) { case …: … }` | a choice by value (§6.5) |
-| `try { … } catch { … } finally { … }` | a choice on the try block's values having arrived: its writes, sends and returns are tied to that, the catch block's to its negation, and a name either assigns is the one chosen, as after an `if`; `finally`'s are tied to neither (§6.5a) |
+| `try { … } catch { … } finally { … }` | a choice on the try block's values having arrived: each line of the block is reached where the lines above it that can fail didn't, so what it did above the line that failed is kept and a name keeps the last value reached; its returns are tied to the block succeeding, the catch block's statements to its failing, and a name either assigns is the one chosen, as after an `if`; `finally`'s are tied to neither, only to the `try` being reached (§6.5a) |
 | `throw new Error(m)` | the `fail` leaf, nothing, `m` for the run's log: in a try block, its failure; elsewhere the handler's answer, as a `return` of nothing: a route's 404 (§6.5a) |
 | `return e` | the handler's answer (§5.11), or a function's outputs (§5.8) |
 | `expr` | an effect (§5.10) |
@@ -2414,6 +2418,20 @@ it, as `respond` has its request. Its sinks are tied to it, and a placement is t
 what an `if (x !== undefined)` around it names. A function with no sink, a calculation, has no
 trigger.
 
+What a function does is done where its call is reached and nowhere else, as JavaScript runs a
+function's body only when it is called. A sink under the function's own `if`, below its own
+`return` or in its own `try` is tied to what its conditions there give, held to the trigger being
+there: `guard(same_value(trigger, trigger), c)`, `same_value` so that a trigger of any value
+counts. A request or a start in a branch of the function's `?:`, `&&`, `||` or `??` is made when
+the branch is taken, as in a handler, and only once the function is entered: its trigger is the
+function's, held to the branch's test, and its answer leaves by a `called` output, so it is made
+whatever reads it. So `function ask(x) { if (x)
+ping(x); return 1 }`, called in a route under `if (req.json.go)`, starts `ping` only where `go`
+holds and `x` does. A function may start an action, its flow's own or another flow's; calling one
+and awaiting it stays a handler's. A function drawn on the canvas without a `trigger` input still
+loads and runs: an input nothing feeds reads as there (§5.11), so its sinks run where its value is
+needed, as they always did; the text written back from it ties them to the call.
+
 Functions are defined at the top level and are visible to the whole file, in any order, so a
 function may use one defined below it. They may not be nested in text (a function declared inside
 a handler is refused); a function placed inside another is the nesting. A function can't place
@@ -2529,6 +2547,31 @@ waiting point inside it is answered by the host, once per item, recorded at the 
 and replayed from there (the `basket` sample prices each line from a collection). View mode shows a
 `map` or `fold` whose function reads from outside with what the run recorded it produced, as it
 does a function that reads.
+
+A list method's function may also do things, as a function of the flow may: write, put, delete,
+send, log, ask a host or start an action (the `restock` sample asks a supplier and keeps a line for
+each item of an order). What it does is made once per item it is applied to, in the order
+JavaScript calls the callback: from the first item; `find`, `findIndex`, `some` and `every` stop at
+the item that decides, `findLast` and `findLastIndex` go from the last, and an item whose function
+gives nothing (where JavaScript's callback would throw) stops the method there, so no item after it
+is applied. The writes, sends and log lines land in that order. The list call itself is reached as
+any step that does something is: below a return that answered, in a branch not taken or an `if`
+not entered, nothing of it is made; bound to a name read only in a branch not taken, it is made,
+as JavaScript makes it. On the canvas the method's step takes a `trigger` input, tied as any such
+step's, and, when its function writes, sends or logs, a second output, `did`: its effects in the
+order made, which the host performs with the run's others. A function written in place whose answer is
+the write, send or log itself (`xs.map((x) => marks.put(x, x))`, where JavaScript keeps `undefined`
+for each item) is refused: the write goes in a function of the flow's, as a statement, which
+returns a value.
+
+What bounds it: a list holds at most 1,048,576 items (`MAX_ITEMS`), and each application is a step
+of the run's `max_steps`. The items' requests and starts are asked in one round, at most
+`per_host_concurrency` at once to a host (6 by default, 32 at most; an action's starts one at a
+time), and every one counts toward the run's `max_requests` (50 by default, 1,000 at most), checked
+before the round is sent: a list of 10,000 items whose function asks a host fails the run with
+nothing sent. Two differences from JavaScript are left: an item whose function starts something and
+then fails stops the items after it only once the start is answered, so theirs are already asked;
+and a `reduce` whose function adds a start's handle to a text stops at the first item.
 
 ### 5.10 Effects and statements
 
@@ -2666,7 +2709,10 @@ every sink placed in it:
   `state.hits = hits` never looks at the request, and is the route's. A function with a sink in it
   takes a trigger too, which its placement wires the same way (§5.8).
 - **The trigger is never read;** it only has to be there. A sink whose trigger has no value does
-  nothing.
+  nothing. **Not connected means never:** a sink, or a placed function with a sink in it, whose
+  trigger nothing is wired to never runs, and the check refuses the flow ("… has nothing wired
+  to its trigger, so it would never run: tie it to what reaches it"). The lowering always wires
+  it, so a text can't leave one untied; a graph built on the canvas or sent by an agent can.
 - **`if (x !== undefined) …` ties a statement's sinks to `x` instead:** `if (saved !== undefined)
   state.last = id` writes once `saved`, the put before it, has its result in the run, so
   `state.last` never names a visit that isn't kept; `if (found !== undefined) state.seen = id`
@@ -2764,14 +2810,20 @@ call's arguments are: `h(go, await api.get(…))` sends the request even if `h` 
 
 A binding isn't a branch. A call written in a branch, `ids[name] ?? JSON.parse((await
 httpbin.get("/uuid")).body).uuid` (the `cache-aside` sample) or `c ? await api.get(…) : undefined`,
-is made only when the branch needs it; a call bound on a statement of its own, `const page = await
-api.get(…)`, is made when the run reaches the statement, whatever reads `page`, even a branch not
-taken (§5.4). A statement in an `if` whose condition doesn't hold, or after a `return` that
+is made only when the branch is taken, as JavaScript evaluates it; a call bound on a statement of
+its own, `const page = await api.get(…)`, is made when the run reaches the statement, whatever
+reads `page`, even a branch not taken (§5.4). Either way, once made, it is made whatever reads its
+answer: `const got = c ? ping(x) : 0`, where `c` holds and `got` is read only in a branch not
+taken, starts `ping`, as JavaScript does. A statement in an `if` whose condition doesn't hold, or after a `return` that
 answered, isn't reached: its call isn't made, though a later statement reads its answer. In the
 graph the difference is the call's trigger: one bound on a statement is tied to its handler's
 trigger, to what an `if (x !== undefined)` around it names, or to the conditions it runs under
-(an `if`'s, and that no `return` before it answered), and its handler keeps it as an output; one written in a branch is left untied, and is made when its answer is
-needed. So whether a call goes out is said where it is written: in the branch that needs it, or by
+(an `if`'s, and that no `return` before it answered), and its handler keeps it as an output; one
+written in a branch is tied the same way, held also to the branch's test (`guard(taken, trigger)`,
+`taken` the tests of the branches around it, innermost first), and kept as an output too. (Until
+2026-11-24 one written in a branch was left untied and made only when its answer was needed: in
+the case above `ping` wasn't started, and a function's `c ? ping(x) : 0` bound to a name read only
+in a branch not taken started nothing.) So whether a call goes out is said where it is written: in the branch that is taken, or by
 its own tie, `if (first !== undefined) charged = await api.post(…)`, never by a reader somewhere
 else. The printer keeps each where it was written. A call in a branch of a value bound in an
 `if`, or after a `return` that may answer (`if (d) { got = v ?? (await api.get(…)).body }`), is
@@ -2854,16 +2906,25 @@ each case chooses the name's value the same way.
 
 A failure is an absence (§6.3), so `try` is a choice on absence: **the try block succeeds when
 every value it makes arrives**. Each binding it makes, each key and value it writes, and each
-answer it returns is tested, where it is reached (`same_value(x, x) ?? false`, true for any value,
-a `NaN` too), and `ok` is all of them. The block's writes and sends are tied to `ok` (their
-`after`), so they are made all together or not at all, and its returns answer only where `ok`
-holds. The catch block is read under `!ok`: its writes are tied to the block having failed, and a
-name or state key either block changes holds `ok ? tried : caught` after them, as after an `if`.
-`finally` holds statements tied to neither, made whichever block ran, as JavaScript's are. And
-what follows a statement in the try block runs only where what that statement made arrived, as
-the rest of JavaScript's block is skipped once a statement throws: a call bound after a failure
-isn't made, and a function after it isn't entered. Its write is tied to that too (here,
-`notes[tried_1]` is written only where `note` arrived).
+answer it returns is tested, where it is reached (`has_value(x)`, true for any value,
+a `NaN` too), and `ok` is all of them. `has_value` is one step, the leaf of that name: true when
+its input arrived, `false`, `0` and `NaN` included, and false when it didn't, so it never gives
+nothing itself; a wait's hold and an `after` test with it too, and a text may call it (`import {
+has_value } from "holon"`). (Until 2026-11-24 the test was two steps, `same_value(x, x) ?? false`,
+drawn on the canvas as a doubled wire into `same_value` and a `default` after it.)
+
+A try block runs as JavaScript's does: **each line runs only where the lines above it that can
+fail didn't**, and what the block did above the line that failed is done and kept. A write, a
+send, a start or a request on a line above it is made; one below it isn't. Each name and state key
+the block changes holds the last value it was given on a line that was reached, so the catch, and
+what follows the `try`, see what the block left, as in JavaScript. A state key written above the
+failing line and again below it keeps the first value. Its returns answer only where `ok` holds.
+The catch block is read under `!ok`, and a name or state key either block changes holds
+`ok ? tried : caught` after them, as after an `if`. `finally` holds statements tied to neither, made whichever block ran, as JavaScript's are, and
+only where the `try` itself is reached: a `return` above the `try` that answered, or an `if` around
+it not entered, leaves the `finally` unmade too, as it leaves a `try` without a `catch`. (Until
+2026-11-24 a `finally`'s write was made though a `return` above the `try` had answered.) Here,
+`notes[tried_1]` is written only where `note` arrived, and the answer is chosen by `ok`.
 
 ```ts
 route.post("/n", (req) => {
@@ -2883,11 +2944,8 @@ is the same unit as (a test says so):
 route.post("/n", (req) => {
   const note = JSON.parse(req.body)
   const tried_1 = note.id
-  const ok_1 = (same_value(note, note) ?? false) && (same_value(tried_1, tried_1) ?? false)
-  const tie = ok_1 ? true : undefined
-  if (tie !== undefined) {
-    notes[tried_1] = (same_value(note, note) ?? false) ? note : undefined
-  }
+  notes[tried_1] = has_value(note) ? note : undefined
+  const ok_1 = has_value(note) && has_value(tried_1)
   return status(!(ok_1 ?? false) ? 400 : 201, !(ok_1 ?? false) ? "not a note" : "kept")
 })
 ```
@@ -2908,16 +2966,11 @@ absence:
   didn't arrive, so the catch runs, where JavaScript would carry on with `undefined` (all but the
   last two). Give such a value its fallback inside the block (`req.json.kind ?? "plain"`) when its
   absence isn't a failure.
-- **The try block's writes are all or none.** JavaScript keeps the writes made before the throw;
-  Holon makes none of them, as a run's writes are made at its end (§6.6).
 - **A call the try block binds is made when the statements before it succeeded,** as
   JavaScript's is: one written after a failure isn't made (until 2026-11-11 it was, unless it read
   what failed). So the requests a try block makes go one after another, each in a round of its
   own, where elsewhere those that don't read each other go together. Its answer's arriving is part
-  of `ok`, so a failed request reaches the catch. A send written as a statement is tied to `ok`, as
-  a write is.
-- **The catch block sees the names as they were before the try,** not as the try block left them,
-  since what the try block made may not have arrived.
+  of `ok`, so a failed request reaches the catch.
 - `catch (e)` is refused, "write `catch { … }`; the reason is in the run's log": a failure carries
   no reason as a value yet (the L4's slice 10). A `return` or `throw` in `finally`, and a `switch`
   that returns inside a try block, come in later slices.
@@ -3065,7 +3118,8 @@ The error catalogue the reader and the lowering produce, each with the span it p
 | an action answers with a value alone | the `status(…)` or `respond(…)` |
 | a route answers and is done, so it doesn't wait | the `await` |
 | a function computes and never waits; calling another flow's action is a handler's | the `await` |
-| a text the canvas can't write back as the same steps: a function that starts another flow's action; a write, a request or a start inside a list method's function (so one request per item of a list), or under a function's own `if` or `?:`; an action awaiting its own flow's action; `&&` or `\|\|` around an awaited function of the flow | the function's name, or the list method its function is given to; else `flow(…)` |
+| a function written in place whose answer is a write, a send or a log: put it in a function of the flow's, as a statement of its own, and return a value | the function's body |
+| a text the canvas can't write back as the same steps: an action awaiting its own flow's action | the function's name, or the list method its function is given to; else `flow(…)` |
 | a flow too long or deeply nested to be shown back as text (from about 25 early returns in a row, 41 writes each under its own `if`, calls or templates nested 21 deep) | where the text nests deepest |
 | a method's function (`map`'s, `filter`'s…) isn't async | the function |
 | no leaf does `.m(…)`: do it in a `js()` function | the method |
@@ -3425,7 +3479,7 @@ is `status(204)`).
   read, and its answer is never its handler's (§5.4, §5.10). The `fan-out` sample shows it. And a
   call bound on a statement was made only when something needed its answer, so whether a charge
   went out could be decided by a reader lines away. Decided and built: a call is made where it is
-  written, when the run reaches its statement or when the branch it is written in needs it (§6.4);
+  written, when the run reaches its statement or when the branch it is written in is taken (§6.4);
   the `idempotent` sample's charge says its own condition. And in a function, a call bound on a
   statement was still made only when the function's answer was needed. Decided and built
   (2026-11-11): its answer leaves the function's boundary by an output of its own, `called`, which

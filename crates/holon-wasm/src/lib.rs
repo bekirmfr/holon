@@ -331,6 +331,23 @@ pub fn passes_extra_primitives() -> Vec<String> {
     holon_core::PASSES_EXTRA.iter().map(|s| s.to_string()).collect()
 }
 
+/// Whether leaf `name`, tied to a trigger, is made when the trigger arrives whatever reads its
+/// answer (core's `made_when_tied`): a replay starts from it, as the run does.
+#[wasm_bindgen]
+pub fn made_when_tied(name: &str) -> bool {
+    holon_core::made_when_tied(name)
+}
+
+/// Whether a step is held back, so core doesn't run it (core's `held`, the one rule): `leaf` is
+/// its primitive's name (empty for any other node), `ports` its input ports' names, `wired` and
+/// `arrived` one per port, nonzero where something is wired there and where a value came in. A
+/// replay says such a step wasn't run, as the run didn't run it.
+#[wasm_bindgen]
+pub fn held_step(leaf: &str, ports: Vec<String>, wired: Vec<u8>, arrived: Vec<u8>) -> bool {
+    let holds_back = !leaf.is_empty() && holon_core::holds_back(leaf);
+    holon_core::held(holds_back, ports.iter().map(String::as_str), |p| wired.get(p).is_some_and(|w| *w != 0), |p| arrived.get(p).is_some_and(|a| *a != 0))
+}
+
 /// The leaves that ask the host (core's `catalog::ASKS_HOST`): a replay answers each from what
 /// the run recorded, never recomputing it.
 #[wasm_bindgen]
@@ -511,6 +528,8 @@ pub enum WValidationError {
     UnknownLeaf { leaf: String, message: String },
     /// A leaf whose ports aren't its catalog entry's: the message says which, and how.
     LeafPorts { leaf: String, message: String },
+    /// A step that does something with nothing wired to its trigger: it would never run.
+    Untied { child: u32, message: String },
 }
 
 impl WValidationError {
@@ -545,6 +564,7 @@ impl WValidationError {
             }
             ValidationError::UnknownLeaf { leaf } => WValidationError::UnknownLeaf { leaf: leaf.clone(), message },
             ValidationError::LeafPorts { leaf, .. } => WValidationError::LeafPorts { leaf: leaf.clone(), message },
+            ValidationError::Untied { child, .. } => WValidationError::Untied { child: *child, message },
             ValidationError::TypeMismatch { edge, src, dst } => WValidationError::TypeMismatch {
                 edge: *edge,
                 src: WType::from_core(src),

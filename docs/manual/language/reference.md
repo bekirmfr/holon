@@ -250,9 +250,11 @@ value, the `switch` has none: it never falls through to another case. With no ca
 
 **`try`, `catch` and `throw`.** A failure is a value that didn't arrive (see
 [How a flow runs](#how-a-flow-runs)), and `throw new Error(message)` makes one: nothing, with the
-message in the run's log. The try block succeeds when every value it makes arrives; its writes are
-made only then, all together, and otherwise the catch block runs instead. `finally` runs either
-way:
+message in the run's log. The try block succeeds when every value it makes arrives, and
+otherwise the catch block runs. As in JavaScript, the block stops at the line that failed: what it
+did above that line (a write, a send, a request) is done and kept, what is below it isn't, and the
+catch, and what follows the `try`, see each name as the block last set it. `finally` runs either
+way, wherever the try itself is reached (a `return` above it that answered skips both):
 
 ```ts
 import { flow, route, status } from "holon"
@@ -287,10 +289,8 @@ this differs from JavaScript:
 - **`catch` catches absence too.** A field the try block reads that isn't there is a failure,
   where JavaScript carries on with `undefined`. Give it a fallback inside the block
   (`req.json.kind ?? "plain"`) when its absence isn't one.
-- **The try block's writes are all or none.** JavaScript keeps the writes made before the throw.
-- **A request the try block makes is made when what it reads arrives,** even after a failure that
-  it doesn't read. If it fails, the catch block runs.
-- **The catch block sees names as they were before the try,** not as the try block left them.
+- **A request the try block binds is part of what must arrive:** if it fails, the catch block
+  runs.
 - **`catch (e)` is refused:** a failure's reason is the run log's, not a value; write
   `catch { … }`. A `return` or a `throw` in `finally` is refused too.
 
@@ -432,6 +432,14 @@ refused: do them in a `js()` function.
 | `[...new Set(xs)]` | each item once, in order |
 | `[...xs.keys()]`, `[...xs.entries()]` | the indices; the `[index, item]` pairs |
 | `Array.isArray(x)`, `Array.of(a, b)`, `Array.from(xs, f)`, `Array.from({ length: n }, (_, i) => …)` | whether `x` is a list; `[a, b]`; `xs.map(f)`; `range(n).map((i) => …)` |
+
+The function given to a list method may write, send, log, ask a host or start an action: it does so
+once per item it is applied to, in the order JavaScript calls it (the ones that stop early stop
+there, `findLast` goes from the last item, and an item whose function gives nothing stops the
+items after it), and only where the run reaches the list call. A list's requests count toward the
+run's `max_requests` (50 by default), checked before any is sent, and go at most
+`per_host_concurrency` at once to a host (6 by default); the `restock` sample asks and keeps one
+line per item.
 
 A list never changes. `xs.sort()`, `xs.reverse()`, `xs.fill(v)` and `xs.copyWithin(t, s)` are read
 as the list they give, on a list made where they are called (`[...xs].sort()`) or one of the
@@ -896,7 +904,9 @@ route.get("/hit", () => {
 ```
 
 `state.hits = hits` never looks at the request, and is still the route's: the write is tied to
-the request. The tie is never read; it only has to be there.
+the request. The tie is never read; it only has to be there. A write or call with no tie at all
+never runs, and the check refuses the flow; the language always ties one, so this is met only
+in a flow built on the canvas or sent as a graph.
 
 **`if (x !== undefined)` ties a statement to `x` instead.** Its writes and calls happen once `x`
 has a value in the run, and not at all when `x` has none:
@@ -1051,7 +1061,8 @@ misled, the compiler refuses instead.
   isn't reached: in an `if` whose condition doesn't hold or has no value, or after a `return` that
   answered (or an `if` that holds one, on a condition with no value). One
   written in a branch (`x ?? (await api.get(…)).body`, `c ? await api.get(…) : undefined`) is
-  made only when the branch needs it, so a branch not taken makes no call. To make a bound call
+  made only when the branch is taken, so a branch not taken makes no call, and one taken makes
+  it whatever reads its answer, as JavaScript does. To make a bound call
   only sometimes, put it in an `if`, or tie it to a value: `if (first !== undefined) charged =
   await api.post(…)`.
 - **Waiting.** `await event(name)` parks the run, an action's: a route answers and is done, and

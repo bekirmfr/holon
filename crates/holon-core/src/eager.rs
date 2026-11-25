@@ -13,6 +13,22 @@ use std::collections::BTreeMap;
 pub fn eval_eager(unit: &Unit, inputs: &[Option<Value>], resolver: &impl Resolver) -> Vec<Option<Value>> {
     let inputs = if crate::takes_trigger(unit) && inputs.len() == unit.inputs.len() { &inputs[..inputs.len() - 1] } else { inputs };
     match &unit.body {
+        // A higher-order leaf placed with a second output, `did`: what its function's
+        // applications made at their Effect outputs, in order, up to and with the first that gives
+        // nothing (eval.rs's `Did`). Each such leaf keeps its own, so a list inside a function
+        // keeps what its own function makes.
+        UnitBody::Primitive { name } if crate::PASSES_EXTRA.contains(&name.as_str()) => {
+            let handing = unit.outputs.len() >= 2;
+            MADE.with(|m| m.borrow_mut().push(handing.then(Made::default)));
+            let answer = primitive(name, unit, inputs, resolver);
+            let made = MADE.with(|m| m.borrow_mut().pop()).flatten();
+            let mut outs = vec![answer];
+            if let Some(made) = made {
+                outs.push((!made.items.is_empty()).then_some(Value::List(made.items)));
+                outs.resize(unit.outputs.len(), None);
+            }
+            outs
+        }
         UnitBody::Primitive { name } => vec![primitive(name, unit, inputs, resolver)],
         UnitBody::Composite { children, edges } => composite(children, edges, unit.outputs.len(), inputs, resolver),
         UnitBody::Module { bytes } => crate::eval::run_module_outputs(bytes, unit, inputs, resolver, &mut crate::NoObserver).0,
@@ -73,17 +89,16 @@ fn composite(children: &[Hash], edges: &[Edge], n_outputs: usize, inputs: &[Opti
     for ci in order {
         let child = resolved[ci];
         let k = child.inputs.len();
-        let mut gathered: Vec<Option<Value>> = (0..k)
+        let gathered: Vec<Option<Value>> = (0..k)
             .map(|p| match incoming.get(&(ci as u32, p as u32)) {
                 Some(&(BOUNDARY, fp)) => inputs.get(fp as usize).cloned().flatten(),
                 Some(&(fc, fp)) => output_of(&scratch, fc, fp),
                 None => None,
             })
             .collect();
-        crate::eval::open_triggers(child, &mut gathered, crate::open_trigger, |p| incoming.contains_key(&(ci as u32, p as u32)));
-        let wired_but_absent = (0..k).any(|p| gathered[p].is_none() && incoming.contains_key(&(ci as u32, p as u32)));
-        let held = wired_but_absent
-            && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name.as_str()));
+        // Held back as the evaluator holds it (`eval::held`, the one rule).
+        let holds_back = matches!(&child.body, UnitBody::Primitive { name } if crate::eval::holds_back(name));
+        let held = crate::eval::held(holds_back, child.inputs.iter().map(|p| p.name.as_str()), |p| incoming.contains_key(&(ci as u32, p as u32)), |p| gathered[p].is_some());
         scratch[ci] = if held { vec![None; child.outputs.len()] } else { eval_eager(child, &gathered, resolver) };
     }
     (0..n_outputs as u32)
@@ -95,9 +110,41 @@ fn composite(children: &[Hash], edges: &[Edge], n_outputs: usize, inputs: &[Opti
         .collect()
 }
 
-/// The function a `map`/`fold` applies, applied: its one output.
+/// What a higher-order leaf placed with `did` keeps of its function's applications.
+#[derive(Default)]
+struct Made {
+    items: Vec<Value>,
+    stopped: bool,
+}
+
+thread_local! {
+    /// One entry per higher-order leaf being evaluated, innermost last: what it keeps, or none
+    /// where it is placed without `did`.
+    static MADE: std::cell::RefCell<Vec<Option<Made>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The function a `map`/`fold` applies, applied: its one output; or, where the leaf hands out
+/// what it makes, its first, its Effect outputs after it kept in order.
 fn apply(unit: &Unit, args: &[Option<Value>], resolver: &impl Resolver) -> Option<Value> {
     let mut outs = eval_eager(unit, args, resolver);
+    let ports: Vec<usize> = unit.outputs.iter().enumerate().skip(1).filter(|(_, p)| p.ty == crate::Type::Effect).map(|(i, _)| i).collect();
+    let kept = MADE.with(|m| {
+        let mut m = m.borrow_mut();
+        let Some(Some(made)) = m.last_mut() else { return false };
+        if ports.is_empty() {
+            return false;
+        }
+        if !made.stopped {
+            made.items.extend(ports.iter().filter_map(|&p| outs.get_mut(p).and_then(Option::take)));
+            made.stopped = outs.first().is_none_or(Option::is_none);
+        }
+        true
+    });
+    // A function that does something (it takes a trigger) answers at its first output, the others
+    // its calls' answers (eval.rs's `at_answer`).
+    if kept || unit.inputs.last().is_some_and(|p| p.name == crate::TRIGGER) {
+        return outs.into_iter().next().flatten();
+    }
     if outs.len() == 1 { outs.pop().unwrap() } else { None }
 }
 
