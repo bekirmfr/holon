@@ -15,6 +15,7 @@ mod access_table;
 mod approval_shows;
 mod deploy_review;
 /// A flow travels as its text: the size, gzip, layout and nesting classes.
+mod text_deploy;
 /// No page of another site may frame the control plane.
 mod frames;
 /// A run of every kind shows its steps, in explain and the editor alike (R151).
