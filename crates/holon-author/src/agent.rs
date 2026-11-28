@@ -133,6 +133,38 @@ pub fn layout_of(canvas: &Value, text: &str) -> Result<(String, Option<crate::ke
     Ok((plan.unit, layout))
 }
 
+/// A flow saved as a canvas document (0.1.0-rc.37 and before) as it is kept now: its text, the
+/// text the document carried when that still compiles to its canvas, else its canvas printed (as
+/// the canvas named its nodes), and where its nodes were drawn, read off its canvas ([`layout_of`];
+/// none when they can't be). How a server reads a saved-flows file written before flows were kept
+/// as their text, so it starts on it and loses none.
+pub fn kept_from_document(name: &str, document: &Value) -> Result<(String, Option<crate::kept_layout::Layout>), String> {
+    let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
+    let source = document.get("source").and_then(Value::as_str).filter(|s| !s.trim().is_empty());
+    let says_its_canvas = |s: &str| plan(s).is_ok_and(|said| canvas_unit(&doc).is_ok_and(|canvas| canvas == said.unit));
+    let text = match source {
+        Some(s) if says_its_canvas(s) => s.to_string(),
+        _ => {
+            let bindings: BTreeMap<String, String> = document.get("bindings").and_then(|b| serde_json::from_value(b.clone()).ok()).unwrap_or_default();
+            match print_lines(Some(name), &doc, &mut MapResolver::new(), &Names::new(), &bindings) {
+                Ok((text, _)) => text,
+                // A draft that never compiled: its text as it was typed, kept as a draft is.
+                Err(e) => source.map(str::to_string).ok_or(e)?,
+            }
+        }
+    };
+    let layout = layout_of(document, &text).ok().and_then(|(_, layout)| layout);
+    Ok((text, layout))
+}
+
+/// The unit `doc`'s canvas deploys as, in hex.
+fn canvas_unit(doc: &FlowDocument) -> Result<String, String> {
+    let mut store = MapResolver::new();
+    crate::text::restore(doc, &mut store, &Names::new());
+    let port = doc.server.clone().unwrap_or_default().port;
+    flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings()).map(|canvas| to_hex(&canvas))
+}
+
 /// A consent name as a person reads it (`StateWrite("beats")` → write its state "beats").
 pub fn describe(item: &str) -> String {
     describe_item(item)

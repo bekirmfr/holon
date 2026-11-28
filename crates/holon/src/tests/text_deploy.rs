@@ -247,3 +247,52 @@ fn the_servers_compile_refuses_a_text_past_the_nesting_bound() {
     });
     assert_eq!(route(&state, &req("GET", "/version", vec![])).status_code, 200, "it answers on");
 }
+
+/// **Guards:** a saved-flows file written before flows were kept as their text (each flow a canvas
+/// document, 0.1.0-rc.37 and before) loads: every sample saved that way, with the text the editor
+/// kept in it or without one, and with its boxes moved by hand, reads back as text that compiles
+/// to the same code, its boxes where they were drawn.
+///
+/// **Why:** the server reads that file as it starts, and refuses to start on one it can't read (the
+/// next save would write over every flow). Read as this release's records only, a server upgraded
+/// with a single flow saved didn't start.
+///
+/// **If it fails:** `wire::StoredFlow` or `agent::kept_from_document` stopped reading the old
+/// shape: an upgraded server refuses to start, or a saved flow opens as other code.
+#[test]
+fn a_flow_saved_as_a_canvas_by_an_earlier_release_loads_as_its_text_and_layout() {
+    let dir = unique_temp_path("old-flows");
+    std::fs::create_dir_all(&dir).unwrap();
+    // One file for each way a flow was saved, each sample under its own name, as the editor saved it.
+    for how in ["source", "canvas", "moved"] {
+        let path = format!("{dir}/{how}.json");
+        let mut old = Vec::new();
+        for sample in holon_author::samples::samples() {
+            let plan = agent::plan(sample.text).unwrap();
+            let mut document = plan.document.clone();
+            if how != "canvas" {
+                document["source"] = Value::String(sample.text.to_string());
+            }
+            if how == "moved" {
+                for (i, n) in document["nodes"].as_array_mut().unwrap().iter_mut().enumerate() {
+                    n["position"] = json!({ "x": 7.0 + i as f64, "y": 3.0 - i as f64 });
+                }
+            }
+            old.push(json!({ "name": sample.name, "document": document, "saved_at_epoch_seconds": 1 }));
+        }
+        crate::at_rest::write_table(std::path::Path::new(&path), crate::at_rest::role::FLOWS, &serde_json::to_vec(&old).unwrap()).unwrap();
+        let loaded = load_flows(&Place::parse(&path)).expect("an earlier release's saved flows load");
+        for sample in holon_author::samples::samples() {
+            let record = &loaded[sample.name];
+            let layout = record.layout.as_ref().map(|l| serde_json::to_value(l).unwrap());
+            let (_, compiled, placed) = agent::canvas_of(&record.text, layout.as_ref()).unwrap_or_else(|e| panic!("{} ({how}): {e}", sample.name));
+            assert_eq!(compiled, agent::plan(sample.text).unwrap().unit, "{} ({how}): its text is its code", sample.name);
+            match how {
+                "source" => assert_eq!(record.text, sample.text, "{}: the text it was saved with", sample.name),
+                "moved" => assert_eq!(placed, Some(kept_layout::Placed::AsDrawn), "{}: its boxes where they were drawn", sample.name),
+                _ => {}
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

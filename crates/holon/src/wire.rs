@@ -188,6 +188,7 @@ pub(crate) struct PerformedEntry {
 /// `Serialize`+`Deserialize` because this exact shape is also the on-disk persistence format
 /// (one JSON array of these, same discipline as `DeploymentRecord`).
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(from = "StoredFlow")]
 pub(crate) struct FlowRecord {
     pub(crate) name: String,
     pub(crate) text: String,
@@ -202,6 +203,42 @@ pub(crate) struct FlowRecord {
     /// the text). Absent when saved before this was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) uses: Option<Vec<HolonUse>>,
+}
+
+/// A [`FlowRecord`] as the saved-flows file holds it, this release's or one written before flows
+/// were kept as their text (0.1.0-rc.37 and before: a canvas `document`, no `text`). Without this
+/// a server upgraded with a single flow saved refused to start ("not valid flows JSON"). An old
+/// record is read once as its text and layout (`agent::kept_from_document`) and written in this
+/// shape on the next save; one that can't be read keeps its name, with an empty text, said on
+/// stderr.
+#[derive(Deserialize)]
+struct StoredFlow {
+    name: String,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    layout: Option<holon_author::kept_layout::Layout>,
+    saved_at_epoch_seconds: u64,
+    #[serde(default)]
+    saved_by: Option<String>,
+    #[serde(default)]
+    uses: Option<Vec<HolonUse>>,
+    #[serde(default)]
+    document: Option<serde_json::Value>,
+}
+
+impl From<StoredFlow> for FlowRecord {
+    fn from(s: StoredFlow) -> FlowRecord {
+        let (text, layout) = match (s.text, s.document) {
+            (Some(text), _) => (text, s.layout),
+            (None, Some(document)) => holon_author::agent::kept_from_document(&s.name, &document).unwrap_or_else(|why| {
+                eprintln!("holon: the saved flow {:?} was saved as a canvas this release can't read as text ({why}): it is kept with an empty text", s.name);
+                (String::new(), None)
+            }),
+            (None, None) => (String::new(), None),
+        };
+        FlowRecord { name: s.name, text, layout, saved_at_epoch_seconds: s.saved_at_epoch_seconds, saved_by: s.saved_by, uses: s.uses }
+    }
 }
 
 /// A saved flow placed as a node in another flow or deployment: its name, and which save of it.
