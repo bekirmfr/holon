@@ -277,7 +277,7 @@ pub(crate) fn check_lines(check: &Value) -> (Vec<Said>, Vec<(String, u64)>) {
     lines.push((Tone::Dim, "Each log's head, the hash of its newest line:".into()));
     for h in check["heads"].as_array().into_iter().flatten() {
         let (slug, head) = (h[0].as_str().unwrap_or("?"), h[1].as_str().unwrap_or(""));
-        lines.push((Tone::Plain, format!("  {slug:<20} {}", &head[..head.len().min(16)])));
+        lines.push((Tone::Plain, format!("  {slug:<20} {}", holon_author::first_chars(head, 16))));
     }
     (lines, breaks)
 }

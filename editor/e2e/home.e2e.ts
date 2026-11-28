@@ -236,7 +236,7 @@ test("closing a changed tab asks: Save and close saves it, then closes it", asyn
   await dialog.getByRole("button", { name: "Save and close" }).click();
   await expect(tabs.getByRole("tab")).toHaveText([/^Home/]);
   const saved = await request.get(`${SERVER}/flows/hello-api`, { headers: { Authorization: `Bearer ${adminToken}` } });
-  expect(((await saved.json()) as { document: { source?: string } }).document.source).toContain(path);
+  expect(((await saved.json()) as { text: string }).text).toContain(path);
   const closed = page.getByRole("region", { name: "recently closed" });
   await expect(closed).not.toContainText("with its unsaved changes");
 });

@@ -62,6 +62,7 @@ import { templateNames } from "./templates";
 import { primitiveName, stageClosure, unitFor } from "./canvasUnits";
 import {
   deriveServer,
+  type DerivedServer,
   excludeProjectedOutput,
   flowAsNode,
   nodeFromPalette,
@@ -415,6 +416,8 @@ function Canvas({
   }, [catalog]);
 
   // Saving it, the saved flows around it, and updating a holon placed from one (useSavedFlows.ts).
+  // What the canvas derives is worked out below; a save reads it as of the last render.
+  const derivedNow = useRef<DerivedServer | null>(null);
   const { savedFlowTimes, savedFlows, onSave, updateHolon } = useSavedFlows({
     refreshOn: page === "canvas" ? savedKey : null,
     flowName,
@@ -423,6 +426,7 @@ function Canvas({
     edges,
     live,
     settings,
+    derived: () => derivedNow.current,
     source,
     getViewport,
     ev,
@@ -557,6 +561,7 @@ function Canvas({
     // live.current is read on purpose: canvasKey changes exactly when the structure does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasKey, ev, byName, settings.port, settings.tags, settings.taint, settings.never_keep]);
+  derivedNow.current = derived;
 
   // What the canvas's flow would ask for, by consent name (null while it doesn't derive): the
   // deploy settings offer each one but its trigger as something it can run without.

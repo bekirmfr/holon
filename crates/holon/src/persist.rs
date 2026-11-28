@@ -53,7 +53,6 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
                 tallies: dep.tallies.clone(),
                 status: Some(dep.life.status),
                 sessions: dep.life.sessions.clone(),
-                document: dep.document.clone(),
                 versions: Vec::new(),
                 versions_kept: dep.versions.clone(),
                 grant: Some(dep.grant.clone()),
@@ -328,8 +327,8 @@ pub(crate) fn load_deployments(
             .deployed_at_epoch_seconds
             .map(|secs| UNIX_EPOCH + Duration::from_secs(secs))
             .unwrap_or_else(SystemTime::now);
-        // A file from before rc.30 keeps earlier versions' documents only: number them, move
-        // their documents into the store, and add the current version.
+        // A file from before rc.30 keeps earlier versions only: number them, and add the current
+        // version.
         let kept = if record.versions_kept.is_empty() { record.versions } else { record.versions_kept };
         let current = crate::wire::Version {
             number: 0,
@@ -338,15 +337,12 @@ pub(crate) fn load_deployments(
             by: record.deployed_by.clone(),
             restored_from: None,
             request: None,
-            document_ref: None,
-            canvas_checked: false,
+            text_ref: None,
+            layout_ref: None,
             state_at_deploy: None,
             first_seq: None,
-            document: record.document.clone(),
         };
-        let values = store.clone();
-        let versions = crate::deploy::complete_versions(kept, current, &values)
-            .map_err(|e| format!("deployment {slug:?} in {file:?}: {e}"))?;
+        let versions = crate::deploy::complete_versions(kept, current);
 
         println!("loaded deployment {:?} from {file:?} (triggers: {triggers:?})", record.slug);
         let mut log = Log::for_deployment(path, &record.slug);
@@ -421,7 +417,6 @@ pub(crate) fn load_deployments(
                 arrivals,
                 parked: record.parked.into_iter().map(|p| (p.run_id.clone(), p)).collect(),
                 log: Arc::new(LogCell::new(log)),
-                document: record.document,
                 versions,
                 trigger_count: record.trigger_count,
                 error_count: record.error_count,

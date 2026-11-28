@@ -214,7 +214,7 @@ pub(crate) fn detail_lines(d: &Value, waiting: &[Value]) -> Vec<String> {
     let mut lines = vec![
         format!("{}: {}", s("slug"), s("status")),
         format!("  starts     {}", starts(d)),
-        format!("  unit       {}", &s("unit")[..s("unit").len().min(12)]),
+        format!("  unit       {}", holon_author::first_chars(&s("unit"), 12)),
         format!("  runs       {} ({} failed)", d["trigger_count"], d["error_count"]),
         format!("  session    {} of {}", d["session"], d["sessions"]),
         format!("  deployed   {}{}", when(d["deployed_at_epoch_seconds"].as_u64()), d["deployed_by"].as_str().map(|b| format!(" by {b}")).unwrap_or_default()),
@@ -671,13 +671,22 @@ pub(crate) fn runs(args: &[String]) -> i32 {
             eprintln!("{slug} has no run {seq} (it may be older than the log keeps)");
             return 1;
         };
-        let document_path = match entry["unit"].as_str().filter(|u| !u.is_empty()) {
-            Some(unit) => format!("{path}/document?unit={unit}"),
-            None => format!("{path}/document"),
+        let text_path = match entry["unit"].as_str().filter(|u| !u.is_empty()) {
+            Some(unit) => format!("{path}/text?unit={unit}"),
+            None => format!("{path}/text"),
         };
-        let document = match cmdline::json(WHO, &args, "GET", &document_path, None) {
+        let kept = match cmdline::json(WHO, &args, "GET", &text_path, None) {
             Ok(v) => v,
             Err(code) => return code,
+        };
+        // Its text compiled here, with its hand-drawn layout: refused when this holon compiles it to
+        // other code than the run ran (another release), as a run's steps would land elsewhere.
+        let document = match kept["text"].as_str().ok_or_else(|| format!("{slug} keeps no text of that code")).and_then(|t| holon_author::agent::document_of(t, kept["unit"].as_str().unwrap_or_default(), kept.get("layout")).map(|(d, _)| d)) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("{WHO}: {e}");
+                return 1;
+            }
         };
         let shown = if args.flag("--json") {
             holon_author::agent::run_json(slug, &document, entry).map(|v| cmdline::print_json(&v))

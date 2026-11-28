@@ -84,13 +84,7 @@ pub(crate) fn flows(args: &[String]) -> i32 {
                 cmdline::print_json(&record);
                 return 0;
             }
-            let text = match agent::text_of(name, &record["document"]) {
-                Ok(t) => t,
-                Err(e) => {
-                    eprintln!("{WHO}: {name}: {e}");
-                    return 1;
-                }
-            };
+            let text = record["text"].as_str().unwrap_or_default().to_string();
             match args.value("--out") {
                 Some(out) => match std::fs::write(out, &text) {
                     Ok(()) => {
@@ -131,8 +125,8 @@ fn save(who: &str, args: &cmdline::Args, file: &str) -> i32 {
             return 1;
         }
     };
-    // Compiled first, as `holon deploy` and the agent tools do: the server takes the document
-    // the editor would send, with the text as written beside it.
+    // Compiled first, as `holon deploy` and the agent tools do, to name it and to say what doesn't
+    // compile before it is kept; the server keeps the text as written.
     let plan = match agent::plan(&text) {
         Ok(p) => p,
         Err(e) => {
@@ -161,9 +155,7 @@ fn save(who: &str, args: &cmdline::Args, file: &str) -> i32 {
             return 1;
         }
     }
-    let mut document = plan.document.clone();
-    document["source"] = json!(text);
-    match cmdline::json(who, args, "POST", "/flows", Some(&json!({ "name": name, "document": document, "base": base }))) {
+    match cmdline::json(who, args, "POST", "/flows", Some(&json!({ "name": name, "text": text, "base": base }))) {
         Ok(_) => {
             println!("{name}: saved, not deployed (the editor's flows page opens it; holon deploy {file} deploys it)");
             0

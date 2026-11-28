@@ -327,7 +327,7 @@ pub(crate) fn handle_post_deploy(
     // Who deploys it: whether they approve what it needs or propose it is `can`'s to say.
     who: &Caller,
 ) -> Response {
-    let bytes = match read_body(request) {
+    let bytes = match read_flow_body(request) {
         Ok(b) => b,
         Err(r) => return r,
     };
@@ -335,7 +335,126 @@ pub(crate) fn handle_post_deploy(
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid deploy request JSON: {e}")),
     };
+    if let Some(refusal) = refused_before_compiling(state, &body, who, true) {
+        return refusal;
+    }
+    let body = match compiled(&state.store, body) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
     deploy(state, body, by, who, None)
+}
+
+/// What a deploy (`deploying`) or its preview is refused for without its text compiled: a slug
+/// that isn't one, a flow the caller may not propose to, an agent that approves, a unit that isn't
+/// a hash, and for a deploy what it says it uses and the browsers it names. Said before the
+/// compile, which takes seconds to minutes and of which the server runs [`COMPILES_AT_ONCE`]: a
+/// caller who may do nothing on a flow can't hold the compiles that every deploy and preview
+/// waits for, nor put units in the store (review of #161). `deploy` says them again, for a restore.
+fn refused_before_compiling(state: &AppState, body: &DeployRequestBody, who: &Caller, deploying: bool) -> Option<Response> {
+    if !is_valid_slug(&body.slug) {
+        return Some(err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only"));
+    }
+    if tags_now(&state.deployments, &body.slug).is_some()
+        && let Err(refusal) = can(who, Action::FlowPropose, &Resource::Flow(&body.slug))
+    {
+        return Some(refusal.response());
+    }
+    if !body.unit.is_empty() && parse_hash(&body.unit).is_none() {
+        return Some(err(400, "unit is not a 64-char hex hash"));
+    }
+    if !deploying {
+        return None;
+    }
+    if let Some((code, why)) = new_slug_refusal(state.deployments.lock().unwrap().keys(), &body.slug) {
+        return Some(err(code, why));
+    }
+    if who.kind == Some(crate::accounts::Kind::Agent) && !body.acknowledge.is_empty() {
+        return Some(err(403, "an agent doesn't approve what a flow may do: deploy without \"acknowledge\"; what needs approval waits for a person, as a proposal"));
+    }
+    if let Err(e) = crate::flows::check_uses(body.uses.as_deref()) {
+        return Some(err(400, e));
+    }
+    if let Some(bad) = body.browsers.iter().find(|o| !crate::listeners::is_origin_or_any(o)) {
+        return Some(err(400, format!("browsers: {bad:?} isn't an origin (https://example.com) or *")));
+    }
+    None
+}
+
+/// How many texts the server compiles at once: a deploy or a preview past them is answered 503
+/// rather than queued, so requests can't pile compiles up on the control plane (audit F2). The
+/// count is the process's: under `cargo test` every test's server shares it, and the tests deploy
+/// texts in parallel, so it is set past what they run at once there.
+const COMPILES_AT_ONCE: usize = if cfg!(test) { 1024 } else { 2 };
+static COMPILING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `text` compiled as every client compiles it (holon-author's `agent::plan`, which counts its
+/// nesting before it reads it and reads it on a deep stack), at most [`COMPILES_AT_ONCE`] at once; a
+/// compile that panics is a refusal, never the server's end. What it answers of a text that doesn't
+/// compile is the compiler's words.
+pub(crate) fn compile_text(text: &str) -> Result<holon_author::agent::Plan, Response> {
+    use std::sync::atomic::Ordering;
+    if COMPILING.fetch_add(1, Ordering::AcqRel) >= COMPILES_AT_ONCE {
+        COMPILING.fetch_sub(1, Ordering::AcqRel);
+        return Err(err(503, "the server is compiling other flows: try again in a moment").with_additional_header("Retry-After", "2"));
+    }
+    let plan = std::panic::catch_unwind(|| holon_author::agent::plan(text));
+    COMPILING.fetch_sub(1, Ordering::AcqRel);
+    match plan {
+        Ok(Ok(plan)) => Ok(plan),
+        Ok(Err(e)) => Err(err(400, format!("the text doesn't compile:\n{e}"))),
+        Err(_) => Err(err(500, "the compiler stopped on this text: it isn't deployed")),
+    }
+}
+
+/// A deploy sent as its text (docs/L4s/text-deploy-plan.md): compiled here, by the compiler every
+/// client compiles with (holon-author), its units put in the store and its unit filled in. One
+/// that sends a unit too sends the unit a person reviewed: it must be the text's. The text's
+/// `browsers` line is the sites the deploy answers, as a person reads it there. A layout it sends
+/// is of the text's unit, and one a server keeps. A body without a text is a unit staged by
+/// `/unit`, as it is, and keeps no layout. The deploy and its preview both come through here.
+pub(crate) fn compiled(store: &SharedStore, mut body: DeployRequestBody) -> Result<DeployRequestBody, Response> {
+    let Some(text) = &body.text else {
+        if body.layout.is_some() {
+            return Err(err(400, "a layout is of a text's canvas: send the text with it"));
+        }
+        return Ok(body);
+    };
+    let plan = compile_text(text)?;
+    let mut put = store.clone();
+    for bytes in &plan.units {
+        let unit = holon_core::decode_preimage(bytes).map_err(|e| err(500, format!("the text's units don't read back: {e:?}")))?;
+        put.put(&unit).map_err(|e| err(500, format!("store error: {e:?}")))?;
+    }
+    if !body.unit.is_empty() && body.unit != plan.unit {
+        let ours = env!("CARGO_PKG_VERSION");
+        return Err(err(
+            400,
+            format!(
+                "the text sent compiles here to {}, not to the unit sent ({}): this server is Holon {ours}, whose compiler may build it otherwise than the one that built the unit. Send the text alone, or update whichever is older (`holon update` for the command line or the server; reload the editor's page)",
+                holon_author::first_chars(&plan.unit, 12),
+                holon_author::first_chars(&body.unit, 12)
+            ),
+        ));
+    }
+    let said: BTreeSet<&str> = plan.browsers.as_deref().unwrap_or_default().split_whitespace().collect();
+    // The text alone says them: a body that doesn't repeat them takes the text's.
+    if body.browsers.is_empty() {
+        body.browsers = said.iter().map(|s| s.to_string()).collect();
+    }
+    let asked: BTreeSet<&str> = body.browsers.iter().map(String::as_str).collect();
+    if said != asked {
+        let line = |set: &BTreeSet<&str>| if set.is_empty() { "none".to_string() } else { set.iter().copied().collect::<Vec<_>>().join(" ") };
+        return Err(err(400, format!("the text's browsers line ({}) isn't the browsers sent ({}): a person reads the text", line(&said), line(&asked))));
+    }
+    if let Some(layout) = &body.layout {
+        holon_author::kept_layout::check(layout).map_err(|why| err(400, why))?;
+        if layout.unit != plan.unit {
+            return Err(err(400, "the layout sent was drawn for other code than the text's: send the text's own, or none"));
+        }
+    }
+    body.unit = plan.unit;
+    Ok(body)
 }
 
 /// Deploy `body` (`POST /deploy`'s, or a restore's: `restored_from` names the version it deploys
@@ -508,15 +627,6 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
     // doesn't approve its deploys wrote what they deploy: what asks for more waits for someone
     // who does, the rest deploys.
     let proposed = !approves && (!missing.is_empty() || waits_for_a_person(who, policy, &previous));
-    // What a person reads of a version is its document: whoever deploys one sends the one its unit
-    // is built from, a person, a program or a proposal alike, so the canvas a version shows is the
-    // code it runs. A restore deploys a version's pair as it was deployed, not built again by
-    // today's compiler: it was checked then, or the version says it wasn't.
-    if restored_from.is_none()
-        && let Err(refused) = document_is_the_unit(&body, unit_hash)
-    {
-        return refused;
-    }
     if proposed {
         if !policy.agents_propose {
             let needs = if missing.is_empty() { String::new() } else { format!(", and this one needs {}", missing.join(", ")) };
@@ -563,14 +673,23 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
 
     let triggers = trigger_labels(&server);
     let is_state = derives_state(caps.iter());
-    // Its canvas goes into the content store before anything changes, so a store that can't take
-    // it refuses the deploy rather than losing the version's canvas.
-    let document_ref = match &body.document {
-        Some(doc) => match store_document(store, doc) {
+    // Its text goes into the content store before anything changes, so a store that can't take
+    // it refuses the deploy rather than losing the version's code. What a person reads of a
+    // version is its text, and the text is what was compiled to its unit (`compiled`); a restore
+    // keeps the text of the version it restores, with its unit, not compiled again.
+    let text_ref = match &body.text {
+        Some(text) => match store_text(store, text) {
             Ok(r) => Some(r),
-            Err(e) => return err(500, format!("its canvas couldn't be kept: {e}")),
+            Err(e) => return err(500, format!("its text couldn't be kept: {e}")),
         },
         None => None,
+    };
+    let layout_ref = match body.layout.as_ref().map(serde_json::to_string) {
+        Some(Ok(json)) => match store_text(store, &json) {
+            Ok(r) => Some(r),
+            Err(e) => return err(500, format!("its layout couldn't be kept: {e}")),
+        },
+        Some(Err(_)) | None => None,
     };
     // What the person deploying it says, kept with the grant on its event and in the activity.
     let note = body.note.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(String::from);
@@ -659,11 +778,8 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
         };
         log.with(|log| log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms()));
         // Every deploy is a version, kept for good with what it asked, so it can be deployed
-        // again. One deployed without a canvas has none: it never shows another version's.
+        // again. One deployed as a unit alone has no text: it never shows another version's.
         version = versions.last().map_or(1, |v| v.number + 1);
-        // Its canvas was checked above to build its unit; a restore's, when the version it
-        // restores was.
-        let canvas_checked = document_ref.is_some() && restored_from.is_none_or(|n| versions.iter().any(|v| v.number == n && v.canvas_checked));
         let carried = deployments.get(&body.slug).and_then(|old| old.state.clone());
         // And the state it carries, as a snapshot: the state the version before it left.
         let state_at_deploy = carried.as_ref().and_then(|arc| {
@@ -682,18 +798,16 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
                 uses: body.uses.clone(),
                 browsers: body.browsers.clone(),
             }),
-            document_ref,
-            canvas_checked,
+            text_ref,
+            layout_ref,
             state_at_deploy,
             first_seq: Some(log.next_seq()),
-            document: None,
         });
         let what = match restored_from {
             Some(n) => format!("restored version {n}'s code, as version {version}"),
             None => format!("deployed version {version}"),
         };
         events.push("deploy", what, by, log.next_seq(), crate::events::Detail { version: Some(version), note: note.clone(), ..Default::default() });
-        let document = body.document.clone();
         // Its subscribers stay subscribed across a redeploy, and its kept packs stay kept.
         let channels = deployments.get(&body.slug).map(|old| Arc::clone(&old.channels)).unwrap_or_default();
         // So do its WebSocket connections, but those on a path this version has no websocket on.
@@ -739,7 +853,6 @@ fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, who: &Cal
                 log,
                 channels,
                 sockets,
-                document,
                 versions,
                 events,
                 agents_propose_off,
@@ -817,48 +930,6 @@ pub(crate) fn borrowed(deployments: &Mutex<BTreeMap<String, Deployment>>, items:
             ))
         })
         .collect()
-}
-
-/// Whether `body`'s document, if it sends one, is what it deploys: its canvas builds the unit sent,
-/// and its `browsers` line is the sites sent. A person reads a version by its document (the text
-/// printed from it, its canvas, a proposal's review, the history), and the deployed one is what
-/// the next review is read against, so one that said something else than the unit would show code
-/// that never runs, and have them approve code they never read.
-fn document_is_the_unit(body: &DeployRequestBody, unit: Hash) -> Result<(), Response> {
-    let Some(document) = &body.document else { return Ok(()) };
-    let releases = other_release(body.made_with.as_deref());
-    let (built, browsers) = holon_author::agent::deploys_as(document).map_err(|e| err(400, format!("{e}: a person reads the document sent, so it must be the flow deployed{releases}")))?;
-    let sent = to_hex(&unit);
-    if built != sent {
-        return Err(err(
-            400,
-            format!(
-                "the document sent deploys as {}, not as the unit sent ({}): a person reads the document, so send the one the unit was built from{releases}",
-                &built[..12],
-                &sent[..12]
-            ),
-        ));
-    }
-    let (said, asked): (BTreeSet<&String>, BTreeSet<&String>) = (browsers.iter().collect(), body.browsers.iter().collect());
-    if said != asked {
-        let line = |set: &BTreeSet<&String>| if set.is_empty() { "none".to_string() } else { set.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ") };
-        return Err(err(400, format!("the document's browsers line ({}) isn't the browsers sent ({}): a person reads the document", line(&said), line(&asked))));
-    }
-    Ok(())
-}
-
-/// What a refused document says of releases, when the client that built its unit is another
-/// release of Holon than this server (`made_with`): both, and what to do. Nothing when it is this
-/// one, or the client didn't say.
-fn other_release(made_with: Option<&str>) -> String {
-    let ours = env!("CARGO_PKG_VERSION");
-    match made_with {
-        Some(theirs) if theirs != ours => format!(
-            ". It was built by Holon {theirs}, and this server is Holon {ours}, whose compiler may build it otherwise: \
-             update whichever is older (`holon update` for the command line or the server; reload the editor's page) and deploy again"
-        ),
-        _ => String::new(),
-    }
 }
 
 /// Its code beside the version deployed now, handler by handler, as dry-run rows in the group
@@ -948,13 +1019,20 @@ pub(crate) fn handle_post_deploy_preview(
     // Who asks: what they need approved is what their deploy would.
     who: &Caller,
 ) -> Response {
-    let bytes = match read_body(request) {
+    let bytes = match read_flow_body(request) {
         Ok(b) => b,
         Err(r) => return r,
     };
     let body: DeployRequestBody = match serde_json::from_slice(&bytes) {
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid deploy request JSON: {e}")),
+    };
+    if let Some(refusal) = refused_before_compiling(state, &body, who, false) {
+        return refusal;
+    }
+    let body = match compiled(&state.store, body) {
+        Ok(b) => b,
+        Err(r) => return r,
     };
     // The route asked about every flow at once; this is the flow, as it is now and as the
     // version would make it (D22), as the deploy asks.
@@ -2188,26 +2266,33 @@ fn log_page(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, reque
     }))
 }
 
-/// Keep a flow document in the content store, as a text value holding its JSON: its hash (hex).
-fn store_document(store: &SharedStore, document: &serde_json::Value) -> Result<String, String> {
-    let text = serde_json::to_string(document).map_err(|e| e.to_string())?;
-    store.clone().put_value(&Value::Text(text)).map(|h| to_hex(&h)).map_err(|e| format!("{e:?}"))
+/// Keep a flow's text in the content store, as a text value: its hash (hex).
+fn store_text(store: &SharedStore, text: &str) -> Result<String, String> {
+    store.clone().put_value(&Value::Text(text.to_string())).map(|h| to_hex(&h)).map_err(|e| format!("{e:?}"))
 }
 
-/// A version's flow document, from the content store.
-fn version_document(store: &SharedStore, version: &Version) -> Option<serde_json::Value> {
-    let hash = parse_hash(version.document_ref.as_deref()?)?;
-    match store.get_value(&hash).ok()?? {
-        Value::Text(text) => serde_json::from_str(&text).ok(),
+/// A text value of the content store, by its hash (hex).
+fn stored_text(store: &SharedStore, at: Option<&str>) -> Option<String> {
+    match store.get_value(&parse_hash(at?)?).ok()?? {
+        Value::Text(text) => Some(text),
         _ => None,
     }
 }
 
+/// A version's text, from the content store.
+fn version_text(store: &SharedStore, version: &Version) -> Option<String> {
+    stored_text(store, version.text_ref.as_deref())
+}
+
+/// A version's hand-drawn layout, from the content store.
+fn version_layout(store: &SharedStore, version: &Version) -> Option<holon_author::kept_layout::Layout> {
+    serde_json::from_str(&stored_text(store, version.layout_ref.as_deref())?).ok()
+}
+
 /// A deployment's versions as this release keeps them, from what a file of any release held:
-/// each numbered, each document in the content store, and `current` last unless it is there
-/// already. Files before rc.30 kept only earlier versions' documents (the last 10), without what
-/// their deploys asked: those versions open on their canvas, but don't restore.
-pub(crate) fn complete_versions(kept: Vec<Version>, current: Version, store: &SharedStore) -> Result<Vec<Version>, String> {
+/// each numbered, and `current` last unless it is there already. Files before rc.30 kept only
+/// earlier versions (the last 10), without what their deploys asked: those don't restore.
+pub(crate) fn complete_versions(kept: Vec<Version>, current: Version) -> Vec<Version> {
     let mut versions: Vec<Version> = Vec::with_capacity(kept.len() + 1);
     let mut next = 1;
     for mut v in kept.into_iter().chain(std::iter::once(current)) {
@@ -2219,46 +2304,42 @@ pub(crate) fn complete_versions(kept: Vec<Version>, current: Version, store: &Sh
             v.number = next;
         }
         next = v.number + 1;
-        if let Some(doc) = v.document.take() {
-            v.document_ref = Some(store_document(store, &doc).map_err(|e| format!("version {}'s canvas can't be stored: {e}", v.number))?);
-        }
         versions.push(v);
     }
-    Ok(versions)
+    versions
 }
 
-/// `GET /deployments/<slug>/document` — the flow document it was deployed from, for view mode;
-/// with `?unit=<hex>`, the document of that code (the current one, or an earlier one), for a run
-/// logged on it: of the versions deployed with it, the newest whose document was checked to build
-/// it, else the newest that has one; with `?version=<n>`, that version's own, none if it was
-/// deployed without one.
-pub(crate) fn handle_get_document(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
+/// `GET /deployments/<slug>/text` — the text its current version was compiled from, with where its
+/// canvas was drawn by hand, as `{unit, version, text, layout}`: whoever shows its code, its canvas
+/// or a run on it compiles the text (docs/L4s/text-deploy-plan.md) and puts the layout on it
+/// (`kept_layout::apply`). With `?unit=<hex>`, the text of that code (the current one, or an
+/// earlier one), for a run logged on it: the newest version deployed with it that keeps one; with
+/// `?version=<n>`, that version's own, none if it was deployed as a unit alone.
+pub(crate) fn handle_get_text(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
     let deployments = deployments.lock().unwrap();
     let Some(dep) = deployments.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
+    let answer = |v: &Version, text: String| Response::json(&serde_json::json!({ "unit": v.unit, "version": v.number, "text": text, "layout": version_layout(store, v) }));
     if let Some(n) = request.get_param("version") {
         let Some(v) = n.parse::<u32>().ok().and_then(|n| dep.versions.iter().find(|v| v.number == n)) else {
             return err(404, format!("{slug:?} has no version {n}"));
         };
-        return match version_document(store, v) {
-            Some(doc) => Response::json(&doc),
-            None => err(404, format!("version {n} of {slug:?} was deployed without its canvas: none is kept")),
+        return match version_text(store, v) {
+            Some(text) => answer(v, text),
+            None => err(404, format!("version {n} of {slug:?} keeps no text: it was deployed as a unit alone, or by a release before flows were kept as their text")),
         };
     }
-    // By code, not by version: any document checked to build that unit is its text, the current
-    // version's included, so a run is shown on its code's canvas even when the version it ran on
-    // was deployed without one.
+    // By code, not by version: any text compiled to that unit is its text, the current version's
+    // included, so a run is shown on its code even when the version it ran on was deployed as a
+    // unit alone.
     let wanted = request.get_param("unit");
-    let doc = match &wanted {
-        None => dep.document.clone(),
-        Some(unit) => {
-            let kept: Vec<&Version> = dep.versions.iter().rev().filter(|v| &v.unit == unit && v.document_ref.is_some()).collect();
-            kept.iter().find(|v| v.canvas_checked).or(kept.first()).and_then(|v| version_document(store, v))
-        }
+    let found = match &wanted {
+        None => dep.versions.last().and_then(|v| version_text(store, v).map(|t| (v, t))),
+        Some(unit) => dep.versions.iter().rev().filter(|v| &v.unit == unit).find_map(|v| version_text(store, v).map(|t| (v, t))),
     };
-    match (doc, wanted) {
-        (Some(doc), _) => Response::json(&doc),
-        (None, None) => err(404, format!("{slug:?} was deployed without its canvas: none is kept; deploy it again from its text to have one")),
-        (None, Some(unit)) => err(404, format!("{slug:?} keeps no canvas of the code {}", &unit[..unit.len().min(12)])),
+    match (found, wanted) {
+        (Some((v, text)), _) => answer(v, text),
+        (None, None) => err(404, format!("{slug:?} keeps no text: it was deployed as a unit alone, or by a release before flows were kept as their text; deploy it again from its text to have one")),
+        (None, Some(unit)) => err(404, format!("{slug:?} keeps no text of the code {}", holon_author::first_chars(&unit, 12))),
     }
 }
 
@@ -2283,10 +2364,8 @@ pub(crate) fn handle_get_versions(deployments: &Mutex<BTreeMap<String, Deploymen
                 "restored_from": v.restored_from,
                 "current": Some(v.number) == current,
                 "restorable": v.request.is_some(),
-                "canvas": v.document_ref.is_some(),
-                // Its canvas was checked to build its code when it was deployed: one that wasn't
-                // may show other code than it runs.
-                "canvas_checked": v.canvas_checked,
+                // It keeps the text it was compiled from.
+                "text": v.text_ref.is_some(),
                 // The state it left is kept: the one the next version carried.
                 "state_kept": dep.versions.get(i + 1).is_some_and(|next| next.state_at_deploy.is_some()),
                 // Where it starts in the log: the seq its first run got (absent from before rc.30).
@@ -2363,11 +2442,9 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
             None => serde_json::json!({}),
         };
         answer["code"] = serde_json::json!(code.as_ref().map(|(n, _)| n));
-        // Whether the version keeps a canvas to show its code, and whether it was checked to be it.
-        if let Some((n, body)) = &code {
-            let checked = state.deployments.lock().unwrap().get(slug).and_then(|d| d.versions.iter().find(|v| v.number == *n).map(|v| v.canvas_checked));
-            answer["canvas"] = serde_json::json!(body.document.is_some());
-            answer["canvas_checked"] = serde_json::json!(checked.unwrap_or(false));
+        // Whether the version keeps the text to show its code.
+        if let Some((_, body)) = &code {
+            answer["text"] = serde_json::json!(body.text.is_some());
         }
         if code.is_none() {
             // Its code stays: what it touches is what it touches now.
@@ -2561,13 +2638,13 @@ fn restore_plan(state: &AppState, slug: &str, point: Point, code: bool, with_sta
                 slug: slug.to_string(),
                 unit: v.unit.clone(),
                 acknowledge: Vec::new(),
-                document: version_document(&state.store, &v),
+                text: version_text(&state.store, &v),
+                layout: version_layout(&state.store, &v),
                 requirements: asked.requirements,
                 uses: asked.uses,
                 browsers: asked.browsers,
                 why: None,
                 note: None,
-                made_with: None,
             };
             Some((v.number, body))
         }

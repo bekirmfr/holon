@@ -27,6 +27,7 @@ crates/holon/Cargo.toml
 crates/holon/src/
 crates/holon/src/tests/semantics.rs
 crates/holon/src/tests/list_grid.rs
+crates/holon/src/tests/text_deploy.rs
 crates/holon/src/tests/reached.rs
 
 [grids-not]

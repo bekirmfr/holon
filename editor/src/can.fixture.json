@@ -425,7 +425,6 @@
     "GET /deployments/{slug}/changes": "state.view",
     "GET /deployments/{slug}/channels": "state.view",
     "GET /deployments/{slug}/collections/{name}": "state.view",
-    "GET /deployments/{slug}/document": "flow.view",
     "GET /deployments/{slug}/events": "flow.view",
     "GET /deployments/{slug}/export": [
       "run.steps",
@@ -448,6 +447,7 @@
     "GET /deployments/{slug}/secrets/{name}": "secret.list",
     "GET /deployments/{slug}/sessions": "state.view",
     "GET /deployments/{slug}/state": "state.view",
+    "GET /deployments/{slug}/text": "flow.view",
     "GET /deployments/{slug}/versions": "flow.view",
     "GET /flows": "flow.view",
     "GET /flows/{slug}": "flow.view",

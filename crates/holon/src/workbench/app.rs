@@ -1150,7 +1150,8 @@ impl App {
     /// which answer differently, as the web editor's Replay draft. Nothing is deployed.
     fn replay_tab(&mut self, i: usize, on: &str) {
         let Some(tab) = self.tabs.get(i) else { return };
-        let plan = match agent::plan(&tab.buf.text()) {
+        let text = tab.buf.text();
+        let plan = match agent::plan(&text) {
             Ok(p) => p,
             Err(e) => return self.fail(format!("can't replay: {e}")),
         };
@@ -1159,7 +1160,8 @@ impl App {
             return self.fail(format!("no server to replay on: {}", self.offline.clone().unwrap_or_else(|| "start holon serve".into())));
         };
         c.ask_can(Some(&slug));
-        if let Err(e) = c.stage(&plan, &slug) {
+        // The preview compiles the text on the server, which keeps its units: the replay runs them.
+        if let Err(e) = c.stage(&plan, &slug, &text) {
             return self.fail(format!("can't replay: {e}"));
         }
         let lines = replayed(c, &slug, &plan.unit);
@@ -1251,7 +1253,8 @@ impl App {
     fn commit_deploy(&mut self, slug: String, plan: Box<agent::Plan>, staged: Staged, text: String, tab: Option<usize>) {
         let Some(c) = self.client.as_ref() else { return };
         let needs = staged.needs.len();
-        match c.commit(&plan, staged, &text) {
+        let _ = &text;
+        match c.commit(&plan, staged) {
             // Kept for someone who may approve what it needs.
             Ok(Some(proposal)) => {
                 let waits: Vec<&str> = proposal["needs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
@@ -2014,7 +2017,7 @@ impl App {
         let what = if wait.starts_with("to start it") {
             Pending::Start
         } else if let Some(p) = proposed {
-            // The proposal's own document, never the newest save (R79), and its words above the review.
+            // The proposal's own text, never the newest save (R79), and its words above the review.
             let place = c.proposals.iter().position(|q| q["id"] == p["id"]).map_or(0, |i| i + 1);
             let staged = c.get(&format!("/proposals/{}", p["id"])).and_then(|full| super::approvals::proposed_plan(&full)).and_then(|(plan, text)| staging(c, slug.clone(), plan, text, None));
             match staged {
@@ -2712,7 +2715,7 @@ fn replay_into(c: &Client, slug: &str, unit: &str, review: &mut Review) {
 
 fn staging(c: &Client, slug: String, plan: agent::Plan, text: String, before: Option<String>) -> Result<Staging, String> {
     let now = c.deployment(&slug).and_then(|_| c.text(&slug, None).ok());
-    let staged = c.stage(&plan, &slug)?;
+    let staged = c.stage(&plan, &slug, &text)?;
     let mut review = deploy_review(&slug, &plan, &staged, now.as_deref(), &text, &c.server());
     // Renamed: it deploys under its new name, and what it was deployed as stays.
     if let Some(before) = before.filter(|_| now.is_none()) {

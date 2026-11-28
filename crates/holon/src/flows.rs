@@ -1,12 +1,14 @@
-//! Saved flows: the editor's canvas documents, by name.
+//! Saved flows, by name: each its text, and where its canvas was drawn by hand when it was
+//! (docs/L4s/text-deploy-plan.md).
 
 use crate::*;
 use crate::access::Caller;
 use crate::can::{can, Action, Resource};
 
-/// `POST /flows` — save (upsert) a flow document by name. The name follows the same rule as
-/// deployment slugs (`is_valid_slug`) — one naming convention across the API, not two. The
-/// document is stored as-is; the server never inspects inside it (see `AppState::flows`).
+/// `POST /flows` — save (upsert) a flow's text by name, with its hand-drawn layout. The name
+/// follows the same rule as deployment slugs (`is_valid_slug`) — one naming convention across the
+/// API, not two. The text is kept as it is, compiling or not (a draft); the layout is checked to be
+/// one a server keeps (`kept_layout::check`). The body may come gzipped (`read_flow_body`).
 /// `base` says which save it was made from (`saved_at_epoch_seconds`; null: a new flow, none saved
 /// under the name), and it is saved only while that is the save there (`save`).
 pub(crate) fn handle_post_flows(
@@ -15,7 +17,7 @@ pub(crate) fn handle_post_flows(
     // Who saves it: an agent replaces only its own.
     who: &Caller,
 ) -> Response {
-    let bytes = match read_body(request) {
+    let bytes = match read_flow_body(request) {
         Ok(b) => b,
         Err(r) => return r,
     };
@@ -30,7 +32,7 @@ pub(crate) fn handle_post_flows(
         return err(400, e);
     }
     let name = body.name.clone();
-    match save(state, &body.name, body.document, body.uses.clone(), who, body.base) {
+    match save(state, &body.name, body.text, body.layout, body.uses.clone(), who, body.base) {
         Ok(saved_at_epoch_seconds) => Response::json(&FlowListEntry { name, saved_at_epoch_seconds, saved_by: who.name.clone(), uses: body.uses }),
         Err(refused) => refused,
     }
@@ -55,7 +57,7 @@ fn deployed(state: &AppState, name: &str) -> bool {
     state.deployments.lock().unwrap().contains_key(name)
 }
 
-/// Save `document` as the flow `name`, by `who`, and answer the save's stamp; saving it is
+/// Save `text` (with `layout`) as the flow `name`, by `who`, and answer the save's stamp; saving it is
 /// `can`'s to let, a new one as `who`'s own, and an agent replaces only a flow it saved itself
 /// (403 otherwise). An agent's proposal saves its flow this way too (proposals.rs).
 ///
@@ -64,10 +66,21 @@ fn deployed(state: &AppState, name: &str) -> bool {
 /// removed) is 409, with the save there now: saved, it would quietly put back what they changed.
 /// Kept or not as one with the file: a save that isn't written (a full disk) answers 500 and leaves
 /// the flow as it was, and one past what this server keeps is refused (`MAX_SAVED`).
-pub(crate) fn save(state: &AppState, name: &str, document: serde_json::Value, uses: Option<Vec<HolonUse>>, who: &Caller, base: Option<Option<u64>>) -> Result<u64, Response> {
-    let size = serde_json::to_vec(&document).map_or(0, |d| d.len());
-    if size > MAX_DOCUMENT_BYTES {
-        return Err(err(413, format!("a flow is saved with a document of at most {MAX_DOCUMENT_BYTES} bytes, and this one is {size}")));
+pub(crate) fn save(
+    state: &AppState,
+    name: &str,
+    text: String,
+    layout: Option<holon_author::kept_layout::Layout>,
+    uses: Option<Vec<HolonUse>>,
+    who: &Caller,
+    base: Option<Option<u64>>,
+) -> Result<u64, Response> {
+    if let Some(why) = layout.as_ref().and_then(|l| holon_author::kept_layout::check(l).err()) {
+        return Err(err(400, why));
+    }
+    let size = record_size(&text, layout.as_ref());
+    if size > MAX_FLOW_BYTES {
+        return Err(err(413, format!("a flow is saved with a text and layout of at most {MAX_FLOW_BYTES} bytes, and this one is {size}")));
     }
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     let by = who.name.as_deref();
@@ -82,14 +95,14 @@ pub(crate) fn save(state: &AppState, name: &str, document: serde_json::Value, us
     if there.is_none() && table.len() >= MAX_SAVED {
         return Err(err(409, format!("{MAX_SAVED} flows are saved here, the most a server keeps: remove one first")));
     }
-    let others: usize = table.values().filter(|f| f.name != name).map(|f| serde_json::to_vec(&f.document).map_or(0, |d| d.len())).sum();
+    let others: usize = table.values().filter(|f| f.name != name).map(|f| record_size(&f.text, f.layout.as_ref())).sum();
     if others + size > MAX_SAVED_BYTES {
-        return Err(err(409, format!("the saved flows' documents would come to {} bytes, past the {MAX_SAVED_BYTES} a server keeps: remove some first", others + size)));
+        return Err(err(409, format!("the saved flows would come to {} bytes, past the {MAX_SAVED_BYTES} a server keeps: remove some first", others + size)));
     }
     // Each save of a flow is stamped later than the one before, even within the same second: the
     // stamp is how a flow placed from it tells an older save from the newest (holonUsage.ts).
     let saved_at_epoch_seconds = there.map_or(now, |there| now.max(there + 1));
-    let before = table.insert(name.to_string(), FlowRecord { name: name.to_string(), document, saved_at_epoch_seconds, saved_by: by.map(String::from), uses });
+    let before = table.insert(name.to_string(), FlowRecord { name: name.to_string(), text, layout, saved_at_epoch_seconds, saved_by: by.map(String::from), uses });
     if let Err(e) = persist_flows(&state.flows_path, &table) {
         match before {
             Some(before) => table.insert(name.to_string(), before),
@@ -127,7 +140,7 @@ fn stale(name: &str, base: Option<u64>, now: Option<&FlowRecord>) -> Response {
     Response::json(&body).with_status_code(409)
 }
 
-/// `GET /flows` — every saved flow `who` may view: its name + freshness, never the documents
+/// `GET /flows` — every saved flow `who` may view: its name + freshness, never the texts
 /// themselves.
 pub(crate) fn handle_get_flows(state: &AppState, who: &Caller) -> Response {
     let deployed: BTreeSet<String> = state.deployments.lock().unwrap().keys().cloned().collect();
@@ -140,7 +153,7 @@ pub(crate) fn handle_get_flows(state: &AppState, who: &Caller) -> Response {
     Response::json(&entries)
 }
 
-/// `GET /flows/<name>` — the full saved record, document included. 404 for an unknown name,
+/// `GET /flows/<name>` — the full saved record, text and layout included. 404 for an unknown name,
 /// same convention as every other by-name lookup on this API; 403 for one `who` may not view.
 pub(crate) fn handle_get_flow(state: &AppState, name: &str, who: &Caller) -> Response {
     let deployed = deployed(state, name);
@@ -173,13 +186,18 @@ pub(crate) fn handle_delete_flow(state: &AppState, name: &str, who: &Caller) -> 
     Response::json(&serde_json::json!({ "deleted": name }))
 }
 
-/// The most flows a server keeps saved, and the most bytes their documents come to: a save past
-/// either is refused (409), so a loop of saves (an agent's) can't fill the disk; each save writes
-/// the file whole. And the largest document one flow is saved with (413).
+/// The most flows a server keeps saved, and the most bytes their texts and layouts come to: a save
+/// past either is refused (409), so a loop of saves (an agent's) can't fill the disk; each save
+/// writes the file whole. And the most one flow is saved with (413).
 /// Smaller in the tests, which fill them.
 pub(crate) const MAX_SAVED: usize = if cfg!(test) { 40 } else { 1000 };
-pub(crate) const MAX_SAVED_BYTES: usize = if cfg!(test) { 256 * 1024 } else { 64 * 1024 * 1024 };
-pub(crate) const MAX_DOCUMENT_BYTES: usize = if cfg!(test) { 64 * 1024 } else { 4 * 1024 * 1024 };
+pub(crate) const MAX_SAVED_BYTES: usize = if cfg!(test) { 4 * 1024 * 1024 } else { 64 * 1024 * 1024 };
+pub(crate) const MAX_FLOW_BYTES: usize = if cfg!(test) { 1024 * 1024 } else { 4 * 1024 * 1024 };
+
+/// What a saved flow comes to: its text and its layout, as kept.
+fn record_size(text: &str, layout: Option<&holon_author::kept_layout::Layout>) -> usize {
+    text.len() + layout.and_then(|l| serde_json::to_vec(l).ok()).map_or(0, |l| l.len())
+}
 
 /// The most holons one flow may say it places.
 const MAX_USES: usize = 1000;

@@ -145,7 +145,7 @@ fn an_agents_new_tag_is_a_proposal() {
     let accounts = Arc::clone(state.access.accounts().unwrap());
     accounts.add("scout", Kind::Agent, "agent", "ada", "ada").unwrap();
     let (scout, _) = accounts.create_token("scout", "Scout", "ada").unwrap();
-    let (code, said) = send(&state, &scout, "POST", "/deploy", json!({ "slug": "e", "unit": tagged, "document": document_of(&tagged), "why": "on the payments team's flows" }));
+    let (code, said) = send(&state, &scout, "POST", "/deploy", json!({ "slug": "e", "unit": tagged, "text": staged_text(&tagged), "why": "on the payments team's flows" }));
     assert_eq!(code, 202, "{said}");
     let proposal: Value = serde_json::from_str(&said).unwrap();
     assert_eq!(proposal["proposal"]["needs"], json!(["Tag(\"payments\")"]));
@@ -153,7 +153,7 @@ fn an_agents_new_tag_is_a_proposal() {
     assert!(accounts.tagged("payments").is_empty());
     let approving = "an agent doesn't approve what a flow may do: deploy without \"acknowledge\"; what needs approval waits for a person, as a proposal";
     for unit in [tagged.clone(), "0".repeat(64)] {
-        let asked = json!({ "slug": "e", "unit": unit, "document": document_of(&unit), "acknowledge": ["Tag(\"payments\")"] });
+        let asked = json!({ "slug": "e", "unit": unit, "text": staged_text(&unit), "acknowledge": ["Tag(\"payments\")"] });
         assert_eq!(refusal(send(&state, &scout, "POST", "/deploy", asked)), (403, approving.to_string()), "{unit}");
     }
 }
@@ -229,4 +229,45 @@ fn a_tag_gives_no_one_through_a_deploy_what_waits_for_people() {
     let (code, said) = deploying("e", &tagged);
     assert_eq!(code, 200, "cy decides e's approvals already: {said}");
     assert!(accounts.tagged("payments").contains("e"));
+}
+
+/// **Guards:** every refusal of a deploy or its preview that needs no compile is said before the
+/// text is compiled: a slug that isn't one, a flow the caller may not propose to, a unit that isn't
+/// a hash (one cut inside a character among them), an agent that approves, browsers that aren't
+/// origins. Each case sends a text that doesn't compile, so a compile run first would answer
+/// "the text doesn't compile" instead.
+///
+/// **Why:** the server compiles two texts at once, for seconds to minutes each. Compiled before
+/// these refusals, a caller who may do nothing on a flow held both compiles in a loop, and every
+/// real deploy and preview answered 503, its units put in the store before it was refused (review
+/// of #161).
+///
+/// **If it fails:** a refusal moved after `compiled` in `handle_post_deploy` or its preview (or a
+/// new one was added only in `deploy`): say it in `refused_before_compiling` too.
+#[test]
+fn a_deploy_is_refused_what_needs_no_compile_before_its_text_is_compiled() {
+    let (state, ada, bob, untagged, _) = server();
+    assert_eq!(deploy(&state, Some(&ada), "e", &untagged, json!({})).0, 200);
+    let accounts = Arc::clone(state.access.accounts().unwrap());
+    accounts.add("scout", Kind::Agent, "agent", "ada", "ada").unwrap();
+    let (scout, _) = accounts.create_token("scout", "Scout", "ada").unwrap();
+    let broken = "import { flow } from \"holon\"\n\nflow(\"e\"";
+    // What is asked, on which route, by whom, with which body, and the refusal it gets.
+    type Row<'a> = (&'a str, &'a str, &'a str, Value, (u16, &'a str));
+    let rows: [Row<'_>; 6] = [
+        ("a slug that isn't one", "/deploy/preview", &ada, json!({ "slug": "no slug!" }), (400, "slug must be")),
+        ("another's flow, previewed", "/deploy/preview", &bob, json!({ "slug": "e" }), (403, "bob may not do that")),
+        ("another's flow, deployed", "/deploy", &bob, json!({ "slug": "e" }), (403, "bob may not do that")),
+        ("a unit cut inside a character", "/deploy", &ada, json!({ "slug": "e", "unit": "a€€€€" }), (400, "unit is not a 64-char hex hash")),
+        ("an agent that approves", "/deploy", &scout, json!({ "slug": "e", "acknowledge": ["NetworkIngress"] }), (403, "an agent doesn't approve")),
+        ("browsers that aren't origins", "/deploy", &ada, json!({ "slug": "e", "browsers": ["not an origin"] }), (400, "browsers: ")),
+    ];
+    for (what, path, token, mut body, (code, said)) in rows {
+        body["text"] = json!(broken);
+        let (got, answer) = refusal(send(&state, token, "POST", path, body));
+        assert!(got == code && answer.starts_with(said), "{what}: {got} {answer}");
+    }
+    // And the text alone, sent by someone who may: it is compiled, and refused for not compiling.
+    let (got, answer) = refusal(send(&state, &ada, "POST", "/deploy", json!({ "slug": "e", "text": broken })));
+    assert!(got == 400 && answer.starts_with("the text doesn't compile"), "{got} {answer}");
 }

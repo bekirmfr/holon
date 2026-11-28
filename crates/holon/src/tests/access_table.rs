@@ -198,7 +198,7 @@ fn rows(unit: &str) -> Vec<Row> {
         unrouted("POST", "/admin/nope", All),
         unrouted("DELETE", "/flows", All),
     ];
-    for what in ["document", "versions", "events", "changes", "history", "manifest", "grant", "runs", "log", "sessions", "export", "replay", "state", "collections/c", "holds", "feeds", "queues"] {
+    for what in ["text", "versions", "events", "changes", "history", "manifest", "grant", "runs", "log", "sessions", "export", "replay", "state", "collections/c", "holds", "feeds", "queues"] {
         rows.push(at("GET", &format!("/deployments/d/{what}"), "", All));
     }
     for what in ["run", "pause", "stop"] {
@@ -262,7 +262,7 @@ fn server(accounts: bool) -> (AppState, String, Vec<Caller>) {
     let mut state = test_state();
     let unit = to_hex(&stage_text(&state, ECHO));
     assert_eq!(deploy(&state, None, "d", &unit, json!({})).0, 200);
-    assert_eq!(ask(&state, None, "POST", "/flows", serde_json::to_vec(&json!({ "name": "f", "document": {} })).unwrap()).0, 200);
+    assert_eq!(ask(&state, None, "POST", "/flows", serde_json::to_vec(&json!({ "name": "f", "text": "" })).unwrap()).0, 200);
     let anyone = Caller { name: "no one", token: None, kind: None, role: None, disabled: false };
     if !accounts {
         return (state, unit, vec![anyone]);
@@ -359,7 +359,7 @@ fn an_agent_is_held_to_its_own_flows_and_to_what_each_flow_lets_agents() {
     let refused = |(code, said): (u16, String), words: &str| code == 403 && error_of(&said).contains(words);
 
     // Its own flows.
-    let save = |t: &str, name: &str| send(t, "POST", "/flows", json!({ "name": name, "document": {} }));
+    let save = |t: &str, name: &str| send(t, "POST", "/flows", json!({ "name": name, "text": "" }));
     assert_eq!(save(&ada, "adas").0, 200);
     let someone_elses = "an agent doesn't replace someone else's flow";
     assert!(refused(save(&claude, "adas"), someone_elses), "saved by ada");
@@ -394,7 +394,7 @@ fn an_agent_is_held_to_its_own_flows_and_to_what_each_flow_lets_agents() {
     let deploy_as = |t: &str, body: Value| send(t, "POST", "/deploy", body);
     let approves = "an agent doesn't approve what a flow may do";
     assert!(refused(deploy_as(&claude, json!({ "slug": "d", "unit": unit, "acknowledge": ["Action(\"echo\")"] })), approves));
-    let (code, said) = deploy_as(&claude, json!({ "slug": "e", "unit": unit, "why": "an echo", "document": document_of(&unit) }));
+    let (code, said) = deploy_as(&claude, json!({ "slug": "e", "unit": unit, "why": "an echo", "text": staged_text(&unit) }));
     assert_eq!(code, 202, "a proposal: {said}");
     assert_eq!(deploy(&state, Some(&ada), "e", &unit, json!({})).0, 200);
     let proposed = state.proposals.all().into_iter().find(|p| p.slug == "e").unwrap();

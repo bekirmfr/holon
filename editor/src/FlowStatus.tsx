@@ -70,12 +70,12 @@ export function StatusTab({
       setMay({ items: m.items, notGranted: m.not_granted });
       setVersions(vs);
       // Each version's items: the server's for the one deployed now, each earlier one's from its
-      // canvas (where it is kept).
+      // text compiled (where it is kept).
       const read: VersionItems[] = await Promise.all(
         vs.slice(0, VERSIONS_READ).map(async (v, i) => ({
           number: v.number,
           by: v.by ?? null,
-          items: i === 0 ? m.items : v.canvas ? await getDeployedDocument(slug, v.unit).then((d) => manifestOf(d).items, () => null) : null,
+          items: i === 0 ? m.items : v.text ? await getDeployedDocument(slug, v.unit).then((d) => manifestOf(d).items, () => null) : null,
         })),
       );
       if (!stale) setSince(sinceOf(m.items, read));

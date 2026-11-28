@@ -87,31 +87,74 @@ pub fn plan(source: &str) -> Result<Plan, String> {
     })
 }
 
-/// A flow's document as the language's text: the text it was saved with (the editor's text pane
-/// and the agent tools keep it, comments and all) when that is the code its canvas is, else
-/// printed from the canvas, with the binding names an agent gave it.
-///
-/// What a document deploys as is its canvas; its text is beside it, for people, and whoever
-/// saves or proposes a document writes both. So a saved text is shown only when it compiles to
-/// the unit the canvas deploys as ([`says_its_canvas`]): a text that says something else (one
-/// that no longer compiles, or one written to be read while another is deployed) gives way to
-/// the canvas. Every reading of a document's text comes through here, and the editor's through
-/// the bridge (`document_text`), so what a person reviews is what would run.
-pub fn text_of(name: &str, document: &Value) -> Result<String, String> {
-    let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
-    if let Some(source) = document.get("source").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
-        && says_its_canvas(source, &doc)
-    {
-        return Ok(source.to_string());
+/// The canvas a flow's code is shown on, from the text it keeps (docs/L4s/text-deploy-plan.md):
+/// the text compiled, its source kept in it, with its hand-drawn `layout` (a
+/// [`crate::kept_layout::Layout`], or null) put on it when it was drawn for this code; and whether
+/// it was (none: no layout). Refused when the text compiles here to other code than `unit`, the
+/// code it runs (another release's compiler): what is shown, and a run's steps laid on it, would be
+/// other code than runs. Every reading of a kept flow's canvas comes through here, natively and in
+/// the editor through the bridge.
+pub fn document_of(text: &str, unit: &str, layout: Option<&Value>) -> Result<(Value, Option<crate::kept_layout::Placed>), String> {
+    let (document, compiled, placed) = canvas_of(text, layout)?;
+    if !unit.is_empty() && compiled != unit {
+        return Err(other_code(&compiled, unit));
     }
-    let bindings: BTreeMap<String, String> = document.get("bindings").and_then(|b| serde_json::from_value(b.clone()).ok()).unwrap_or_default();
-    print_lines(Some(name), &doc, &mut MapResolver::new(), &Names::new(), &bindings).map(|(text, _)| text)
+    Ok((document, placed))
 }
 
-/// Whether `source` compiles to the unit `doc`'s canvas deploys as.
-fn says_its_canvas(source: &str, doc: &FlowDocument) -> bool {
-    let Ok(said) = plan(source) else { return false };
-    canvas_unit(doc).is_ok_and(|canvas| canvas == said.unit)
+/// What [`document_of`] says when a kept text compiles here to other code than `unit`, the code it
+/// runs.
+pub fn other_code(compiled: &str, unit: &str) -> String {
+    format!(
+        "its text compiles here to other code ({}) than it runs ({}): this Holon is another release than the one that compiled it; update whichever is older",
+        crate::first_chars(compiled, 12),
+        crate::first_chars(unit, 12)
+    )
+}
+
+/// A text's canvas ([`document_of`]) and the unit it compiles to here, without holding it to the
+/// code it runs: the caller says which code that is, or that they differ.
+pub fn canvas_of(text: &str, layout: Option<&Value>) -> Result<(Value, String, Option<crate::kept_layout::Placed>), String> {
+    let plan = plan(text)?;
+    let mut document = plan.document;
+    document["source"] = Value::String(text.to_string());
+    let layout: Option<crate::kept_layout::Layout> = layout.filter(|l| !l.is_null()).map(|l| serde_json::from_value(l.clone()).map_err(|e| format!("its layout doesn't read: {e}"))).transpose()?;
+    let placed = layout.map(|l| crate::kept_layout::apply(&mut document, &plan.unit, &l));
+    Ok((document, plan.unit, placed))
+}
+
+/// What a canvas sends to be kept (docs/L4s/text-deploy-plan.md): `text` (its text as typed, or the
+/// canvas printed) compiled, its unit, and where the canvas's nodes are when a person moved them
+/// (none when every node is where the compiler puts it). Refused when `canvas` isn't the code its
+/// text compiles to (its handlers differ).
+pub fn layout_of(canvas: &Value, text: &str) -> Result<(String, Option<crate::kept_layout::Layout>), String> {
+    let plan = plan(text)?;
+    let layout = crate::kept_layout::of_canvas(canvas, &plan.unit, &plan.document)?;
+    Ok((plan.unit, layout))
+}
+
+/// A flow saved as a canvas document (0.1.0-rc.37 and before) as it is kept now: its text, the
+/// text the document carried when that still compiles to its canvas, else its canvas printed (as
+/// the canvas named its nodes), and where its nodes were drawn, read off its canvas ([`layout_of`];
+/// none when they can't be). How a server reads a saved-flows file written before flows were kept
+/// as their text, so it starts on it and loses none.
+pub fn kept_from_document(name: &str, document: &Value) -> Result<(String, Option<crate::kept_layout::Layout>), String> {
+    let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
+    let source = document.get("source").and_then(Value::as_str).filter(|s| !s.trim().is_empty());
+    let says_its_canvas = |s: &str| plan(s).is_ok_and(|said| canvas_unit(&doc).is_ok_and(|canvas| canvas == said.unit));
+    let text = match source {
+        Some(s) if says_its_canvas(s) => s.to_string(),
+        _ => {
+            let bindings: BTreeMap<String, String> = document.get("bindings").and_then(|b| serde_json::from_value(b.clone()).ok()).unwrap_or_default();
+            match print_lines(Some(name), &doc, &mut MapResolver::new(), &Names::new(), &bindings) {
+                Ok((text, _)) => text,
+                // A draft that never compiled: its text as it was typed, kept as a draft is.
+                Err(e) => source.map(str::to_string).ok_or(e)?,
+            }
+        }
+    };
+    let layout = layout_of(document, &text).ok().and_then(|(_, layout)| layout);
+    Ok((text, layout))
 }
 
 /// The unit `doc`'s canvas deploys as, in hex.
@@ -120,29 +163,6 @@ fn canvas_unit(doc: &FlowDocument) -> Result<String, String> {
     crate::text::restore(doc, &mut store, &Names::new());
     let port = doc.server.clone().unwrap_or_default().port;
     flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings()).map(|canvas| to_hex(&canvas))
-}
-
-/// The units `document`'s canvas deploys as: the flow's, in hex, and each unit it is made of,
-/// encoded, as a client stages them (`POST /unit`) before deploying it.
-pub fn canvas_units(document: &Value) -> Result<(String, Vec<Vec<u8>>), String> {
-    let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
-    let mut store = MapResolver::new();
-    crate::text::restore(&doc, &mut store, &Names::new());
-    let port = doc.server.clone().unwrap_or_default().port;
-    let hash = flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings())?;
-    let units = closure_of(&[hash], &store).iter().filter_map(|h| store.resolve(h).and_then(|u| encode_preimage(u).ok())).collect();
-    Ok((to_hex(&hash), units))
-}
-
-/// What a flow's document deploys as: the unit its canvas builds, in hex, and the sites whose
-/// pages it answers (its `browsers` line, one by one). A server checks a document it is sent
-/// against the unit deployed with it: a person reviews the document (its text is printed from it,
-/// [`text_of`]), so one that said something else would have them approve what they never read.
-pub fn deploys_as(document: &Value) -> Result<(String, Vec<String>), String> {
-    let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
-    let unit = canvas_unit(&doc).map_err(|e| format!("the flow's document doesn't build: {e}"))?;
-    let browsers = doc.server.and_then(|s| s.browsers).unwrap_or_default().split(|c: char| c.is_whitespace() || c == ',').filter(|o| !o.is_empty()).map(String::from).collect();
-    Ok((unit, browsers))
 }
 
 /// A consent name as a person reads it (`StateWrite("beats")` → write its state "beats").
@@ -1101,73 +1121,52 @@ mod tests {
         assert!(!noted.iter().any(|l| *l >= 11), "the other action didn't run: {noted:?}");
     }
 
-    /// **Guards:** the text a document is shown as is the code it deploys as, whatever text was
-    /// saved beside its canvas: as saved, comments and all, when that text is the canvas's code,
-    /// and printed from the canvas when it isn't.
+    /// **Guards:** a kept flow is shown as the code that runs: its text, as written, compiled to
+    /// the unit it runs, with its hand-drawn layout put back only on that code.
     ///
-    /// **Why:** a document carries its code twice, as a canvas (what deploys) and as a text (what
-    /// a person reads), and whoever saves or proposes it writes both: the editor, the agent tools,
-    /// or anything that can post JSON with an agent's token. Nothing else ties the two.
+    /// **Why:** a flow travels and is kept as its text (docs/L4s/text-deploy-plan.md); every canvas,
+    /// review and run view is that text compiled again, here or in the editor. A text that compiles
+    /// to other code than runs (another release's compiler) would lay a run's steps, or a person's
+    /// review, on other nodes than ran.
     ///
-    /// **If it fails:** a person approving an agent's proposal reads one program and deploys
-    /// another, within the permissions the approval shows: the review, the diff, `holon flows`,
-    /// the agent's own `flows` tool and the terminal editor all showed the saved text as it came.
+    /// **If it fails:** someone opening a deployed flow, a version, or a run reads one program
+    /// while another runs, or sees a canvas half in its drawn places and half moved.
     ///
-    /// Every sample is a document; beside each canvas is put its own text, another sample's, its
-    /// own with a route added or its port changed, and one that doesn't compile, and each sample's
-    /// text is put beside another's canvas. What is shown always compiles to what deploys.
+    /// Every sample: its text read back as its canvas holds its text as written and its own trace;
+    /// held to its own unit it is shown, held to another sample's it is refused; moved by hand, its
+    /// layout comes back as drawn on its own code, and on another sample's code none of it does.
     #[test]
-    fn the_text_a_document_shows_is_the_code_it_deploys() {
+    fn every_sample_reads_back_as_its_own_code_and_drawing() {
         let all = samples::samples();
         let plans: Vec<Plan> = all.iter().map(|s| plan(s.text).unwrap_or_else(|e| panic!("{}: {e}", s.name))).collect();
-        // A text's unit, compiled once: a sample's text is asked for many times over.
-        let units = std::cell::RefCell::new(HashMap::<String, Result<String, String>>::new());
-        let unit_of = |text: &str| units.borrow_mut().entry(text.to_string()).or_insert_with(|| plan(text).map(|p| p.unit)).clone();
-        let (mut forged, mut kept) = (0, 0);
         for (i, (sample, own)) in all.iter().zip(&plans).enumerate() {
-            let shown = |source: Option<&str>| {
-                let mut document = own.document.clone();
-                if let Some(source) = source {
-                    document["source"] = json!(source);
-                }
-                text_of(sample.name, &document).unwrap_or_else(|e| panic!("{}: {e}", sample.name))
-            };
-            // With no text saved, its canvas printed (a sample opens with a comment, which a canvas
-            // doesn't keep): the same unit.
-            let printed = shown(None);
-            assert_ne!(printed, sample.text, "{}: printed from the canvas", sample.name);
-            assert_eq!(unit_of(&printed).as_ref(), Ok(&own.unit), "{}: its canvas printed is its code", sample.name);
-            // Its own text, as saved.
-            assert_eq!(shown(Some(sample.text)), sample.text, "{}: its own text is shown as saved", sample.name);
-            // Texts that say something else.
-            let other = &all[(i + 1) % all.len()];
-            let mut others = vec![
-                other.text.to_string(),
-                format!("{}\nroute.get(\"/one-more\", () => \"added\")\n", sample.text),
-                "import { flow, route } from \"holon\"\n\nflow(\"x\")\n\nroute.get(\"/a\", () => nope)\n".to_string(),
-                "not a flow at all".to_string(),
-            ];
-            if let Some(port) = sample.port {
-                others.push(sample.text.replacen(&format!("port: {port}"), &format!("port: {}", port.parse::<u32>().unwrap() + 1), 1));
+            let (doc, placed) = document_of(sample.text, &own.unit, None).unwrap_or_else(|e| panic!("{}: {e}", sample.name));
+            assert_eq!(doc["source"], json!(sample.text), "{}: its text as written", sample.name);
+            assert_eq!(doc["trace"], own.document["trace"], "{}: its own trace", sample.name);
+            assert_eq!(placed, None, "{}: no layout, none placed", sample.name);
+            let other = &plans[(i + 1) % all.len()];
+            if other.unit != own.unit {
+                let refused = document_of(sample.text, &other.unit, None).expect_err(sample.name);
+                assert!(refused.contains("other code"), "{}: {refused}", sample.name);
             }
-            for said in &others {
-                let text = shown(Some(said));
-                assert_eq!(unit_of(&text).as_ref(), Ok(&own.unit), "{}: what is shown is what deploys, beside a text that says {said:.60?}…", sample.name);
-                match unit_of(said) == Ok(own.unit.clone()) {
-                    // The same code written otherwise (a sample whose text has no port to change).
-                    true => kept += 1,
-                    false => {
-                        assert_ne!(&text, said, "{}: a text that isn't its canvas's code isn't shown", sample.name);
-                        forged += 1;
-                    }
-                }
+            // Moved by hand: every node somewhere the compiler doesn't put it.
+            let mut drawn = own.document.clone();
+            for (k, n) in drawn["nodes"].as_array_mut().into_iter().flatten().enumerate() {
+                n["position"] = json!({ "x": 5000.0 + k as f64, "y": -3.0 * k as f64 });
             }
-            // And its text beside another's canvas.
-            let mut document = plans[(i + 1) % all.len()].document.clone();
-            document["source"] = json!(sample.text);
-            assert_eq!(unit_of(&text_of(other.name, &document).unwrap()).as_ref(), Ok(&plans[(i + 1) % all.len()].unit), "{}'s text beside {}'s canvas", sample.name, other.name);
+            let (unit, layout) = layout_of(&drawn, sample.text).unwrap_or_else(|e| panic!("{}: {e}", sample.name));
+            assert_eq!(unit, own.unit);
+            let layout = serde_json::to_value(layout.expect("moved by hand")).unwrap();
+            let (back, placed) = document_of(sample.text, &own.unit, Some(&layout)).unwrap();
+            assert_eq!(placed, Some(crate::kept_layout::Placed::AsDrawn), "{}", sample.name);
+            assert_eq!(back["nodes"], drawn["nodes"], "{}: every node where it was drawn", sample.name);
+            if other.unit != own.unit {
+                let other_text: &str = all[(i + 1) % all.len()].text;
+                let (elsewhere, _, placed) = canvas_of(other_text, Some(&layout)).unwrap();
+                assert_eq!(placed, Some(crate::kept_layout::Placed::OtherCode), "{}'s layout on other code", sample.name);
+                assert_eq!(elsewhere["nodes"], document_of(other_text, "", None).unwrap().0["nodes"], "{}'s layout moves nothing of other code", sample.name);
+            }
         }
-        assert!(forged > all.len() * 4 && kept < all.len(), "{forged} texts that weren't the canvas's, {kept} that were");
     }
 
     /// A js node that gave nothing says why, in the engine's words, under the statement that

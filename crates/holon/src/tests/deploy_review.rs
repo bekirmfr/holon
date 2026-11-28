@@ -49,7 +49,7 @@ fn stage(state: &AppState, ada: &str, text: &str) -> String {
     for unit in &plan.units {
         assert_eq!(ask(state, Some(ada), "POST", "/unit", unit.clone()).0, 200);
     }
-    keep_document(&plan.unit, &plan.document);
+    keep_text(&plan.unit, text);
     plan.unit
 }
 
@@ -72,7 +72,7 @@ fn at_once(state: &AppState, token: &str, slug: &str) {
 /// needs, an agent approving nothing.
 fn deploy_as(state: &AppState, token: &str, slug: &str, unit: &str, by_agent: bool) -> (u16, Value) {
     let needs = if by_agent { json!([]) } else { review(state, token, slug, unit).0 };
-    send(state, token, "POST", "/deploy", json!({ "slug": slug, "unit": unit, "document": document_of(unit), "acknowledge": needs }))
+    send(state, token, "POST", "/deploy", json!({ "slug": slug, "unit": unit, "text": staged_text(unit), "acknowledge": needs }))
 }
 
 const PAYMENTS: &str = r#"import { action, flow } from "holon"
@@ -135,7 +135,7 @@ fn a_flow_call_runs_only_what_whoever_deploys_it_may_run() {
     let (needs, lines, _) = review(&state, &scout, "promo", &promo);
     assert_eq!(needs, json!(["RunsAction(\"payments/payout\")"]));
     assert!(lines.contains(&"  ! flow payments: run payout — asked again: approved by confirming; scout may not run it: it waits for someone who may, as a proposal".to_string()), "{lines:#?}");
-    let approve = json!({ "slug": "promo", "unit": promo, "document": document_of(&promo), "acknowledge": ["RunsAction(\"payments/payout\")"] });
+    let approve = json!({ "slug": "promo", "unit": promo, "text": staged_text(&promo), "acknowledge": ["RunsAction(\"payments/payout\")"] });
     let (code, answer) = send(&state, &bob, "POST", "/deploy", approve.clone());
     assert_eq!((code, answer["error"].as_str().unwrap_or_default()), (403, bobs), "bob doesn't approve it");
     assert_eq!(send(&state, &pat, "POST", "/deploy", approve).0, 200, "pat does");
@@ -344,13 +344,14 @@ route.get("/hi", () => "hi")
 /// keys it keeps out of its records and those it never keeps, its port, a handler's log level),
 /// an agent's asking to record or keep a key again among what it needs approved, its tags among what it
 /// touches. A first deploy has nothing to set beside, and the same version again changes none of
-/// it. And what a person reads is what deploys: a proposal whose document builds another unit,
-/// whose browsers line isn't the browsers sent, or that doesn't read, is refused and nothing
-/// proposed; so is an agent's version deployed at once with one, which the next review reads.
+/// it. And what a person reads is what deploys: a proposal whose text compiles to another unit
+/// than the one sent, whose browsers line isn't the browsers sent, or that doesn't compile, is
+/// refused and nothing proposed; so is an agent's version deployed at once with one, which the next
+/// review reads. A proposal kept keeps the text it was sent, which compiles to its unit.
 ///
 /// **Why:** the review said nothing of a version's port or log levels, nor per handler, a person
 /// reviewing in the editor never saw the sites it answers (its preview sent none, R24), and the
-/// document shown was never checked against the unit approved (R25).
+/// text shown was never checked against the unit approved (R25).
 #[test]
 fn a_review_shows_all_a_version_changes_and_what_it_shows_deploys() {
     let (state, book, ada) = server();
@@ -380,7 +381,7 @@ fn a_review_shows_all_a_version_changes_and_what_it_shows_deploys() {
     let beside = |lines: &[String]| lines.iter().any(|l| l == "Its handlers" || l == "Its settings");
     let first = preview(&ada, &base, &one);
     assert!(!beside(&lines(&first)), "a first deploy: {:#?}", lines(&first));
-    let deployed = json!({ "slug": "shown", "unit": base, "document": document_of(&base), "browsers": one, "acknowledge": first["needs_approval"] });
+    let deployed = json!({ "slug": "shown", "unit": base, "text": staged_text(&base), "browsers": one, "acknowledge": first["needs_approval"] });
     assert_eq!(send(&state, &ada, "POST", "/deploy", deployed).0, 200);
 
     for (who, token) in [("ada", &ada), ("scout", &scout)] {
@@ -412,141 +413,182 @@ fn a_review_shows_all_a_version_changes_and_what_it_shows_deploys() {
     assert!(!beside(&same), "the same version: {same:#?}");
 
     // What a person reads is what deploys: an agent's proposal, and a person's.
-    let propose = |token: &str, document: Value, browsers: &Value| send(&state, token, "POST", "/deploy", json!({ "slug": "shown", "unit": next, "document": document, "browsers": browsers, "why": "two sites" }));
-    let rows: [(&str, &str, Value, &Value, &str); 4] = [
-        ("another version's document", &scout, document_of(&base), &both, "the document sent deploys as "),
-        ("a browsers line that isn't the browsers sent", &scout, document_of(&next), &one, "the document's browsers line (https://a.example https://b.example) isn't the browsers sent (https://a.example)"),
-        ("a document that doesn't read", &scout, json!({ "nodes": 3 }), &both, "the flow's document doesn't read"),
-        ("a person's proposal with another version's document", &cy, document_of(&base), &both, "the document sent deploys as "),
+    let propose = |token: &str, text: Value, browsers: &Value| send(&state, token, "POST", "/deploy", json!({ "slug": "shown", "unit": next, "text": text, "browsers": browsers, "why": "two sites" }));
+    let rows: [(&str, &str, Value, &Value, &str); 5] = [
+        ("another version's text", &scout, staged_text(&base), &both, "the text sent compiles here to "),
+        ("a browsers line that isn't the browsers sent", &scout, staged_text(&next), &one, "the text's browsers line (https://a.example https://b.example) isn't the browsers sent (https://a.example)"),
+        ("a text that doesn't compile", &scout, json!("flow(\"shown\""), &both, "the text doesn't compile"),
+        ("no text", &scout, Value::Null, &both, "a proposal keeps its text for the person who reviews it"),
+        ("a person's proposal with another version's text", &cy, staged_text(&base), &both, "the text sent compiles here to "),
     ];
-    for (what, token, document, browsers, said) in rows {
-        let (code, answer) = propose(token, document, browsers);
+    for (what, token, text, browsers, said) in rows {
+        let (code, answer) = propose(token, text, browsers);
         assert_eq!(code, 400, "{what}: {answer}");
         assert!(answer["error"].as_str().unwrap().starts_with(said), "{what}: {answer}");
     }
     assert!(state.proposals.all().iter().all(|p| p.slug != "shown"), "nothing proposed");
-    let (code, answer) = propose(&scout, document_of(&next), &both);
-    assert_eq!(code, 202, "with its own document: {answer}");
+    let (code, answer) = propose(&scout, staged_text(&next), &both);
+    assert_eq!(code, 202, "with its own text: {answer}");
+    // What a reviewer is shown is the text kept with it, which compiles to the unit it deploys.
+    let (code, shown) = send(&state, &ada, "GET", &format!("/proposals/{}", answer["proposal"]["id"]), Value::Null);
+    assert_eq!((code, &shown["unit"], &shown["text"]), (200, &json!(next), &staged_text(&next)), "{shown}");
+    for p in state.proposals.all() {
+        let text = p.text.as_deref().unwrap_or_else(|| panic!("proposal {} keeps no text", p.id));
+        assert_eq!(holon_author::agent::plan(text).unwrap().unit, p.unit, "proposal {}: its text is its unit's", p.id);
+    }
+    // Approved after the server's compiler changed (another release, whose compiler builds the
+    // proposal's text as other code): a person approves by deploying the unit they reviewed with
+    // its text, which the server compiles again (deploy.rs `compiled`). Here the text sent compiles
+    // to other code than the reviewed unit, as it would there: refused, naming both, and nothing is
+    // deployed or decided; never the other code silently.
+    let pending = || state.proposals.all().into_iter().filter(|p| p.slug == "shown" && p.decided_at_ms.is_none()).count();
+    let (current, waiting) = (send(&state, &ada, "GET", "/deployments/shown/text", Value::Null).1["unit"].clone(), pending());
+    let (code, answer) = send(&state, &ada, "POST", "/deploy", json!({ "slug": "shown", "unit": next, "text": staged_text(&base), "browsers": both }));
+    let said = answer["error"].as_str().unwrap_or_default();
+    assert_eq!(code, 400, "{answer}");
+    assert!(said.contains(&base[..12]) && said.contains(&next[..12]), "it names both: {said}");
+    assert_eq!((send(&state, &ada, "GET", "/deployments/shown/text", Value::Null).1["unit"].clone(), pending()), (current, waiting), "nothing deployed or decided");
     // Deployed at once, the agent's version is held to it too.
     at_once(&state, &ada, "shown");
-    let again = |document: Value| send(&state, &scout, "POST", "/deploy", json!({ "slug": "shown", "unit": base, "document": document, "browsers": one }));
-    let (code, answer) = again(document_of(&next));
+    let again = |text: Value| send(&state, &scout, "POST", "/deploy", json!({ "slug": "shown", "unit": base, "text": text, "browsers": one }));
+    let (code, answer) = again(staged_text(&next));
     assert_eq!(code, 400, "{answer}");
-    assert_eq!(again(document_of(&base)).0, 200);
+    assert_eq!(again(staged_text(&base)).0, 200);
 }
 
-/// R180: a version's canvas is the code it runs. Whoever deploys a version sends the document its
-/// unit is built from, or none: a person, an agent, a script by hash alike (a proposal's is held to
-/// it in the test above). One that builds other code is refused, naming both releases when the
-/// client that built it is another; one deployed without a document has no canvas and says so,
-/// never showing another version's. A restore deploys a version's pair as it was deployed, not
-/// built again by today's compiler: checked then, or saying it wasn't.
+/// R180, R25: a version's text is the code it runs. Whoever deploys a version sends its text, which
+/// the server compiles, or a unit staged alone: a person, an agent, a script by hash alike (a
+/// proposal's is held to it in the test above). A text sent with another unit than its own, a text
+/// that doesn't compile, a layout without a text or drawn for other code, are each refused and
+/// nothing deployed; one deployed as a unit alone keeps no text and says so, never showing another
+/// version's. A restore deploys a version's unit and text as they were deployed. And over every
+/// version it ends with: the text it keeps compiles to its unit.
 #[test]
-fn a_versions_canvas_is_the_code_it_runs() {
+fn a_versions_text_is_the_code_it_runs() {
     let (state, book, ada) = server();
     let scout = agent(&book, "scout");
     let text = |says: &str| format!("import {{ flow, route }} from \"holon\"\n\nflow(\"canvas\", {{ port: 18471 }})\n\nroute.get(\"/\", () => \"{says}\")\n");
     let (a, b) = (stage(&state, &ada, &text("a")), stage(&state, &ada, &text("b")));
     let other = stage(&state, &ada, "import { flow, route } from \"holon\"\n\nflow(\"other\", { port: 18472 })\n\nroute.get(\"/\", () => \"other\")\n");
     let ours = env!("CARGO_PKG_VERSION");
-    let deploy = |token: &str, unit: &str, document: &Value, made_with: Option<&str>| {
-        let mut body = json!({ "slug": "canvas", "unit": unit, "document": document });
-        if token == ada {
-            body["acknowledge"] = send(&state, token, "POST", "/deploy/preview", json!({ "slug": "canvas", "unit": unit })).1["needs_approval"].clone();
+    // A deploy of `unit` (none: the text's alone), with `text` and `layout` (none when null).
+    let deploy = |token: &str, unit: Option<&str>, text: &Value, layout: &Value| {
+        let mut body = json!({ "slug": "canvas", "text": text, "layout": layout });
+        if let Some(unit) = unit {
+            body["unit"] = json!(unit);
         }
-        if let Some(release) = made_with {
-            body["made_with"] = json!(release);
+        if token == ada {
+            let mut asked = body.clone();
+            asked.as_object_mut().unwrap().remove("layout");
+            if let Some(needs) = send(&state, token, "POST", "/deploy/preview", asked).1["needs_approval"].as_array() {
+                body["acknowledge"] = json!(needs);
+            }
         }
         send(&state, token, "POST", "/deploy", body)
     };
     let versions = || send(&state, &ada, "GET", "/deployments/canvas/versions", Value::Null).1["versions"].as_array().unwrap().clone();
     let entry = |n: u64| versions().into_iter().find(|v| v["number"] == n).unwrap_or_else(|| panic!("no version {n}"));
-    let document = |query: &str| send(&state, &ada, "GET", &format!("/deployments/canvas/document{query}"), Value::Null);
-    // Version `n`'s canvas is `want` (none when null), checked or not, as its own and as the
-    // current one's.
-    let shows = |what: &str, n: u64, want: &Value, checked: bool| {
-        let (listed, own, now) = (entry(n), document(&format!("?version={n}")), document(""));
-        assert_eq!((&listed["canvas"], &listed["canvas_checked"]), (&json!(!want.is_null()), &json!(checked)), "{what}: {listed}");
+    let kept = |query: &str| send(&state, &ada, "GET", &format!("/deployments/canvas/text{query}"), Value::Null);
+    // Version `n`'s text is `want` (none when null), with `layout`, as its own and as the current
+    // one's.
+    let shows = |what: &str, n: u64, want: &Value, layout: &Value| {
+        let (listed, own, now) = (entry(n), kept(&format!("?version={n}")), kept(""));
+        assert_eq!(listed["text"], json!(!want.is_null()), "{what}: {listed}");
         if want.is_null() {
-            assert!(own.0 == 404 && own.1["error"].as_str().unwrap().contains("deployed without its canvas: none is kept"), "{what}: {own:?}");
-            assert!(now.0 == 404 && now.1["error"].as_str().unwrap().contains("none is kept"), "{what}: {now:?}");
+            assert!(own.0 == 404 && own.1["error"].as_str().unwrap().contains("keeps no text: it was deployed as a unit alone"), "{what}: {own:?}");
+            assert!(now.0 == 404 && now.1["error"].as_str().unwrap().contains("keeps no text"), "{what}: {now:?}");
         } else {
-            assert_eq!((own.0, &own.1), (200, want), "{what}");
-            assert_eq!((now.0, &now.1), (200, want), "{what}");
+            for (whose, (code, said)) in [("its own", own), ("the current one's", now)] {
+                assert_eq!(code, 200, "{what}, {whose}: {said}");
+                assert_eq!((&said["text"], &said["unit"], &said["version"], &said["layout"]), (want, &listed["unit"], &json!(n), layout), "{what}, {whose}");
+            }
         }
     };
 
-    let (code, said) = deploy(&ada, &a, &document_of(&a), None);
+    let (code, said) = deploy(&ada, Some(&a), &staged_text(&a), &Value::Null);
     assert_eq!((code, &said["version"]), (200, &json!(1)), "{said}");
-    shows("a person, with its own document", 1, &document_of(&a), true);
+    shows("a person, with its own text", 1, &staged_text(&a), &Value::Null);
     at_once(&state, &ada, "canvas");
-    // Each deploy in turn: who, which unit, the document it sends, the release its client says
-    // built it, and what comes of it: the version it makes, or what its refusal says.
-    let other_release = format!("It was built by Holon 0.1.0-rc.1, and this server is Holon {ours}, whose compiler may build it otherwise");
-    type Row<'a> = (&'a str, &'a str, &'a str, Value, Option<&'a str>, Result<u64, &'a str>);
-    let rows: [Row<'_>; 6] = [
-        ("a person, with another flow's document", &ada, &b, document_of(&other), None, Err("the document sent deploys as ")),
-        ("a person whose client is another release", &ada, &b, document_of(&a), Some("0.1.0-rc.1"), Err(other_release.as_str())),
-        ("a script by hash, without a document", &ada, &b, Value::Null, None, Ok(2)),
-        ("an agent at once, with its own document", &scout, &a, document_of(&a), None, Ok(3)),
-        ("an agent, with another version's document", &scout, &b, document_of(&a), Some(ours), Err("the document sent deploys as ")),
-        ("a person, with its own document again", &ada, &b, document_of(&b), Some(ours), Ok(4)),
+    let drawn = |unit: &str| json!({ "unit": unit, "at": { "GET /": [[10.0, -20.5]] } });
+    // Each deploy in turn: who, which unit, the text and layout it sends, and what comes of it:
+    // the version it makes, or what its refusal says.
+    type Row<'a> = (&'a str, &'a str, Option<&'a str>, Value, Value, Result<u64, &'a str>);
+    let rows: [Row<'_>; 10] = [
+        ("a person, with another flow's text", &ada, Some(&b), staged_text(&other), Value::Null, Err("the text sent compiles here to ")),
+        ("a script by hash, without a text", &ada, Some(&b), Value::Null, Value::Null, Ok(2)),
+        ("an agent at once, with its own text", &scout, Some(&a), staged_text(&a), Value::Null, Ok(3)),
+        ("an agent, with another version's text", &scout, Some(&b), staged_text(&a), Value::Null, Err("the text sent compiles here to ")),
+        ("an agent, its text alone", &scout, None, staged_text(&b), Value::Null, Ok(4)),
+        ("a text that doesn't compile", &ada, None, json!("route.get(\"/\", () => \"b\")\n"), Value::Null, Err("the text doesn't compile")),
+        ("a layout without a text", &ada, Some(&b), Value::Null, drawn(&b), Err("a layout is of a text's canvas: send the text with it")),
+        ("a layout drawn for other code", &ada, Some(&b), staged_text(&b), drawn(&a), Err("the layout sent was drawn for other code than the text's")),
+        ("a layout that isn't one a server keeps", &ada, Some(&b), staged_text(&b), json!({ "unit": "b", "at": {} }), Err("a layout names the unit it was drawn for")),
+        ("a person, with its own text and layout", &ada, Some(&b), staged_text(&b), drawn(&b), Ok(5)),
     ];
-    for (what, token, unit, sent, made_with, then) in rows {
+    for (what, token, unit, sent, layout, then) in rows {
         let before = versions().len();
-        let (code, said) = deploy(token, unit, &sent, made_with);
+        let (code, said) = deploy(token, unit, &sent, &layout);
         match then {
             Ok(n) => {
                 assert_eq!((code, &said["version"]), (200, &json!(n)), "{what}: {said}");
-                shows(what, n, &sent, !sent.is_null());
+                shows(what, n, &sent, &layout);
             }
             Err(refused) => {
                 let error = said["error"].as_str().unwrap_or_default();
                 assert!(code == 400 && error.contains(refused), "{what}: {said}");
-                // Releases are named only when the client's is another: what to do, then, too.
-                let skewed = made_with.is_some_and(|r| r != ours);
-                assert_eq!(error.contains("built by Holon"), skewed, "{what}: {error}");
-                assert_eq!(error.contains("update whichever is older"), skewed, "{what}: {error}");
+                // A unit that isn't its text's names the server's release: whose compiler built it.
+                assert_eq!(error.contains(&format!("this server is Holon {ours}")), refused.starts_with("the text sent compiles"), "{what}: {error}");
                 assert_eq!(versions().len(), before, "{what}: nothing deployed");
             }
         }
     }
 
-    // A restore deploys the version's pair as it was deployed: its dry run says which it is.
+    // A restore deploys the version's unit and text as they were deployed: its dry run says
+    // whether it keeps a text.
     let restore = |n: u64, dry_run: bool| send(&state, &ada, "POST", "/deployments/canvas/restore", json!({ "version": n, "code": true, "dry_run": dry_run }));
     let says = |n: u64| {
         let (code, preview) = restore(n, true);
         assert_eq!(code, 200, "{preview}");
-        (preview["canvas"].clone(), preview["canvas_checked"].clone())
+        preview["text"].clone()
     };
-    assert_eq!(says(2), (json!(false), json!(false)), "version 2 keeps no canvas");
-    assert_eq!(restore(2, false).1["version"], 5);
-    shows("version 2 restored", 5, &Value::Null, false);
-    assert_eq!(says(1), (json!(true), json!(true)));
-    assert_eq!(restore(1, false).1["version"], 6);
-    shows("version 1 restored", 6, &document_of(&a), true);
-    // Version 3 as one deployed before this rule reads: never checked, and its document, say,
-    // another version's. Restored, it is deployed as it was, not refused nor built again, and says
-    // it wasn't checked.
-    {
-        let mut table = state.deployments.lock().unwrap();
-        let kept = &mut table.get_mut("canvas").unwrap().versions;
-        let bs = kept.iter().find(|v| v.number == 4).unwrap().document_ref.clone();
-        let three = kept.iter_mut().find(|v| v.number == 3).unwrap();
-        (three.document_ref, three.canvas_checked) = (bs, false);
+    assert_eq!(says(2), json!(false), "version 2 keeps no text");
+    assert_eq!(restore(2, false).1["version"], 6);
+    shows("version 2 restored", 6, &Value::Null, &Value::Null);
+    assert_eq!(says(1), json!(true));
+    assert_eq!(restore(1, false).1["version"], 7);
+    shows("version 1 restored", 7, &staged_text(&a), &Value::Null);
+    assert_eq!(restore(5, false).1["version"], 8);
+    shows("version 5 restored, with its layout", 8, &staged_text(&b), &drawn(&b));
+    // By code, a run's text is one compiled to it.
+    assert_eq!(kept(&format!("?unit={a}")).1["text"], staged_text(&a));
+    assert_eq!(kept(&format!("?unit={b}")).1["text"], staged_text(&b));
+    // Every version that keeps a text: it compiles to the version's unit.
+    let all = versions();
+    assert_eq!(all.len(), 8);
+    for v in all.iter().filter(|v| v["text"] == true) {
+        let (code, said) = kept(&format!("?version={}", v["number"]));
+        assert_eq!(code, 200, "{v}: {said}");
+        let unit = holon_author::agent::plan(said["text"].as_str().unwrap()).unwrap().unit;
+        assert_eq!(json!(unit), v["unit"], "version {}: its text compiles to its unit", v["number"]);
     }
-    assert_eq!(says(3), (json!(true), json!(false)));
-    let (code, said) = restore(3, false);
-    assert_eq!((code, &said["version"], &said["unit"]), (200, &json!(7), &json!(a)), "{said}");
-    shows("version 3 restored", 7, &document_of(&b), false);
-    // By code, a run's canvas is one checked to build it, before one that wasn't.
-    assert_eq!(document(&format!("?unit={a}")).1, document_of(&a));
-    assert_eq!(document(&format!("?unit={b}")).1, document_of(&b));
+}
+
+/// A canvas's units as a client builds them from its document, past the language (which refuses
+/// what some canvases build): its unit (hex) and its units, to stage and deploy by hash.
+fn canvas_units(document: &Value) -> (String, Vec<Vec<u8>>) {
+    let doc: holon_author::builder::FlowDocument = serde_json::from_value(document.clone()).unwrap();
+    let mut store = holon_core::MapResolver::new();
+    holon_author::text::restore(&doc, &mut store, &Default::default());
+    let port = doc.server.clone().unwrap_or_default().port;
+    let hash = holon_author::flow::flow_unit(&doc.nodes, &doc.edges, &mut store, &port, doc.unit_settings()).unwrap_or_else(|e| panic!("{e}"));
+    let units = holon_author::builder::closure_of(&[hash], &store).iter().filter_map(|h| holon_core::Resolver::resolve(&store, h).and_then(|u| holon_core::encode_preimage(u).ok())).collect();
+    (holon_author::to_hex(&hash), units)
 }
 
 /// R22: a flow whose canvas has two approvals named alike, asking for other steps (the language
-/// refuses them where they are written; a canvas can build them), is refused: its preview says why,
-/// and its deploy is 400, saying the same. Named apart, it deploys.
+/// refuses them where they are written; a canvas can build them, and a client can stage its units
+/// by hash), is refused: its preview says why, and its deploy is 400, saying the same. Named apart,
+/// it deploys, by hash and as its text.
 ///
 /// **Why:** a run keeps one decision a name, so the second was answered with the first's: a review
 /// showed a CFO step, and one approval by someone without the role completed the run.
@@ -569,16 +611,21 @@ export const pay = action(async (order) => {
         ("two approvals named alike", alike, Some("an approval asking for a person and an approval asking for a person holding cfo are both named \"payout\": a run keeps one decision a name, so the second would be answered with the first's, and what it asks for never asked. Name them apart")),
         ("named apart", plan.document.clone(), None),
     ] {
-        let (unit, units) = holon_author::agent::canvas_units(&document).unwrap();
+        let (unit, units) = canvas_units(&document);
         for u in units {
             assert_eq!(ask(&state, Some(&ada), "POST", "/unit", u).0, 200, "{what}");
         }
         let (code, preview) = send(&state, &ada, "POST", "/deploy/preview", json!({ "slug": "twice", "unit": unit }));
         assert_eq!((code, preview["refused"].as_str()), (200, refused), "{what}: {preview}");
-        let (code, said) = send(&state, &ada, "POST", "/deploy", json!({ "slug": "twice", "unit": unit, "document": document, "acknowledge": preview["needs_approval"] }));
+        let (code, said) = send(&state, &ada, "POST", "/deploy", json!({ "slug": "twice", "unit": unit, "acknowledge": preview["needs_approval"] }));
         match refused {
             Some(why) => assert_eq!((code, said["error"].as_str()), (400, Some(why)), "{what}"),
-            None => assert_eq!(code, 200, "{what}: {said}"),
+            None => {
+                assert_eq!(code, 200, "{what}: {said}");
+                assert_eq!(unit, plan.unit, "{what}: the canvas builds the text's unit");
+                let (code, said) = send(&state, &ada, "POST", "/deploy", json!({ "slug": "twice", "text": text, "acknowledge": preview["needs_approval"] }));
+                assert_eq!((code, &said["unit"]), (200, &json!(plan.unit)), "{what}, as its text: {said}");
+            }
         }
     }
 }

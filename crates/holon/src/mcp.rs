@@ -110,13 +110,19 @@ impl Api for Http {
     }
     fn send(&self, method: &str, path: &str, body: Option<Body>) -> Result<(u16, Vec<u8>), String> {
         let url = format!("{}{path}", self.server);
-        let mut request = ureq::request(method, &url).timeout(Duration::from_secs(60));
+        let mut request = ureq::request(method, &url).timeout(crate::deploycmd::wait_for(path));
         if let Some(token) = &self.token {
             request = request.set("Authorization", &format!("Bearer {token}"));
         }
         let result = match body {
             None => request.call(),
-            Some(Body::Json(v)) => request.set("Content-Type", "application/json").send_string(&v.to_string()),
+            Some(Body::Json(v)) => {
+                let json = v.to_string();
+                match crate::deploycmd::packed(path, json.as_bytes()) {
+                    Some(gz) => request.set("Content-Type", "application/json").set("Content-Encoding", "gzip").send_bytes(&gz),
+                    None => request.set("Content-Type", "application/json").send_string(&json),
+                }
+            }
             Some(Body::Bytes(b)) => request.set("Content-Type", "application/octet-stream").send_bytes(&b),
         };
         let response = match result {
@@ -507,19 +513,9 @@ struct Asked<'a> {
 fn deploy(api: &dyn Api, text: &str, slug: Option<&str>, asked: Asked) -> Result<String, String> {
     let plan = agent::plan(text)?;
     let slug = slug.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&plan.name).to_string();
-    for unit in &plan.units {
-        json_of(api, "POST", "/unit", Some(Body::Bytes(unit.clone())))?;
-    }
-    let mut body = json!({ "slug": slug, "unit": plan.unit });
-    if let Some(r) = &plan.requirements {
-        body["requirements"] = r.clone();
-    }
-    if let Some(b) = &plan.browsers {
-        // The plan keeps the origins on one line (`https://a.example *`); the deploy request
-        // takes them one by one, as the editor sends them. The preview gets them too: answering
-        // pages from a new site is a person's to approve.
-        body["browsers"] = json!(b.split_whitespace().collect::<Vec<_>>());
-    }
+    // The text is what is deployed: the server compiles it (docs/L4s/text-deploy-plan.md), and the
+    // unit compiled here is the one it must come to, the code this agent checked.
+    let mut body = crate::deploycmd::flow_body(&slug, &plan, text);
     let preview = json_of(api, "POST", "/deploy/preview", Some(Body::Json(body.clone())))?;
     if let Some(why) = preview.get("refused").and_then(Value::as_str) {
         return Err(format!("this server won't run it: {why}"));
@@ -532,11 +528,6 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>, asked: Asked) -> Result
     } else {
         format!("\nSecrets not set yet (an admin sets them in the editor, in the flow's Settings): {}. Until then, a run that reads one gets nothing.", missing.join(", "))
     };
-    // Its text goes with it, comments and all, so the person who opens it reads what was written.
-    body["document"] = saved_document(&plan, text);
-    // The release whose compiler built the unit: a server that builds the document otherwise says
-    // which two differ.
-    body["made_with"] = json!(env!("CARGO_PKG_VERSION"));
     if let Some(w) = asked.why {
         body["why"] = json!(w);
     }
@@ -582,9 +573,9 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>, asked: Asked) -> Result
     Ok(out.join("\n"))
 }
 
-/// Save `document` as the flow `name`; or, when a flow by that name is someone else's, leave it
-/// and answer whose it is. It replaces the save read here (`base`), and no save made since.
-fn save_flow(api: &dyn Api, name: &str, document: &Value) -> Result<Option<String>, String> {
+/// Save `text` as the flow `name`; or, when a flow by that name is someone else's, leave it and
+/// answer whose it is. It replaces the save read here (`base`), and no save made since.
+fn save_flow(api: &dyn Api, name: &str, text: &str) -> Result<Option<String>, String> {
     let me = json_of(api, "GET", "/auth/me", None).ok().and_then(|m| m.get("name").and_then(Value::as_str).map(str::to_string));
     let (status, bytes) = api.send("GET", &format!("/flows/{}", seg(name)), None)?;
     let mut base = Value::Null;
@@ -596,22 +587,14 @@ fn save_flow(api: &dyn Api, name: &str, document: &Value) -> Result<Option<Strin
         }
         base = saved["saved_at_epoch_seconds"].clone();
     }
-    json_of(api, "POST", "/flows", Some(Body::Json(json!({ "name": name, "document": document, "base": base }))))?;
+    json_of(api, "POST", "/flows", Some(Body::Json(json!({ "name": name, "text": text, "base": base }))))?;
     Ok(None)
-}
-
-/// The document a flow is saved with: the compiled canvas, and the text as written, comments
-/// and all, so the person who opens it reads what the agent wrote (the editor's text pane).
-pub(crate) fn saved_document(plan: &agent::Plan, text: &str) -> Value {
-    let mut document = plan.document.clone();
-    document["source"] = json!(text);
-    document
 }
 
 fn save(api: &dyn Api, text: &str, name: Option<&str>) -> Result<String, String> {
     let plan = agent::plan(text)?;
     let name = name.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&plan.name).to_string();
-    if let Some(by) = save_flow(api, &name, &saved_document(&plan, text))? {
+    if let Some(by) = save_flow(api, &name, text)? {
         return Err(format!("not saved: a flow named \"{name}\" saved by {by} is already on {}; save it under another name so theirs isn't replaced", api.server()));
     }
     let may = if plan.may.is_empty() { "It only computes.".to_string() } else { format!("When deployed, it may:\n{}", plan.may.iter().map(|i| format!("  - {}", agent::describe_sending(i, &plan.sent))).collect::<Vec<_>>().join("\n")) };
@@ -660,7 +643,7 @@ fn deployment_line(d: &Value) -> String {
     let s = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or("?");
     let n = |k: &str| d.get(k).and_then(Value::as_u64).unwrap_or(0);
     let unit = s("unit");
-    let mut line = format!("{}: {}, version {}", s("slug"), s("status"), &unit[..unit.len().min(12)]);
+    let mut line = format!("{}: {}, version {}", s("slug"), s("status"), holon_author::first_chars(unit, 12));
     if let Some(p) = d.get("port").and_then(Value::as_u64) {
         line.push_str(&format!(", port {p}"));
     } else if let Some(t) = d.get("triggers").and_then(Value::as_array).filter(|t| !t.is_empty()) {
@@ -719,7 +702,7 @@ fn deployments(api: &dyn Api, slug: Option<&str>) -> Result<String, String> {
     let path = format!("/deployments/{}", seg(slug));
     let manifest = json_of(api, "GET", &format!("{path}/manifest"), None)?;
     let secrets = json_of(api, "GET", &format!("{path}/secrets"), None).map(|s| list_of(s, Some("names"))).unwrap_or_default();
-    let text = agent::text_of(slug, &json_of(api, "GET", &format!("{path}/document"), None)?);
+    let text = kept_text(api, slug, "");
     let strings = |v: &Value, k: &str| -> Vec<String> { v.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(|i| i.as_str().map(str::to_string)).collect()).unwrap_or_default() };
     let mut out = vec![format!("On {}: {}", api.server(), deployment_line(d))];
     if let Ok(plan) = text.as_deref().map_err(String::clone).and_then(agent::plan)
@@ -847,7 +830,7 @@ fn flows(api: &dyn Api, name: Option<&str>) -> Result<String, String> {
         return Ok(out.join("\n"));
     };
     let record = json_of(api, "GET", &format!("/flows/{}", seg(name)), None)?;
-    let text = agent::text_of(name, record.get("document").unwrap_or(&Value::Null))?;
+    let text = record.get("text").and_then(Value::as_str).unwrap_or_default();
     Ok(format!("{}\n\n{}", saved_line(&record), text.trim_end()))
 }
 
@@ -1076,12 +1059,31 @@ fn explain(api: &dyn Api, slug: &str, run: Option<u64>) -> Result<String, String
         });
     };
     let unit = entry.get("unit").and_then(Value::as_str).filter(|u| !u.is_empty());
-    let path = match unit {
-        Some(u) => format!("/deployments/{}/document?unit={u}", seg(slug)),
-        None => format!("/deployments/{}/document", seg(slug)),
-    };
-    let document = json_of(api, "GET", &path, None)?;
+    let query = unit.map(|u| format!("?unit={u}")).unwrap_or_default();
+    let document = kept_document(api, slug, &query)?;
     agent::explain(slug, &document, &entry)
+}
+
+/// The text `slug` keeps of its code (`GET /deployments/<slug>/text`, with `query`: `?unit=…`,
+/// `?version=…`, or nothing for the version deployed now), as `{unit, version, text, layout}`.
+pub(crate) fn kept(api: &dyn Api, slug: &str, query: &str) -> Result<Value, String> {
+    json_of(api, "GET", &format!("/deployments/{}/text{query}", seg(slug)), None)
+}
+
+/// The text `slug` keeps of its code ([`kept`]).
+pub(crate) fn kept_text(api: &dyn Api, slug: &str, query: &str) -> Result<String, String> {
+    kept(api, slug, query)?.get("text").and_then(Value::as_str).map(str::to_string).ok_or_else(|| format!("{} keeps no text of \"{slug}\"", api.server()))
+}
+
+/// The canvas `slug`'s code is shown and explained on: its kept text ([`kept`]) compiled here, with
+/// its hand-drawn layout on it. Compiled here to other code than the server compiled it to (this
+/// `holon` is another release than the server), a run's steps would land on other nodes: refused,
+/// saying so (docs/L4s/text-deploy-plan.md).
+pub(crate) fn kept_document(api: &dyn Api, slug: &str, query: &str) -> Result<Value, String> {
+    let kept = kept(api, slug, query)?;
+    let text = kept.get("text").and_then(Value::as_str).ok_or_else(|| format!("{} keeps no text of \"{slug}\"", api.server()))?;
+    let unit = kept.get("unit").and_then(Value::as_str).unwrap_or_default();
+    agent::document_of(text, unit, kept.get("layout")).map(|(document, _)| document)
 }
 
 /// `slug`'s timeline, as `holon history` prints it: its newest `last` runs and the events among
@@ -1224,27 +1226,11 @@ pub(crate) fn code_diff(api: &dyn Api, slug: &str, number: u64) -> Result<String
     Ok(format!("Its text (- deployed now, + version {number}'s):\n{}{note}", lines.join("\n")))
 }
 
-/// The text deployed now and version `number`'s, printed alike, to compare; and a note when
-/// they had to be printed without their names.
+/// The text deployed now and version `number`'s, to compare; and a note to say beside them (none:
+/// both are kept as they were written).
 pub(crate) fn code_texts(api: &dyn Api, slug: &str, number: u64) -> Result<(String, String, &'static str), String> {
-    let path = format!("/deployments/{}", seg(slug));
-    let now = json_of(api, "GET", &format!("{path}/document"), None)?;
-    // That version's own text, never another's: none if it was deployed without one.
-    let then = json_of(api, "GET", &format!("{path}/document?version={number}"), None)?;
-    let named = |d: &Value| d.get("source").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty()) || d.get("bindings").and_then(Value::as_object).is_some_and(|b| !b.is_empty());
-    let plain = |d: &Value| {
-        let mut d = d.clone();
-        if let Some(o) = d.as_object_mut() {
-            o.remove("source");
-            o.remove("bindings");
-        }
-        d
-    };
-    Ok(if named(&now) == named(&then) {
-        (agent::text_of(slug, &now)?, agent::text_of(slug, &then)?, "")
-    } else {
-        (agent::text_of(slug, &plain(&now))?, agent::text_of(slug, &plain(&then))?, "\n(Both printed without the text's names: one of them was deployed from the canvas, which keeps none.)")
-    })
+    // That version's own text, never another's: none if it was deployed as a unit alone.
+    Ok((kept_text(api, slug, "")?, kept_text(api, slug, &format!("?version={number}"))?, ""))
 }
 
 /// A line diff of `a` to `b`: `- ` for a's lines, `+ ` for b's, `  ` for both, with the unchanged
@@ -1631,9 +1617,9 @@ mod tests {
         // waiting or not, and whether it asks for something new.
         let deploy = |api: &dyn Api, text: &str| {
             let plan = agent::plan(text).unwrap();
-            let staged = crate::deploycmd::stage(api, &plan, "slugs").unwrap();
+            let staged = crate::deploycmd::stage(api, &plan, "slugs", text).unwrap();
             let approves = staged.approves;
-            let kept = crate::deploycmd::commit(api, &plan, staged, plan.document.clone()).unwrap_or_else(|e| panic!("{e}"));
+            let kept = crate::deploycmd::commit(api, &plan, staged).unwrap_or_else(|e| panic!("{e}"));
             (approves, kept.map(|p| (p["state"].as_str().unwrap_or_default().to_string(), p["needs"].as_array().is_some_and(|n| !n.is_empty()))))
         };
         let deployed = || json_of(&ada, "GET", "/deployments", None).unwrap()["deployments"].as_array().unwrap().iter().find(|d| d["slug"] == "slugs").map(|d| d["unit"].clone());
@@ -1688,12 +1674,12 @@ mod tests {
         assert!(first.starts_with("Not deployed yet"), "{first}");
         assert!(first.contains("receive requests") && first.contains("\"slugs\""), "{first}");
         let saved = serde_json::from_slice::<Value>(&body_bytes(route(&state, &req_as(&p.ada, "GET", "/flows/slugs", vec![])))).unwrap();
-        assert!(saved["document"]["trace"].is_object(), "the saved flow is the document a deploy sends");
+        assert_eq!(saved["text"], text, "the saved flow is the text a deploy sends");
         assert!(serde_json::from_slice::<Value>(&body_bytes(route(&state, &req_as(&p.ada, "GET", "/deployments", vec![])))).unwrap()["deployments"].as_array().unwrap().is_empty());
         // A person approves it (the editor's deploy: everything the preview asked).
         let plan = agent::plan(text).unwrap();
         let preview: Value = serde_json::from_slice(&body_bytes(route(&state, &req_as(&p.ada, "POST", "/deploy/preview", serde_json::to_vec(&json!({ "slug": "slugs", "unit": plan.unit })).unwrap())))).unwrap();
-        let approve = json!({ "slug": "slugs", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document });
+        let approve = json!({ "slug": "slugs", "unit": plan.unit, "acknowledge": preview["needs_approval"], "text": text });
         assert_eq!(route(&state, &req_as(&p.ada, "POST", "/deploy", serde_json::to_vec(&approve).unwrap())).status_code, 200);
         // A new version waits for a person too, whatever it changes; this one asks for nothing new.
         let v2 = text.replace("\"unsigned\"", "\"not signed\"");
@@ -1702,7 +1688,7 @@ mod tests {
         // The person approves it, and lets the flow take the agent's versions that ask for nothing
         // more at once: then one deploys from the agent.
         let plan = agent::plan(&v2).unwrap();
-        let approve = json!({ "slug": "slugs", "unit": plan.unit, "acknowledge": [], "document": plan.document });
+        let approve = json!({ "slug": "slugs", "unit": plan.unit, "acknowledge": [], "text": v2 });
         assert_eq!(route(&state, &req_as(&p.ada, "POST", "/deploy", serde_json::to_vec(&approve).unwrap())).status_code, 200);
         let_at_once(&Signed { state: &state, token: &p.ada }, "slugs");
         let second = tool(&state, &p.claude, "deploy", json!({ "text": v2 })).unwrap();
@@ -1796,7 +1782,7 @@ mod tests {
         let plan = agent::plan(text).unwrap();
         assert_eq!(plan.browsers.as_deref(), Some("https://app.example *"), "the plan keeps them on one line");
         let preview: Value = serde_json::from_slice(&body_bytes(route(&state, &req_as(&p.ada, "POST", "/deploy/preview", serde_json::to_vec(&json!({ "slug": "page-api", "unit": plan.unit })).unwrap())))).unwrap();
-        let approve = json!({ "slug": "page-api", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document, "browsers": ["https://app.example", "*"] });
+        let approve = json!({ "slug": "page-api", "unit": plan.unit, "acknowledge": preview["needs_approval"], "text": text, "browsers": ["https://app.example", "*"] });
         assert_eq!(route(&state, &req_as(&p.ada, "POST", "/deploy", serde_json::to_vec(&approve).unwrap())).status_code, 200);
         let_at_once(&Signed { state: &state, token: &p.ada }, "page-api");
         // The next version deploys from the agent, where the person let it, with the origins one by
@@ -1834,7 +1820,7 @@ mod tests {
         assert_eq!(json_of(&person, "GET", "/flows/agent-slugs", None).unwrap()["saved_by"], "claude", "proposed under its own name");
         // Approving it itself is refused; deploying what needs approval proposes it.
         let plan = agent::plan(SLUGS_TEXT).unwrap();
-        let ask = |acknowledge: Value| Some(Body::Json(json!({ "slug": "agent-slugs", "unit": plan.unit, "acknowledge": acknowledge, "document": plan.document })));
+        let ask = |acknowledge: Value| Some(Body::Json(json!({ "slug": "agent-slugs", "unit": plan.unit, "acknowledge": acknowledge, "text": SLUGS_TEXT })));
         let approved = json_of(&agent, "POST", "/deploy", ask(json!(["NetworkIngress"]))).unwrap_err();
         assert!(approved.contains("refused") && approved.contains("an agent doesn't approve"), "{approved}");
         let unasked = json_of(&agent, "POST", "/deploy", ask(json!([]))).unwrap();
@@ -1870,8 +1856,8 @@ mod tests {
             assert_eq!(agent.send(method, path, None).unwrap().0, 403, "{method} {path}");
         }
         // The server, too, keeps it from replacing a flow the person saved.
-        json_of(&person, "POST", "/flows", Some(Body::Json(json!({ "name": "mine", "document": {} })))).unwrap();
-        let replaced = json_of(&agent, "POST", "/flows", Some(Body::Json(json!({ "name": "mine", "document": {} })))).unwrap_err();
+        json_of(&person, "POST", "/flows", Some(Body::Json(json!({ "name": "mine", "text": "" })))).unwrap();
+        let replaced = json_of(&agent, "POST", "/flows", Some(Body::Json(json!({ "name": "mine", "text": "" })))).unwrap_err();
         assert!(replaced.contains("saved by ada") && replaced.contains("doesn't replace"), "{replaced}");
         assert_eq!(person.send("POST", "/deployments/agent-slugs/stop", None).unwrap().0, 200);
     }
@@ -1888,7 +1874,7 @@ mod tests {
         assert!(deploy(&agent, &text, None).unwrap().starts_with("Not deployed yet"));
         let plan = agent::plan(&text).unwrap();
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "price-rollback", "unit": plan.unit })))).unwrap();
-        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "price-rollback", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document })))).unwrap();
+        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "price-rollback", "unit": plan.unit, "acknowledge": preview["needs_approval"], "text": text })))).unwrap();
         let_at_once(&person, "price-rollback");
         // Version 2, with another fee, from the agent: it needs nothing more, and the person let it.
         assert!(deploy(&agent, &text.replace("fee = 0.5", "fee = 5"), None).unwrap().starts_with("Deployed \"price-rollback\""));
@@ -1951,7 +1937,7 @@ mod tests {
         let deploy_with = |agents: Value| -> Result<Value, String> {
             let requirements = json!({ "agents": agents });
             let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "ticker", "unit": plan.unit, "requirements": requirements }))))?;
-            let ask = json!({ "slug": "ticker", "unit": plan.unit, "acknowledge": preview["needs_approval"], "requirements": requirements, "document": plan.document });
+            let ask = json!({ "slug": "ticker", "unit": plan.unit, "acknowledge": preview["needs_approval"], "requirements": requirements, "text": text });
             json_of(&person, "POST", "/deploy", Some(Body::Json(ask)))?;
             Ok(preview)
         };
@@ -1991,7 +1977,7 @@ mod tests {
         let deploy_with = |agent_logs: bool| -> Result<Value, String> {
             let requirements = json!({ "agent_logs": agent_logs });
             let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "traced-payout", "unit": plan.unit, "requirements": requirements }))))?;
-            let ask = json!({ "slug": "traced-payout", "unit": plan.unit, "acknowledge": preview["needs_approval"], "requirements": requirements, "document": plan.document });
+            let ask = json!({ "slug": "traced-payout", "unit": plan.unit, "acknowledge": preview["needs_approval"], "requirements": requirements, "text": text });
             json_of(&person, "POST", "/deploy", Some(Body::Json(ask)))?;
             Ok(preview)
         };
@@ -2035,7 +2021,7 @@ mod tests {
         let approve = |text: &str| {
             let plan = agent::plan(text).unwrap();
             let preview: Value = serde_json::from_slice(&body_bytes(route(&state, &req_as(&p.ada, "POST", "/deploy/preview", serde_json::to_vec(&json!({ "slug": "hello-api", "unit": plan.unit })).unwrap())))).unwrap();
-            let approve = json!({ "slug": "hello-api", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document });
+            let approve = json!({ "slug": "hello-api", "unit": plan.unit, "acknowledge": preview["needs_approval"], "text": text });
             assert_eq!(route(&state, &req_as(&p.ada, "POST", "/deploy", serde_json::to_vec(&approve).unwrap())).status_code, 200);
         };
         assert!(tool(&state, &p.claude, "deploy", json!({ "text": text })).unwrap().starts_with("Not deployed yet"));
@@ -2065,7 +2051,7 @@ mod tests {
         assert!(deploy(&agent, text, slug).unwrap().starts_with("Not deployed yet"));
         let plan = agent::plan(text).unwrap();
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "quiet-api", "unit": plan.unit })))).unwrap();
-        let approve = json!({ "slug": "quiet-api", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document });
+        let approve = json!({ "slug": "quiet-api", "unit": plan.unit, "acknowledge": preview["needs_approval"], "text": text });
         json_of(&person, "POST", "/deploy", Some(Body::Json(approve))).unwrap();
         let_at_once(&person, "quiet-api");
         let item = json!("Unrecorded(\"GET /health\")");
@@ -2115,7 +2101,7 @@ mod tests {
             json_of(&person, "POST", "/unit", Some(Body::Bytes(u.clone()))).unwrap();
         }
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "price", "unit": plan.unit })))).unwrap();
-        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "price", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document })))).unwrap();
+        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "price", "unit": plan.unit, "acknowledge": preview["needs_approval"], "text": text })))).unwrap();
         assert_eq!(replay(text, None).unwrap(), "\"price\" has no runs yet to replay this version on.");
         for body in [r#"{"total":80,"member":true}"#, r#"{"total":80}"#, "{}"] {
             call(&agent, &json!({ "slug": "price", "method": "POST", "path": "/price", "body": body, "headers": { "content-type": "application/json" } })).unwrap();
@@ -2150,7 +2136,7 @@ mod tests {
             json_of(&person, "POST", "/unit", Some(Body::Bytes(u.clone()))).unwrap();
         }
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "payouts", "unit": plan.unit })))).unwrap();
-        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "payouts", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document })))).unwrap();
+        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "payouts", "unit": plan.unit, "acknowledge": preview["needs_approval"], "text": text })))).unwrap();
 
         // Started by a person (agents run an action only once it lets them).
         let ran = tool_as(&person, "run", json!({ "slug": "payouts", "action": "pay", "input": { "amount": 900 } })).unwrap();
@@ -2204,7 +2190,7 @@ mod tests {
             json_of(&person, "POST", "/unit", Some(Body::Bytes(u.clone()))).unwrap();
         }
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "payouts", "unit": plan.unit })))).unwrap();
-        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "payouts", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document })))).unwrap();
+        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "payouts", "unit": plan.unit, "acknowledge": preview["needs_approval"], "text": text })))).unwrap();
         assert!(tool_as(&person, "run", json!({ "slug": "payouts", "action": "pay", "input": { "amount": 900 } })).unwrap().starts_with("action pay is waiting: run "));
         let run_id = json_of(&person, "GET", "/deployments/payouts/runs", None).unwrap()["runs"][0]["run_id"].as_str().unwrap().to_string();
         let short = &run_id[..12];
@@ -2282,7 +2268,7 @@ mod tests {
             for unit in &plan.units {
                 json_of(&person, "POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
             }
-            let mut body = json!({ "slug": slug, "unit": plan.unit, "document": plan.document });
+            let mut body = json!({ "slug": slug, "unit": plan.unit, "text": text });
             if let Some(b) = &plan.browsers {
                 body["browsers"] = json!(b.split_whitespace().collect::<Vec<_>>());
             }
@@ -2356,9 +2342,9 @@ mod tests {
         for unit in &plan.units {
             agent.send("POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
         }
-        let ask = |plan: &agent::Plan, acknowledge: Value| Some(Body::Json(json!({ "slug": "peek", "unit": plan.unit, "acknowledge": acknowledge, "document": plan.document })));
+        let ask = |plan: &agent::Plan, text: &str, acknowledge: Value| Some(Body::Json(json!({ "slug": "peek", "unit": plan.unit, "acknowledge": acknowledge, "text": text })));
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "peek", "unit": plan.unit })))).unwrap();
-        json_of(&person, "POST", "/deploy", ask(&plan, preview["needs_approval"].clone())).unwrap();
+        json_of(&person, "POST", "/deploy", ask(&plan, v1, preview["needs_approval"].clone())).unwrap();
         // Its agent versions that ask for nothing more let deploy at once: these still wait.
         let_at_once(&person, "peek");
         json_of(&person, "POST", "/deployments/peek/secrets/api_key", Some(Body::Json(json!({ "value": "sk_live_not_for_agents" })))).unwrap();
@@ -2368,14 +2354,14 @@ mod tests {
         let preview = json_of(&agent, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "peek", "unit": leaky.unit })))).unwrap();
         // Answering with what is computed from the key is a permission of its own.
         assert_eq!(preview["needs_approval"], json!(["SecretAnswer(\"api_key\")", "SecretRead(\"api_key\")"]), "{preview}");
-        let proposed = json_of(&agent, "POST", "/deploy", ask(&leaky, json!([]))).unwrap();
+        let proposed = json_of(&agent, "POST", "/deploy", ask(&leaky, &v2, json!([]))).unwrap();
         assert!(proposed["proposal"]["needs"].as_array().unwrap().contains(&json!("SecretAnswer(\"api_key\")")), "proposed, not deployed: {proposed}");
         let answered = json_of(&agent, "POST", "/deployments/peek/request", Some(Body::Json(json!({ "method": "GET", "url": "/k" })))).unwrap();
         assert!(!answered.to_string().contains("c2tfbGl2ZV"), "the key isn't read out as base64: {answered}");
         // The same code it may deploy again while it runs; once a person stops it, it stays stopped.
-        json_of(&agent, "POST", "/deploy", ask(&plan, json!([]))).unwrap();
+        json_of(&agent, "POST", "/deploy", ask(&plan, v1, json!([]))).unwrap();
         assert_eq!(person.send("POST", "/deployments/peek/stop", None).unwrap().0, 200);
-        let restarted = json_of(&agent, "POST", "/deploy", ask(&plan, json!([]))).unwrap_err();
+        let restarted = json_of(&agent, "POST", "/deploy", ask(&plan, v1, json!([]))).unwrap_err();
         assert!(restarted.contains("is stopped") && restarted.contains("doesn't start"), "{restarted}");
         assert_eq!(json_of(&person, "GET", "/deployments", None).unwrap()["deployments"][0]["status"], "stopped");
     }
@@ -2388,7 +2374,7 @@ mod tests {
         let p = with_people(&mut state);
         let (agent, person) = (Signed { state: &state, token: &p.claude }, Signed { state: &state, token: &p.ada });
         let text = holon_author::samples::sample("hello-api").unwrap().text;
-        json_of(&person, "POST", "/flows", Some(Body::Json(json!({ "name": "hello-api", "document": {} })))).unwrap();
+        json_of(&person, "POST", "/flows", Some(Body::Json(json!({ "name": "hello-api", "text": "" })))).unwrap();
         let refused = deploy(&agent, text, None).unwrap_err();
         assert!(refused.contains("saved by ada") && refused.contains("another name"), "{refused}");
         assert!(state.proposals.all().is_empty(), "nor is it proposed");
@@ -2415,9 +2401,9 @@ mod tests {
             [&json!("waiting"), &json!("slugs for the blog"), &json!("asked by mira"), &json!(1), &json!("claude")],
             "{listed}"
         );
-        assert!(p.get("document").is_none(), "listed without its document");
+        assert!(p.get("text").is_none(), "listed without its text");
         let one = json_of(&person, "GET", "/proposals/1", None).unwrap();
-        assert!(one["document"]["source"].as_str().is_some_and(|s| s.contains("flow(\"slugs\"")), "with it, its text: {one}");
+        assert_eq!(one["text"], SLUGS_TEXT, "with it, its text: {one}");
         // An agent doesn't decide it; a person declines it, with a reason the agent reads.
         assert_eq!(agent.send("POST", "/proposals/1/decline", Some(Body::Json(json!({ "reason": "mine" })))).unwrap().0, 403);
         json_of(&person, "POST", "/proposals/1/decline", Some(Body::Json(json!({ "reason": "name its table first" })))).unwrap();
@@ -2428,7 +2414,7 @@ mod tests {
         assert!(deploy(&agent, SLUGS_TEXT, slug).unwrap().contains("(proposal 2)"));
         let plan = agent::plan(SLUGS_TEXT).unwrap();
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "proposed", "unit": plan.unit })))).unwrap();
-        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "proposed", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document })))).unwrap();
+        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "proposed", "unit": plan.unit, "acknowledge": preview["needs_approval"], "text": SLUGS_TEXT })))).unwrap();
         let all = json_of(&person, "GET", "/proposals", None).unwrap();
         let states: Vec<(u64, &str)> = all["proposals"].as_array().unwrap().iter().map(|p| (p["id"].as_u64().unwrap(), p["state"].as_str().unwrap())).collect();
         assert_eq!(states, [(2, "approved"), (1, "declined")], "the decided, newest first");
@@ -2464,7 +2450,7 @@ mod tests {
         assert_eq!(json_of(&person, "GET", "/permissions", None).unwrap()["agents_propose"], false);
         let plan = agent::plan(SLUGS_TEXT).unwrap();
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "proposed", "unit": plan.unit })))).unwrap();
-        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "proposed", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document })))).unwrap();
+        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "proposed", "unit": plan.unit, "acknowledge": preview["needs_approval"], "text": SLUGS_TEXT })))).unwrap();
         assert_eq!(person.send("POST", "/deployments/proposed/stop", None).unwrap().0, 200);
     }
 
@@ -2493,7 +2479,7 @@ mod tests {
             route(&state, &req_as(&p.ada, "POST", "/unit", unit.clone()));
         }
         let preview: Value = serde_json::from_slice(&body_bytes(route(&state, &req_as(&p.ada, "POST", "/deploy/preview", serde_json::to_vec(&json!({ "slug": "slugs", "unit": plan.unit })).unwrap())))).unwrap();
-        let approve = json!({ "slug": "slugs", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document });
+        let approve = json!({ "slug": "slugs", "unit": plan.unit, "acknowledge": preview["needs_approval"], "text": SLUGS_TEXT });
         assert_eq!(route(&state, &req_as(&p.ada, "POST", "/deploy", serde_json::to_vec(&approve).unwrap())).status_code, 200);
         let all = tool(&state, &p.claude, "deployments", json!({})).unwrap();
         assert!(all.contains("slugs: running") && all.contains("0 runs, 0 failed"), "{all}");

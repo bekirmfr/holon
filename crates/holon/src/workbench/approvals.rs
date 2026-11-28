@@ -112,21 +112,20 @@ impl Proposed {
     }
 }
 
-/// What a proposal deploys (`GET /proposals/<id>`, with its document): its text, as the document
-/// prints it (`agent::text_of`), compiled. Refused when that builds another unit than the one
-/// proposed (R79): a person approves what was proposed, or nothing. The server checks no person's
-/// deploy against a proposal; it marks one approved only when the units match.
+/// What a proposal deploys (`GET /proposals/<id>`, with its text): its text, compiled. Refused when
+/// that builds another unit than the one proposed (R79): a person approves what was proposed, or
+/// nothing; and the deploy sends the proposed unit, which the server's compile must come to too.
 pub(crate) fn proposed_plan(p: &Value) -> Result<(agent::Plan, String), String> {
     let slug = p["slug"].as_str().ok_or("the proposal names no flow")?;
-    let document = p.get("document").filter(|d| !d.is_null()).ok_or("the server sent the proposal without its document")?;
-    let text = agent::text_of(slug, document)?;
+    let _ = slug;
+    let text = p["text"].as_str().ok_or("the server sent the proposal without its text")?.to_string();
     let plan = agent::plan(&text)?;
     match p["unit"].as_str() {
         Some(unit) if unit == plan.unit => Ok((plan, text)),
         Some(unit) => Err(format!(
             "its text builds {} where {} was proposed: this isn't what was proposed. Decline it (d), and say so.",
-            &plan.unit[..12.min(plan.unit.len())],
-            &unit[..12.min(unit.len())]
+            holon_author::first_chars(&plan.unit, 12),
+            holon_author::first_chars(unit, 12)
         )),
         None => Err("the proposal names no unit".into()),
     }

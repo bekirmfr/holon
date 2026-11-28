@@ -26,6 +26,7 @@
 //! - [`editing`]: what an editor asks of a text as it is typed (`holon lsp`).
 
 pub mod agent;
+pub mod kept_layout;
 pub mod builder;
 pub mod canvas;
 pub mod commands;
@@ -97,6 +98,13 @@ pub const LIMIT_NAMES: [&str; 41] = [
     holon_core::FUEL_LIMIT,
     holon_core::MEMORY_LIMIT,
 ];
+
+/// `s`'s first `n` characters, or all of it: never cut inside a character, which slicing by bytes
+/// (`&s[..s.len().min(n)]`) does, and panics on, for a value from outside that isn't ASCII (an id
+/// in a query, a server's answer). `tests::text_deploy` holds that no such slice is left.
+pub fn first_chars(s: &str, n: usize) -> &str {
+    s.char_indices().nth(n).map_or(s, |(at, _)| &s[..at])
+}
 
 /// A 32-byte hash as 64 lowercase hex chars: how hashes cross to the editor and sit in documents.
 pub fn to_hex(h: &holon_core::Hash) -> String {

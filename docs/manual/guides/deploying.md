@@ -9,6 +9,12 @@ runs. [Concepts](../concepts.md#policy-grants-and-enforcement) explains the mode
 Pressing **deploy** in the editor (or an agent's `deploy`):
 
 1. compiles the flow into its unit, and works out its **manifest**, what it may do;
+   what it sends the server is the flow's **text** (as you typed it, or the canvas written out
+   as text), which the server compiles again with the same compiler and must come to the same
+   unit, and, when you moved boxes by hand, where each one is. The server keeps that text and
+   layout with each version: every canvas of a deployed flow (its view, a version, a run) is its
+   text compiled again, with your layout on it. A canvas that can't be written as text that runs
+   as drawn isn't deployed or saved: the editor says what to change;
 2. checks the manifest against the server's **policy**: anything the policy can never grant
    (a limit above its ceiling, plain HTTP the host doesn't allow) stops the deploy here, with
    "this host can't grant that: …";
@@ -507,9 +513,8 @@ right after it: the version deployed then, and the state then, which is what the
 left, or what the restore before it put back (a restore names the point it put back, `from` in
 its event). Picked:
 
-- **canvas** (a version) shows the canvas it was deployed with: `none kept` for one deployed
-  without its text, and, for one deployed before the server checked every deploy's text, that it
-  may show other code than it runs;
+- **text** (a version) says whether the text it was compiled from is kept: `none kept` for one
+  deployed as a bare unit, without its text;
 - **code**, **state** or **both** restore it, as `holon restore` does: a dry run first, its
   result in a dry-run window (nothing has changed yet) that says what it would change, part by
   part (the code; what it touches, row by row, as `holon restore --dry-run` says it; the keys,

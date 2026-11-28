@@ -103,6 +103,7 @@ pub mod sql;
 pub mod documents;
 pub use primitives::{content_type, number_text, MAX_AWAIT_SECONDS, MAX_BYTES, MAX_ITEMS, MAX_RANGE};
 pub use texts::MAX_TEXT;
+pub use compress::{gunzip_bounded, gzip, Unpacked};
 
 pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Expose, Promote};

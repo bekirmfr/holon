@@ -864,7 +864,7 @@ fn deployment_row(c: &Client, d: &Value, width: usize) -> Line<'static> {
     spans.extend(state);
     spans.push(Span::raw(" ".repeat(16usize.saturating_sub(used))));
     if width > 124 {
-        spans.push(dim(format!("{:<10}", &unit[..unit.len().min(8)])));
+        spans.push(dim(format!("{:<10}", holon_author::first_chars(unit, 8))));
     }
     spans.push(Span::raw(format!("{:<10}", fit(&reach(d), 9))));
     // Its runs, and how many failed, in one column.
@@ -1193,7 +1193,7 @@ fn draw_flows(f: &mut Frame, app: &App, area: Rect) {
                 let st = status(d);
                 let n = 11usize.saturating_sub(st.content.chars().count());
                 let unit = d["unit"].as_str().unwrap_or("");
-                spans.extend([st, Span::raw(" ".repeat(n)), Span::raw(format!("{:<5}", version(d))), dim(format!("{:<10}", &unit[..unit.len().min(8)])), Span::raw(format!("{:<10}", reach(d)))]);
+                spans.extend([st, Span::raw(" ".repeat(n)), Span::raw(format!("{:<5}", version(d))), dim(format!("{:<10}", holon_author::first_chars(unit, 8))), Span::raw(format!("{:<10}", reach(d)))]);
             }
             None => spans.push(coloured(format!("{:<36}", "not deployed"), DIM)),
         }

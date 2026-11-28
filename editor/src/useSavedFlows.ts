@@ -12,6 +12,9 @@ import { documentUnits } from "./docUnits";
 import { holonIndex, interfaceLoss } from "./holonUsage";
 import { getFlow, listDeployments, listFlows, saveFlow, StaleSave, type FlowDocument } from "./server";
 import { savedKeyOf } from "./tabs";
+import { printHolon } from "./holonText";
+import { flowToKeep, type KeptFlow } from "./keptFlow";
+import type { DerivedServer } from "./canvasOps";
 import type { Evaluator } from "./holon";
 import type { FlowSettings } from "./DeploySettings";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
@@ -27,6 +30,7 @@ export function useSavedFlows({
   edges,
   live,
   settings,
+  derived,
   source,
   getViewport,
   ev,
@@ -48,6 +52,9 @@ export function useSavedFlows({
   edges: Edge[];
   live: MutableRefObject<{ nodes: PrimitiveNodeType[]; edges: Edge[] }>;
   settings: FlowSettings;
+  /** The server the canvas declares (canvasOps.deriveServer), its trace and unit, as of the last
+   *  render (null before the first). */
+  derived: () => DerivedServer | null;
   /** The text kept with the flow (the pane's, as typed), or null. */
   source: string | null;
   getViewport: () => Viewport;
@@ -129,8 +136,19 @@ export function useSavedFlows({
       viewport: getViewport(),
       ...carried,
       server: settings,
+      ...(derived()?.trace ? { trace: derived()!.trace } : {}),
       ...(source !== null ? { source } : {}),
     };
+    // Kept as its text (as typed, or the canvas printed) and where its nodes were moved: a canvas
+    // its text doesn't spell isn't saved, as it isn't deployed (keptFlow.ts).
+    let flow: KeptFlow & { document: FlowDocument };
+    try {
+      const text = source ?? printHolon(name, doc, ev);
+      flow = { ...keptOrDraft(doc, text, derived()), document: doc };
+    } catch (e) {
+      notify(`not saved: ${e instanceof Error ? e.message : String(e)}`, "bad");
+      return null;
+    }
     if (!(await placedElsewhereOk(name, doc))) return null;
     const saved = name;
     const key = savedKeyOf(nodes, edges, settings, source);
@@ -146,7 +164,7 @@ export function useSavedFlows({
       return null;
     };
     try {
-      return kept(await saveFlow(name, doc, base));
+      return kept(await saveFlow(name, flow, base));
     } catch (e) {
       if (!(e instanceof StaleSave)) return notKept(e);
       // Saved since it was opened (or before, under a name given now), or removed: replaced only
@@ -156,9 +174,9 @@ export function useSavedFlows({
         e.savedAt === null ? `"${name}" was removed since you opened it.` : base === null ? `A flow named "${name}" is saved already${by}.` : `"${name}" was saved again${by}, since you opened it.`;
       const ask = e.savedAt === null ? "Save yours as it again?" : "Replace that save with yours? It is lost if you do.";
       if (!(await dialog.confirm(`${what} ${ask}`, e.savedAt === null ? "Save" : "Replace"))) return notKept(new Error(what));
-      return saveFlow(name, doc, e.savedAt).then(kept, notKept);
+      return saveFlow(name, flow, e.savedAt).then(kept, notKept);
     }
-  }, [flowName, nodes, edges, getViewport, ev, settings, source, dialog, savedFlowTimes, savedAt, placedElsewhereOk, setFlowName, notify, setSavedKey, setSavedOnServer, setSavedAt]);
+  }, [flowName, nodes, edges, getViewport, ev, settings, source, derived, dialog, savedFlowTimes, savedAt, placedElsewhereOk, setFlowName, notify, setSavedKey, setSavedOnServer, setSavedAt]);
 
   // Place the newest saved version of a holon over the one placed from an older save: same place,
   // and its wires kept to the ports the new version still has.
@@ -193,4 +211,12 @@ export function useSavedFlows({
   );
 
   return { savedFlowTimes, savedFlows, onSave, updateHolon };
+}
+
+/** What a save keeps of `doc`: its text and layout (keptFlow.ts `flowToKeep`, which refuses a
+ *  canvas its text doesn't spell); a canvas that doesn't derive a server yet (a draft) is kept as
+ *  its text alone, laid out again when it is opened. */
+function keptOrDraft(doc: FlowDocument, text: string, derived: DerivedServer | null): KeptFlow {
+  if (!derived || derived.errors.length > 0 || !derived.serverHash) return { text, layout: null };
+  return flowToKeep(doc, text, derived.serverHash);
 }

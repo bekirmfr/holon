@@ -184,8 +184,8 @@ describe("Claims", () => {
 describe("the run strip", () => {
   it("says the run: how it ended, what came in, its version and what it did outside", () => {
     const versions = [
-      { number: 2, unit: "aa".repeat(32), deployed_at: 0, current: false, restorable: true, canvas: true, state_kept: false },
-      { number: 3, unit: "bb".repeat(32), deployed_at: 0, current: true, restorable: true, canvas: true, state_kept: false },
+      { number: 2, unit: "aa".repeat(32), deployed_at: 0, current: false, restorable: true, text: true, state_kept: false },
+      { number: 3, unit: "bb".repeat(32), deployed_at: 0, current: true, restorable: true, text: true, state_kept: false },
     ];
     const run = entry({
       unit: "aa".repeat(32),

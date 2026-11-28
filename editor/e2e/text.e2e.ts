@@ -105,9 +105,9 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   }
   await expect(kept).toBeVisible();
   const saved = await request.get(`${SERVER}/flows/hello-api`, { headers: { Authorization: `Bearer ${adminToken}` } });
-  const doc = ((await saved.json()) as { document: { source?: string } }).document;
-  expect(doc.source).toContain("// says hello, loudly");
-  expect(doc.source).toContain("uppercase(");
+  const { text: savedText } = (await saved.json()) as { text: string };
+  expect(savedText).toContain("// says hello, loudly");
+  expect(savedText).toContain("uppercase(");
 
   // A canvas change writes the text again: the comment goes, and says so; undo brings it back.
   // The canvas commits an edit 400 ms after it settles (history.ts), and the steps above can each

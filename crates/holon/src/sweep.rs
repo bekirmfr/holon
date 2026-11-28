@@ -9,7 +9,7 @@
 //! nothing may name that snapshot or those values any more; a sweep removes them. What stays is
 //! whatever something kept names, followed through the values themselves:
 //!
-//! - each deployment's live state, its sessions' states, its versions (their documents and the
+//! - each deployment's live state, its sessions' states, its versions (their texts and the
 //!   states they were deployed with), its events, its waiting runs, and every line its log's file
 //!   holds (up to twice what it keeps until the file is cut back: a keep raised later reads them
 //!   back, so their states stay);
@@ -202,7 +202,6 @@ fn named(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<Vec<Names>
             texts.push(json("versions", serde_json::to_string(&dep.versions))?);
             texts.push(json("waiting runs", serde_json::to_string(&dep.parked))?);
             texts.push(json("ticks", serde_json::to_string(&dep.history))?);
-            texts.extend(dep.document.as_ref().map(|d| d.to_string()));
             each.push((slug.clone(), std::sync::Arc::clone(&dep.log), texts, dep.state.clone()));
         }
     }

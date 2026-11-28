@@ -73,8 +73,8 @@ pub fn restore_modules(entries: &[ModuleEntry], store: &mut MapResolver) -> Opti
             Ok(h) if to_hex(&h) == e.hash => {
                 let _ = store.insert(unit);
             }
-            Ok(h) => failed.push(format!("the module {} rebuilds as {}: another {} engine", &e.hash[..12.min(e.hash.len())], &to_hex(&h)[..12], e.engine)),
-            Err(err) => failed.push(format!("the module {} doesn't hash: {err:?}", &e.hash[..12.min(e.hash.len())])),
+            Ok(h) => failed.push(format!("the module {} rebuilds as {}: another {} engine", crate::first_chars(&e.hash, 12), &to_hex(&h)[..12], e.engine)),
+            Err(err) => failed.push(format!("the module {} doesn't hash: {err:?}", crate::first_chars(&e.hash, 12))),
         }
     }
     (!failed.is_empty()).then(|| failed.join("; "))

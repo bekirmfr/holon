@@ -105,7 +105,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
     let server = target.server.clone();
     let api = Person(target);
 
-    let mut staged = match stage(&api, &plan, &slug) {
+    let mut staged = match stage(&api, &plan, &slug, &source) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("holon deploy: {e}");
@@ -117,21 +117,15 @@ pub(crate) fn run(args: &[String]) -> i32 {
     if manifest && as_json {
         // The text it would deploy, beside the text deployed now (null when nothing is deployed as `slug`):
         // what a person reads before approving a deploy that changes the code.
-        let deployed = match crate::mcp::json_of(&api, "GET", &format!("/deployments/{}/document", crate::mcp::seg(&slug)), None) {
-            Ok(doc) => Value::String(agent::text_of(&slug, &doc).unwrap_or_default()),
+        let deployed = match crate::mcp::json_of(&api, "GET", &format!("/deployments/{}/text", crate::mcp::seg(&slug)), None) {
+            Ok(kept) => kept.get("text").cloned().unwrap_or(Value::Null),
             Err(e) if e.contains("answered 404") => Value::Null,
             Err(e) => {
                 eprintln!("holon deploy: {e}");
                 return 1;
             }
         };
-        let new_text = match agent::text_of(&slug, &plan.document) {
-            Ok(text) => text,
-            Err(e) => {
-                eprintln!("holon deploy: {e}");
-                return 1;
-            }
-        };
+        let new_text = source.clone();
         let starts: Vec<String> = if plan.routes.is_empty() { plan.document["trace"].as_object().map(|t| t.keys().cloned().collect()).unwrap_or_default() } else { plan.routes.clone() };
         let asks: Vec<String> = needs.iter().map(|cap| agent::describe_sending(cap, &plan.sent)).collect();
         let page = json!({
@@ -191,7 +185,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
     if let Some(note) = note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
         staged.body["note"] = json!(note);
     }
-    match commit(&api, &plan, staged, plan.document.clone()) {
+    match commit(&api, &plan, staged) {
         Err(e) => {
             eprintln!("holon deploy: {e}");
             return 1;
@@ -245,7 +239,7 @@ fn proposed_lines(slug: &str, server: &str, plan: &agent::Plan, proposal: &Value
 
 /// A deploy staged on a server: its units sent, and what the server says deploying it needs.
 pub(crate) struct Staged {
-    /// The deploy request, without its acknowledgements and document yet.
+    /// The deploy request (its text), without its acknowledgements yet.
     body: Value,
     /// What it asks for that isn't granted yet: a person approves these by deploying it.
     pub(crate) needs: Vec<String>,
@@ -279,21 +273,28 @@ impl Staged {
     }
 }
 
-/// Send `plan`'s units to `server`, and ask what deploying it as `slug` needs a person to approve;
-/// or why the server won't run it. `holon deploy` and `holon editor` deploy through this and
-/// [`commit`], as the editor does through the same two requests.
-pub(crate) fn stage(api: &dyn Api, plan: &agent::Plan, slug: &str) -> Result<Staged, String> {
-    // Stage every unit the root needs, children first.
-    for unit in &plan.units {
-        post_bytes(api, "/unit", unit).map_err(|e| format!("staging a unit: {e}"))?;
-    }
-    let mut body = json!({ "slug": slug, "unit": plan.unit });
+/// The body of a deploy of `text`, compiled here to `plan`, as `slug`: the text, which the server
+/// compiles (docs/L4s/text-deploy-plan.md), the unit it must come to (the code checked here), and
+/// what it asks beside them. No canvas: a hand-drawn layout is the editor's.
+pub(crate) fn flow_body(slug: &str, plan: &agent::Plan, text: &str) -> Value {
+    let mut body = json!({ "slug": slug, "unit": plan.unit, "text": text });
     if let Some(r) = &plan.requirements {
         body["requirements"] = r.clone();
     }
     if let Some(b) = &plan.browsers {
+        // The plan keeps the origins on one line (`https://a.example *`); the deploy request takes
+        // them one by one. The preview gets them too: answering pages from a new site is a
+        // person's to approve.
         body["browsers"] = json!(b.split_whitespace().collect::<Vec<_>>());
     }
+    body
+}
+
+/// Send `text` (compiled here to `plan`) to `server`, and ask what deploying it as `slug` needs a person to approve;
+/// or why the server won't run it. `holon deploy` and `holon editor` deploy through this and
+/// [`commit`], as the editor does through the same two requests.
+pub(crate) fn stage(api: &dyn Api, plan: &agent::Plan, slug: &str, text: &str) -> Result<Staged, String> {
+    let body = flow_body(slug, plan, text);
     let preview = post_json(api, "/deploy/preview", &body)?;
     if let Some(why) = preview.get("refused").and_then(Value::as_str) {
         return Err(format!("this server won't run \"{slug}\": {why}"));
@@ -313,13 +314,13 @@ pub(crate) fn stage(api: &dyn Api, plan: &agent::Plan, slug: &str) -> Result<Sta
     })
 }
 
-/// Deploy what [`stage`] staged, with `document` (the plan's, with its text kept or not):
+/// Deploy what [`stage`] staged:
 /// approving what it needs, as whoever `token` signs in as, if they approve it. The proposal it
 /// was kept as instead, when they don't (an agent's version, or one who may propose but not
 /// approve), or
 /// what it needs is beyond them (proposals.rs): their deploy acknowledges nothing, which the
 /// server would refuse.
-pub(crate) fn commit(api: &dyn Api, plan: &agent::Plan, staged: Staged, document: Value) -> Result<Option<Value>, String> {
+pub(crate) fn commit(api: &dyn Api, plan: &agent::Plan, staged: Staged) -> Result<Option<Value>, String> {
     let Staged { mut body, needs, approves, .. } = staged;
     let mut acknowledge = Vec::new();
     if approves {
@@ -327,10 +328,6 @@ pub(crate) fn commit(api: &dyn Api, plan: &agent::Plan, staged: Staged, document
         acknowledge.extend(needs.iter().filter(|n| !plan.may.contains(n)).cloned());
     }
     body["acknowledge"] = json!(acknowledge);
-    body["document"] = document;
-    // The release whose compiler built the unit, so a server that builds the document otherwise
-    // says which two differ.
-    body["made_with"] = json!(env!("CARGO_PKG_VERSION"));
     post_json(api, "/deploy", &body).map(|answer| answer.get("proposal").cloned())
 }
 
@@ -377,25 +374,36 @@ fn post_json(api: &dyn Api, path: &str, body: &Value) -> Result<Value, String> {
     call(api, "POST", path, Some(Body::Json(body.clone())))
 }
 
-/// POST raw bytes to `api`'s `path`.
-fn post_bytes(api: &dyn Api, path: &str, body: &[u8]) -> Result<(), String> {
-    let server = api.server();
-    let (status, bytes) = api.send("POST", path, Some(Body::Bytes(body.to_vec())))?;
-    if (200..300).contains(&status) {
-        return Ok(());
+/// A body sent to `path` gzipped, when `path` takes a flow (a deploy, its preview, a save: the only
+/// routes that take one, http.rs `read_flow_body`) and the body is big enough to gain from it.
+pub(crate) fn packed(path: &str, body: &[u8]) -> Option<Vec<u8>> {
+    const WORTH_IT: usize = 32 * 1024;
+    (matches!(path, "/deploy" | "/deploy/preview" | "/flows") && body.len() > WORTH_IT).then(|| holon_core::gzip(body))
+}
+
+/// How long a command waits for `path`'s answer. A route that takes a flow compiles its text before
+/// it answers (deploy.rs `compiled`), which for a flow of a few hundred thousand nodes takes minutes
+/// (the workroom branch of 12 MB as a document took 67 s in a release build): the 60 s every other
+/// route gets ended such a deploy as "can't reach" while the server was still compiling it.
+pub(crate) fn wait_for(path: &str) -> Duration {
+    if matches!(path, "/deploy" | "/deploy/preview" | "/flows") {
+        Duration::from_secs(600)
+    } else {
+        Duration::from_secs(60)
     }
-    let why = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string)).unwrap_or_else(|| String::from_utf8_lossy(&bytes).trim().to_string());
-    Err(format!("{server} answered {status}: {why}"))
 }
 
 fn send(server: &str, token: Option<&str>, method: &str, path: &str, body: Option<&[u8]>, content_type: &str) -> Result<(u16, Vec<u8>), String> {
     let url = format!("{server}{path}");
-    let mut req = ureq::request(method, &url).timeout(Duration::from_secs(60));
+    let mut req = ureq::request(method, &url).timeout(wait_for(path));
     if let Some(t) = token {
         req = req.set("Authorization", &format!("Bearer {t}"));
     }
     let result = match body {
-        Some(b) => req.set("Content-Type", content_type).send_bytes(b),
+        Some(b) => match packed(path, b) {
+            Some(gz) => req.set("Content-Type", content_type).set("Content-Encoding", "gzip").send_bytes(&gz),
+            None => req.set("Content-Type", content_type).send_bytes(b),
+        },
         None => req.call(),
     };
     let response = match result {
@@ -410,6 +418,7 @@ fn send(server: &str, token: Option<&str>, method: &str, path: &str, body: Optio
     };
     let status = response.status();
     let mut bytes = Vec::new();
-    response.into_reader().take(4 << 20).read_to_end(&mut bytes).map_err(|e| format!("reading {server}'s answer: {e}"))?;
+    // As much as the MCP server reads (mcp.rs): a deployment's text and layout, or a log page.
+    response.into_reader().take(64 << 20).read_to_end(&mut bytes).map_err(|e| format!("reading {server}'s answer: {e}"))?;
     Ok((status, bytes))
 }
