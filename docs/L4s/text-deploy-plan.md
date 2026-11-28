@@ -73,6 +73,71 @@ Editor (web) and wasm:
 2. A canvas the text can't spell can't be saved on the server (stays in the open tab).
 3. Old deployments' versions keep running; their text shows only after a redeploy.
 
+## Why it was a document, and what that must keep (checked 2026-11-28)
+
+- July (JOURNAL 2026-07-04): saved flows were made to keep a canvas "exactly as left" (positions,
+  viewport), opaque to the server; deploying stayed the content-addressed unit path, untouched.
+  The document rode along with a deploy only for view mode.
+- October 24: the language came as a second surface over the same IR; documents gained `source`;
+  agent deploys sent "the document the editor would" so a person sees the same canvas.
+- November 11-21 (08f112dc, 7d4ddd00 R24/R25, 1744616b): what a person reads must be what runs, so
+  the server checks the document builds the unit, records `canvas_checked` and `made_with`.
+- No register row says it must be a document (the codebase review session, 2026-11-28). What the
+  rows protect is that the person approves what runs. With the server compiling the text it keeps,
+  that holds by construction.
+
+What the change must keep, each with a test:
+
+- R25: for every proposal, the text a reviewer is shown is the text compiled into the unit that
+  deploys. The 11-mutation class test is rewritten for text, not dropped.
+- R79: approving deploys exactly the proposed unit or refuses. Approval deploys the proposal's own
+  stored unit and text, not compiled again; never compiled silently into another unit when the
+  server's release changed between proposal and approval.
+- R24: the preview compiles through the same entry as the deploy (`compiled`), one entry.
+- Agent versions wait with a full diff, and MCP `replay`: both read the server-compiled unit.
+- R36/R58 (nesting.rs): every server entry goes through the nesting count first; the server's
+  compile is added to `no_way_of_writing_a_text_gets_it_past_the_count`'s list of entries; a panic
+  in compile answers 400/500 and never takes the server down.
+- R17 / audit F2 (one request exhausting the server), R122/R105 (control port accept path): the
+  compile is bounded: who may call it (as deploy/preview are), how many at once, off the accept
+  path; no change to the tiny_http copy beyond that.
+- R11: the deploy body (its text) is never written whole to a log or record.
+- R85/R87: compile errors answered are the compiler's words only.
+- Two compilers, one unit: wasm/native hash parity (wasm-pack test); a drawing whose unit is not
+  the version's says so.
+- The compiler is changing on branch s2-2-catch (unmerged): no edits in holon-author/src/lang/ or
+  graph.rs here; call the existing entries; unit hashes may move when it lands.
+- Restore and unit-only deploys by hash stay.
+
+## Revision (owner, 2026-11-28): keep hand-drawn canvases, text plus layout, compressed
+
+The owner: "we want to keep the hand drawn canvas data. but the current size is not acceptable."
+Measured on the workroom: document 8.0 MB (0.68 MB gzipped); text 0.62 MB (0.16 MB); positions of
+all 11,631 boxes 0.32 MB (0.07 MB). So a flow travels and is kept as its text plus an optional
+`layout` (node id -> position, only when the canvas was moved by hand); everything else is rebuilt
+from the text. Checked with the codebase review session:
+
+- Gzip bodies: one cap, `MAX_BODY_BYTES`, for the encoded and the decoded size; inflate stops at the
+  cap while streaming (holon-core `gunzip_within`, its visibility widened: a small core change);
+  decoded in the handler after `read_body`, nothing under vendor/tiny_http; only the routes that take
+  a flow accept it; unknown encoding, bad gzip and past-the-cap each answer their own 4xx in fixed
+  words; neither body logged whole. Class test: every such route x {plain, gzip, bad gzip, bomb,
+  unknown encoding}.
+- Layout is presentation: never in the unit; one text with two layouts deploys as one unit hash
+  (tested). An agent's deploy carrying a layout waits like any agent version (owner rule: agent
+  versions always wait).
+- Ids move with the compiler (s2-2-catch renumbers): a layout is stored with the release that made
+  its ids, and applied only when that release is the compiler's or every id matches; otherwise it is
+  dropped whole and the editor says so ("positions from release X no longer fit; laid out again").
+  Never a partial match.
+- The layout is capped (entries, bytes), finite numbers only, ids of the compiler's form.
+- One function applies a layout, used natively and through wasm; the parity test covers it.
+- Run view and explain match a run's record to a drawing compiled from the text: when that drawing's
+  unit isn't the run's, they say so, as the canvas does.
+- Storage, backups, history and restore read the new shape; old versions keep no text (dev phase).
+- Open, the owner's: a canvas the text can't spell. Proposed: it can't be saved, and the editor says
+  which box stops it, at save time (text and canvas both ways expressible).
+
 ## Tests (class)
 
 - Size: a generated flow whose old description was over 8 MiB deploys from the command line and
