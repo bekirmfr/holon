@@ -335,11 +335,50 @@ pub(crate) fn handle_post_deploy(
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid deploy request JSON: {e}")),
     };
+    if let Some(refusal) = refused_before_compiling(state, &body, who, true) {
+        return refusal;
+    }
     let body = match compiled(&state.store, body) {
         Ok(b) => b,
         Err(r) => return r,
     };
     deploy(state, body, by, who, None)
+}
+
+/// What a deploy (`deploying`) or its preview is refused for without its text compiled: a slug
+/// that isn't one, a flow the caller may not propose to, an agent that approves, a unit that isn't
+/// a hash, and for a deploy what it says it uses and the browsers it names. Said before the
+/// compile, which takes seconds to minutes and of which the server runs [`COMPILES_AT_ONCE`]: a
+/// caller who may do nothing on a flow can't hold the compiles that every deploy and preview
+/// waits for, nor put units in the store (review of #161). `deploy` says them again, for a restore.
+fn refused_before_compiling(state: &AppState, body: &DeployRequestBody, who: &Caller, deploying: bool) -> Option<Response> {
+    if !is_valid_slug(&body.slug) {
+        return Some(err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only"));
+    }
+    if tags_now(&state.deployments, &body.slug).is_some()
+        && let Err(refusal) = can(who, Action::FlowPropose, &Resource::Flow(&body.slug))
+    {
+        return Some(refusal.response());
+    }
+    if !body.unit.is_empty() && parse_hash(&body.unit).is_none() {
+        return Some(err(400, "unit is not a 64-char hex hash"));
+    }
+    if !deploying {
+        return None;
+    }
+    if let Some((code, why)) = new_slug_refusal(state.deployments.lock().unwrap().keys(), &body.slug) {
+        return Some(err(code, why));
+    }
+    if who.kind == Some(crate::accounts::Kind::Agent) && !body.acknowledge.is_empty() {
+        return Some(err(403, "an agent doesn't approve what a flow may do: deploy without \"acknowledge\"; what needs approval waits for a person, as a proposal"));
+    }
+    if let Err(e) = crate::flows::check_uses(body.uses.as_deref()) {
+        return Some(err(400, e));
+    }
+    if let Some(bad) = body.browsers.iter().find(|o| !crate::listeners::is_origin_or_any(o)) {
+        return Some(err(400, format!("browsers: {bad:?} isn't an origin (https://example.com) or *")));
+    }
+    None
 }
 
 /// How many texts the server compiles at once: a deploy or a preview past them is answered 503
@@ -393,8 +432,8 @@ pub(crate) fn compiled(store: &SharedStore, mut body: DeployRequestBody) -> Resu
             400,
             format!(
                 "the text sent compiles here to {}, not to the unit sent ({}): this server is Holon {ours}, whose compiler may build it otherwise than the one that built the unit. Send the text alone, or update whichever is older (`holon update` for the command line or the server; reload the editor's page)",
-                &plan.unit[..12],
-                &body.unit[..body.unit.len().min(12)]
+                holon_author::first_chars(&plan.unit, 12),
+                holon_author::first_chars(&body.unit, 12)
             ),
         ));
     }
@@ -988,6 +1027,9 @@ pub(crate) fn handle_post_deploy_preview(
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid deploy request JSON: {e}")),
     };
+    if let Some(refusal) = refused_before_compiling(state, &body, who, false) {
+        return refusal;
+    }
     let body = match compiled(&state.store, body) {
         Ok(b) => b,
         Err(r) => return r,
@@ -2283,7 +2325,7 @@ pub(crate) fn handle_get_text(store: &SharedStore, deployments: &Mutex<BTreeMap<
         };
         return match version_text(store, v) {
             Some(text) => answer(v, text),
-            None => err(404, format!("version {n} of {slug:?} was deployed as a unit alone: no text is kept")),
+            None => err(404, format!("version {n} of {slug:?} keeps no text: it was deployed as a unit alone, or by a release before flows were kept as their text")),
         };
     }
     // By code, not by version: any text compiled to that unit is its text, the current version's
@@ -2296,8 +2338,8 @@ pub(crate) fn handle_get_text(store: &SharedStore, deployments: &Mutex<BTreeMap<
     };
     match (found, wanted) {
         (Some((v, text)), _) => answer(v, text),
-        (None, None) => err(404, format!("{slug:?} was deployed as a unit alone: no text is kept; deploy it again from its text to have one")),
-        (None, Some(unit)) => err(404, format!("{slug:?} keeps no text of the code {}", &unit[..unit.len().min(12)])),
+        (None, None) => err(404, format!("{slug:?} keeps no text: it was deployed as a unit alone, or by a release before flows were kept as their text; deploy it again from its text to have one")),
+        (None, Some(unit)) => err(404, format!("{slug:?} keeps no text of the code {}", holon_author::first_chars(&unit, 12))),
     }
 }
 

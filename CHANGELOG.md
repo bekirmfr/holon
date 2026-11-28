@@ -10,9 +10,12 @@
   run, a proposal) is that text compiled again, with your boxes where you put them. A canvas that
   can't be written as text that runs as drawn is neither saved nor deployed: the editor says what
   to change. `GET /deployments/<slug>/text` answers a version's text and layout.
-  Who notices: everyone deploying, a little: nothing to do. Versions deployed before this release
-  keep running, and show `no text kept` until deployed again. Flows saved before it are read as
-  their text when the server starts, with their boxes where they were.
+  Who notices: everyone with flows deployed before this release. They keep running, but their
+  code can't be shown (in their history, a proposal's review or a run's steps) until they are
+  deployed again from their text: after updating, deploy each of your flows once. Flows saved
+  before it are read as their text when the server starts, with their boxes where they were. A
+  request to any other route of the server that says its body is compressed (`Content-Encoding`)
+  is refused (415): only a deploy, its preview and a save take one, gzipped.
 
 - **A big flow is no longer refused for its size.** A deploy, a preview and a proposal sent the
   flow's whole drawing, about 700 bytes a box, and a flow of some ten thousand boxes came past the

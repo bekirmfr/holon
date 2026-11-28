@@ -202,7 +202,7 @@ fn and_list(items: &[String]) -> String {
 
 /// A run's id as it is listed: its first 12 characters, enough to pick it.
 pub(crate) fn short(run_id: &str) -> &str {
-    &run_id[..run_id.len().min(12)]
+    holon_author::first_chars(run_id, 12)
 }
 
 /// What runs wait at, a line a point: the run, what started it, who (when someone did) and since

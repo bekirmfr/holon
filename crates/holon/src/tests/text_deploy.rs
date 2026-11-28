@@ -296,3 +296,52 @@ fn a_flow_saved_as_a_canvas_by_an_earlier_release_loads_as_its_text_and_layout()
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Whether `line` cuts a value at a fixed length by bytes against its own length:
+/// `&x[..x.len().min(12)]` or `&x[..12.min(x.len())]`.
+fn cuts_by_bytes(line: &str) -> bool {
+    let mut from = 0;
+    while let Some(at) = line[from..].find("[..").map(|k| from + k) {
+        from = at + 3;
+        let Some(end) = line[from..].find(']').map(|k| from + k) else { break };
+        let inside = &line[from..end];
+        let before = &line[..at];
+        let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        let cut = match inside.split_once(".len().min(") {
+            Some((x, n)) if digits(n.trim_end_matches(')')) => Some(x),
+            _ => inside.split_once(".min(").filter(|(n, _)| digits(n)).and_then(|(_, x)| x.strip_suffix(".len())")),
+        };
+        if cut.is_some_and(|x| !x.is_empty() && before.ends_with(x)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// **Guards:** no text is cut at a fixed length by bytes in the server or the translator: a value
+/// shortened for a message (a unit, a run id, a hash) is cut with `holon_author::first_chars`.
+///
+/// **Why:** `&unit[..unit.len().min(12)]` panics when byte 12 is inside a character, and the
+/// value can come from outside: a `?unit=` of `a€€€€` answered 500 with the deployments' lock held
+/// (review of #161, run on a scratch server).
+///
+/// **If it fails:** use `holon_author::first_chars(&x, n)` at the line it names.
+#[test]
+fn no_text_is_cut_by_bytes_where_a_character_may_be() {
+    let mut files = Vec::new();
+    for dir in ["crates/holon/src", "crates/holon-author/src"] {
+        super::heavy::rust_files(&super::heavy::root().join(dir), &mut files);
+    }
+    let found: Vec<String> = files
+        .iter()
+        .flat_map(|f| {
+            let text = std::fs::read_to_string(f).unwrap();
+            text.lines().enumerate().filter(|(_, l)| cuts_by_bytes(l) && !l.trim_start().starts_with("//")).map(|(n, _)| format!("{}:{}", f.display(), n + 1)).collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(found.is_empty(), "cut by bytes: {found:#?}");
+    // Each written in two pieces, so this file's own lines aren't found.
+    for (line, cuts) in [(concat!("&unit[", "..unit.len().min(12)]"), true), (concat!("&h[", "..8.min(h.len())]"), true), (concat!("&b[", "..at.min(b.len())]"), false), (concat!("&plan.unit[", "..12]"), false)] {
+        assert_eq!(cuts_by_bytes(line), cuts, "{line}");
+    }
+}

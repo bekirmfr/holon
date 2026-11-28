@@ -436,6 +436,18 @@ fn a_review_shows_all_a_version_changes_and_what_it_shows_deploys() {
         let text = p.text.as_deref().unwrap_or_else(|| panic!("proposal {} keeps no text", p.id));
         assert_eq!(holon_author::agent::plan(text).unwrap().unit, p.unit, "proposal {}: its text is its unit's", p.id);
     }
+    // Approved after the server's compiler changed (another release, whose compiler builds the
+    // proposal's text as other code): a person approves by deploying the unit they reviewed with
+    // its text, which the server compiles again (deploy.rs `compiled`). Here the text sent compiles
+    // to other code than the reviewed unit, as it would there: refused, naming both, and nothing is
+    // deployed or decided; never the other code silently.
+    let pending = || state.proposals.all().into_iter().filter(|p| p.slug == "shown" && p.decided_at_ms.is_none()).count();
+    let (current, waiting) = (send(&state, &ada, "GET", "/deployments/shown/text", Value::Null).1["unit"].clone(), pending());
+    let (code, answer) = send(&state, &ada, "POST", "/deploy", json!({ "slug": "shown", "unit": next, "text": staged_text(&base), "browsers": both }));
+    let said = answer["error"].as_str().unwrap_or_default();
+    assert_eq!(code, 400, "{answer}");
+    assert!(said.contains(&base[..12]) && said.contains(&next[..12]), "it names both: {said}");
+    assert_eq!((send(&state, &ada, "GET", "/deployments/shown/text", Value::Null).1["unit"].clone(), pending()), (current, waiting), "nothing deployed or decided");
     // Deployed at once, the agent's version is held to it too.
     at_once(&state, &ada, "shown");
     let again = |text: Value| send(&state, &scout, "POST", "/deploy", json!({ "slug": "shown", "unit": base, "text": text, "browsers": one }));
@@ -483,8 +495,8 @@ fn a_versions_text_is_the_code_it_runs() {
         let (listed, own, now) = (entry(n), kept(&format!("?version={n}")), kept(""));
         assert_eq!(listed["text"], json!(!want.is_null()), "{what}: {listed}");
         if want.is_null() {
-            assert!(own.0 == 404 && own.1["error"].as_str().unwrap().contains("deployed as a unit alone: no text is kept"), "{what}: {own:?}");
-            assert!(now.0 == 404 && now.1["error"].as_str().unwrap().contains("no text is kept"), "{what}: {now:?}");
+            assert!(own.0 == 404 && own.1["error"].as_str().unwrap().contains("keeps no text: it was deployed as a unit alone"), "{what}: {own:?}");
+            assert!(now.0 == 404 && now.1["error"].as_str().unwrap().contains("keeps no text"), "{what}: {now:?}");
         } else {
             for (whose, (code, said)) in [("its own", own), ("the current one's", now)] {
                 assert_eq!(code, 200, "{what}, {whose}: {said}");

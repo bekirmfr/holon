@@ -68,7 +68,7 @@ impl PartialEq for Served {
 impl Served {
     /// How the run log and the control plane say it: `file site/app.js (148.2 KiB, blake3 7c1e2a9b…)`.
     pub(crate) fn line(&self) -> String {
-        format!("file {}/{} ({}, blake3 {}…)", self.folder, self.name, crate::folders::size_text(self.size), &self.hash[..self.hash.len().min(8)])
+        format!("file {}/{} ({}, blake3 {}…)", self.folder, self.name, crate::folders::size_text(self.size), holon_author::first_chars(&self.hash, 8))
     }
 }
 

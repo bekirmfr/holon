@@ -252,7 +252,7 @@ pub(crate) fn came_in(r: &Value) -> String {
 }
 
 fn short(s: &str, n: usize) -> &str {
-    &s[..s.len().min(n)]
+    holon_author::first_chars(s, n)
 }
 
 /// What one log line holds: when, its level, the run that wrote it and the version, then its text.

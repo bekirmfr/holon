@@ -43,7 +43,7 @@ fn draw_head(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
         Span::styled(format!(" {} ", d.slug), Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::raw("  "),
         status(e),
-        dim(format!("   {version} {}   {}   deployed{by}, {}", &unit[..unit.len().min(8)], reach(e), crate::mcp::when(&e["deployed_at_epoch_seconds"]))),
+        dim(format!("   {version} {}   {}   deployed{by}, {}", holon_author::first_chars(unit, 8), reach(e), crate::mcp::when(&e["deployed_at_epoch_seconds"]))),
     ]);
     f.render_widget(Paragraph::new(line), area);
     // The buttons, on the right.

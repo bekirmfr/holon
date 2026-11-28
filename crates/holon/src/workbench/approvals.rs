@@ -124,8 +124,8 @@ pub(crate) fn proposed_plan(p: &Value) -> Result<(agent::Plan, String), String> 
         Some(unit) if unit == plan.unit => Ok((plan, text)),
         Some(unit) => Err(format!(
             "its text builds {} where {} was proposed: this isn't what was proposed. Decline it (d), and say so.",
-            &plan.unit[..12.min(plan.unit.len())],
-            &unit[..12.min(unit.len())]
+            holon_author::first_chars(&plan.unit, 12),
+            holon_author::first_chars(unit, 12)
         )),
         None => Err("the proposal names no unit".into()),
     }

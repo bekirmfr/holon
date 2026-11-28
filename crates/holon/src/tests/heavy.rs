@@ -12,12 +12,12 @@ const MARK: &str = "#[ignore = \"heavy:";
 /// Folders under editor/ a build writes, never committed.
 const GENERATED: &[&str] = &["editor/dist", "editor/wasm", "editor/node_modules"];
 
-fn root() -> PathBuf {
+pub(super) fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 /// Every `.rs` file under `dir`, past what a build writes.
-fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(super) fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap().flatten() {
         let path = entry.path();
         if path.is_dir() {

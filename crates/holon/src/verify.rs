@@ -1722,7 +1722,7 @@ fn rerun(
         return Rerun::Differs("its entry doesn't name its unit".into());
     };
     let Some(deployed) = resolver.resolve(&deployment) else {
-        return Rerun::Differs(format!("its unit {} isn't in the export", &entry.unit[..12.min(entry.unit.len())]));
+        return Rerun::Differs(format!("its unit {} isn't in the export", holon_author::first_chars(&entry.unit, 12)));
     };
 
     // What it ran: the handler its kind and label name (`handler_of`), with what was sent, or

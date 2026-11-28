@@ -247,7 +247,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     }
     if let Some(n) = done["code"].as_u64() {
         let unit = done["unit"].as_str().unwrap_or_default();
-        println!("{slug}: version {n}'s code is deployed again, as version {} ({})", done["version"], &unit[..unit.len().min(12)]);
+        println!("{slug}: version {n}'s code is deployed again, as version {} ({})", done["version"], holon_author::first_chars(unit, 12));
     } else if !state {
         println!("{slug}: nothing to deploy");
     }
@@ -354,7 +354,7 @@ pub(crate) fn file_line(f: &serde_json::Value) -> String {
         line.push_str(&format!("; can't be checked on disk now: {why}"));
     } else if f["outside"].as_bool() == Some(true) {
         line.push_str(&match f["disk"]["hash"].as_str() {
-            Some(h) => format!("; changed outside a run since run {last}: on disk now #{}, not what run {last} left", &h[..8.min(h.len())]),
+            Some(h) => format!("; changed outside a run since run {last}: on disk now #{}, not what run {last} left", holon_author::first_chars(h, 8)),
             None => format!("; gone from disk since run {last}, which left it"),
         });
     }
@@ -407,7 +407,7 @@ pub(crate) fn canvas_said(preview: &serde_json::Value, n: u64) -> Option<String>
 /// One version, as the list shows it: `v3  3f2a9c1e04b7  2026-10-29T20:56:39  by maria  restores v1  (now)`.
 fn version_line(v: &serde_json::Value) -> String {
     let unit = v["unit"].as_str().unwrap_or_default();
-    let mut line = format!("v{:<4} {}", v["number"].as_u64().unwrap_or_default(), &unit[..unit.len().min(12)]);
+    let mut line = format!("v{:<4} {}", v["number"].as_u64().unwrap_or_default(), holon_author::first_chars(unit, 12));
     if let Some(at) = v["deployed_at"].as_i64() {
         line.push_str(&format!("  {}", crate::engines::time_text(at * 1_000_000)));
     }

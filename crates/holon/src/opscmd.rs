@@ -214,7 +214,7 @@ pub(crate) fn detail_lines(d: &Value, waiting: &[Value]) -> Vec<String> {
     let mut lines = vec![
         format!("{}: {}", s("slug"), s("status")),
         format!("  starts     {}", starts(d)),
-        format!("  unit       {}", &s("unit")[..s("unit").len().min(12)]),
+        format!("  unit       {}", holon_author::first_chars(&s("unit"), 12)),
         format!("  runs       {} ({} failed)", d["trigger_count"], d["error_count"]),
         format!("  session    {} of {}", d["session"], d["sessions"]),
         format!("  deployed   {}{}", when(d["deployed_at_epoch_seconds"].as_u64()), d["deployed_by"].as_str().map(|b| format!(" by {b}")).unwrap_or_default()),

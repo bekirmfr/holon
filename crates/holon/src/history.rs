@@ -313,7 +313,7 @@ fn run_line(r: &serde_json::Value, versions: &Versions) -> String {
     }
     match r["unit"].as_str().and_then(|u| versions.ran_on(u, r["seq"].as_u64().unwrap_or_default())) {
         Some(n) => line.push_str(&format!("  v{n}")),
-        None => line.push_str(&format!("  {}", r["unit"].as_str().map_or("", |u| &u[..u.len().min(12)]))),
+        None => line.push_str(&format!("  {}", r["unit"].as_str().map_or("", |u| holon_author::first_chars(u, 12)))),
     }
     line
 }

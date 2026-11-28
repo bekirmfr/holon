@@ -107,8 +107,8 @@ pub fn document_of(text: &str, unit: &str, layout: Option<&Value>) -> Result<(Va
 pub fn other_code(compiled: &str, unit: &str) -> String {
     format!(
         "its text compiles here to other code ({}) than it runs ({}): this Holon is another release than the one that compiled it; update whichever is older",
-        &compiled[..compiled.len().min(12)],
-        &unit[..unit.len().min(12)]
+        crate::first_chars(compiled, 12),
+        crate::first_chars(unit, 12)
     )
 }
 

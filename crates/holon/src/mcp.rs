@@ -643,7 +643,7 @@ fn deployment_line(d: &Value) -> String {
     let s = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or("?");
     let n = |k: &str| d.get(k).and_then(Value::as_u64).unwrap_or(0);
     let unit = s("unit");
-    let mut line = format!("{}: {}, version {}", s("slug"), s("status"), &unit[..unit.len().min(12)]);
+    let mut line = format!("{}: {}, version {}", s("slug"), s("status"), holon_author::first_chars(unit, 12));
     if let Some(p) = d.get("port").and_then(Value::as_u64) {
         line.push_str(&format!(", port {p}"));
     } else if let Some(t) = d.get("triggers").and_then(Value::as_array).filter(|t| !t.is_empty()) {
