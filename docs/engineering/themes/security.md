@@ -244,15 +244,14 @@ carrying a secret goes to the caller only under `SecretAnswer("name")` (listener
 can be changed while deployed (grants.rs): a revoke that leaves the manifest uncovered pauses the
 deployment (`attention`) until it is granted back; load rechecks every grant.
 
-**What a person reads is what deploys.** A document carries its code twice: a canvas, which is
-what deploys, and a text (`source`), which is what a person reads, and whoever saves or proposes a
-document writes both (an agent's token can post any JSON). So a document's text is shown only
-when it compiles to the unit its canvas deploys as, and its canvas printed otherwise
-(`holon_author::agent::text_of`): the review of a proposal and the diff beside a deploy in the
-editor (through the bridge, `document_text`), `holon flows`, `holon history`, a deploy's diff, the
-agent's own tools and the terminal editor all read it there. Before, each showed the saved text
-as it came, so a proposal could show one program and deploy another within the permissions shown.
-The permissions were never in question: they are derived from the unit that deploys.
+**What a person reads is what deploys.** A flow is deployed, proposed and saved as its text, and
+the server compiles it (deploy.rs `compiled`): a body whose unit isn't the text's is refused, so a
+version's kept text is the code it runs, and every canvas of it (the review of a proposal, a
+version, a run) is that text compiled again, with any hand-placed layout put back only on the unit
+it was drawn for (`holon_author::agent::canvas_of`). Before, a document carried its code twice (a
+canvas that deployed, a text that was read), and whoever saved or proposed one wrote both, so a
+proposal could show one program and deploy another within the permissions shown. The permissions
+were never in question: they are derived from the unit that deploys.
 
 ### 2.5 Outbound requests (outbound.rs)
 

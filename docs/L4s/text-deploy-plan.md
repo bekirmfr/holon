@@ -155,3 +155,41 @@ from the text. Checked with the codebase review session:
 4. Editor and wasm.
 5. Class tests, samples/e2e, manual and LANGUAGE.md §8.
 6. Live: the workroom flow and an over-8 MB branch on a scratch server.
+
+## Built (2026-11-28), where it differs from the above
+
+- A layout is keyed by the trace's order and the unit, not by node ids and a release: each
+  handler's nodes in the order its trace lists them (the canonical order of the unit's children),
+  and the unit it was drawn for. It goes back only on that unit's canvas, whole, else not at all
+  (`holon-author/src/kept_layout.rs`). A text that compiles here to other code than runs is
+  refused where a run or a version is shown (`agent::document_of`, the editor's `keptDocument`).
+- One guard for save and deploy (editor `keptFlow.ts` `flowToKeep`): the text sent (typed, or the
+  canvas printed) must compile to the canvas's own unit, else nothing is sent and the editor says
+  so. A canvas that doesn't derive a server yet (a draft) is saved as its text alone, laid out
+  again when opened.
+- The editor's preview still stages units (`POST /unit`) and previews by unit; its deploy sends
+  the text with that unit, which the server's compile must come to.
+- The nesting class test is in `lang/` (s2-2-catch's): the server's entry is held by a test of its
+  own (`tests/text_deploy.rs`), on a 1 MiB stack.
+- Found on the way, not changed here: main (since rc.37) refuses two of the workroom flow's
+  handlers at the write-back check ("a mistake in fmt": `GET /work/:id`, `GET /state`); and
+  compiling grows faster than a flow does (150 routes 5 s, 600 routes 70 s in wasm), so the server
+  compiles a large text twice per deploy (preview, then deploy) at that cost.
+- The command line and `holon mcp` waited 60 s for any answer; a route that takes a flow now
+  compiles before it answers, so they wait up to 10 minutes there (`deploycmd::wait_for`). The
+  first live deploy of the 12 MB branch ended "can't reach" at 60 s while the server compiled.
+
+## Live run (2026-11-28, release build, scratch server on 7561)
+
+The workroom flow (its two handlers main refuses left out) and a branch of it, each deployed from
+the command line, the bigger then proposed by an agent through `holon mcp`:
+
+| flow | old document | text | gzipped | check here | preview | deploy | kept text = sent |
+|---|---|---|---|---|---|---|---|
+| workroom | 8.5 MB | 621 KB | 162 KB | 29 s | 56 s | 100 s | yes |
+| branch | 12.3 MB | 674 KB | 171 KB | 62 s | 45 s | 133 s | yes |
+| agent's proposal of the branch | | | | | | 167 s | yes |
+
+Compile time, not size, is now what a big flow costs: a deploy compiles twice on the server
+(preview, then deploy), and an agent's proposal took 167 s, past what some MCP hosts wait for a
+tool. A compile cache keyed by the text's hash would halve a deploy; follow-up.

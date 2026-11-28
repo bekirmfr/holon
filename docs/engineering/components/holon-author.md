@@ -129,8 +129,10 @@ text's `bindings`), `routes`, `port`, `requirements`, `browsers`, `may`
 (consent names, with each module's budget as a `Limit(...)` item) and `sent` (core's
 `sent_secrets`). `holon mcp`, `holon deploy` and `holon editor` deploy from it, and `holon flows
 save` saves from it.
-`text_of` reads a document back as text (its saved `source` when that still plans, else the canvas
-printed, with the binding names an agent gave it); `explain` and `run_view` show a recorded run
+`canvas_of` draws a kept text with its hand-placed layout (`kept_layout.rs`, put back only on the
+unit it was drawn for), `document_of` refuses one that compiles here to other code than runs, and
+`layout_of` is the guard the editor saves and deploys through (a canvas becomes its text and its
+layout, or is refused when its text compiles to other code); `explain` and `run_view` show a recorded run
 as the program with each statement's value; `reference` is the language reference an agent reads.
 
 ### Samples
@@ -269,7 +271,7 @@ holon-author golden` writes it afresh.
   `a_text_is_coloured_as_the_language_reads_it`, `completion_offers_what_may_be_written_there`,
   `format_is_fmt`; `lsp.rs` on framed messages; `agent.rs`'s
   `a_plan_carries_the_unit_its_units_its_trace_and_its_names`,
-  `a_plan_says_each_mistake_as_check_does`, `the_text_a_document_shows_is_the_code_it_deploys`.
+  `a_plan_says_each_mistake_as_check_does`, `every_sample_reads_back_as_its_own_code_and_drawing`.
 - **Golden** (`golden.rs`): `the_evaluator_gives_what_its_golden_record_holds`;
   `keeping_each_composites_shape_changes_nothing_the_evaluator_gives`; the tripwire
   `the_compute_heavy_flows_functions_all_run_down_a_plan` (at least 5 of `CRUNCH`'s functions pass

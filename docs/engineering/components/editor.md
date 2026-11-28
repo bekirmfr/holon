@@ -111,7 +111,7 @@ from Vite against a server on 7420.
 flows on a server, what waits for a person, a flow's runs and history, and its text in tabs,
 checked as it is typed. It shares no code with the web editor but the language: it calls
 holon-author natively (`editing::mistakes`, `editing::highlight`, `agent::plan` to deploy,
-`agent::text_of` and `agent::run_view` to read a deployment, `graph::graph` for its graph,
+`mcp::kept_text`, `agent::document_of` and `agent::run_view` to read a deployment, `graph::graph` for its graph,
 `usage::usage` for its inspector, `samples` for its palette), and the server over HTTP
 (`client.rs`). It has no canvas: a flow is drawn as rows of statements. Without a server it still
 edits, checks and formats files.

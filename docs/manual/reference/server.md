@@ -26,7 +26,7 @@ In the data folder (`--data`, `HOLON_DATA`):
 | `deployments.json` | the deployments, their grants, sessions and parked runs | `--deployments` |
 | `deployments.logs/` | each deployment's run log: its newest 128 runs a line each, `<slug>.jsonl`, and the older ones it keeps gzipped in `<slug>.sealed/`; its events, `<slug>.events.jsonl`; its console lines in `<slug>.console.jsonl`, rolled to `<slug>.console.1.jsonl` and on. All sealed (see [The root key](#the-root-key)): `holon export` gives a run log readable | |
 | `deployments.state/` | each stateful deployment's state, `<slug>`: the hash of its current snapshot, whose values are in `store/`, written as each change lands, sealed | |
-| `flows.json` | saved flows: at most 1,000, with documents of 4 MiB each and 64 MiB in all; a save past them is refused (413 for the document, 409 for the rest), and one this file doesn't take answers 500 and changes nothing | `--flows` |
+| `flows.json` | saved flows: at most 1,000, each its text and layout, of 4 MiB each and 64 MiB in all; a save past them is refused (413 for the flow, 409 for the rest), and one this file doesn't take answers 500 and changes nothing | `--flows` |
 | `accounts.json` | people, agents and services, sessions, invites and tokens (as hashes) | `--accounts` |
 | `access.json` | the roles bound to each of them; `access.versions.jsonl` beside it, every version, with who changed what and when | beside `--accounts` |
 | `secrets.json` | sealed secrets; `secrets.audit.jsonl` beside it, who changed what (never values) | `--secrets` |

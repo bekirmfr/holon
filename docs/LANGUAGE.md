@@ -101,7 +101,7 @@ unit.
 | A run that waits | A route answers and is done: what waits (`await event(…)`) is an action, which the route starts by calling it without `await`, `payment(x)`, answered `{run, waiting}` with the token for each point it waits at | §5.4 |
 | Sharing | A binding used twice is one node with two wires; the same expression written twice is two nodes. No common-subexpression elimination | §6.2 |
 | Hash | The lowered DAG's. Binding names, function names, layout and comments are not in it; a function's parameter and output names are, as its ports | §7 |
-| Layout | Not in the text. Positions live in the flow document; import lays out automatically | §8 |
+| Layout | Not in the text. A hand-drawn layout is kept beside the text; compiling lays out automatically | §8 |
 | Diagnostics | `file:line:col: message`; every node keeps its span, so `check`, replay and the agent tools point at the expression | §9 |
 | A canvas the text can't spell | Has no text; the editor says what to change. The wiring form and flows without handlers are gone | §10 |
 
@@ -3071,8 +3071,11 @@ decides.
 
 ## 8. Layout
 
-Positions are not part of a program. The text has no positions. The flow document keeps positions,
-as it always has, so a flow authored on the canvas keeps its layout through save and open. When
+Positions are not part of a program. The text has no positions. A flow is saved and deployed as its
+text; a canvas a person arranged by hand keeps its arrangement beside the text as a layout
+(`kept_layout.rs`: each handler's nodes in the order its trace lists them, and the unit it was drawn
+for), put back only on that unit's canvas, so a flow authored on the canvas keeps its layout through
+save, deploy and open, and code compiled otherwise is laid out again whole, never in part. When
 text is compiled, nodes are laid out automatically (`lang/layout.rs`): each connected group (a
 handler) is a band, stacked in the order the text writes them; inside a band a node's column is its
 depth, a node nothing feeds sits just before the first node it feeds, and a column keeps statement
