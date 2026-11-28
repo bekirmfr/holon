@@ -126,7 +126,7 @@ test("a service's token acts with its role, until revoked; a disabled person is 
   await add("ci", "service", "editor");
   await expect(ada.getByText("ci has no token: it can't sign in yet")).toBeVisible();
   const asCi = await tokenFor("ci", "a script");
-  expect((await request.post(`${SERVER}/flows`, { data: { name: "from-ci", document: { nodes: [], edges: [] } }, headers: asCi })).status()).toBe(200);
+  expect((await request.post(`${SERVER}/flows`, { data: { name: "from-ci", text: 'flow("from-ci")' }, headers: asCi })).status()).toBe(200);
   expect((await request.get(`${SERVER}/people`, { headers: asCi })).status()).toBe(403);
   await ada.getByRole("button", { name: "revoke ci's token a script" }).click();
   await ada.locator('[aria-modal="true"]').getByRole("button", { name: "Revoke" }).click();
@@ -137,7 +137,7 @@ test("a service's token acts with its role, until revoked; a disabled person is 
   // An agent's token proposes, and never approves, stops or deletes.
   await add("claude", "agent", "agent");
   const asAgent = await tokenFor("claude", "claude code");
-  expect((await request.post(`${SERVER}/flows`, { data: { name: "from-claude", document: { nodes: [], edges: [] } }, headers: asAgent })).status()).toBe(200);
+  expect((await request.post(`${SERVER}/flows`, { data: { name: "from-claude", text: 'flow("from-claude")' }, headers: asAgent })).status()).toBe(200);
   const approving = await request.post(`${SERVER}/deploy`, { data: { slug: "from-claude", unit: "0".repeat(64), acknowledge: ["NetworkIngress"] }, headers: asAgent });
   expect(approving.status()).toBe(403);
   expect((await approving.json()).error).toContain("an agent doesn't approve");

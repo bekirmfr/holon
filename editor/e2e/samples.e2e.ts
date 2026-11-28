@@ -66,11 +66,11 @@ test("a sample deployed as it is keeps its text and the names it binds", async (
   await page.keyboard.insertText(text.replace("port: 8115", `port: ${port}`));
   await settingsSayPort(page, String(port));
   expect(await deploy(page, 0)).toBe(port);
-  const deployed = await request.get(`${SERVER}/deployments/cache-aside/document`, { headers: { Authorization: `Bearer ${adminToken}` } });
+  // Kept as the text typed, comments and names and all: what a run explains by, compiled again.
+  const deployed = await request.get(`${SERVER}/deployments/cache-aside/text`, { headers: { Authorization: `Bearer ${adminToken}` } });
   expect(deployed.status()).toBe(200);
-  const document = (await deployed.json()) as { source?: string; bindings?: Record<string, string> };
-  expect(document.source).toContain('flow("cache-aside"');
-  expect(Object.values(document.bindings ?? {})).toEqual(expect.arrayContaining(["name", "id"]));
+  const kept = (await deployed.json()) as { text?: string };
+  expect(kept.text).toBe(text.replace("port: 8115", `port: ${port}`));
 });
 
 test("a flow nothing would start can't deploy; given an action, it deploys and runs by hand", async ({ page }) => {

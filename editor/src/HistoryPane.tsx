@@ -526,7 +526,7 @@ export function itemDetails(item: TimelineItem, target: Target): [string, string
     fields.push(["version", `${v.number}${v.current ? " (deployed now)" : ""}`], ["unit", v.unit]);
     if (v.restored_from) fields.push(["restores", `version ${v.restored_from}'s code`]);
     if (v.first_seq !== undefined) fields.push(["first run", `#${v.first_seq}`]);
-    fields.push(["canvas", !v.canvas ? "none kept" : v.canvas_checked ? "kept" : "kept, not checked against its code when deployed: it may show other code than it runs"]);
+    fields.push(["text", v.text ? "kept" : "none kept"]);
   }
   fields.push(
     ["back to its code", target.code && target.why.code === null ? `${pointLabel(target.code)}'s` : `no: ${target.why.code}`],

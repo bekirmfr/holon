@@ -17,6 +17,7 @@ import type { WValue, ModuleEntry } from "./holon";
 import type { EndpointDraft } from "./endpoint";
 import type { NodeTiming, SkippedNote } from "./replay";
 import type { SettingChange, Touch } from "./touches";
+import { keptDocument, savedDocument, type KeptFlow, type Layout } from "./keptFlow";
 
 /** The server: VITE_HOLON_SERVER when set; else, built (`npm run build`), the server it is served
  *  from (holon-server serves the editor itself, editor.rs), and in development the local one. */
@@ -851,33 +852,46 @@ export async function deployUnit(
   slug: string,
   unitHash: string,
   acknowledge: string[],
-  /** The flow's canvas, kept with the deployment so view mode shows exactly what runs. */
-  document?: FlowDocument,
+  /** The flow as it is kept (keptFlow.ts): its text, which the server compiles and must come to
+   *  `unitHash`, the code reviewed here, and its layout; with the canvas it is, for what it places
+   *  and the sites it answers. Absent: the unit staged, deployed as it is, keeping no text. */
+  flow?: KeptFlow & { document: FlowDocument },
   /** What it needs beyond its graph (limits, exceptions): part of its manifest. */
   requirements?: Requirements,
   /** What the person deploying it says: kept with the grant, on its event (events.rs). */
   note?: string,
 ): Promise<DeployResult> {
-  const res = await api(`${BASE}/deploy`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  const document = flow?.document;
+  const res = await api(
+    `${BASE}/deploy`,
+    await flowRequest({
       slug,
       unit: unitHash,
       acknowledge,
-      ...(document !== undefined ? { document } : {}),
-      // The release whose wasm built the unit from the document: a server of another one says so
-      // when the document builds otherwise there.
-      ...(document !== undefined ? { made_with: __HOLON_RELEASE__ } : {}),
+      ...(flow !== undefined ? { text: flow.text } : {}),
+      ...(flow?.layout ? { layout: flow.layout } : {}),
       ...(requirements !== undefined ? { requirements } : {}),
-      // What it places, beside the document (holonUsage.ts): who uses a holon, from listings.
+      // What it places (holonUsage.ts): who uses a holon, from listings.
       ...(document !== undefined ? { uses: usesIn(document) } : {}),
       // The web pages from other sites it answers (its Settings), when it says any.
       ...(document?.server ? { browsers: browsersOf(document.server) } : {}),
       ...(note?.trim() ? { note: note.trim() } : {}),
     }),
-  });
+  );
   return asJson<DeployResult>(res);
+}
+
+/** A flow's body is sent gzipped when it is big enough to gain from it (`Content-Encoding: gzip`):
+ *  the routes that take a flow (a deploy, its preview, a save) unpack it, held to the same size
+ *  as sent plain (http.rs `read_flow_body`). */
+const PACK_OVER = 32 * 1024;
+
+/** A POST of `body` as JSON to a route that takes a flow: gzipped past {@link PACK_OVER}. */
+export async function flowRequest(body: unknown): Promise<RequestInit> {
+  const json = JSON.stringify(body);
+  if (json.length <= PACK_OVER || typeof CompressionStream === "undefined") return { method: "POST", headers: { "Content-Type": "application/json" }, body: json };
+  const packed = await new Response(new Blob([json]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
+  return { method: "POST", headers: { "Content-Type": "application/json", "Content-Encoding": "gzip" }, body: packed };
 }
 
 /** What a flow declares it needs beyond its graph (permissions.rs's `Requirements`): limits set
@@ -1061,14 +1075,21 @@ export type Proposal = {
   reason?: string;
   /** While it waits: the version it would deploy as. */
   version?: number;
-  /** Its canvas, with its text (`GET /proposals/<id>` only). */
+  /** Its text and layout as proposed (`GET /proposals/<id>` only), and its canvas: the text
+   *  compiled here (keptFlow.ts), held to the proposed unit. */
+  text?: string;
+  layout?: Layout | null;
   document?: FlowDocument;
 };
 
 /** `GET /proposals`: the waiting ones, oldest first (the queue), then the decided, newest first. */
 export const listProposals = async () => (await asJson<{ proposals: Proposal[] }>(await api(`${BASE}/proposals`))).proposals;
-/** `GET /proposals/<id>`: one, with its document. */
-export const getProposal = async (id: number) => asJson<Proposal>(await api(`${BASE}/proposals/${id}`));
+/** `GET /proposals/<id>`: one, with its text, and its canvas compiled from it here; a text that
+ *  compiles here to other code than proposed throws, saying so (R79: it isn't what was proposed). */
+export const getProposal = async (id: number) => {
+  const p = await asJson<Proposal>(await api(`${BASE}/proposals/${id}`));
+  return p.text === undefined ? p : { ...p, document: keptDocument(p.text, p.layout, p.unit) };
+};
 /** Decline a waiting proposal, with a reason its author reads. */
 export const declineProposal = async (id: number, reason: string) => asJson<Proposal>(await post(`${BASE}/proposals/${id}/decline`, { reason }));
 /** Whether agents may propose a deployment's versions. */
@@ -1602,14 +1623,22 @@ export async function downloadRuns(slug: string, run?: number): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-/** `GET /deployments/<slug>/document` — the canvas it was deployed from. Throws
- *  {@link ServerError} (404) for one deployed without it. */
-/** The flow document a deployment was deployed from; with `unit`, that version's (the current
- *  one, or an earlier one it keeps), for a run logged on it. */
-export async function getDeployedDocument(slug: string, unit?: string): Promise<FlowDocument> {
+/** What a deployment keeps of a version's code (`GET /deployments/<slug>/text`): the text it was
+ *  compiled from, and its layout. Throws {@link ServerError} (404) for one deployed without it. */
+export type KeptText = { unit: string; version: number; text: string; layout: Layout | null };
+
+/** The text a deployment runs; with `unit`, that version's (the current one, or an earlier one it
+ *  keeps), for a run logged on it. */
+export async function getDeployedText(slug: string, unit?: string): Promise<KeptText> {
   const q = unit ? `?unit=${encodeURIComponent(unit)}` : "";
-  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/document${q}`);
-  return asJson<FlowDocument>(res);
+  return asJson<KeptText>(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/text${q}`));
+}
+
+/** The canvas a deployment runs, or version `unit`'s: its kept text compiled here, with its
+ *  layout (keptFlow.ts); throws when it compiles here to other code than runs. */
+export async function getDeployedDocument(slug: string, unit?: string): Promise<FlowDocument> {
+  const kept = await getDeployedText(slug, unit);
+  return keptDocument(kept.text, kept.layout, kept.unit);
 }
 
 /** One version a deployment was deployed with (`GET /deployments/<slug>/versions`). */
@@ -1625,11 +1654,9 @@ export type VersionEntry = {
   current: boolean;
   /** What its deploy asked is kept, so its code can be restored (rc.30 on). */
   restorable: boolean;
-  /** Its canvas is kept: the one it was deployed with, never another version's. */
-  canvas: boolean;
-  /** Its canvas was checked to build its unit when it was deployed (false for one deployed
-   *  before the server checked every deploy's, whose canvas may show other code than it runs). */
-  canvas_checked?: boolean;
+  /** Its text is kept: the one its code was compiled from, never another version's (none when it
+   *  was deployed as a unit alone). */
+  text: boolean;
   /** The state it left is kept, so it can be put back. */
   state_kept: boolean;
   /** The log's seq at its deploy: its first run's (absent from before rc.30). */
@@ -1778,10 +1805,8 @@ export type FileSince = {
 export type RestorePreview = Partial<DeployPreview> & {
   code: number | null;
   state?: StateChange;
-  /** Whether the version its code comes from keeps a canvas, and whether that canvas was checked
-   *  to build its code when it was deployed (absent when no code is restored). */
-  canvas?: boolean;
-  canvas_checked?: boolean;
+  /** Whether the version its code comes from keeps its text (absent when no code is restored). */
+  text?: boolean;
 };
 
 /** What a restore did: the version it deployed (as `version`, restoring `code`), and the session
@@ -1951,8 +1976,9 @@ export type FlowDocument = {
  *  flows it places (absent when saved before that was recorded). */
 export type FlowListEntry = { name: string; saved_at_epoch_seconds: number; saved_by?: string; uses?: Placed[] };
 
-/** A full saved flow as `GET /flows/<name>` returns it. */
-export type FlowRecord = FlowListEntry & { document: FlowDocument };
+/** A full saved flow as `GET /flows/<name>` returns it (its text and layout), and its canvas: the
+ *  text compiled here (keptFlow.ts). */
+export type FlowRecord = FlowListEntry & { text: string; layout?: Layout | null; document: FlowDocument };
 
 /** A save refused because the flow was saved again, or removed, since the save it was made from:
  *  the save there now (`savedAt`, null when none is), to replace it from if its author says so. */
@@ -1967,16 +1993,13 @@ export class StaleSave extends ServerError {
   }
 }
 
-/** `POST /flows` — save the current canvas under `name`, over `base`: the save it was made from
- *  (its stamp; null for a new flow, none saved under the name). One saved since, or removed, is
- *  left as it is and throws {@link StaleSave}; {@link ServerError} (400) for an invalid name. */
-export async function saveFlow(name: string, document: FlowDocument, base: number | null): Promise<FlowListEntry> {
-  const res = await api(`${BASE}/flows`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    // What it places, beside the document (holonUsage.ts): who uses a holon, from listings.
-    body: JSON.stringify({ name, document, uses: usesIn(document), base }),
-  });
+/** `POST /flows` — save a flow under `name` as its text and layout (keptFlow.ts), over `base`: the
+ *  save it was made from (its stamp; null for a new flow, none saved under the name). One saved
+ *  since, or removed, is left as it is and throws {@link StaleSave}; {@link ServerError} (400) for
+ *  an invalid name. `document`: the canvas it is, for what it places. */
+export async function saveFlow(name: string, flow: KeptFlow & { document: FlowDocument }, base: number | null): Promise<FlowListEntry> {
+  // What it places (holonUsage.ts): who uses a holon, from listings.
+  const res = await api(`${BASE}/flows`, await flowRequest({ name, text: flow.text, ...(flow.layout ? { layout: flow.layout } : {}), uses: usesIn(flow.document), base }));
   if (res.status === 409) {
     const body = (await res.json().catch(() => ({}))) as { error?: string; saved_at_epoch_seconds?: number | null; saved_by?: string | null };
     if ("saved_at_epoch_seconds" in body) throw new StaleSave(body.error ?? res.statusText, body.saved_at_epoch_seconds ?? null, body.saved_by ?? null);
@@ -1991,10 +2014,12 @@ export async function listFlows(): Promise<FlowListEntry[]> {
   return asJson<FlowListEntry[]>(res);
 }
 
-/** `GET /flows/<name>` — one full saved flow, document included. Throws (404) if unknown. */
+/** `GET /flows/<name>` — one full saved flow, its canvas compiled from its text here. Throws (404)
+ *  if unknown. */
 export async function getFlow(name: string): Promise<FlowRecord> {
   const res = await api(`${BASE}/flows/${encodeURIComponent(name)}`);
-  return asJson<FlowRecord>(res);
+  const rec = await asJson<Omit<FlowRecord, "document">>(res);
+  return { ...rec, document: savedDocument(rec.text, rec.layout) };
 }
 
 /** `DELETE /flows/<name>` — remove a saved flow. Throws (404) if it was never there. */

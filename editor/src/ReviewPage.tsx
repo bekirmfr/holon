@@ -123,8 +123,8 @@ export function ReviewPage({
       // A proposal is reviewed as proposed; anything else, as saved.
       const proposal = proposalId === undefined ? null : await getProposal(proposalId);
       const saved: FlowRecord =
-        proposal?.document !== undefined
-          ? { name: slug, document: proposal.document, saved_at_epoch_seconds: proposal.saved_at ?? Math.floor(proposal.at_ms / 1000), saved_by: proposal.by }
+        proposal?.document !== undefined && proposal.text !== undefined
+          ? { name: slug, text: proposal.text, layout: proposal.layout, document: proposal.document, saved_at_epoch_seconds: proposal.saved_at ?? Math.floor(proposal.at_ms / 1000), saved_by: proposal.by }
           : await getFlow(slug);
       // The version deployed now keeps no text when it was deployed without one (by hash): this
       // one is read whole, beside nothing.
@@ -201,7 +201,8 @@ export function ReviewPage({
     setBusy(true);
     setError("");
     try {
-      await deployUnit(slug, data.hash, data.preview.needs_approval, data.document, data.saved.document.server?.requirements, note);
+      // The text as saved or proposed, which the server compiles and must come to the unit reviewed.
+      await deployUnit(slug, data.hash, data.preview.needs_approval, { text: data.saved.text, layout: data.saved.layout ?? null, document: data.document }, data.saved.document.server?.requirements, note);
       onDeployed(slug, data.version);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -349,7 +350,7 @@ export function ReviewPage({
             {view === "changes" ? (
               <Review
                 hunks={[
-                  codeHunk(data.deployedText, data.text, data.current && !data.current.canvas ? `code (version ${data.current.number} keeps no text: all of this one is shown)` : "code"),
+                  codeHunk(data.deployedText, data.text, data.current && !data.current.text ? `code (version ${data.current.number} keeps no text: all of this one is shown)` : "code"),
                   ...touchHunks(touchLines(data.preview.touches, data.preview.settings)),
                 ]}
                 label="changes"

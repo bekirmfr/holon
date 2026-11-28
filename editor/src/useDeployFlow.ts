@@ -12,11 +12,12 @@ import { createElement, useCallback, useEffect, useMemo, useState, type MutableR
 import type { Edge, Viewport } from "@xyflow/react";
 import type { DerivedServer } from "./canvasOps";
 import { documentUnits } from "./docUnits";
-import { bindingsOf, documentText, printHolon } from "./holonText";
+import { bindingsOf, printHolon } from "./holonText";
 import { isWEncapError } from "./diagnostics";
 import { describeItemSending, type Evaluator } from "./holon";
 import { stageClosure } from "./canvasUnits";
-import { deployUnit, getDeployedDocument, listProposals, previewDeploy, type DeploymentEntry, type FlowDocument } from "./server";
+import { deployUnit, getDeployedText, listProposals, previewDeploy, type DeploymentEntry, type FlowDocument } from "./server";
+import { flowToKeep, type KeptFlow } from "./keptFlow";
 import { browsersOf, type FlowSettings } from "./DeploySettings";
 import { canOn } from "./can";
 import { useToast } from "./ui/Toast";
@@ -132,6 +133,9 @@ export function useDeployFlow({
     }
     let hash: string;
     const trace = derived.trace;
+    // What is sent: its text (as typed, or the canvas printed), which the server compiles, and where
+    // its nodes were moved. A canvas its text doesn't spell can't be deployed (keptFlow.ts).
+    let kept: KeptFlow & { document: FlowDocument };
     try {
       if (derived.errors.length > 0) throw new Error(derived.errors.join("; "));
       if (derived.endpoints.length + derived.clocks.length + derived.files.length + derived.mails.length + derived.feeds.length + derived.queues.length + derived.websockets.length + derived.actions.length === 0) {
@@ -139,6 +143,22 @@ export function useDeployFlow({
       }
       if (!derived.serverHash) throw new Error(`"${settings.port}" is not a port (set it in Settings, in the bottom pane)`);
       hash = derived.serverHash;
+      const { nodes: ns, edges: es } = live.current;
+      const carried = documentUnits(ns.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])), ev);
+      // The text's names ride with it, as they do with a save: a run then explains as the text reads.
+      const bindings = source !== null ? bindingsOf(source, { nodes: ns, edges: es }, ev) : null;
+      const document: FlowDocument = {
+        nodes: ns,
+        edges: es,
+        viewport: getViewport(),
+        ...carried,
+        server: settings,
+        trace,
+        ...(source !== null ? { source } : {}),
+        ...(bindings ? { bindings } : {}),
+      };
+      const text = source ?? printHolon(name, document, ev);
+      kept = { ...flowToKeep(document, text, hash), document };
     } catch (err) {
       setError(isWEncapError(err) ? err.message : err instanceof Error ? err.message : String(err));
       return;
@@ -173,7 +193,7 @@ export function useDeployFlow({
       // beside what it touches now, and whether this server is ready for each (a secret not set
       // yet, a folder not bound).
       const hunks: Hunk[] = [];
-      const code = await codeNow(name, existing);
+      const code = await codeNow(kept.text, name, existing);
       if (code) hunks.push(code);
       const touches = touchHunks(touchLines(preview.touches, preview.settings));
       hunks.push(...touches);
@@ -197,22 +217,7 @@ export function useDeployFlow({
     }
     setDeployBusy(true);
     try {
-      const { nodes: ns, edges: es } = live.current;
-      const carried = documentUnits(ns.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])), ev);
-      // The text and its names ride with the deployment, as they do with a save and with a deploy
-      // from text through `holon mcp`: a run then explains as the text reads.
-      const bindings = source !== null ? bindingsOf(source, { nodes: ns, edges: es }, ev) : null;
-      const document: FlowDocument = {
-        nodes: ns,
-        edges: es,
-        viewport: getViewport(),
-        ...carried,
-        server: settings,
-        trace,
-        ...(source !== null ? { source } : {}),
-        ...(bindings ? { bindings } : {}),
-      };
-      const done = await deployUnit(name, hash, proposes ? [] : ask, document, requirements);
+      const done = await deployUnit(name, hash, proposes ? [] : ask, kept, requirements);
       refreshDeployments();
       // Proposed (as the dialog said, or as the server decided): nothing deployed yet.
       if (done.proposal) {
@@ -226,18 +231,15 @@ export function useDeployFlow({
     }
   }, [flowName, setFlowName, dialog, derived, settings, source, live, ev, deployments, refreshDeployments, getViewport, setError, onDeployed, onProposedSave, toast]);
 
-  /** The code's hunk: the flow's text beside the deployed version's (none on a first deploy);
-   *  null when either can't be written as text. */
-  async function codeNow(name: string, existing: boolean): Promise<Hunk | null> {
-    try {
-      const { nodes: ns, edges: es } = live.current;
-      const now = source ?? printHolon(name, { nodes: ns, edges: es, server: settings }, ev);
-      if (!existing) return codeHunk(null, now);
-      const doc = await getDeployedDocument(name);
-      return codeHunk(documentText(name, doc), now);
-    } catch {
-      return null;
-    }
+  /** The code's hunk: the text it sends beside the deployed version's (none on a first deploy, or
+   *  when that version keeps none). */
+  async function codeNow(now: string, name: string, existing: boolean): Promise<Hunk | null> {
+    if (!existing) return codeHunk(null, now);
+    const deployed = await getDeployedText(name).then(
+      (k) => k.text,
+      () => null,
+    );
+    return codeHunk(deployed, now);
   }
 
   return { deployedEntry, outOfDate, waitingVersion, deployBusy, secretNames, onDeployFlow };
