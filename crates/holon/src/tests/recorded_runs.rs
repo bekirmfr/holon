@@ -131,7 +131,7 @@ fn every_samples_runs_go_to_the_editor() {
         }
         let browsers: Vec<&str> = plan.browsers.as_deref().map(|b| b.split_whitespace().collect()).unwrap_or_default();
         let requirements = serde_json::json!({ "plain_http": hosts, "private_addresses": !hosts.is_empty() });
-        let r = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": acknowledge, "document": plan.document, "browsers": browsers, "requirements": requirements }));
+        let r = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": acknowledge, "text": sample.text, "browsers": browsers, "requirements": requirements }));
         if r.status_code != 200 {
             continue;
         }

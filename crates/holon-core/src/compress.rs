@@ -54,6 +54,20 @@ fn crc32(data: &[u8]) -> u32 {
 /// took; nothing for a stream that is broken, cut short, or would pass what is left of `budget`,
 /// which it spends.
 fn inflated(input: &[u8], budget: &mut usize) -> Option<(Vec<u8>, usize)> {
+    inflated_or(input, budget).ok()
+}
+
+/// Why a gzip didn't unpack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unpacked {
+    /// It isn't a gzip, or one cut short or broken.
+    Broken,
+    /// It would unpack past the budget: stopped there.
+    TooLarge,
+}
+
+/// [`inflated`], saying which way it failed.
+fn inflated_or(input: &[u8], budget: &mut usize) -> Result<(Vec<u8>, usize), Unpacked> {
     let mut state = InflateState::new_boxed(DataFormat::Raw);
     let mut out = Vec::new();
     let mut chunk = vec![0u8; 64 * 1024];
@@ -61,12 +75,12 @@ fn inflated(input: &[u8], budget: &mut usize) -> Option<(Vec<u8>, usize)> {
     loop {
         let step = inflate(&mut state, &input[at..], &mut chunk, MZFlush::None);
         at += step.bytes_consumed;
-        *budget = budget.checked_sub(step.bytes_written)?;
+        *budget = budget.checked_sub(step.bytes_written).ok_or(Unpacked::TooLarge)?;
         out.extend_from_slice(&chunk[..step.bytes_written]);
         match step.status {
-            Ok(MZStatus::StreamEnd) => return Some((out, at)),
+            Ok(MZStatus::StreamEnd) => return Ok((out, at)),
             Ok(MZStatus::Ok) if step.bytes_consumed > 0 || step.bytes_written > 0 => {}
-            _ => return None,
+            _ => return Err(Unpacked::Broken),
         }
     }
 }
@@ -86,7 +100,7 @@ fn u32_at(b: &[u8], at: usize) -> Option<u32> {
 
 /// `data` gzipped: one member, deflated at level 6, with no name, time 0 and system 255 (unknown),
 /// so the same data gives the same bytes wherever it is gzipped.
-pub(crate) fn gzip(data: &[u8]) -> Vec<u8> {
+pub fn gzip(data: &[u8]) -> Vec<u8> {
     let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 255];
     out.extend(miniz_oxide::deflate::compress_to_vec(data, LEVEL));
     out.extend(crc32(data).to_le_bytes());
@@ -101,15 +115,22 @@ pub(crate) fn gunzip(bytes: &[u8]) -> Option<Vec<u8>> {
     gunzip_within(bytes, MAX_INFLATED)
 }
 
-fn gunzip_within(bytes: &[u8], mut budget: usize) -> Option<Vec<u8>> {
+fn gunzip_within(bytes: &[u8], budget: usize) -> Option<Vec<u8>> {
+    gunzip_bounded(bytes, budget).ok()
+}
+
+/// The bytes inside a gzip, as [`gunzip`], inflating at most `budget` bytes, stopped as the stream
+/// passes it, not after; or why not. The host reads a request body sent gzipped with it
+/// (docs/L4s/text-deploy-plan.md), under its own cap.
+pub fn gunzip_bounded(bytes: &[u8], mut budget: usize) -> Result<Vec<u8>, Unpacked> {
     let mut out = Vec::new();
     let mut rest = bytes;
     loop {
-        let body = member_header(rest)?;
-        let (data, used) = inflated(&rest[body..], &mut budget)?;
+        let body = member_header(rest).ok_or(Unpacked::Broken)?;
+        let (data, used) = inflated_or(&rest[body..], &mut budget)?;
         let end = body + used;
-        if u32_at(rest, end)? != crc32(&data) || u32_at(rest, end + 4)? != data.len() as u32 {
-            return None;
+        if u32_at(rest, end).ok_or(Unpacked::Broken)? != crc32(&data) || u32_at(rest, end + 4).ok_or(Unpacked::Broken)? != data.len() as u32 {
+            return Err(Unpacked::Broken);
         }
         // The first member's bytes are the output, not copied into it: one copy of up to
         // MAX_INFLATED bytes, not two.
@@ -119,7 +140,7 @@ fn gunzip_within(bytes: &[u8], mut budget: usize) -> Option<Vec<u8>> {
         }
         rest = &rest[end + 8..];
         if rest.is_empty() {
-            return Some(out);
+            return Ok(out);
         }
     }
 }

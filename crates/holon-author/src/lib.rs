@@ -26,6 +26,7 @@
 //! - [`editing`]: what an editor asks of a text as it is typed (`holon lsp`).
 
 pub mod agent;
+pub mod kept_layout;
 pub mod builder;
 pub mod canvas;
 pub mod commands;

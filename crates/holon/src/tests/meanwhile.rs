@@ -29,10 +29,10 @@ export const keep = action((asked) => {
 /// What its action writes: an item of its grant.
 const WRITES: &str = "StateWrite(\"count\")";
 
-/// A version, its units stored: its unit and its document.
+/// A version, its units stored: its unit and its text.
 struct Staged {
     unit: String,
-    document: Value,
+    text: String,
 }
 
 /// `method` `path` with `body` (none when null) as the holder of `token`: its status and its body.
@@ -43,16 +43,17 @@ fn send(state: &AppState, token: &str, method: &str, path: &str, body: Value) ->
 
 /// `FLOW` answering `answer`, compiled and its units stored by `ada`.
 fn stage(state: &AppState, ada: &str, answer: &str) -> Staged {
-    let plan = holon_author::agent::plan(&FLOW.replace("return \"kept\"", &format!("return {answer:?}"))).unwrap_or_else(|e| panic!("{e}"));
+    let text = FLOW.replace("return \"kept\"", &format!("return {answer:?}"));
+    let plan = holon_author::agent::plan(&text).unwrap_or_else(|e| panic!("{e}"));
     for unit in &plan.units {
         assert_eq!(ask(state, Some(ada), "POST", "/unit", unit.clone()).0, 200);
     }
-    Staged { unit: plan.unit, document: plan.document }
+    Staged { unit: plan.unit, text }
 }
 
 /// `staged` deployed by `token`'s holder, approving `acknowledge`.
 fn deploy(state: &AppState, token: &str, staged: &Staged, acknowledge: &Value) -> (u16, Value) {
-    send(state, token, "POST", "/deploy", json!({ "slug": SLUG, "unit": staged.unit, "document": staged.document, "acknowledge": acknowledge }))
+    send(state, token, "POST", "/deploy", json!({ "slug": SLUG, "unit": staged.unit, "text": staged.text, "acknowledge": acknowledge }))
 }
 
 /// What deploying `staged` needs approving, as `token`'s holder is told.

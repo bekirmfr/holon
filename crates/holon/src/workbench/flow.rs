@@ -608,10 +608,14 @@ impl App {
                 let r = &d.runs[i];
                 let Some(c) = self.client.as_ref() else { return };
                 let path = match r["unit"].as_str().filter(|u| !u.is_empty()) {
-                    Some(u) => format!("/deployments/{}/document?unit={u}", crate::mcp::seg(slug)),
-                    None => format!("/deployments/{}/document", crate::mcp::seg(slug)),
+                    Some(u) => format!("/deployments/{}/text?unit={u}", crate::mcp::seg(slug)),
+                    None => format!("/deployments/{}/text", crate::mcp::seg(slug)),
                 };
-                match c.get(&path).and_then(|doc| agent::explain(slug, &doc, r)) {
+                let document = |kept: serde_json::Value| {
+                    let text = kept["text"].as_str().ok_or_else(|| format!("the server keeps no text of \"{slug}\""))?;
+                    agent::document_of(text, kept["unit"].as_str().unwrap_or_default(), kept.get("layout")).map(|(d, _)| d)
+                };
+                match c.get(&path).and_then(document).and_then(|doc| agent::explain(slug, &doc, r)) {
                     Ok(said) => self.modal = Some(Modal::Lines { title: format!("Run #{} of {slug}, explained", r["seq"]), lines: said.lines().map(|l| (Tone::Plain, l.to_string())).collect(), scroll: 0 }),
                     Err(e) => self.fail(e),
                 }

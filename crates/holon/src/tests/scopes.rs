@@ -40,7 +40,7 @@ fn server() -> (AppState, Tokens, String, String) {
     let unit = to_hex(&stage_text(&state, PAY));
     for slug in ["d", "e"] {
         assert_eq!(deploy(&state, None, slug, &unit, json!({})).0, 200);
-        assert_eq!(ask(&state, None, "POST", "/flows", serde_json::to_vec(&json!({ "name": slug, "document": {} })).unwrap()).0, 200);
+        assert_eq!(ask(&state, None, "POST", "/flows", serde_json::to_vec(&json!({ "name": slug, "text": "" })).unwrap()).0, 200);
     }
     assert!(run_action_named(&state, "d", "pay", json!({})).is_success());
     let runs: Value = serde_json::from_str(&ask(&state, None, "GET", "/deployments/d/runs", vec![]).1).unwrap();
@@ -114,10 +114,10 @@ fn a_binding_at_a_flow_lets_its_holder_act_there_and_nowhere_else() {
     assert_eq!(bob("POST", "/deployments/d/stop", Value::Null).0, 200);
 
     // His draft, and someone else's flow.
-    assert_eq!(bob("POST", "/flows", json!({ "name": "x", "document": {} })).0, 200);
+    assert_eq!(bob("POST", "/flows", json!({ "name": "x", "text": "" })).0, 200);
     assert_eq!(listed(&state, &t.bob, "/flows", None, "name"), ["d", "x"]);
     assert_eq!(bob("GET", "/flows/x", Value::Null).0, 200);
-    assert_eq!(refusal(bob("POST", "/flows", json!({ "name": "e", "document": {} }))), none_on("bob", "on \"e\"", "flow.edit"));
+    assert_eq!(refusal(bob("POST", "/flows", json!({ "name": "e", "text": "" }))), none_on("bob", "on \"e\"", "flow.edit"));
     assert_eq!(bob("DELETE", "/flows/x", Value::Null).0, 200);
 
     let activity: Value = serde_json::from_str(&bob("GET", "/activity", Value::Null).1).unwrap();
@@ -910,9 +910,9 @@ const WHOLES: [Whole; 3] = [
     Whole {
         what: "a saved flow",
         write: ("POST", "/flows"),
-        body: |content, base| with_base(json!({ "name": "draft", "document": { "says": content } }), base),
+        body: |content, base| with_base(json!({ "name": "draft", "text": content }), base),
         base: |state, token| read_json(state, token, "/flows/draft").get("saved_at_epoch_seconds").cloned().unwrap_or(Value::Null),
-        now: |state, token| read_json(state, token, "/flows/draft").pointer("/document/says").and_then(Value::as_str).map(String::from),
+        now: |state, token| read_json(state, token, "/flows/draft").pointer("/text").and_then(Value::as_str).map(String::from),
         remove: "/flows/draft",
         says: ["first", "ada's", "bob's", "later"],
     },

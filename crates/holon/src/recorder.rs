@@ -161,7 +161,7 @@ pub struct LogEntry {
     pub run_id: String,
     /// The deployment version it ran on (the deployment's unit then, hex; for a resumed part, the
     /// version its run started on). View mode shows that version's canvas
-    /// (`GET …/document?unit=`).
+    /// (`GET …/text?unit=`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub unit: String,
     pub nonce: String,

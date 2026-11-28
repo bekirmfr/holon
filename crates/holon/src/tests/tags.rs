@@ -145,7 +145,7 @@ fn an_agents_new_tag_is_a_proposal() {
     let accounts = Arc::clone(state.access.accounts().unwrap());
     accounts.add("scout", Kind::Agent, "agent", "ada", "ada").unwrap();
     let (scout, _) = accounts.create_token("scout", "Scout", "ada").unwrap();
-    let (code, said) = send(&state, &scout, "POST", "/deploy", json!({ "slug": "e", "unit": tagged, "document": document_of(&tagged), "why": "on the payments team's flows" }));
+    let (code, said) = send(&state, &scout, "POST", "/deploy", json!({ "slug": "e", "unit": tagged, "text": staged_text(&tagged), "why": "on the payments team's flows" }));
     assert_eq!(code, 202, "{said}");
     let proposal: Value = serde_json::from_str(&said).unwrap();
     assert_eq!(proposal["proposal"]["needs"], json!(["Tag(\"payments\")"]));
@@ -153,7 +153,7 @@ fn an_agents_new_tag_is_a_proposal() {
     assert!(accounts.tagged("payments").is_empty());
     let approving = "an agent doesn't approve what a flow may do: deploy without \"acknowledge\"; what needs approval waits for a person, as a proposal";
     for unit in [tagged.clone(), "0".repeat(64)] {
-        let asked = json!({ "slug": "e", "unit": unit, "document": document_of(&unit), "acknowledge": ["Tag(\"payments\")"] });
+        let asked = json!({ "slug": "e", "unit": unit, "text": staged_text(&unit), "acknowledge": ["Tag(\"payments\")"] });
         assert_eq!(refusal(send(&state, &scout, "POST", "/deploy", asked)), (403, approving.to_string()), "{unit}");
     }
 }

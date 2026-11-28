@@ -682,7 +682,7 @@ pub(crate) static ROUTES: &[Route] = &[
     asks("GET", "/deployments/{slug}/log/heads", RunView, On::Slug),
     both("GET", "/deployments/{slug}/export", RunSteps, RunExport, On::Slug),
     both("GET", "/deployments/{slug}/replay", RunSteps, RunExport, On::Slug),
-    asks("GET", "/deployments/{slug}/document", FlowView, On::Slug),
+    asks("GET", "/deployments/{slug}/text", FlowView, On::Slug),
     asks("GET", "/deployments/{slug}/events", FlowView, On::Slug),
     asks("GET", "/deployments/{slug}/versions", FlowView, On::Slug),
     asks("GET", "/deployments/{slug}/holds", StateView, On::Slug),

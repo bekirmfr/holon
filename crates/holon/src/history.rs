@@ -115,16 +115,13 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             eprintln!("{WHO}: version {number} isn't listed (holon restore {slug} lists them)");
             return 1;
         };
-        let document = match get(format!("/deployments/{slug}/document?unit={unit}")) {
+        let kept = match get(format!("/deployments/{slug}/text?unit={unit}")) {
             Ok(v) => v,
             Err(code) => return code,
         };
-        let text = match holon_author::agent::text_of(&slug, &document) {
-            Ok(text) => text,
-            Err(e) => {
-                eprintln!("{WHO}: {e}");
-                return 1;
-            }
+        let Some(text) = kept["text"].as_str().map(str::to_string) else {
+            eprintln!("{WHO}: version {number} keeps no text");
+            return 1;
         };
         if as_json {
             crate::cmdline::print_json(&serde_json::json!({ "version": number, "unit": unit, "text": text }));
@@ -202,8 +199,7 @@ struct Version {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Text {
-    Checked,
-    Unchecked,
+    Kept,
     None,
 }
 
@@ -217,11 +213,8 @@ impl Versions {
                 .flatten()
                 .rev()
                 .filter_map(|v| {
-                    let text = match (v["canvas"].as_bool(), v["canvas_checked"] == true) {
-                        (Some(false), _) => Text::None,
-                        (Some(true), false) => Text::Unchecked,
-                        _ => Text::Checked,
-                    };
+                    // Every text kept is the one its code was compiled from (the server compiles it).
+                    let text = if v["text"] == false { Text::None } else { Text::Kept };
                     Some(Version { number: v["number"].as_u64()?, unit: v["unit"].as_str()?.to_string(), first_seq: v["first_seq"].as_u64(), text })
                 })
                 .collect(),
@@ -232,7 +225,6 @@ impl Versions {
     fn text_of(&self, n: u64) -> &'static str {
         match self.0.iter().find(|v| v.number == n).map(|v| v.text) {
             Some(Text::None) => "  (no text kept)",
-            Some(Text::Unchecked) => "  (its text not checked against its code)",
             _ => "",
         }
     }
@@ -342,20 +334,19 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// A version's deploy says when its text isn't one checked to build its code: kept from before
-    /// every deploy was checked, or none kept.
+    /// A version's deploy says when it keeps no text (deployed as a unit alone).
     #[test]
-    fn a_deploy_says_when_its_text_isnt_checked_or_kept() {
+    fn a_deploy_says_when_its_text_isnt_kept() {
         let versions = Versions::of(&json!({ "versions": [
-            { "number": 3, "unit": "cc", "canvas": true, "canvas_checked": true },
-            { "number": 2, "unit": "bb", "canvas": false },
-            { "number": 1, "unit": "aa", "canvas": true },
+            { "number": 3, "unit": "cc", "text": true },
+            { "number": 2, "unit": "bb", "text": false },
+            { "number": 1, "unit": "aa", "text": true },
         ] }));
         let deploy = |n: u32| json!({ "run_seq": 0, "at_ms": 0, "kind": "deploy", "what": format!("deployed version {n}"), "by": "maria", "version": n });
         assert_eq!(
             timeline(&[], &[deploy(1), deploy(2), deploy(3)], &versions, true),
             [
-                "       deploy     1970-01-01T00:00:00  deployed version 1  by maria  (its text not checked against its code)",
+                "       deploy     1970-01-01T00:00:00  deployed version 1  by maria",
                 "       deploy     1970-01-01T00:00:00  deployed version 2  by maria  (no text kept)",
                 "       deploy     1970-01-01T00:00:00  deployed version 3  by maria",
             ]

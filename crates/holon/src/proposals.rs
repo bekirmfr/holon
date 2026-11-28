@@ -54,9 +54,12 @@ pub(crate) struct Proposal {
     /// Why it was declined, for its author to read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<String>,
-    /// Its canvas, as deployed it would be (with its text, `source`).
+    /// Its text, as proposed: what approving it deploys, whatever is saved since.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) document: Option<Value>,
+    pub(crate) text: Option<String>,
+    /// Where its canvas's nodes were drawn by hand, as proposed (`kept_layout`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) layout: Option<holon_author::kept_layout::Layout>,
 }
 
 /// How many decided proposals `GET /proposals` lists, newest first.
@@ -166,11 +169,12 @@ fn next_version(state: &AppState, slug: &str) -> u32 {
     state.deployments.lock().unwrap().get(slug).and_then(|d| d.versions.last()).map_or(1, |v| v.number + 1)
 }
 
-/// A proposal as listed: without its document, with the version it would deploy as while it waits.
-fn listed(state: &AppState, p: &Proposal, with_document: bool) -> Value {
+/// A proposal as listed: without its text, with the version it would deploy as while it waits.
+fn listed(state: &AppState, p: &Proposal, with_text: bool) -> Value {
     let mut v = serde_json::to_value(p).unwrap_or(Value::Null);
-    if !with_document && let Some(o) = v.as_object_mut() {
-        o.remove("document");
+    if !with_text && let Some(o) = v.as_object_mut() {
+        o.remove("text");
+        o.remove("layout");
     }
     if p.state == Decision::Waiting {
         v["version"] = json!(next_version(state, &p.slug));
@@ -192,10 +196,10 @@ fn on_timeline(state: &AppState, slug: &str, what: String, by: Option<&str>) {
 /// someone else's), and kept as a proposal. 202, with the proposal.
 pub(crate) fn propose(state: &AppState, body: &DeployRequestBody, needs: Vec<String>, who: &crate::access::Caller) -> Response {
     let by = who.name.as_deref();
-    let Some(document) = body.document.clone() else {
-        return err(400, "a proposal keeps its canvas for the person who reviews it: send \"document\"");
+    let Some(text) = body.text.clone() else {
+        return err(400, "a proposal keeps its text for the person who reviews it: send \"text\"");
     };
-    let saved_at = match crate::flows::save(state, &body.slug, document.clone(), body.uses.clone(), who, None) {
+    let saved_at = match crate::flows::save(state, &body.slug, text.clone(), body.layout.clone(), body.uses.clone(), who, None) {
         Ok(at) => at,
         Err(refused) => return refused,
     };
@@ -216,7 +220,8 @@ pub(crate) fn propose(state: &AppState, body: &DeployRequestBody, needs: Vec<Str
         decided_by: None,
         decided_at_ms: None,
         reason: None,
-        document: Some(document),
+        text: Some(text),
+        layout: body.layout.clone(),
     });
     let version = next_version(state, &body.slug);
     let said = if proposal.why.is_empty() { String::new() } else { format!(": {}", proposal.why) };
@@ -240,7 +245,7 @@ pub(crate) fn handle_get_proposals(state: &AppState, who: &Caller) -> Response {
     Response::json(&json!({ "proposals": listed }))
 }
 
-/// `GET /proposals/<id>`: one, with its document; none of a flow `who` may not view.
+/// `GET /proposals/<id>`: one, with its text; none of a flow `who` may not view.
 pub(crate) fn handle_get_proposal(state: &AppState, id: &str, who: &Caller) -> Response {
     match id.parse::<u64>().ok().and_then(|id| state.proposals.all().into_iter().find(|p| p.id == id && views(who, p))) {
         Some(p) => Response::json(&listed(state, &p, true)),
@@ -392,7 +397,8 @@ mod tests {
             decided_by: None,
             decided_at_ms: None,
             reason: None,
-            document: None,
+            text: None,
+            layout: None,
         }
     }
 

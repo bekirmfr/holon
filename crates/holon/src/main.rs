@@ -281,17 +281,12 @@ struct AppState {
     /// Where `deployments` is persisted, or nowhere (`--deployments :memory:`, matching
     /// `--store`'s own convention) to opt out entirely.
     deployments_path: Place,
-    /// name → saved flow document. A flow is a *workspace file* — the editor's canvas exactly
-    /// as it was left (node positions, viewport, UI settings), saved and re-opened by name —
-    /// deliberately NOT a content-addressed unit: positions and zoom are presentation, and the
-    /// whole hashing design exists to keep presentation out of identity (child_order /
-    /// param_order are cosmetic). The two stay separate: flows are mutable named documents;
-    /// projecting/publishing/deploying stays the existing content-addressed path, untouched.
-    /// The document itself is opaque `serde_json::Value` — the server validates the name and
-    /// that the body parses, nothing more; its internal shape is the editor's contract with
-    /// itself, and teaching the server that shape would couple it to a presentation format for
-    /// zero gain. Plain `Mutex`, no `Arc` — deployments needed a second handle for the clock
-    /// scheduler thread; nothing but HTTP handlers ever touches flows.
+    /// name → saved flow, as its text. A flow is a *workspace file*, saved and re-opened by name,
+    /// deliberately NOT a content-addressed unit: a draft is saved before it compiles, and saving
+    /// over a name is what "save" means in any editor. Deploying stays the content-addressed path:
+    /// the server compiles the text it is sent (docs/L4s/text-deploy-plan.md). Plain `Mutex`, no
+    /// `Arc` — deployments needed a second handle for the clock scheduler thread; nothing but HTTP
+    /// handlers ever touches flows.
     flows: Mutex<BTreeMap<String, FlowRecord>>,
     /// Where `flows` is persisted (write-through, same discipline as `deployments_path`), or
     /// nowhere to opt out.
@@ -478,9 +473,6 @@ struct Deployment {
     /// Its open WebSocket connections (websockets.rs): kept across redeploys, closed when it is
     /// paused, stopped or removed. Never persisted: a restart ends them.
     sockets: Arc<websockets::Sockets>,
-    /// The flow document (canvas) this deployment was deployed from, as the editor sent it, so
-    /// view mode shows exactly what runs even after the flow is edited. Persisted.
-    document: Option<serde_json::Value>,
     /// A person turned off agents proposing its versions (proposals.rs). Persisted.
     agents_propose_off: bool,
     /// A person who may approve its deploys let an agent's versions of it deploy without them,

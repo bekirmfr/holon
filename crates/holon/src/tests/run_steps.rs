@@ -51,7 +51,7 @@ fn deploy(state: &AppState, ada: &str, slug: &str, text: &str) {
     let (code, preview) = send(state, ada, "POST", "/deploy/preview", json!({ "slug": slug, "unit": plan.unit }));
     assert_eq!(code, 200, "{preview}");
     let preview: Value = serde_json::from_str(&preview).unwrap();
-    let (code, said) = send(state, ada, "POST", "/deploy", json!({ "slug": slug, "unit": plan.unit, "document": plan.document, "acknowledge": preview["needs_approval"] }));
+    let (code, said) = send(state, ada, "POST", "/deploy", json!({ "slug": slug, "unit": plan.unit, "text": text, "acknowledge": preview["needs_approval"] }));
     assert_eq!(code, 200, "{said}");
 }
 
@@ -447,13 +447,13 @@ every("1h", () => {
 "#;
 
 /// What the sweep of every route sends that the server made: a version of `kept` to deploy (its
-/// units, its unit and its document), the run of `steps` waiting at its approval, an agent's
+/// units, its unit and its text), the run of `steps` waiting at its approval, an agent's
 /// proposal, and the run of `kept` that kept the value, to go back to.
 #[derive(Default)]
 struct Got {
     units: Vec<Vec<u8>>,
     unit: String,
-    document: Value,
+    text: String,
     waiting: String,
     proposal: u64,
     seq: u64,
@@ -463,21 +463,23 @@ struct Got {
 /// kept, the run of `steps` waiting, a proposal scout makes, the run that kept the value.
 fn what_rob_sends(state: &AppState, tokens: &BTreeMap<&'static str, String>) -> Got {
     let ada = &tokens["ada"];
-    let plan = holon_author::agent::plan(&KEPT.replace("return \"kept\"", "return \"kept, again\"")).unwrap();
+    let text = KEPT.replace("return \"kept\"", "return \"kept, again\"");
+    let plan = holon_author::agent::plan(&text).unwrap();
     let heads: Value = serde_json::from_str(&send(state, ada, "GET", "/deployments/kept/log/heads", Value::Null).1).unwrap();
     let seq = heads["entries"].as_array().unwrap().iter().find(|e| e["kind"] == "request").unwrap()["seq"].as_u64().unwrap();
     let runs: Value = serde_json::from_str(&send(state, ada, "GET", "/deployments/steps/runs", Value::Null).1).unwrap();
     let waiting = runs["runs"][0]["run_id"].as_str().unwrap().to_string();
     let proposal = {
-        let other = holon_author::agent::plan(&KEPT.replace("return \"kept\"", "return \"kept, an agent's\"")).unwrap();
+        let other_text = KEPT.replace("return \"kept\"", "return \"kept, an agent's\"");
+        let other = holon_author::agent::plan(&other_text).unwrap();
         for unit in &other.units {
             assert_eq!(ask(state, Some(&tokens["scout"]), "POST", "/unit", unit.clone()).0, 200);
         }
-        let (code, said) = send(state, &tokens["scout"], "POST", "/deploy", json!({ "slug": "kept", "unit": other.unit, "document": other.document }));
+        let (code, said) = send(state, &tokens["scout"], "POST", "/deploy", json!({ "slug": "kept", "unit": other.unit, "text": other_text }));
         assert_eq!(code, 202, "an agent's version waits: {said}");
         serde_json::from_str::<Value>(&said).unwrap()["proposal"]["id"].as_u64().unwrap()
     };
-    Got { units: plan.units.clone(), unit: plan.unit.clone(), document: plan.document.clone(), waiting, proposal, seq }
+    Got { units: plan.units.clone(), unit: plan.unit.clone(), text, waiting, proposal, seq }
 }
 
 /// Every route that isn't a GET, as rob sends it in the sweep (R57), in an order that leaves each
@@ -496,8 +498,8 @@ fn every_other(got: &Got) -> Vec<(&'static str, String, Vec<u8>, u16)> {
     };
     sent.extend([
         ("POST", "/deploy/preview".into(), j(json!({ "slug": "kept", "unit": got.unit })), 200),
-        ("POST", "/deploy".into(), j(json!({ "slug": "kept", "unit": got.unit, "document": got.document })), 200),
-        ("POST", "/flows".into(), j(json!({ "name": "rob-saved", "document": {} })), 200),
+        ("POST", "/deploy".into(), j(json!({ "slug": "kept", "unit": got.unit, "text": got.text })), 200),
+        ("POST", "/flows".into(), j(json!({ "name": "rob-saved", "text": "" })), 200),
         ("DELETE", "/flows/rob-saved".into(), vec![], 200),
         ("POST", format!("/proposals/{}/decline", got.proposal), j(json!({ "reason": "not now" })), 200),
         ("POST", "/summary/check".into(), vec![], 200),
@@ -1297,7 +1299,7 @@ fn deploy_answer(state: &AppState, ada: &str, slug: &str, text: &str) -> (u16, S
         return (code, preview);
     }
     let preview: Value = serde_json::from_str(&preview).unwrap();
-    send(state, ada, "POST", "/deploy", json!({ "slug": slug, "unit": plan.unit, "document": plan.document, "acknowledge": preview["needs_approval"] }))
+    send(state, ada, "POST", "/deploy", json!({ "slug": slug, "unit": plan.unit, "text": text, "acknowledge": preview["needs_approval"] }))
 }
 
 /// A flow that reads a file of a folder bound to it, its text kept in the data folder (a folder's

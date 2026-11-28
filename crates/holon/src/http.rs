@@ -21,8 +21,9 @@ pub(crate) fn is_allowed_origin(origin: &str) -> bool {
     })
 }
 
-/// The largest request body any endpoint accepts. Units and flow documents are kilobytes; this
-/// only exists so one oversized POST can't exhaust memory.
+/// The largest request body any endpoint accepts. Units and flow texts are kilobytes, a big
+/// flow's text under a megabyte (a deploy sends the text, docs/L4s/text-deploy-plan.md); this only
+/// exists so one oversized POST can't exhaust memory.
 pub(crate) const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
 
 /// The control plane's request gate, checked before any routing. CORS headers only decide
@@ -71,7 +72,7 @@ pub(crate) fn with_cors(access: &Access, request: &Request, mut response: Respon
             response = response
                 .with_additional_header("Access-Control-Allow-Origin", origin.to_string())
                 .with_additional_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-                .with_additional_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+                .with_additional_header("Access-Control-Allow-Headers", "Content-Type, Content-Encoding, Authorization")
                 // A preflight's answer kept ten minutes (unstated, five seconds): a page on
                 // another origin (the editor in development, an --allow-origin console) opens
                 // fewer new connections, each one the server's HTTP library may leave unread
@@ -125,8 +126,42 @@ fn body_deadline() -> Duration {
     BODY_DEADLINE
 }
 
-/// Every body the control plane reads, read by the deadline and the cap.
+/// Every body the control plane reads, read by the deadline and the cap. Sent as it is: a body sent
+/// compressed (`Content-Encoding`) is refused here; only the routes that take a flow read one
+/// ([`read_flow_body`]).
 pub(crate) fn read_body(request: &Request) -> Result<Vec<u8>, Response> {
+    if encoding_of(request).is_some() {
+        return Err(err(415, "this route takes its body as it is, not encoded (Content-Encoding)"));
+    }
+    read_plain(request)
+}
+
+/// The body's `Content-Encoding`, when it names one (`identity` names none).
+fn encoding_of(request: &Request) -> Option<String> {
+    request.header("Content-Encoding").map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty() && e != "identity")
+}
+
+/// The body of a request that sends a flow (a deploy, its preview, a save), which may come gzipped
+/// (`Content-Encoding: gzip`, docs/L4s/text-deploy-plan.md): sent or unpacked, it is held to
+/// [`MAX_BODY_BYTES`], unpacking stopped as it passes that, so no body is ever larger here than a
+/// plain one may be. Another encoding, a gzip that doesn't unpack and one past the cap are each
+/// refused in their own words.
+pub(crate) fn read_flow_body(request: &Request) -> Result<Vec<u8>, Response> {
+    match encoding_of(request).as_deref() {
+        None => read_plain(request),
+        Some("gzip") => {
+            let packed = read_plain(request)?;
+            holon_core::gunzip_bounded(&packed, MAX_BODY_BYTES as usize).map_err(|why| match why {
+                holon_core::Unpacked::Broken => err(400, "the body says it is gzipped, and it doesn't unpack as gzip"),
+                holon_core::Unpacked::TooLarge => err(413, format!("request body exceeds {MAX_BODY_BYTES} bytes, unpacked")),
+            })
+        }
+        Some(_) => Err(err(415, "a flow's body is sent as it is or gzipped (Content-Encoding: gzip), not otherwise encoded")),
+    }
+}
+
+/// [`read_body`], whatever the body says of its encoding.
+fn read_plain(request: &Request) -> Result<Vec<u8>, Response> {
     // Read on a thread of its own, from a copy of the request that shares its body: one that
     // trickles or stops is left to that thread and its connection, and this request answers at
     // the deadline. Given up on, the reader stops at its next read, so the 408 can be written
@@ -385,9 +420,9 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             if method == "GET" {
                 return verify::handle_get_replay(&state.store, &state.folders, &state.deployments, &state.replays, slug, request);
             }
-        } else if let Some(slug) = rest.strip_suffix("/document") {
+        } else if let Some(slug) = rest.strip_suffix("/text") {
             if method == "GET" {
-                return handle_get_document(&state.store, &state.deployments, slug, request);
+                return handle_get_text(&state.store, &state.deployments, slug, request);
             }
         } else if let Some(slug) = rest.strip_suffix("/events") {
             if method == "GET" {

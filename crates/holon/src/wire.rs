@@ -182,21 +182,24 @@ pub(crate) struct PerformedEntry {
     pub(crate) payload: SValue,
 }
 
-/// One saved flow — a named workspace document (see `AppState::flows` for why this is
-/// deliberately not a content-addressed unit). `document` is opaque JSON: node positions,
-/// viewport, whatever the editor chooses to keep — the server never reads inside it.
+/// One saved flow: a named workspace file (see `AppState::flows` for why this is deliberately not
+/// a content-addressed unit), kept as its text (docs/L4s/text-deploy-plan.md): whoever needs its
+/// canvas, units or names compiles the text. A draft that doesn't compile yet is kept as well.
 /// `Serialize`+`Deserialize` because this exact shape is also the on-disk persistence format
 /// (one JSON array of these, same discipline as `DeploymentRecord`).
 #[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct FlowRecord {
     pub(crate) name: String,
-    pub(crate) document: serde_json::Value,
+    pub(crate) text: String,
+    /// Where its canvas's nodes were drawn by hand, when they were (`kept_layout`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) layout: Option<holon_author::kept_layout::Layout>,
     pub(crate) saved_at_epoch_seconds: u64,
     /// Who did it (access.rs's caller: a named user, `admin`), when the server knows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) saved_by: Option<String>,
     /// The saved flows it places as nodes, and which save of each (the editor says so beside
-    /// the document, which stays opaque). Absent when saved before this was recorded.
+    /// the text). Absent when saved before this was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) uses: Option<Vec<HolonUse>>,
 }
@@ -214,7 +217,9 @@ pub(crate) struct HolonUse {
 #[derive(Deserialize)]
 pub(crate) struct SaveFlowBody {
     pub(crate) name: String,
-    pub(crate) document: serde_json::Value,
+    pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) layout: Option<holon_author::kept_layout::Layout>,
     #[serde(default)]
     pub(crate) uses: Option<Vec<HolonUse>>,
     /// The save it was made from, by its `saved_at_epoch_seconds`; null for a new flow, none saved
@@ -223,8 +228,8 @@ pub(crate) struct SaveFlowBody {
     pub(crate) base: Option<Option<u64>>,
 }
 
-/// `GET /flows`' per-entry listing shape — name and freshness only, never the (possibly
-/// large) document itself; that's what `GET /flows/<name>` is for.
+/// `GET /flows`' per-entry listing shape — name and freshness only, never the text itself;
+/// that's what `GET /flows/<name>` is for.
 #[derive(Serialize)]
 pub(crate) struct FlowListEntry {
     pub(crate) name: String,
@@ -237,9 +242,11 @@ pub(crate) struct FlowListEntry {
     pub(crate) uses: Option<Vec<HolonUse>>,
 }
 
-/// `POST /deploy`'s request body. `unit` must already be resolvable in the store (staged via
-/// `/unit`, or published — see the L4's Fork 1: deploy deliberately does not require
-/// publication, a separate, marketplace-facing concept). Nothing about *which* triggers apply
+/// `POST /deploy`'s request body. A flow is sent as its `text`, which the server compiles
+/// (docs/L4s/text-deploy-plan.md): its units go into the store, and `unit`, when sent too, must be
+/// the text's (the unit a person reviewed). Without a text, `unit` must already be resolvable in
+/// the store (staged via `/unit`, or published — see the L4's Fork 1: deploy deliberately does not
+/// require publication, a separate, marketplace-facing concept), and no text is kept. Nothing about *which* triggers apply
 /// is asserted by the caller; that's read off the unit itself (its handlers). `acknowledge`
 /// **is** something the caller must assert — not the capability *set* (still fully derived),
 /// but that the caller has actually reviewed it: every capability
@@ -251,12 +258,19 @@ pub(crate) struct FlowListEntry {
 #[derive(Deserialize)]
 pub(crate) struct DeployRequestBody {
     pub(crate) slug: String,
+    /// The unit it deploys (hex): the text's, filled in from it when only the text is sent.
+    #[serde(default)]
     pub(crate) unit: String,
     #[serde(default)]
     pub(crate) acknowledge: Vec<String>,
-    /// The flow document (canvas) being deployed, for view mode. Optional.
+    /// The flow's text (`.holon.ts`): what is deployed, compiled here, and kept with the version.
     #[serde(default)]
-    pub(crate) document: Option<serde_json::Value>,
+    pub(crate) text: Option<String>,
+    /// Where its canvas's nodes were drawn by hand, for its text's unit (holon-author's
+    /// `kept_layout`): kept with the version, never part of its unit. None for a canvas the
+    /// compiler laid out.
+    #[serde(default)]
+    pub(crate) layout: Option<holon_author::kept_layout::Layout>,
     /// What it needs beyond its graph: limits, exceptions (permissions.rs).
     #[serde(default)]
     pub(crate) requirements: Requirements,
@@ -274,11 +288,6 @@ pub(crate) struct DeployRequestBody {
     /// event and in the activity (events.rs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) note: Option<String>,
-    /// The release of Holon whose compiler built the unit from the document (the editor, the
-    /// command line, the MCP server send theirs): a document this server builds otherwise is
-    /// refused naming both, when they differ.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) made_with: Option<String>,
 }
 
 /// The on-disk, persisted shape of one deployment. `triggers` is still not persisted — it's
@@ -349,8 +358,6 @@ pub(crate) struct DeploymentRecord {
     pub(crate) status: Option<Status>,
     #[serde(default)]
     pub(crate) sessions: Vec<Session>,
-    #[serde(default)]
-    pub(crate) document: Option<serde_json::Value>,
     /// The documents of earlier versions, as files before rc.30 kept them (`{unit, document}`, the
     /// last 10). Read once at load, numbered and completed into `versions_kept`; never written,
     /// so an older release reading a newer file finds no versions rather than failing on them.
@@ -523,16 +530,16 @@ pub(crate) struct Version {
     /// deployed before Holon kept it (rc.29 and earlier): they open, but don't restore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) request: Option<VersionRequest>,
-    /// Its flow document (canvas), by the hash of a text value holding its JSON in the content
-    /// store, so the deployments file stays small however many versions it keeps.
+    /// Its text, by the hash of a text value in the content store, so the deployments file stays
+    /// small however many versions it keeps. Absent for a version deployed as a unit alone. The
+    /// text is what was compiled to its unit, so it is the code it runs (a restore keeps the text
+    /// of the version it restores, with its unit).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) document_ref: Option<String>,
-    /// Whether its document was checked to build its unit when it was deployed (deploy.rs
-    /// `document_is_the_unit`), or, for a restore, when the version it restores was. A version
-    /// deployed before every deploy was checked never was: its canvas may show other code than it
-    /// runs, and the history says so.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub(crate) canvas_checked: bool,
+    pub(crate) text_ref: Option<String>,
+    /// Where its canvas's nodes were drawn by hand (`kept_layout::Layout`), by the hash of a text
+    /// value holding its JSON in the content store; none for a canvas the compiler laid out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) layout_ref: Option<String>,
     /// The state it carried when deployed, as a snapshot's hash (`restore::save_snapshot`): the
     /// state the version before it left, which restoring that one's state puts back. Absent for a
     /// deployment without state, and for versions deployed before rc.30.
@@ -541,13 +548,9 @@ pub(crate) struct Version {
     /// The seq its deploy's next run took in the log: where the runs since it start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) first_seq: Option<u64>,
-    /// The document inline, as files kept it before `document_ref`. Read once at load, when it
-    /// moves into the store; never written.
-    #[serde(default, skip_serializing)]
-    pub(crate) document: Option<serde_json::Value>,
 }
 
-/// What a deploy asked beside its unit and document: what deploying it again asks.
+/// What a deploy asked beside its unit and text: what deploying it again asks.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub(crate) struct VersionRequest {
     #[serde(default)]

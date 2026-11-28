@@ -378,7 +378,7 @@ fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_t
     app.refresh();
     ctrl(&mut app, 'r');
     let runs = app.tabs[0].runs.as_ref().expect("its runs");
-    // A run is shown over the text its view prints from the deployed document (agent::run_view),
+    // A run is shown over the text deployed, compiled here (agent::run_view),
     // laid out as fmt writes it: the action's line, then its statements.
     let steps = runs.steps();
     let mut lines = steps.clone();
@@ -2043,7 +2043,7 @@ fn the_editor_shows_what_the_server_keeps_only_to_its_grants() {
             crate::mcp::json_of(&as_ada, "POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
         }
         let preview = send("POST", "/deploy/preview", serde_json::json!({ "slug": slug, "unit": plan.unit }));
-        send("POST", "/deploy", serde_json::json!({ "slug": slug, "unit": plan.unit, "document": plan.document, "acknowledge": preview["needs_approval"] }));
+        send("POST", "/deploy", serde_json::json!({ "slug": slug, "unit": plan.unit, "text": text, "acknowledge": preview["needs_approval"] }));
     }
     let request = |slug: &str, url: &str, body: serde_json::Value| {
         send("POST", &format!("/deployments/{slug}/request"), serde_json::json!({ "method": "POST", "url": url, "headers": [["content-type", "application/json"]], "body": body.to_string() }));
@@ -2101,35 +2101,27 @@ fn the_editor_shows_what_the_server_keeps_only_to_its_grants() {
 }
 
 /// R79, as a class: approving a proposal deploys exactly the unit it proposed, or nothing. For
-/// every sample, its proposal as the server keeps it (slug, unit, document) plans to the unit
-/// proposed, or is refused, never to another; and it plans whenever the server would take it (its
-/// document deploys as its unit, deploy.rs `document_is_the_unit`). Its document under another
-/// sample's unit, another sample's document under its unit, and one without its document, are each
-/// refused.
+/// every sample, its proposal as the server keeps it (slug, unit, text: the server compiled the
+/// text to the unit) plans to the unit proposed, with the text proposed. Its text under another
+/// sample's unit, another sample's text under its unit, and one without its text, are each refused.
 #[test]
 fn a_proposal_is_deployed_as_proposed_or_refused() {
     use super::approvals::proposed_plan;
-    let planned: Vec<_> = holon_author::samples::samples().iter().map(|s| (s.name, holon_author::agent::plan(s.text).unwrap_or_else(|e| panic!("{}: {e}", s.name)))).collect();
+    let planned: Vec<_> = holon_author::samples::samples().iter().map(|s| (s.name, s.text, holon_author::agent::plan(s.text).unwrap_or_else(|e| panic!("{}: {e}", s.name)))).collect();
     assert!(planned.len() > 1);
-    let mut taken = vec![];
-    for (i, (name, plan)) in planned.iter().enumerate() {
-        let (_, other) = &planned[(i + 1) % planned.len()];
+    for (i, (name, text, plan)) in planned.iter().enumerate() {
+        let (_, other_text, other) = &planned[(i + 1) % planned.len()];
         assert_ne!(plan.unit, other.unit, "{name}");
-        let proposal = |unit: &str, document: &serde_json::Value| serde_json::json!({ "id": 1, "slug": name, "unit": unit, "document": document });
-        let server_takes = holon_author::agent::deploys_as(&plan.document).is_ok_and(|(unit, _)| unit == plan.unit);
-        match proposed_plan(&proposal(&plan.unit, &plan.document)) {
-            Ok((got, _)) => assert_eq!(got.unit, plan.unit, "{name}: the unit proposed"),
-            Err(e) => assert!(!server_takes, "{name}: the server takes this proposal, and the terminal can't approve it: {e}"),
+        let proposal = |unit: &str, text: &str| serde_json::json!({ "id": 1, "slug": name, "unit": unit, "text": text });
+        match proposed_plan(&proposal(&plan.unit, text)) {
+            Ok((got, kept)) => assert_eq!((got.unit, kept.as_str()), (plan.unit.clone(), *text), "{name}: the unit and text proposed"),
+            Err(e) => panic!("{name}: the server takes this proposal, and the terminal can't approve it: {e}"),
         }
-        if server_takes {
-            taken.push(*name);
-        }
-        for tampered in [proposal(&other.unit, &plan.document), proposal(&plan.unit, &other.document)] {
+        for tampered in [proposal(&other.unit, text), proposal(&plan.unit, other_text)] {
             assert!(proposed_plan(&tampered).is_err(), "{name}: tampered, it is refused");
         }
-        assert!(proposed_plan(&serde_json::json!({ "slug": name, "unit": plan.unit })).is_err(), "{name}: without its document");
+        assert!(proposed_plan(&serde_json::json!({ "slug": name, "unit": plan.unit })).is_err(), "{name}: without its text");
     }
-    assert!(taken.len() * 2 > planned.len(), "most samples are proposable: {taken:?}");
 }
 
 /// R79, through the Approvals page: an agent proposes a version of "greet", then a person saves
@@ -2154,7 +2146,7 @@ fn approving_a_proposal_deploys_what_was_proposed_not_the_newest_save() {
     let propose = |flow: &str, says: &str| {
         let text = greet(flow, says);
         let plan = holon_author::agent::plan(&text).unwrap();
-        let said = agent.post("/deploy", serde_json::json!({ "slug": flow, "unit": plan.unit, "document": plan.document, "why": format!("says {says}") }));
+        let said = agent.post("/deploy", serde_json::json!({ "slug": flow, "unit": plan.unit, "text": text, "why": format!("says {says}") }));
         assert!(said.as_ref().is_ok_and(|s| s["proposal"]["id"].is_u64()), "a proposal: {said:?}");
         plan.unit
     };
@@ -2366,7 +2358,7 @@ fn approving_new_permissions_takes_a_mark_first_however_it_is_approved() {
     let agent = Client::new(Box::new(InProcess(state, Some(claude))));
     let propose = |text: &str| {
         let plan = holon_author::agent::plan(text).unwrap();
-        let said = agent.post("/deploy", serde_json::json!({ "slug": plan.name, "unit": plan.unit, "document": plan.document, "why": "r121" }));
+        let said = agent.post("/deploy", serde_json::json!({ "slug": plan.name, "unit": plan.unit, "text": text, "why": "r121" }));
         assert!(said.as_ref().is_ok_and(|s| s["proposal"]["id"].is_u64()), "a proposal: {said:?}");
     };
     let pick = |app: &mut App, slug: &str| {
@@ -2569,7 +2561,7 @@ fn live_approvals() {
     // Runs waiting at a two-person approval: ada starts it, bob and cy approve it, and it goes on.
     let payouts = "import { action, approval, flow } from \"holon\"\n\nflow(\"payouts\")\n\nexport const pay = action(async (order) => {\n  const decision = await approval(\"payout\", { expires: \"1h\", people: 2 })\n  return decision.approved\n})\n";
     let plan = stage(&ada, payouts);
-    let ack = serde_json::json!({ "slug": "payouts", "unit": plan.unit, "document": plan.document, "acknowledge": ["Action(\"pay\")", "Approval(\"payout/person*2\")"] });
+    let ack = serde_json::json!({ "slug": "payouts", "unit": plan.unit, "text": payouts, "acknowledge": ["Action(\"pay\")", "Approval(\"payout/person*2\")"] });
     ok(as_ada.post("/deploy", ack), "payouts deployed");
     ok(as_ada.post("/trigger/payouts/pay", serde_json::json!({ "amount": 10 })).or_else(|e| if e.contains("wait") { Ok(serde_json::Value::Null) } else { Err(e) }), "a run");
     // ada started it: it waits, and none of it is hers to decide.
@@ -2598,7 +2590,7 @@ fn live_approvals() {
     let as_agent = open(Some(&agent));
     let greet = "import { action, flow } from \"holon\"\n\nflow(\"greet\")\n\nexport const hi = action(async (name) => \"hello\")\n";
     let plan = stage(&agent, greet);
-    let said = ok(as_agent.post("/deploy", serde_json::json!({ "slug": "greet", "unit": plan.unit, "document": plan.document, "why": "to say hello" })), "proposed");
+    let said = ok(as_agent.post("/deploy", serde_json::json!({ "slug": "greet", "unit": plan.unit, "text": greet, "why": "to say hello" })), "proposed");
     assert!(said["proposal"]["id"].is_u64(), "{said}");
     let mut a = editor(&ada);
     keep("ada: Deploys, the proposal", &mut a);
@@ -3119,7 +3111,7 @@ fn a_resource_says_who_uses_it_and_what_a_waiting_version_would_add() {
     assert!(app.client.as_ref().unwrap().deployment("reader").is_some(), "{}", note(&app));
     let agent = Client::new(Box::new(InProcess(state, Some(claude))));
     let plan = holon_author::agent::plan(&reader("later")).unwrap();
-    let said = agent.post("/deploy", serde_json::json!({ "slug": "later", "unit": plan.unit, "document": plan.document, "why": "it reads the inbox too" }));
+    let said = agent.post("/deploy", serde_json::json!({ "slug": "later", "unit": plan.unit, "text": reader("later"), "why": "it reads the inbox too" }));
     assert!(said.as_ref().is_ok_and(|s| s["proposal"]["id"].is_u64()), "a proposal: {said:?}");
     app.refresh();
     app.go(Page::Admin);
@@ -3382,7 +3374,7 @@ fn live_host() {
     press(&mut app, KeyCode::Enter);
     assert!(app.client.as_ref().unwrap().deployment("reader").is_some(), "{}", note(&app));
     let plan = holon_author::agent::plan(&reader("later")).unwrap();
-    let said = open(Some(&claude)).post("/deploy", serde_json::json!({ "slug": "later", "unit": plan.unit, "document": plan.document, "why": "it reads the inbox too" }));
+    let said = open(Some(&claude)).post("/deploy", serde_json::json!({ "slug": "later", "unit": plan.unit, "text": reader("later"), "why": "it reads the inbox too" }));
     assert!(said.as_ref().is_ok_and(|s| s["proposal"]["id"].is_u64()), "a proposal: {said:?}");
     app.refresh();
     app.go(Page::Admin);

@@ -355,30 +355,22 @@ impl Client {
 
     /// Its text as deployed now, or as version `unit` was.
     pub(crate) fn text(&self, slug: &str, unit: Option<&str>) -> Result<String, String> {
-        let path = match unit.filter(|u| !u.is_empty()) {
-            Some(u) => format!("/deployments/{}/document?unit={u}", seg(slug)),
-            None => format!("/deployments/{}/document", seg(slug)),
-        };
-        agent::text_of(slug, &self.get(&path)?)
+        let query = unit.filter(|u| !u.is_empty()).map(|u| format!("?unit={u}")).unwrap_or_default();
+        crate::mcp::kept_text(self.api.as_ref(), slug, &query)
     }
 
-    /// The text of a saved flow: as written when that is its canvas's code, else its canvas
-    /// printed (`agent::text_of`, as every reading of a document's text is); and the stamp of the
-    /// save it is.
+    /// The text of a saved flow, as written; and the stamp of the save it is.
     pub(crate) fn saved_text(&self, name: &str) -> Result<(String, Option<u64>), String> {
         let saved = self.get(&format!("/flows/{}", seg(name)))?;
         let at = saved["saved_at_epoch_seconds"].as_u64();
-        let document = saved.get("document").cloned().unwrap_or(saved);
-        agent::text_of(name, &document).map(|text| (text, at))
+        let text = saved["text"].as_str().ok_or_else(|| format!("the saved flow {name:?} came without its text"))?;
+        Ok((text.to_string(), at))
     }
 
-    /// What a run did, laid over the text of the version it ran on.
+    /// What a run did, laid over the text of the version it ran on, compiled here.
     pub(crate) fn run_view(&self, slug: &str, entry: &Value) -> Result<agent::RunView, String> {
-        let path = match entry.get("unit").and_then(Value::as_str).filter(|u| !u.is_empty()) {
-            Some(u) => format!("/deployments/{}/document?unit={u}", seg(slug)),
-            None => format!("/deployments/{}/document", seg(slug)),
-        };
-        agent::run_view(slug, &self.get(&path)?, entry)
+        let query = entry.get("unit").and_then(Value::as_str).filter(|u| !u.is_empty()).map(|u| format!("?unit={u}")).unwrap_or_default();
+        agent::run_view(slug, &crate::mcp::kept_document(self.api.as_ref(), slug, &query)?, entry)
     }
 
     /// Start, pause or stop a deployment; `from` starts a stopped one from a session's state.
@@ -396,20 +388,22 @@ impl Client {
         self.delete(&format!("/deployments/{}", seg(slug))).map(|_| ())
     }
 
-    pub(crate) fn stage(&self, plan: &agent::Plan, slug: &str) -> Result<Staged, String> {
-        deploycmd::stage(self.api.as_ref(), plan, slug)
+    /// Ask what deploying `text` (compiled here to `plan`) as `slug` needs approved.
+    pub(crate) fn stage(&self, plan: &agent::Plan, slug: &str, text: &str) -> Result<Staged, String> {
+        deploycmd::stage(self.api.as_ref(), plan, slug, text)
     }
 
-    /// Deploy what was staged, approving what it needs as us, with its text as written; the
-    /// proposal it was kept as instead, when what it needs is beyond us.
-    pub(crate) fn commit(&self, plan: &agent::Plan, staged: Staged, text: &str) -> Result<Option<Value>, String> {
-        deploycmd::commit(self.api.as_ref(), plan, staged, crate::mcp::saved_document(plan, text))
+    /// Deploy what was staged (its text), approving what it needs as us; the proposal it was kept
+    /// as instead, when what it needs is beyond us.
+    pub(crate) fn commit(&self, plan: &agent::Plan, staged: Staged) -> Result<Option<Value>, String> {
+        deploycmd::commit(self.api.as_ref(), plan, staged)
     }
 
     /// Save a flow without deploying it, as the flows page lists it, over `base` when said (the save
     /// it replaces, flows.rs `save`): the save's stamp.
     pub(crate) fn save(&self, name: &str, plan: &agent::Plan, text: &str, base: Option<Option<u64>>) -> Result<u64, String> {
-        let mut body = json!({ "name": name, "document": crate::mcp::saved_document(plan, text) });
+        let _ = plan;
+        let mut body = json!({ "name": name, "text": text });
         if let Some(base) = base {
             body["base"] = json!(base);
         }

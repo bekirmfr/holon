@@ -370,7 +370,7 @@ pub(crate) fn send(who: &str, server: Option<&str>, method: &str, path: &str, bo
         1
     };
     let target = target(server).map_err(said)?;
-    let (status, response) = request(&target, method, path, body.as_ref().map(|(t, b)| (*t, b.as_slice())), Duration::from_secs(60)).map_err(said)?;
+    let (status, response) = request(&target, method, path, body.as_ref().map(|(t, b)| (*t, b.as_slice())), crate::deploycmd::wait_for(path)).map_err(said)?;
     let Target { server, from, .. } = target;
     // An answer that can't be read whole is no answer: said, never taken as an empty one (which
     // a command printed as `null`, and ended 0).

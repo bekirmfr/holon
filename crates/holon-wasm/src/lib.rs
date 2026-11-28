@@ -1264,15 +1264,30 @@ pub fn compile_holon(source: &str) -> Result<JsValue, JsError> {
     to_js(&serde_json::json!({ "name": compiled.name, "doc": compiled.doc, "names": compiled.names, "lines": lines, "spans": spans }))
 }
 
-/// A flow document as text (holon-author's agent.rs `text_of`, the one every reading of a
-/// document's text goes through): the text it was saved with when that compiles to the unit its
-/// canvas deploys as, else its canvas printed. What the editor shows wherever it shows a
-/// document's text (a review, a diff, a tab opened), so that it is what would run. Throws when the
-/// document doesn't read or its canvas can't be printed.
+/// A kept flow's canvas (docs/L4s/text-deploy-plan.md): its text compiled, as every client
+/// compiles it (holon-author's `agent::canvas_of`, the command line's too), with its hand-drawn
+/// `layout` (or null) put on it when it was drawn for this code. `{doc, unit, placed}`: the unit it
+/// compiles to here, and `"as_drawn"`, `"other_code"` or null (no layout). Throws the text's
+/// mistakes.
 #[wasm_bindgen]
-pub fn document_text(name: &str, document: JsValue) -> Result<String, JsError> {
-    let document: serde_json::Value = from_js(document, "document")?;
-    holon_author::agent::text_of(name, &document).map_err(|e| JsError::new(&e))
+pub fn kept_canvas(text: &str, layout: JsValue) -> Result<JsValue, JsError> {
+    let layout: Option<serde_json::Value> = if layout.is_null() || layout.is_undefined() { None } else { Some(from_js(layout, "layout")?) };
+    let (doc, unit, placed) = holon_author::agent::canvas_of(text, layout.as_ref()).map_err(|e| JsError::new(&e))?;
+    let placed = placed.map(|p| match p {
+        holon_author::kept_layout::Placed::AsDrawn => "as_drawn",
+        holon_author::kept_layout::Placed::OtherCode => "other_code",
+    });
+    to_js(&serde_json::json!({ "doc": doc, "unit": unit, "placed": placed }))
+}
+
+/// What a canvas sends to be kept: `{unit, layout}`, its text compiled (holon-author's
+/// `agent::layout_of`) and where its nodes are when moved by hand (null when none was). Throws when
+/// the text doesn't compile, or the canvas isn't the code its text compiles to.
+#[wasm_bindgen]
+pub fn kept_layout_of(canvas: JsValue, text: &str) -> Result<JsValue, JsError> {
+    let canvas: serde_json::Value = from_js(canvas, "canvas")?;
+    let (unit, layout) = holon_author::agent::layout_of(&canvas, text).map_err(|e| JsError::new(&e))?;
+    to_js(&serde_json::json!({ "unit": unit, "layout": layout }))
 }
 
 /// Each node's range in `source`, as the editor counts it: `[from, to]` in UTF-16 offsets.
