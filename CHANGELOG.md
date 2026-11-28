@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **A flow is sent and kept as its text, and the server compiles it.** The editor, `holon deploy`,
+  `holon flows save` and an agent through `holon mcp` send a flow's text, not its drawing; when you
+  moved boxes on the canvas by hand, where each one is goes with it, compressed. The server
+  compiles the text with the same compiler and refuses a deploy whose code isn't what the text
+  says. Each version keeps its text, so every canvas of a deployed flow (its view, a version, a
+  run, a proposal) is that text compiled again, with your boxes where you put them. A canvas that
+  can't be written as text that runs as drawn is neither saved nor deployed: the editor says what
+  to change. `GET /deployments/<slug>/text` answers a version's text and layout.
+  Who notices: everyone deploying, a little: nothing to do. Versions deployed before this release
+  keep running, and show `no text kept` until deployed again. Flows saved before it are read as
+  their text when the server starts, with their boxes where they were.
+
+- **A big flow is no longer refused for its size.** A deploy, a preview and a proposal sent the
+  flow's whole drawing, about 700 bytes a box, and a flow of some ten thousand boxes came past the
+  server's 8 MB limit and was refused. The text is a fourteenth of that, sent gzipped: the
+  workroom flow, 8.5 MB as a drawing, deploys as 162 KB.
+  Who notices: someone whose flow was refused with 413 on deploy or proposal; it deploys now.
+
+- **Deploying a big flow is slow.** The server compiles a flow's text twice per deploy (for the
+  preview, then the deploy), and compiling grows faster than a flow does: a flow of some ten
+  thousand boxes takes one to two minutes to deploy, and an agent's proposal of it about three.
+  `holon deploy` and `holon mcp` wait up to 10 minutes for those answers. A server compiles at
+  most two flows at once, and answers 503 with `Retry-After` past that.
+  Who notices: someone deploying a flow of thousands of boxes; and an agent's host that gives a
+  tool less than three minutes, which may give up on such a proposal before it is made.
+
 - **Holon may now be used freely by individuals and small teams.** Until now its license
   reserved every right, so even installing a release and running it needed a written agreement.
   It is now source-available, under the PolyForm Noncommercial License 1.0.0 with Holon's
